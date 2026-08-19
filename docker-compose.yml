@@ -1,0 +1,63 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm}
+        RUST_TOOLCHAIN: ${RUST_TOOLCHAIN:-1.88.0}
+    image: hard-vibe-code:dev
+    working_dir: /workspace
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+    ports:
+      - "5173:5173"
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+      RUST_LOG: info
+    volumes:
+      - .:/workspace
+      - node_modules:/workspace/node_modules
+      - cargo_registry:/root/.cargo/registry
+      - cargo_git:/root/.cargo/git
+      - tauri_target:/workspace/src-tauri/target
+
+  tauri-check:
+    image: hard-vibe-code:dev
+    profiles: ["tools"]
+    working_dir: /workspace
+    command: cargo check --manifest-path src-tauri/Cargo.toml
+    volumes:
+      - .:/workspace
+      - cargo_registry:/root/.cargo/registry
+      - cargo_git:/root/.cargo/git
+      - tauri_target:/workspace/src-tauri/target
+
+  frontend-build:
+    image: hard-vibe-code:dev
+    profiles: ["tools"]
+    working_dir: /workspace
+    command: npm run build
+    volumes:
+      - .:/workspace
+      - node_modules:/workspace/node_modules
+
+  test-runner:
+    image: hard-vibe-code:dev
+    profiles: ["tools"]
+    working_dir: /workspace
+    command: npm run test:all
+    environment:
+      CI: "true"
+    volumes:
+      - .:/workspace
+      - node_modules:/workspace/node_modules
+      - cargo_registry:/root/.cargo/registry
+      - cargo_git:/root/.cargo/git
+      - tauri_target:/workspace/src-tauri/target
+
+volumes:
+  node_modules:
+  cargo_registry:
+  cargo_git:
+  tauri_target:

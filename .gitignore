@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.vite/
+coverage/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Rust / Tauri
+src-tauri/target/
+
+# Environment
+.env

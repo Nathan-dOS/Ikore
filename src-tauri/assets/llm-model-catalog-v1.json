@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "2026-08-18.1",
+  "synchronizedAutomatically": false,
+  "pricingPolicy": "unknown_is_null",
+  "models": [
+    { "providerId": "openai", "modelId": "gpt-4.1-mini", "structuredOutput": true, "streaming": true, "inputUsdPerMillion": null, "outputUsdPerMillion": null },
+    { "providerId": "anthropic", "modelId": "claude-sonnet-4-20250514", "structuredOutput": false, "streaming": true, "inputUsdPerMillion": null, "outputUsdPerMillion": null },
+    { "providerId": "gemini", "modelId": "gemini-2.5-flash", "structuredOutput": true, "streaming": true, "inputUsdPerMillion": null, "outputUsdPerMillion": null },
+    { "providerId": "deepseek", "modelId": "deepseek-chat", "structuredOutput": false, "streaming": true, "inputUsdPerMillion": null, "outputUsdPerMillion": null },
+    { "providerId": "groq", "modelId": "llama-3.3-70b-versatile", "structuredOutput": false, "streaming": true, "inputUsdPerMillion": null, "outputUsdPerMillion": null },
+    { "providerId": "mistral", "modelId": "mistral-small-latest", "structuredOutput": true, "streaming": true, "inputUsdPerMillion": null, "outputUsdPerMillion": null },
+    { "providerId": "ollama", "modelId": "qwen2.5-coder:7b", "structuredOutput": false, "streaming": true, "inputUsdPerMillion": null, "outputUsdPerMillion": null }
+  ]
+}
