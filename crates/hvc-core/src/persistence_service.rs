@@ -11,14 +11,15 @@ use crate::agent_runtime::{
 };
 use crate::embedding_service::{EmbeddingGateway, OllamaEmbeddingGateway};
 use crate::llm::{
-    CompressionPreview, CompressionPreviewRequest, CredentialStore,
-    DeleteProviderConnectionRequest, DeleteProviderRouteRequest, KeyringCredentialStore, LlmError,
-    LlmErrorKind, LlmEventSink, LlmExecutionSnapshot, LlmResilienceSnapshot, LlmRoutingMetric,
-    NoopEventSink, ProviderConnection, ProviderProfile, ProviderRoute, ProviderRouteBinding,
-    ProviderRouter, ResetLlmResilienceStateRequest, RoutingMode, SqliteLlmRepository, StableJitter,
-    SystemClock, TestProviderConnectionRequest, TestProviderConnectionResponse,
-    UpsertProviderConnectionRequest, UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
-    preview_compression, provider_profiles_for_ipc,
+    Clock, CompressionPreview, CompressionPreviewRequest, CredentialStore,
+    DeleteProviderConnectionRequest, DeleteProviderRouteRequest, JitterSource,
+    KeyringCredentialStore, LlmError, LlmErrorKind, LlmEventSink, LlmExecutionSnapshot,
+    LlmResilienceSnapshot, LlmRoutingMetric, NoopEventSink, ProviderConnection, ProviderProfile,
+    ProviderRoute, ProviderRouteBinding, ProviderRouter, ResetLlmResilienceStateRequest,
+    RoutingMode, SqliteLlmRepository, StableJitter, SystemClock, TestProviderConnectionRequest,
+    TestProviderConnectionResponse, UpsertProviderConnectionRequest,
+    UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest, preview_compression,
+    provider_profiles_for_ipc,
 };
 use chrono::Utc;
 use reqwest::Client;
@@ -923,7 +924,7 @@ pub struct PersistenceService {
     runtime_control: Arc<RuntimeControl>,
     embedding_gateway: Arc<dyn EmbeddingGateway>,
     llm_repository: SqliteLlmRepository,
-    credentials: Arc<KeyringCredentialStore>,
+    credentials: Arc<dyn CredentialStore>,
     llm_router: Arc<ProviderRouter>,
 }
 
@@ -940,6 +941,27 @@ impl PersistenceService {
         app_data_dir: &Path,
         event_sink: Arc<dyn LlmEventSink>,
     ) -> Result<Self, PersistenceServiceError> {
+        let llm_client = Client::new();
+        Self::initialize_with_dependencies(
+            app_data_dir,
+            event_sink,
+            Arc::new(KeyringCredentialStore),
+            Arc::new(OllamaEmbeddingGateway::new(llm_client.clone())),
+            Arc::new(SystemClock),
+            Arc::new(StableJitter),
+            llm_client,
+        )
+    }
+
+    pub fn initialize_with_dependencies(
+        app_data_dir: &Path,
+        event_sink: Arc<dyn LlmEventSink>,
+        credentials: Arc<dyn CredentialStore>,
+        embedding_gateway: Arc<dyn EmbeddingGateway>,
+        clock: Arc<dyn Clock>,
+        jitter: Arc<dyn JitterSource>,
+        llm_client: Client,
+    ) -> Result<Self, PersistenceServiceError> {
         fs::create_dir_all(app_data_dir)?;
         let db_path = app_data_dir.join("hard-vibe-code.db");
         let mut connection = Connection::open(&db_path)?;
@@ -952,17 +974,13 @@ impl PersistenceService {
 
         let llm_repository = SqliteLlmRepository::new(&db_path);
         llm_repository.ensure_legacy_configuration()?;
-        let credentials = Arc::new(KeyringCredentialStore);
-        let llm_client = Client::new();
-        let embedding_gateway: Arc<dyn EmbeddingGateway> =
-            Arc::new(OllamaEmbeddingGateway::new(llm_client.clone()));
         let llm_router = Arc::new(ProviderRouter::new(
             llm_repository.clone(),
             llm_client.clone(),
             credentials.clone(),
             event_sink,
-            Arc::new(SystemClock),
-            Arc::new(StableJitter),
+            clock,
+            jitter,
         ));
         Ok(Self {
             db_path,

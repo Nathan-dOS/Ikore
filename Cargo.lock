@@ -3464,6 +3464,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "hvc-test-support"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hvc-core",
+ "refinery",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "hvc-ui"
 version = "0.1.0"
 dependencies = [
@@ -3471,6 +3485,7 @@ dependencies = [
  "gpui",
  "hvc-core",
  "hvc-editor",
+ "hvc-test-support",
  "tokio",
 ]
 

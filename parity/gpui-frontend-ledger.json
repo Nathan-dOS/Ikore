@@ -1,0 +1,419 @@
+{
+  "baselineFrontendTests": 51,
+  "cases": [
+    {
+      "id": "shell-001",
+      "area": "shell_lifecycle",
+      "source": "src/app/applicationController.test.ts::polls every 1.2 seconds without overlapping and disposes listeners and timers",
+      "target": "hvc_ui::lifecycle::tests::polls_without_overlap_and_disposes_resources",
+      "status": "pending",
+      "rationale": "O coordenador GPUI ainda não possui polling e disposal equivalentes."
+    },
+    {
+      "id": "shell-002",
+      "area": "shell_lifecycle",
+      "source": "src/app/applicationController.test.ts::persists restorable layout and domain selections with debounce",
+      "target": "hvc_ui::session::tests::persists_layout_and_domain_selections_with_debounce",
+      "status": "pending",
+      "rationale": "A restauração existe, mas a persistência GPUI com debounce ainda não."
+    },
+    {
+      "id": "shell-003",
+      "area": "shell_lifecycle",
+      "source": "src/app/applicationController.test.ts::flushes the latest pending session when the application stops inside the debounce window",
+      "target": "hvc_ui::session::tests::flushes_pending_session_during_shutdown",
+      "status": "pending",
+      "rationale": "O shutdown do core é gracioso, porém o flush da sessão da UI ainda falta."
+    },
+    {
+      "id": "shell-004",
+      "area": "shell_lifecycle",
+      "source": "src/app/applicationController.test.ts::rehydrates every persisted domain selection when reopening a workspace",
+      "target": "hvc_ui::session::tests::rehydrates_all_domain_selections",
+      "status": "partial",
+      "rationale": "View, workspace e aba são restaurados parcialmente; seleções das demais entidades ainda não."
+    },
+    {
+      "id": "shell-005",
+      "area": "shell_lifecycle",
+      "source": "src/App.test.tsx::switches between all six dedicated views without remounting the shell",
+      "target": "hvc_ui::app_model::tests::navigates_all_six_views",
+      "status": "covered",
+      "rationale": "O modelo GPUI mantém as seis entidades e alterna a view raiz."
+    },
+    {
+      "id": "shell-006",
+      "area": "shell_lifecycle",
+      "source": "src/App.test.tsx::shows semantic badges and preserves collapsed navigation across view changes",
+      "target": "hvc_ui::shell::tests::preserves_collapsed_navigation_and_semantic_badges",
+      "status": "pending",
+      "rationale": "Sidebar colapsável e badges semânticos ainda não estão no shell GPUI."
+    },
+    {
+      "id": "shell-007",
+      "area": "shell_lifecycle",
+      "source": "src/components/layout/AppHeader.test.tsx::keeps warnings and errors in header flow and reveals the queued notice after dismissal",
+      "target": "hvc_ui::shell::tests::queues_header_errors_warnings_and_notices",
+      "status": "pending",
+      "rationale": "O shell mostra um status único e ainda não possui fila de banners."
+    },
+    {
+      "id": "shell-008",
+      "area": "shell_lifecycle",
+      "source": "src/state/viewStore.test.ts::hydrates persisted layout preferences and resets transient fullscreen state",
+      "target": "hvc_ui::session::tests::hydrates_persisted_layout_and_resets_transient_state",
+      "status": "partial",
+      "rationale": "A active view é restaurada; preferências completas e estado transitório aguardam a Etapa 1."
+    },
+
+    {
+      "id": "contract-001",
+      "area": "rust_contracts",
+      "source": "src/ipc/client.test.ts::normalizes a serialized domain error",
+      "target": "hvc_core::contracts::tests::preserves_typed_domain_error_fields",
+      "status": "partial",
+      "rationale": "Os erros Rust são tipados, mas falta o contrato substituto explícito."
+    },
+    {
+      "id": "contract-002",
+      "area": "rust_contracts",
+      "source": "src/ipc/client.test.ts::falls back to io_error for a regular Error",
+      "target": "hvc_ui::errors::tests::maps_untyped_failures_to_safe_io_error",
+      "status": "pending",
+      "rationale": "A fronteira direta ainda não possui normalizador único para falhas de task."
+    },
+    {
+      "id": "contract-003",
+      "area": "rust_contracts",
+      "source": "src/ipc/client.test.ts::preserves enriched LLM error details and remediation",
+      "target": "hvc_core::contracts::tests::preserves_llm_details_and_remediation",
+      "status": "partial",
+      "rationale": "Os DTOs contêm detalhes e remediação, mas falta teste de contrato dedicado."
+    },
+    {
+      "id": "contract-004",
+      "area": "rust_contracts",
+      "source": "src/ipc/client.test.ts::invokes open_workspace with the request envelope",
+      "target": "hvc_ui::backend::tests::opens_workspace_through_typed_request",
+      "status": "partial",
+      "rationale": "A chamada direta tipada existe e precisa ser fixada como contrato substituto."
+    },
+    {
+      "id": "contract-005",
+      "area": "rust_contracts",
+      "source": "src/ipc/client.test.ts::starts and cancels chat turns through read-only chat IPC",
+      "target": "hvc_core::contracts::tests::starts_and_cancels_typed_chat_turns",
+      "status": "partial",
+      "rationale": "ChatService suporta ambas operações; a equivalência conjunta ainda não está registrada em teste."
+    },
+    {
+      "id": "contract-006",
+      "area": "rust_contracts",
+      "source": "src/ipc/client.test.ts::turns a backend domain error into WorkspaceClientError",
+      "target": "hvc_ui::errors::tests::renders_workspace_command_error_without_losing_fields",
+      "status": "pending",
+      "rationale": "A UI GPUI ainda apresenta somente a mensagem simples."
+    },
+    {
+      "id": "contract-007",
+      "area": "rust_contracts",
+      "source": "src/ipc/client.test.ts::sends a connection secret only in the write request",
+      "target": "hvc_core::contracts::tests::never_persists_or_logs_connection_secret",
+      "status": "partial",
+      "rationale": "A persistência já testa ausência da chave no SQLite; falta cobrir toda a nova fronteira direta."
+    },
+    {
+      "id": "contract-008",
+      "area": "rust_contracts",
+      "source": "src/ipc/client.test.ts::lists provider profiles",
+      "target": "hvc_core::llm::profiles::tests::exposes_eight_tool_calling_providers_and_legacy_openai_profile",
+      "status": "covered",
+      "rationale": "O catálogo Rust valida os profiles expostos."
+    },
+    {
+      "id": "contract-009",
+      "area": "rust_contracts",
+      "source": "src/ipc/client.test.ts::tests a provider connection and deletes it",
+      "target": "hvc_core::contracts::tests::tests_and_deletes_provider_connection",
+      "status": "partial",
+      "rationale": "As operações existem e têm cobertura separada, mas falta o fluxo contratual equivalente."
+    },
+    {
+      "id": "contract-010",
+      "area": "rust_contracts",
+      "source": "src/ipc/client.test.ts::manages routes and bindings",
+      "target": "hvc_core::contracts::tests::manages_routes_targets_and_bindings",
+      "status": "partial",
+      "rationale": "O repositório cobre decisões e bindings; o fluxo público completo será consolidado."
+    },
+    {
+      "id": "contract-011",
+      "area": "rust_contracts",
+      "source": "src/ipc/client.test.ts::handles resilience snapshots and reset",
+      "target": "hvc_core::contracts::tests::loads_and_resets_resilience_snapshot",
+      "status": "partial",
+      "rationale": "O ciclo de circuit breaker é coberto, mas snapshot/reset público ainda precisa equivalência."
+    },
+    {
+      "id": "contract-012",
+      "area": "rust_contracts",
+      "source": "src/ipc/client.test.ts::retrieves execution snapshot, metrics and compression preview",
+      "target": "hvc_core::contracts::tests::loads_execution_metrics_and_compression_preview",
+      "status": "partial",
+      "rationale": "As três capacidades possuem regras Rust, sem teste único da interface pública."
+    },
+
+    {
+      "id": "workspace-001",
+      "area": "workspace_editor",
+      "source": "src/components/editor/HitlActionBar.test.tsx::supports workspace review shortcuts while ignoring typing targets",
+      "target": "hvc_ui::hitl::tests::handles_review_shortcuts_outside_typing_targets",
+      "status": "pending",
+      "rationale": "Atalhos HITL ainda não foram registrados no GPUI."
+    },
+    {
+      "id": "workspace-002",
+      "area": "workspace_editor",
+      "source": "src/components/editor/HitlActionBar.test.tsx::disables actions and shortcuts while a decision is pending",
+      "target": "hvc_ui::hitl::tests::disables_decisions_while_request_is_pending",
+      "status": "pending",
+      "rationale": "A entidade HITL funcional será implementada na Etapa 3."
+    },
+    {
+      "id": "workspace-003",
+      "area": "workspace_editor",
+      "source": "src/markdown/renderMarkdown.test.ts::renders basic Markdown and GFM",
+      "target": "hvc_editor::markdown::tests::parses_gfm_blocks_and_ignores_raw_html",
+      "status": "covered",
+      "rationale": "O parser Rust habilita as extensões GFM necessárias."
+    },
+    {
+      "id": "workspace-004",
+      "area": "workspace_editor",
+      "source": "src/markdown/renderMarkdown.test.ts::neutralizes script tags",
+      "target": "hvc_editor::markdown::tests::parses_gfm_blocks_and_ignores_raw_html",
+      "status": "covered",
+      "rationale": "HTML bruto é descartado pelo renderer Rust."
+    },
+    {
+      "id": "workspace-005",
+      "area": "workspace_editor",
+      "source": "src/markdown/renderMarkdown.test.ts::removes unsafe URL protocols",
+      "target": "hvc_editor::markdown::tests::rejects_unsafe_link_protocols",
+      "status": "pending",
+      "rationale": "A política explícita de protocolos ainda precisa ser implementada e testada."
+    },
+    {
+      "id": "workspace-006",
+      "area": "workspace_editor",
+      "source": "src/state/editorStore.test.ts::opens a tab once and makes it active",
+      "target": "hvc_ui::workspace::tests::opens_each_tab_once_and_activates_it",
+      "status": "pending",
+      "rationale": "O modelo GPUI ainda representa somente a contagem de abas."
+    },
+    {
+      "id": "workspace-007",
+      "area": "workspace_editor",
+      "source": "src/state/editorStore.test.ts::tracks dirty state relative to the saved base content",
+      "target": "hvc_editor::buffer::tests::tracks_dirty_state_against_saved_revision",
+      "status": "partial",
+      "rationale": "EditorBuffer cobre dirty/save, mas a integração por aba ainda não."
+    },
+    {
+      "id": "workspace-008",
+      "area": "workspace_editor",
+      "source": "src/state/editorStore.test.ts::clears transient state after a successful save",
+      "target": "hvc_ui::workspace::tests::clears_saving_conflict_and_error_after_save",
+      "status": "pending",
+      "rationale": "Autosave persistido e estado transitório por aba ainda não estão ligados."
+    },
+    {
+      "id": "workspace-009",
+      "area": "workspace_editor",
+      "source": "src/state/editorStore.test.ts::activates the last remaining tab when the current tab closes",
+      "target": "hvc_ui::workspace::tests::activates_last_remaining_tab_after_close",
+      "status": "pending",
+      "rationale": "Fechamento e fallback de aba aguardam a Etapa 2."
+    },
+    {
+      "id": "workspace-010",
+      "area": "workspace_editor",
+      "source": "src/components/SanitizedMarkdown.test.tsx::removes executable markup and unsafe URLs before DOM insertion",
+      "target": "hvc_editor::markdown::tests::sanitizes_executable_markup_and_urls",
+      "status": "partial",
+      "rationale": "HTML é ignorado, porém a política de URLs ainda está pendente."
+    },
+
+    {
+      "id": "pulsations-001",
+      "area": "pulsations",
+      "source": "src/state/pulsationStore.test.ts::hydrates the active checkpoint, counters, and artifacts",
+      "target": "hvc_ui::pulsations::tests::hydrates_checkpoint_counters_and_artifacts",
+      "status": "partial",
+      "rationale": "O core expõe snapshots e artifacts; a entidade GPUI ainda não os hidrata."
+    },
+    {
+      "id": "pulsations-002",
+      "area": "pulsations",
+      "source": "src/state/pulsationStore.test.ts::refreshes artifacts for the same selected pulsation",
+      "target": "hvc_ui::pulsations::tests::refreshes_artifacts_for_selected_pulsation",
+      "status": "pending",
+      "rationale": "Seleção e refresh funcional serão ligados na Etapa 3."
+    },
+
+    {
+      "id": "vault-001",
+      "area": "vault",
+      "source": "src/state/vaultStore.test.ts::derives deterministic graph and context layouts",
+      "target": "hvc_ui::vault::tests::derives_deterministic_graph_and_context_layouts",
+      "status": "partial",
+      "rationale": "O índice Rust é determinístico; o layout e o context drawer GPUI ainda não."
+    },
+    {
+      "id": "vault-002",
+      "area": "vault",
+      "source": "src/state/vaultStore.test.ts::delegates substring or regex search through the typed IPC boundary",
+      "target": "hvc_ui::vault::tests::runs_typed_substring_and_regex_search",
+      "status": "partial",
+      "rationale": "A busca direta existe no AppCore, ainda sem modelo GPUI funcional."
+    },
+    {
+      "id": "vault-003",
+      "area": "vault",
+      "source": "src/state/vaultStore.test.ts::renames relative notes, updates cached documents, and refreshes tree and graph",
+      "target": "hvc_ui::vault::tests::renames_note_and_refreshes_all_dependent_state",
+      "status": "partial",
+      "rationale": "O core renomeia e atualiza wikilinks; coordenação da UI continua pendente."
+    },
+    {
+      "id": "vault-004",
+      "area": "vault",
+      "source": "src/state/vaultStore.test.ts::loads each context document once even when requests overlap",
+      "target": "hvc_ui::vault::tests::deduplicates_overlapping_context_document_loads",
+      "status": "pending",
+      "rationale": "Ainda não há cache de carregamentos concorrentes na entidade GPUI."
+    },
+
+    {
+      "id": "settings-001",
+      "area": "settings",
+      "source": "src/components/LlmRoutingSettings.test.tsx::accepts consecutive events, discards stale events, and detects gaps",
+      "target": "hvc_ui::logs::tests::classifies_consecutive_stale_and_gap_llm_events",
+      "status": "partial",
+      "rationale": "AppEventBus detecta Lagged e envelopes possuem sequência; falta a política completa na UI."
+    },
+    {
+      "id": "settings-002",
+      "area": "settings",
+      "source": "src/components/LlmRoutingSettings.test.tsx::renders the store-backed connections, routes, and bindings",
+      "target": "hvc_ui::settings::tests::renders_connections_routes_and_bindings",
+      "status": "pending",
+      "rationale": "A view GPUI mostra somente uma métrica de providers."
+    },
+    {
+      "id": "settings-003",
+      "area": "settings",
+      "source": "src/components/LlmRoutingSettings.test.tsx::delegates routing mode changes to the runtime store",
+      "target": "hvc_ui::settings::tests::updates_routing_mode_through_core",
+      "status": "pending",
+      "rationale": "Controles funcionais de runtime ainda não foram portados."
+    },
+    {
+      "id": "settings-004",
+      "area": "settings",
+      "source": "src/components/LlmRoutingSettings.test.tsx::tests the selected provider connection through the runtime store",
+      "target": "hvc_ui::settings::tests::tests_selected_provider_connection",
+      "status": "pending",
+      "rationale": "A ação assíncrona e seu feedback aguardam a Etapa 5."
+    },
+    {
+      "id": "settings-005",
+      "area": "settings",
+      "source": "src/components/LlmRoutingSettings.test.tsx::sends a credential directly to the store and clears the uncontrolled field",
+      "target": "hvc_ui::settings::tests::writes_secret_once_and_clears_input",
+      "status": "pending",
+      "rationale": "A interface nativa de credenciais ainda não existe."
+    },
+    {
+      "id": "settings-006",
+      "area": "settings",
+      "source": "src/components/LlmRoutingSettings.test.tsx::clears the credential field even when persistence fails",
+      "target": "hvc_ui::settings::tests::clears_secret_input_after_persistence_failure",
+      "status": "pending",
+      "rationale": "O double de keyring da Etapa 0 permitirá cobrir esse cenário sem credenciais reais."
+    },
+
+    {
+      "id": "chat-001",
+      "area": "chat",
+      "source": "src/views/ChatView.test.tsx::shows only connections explicitly eligible for chat tool calling",
+      "target": "hvc_ui::chat::tests::filters_connections_by_chat_tool_capability",
+      "status": "pending",
+      "rationale": "A entidade Chat ainda não carrega connections."
+    },
+    {
+      "id": "chat-002",
+      "area": "chat",
+      "source": "src/views/ChatView.test.tsx::requires a project before exposing the composer",
+      "target": "hvc_ui::chat::tests::requires_active_project_before_composer",
+      "status": "pending",
+      "rationale": "O painel GPUI ainda não possui composer."
+    },
+    {
+      "id": "chat-003",
+      "area": "chat",
+      "source": "src/components/chat/ChatMessageContent.test.tsx::recognizes only unified diffs with matching a/ and b/ headers",
+      "target": "hvc_editor::diff::tests::recognizes_only_matching_unified_diff_headers",
+      "status": "partial",
+      "rationale": "O contrato de diff existe, mas a validação exata dos headers ainda precisa equivalência."
+    },
+    {
+      "id": "chat-004",
+      "area": "chat",
+      "source": "src/components/chat/ChatMessageContent.test.tsx::sanitizes markdown and offers copy without any apply action",
+      "target": "hvc_ui::chat::tests::renders_safe_markdown_with_copy_only_diff",
+      "status": "partial",
+      "rationale": "Parser e clipboard double existem; apresentação Chat e ausência de apply ainda serão testadas."
+    },
+    {
+      "id": "chat-005",
+      "area": "chat",
+      "source": "src/state/chatStore.test.ts::classifies duplicate, next and gap sequences",
+      "target": "hvc_ui::chat::tests::classifies_duplicate_next_and_gap_sequences",
+      "status": "partial",
+      "rationale": "Envelopes tipados têm sequência, porém o reconciliador GPUI ainda não."
+    },
+    {
+      "id": "chat-006",
+      "area": "chat",
+      "source": "src/state/chatStore.test.ts::deduplicates deltas and reconciles a detected gap",
+      "target": "hvc_ui::chat::tests::deduplicates_deltas_and_reconciles_gap_snapshot",
+      "status": "pending",
+      "rationale": "Streaming da entidade Chat será implementado na Etapa 7."
+    },
+    {
+      "id": "chat-007",
+      "area": "chat",
+      "source": "src/state/chatStore.test.ts::cancels the active execution without changing provider state",
+      "target": "hvc_ui::chat::tests::cancels_active_turn_without_mutating_provider_state",
+      "status": "partial",
+      "rationale": "ChatService cancela turns; falta o fluxo observável da UI."
+    },
+    {
+      "id": "chat-008",
+      "area": "chat",
+      "source": "src/state/chatStore.test.ts::discards a late conversation response after switching projects",
+      "target": "hvc_ui::chat::tests::discards_late_response_after_project_switch",
+      "status": "pending",
+      "rationale": "Ainda não existe generation token por hidratação no modelo GPUI."
+    },
+    {
+      "id": "chat-009",
+      "area": "chat",
+      "source": "src/state/chatStore.test.ts::falls back to the newest persisted conversation when the restored selection was deleted",
+      "target": "hvc_ui::chat::tests::falls_back_to_newest_existing_conversation",
+      "status": "pending",
+      "rationale": "A restauração guarda o id, mas a entidade Chat ainda não reconcilia conversas removidas."
+    }
+  ]
+}

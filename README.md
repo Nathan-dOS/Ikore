@@ -29,6 +29,7 @@ Não são reutilizadas crates de editor/UI do Zed sujeitas a GPL. A distribuiç�
 - `crates/hvc-core`: domínio, persistência, workspace, LLM, Chat e barramento tipado.
 - `crates/hvc-ui`: shell, design system, seis views e editor conectado ao GPUI.
 - `crates/hvc-editor`: Rope, seleção, undo/redo, diff, Markdown e Tree-sitter.
+- `crates/hvc-test-support`: ambientes isolados, doubles determinísticos e fixtures HTTP/SSE para os testes de paridade.
 - `src-tauri`: adaptador legado temporário, consumidor de `hvc-core`.
 - `src`: frontend React legado temporário.
 
@@ -68,11 +69,17 @@ cargo check -p hvc-tauri-legacy
 
 O frontend, `package.json`, Vite, Monaco, Zustand, IPC e Tauri só serão removidos quando houver equivalência dos testes frontend, paridade funcional das seis views, smoke test Windows e aprovação dos benchmarks definidos na ADR-006.
 
+## Controle de paridade
+
+O inventário versionado [`parity/gpui-frontend-ledger.json`](parity/gpui-frontend-ledger.json) mapeia nominalmente cada um dos 51 testes React para seu alvo Rust. A validação estrutural do ledger faz parte de `cargo test --workspace` e impede casos ausentes, duplicados ou sem justificativa.
+
+Estado ao concluir a Etapa 0: 4 casos cobertos, 22 parcialmente cobertos e 25 pendentes. Esses estados registram equivalência funcional por cenário; não são uma contagem dos testes executados pelo Cargo.
+
 ## Limitações atuais da migração
 
 - O shell GPUI, as seis rotas, o editor Rope/IME, a restauração V8/V9 e a ressincronização após atraso do barramento estão implementados.
 - A paridade funcional de Workspace ainda precisa ligar árvore, múltiplas abas, preview, autosave persistido e o fluxo completo de diff/HITL à UI nativa.
 - Pulsations, Vault, Settings, Logs e Chat já têm entidades e painéis próprios, mas suas operações completas, streaming/cancelamento e testes de fluxo ainda não substituem as views React.
-- Benchmarks comparativos, equivalência Rust dos 51 testes frontend, auditoria de licenças/advisories e decisão sobre a dependência GPL continuam pendentes.
+- Benchmarks comparativos, equivalência Rust completa dos 51 testes frontend, auditoria de licenças/advisories e decisão sobre a dependência GPL continuam pendentes.
 
-Última validação local desta etapa: 107 testes Rust do workspace e 51 testes frontend aprovados, além de Clippy com `-D warnings`, builds frontend/release e smoke Windows com shutdown gracioso.
+Última validação local da Etapa 0 de paridade: 114 testes Rust do workspace e 51 testes frontend aprovados, além de `cargo fmt --check`, Clippy com `-D warnings`, build frontend e check do adaptador Tauri legado. O build release e o smoke Windows permanecem gates dos marcos funcionais e do corte.

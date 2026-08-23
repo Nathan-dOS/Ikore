@@ -5,14 +5,19 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use fs2::FileExt;
+use reqwest::Client;
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::chat_service::{ChatEventSink, ChatService};
+use crate::embedding_service::{EmbeddingGateway, OllamaEmbeddingGateway};
 use crate::events::{AppEvent, AppEventBus};
-use crate::llm::LlmEventSink;
+use crate::llm::{
+    Clock, CredentialStore, JitterSource, KeyringCredentialStore, LlmEventSink, StableJitter,
+    SystemClock,
+};
 use crate::persistence_service::{PersistenceService, PersistenceServiceError};
 use crate::workspace_service::{
     self, BootstrapGreenfieldWorkspaceResponse, GetContextCandidatesRequest,
@@ -81,6 +86,28 @@ pub enum AppCoreError {
     Persistence(#[from] PersistenceServiceError),
     #[error("falha ao recuperar o Chat Companion: {0}")]
     Chat(#[from] crate::chat_service::ChatCommandError),
+}
+
+#[derive(Clone)]
+pub struct AppCoreDependencies {
+    pub credentials: Arc<dyn CredentialStore>,
+    pub embedding_gateway: Arc<dyn EmbeddingGateway>,
+    pub clock: Arc<dyn Clock>,
+    pub jitter: Arc<dyn JitterSource>,
+    pub http_client: Client,
+}
+
+impl Default for AppCoreDependencies {
+    fn default() -> Self {
+        let http_client = Client::new();
+        Self {
+            credentials: Arc::new(KeyringCredentialStore),
+            embedding_gateway: Arc::new(OllamaEmbeddingGateway::new(http_client.clone())),
+            clock: Arc::new(SystemClock),
+            jitter: Arc::new(StableJitter),
+            http_client,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -167,15 +194,31 @@ pub struct AppCore {
 
 impl AppCore {
     pub fn initialize(paths: AppPaths, runtime: Handle) -> Result<Arc<Self>, AppCoreError> {
+        Self::initialize_with_dependencies(paths, runtime, AppCoreDependencies::default())
+    }
+
+    pub fn initialize_with_dependencies(
+        paths: AppPaths,
+        runtime: Handle,
+        dependencies: AppCoreDependencies,
+    ) -> Result<Arc<Self>, AppCoreError> {
         let data_lock = DataDirectoryLock::acquire(&paths)?;
         let events = Arc::new(AppEventBus::default());
         let llm_sink: Arc<dyn LlmEventSink> = events.clone();
-        let persistence =
-            PersistenceService::initialize_with_event_sink(paths.data_dir(), llm_sink)?;
+        let persistence = PersistenceService::initialize_with_dependencies(
+            paths.data_dir(),
+            llm_sink,
+            dependencies.credentials.clone(),
+            dependencies.embedding_gateway,
+            dependencies.clock,
+            dependencies.jitter,
+            dependencies.http_client,
+        )?;
         persistence.recover_interrupted_jobs()?;
         let chat_sink: Arc<dyn ChatEventSink> = events.clone();
-        let chat = Arc::new(ChatService::with_keyring_and_runtime(
+        let chat = Arc::new(ChatService::with_dependencies_and_runtime(
             persistence.database_path(),
+            dependencies.credentials,
             chat_sink,
             runtime.clone(),
         ));

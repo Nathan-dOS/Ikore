@@ -12,5 +12,5 @@ pub mod persistence_service;
 pub mod repository_context;
 pub mod workspace_service;
 
-pub use app_core::{AppCore, AppPaths, DataDirectoryLock};
+pub use app_core::{AppCore, AppCoreDependencies, AppPaths, DataDirectoryLock};
 pub use events::{AppEvent, AppEventBus};

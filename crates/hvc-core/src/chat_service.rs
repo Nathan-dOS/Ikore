@@ -370,7 +370,21 @@ impl ChatService {
         event_sink: Arc<dyn ChatEventSink>,
         runtime_handle: Handle,
     ) -> Self {
-        let mut service = Self::with_keyring(db_path, event_sink);
+        Self::with_dependencies_and_runtime(
+            db_path,
+            Arc::new(KeyringCredentialStore),
+            event_sink,
+            runtime_handle,
+        )
+    }
+
+    pub fn with_dependencies_and_runtime(
+        db_path: impl AsRef<Path>,
+        credentials: Arc<dyn CredentialStore>,
+        event_sink: Arc<dyn ChatEventSink>,
+        runtime_handle: Handle,
+    ) -> Self {
+        let mut service = Self::new(db_path, credentials, event_sink);
         service.runtime_handle = Some(runtime_handle);
         service
     }

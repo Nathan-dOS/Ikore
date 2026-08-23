@@ -15,3 +15,4 @@ tokio.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+hvc-test-support.workspace = true

@@ -4,6 +4,8 @@
 mod app_model;
 mod native_editor;
 mod shell;
+#[cfg(test)]
+mod test_support;
 mod theme;
 mod views;
 

@@ -4,6 +4,7 @@ members = [
     "crates/hvc-app",
     "crates/hvc-core",
     "crates/hvc-editor",
+    "crates/hvc-test-support",
     "crates/hvc-ui",
     "src-tauri",
 ]
@@ -22,6 +23,7 @@ futures = "0.3"
 gpui = { version = "0.2.2", default-features = false, features = ["windows-manifest"] }
 hvc-core = { path = "crates/hvc-core" }
 hvc-editor = { path = "crates/hvc-editor" }
+hvc-test-support = { path = "crates/hvc-test-support" }
 hvc-ui = { path = "crates/hvc-ui" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
