@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::catalog::model_price_basis;
+use super::catalog::{model_entry, model_price_basis};
 use super::compression::CompressionPreview;
 use super::credentials::CredentialStore;
 use super::domain::{
@@ -350,8 +350,17 @@ impl SqliteLlmRepository {
                 created_at,
                 updated_at,
             ) = row.map_err(db_error)?;
-            let has_api_key = profile_by_id(&provider_id).is_some_and(|profile| profile.local)
+            let profile = profile_by_id(&provider_id);
+            let has_api_key = profile.as_ref().is_some_and(|profile| profile.local)
                 || credentials.get(&credential_ref).ok().flatten().is_some();
+            let chat_eligible = enabled
+                && state != "blocked"
+                && has_api_key
+                && profile
+                    .as_ref()
+                    .is_some_and(|profile| profile.capabilities.tool_calling)
+                && model_entry(&provider_id, &default_model)
+                    .is_some_and(|model| model.tool_calling);
             items.push(ProviderConnection {
                 id,
                 provider_id,
@@ -365,6 +374,7 @@ impl SqliteLlmRepository {
                 max_concurrency,
                 version,
                 has_api_key,
+                chat_eligible,
                 created_at,
                 updated_at,
             });

@@ -313,6 +313,9 @@ fn apply_stream_events(
                     usage.output_tokens = output_tokens;
                 }
             }
+            ParsedStreamEvent::ToolCallStarted { .. }
+            | ParsedStreamEvent::ToolArgumentsDelta { .. }
+            | ParsedStreamEvent::ToolCallCompleted { .. } => {}
         }
     }
 }
@@ -509,6 +512,10 @@ mod tests {
         assert_eq!(
             payload.pointer("/text/format/type").and_then(Value::as_str),
             Some("json_object")
+        );
+        assert_eq!(
+            payload.get("max_output_tokens").and_then(Value::as_u64),
+            Some(req.max_output_tokens as u64)
         );
         assert!(payload.get("messages").is_none());
     }

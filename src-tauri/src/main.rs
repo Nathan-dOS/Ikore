@@ -4,7 +4,16 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use hard_vibe_code::{llm::TauriEventSink, persistence_service, workspace_service};
+use hard_vibe_code::{chat_service, llm::TauriEventSink, persistence_service, workspace_service};
+
+use chat_service::{
+    CancelChatTurnRequest, CancelChatTurnResponse, ChatCommandError, ChatService,
+    CreateChatConversationRequest, CreateChatConversationResponse, DeleteChatConversationRequest,
+    DeleteChatConversationResponse, GetChatConversationRequest, GetChatConversationResponse,
+    GetChatTurnSnapshotRequest, GetChatTurnSnapshotResponse, ListChatConversationsRequest,
+    ListChatConversationsResponse, SendChatMessageRequest, SendChatMessageResponse,
+    TauriChatEventSink,
+};
 
 use hard_vibe_code::llm::{
     CompressionPreviewRequest, DeleteProviderConnectionRequest, DeleteProviderRouteRequest,
@@ -48,6 +57,7 @@ use workspace_service::{
 struct AppState {
     workspace: Mutex<WorkspaceContext>,
     persistence: PersistenceService,
+    chat: Arc<ChatService>,
 }
 
 #[derive(Default)]
@@ -58,10 +68,11 @@ struct WorkspaceContext {
 }
 
 impl AppState {
-    fn new(persistence: PersistenceService) -> Self {
+    fn new(persistence: PersistenceService, chat: Arc<ChatService>) -> Self {
         Self {
             workspace: Mutex::new(WorkspaceContext::default()),
             persistence,
+            chat,
         }
     }
 }
@@ -598,6 +609,66 @@ async fn reindex_workspace_embeddings(
         .map_err(PersistenceCommandError::from)
 }
 
+#[tauri::command]
+fn list_chat_conversations(
+    request: ListChatConversationsRequest,
+    state: State<AppState>,
+) -> Result<ListChatConversationsResponse, ChatCommandError> {
+    state.chat.list_conversations(request)
+}
+
+#[tauri::command]
+fn create_chat_conversation(
+    request: CreateChatConversationRequest,
+    state: State<AppState>,
+) -> Result<CreateChatConversationResponse, ChatCommandError> {
+    state.chat.create_conversation(request)
+}
+
+#[tauri::command]
+fn get_chat_conversation(
+    request: GetChatConversationRequest,
+    state: State<AppState>,
+) -> Result<GetChatConversationResponse, ChatCommandError> {
+    state.chat.get_conversation(request)
+}
+
+#[tauri::command]
+fn delete_chat_conversation(
+    request: DeleteChatConversationRequest,
+    state: State<AppState>,
+) -> Result<DeleteChatConversationResponse, ChatCommandError> {
+    state.chat.delete_conversation(request)
+}
+
+#[tauri::command]
+fn send_chat_message(
+    request: SendChatMessageRequest,
+    state: State<AppState>,
+) -> Result<SendChatMessageResponse, ChatCommandError> {
+    let root = get_workspace_root(&state).map_err(|error| ChatCommandError {
+        code: "workspace_not_open".into(),
+        message: error.message,
+    })?;
+    state.chat.start_turn(request, &root)
+}
+
+#[tauri::command]
+fn cancel_chat_turn(
+    request: CancelChatTurnRequest,
+    state: State<AppState>,
+) -> Result<CancelChatTurnResponse, ChatCommandError> {
+    state.chat.cancel_turn(request)
+}
+
+#[tauri::command]
+fn get_chat_turn_snapshot(
+    request: GetChatTurnSnapshotRequest,
+    state: State<AppState>,
+) -> Result<GetChatTurnSnapshotResponse, ChatCommandError> {
+    state.chat.get_turn_snapshot(request)
+}
+
 fn get_workspace_root(state: &State<AppState>) -> Result<PathBuf, WorkspaceCommandError> {
     let workspace = state.workspace.lock().map_err(|_| WorkspaceCommandError {
         code: workspace_service::WorkspaceErrorCode::IoError,
@@ -626,11 +697,18 @@ fn main() {
             persistence.recover_interrupted_jobs().map_err(|error| {
                 io::Error::other(PersistenceCommandError::from(error).message.clone())
             })?;
+            let chat_event_sink = Arc::new(TauriChatEventSink::new(app.handle().clone()));
+            let chat = Arc::new(ChatService::with_keyring(
+                persistence.database_path(),
+                chat_event_sink,
+            ));
+            chat.recover_interrupted_turns()
+                .map_err(|error| io::Error::other(error.message))?;
             let worker_persistence = persistence.clone();
             tauri::async_runtime::spawn(async move {
                 worker_persistence.run_job_worker_loop().await;
             });
-            app.manage(AppState::new(persistence));
+            app.manage(AppState::new(persistence, chat));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -678,7 +756,14 @@ fn main() {
             preview_context_compression,
             cancel_pulsation_jobs,
             list_agent_runs,
-            reindex_workspace_embeddings
+            reindex_workspace_embeddings,
+            list_chat_conversations,
+            create_chat_conversation,
+            get_chat_conversation,
+            delete_chat_conversation,
+            send_chat_message,
+            cancel_chat_turn,
+            get_chat_turn_snapshot
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

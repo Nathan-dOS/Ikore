@@ -45,10 +45,15 @@ import {
   GET_LLM_EXECUTION_SNAPSHOT_COMMAND,
   GET_LLM_ROUTING_METRICS_COMMAND,
   PREVIEW_CONTEXT_COMPRESSION_COMMAND,
+  LIST_CHAT_CONVERSATIONS_COMMAND,
+  CREATE_CHAT_CONVERSATION_COMMAND,
+  GET_CHAT_CONVERSATION_COMMAND,
+  DELETE_CHAT_CONVERSATION_COMMAND,
+  SEND_CHAT_MESSAGE_COMMAND,
+  CANCEL_CHAT_TURN_COMMAND,
+  GET_CHAT_TURN_SNAPSHOT_COMMAND,
   type AppDomainError,
   type AppErrorCode,
-  type AgentRunListItem,
-  type AgentRuntimeConfig,
   type ApplyHitlDecisionRequest,
   type ApplyHitlDecisionResponse,
   type ArchiveProjectRequest,
@@ -122,6 +127,20 @@ import {
   type GetLlmRoutingMetricsResponse,
   type CompressionPreviewRequest,
   type PreviewContextCompressionResponse,
+  type ListChatConversationsRequest,
+  type ListChatConversationsResponse,
+  type CreateChatConversationRequest,
+  type CreateChatConversationResponse,
+  type GetChatConversationRequest,
+  type GetChatConversationResponse,
+  type DeleteChatConversationRequest,
+  type DeleteChatConversationResponse,
+  type SendChatMessageRequest,
+  type SendChatMessageResponse,
+  type CancelChatTurnRequest,
+  type CancelChatTurnResponse,
+  type GetChatTurnSnapshotRequest,
+  type GetChatTurnSnapshotResponse,
   WRITE_WORKSPACE_FILE_ATOMIC_COMMAND,
   type ListWorkspaceTreeResponse,
   type OpenWorkspaceRequest,
@@ -144,14 +163,41 @@ const APP_ERROR_CODES: AppErrorCode[] = [
   "not_found",
   "db_error",
   "migration_error",
-  "runtime_error"
-  ,"missing_api_key"
-  ,"provider_timeout"
-  ,"provider_blocked"
-  ,"all_targets_exhausted"
-  ,"schema_violation"
-  ,"route_conflict"
-  ,"stream_failed"
+  "runtime_error",
+  "missing_api_key",
+  "provider_timeout",
+  "provider_blocked",
+  "all_targets_exhausted",
+  "schema_violation",
+  "route_conflict",
+  "stream_failed",
+  "chat_persistence",
+  "chat_runtime",
+  "invalid_request",
+  "invalid_message",
+  "project_not_found",
+  "conversation_not_found",
+  "turn_not_found",
+  "turn_active",
+  "workspace_not_open",
+  "workspace_mismatch",
+  "connection_not_found",
+  "connection_removed",
+  "connection_changed",
+  "connection_unavailable",
+  "credential_unavailable",
+  "provider_incompatible",
+  "model_incompatible",
+  "repository_unavailable",
+  "provider_unavailable",
+  "invalid_response",
+  "invalid_tool_arguments",
+  "empty_response",
+  "tool_call_limit",
+  "tool_result_limit",
+  "model_round_limit",
+  "turn_timeout",
+  "cancelled"
 ];
 
 type TauriWindow = Window & {
@@ -508,6 +554,62 @@ export async function listProviderProfiles(): Promise<ListProviderProfilesRespon
 
 export async function listProviderConnections(): Promise<ListProviderConnectionsResponse> {
   return invokeWorkspace<ListProviderConnectionsResponse>(LIST_PROVIDER_CONNECTIONS_COMMAND);
+}
+
+export async function listChatConversations(
+  payload: ListChatConversationsRequest
+): Promise<ListChatConversationsResponse> {
+  return invokeWorkspace<ListChatConversationsResponse>(LIST_CHAT_CONVERSATIONS_COMMAND, {
+    request: payload
+  });
+}
+
+export async function createChatConversation(
+  payload: CreateChatConversationRequest
+): Promise<CreateChatConversationResponse> {
+  return invokeWorkspace<CreateChatConversationResponse>(CREATE_CHAT_CONVERSATION_COMMAND, {
+    request: payload
+  });
+}
+
+export async function getChatConversation(
+  payload: GetChatConversationRequest
+): Promise<GetChatConversationResponse> {
+  return invokeWorkspace<GetChatConversationResponse>(GET_CHAT_CONVERSATION_COMMAND, {
+    request: payload
+  });
+}
+
+export async function deleteChatConversation(
+  payload: DeleteChatConversationRequest
+): Promise<DeleteChatConversationResponse> {
+  return invokeWorkspace<DeleteChatConversationResponse>(DELETE_CHAT_CONVERSATION_COMMAND, {
+    request: payload
+  });
+}
+
+export async function sendChatMessage(
+  payload: SendChatMessageRequest
+): Promise<SendChatMessageResponse> {
+  return invokeWorkspace<SendChatMessageResponse>(SEND_CHAT_MESSAGE_COMMAND, {
+    request: payload
+  });
+}
+
+export async function cancelChatTurn(
+  payload: CancelChatTurnRequest
+): Promise<CancelChatTurnResponse> {
+  return invokeWorkspace<CancelChatTurnResponse>(CANCEL_CHAT_TURN_COMMAND, {
+    request: payload
+  });
+}
+
+export async function getChatTurnSnapshot(
+  payload: GetChatTurnSnapshotRequest
+): Promise<GetChatTurnSnapshotResponse> {
+  return invokeWorkspace<GetChatTurnSnapshotResponse>(GET_CHAT_TURN_SNAPSHOT_COMMAND, {
+    request: payload
+  });
 }
 
 export async function upsertProviderConnection(

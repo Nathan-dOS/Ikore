@@ -15,6 +15,13 @@ vi.mock("@tauri-apps/plugin-dialog", async () => {
   return { open: tauriOpenDialogMock };
 });
 
+vi.mock("@tauri-apps/api/event", async () => {
+  const { tauriListenMock } = await import("./mocks/tauriMock");
+  return {
+    listen: tauriListenMock
+  };
+});
+
 afterEach(() => {
   cleanup();
   resetTauriMock();

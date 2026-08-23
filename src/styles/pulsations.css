@@ -1,0 +1,28 @@
+.view-grid, .pulsations-view { display: grid; grid-template-columns: 300px minmax(0,1fr); gap: 14px; min-height: calc(100vh - 166px); }
+.pulsation-sidebar, .pulsation-detail { padding: 14px; }
+.pulsation-sidebar { display: flex; flex-direction: column; gap: 14px; }
+.inline-create-form { display: grid; gap: 6px; }
+.inline-create-form > div { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px; }
+.pulsation-cards { display: grid; gap: 7px; overflow: auto; }
+.pulsation-card { display: grid; gap: 4px; min-height: 78px; padding: 10px; color: var(--text-secondary); text-align: left; border-color: var(--border-subtle); background: rgba(5,10,15,.5); }
+.pulsation-card[aria-pressed="true"] { color: var(--text-primary); border-color: rgba(43,213,216,.5); background: rgba(43,213,216,.1); }
+.card-topline { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pulsation-card small { color: var(--text-muted); }
+.status-dot { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 10px currentColor; }
+.pulsation-detail { display: flex; flex-direction: column; gap: 18px; }
+.pipeline-progress { display: grid; grid-template-columns: repeat(6,1fr); margin: 8px 0; padding: 0; list-style: none; }
+.pipeline-progress li { position: relative; display: grid; justify-items: center; gap: 7px; color: var(--text-muted); font-size: .69rem; text-align: center; }
+.pipeline-progress li::before { content: ""; position: absolute; left: 0; right: 0; top: 13px; height: 1px; background: var(--border-subtle); }
+.pipeline-progress li:first-child::before { left: 50%; } .pipeline-progress li:last-child::before { right: 50%; }
+.pipeline-dot { position: relative; z-index: 1; display: grid; place-items: center; width: 27px; height: 27px; border: 1px solid var(--border-subtle); border-radius: 50%; background: var(--bg-panel-solid); }
+.pipeline-progress .is-complete { color: var(--accent-green); } .pipeline-progress .is-complete .pipeline-dot { border-color: var(--accent-green); }
+.pipeline-progress .is-current { color: var(--accent-cyan); font-weight: 800; } .pipeline-progress .is-current .pipeline-dot { color: #042a2c; border-color: var(--accent-cyan); background: var(--accent-cyan); box-shadow: 0 0 18px rgba(43,213,216,.28); }
+.facts-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 9px; }
+.facts-grid > div { display: grid; gap: 5px; border: 1px solid var(--border-subtle); border-radius: 10px; padding: 11px; background: rgba(4,9,14,.35); }
+.facts-grid span { color: var(--text-muted); font-size: .68rem; text-transform: uppercase; }
+.facts-grid strong { font-size: .8rem; }
+.artifact-section { display: grid; gap: 10px; }
+.artifact-list { display: grid; gap: 6px; }
+.artifact-list button { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 58px; color: var(--text-primary); text-align: left; border-color: var(--border-subtle); background: rgba(5,10,15,.5); }
+.artifact-list button > span { display: grid; gap: 3px; } .artifact-list small { color: var(--text-muted); } .artifact-list code { font-size: .7rem; }
+@media (max-width: 950px) { .view-grid, .pulsations-view { grid-template-columns: 1fr; } .pulsation-cards { grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); } }

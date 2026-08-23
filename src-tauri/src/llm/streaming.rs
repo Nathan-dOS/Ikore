@@ -9,6 +9,18 @@ pub const MAX_STREAM_BUFFER_BYTES: usize = 256 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedStreamEvent {
     Delta(String),
+    ToolCallStarted {
+        index: usize,
+        id: String,
+        name: String,
+    },
+    ToolArgumentsDelta {
+        index: usize,
+        delta: String,
+    },
+    ToolCallCompleted {
+        index: usize,
+    },
     Completed,
     Usage {
         input_tokens: Option<i64>,
@@ -150,6 +162,44 @@ fn parse_responses(event_name: Option<&str>, payload: &Value) -> Vec<ParsedStrea
                 ParsedStreamEvent::Completed,
             ]
         }
+        "response.output_item.added"
+            if payload.pointer("/item/type").and_then(Value::as_str) == Some("function_call") =>
+        {
+            vec![ParsedStreamEvent::ToolCallStarted {
+                index: payload
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize,
+                id: payload
+                    .pointer("/item/call_id")
+                    .or_else(|| payload.pointer("/item/id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool-call")
+                    .to_string(),
+                name: payload
+                    .pointer("/item/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            }]
+        }
+        "response.function_call_arguments.delta" => vec![ParsedStreamEvent::ToolArgumentsDelta {
+            index: payload
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
+            delta: payload
+                .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        }],
+        "response.function_call_arguments.done" => vec![ParsedStreamEvent::ToolCallCompleted {
+            index: payload
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
+        }],
         _ => Vec::new(),
     }
 }
@@ -167,6 +217,36 @@ fn parse_chat(payload: &Value) -> Vec<ParsedStreamEvent> {
     {
         events.push(ParsedStreamEvent::Delta(delta.to_string()));
     }
+    if let Some(tool_calls) = payload
+        .pointer("/choices/0/delta/tool_calls")
+        .and_then(Value::as_array)
+    {
+        for call in tool_calls {
+            let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let id = call.get("id").and_then(Value::as_str).unwrap_or_default();
+            let name = call
+                .pointer("/function/name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !id.is_empty() || !name.is_empty() {
+                events.push(ParsedStreamEvent::ToolCallStarted {
+                    index,
+                    id: id.to_string(),
+                    name: name.to_string(),
+                });
+            }
+            if let Some(arguments) = call
+                .pointer("/function/arguments")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                events.push(ParsedStreamEvent::ToolArgumentsDelta {
+                    index,
+                    delta: arguments.to_string(),
+                });
+            }
+        }
+    }
     if payload
         .get("choices")
         .and_then(Value::as_array)
@@ -174,6 +254,29 @@ fn parse_chat(payload: &Value) -> Vec<ParsedStreamEvent> {
         .and_then(|choice| choice.get("finish_reason"))
         .is_some_and(|reason| !reason.is_null())
     {
+        if payload
+            .pointer("/choices/0/finish_reason")
+            .and_then(Value::as_str)
+            == Some("tool_calls")
+        {
+            let indices = payload
+                .pointer("/choices/0/delta/tool_calls")
+                .and_then(Value::as_array)
+                .map(|calls| {
+                    calls
+                        .iter()
+                        .filter_map(|call| call.get("index").and_then(Value::as_u64))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            events.extend(
+                indices
+                    .into_iter()
+                    .map(|index| ParsedStreamEvent::ToolCallCompleted {
+                        index: index as usize,
+                    }),
+            );
+        }
         events.push(ParsedStreamEvent::Completed);
     }
     if let Some(usage) = payload.get("usage") {
@@ -192,11 +295,46 @@ fn parse_anthropic(event_name: Option<&str>, payload: &Value) -> Vec<ParsedStrea
     match event_type {
         "content_block_delta" => payload
             .get("delta")
-            .and_then(|delta| delta.get("text"))
-            .and_then(Value::as_str)
-            .filter(|delta| !delta.is_empty())
-            .map(|delta| vec![ParsedStreamEvent::Delta(delta.to_string())])
+            .map(|delta| match delta.get("type").and_then(Value::as_str) {
+                Some("input_json_delta") => vec![ParsedStreamEvent::ToolArgumentsDelta {
+                    index: payload.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
+                    delta: delta
+                        .get("partial_json")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                }],
+                _ => delta
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|delta| !delta.is_empty())
+                    .map(|delta| vec![ParsedStreamEvent::Delta(delta.to_string())])
+                    .unwrap_or_default(),
+            })
             .unwrap_or_default(),
+        "content_block_start"
+            if payload
+                .pointer("/content_block/type")
+                .and_then(Value::as_str)
+                == Some("tool_use") =>
+        {
+            vec![ParsedStreamEvent::ToolCallStarted {
+                index: payload.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
+                id: payload
+                    .pointer("/content_block/id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool-call")
+                    .to_string(),
+                name: payload
+                    .pointer("/content_block/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            }]
+        }
+        "content_block_stop" => vec![ParsedStreamEvent::ToolCallCompleted {
+            index: payload.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
+        }],
         "message_delta" => vec![ParsedStreamEvent::Usage {
             input_tokens: None,
             output_tokens: payload
@@ -233,6 +371,29 @@ mod tests {
     }
 
     #[test]
+    fn parses_fragmented_responses_tool_call() {
+        let mut parser = SseParser::new(ProviderProtocol::OpenaiResponses);
+        let started = parser
+            .push(b"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"read_repository_file\"}}\n\n")
+            .unwrap();
+        assert!(matches!(started[0], ParsedStreamEvent::ToolCallStarted { index: 1, .. }));
+        assert!(parser
+            .push(b"event: response.function_call_arguments.delta\nda")
+            .unwrap()
+            .is_empty());
+        let arguments = parser
+            .push(b"ta: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{\\\"path\\\":\\\"src/lib.rs\\\"}\"}\n\n")
+            .unwrap();
+        assert_eq!(
+            arguments,
+            vec![ParsedStreamEvent::ToolArgumentsDelta {
+                index: 1,
+                delta: "{\"path\":\"src/lib.rs\"}".into()
+            }]
+        );
+    }
+
+    #[test]
     fn parses_fragmented_chat_sse() {
         let mut parser = SseParser::new(ProviderProtocol::OpenaiChat);
         let events = parser
@@ -266,5 +427,48 @@ mod tests {
         let mut parser = SseParser::new(ProviderProtocol::AnthropicMessages);
         let events = parser.push(b"event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n").unwrap();
         assert_eq!(events, vec![ParsedStreamEvent::Delta("x".to_string())]);
+    }
+
+    #[test]
+    fn parses_fragmented_openai_compatible_tool_arguments() {
+        let mut parser = SseParser::new(ProviderProtocol::OpenaiChat);
+        let first = parser
+            .push(b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"read_repository_file\",\"arguments\":\"{\\\"pa\"}}]},\"finish_reason\":null}]}\n\n")
+            .unwrap();
+        let second = parser
+            .push(b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"th\\\":\\\"src/lib.rs\\\"}\"}}]},\"finish_reason\":null}]}\n\n")
+            .unwrap();
+        assert!(matches!(
+            first[0],
+            ParsedStreamEvent::ToolCallStarted { index: 0, .. }
+        ));
+        let fragments = first
+            .into_iter()
+            .chain(second)
+            .filter_map(|event| match event {
+                ParsedStreamEvent::ToolArgumentsDelta { delta, .. } => Some(delta),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(fragments, "{\"path\":\"src/lib.rs\"}");
+    }
+
+    #[test]
+    fn parses_anthropic_tool_use_fragments() {
+        let mut parser = SseParser::new(ProviderProtocol::AnthropicMessages);
+        let started = parser
+            .push(b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool-1\",\"name\":\"search_repository\",\"input\":{}}}\n\n")
+            .unwrap();
+        let delta = parser
+            .push(b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"query\\\":\\\"AppView\\\"}\"}}\n\n")
+            .unwrap();
+        assert!(matches!(
+            started[0],
+            ParsedStreamEvent::ToolCallStarted { index: 1, .. }
+        ));
+        assert!(matches!(
+            delta[0],
+            ParsedStreamEvent::ToolArgumentsDelta { index: 1, .. }
+        ));
     }
 }

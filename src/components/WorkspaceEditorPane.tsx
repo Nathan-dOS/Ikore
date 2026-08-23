@@ -2,7 +2,6 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
-  useMemo,
   useRef,
   type ForwardedRef
 } from "react";
@@ -12,7 +11,7 @@ import type { editor as MonacoEditorNamespace } from "monaco-editor/esm/vs/edito
 import "monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 
-import { renderMarkdown } from "../markdown/renderMarkdown";
+import { SanitizedMarkdown } from "./SanitizedMarkdown";
 import type { EditorTab } from "../state/editorStore";
 
 loader.config({ monaco });
@@ -78,7 +77,10 @@ function WorkspaceEditorPane(
   const editorRef = useRef<MonacoEditorNamespace.IStandaloneCodeEditor | null>(null);
   const editorDisposablesRef = useRef<monaco.IDisposable[]>([]);
   const activeTabPathRef = useRef<string | null>(activeTabPath);
-  const previewHtml = useMemo(() => renderMarkdown(activeTab?.content ?? ""), [activeTab?.content]);
+  const activeCursorLine = activeTab?.cursorLine;
+  const activeCursorColumn = activeTab?.cursorColumn;
+  const activeRelativePath = activeTab?.relativePath;
+  const activeScrollTop = activeTab?.scrollTop;
 
   useImperativeHandle(
     ref,
@@ -112,21 +114,21 @@ function WorkspaceEditorPane(
 
   useEffect(() => {
     const editor = editorRef.current;
-    if (!editor || !activeTab) {
+    if (!editor || !activeRelativePath) {
       return;
     }
 
-    if (activeTab.cursorLine && activeTab.cursorColumn) {
+    if (activeCursorLine && activeCursorColumn) {
       editor.setPosition({
-        lineNumber: Math.max(1, activeTab.cursorLine),
-        column: Math.max(1, activeTab.cursorColumn)
+        lineNumber: Math.max(1, activeCursorLine),
+        column: Math.max(1, activeCursorColumn)
       });
     }
 
-    if (activeTab.scrollTop !== null && activeTab.scrollTop !== undefined) {
-      editor.setScrollTop(Math.max(0, activeTab.scrollTop));
+    if (activeScrollTop !== null && activeScrollTop !== undefined) {
+      editor.setScrollTop(Math.max(0, activeScrollTop));
     }
-  }, [activeTab?.cursorColumn, activeTab?.cursorLine, activeTab?.relativePath, activeTab?.scrollTop]);
+  }, [activeCursorColumn, activeCursorLine, activeRelativePath, activeScrollTop]);
 
   useEffect(() => {
     return () => {
@@ -228,7 +230,7 @@ function WorkspaceEditorPane(
         </div>
         <div className="preview-surface">
           <h3>Markdown Preview</h3>
-          <div className="markdown-preview" dangerouslySetInnerHTML={{ __html: previewHtml }} />
+          <SanitizedMarkdown content={activeTab?.content ?? ""} className="markdown-preview" />
         </div>
       </div>
     </div>

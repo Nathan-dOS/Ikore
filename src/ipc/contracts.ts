@@ -43,6 +43,13 @@ export const RESET_LLM_RESILIENCE_STATE_COMMAND = "reset_llm_resilience_state";
 export const GET_LLM_EXECUTION_SNAPSHOT_COMMAND = "get_llm_execution_snapshot";
 export const GET_LLM_ROUTING_METRICS_COMMAND = "get_llm_routing_metrics";
 export const PREVIEW_CONTEXT_COMPRESSION_COMMAND = "preview_context_compression";
+export const LIST_CHAT_CONVERSATIONS_COMMAND = "list_chat_conversations";
+export const CREATE_CHAT_CONVERSATION_COMMAND = "create_chat_conversation";
+export const GET_CHAT_CONVERSATION_COMMAND = "get_chat_conversation";
+export const DELETE_CHAT_CONVERSATION_COMMAND = "delete_chat_conversation";
+export const SEND_CHAT_MESSAGE_COMMAND = "send_chat_message";
+export const CANCEL_CHAT_TURN_COMMAND = "cancel_chat_turn";
+export const GET_CHAT_TURN_SNAPSHOT_COMMAND = "get_chat_turn_snapshot";
 
 export const WORKSPACE_CHANGED_EVENT = "workspace://changed";
 export const LLM_ROUTE_STARTED_EVENT = "llm://route-started";
@@ -52,6 +59,14 @@ export const LLM_ATTEMPT_FAILED_EVENT = "llm://attempt-failed";
 export const LLM_ROUTE_COMPLETED_EVENT = "llm://route-completed";
 export const LLM_ROUTE_FAILED_EVENT = "llm://route-failed";
 export const LLM_RESILIENCE_CHANGED_EVENT = "llm://resilience-changed";
+export const CHAT_TURN_STARTED_EVENT = "chat://turn-started";
+export const CHAT_TOOL_STARTED_EVENT = "chat://tool-started";
+export const CHAT_TOOL_COMPLETED_EVENT = "chat://tool-completed";
+export const CHAT_TOKEN_DELTA_EVENT = "chat://token-delta";
+export const CHAT_CONTENT_RESET_EVENT = "chat://content-reset";
+export const CHAT_TURN_COMPLETED_EVENT = "chat://turn-completed";
+export const CHAT_TURN_FAILED_EVENT = "chat://turn-failed";
+export const CHAT_TURN_CANCELLED_EVENT = "chat://turn-cancelled";
 
 export type FileNodeKind = "directory" | "file";
 
@@ -233,7 +248,38 @@ export type PersistenceErrorCode =
   | "route_conflict"
   | "stream_failed";
 
-export type AppErrorCode = WorkspaceErrorCode | PersistenceErrorCode;
+export type ChatErrorCode =
+  | "chat_persistence"
+  | "chat_runtime"
+  | "invalid_request"
+  | "invalid_message"
+  | "project_not_found"
+  | "conversation_not_found"
+  | "turn_not_found"
+  | "turn_active"
+  | "workspace_not_open"
+  | "workspace_mismatch"
+  | "connection_not_found"
+  | "connection_removed"
+  | "connection_changed"
+  | "connection_unavailable"
+  | "credential_unavailable"
+  | "provider_incompatible"
+  | "model_incompatible"
+  | "repository_unavailable"
+  | "provider_unavailable"
+  | "provider_timeout"
+  | "stream_failed"
+  | "invalid_response"
+  | "invalid_tool_arguments"
+  | "empty_response"
+  | "tool_call_limit"
+  | "tool_result_limit"
+  | "model_round_limit"
+  | "turn_timeout"
+  | "cancelled";
+
+export type AppErrorCode = WorkspaceErrorCode | PersistenceErrorCode | ChatErrorCode;
 
 export interface AppDomainError {
   code: AppErrorCode;
@@ -392,6 +438,7 @@ export interface ListPulsationArtifactsResponse {
 }
 
 export type WorkspaceViewMode = "editor" | "hitl";
+export type AppView = "workspace" | "pulsations" | "vault" | "chat" | "settings" | "logs";
 
 export interface UiTabSnapshot {
   relativePath: string;
@@ -407,6 +454,12 @@ export interface UiSessionState {
   workspaceRoot: string;
   activeTabPath: string | null;
   workspaceViewMode: WorkspaceViewMode;
+  activeView: AppView;
+  sidebarCollapsed: boolean;
+  contextDrawerOpen: boolean;
+  activePulsationId: string | null;
+  selectedVaultPath: string | null;
+  activeChatConversationId: string | null;
   scrollTop?: number | null;
   tabs: UiTabSnapshot[];
   updatedAt: string;
@@ -425,6 +478,12 @@ export interface SaveUiSessionRequest {
   workspaceRoot: string;
   activeTabPath: string | null;
   workspaceViewMode: WorkspaceViewMode;
+  activeView: AppView;
+  sidebarCollapsed: boolean;
+  contextDrawerOpen: boolean;
+  activePulsationId: string | null;
+  selectedVaultPath: string | null;
+  activeChatConversationId: string | null;
   scrollTop?: number | null;
   tabs: UiTabSnapshot[];
 }
@@ -570,6 +629,7 @@ export interface ProviderCapabilities {
   jsonObject: boolean;
   jsonSchema: boolean;
   usage: boolean;
+  toolCalling: boolean;
 }
 
 export interface ProviderProfile {
@@ -598,8 +658,163 @@ export interface ProviderConnection {
   maxConcurrency: number;
   version: number;
   hasApiKey: boolean;
+  chatEligible: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export type ChatMessageStatus =
+  | "pending"
+  | "streaming"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export interface ChatConversation {
+  id: string;
+  projectId: string;
+  connectionId: string | null;
+  providerId: string;
+  modelId: string;
+  title: string;
+  connectionAvailable: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  conversationId: string;
+  ordinal: number;
+  role: "user" | "assistant";
+  content: string;
+  status: ChatMessageStatus;
+  executionId: string | null;
+  generationId: string | null;
+  lastSequence: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  estimatedCostUsd: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatToolCall {
+  id: string;
+  assistantMessageId: string;
+  roundIndex: number;
+  toolCallId: string;
+  toolName: string;
+  sanitizedArguments: Record<string, unknown>;
+  resultSummary: string | null;
+  resultBytes: number;
+  status: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  startedAt: string;
+  completedAt: string | null;
+}
+
+export interface ListChatConversationsRequest {
+  projectId: string;
+}
+
+export interface ListChatConversationsResponse {
+  conversations: ChatConversation[];
+}
+
+export interface CreateChatConversationRequest {
+  projectId: string;
+  connectionId: string;
+}
+
+export interface CreateChatConversationResponse {
+  conversation: ChatConversation;
+}
+
+export interface GetChatConversationRequest {
+  conversationId: string;
+}
+
+export interface GetChatConversationResponse {
+  conversation: ChatConversation;
+  messages: ChatMessage[];
+  toolCalls: ChatToolCall[];
+}
+
+export interface DeleteChatConversationRequest {
+  conversationId: string;
+}
+
+export interface DeleteChatConversationResponse {
+  deleted: boolean;
+}
+
+export interface SendChatMessageRequest {
+  conversationId: string;
+  content: string;
+}
+
+export interface SendChatMessageResponse {
+  executionId: string;
+  generationId: string;
+  userMessageId: string;
+  assistantMessageId: string;
+}
+
+export interface CancelChatTurnRequest {
+  executionId: string;
+}
+
+export interface CancelChatTurnResponse {
+  cancelled: boolean;
+}
+
+export interface GetChatTurnSnapshotRequest {
+  generationId: string;
+}
+
+export interface GetChatTurnSnapshotResponse {
+  message: ChatMessage;
+  toolCalls: ChatToolCall[];
+}
+
+export type ChatEventName =
+  | typeof CHAT_TURN_STARTED_EVENT
+  | typeof CHAT_TOOL_STARTED_EVENT
+  | typeof CHAT_TOOL_COMPLETED_EVENT
+  | typeof CHAT_TOKEN_DELTA_EVENT
+  | typeof CHAT_CONTENT_RESET_EVENT
+  | typeof CHAT_TURN_COMPLETED_EVENT
+  | typeof CHAT_TURN_FAILED_EVENT
+  | typeof CHAT_TURN_CANCELLED_EVENT;
+
+export interface ChatEventEnvelope {
+  kind: ChatEventName;
+  schemaVersion: number;
+  sequence: number;
+  occurredAt: string;
+  conversationId: string;
+  assistantMessageId: string;
+  executionId: string;
+  generationId: string;
+  detail: {
+    delta?: string;
+    reason?: string;
+    toolCall?: {
+      id: string;
+      name: string;
+      status?: string;
+      summary?: string;
+      resultBytes?: number;
+      roundIndex?: number;
+      arguments?: Record<string, unknown>;
+    };
+    error?: { code: string; message: string };
+  };
 }
 
 export interface RouteTarget {

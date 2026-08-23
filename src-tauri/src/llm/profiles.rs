@@ -18,6 +18,7 @@ pub struct ProviderCapabilities {
     pub json_object: bool,
     pub json_schema: bool,
     pub usage: bool,
+    pub tool_calling: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +198,7 @@ pub fn profiles() -> Vec<ProviderProfile> {
                 json_object: true,
                 json_schema: false,
                 usage: true,
+                tool_calling: true,
             },
             forbidden_parameters: vec![],
             default_model: "qwen2.5-coder:7b".to_string(),
@@ -229,6 +231,7 @@ fn profile(
             json_object,
             json_schema,
             usage: true,
+            tool_calling: true,
         },
         forbidden_parameters: forbidden_parameters
             .into_iter()
@@ -262,7 +265,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exposes_seven_providers_and_legacy_openai_profile() {
+    fn exposes_eight_tool_calling_providers_and_legacy_openai_profile() {
         let profiles = profiles();
         assert_eq!(profiles.len(), 8);
         for expected in [
@@ -277,6 +280,7 @@ mod tests {
         ] {
             assert!(profiles.iter().any(|profile| profile.id == expected));
         }
+        assert!(profiles.iter().all(|profile| profile.capabilities.tool_calling));
     }
 
     #[test]

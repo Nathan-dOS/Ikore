@@ -25,6 +25,30 @@ use super::repository::TestProviderConnectionResponse;
 use super::repository::{endpoint_origin, LlmRepository, ResolvedRouteTarget, SqliteLlmRepository};
 use super::resilience::{cooldown_ms, eligible_at};
 
+const CONNECTION_TEST_MAX_OUTPUT_TOKENS: u32 = 16;
+
+fn connection_test_request(provider_id: &str, model: &str) -> LlmRequest {
+    LlmRequest {
+        execution_id: uuid::Uuid::new_v4().to_string().into(),
+        generation_id: uuid::Uuid::new_v4().to_string().into(),
+        project_id: "connection-test".to_string(),
+        pulsation_id: None,
+        job_id: None,
+        job_chain: "connection-test".to_string(),
+        agent_role: super::domain::AgentRole::IntakeRouter,
+        stage: "connection_test".to_string(),
+        system_prompt: "Responda de forma concisa.".to_string(),
+        user_prompt: "Responda apenas OK.".to_string(),
+        response_format: ResponseFormat::Text,
+        max_output_tokens: CONNECTION_TEST_MAX_OUTPUT_TOKENS,
+        temperature: 0.0,
+        deadline: Instant::now() + Duration::from_secs(30),
+        stream: false,
+        legacy_provider: provider_id.to_string(),
+        legacy_model: model.to_string(),
+    }
+}
+
 pub struct ProviderRouter {
     repository: SqliteLlmRepository,
     credentials: Arc<dyn CredentialStore>,
@@ -91,25 +115,7 @@ impl ProviderRouter {
                 ),
             );
         }
-        let request = LlmRequest {
-            execution_id: uuid::Uuid::new_v4().to_string().into(),
-            generation_id: uuid::Uuid::new_v4().to_string().into(),
-            project_id: "connection-test".to_string(),
-            pulsation_id: None,
-            job_id: None,
-            job_chain: "connection-test".to_string(),
-            agent_role: super::domain::AgentRole::IntakeRouter,
-            stage: "connection_test".to_string(),
-            system_prompt: "Responda de forma concisa.".to_string(),
-            user_prompt: "Responda apenas OK.".to_string(),
-            response_format: ResponseFormat::Text,
-            max_output_tokens: 8,
-            temperature: 0.0,
-            deadline: Instant::now() + Duration::from_secs(30),
-            stream: false,
-            legacy_provider: profile.id.clone(),
-            legacy_model: connection.default_model.clone(),
-        };
+        let request = connection_test_request(&profile.id, &connection.default_model);
         let adapter = self.adapters.get(&profile.protocol).ok_or_else(|| {
             LlmError::new(
                 LlmErrorKind::InvalidRequest,
@@ -810,7 +816,7 @@ impl ProviderRouter {
                 if from_state != to_state {
                     emitter.emit(LlmStreamEvent::ResilienceChanged {
                         scope: "breaker".to_string(),
-                        scope_id: format!("{}@{}", provider_id, origin),
+                        scope_id: format!("{provider_id}@{origin}"),
                         from_state,
                         to_state,
                         retry_at: None,
@@ -1098,6 +1104,16 @@ fn flush_delta_state(
 mod tests {
     use super::*;
     use crate::llm::domain::{AgentRole, ExecutionId, GenerationId};
+
+    #[test]
+    fn connection_test_request_preserves_the_openai_minimum_contract() {
+        let request = connection_test_request("openai", "gpt-4.1-mini");
+        assert_eq!(request.max_output_tokens, 16);
+        assert!(!request.stream);
+        assert_eq!(request.legacy_provider, "openai");
+        assert_eq!(request.legacy_model, "gpt-4.1-mini");
+        assert_eq!(request.user_prompt, "Responda apenas OK.");
+    }
 
     #[test]
     fn affinity_hash_is_stable_and_scoped() {

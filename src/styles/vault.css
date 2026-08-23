@@ -1,0 +1,40 @@
+.vault-view { display: grid; grid-template-columns: 280px minmax(420px,1fr) 330px; gap: 14px; min-height: calc(100vh - 166px); }
+.vault-browser, .graph-panel, .vault-inspector { min-width: 0; padding: 13px; overflow: hidden; }
+.vault-browser, .vault-inspector { display: flex; flex-direction: column; gap: 12px; }
+.vault-search { display: grid; gap: 7px; }
+.vault-search > div { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.vault-search select { min-width: 110px; }
+.vault-search label { display: flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: .68rem; }
+.vault-tree, .vault-tree ul { margin: 0; padding: 0; list-style: none; }
+.vault-tree { flex: 1; overflow: auto; }
+.vault-tree ul { margin-left: 13px; padding-left: 6px; border-left: 1px solid rgba(137,171,191,.14); }
+.tree-directory { display: flex; align-items: center; gap: 6px; min-height: 30px; color: var(--text-secondary); font-size: .74rem; }
+.vault-tree button { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 39px; padding: 5px 7px; color: var(--text-secondary); text-align: left; background: transparent; }
+.vault-tree button[aria-pressed="true"] { color: var(--text-primary); background: rgba(43,213,216,.1); border-color: rgba(43,213,216,.26); }
+.vault-tree button > span:last-child { display: grid; min-width: 0; }
+.vault-tree small { overflow: hidden; color: var(--text-muted); font-size: .62rem; text-overflow: ellipsis; white-space: nowrap; }
+.search-results { display: grid; gap: 6px; overflow: auto; }
+.search-results > p { color: var(--text-muted); font-size: .68rem; }
+.search-results button { display: grid; width: 100%; padding: 8px; color: var(--text-secondary); text-align: left; border-color: var(--border-subtle); background: rgba(4,9,14,.45); }
+.search-results small { color: var(--accent-cyan); } .search-results span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .7rem; }
+.graph-panel { display: flex; flex-direction: column; gap: 11px; }
+.vault-graph { flex: 1; min-height: 440px; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: 11px; background: radial-gradient(circle at center, rgba(43,213,216,.07), rgba(3,7,11,.65)); }
+.vault-graph svg { width: 100%; height: 100%; min-height: 440px; }
+.graph-edges line { stroke: rgba(131,168,191,.28); stroke-width: 1.2; }
+.graph-nodes g { cursor: pointer; }
+.graph-nodes circle { fill: #243646; stroke: var(--accent-cyan); stroke-width: 1.4; }
+.graph-nodes g.is-selected circle { fill: var(--accent-cyan); filter: drop-shadow(0 0 8px rgba(43,213,216,.7)); }
+.graph-nodes text { fill: var(--text-secondary); font-size: 9px; text-anchor: middle; pointer-events: none; }
+.graph-empty { display: grid; place-items: center; min-height: 440px; color: var(--text-muted); }
+.broken-links { display: grid; gap: 7px; color: #ffc2c6; font-size: .73rem; }
+.broken-links > div { display: flex; gap: 6px; overflow-x: auto; }
+.broken-links button { display: grid; min-width: 150px; color: var(--text-secondary); text-align: left; border-color: rgba(255,127,135,.23); background: rgba(255,127,135,.07); font-size: .66rem; }
+.integrity-ok { margin: 0; color: var(--accent-green); font-size: .72rem; }
+.rename-form { display: grid; gap: 6px; }
+.rename-form > div { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px; }
+.note-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.note-stats span { border: 1px solid var(--border-subtle); border-radius: 8px; padding: 7px; color: var(--text-secondary); text-align: center; font-size: .69rem; }
+.vault-inspector .markdown-surface { flex: 1; min-height: 220px; overflow: auto; border-top: 1px solid var(--border-subtle); padding-top: 8px; }
+.schema-warnings { margin: 0; padding-left: 18px; color: #f2d59b; font-size: .72rem; }
+@media (max-width: 1280px) { .vault-view { grid-template-columns: 260px minmax(380px,1fr); } .vault-inspector { grid-column: 1 / -1; } }
+@media (max-width: 850px) { .vault-view { grid-template-columns: 1fr; } .vault-inspector { grid-column: auto; } }

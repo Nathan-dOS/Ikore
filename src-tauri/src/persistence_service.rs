@@ -324,9 +324,23 @@ pub struct UiSessionState {
     pub workspace_root: String,
     pub active_tab_path: Option<String>,
     pub workspace_view_mode: String,
+    pub active_view: String,
+    pub sidebar_collapsed: bool,
+    pub context_drawer_open: bool,
+    pub active_pulsation_id: Option<String>,
+    pub selected_vault_path: Option<String>,
+    pub active_chat_conversation_id: Option<String>,
     pub scroll_top: Option<f64>,
     pub tabs: Vec<UiTabSnapshot>,
     pub updated_at: String,
+}
+
+fn default_active_view() -> String {
+    "workspace".to_string()
+}
+
+fn default_context_drawer_open() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,6 +362,18 @@ pub struct SaveUiSessionRequest {
     pub workspace_root: String,
     pub active_tab_path: Option<String>,
     pub workspace_view_mode: String,
+    #[serde(default = "default_active_view")]
+    pub active_view: String,
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
+    #[serde(default = "default_context_drawer_open")]
+    pub context_drawer_open: bool,
+    #[serde(default)]
+    pub active_pulsation_id: Option<String>,
+    #[serde(default)]
+    pub selected_vault_path: Option<String>,
+    #[serde(default)]
+    pub active_chat_conversation_id: Option<String>,
     pub scroll_top: Option<f64>,
     #[serde(default)]
     pub tabs: Vec<UiTabSnapshot>,
@@ -900,6 +926,10 @@ pub struct PersistenceService {
 }
 
 impl PersistenceService {
+    pub fn database_path(&self) -> &Path {
+        &self.db_path
+    }
+
     pub fn initialize(app_data_dir: &Path) -> Result<Self, PersistenceServiceError> {
         Self::initialize_with_event_sink(app_data_dir, Arc::new(NoopEventSink))
     }
@@ -1235,6 +1265,21 @@ impl PersistenceService {
         if normalized != "editor" && normalized != "hitl" {
             return Err(PersistenceServiceError::Validation(
                 "workspaceViewMode deve ser `editor` ou `hitl`.".to_string(),
+            ));
+        }
+
+        Ok(normalized.to_string())
+    }
+
+    fn normalize_active_view(raw: &str) -> Result<String, PersistenceServiceError> {
+        let normalized = raw.trim();
+        if !matches!(
+            normalized,
+            "workspace" | "pulsations" | "vault" | "chat" | "settings" | "logs"
+        ) {
+            return Err(PersistenceServiceError::Validation(
+                "activeView deve ser `workspace`, `pulsations`, `vault`, `chat`, `settings` ou `logs`."
+                    .to_string(),
             ));
         }
 
@@ -1808,7 +1853,10 @@ impl PersistenceService {
         let connection = self.connection()?;
 
         let mut statement = connection.prepare(
-            "SELECT project_id, workspace_root, active_tab_path, workspace_view_mode, scroll_top, updated_at
+            "SELECT project_id, workspace_root, active_tab_path, workspace_view_mode,
+                    active_view, sidebar_collapsed, context_drawer_open,
+                    active_pulsation_id, selected_vault_path, active_chat_conversation_id,
+                    scroll_top, updated_at
              FROM ui_sessions
              WHERE project_id = ?1",
         )?;
@@ -1820,6 +1868,12 @@ impl PersistenceService {
                     workspace_root: row.get("workspace_root")?,
                     active_tab_path: row.get("active_tab_path")?,
                     workspace_view_mode: row.get("workspace_view_mode")?,
+                    active_view: row.get("active_view")?,
+                    sidebar_collapsed: row.get::<_, i64>("sidebar_collapsed")? != 0,
+                    context_drawer_open: row.get::<_, i64>("context_drawer_open")? != 0,
+                    active_pulsation_id: row.get("active_pulsation_id")?,
+                    selected_vault_path: row.get("selected_vault_path")?,
+                    active_chat_conversation_id: row.get("active_chat_conversation_id")?,
                     scroll_top: row.get("scroll_top")?,
                     tabs: Vec::new(),
                     updated_at: row.get("updated_at")?,
@@ -1830,6 +1884,9 @@ impl PersistenceService {
         let Some(mut session) = session_row else {
             return Ok(LoadUiSessionResponse { session: None });
         };
+        session.workspace_view_mode =
+            Self::normalize_workspace_view_mode(&session.workspace_view_mode)?;
+        session.active_view = Self::normalize_active_view(&session.active_view)?;
 
         let mut tabs_statement = connection.prepare(
             "SELECT relative_path, draft_content, base_revision, cursor_line, cursor_column, scroll_top
@@ -1871,9 +1928,13 @@ impl PersistenceService {
         let workspace_root = Self::normalize_workspace_path(&request.workspace_root)?;
         let workspace_view_mode =
             Self::normalize_workspace_view_mode(&request.workspace_view_mode)?;
+        let active_view = Self::normalize_active_view(&request.active_view)?;
         let updated_at = Self::now_iso();
         let connection = self.connection()?;
         let active_tab_path = request.active_tab_path.clone();
+        let active_pulsation_id = request.active_pulsation_id.clone();
+        let selected_vault_path = request.selected_vault_path.clone();
+        let active_chat_conversation_id = request.active_chat_conversation_id.clone();
         let scroll_top = request.scroll_top;
         let tabs = request.tabs;
 
@@ -1890,13 +1951,25 @@ impl PersistenceService {
                workspace_root,
                active_tab_path,
                workspace_view_mode,
+               active_view,
+               sidebar_collapsed,
+               context_drawer_open,
+               active_pulsation_id,
+               selected_vault_path,
+               active_chat_conversation_id,
                scroll_top,
                updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(project_id) DO UPDATE SET
                workspace_root = excluded.workspace_root,
                active_tab_path = excluded.active_tab_path,
                workspace_view_mode = excluded.workspace_view_mode,
+               active_view = excluded.active_view,
+               sidebar_collapsed = excluded.sidebar_collapsed,
+               context_drawer_open = excluded.context_drawer_open,
+               active_pulsation_id = excluded.active_pulsation_id,
+               selected_vault_path = excluded.selected_vault_path,
+               active_chat_conversation_id = excluded.active_chat_conversation_id,
                scroll_top = excluded.scroll_top,
                updated_at = excluded.updated_at",
             params![
@@ -1904,6 +1977,12 @@ impl PersistenceService {
                 workspace_root,
                 active_tab_path,
                 workspace_view_mode,
+                active_view,
+                i64::from(request.sidebar_collapsed),
+                i64::from(request.context_drawer_open),
+                active_pulsation_id,
+                selected_vault_path,
+                active_chat_conversation_id,
                 scroll_top,
                 updated_at
             ],
@@ -3757,12 +3836,50 @@ mod tests {
             workspace_root: "C:/workspace/view-mode".to_string(),
             active_tab_path: None,
             workspace_view_mode: "split".to_string(),
+            active_view: "workspace".to_string(),
+            sidebar_collapsed: false,
+            context_drawer_open: true,
+            active_pulsation_id: None,
+            selected_vault_path: None,
+            active_chat_conversation_id: None,
             scroll_top: None,
             tabs: vec![],
         });
 
         assert!(matches!(
             invalid_mode_result,
+            Err(PersistenceServiceError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn save_ui_session_rejects_invalid_active_view() {
+        let (_root, service) = prepare_service();
+        let project = service
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: "C:/workspace/active-view".to_string(),
+                preferred_name: Some("Active View".to_string()),
+            })
+            .expect("project should be created")
+            .project;
+
+        let result = service.save_ui_session(SaveUiSessionRequest {
+            project_id: project.id,
+            workspace_root: "C:/workspace/active-view".to_string(),
+            active_tab_path: None,
+            workspace_view_mode: "editor".to_string(),
+            active_view: "unknown".to_string(),
+            sidebar_collapsed: false,
+            context_drawer_open: true,
+            active_pulsation_id: None,
+            selected_vault_path: None,
+            active_chat_conversation_id: None,
+            scroll_top: None,
+            tabs: vec![],
+        });
+
+        assert!(matches!(
+            result,
             Err(PersistenceServiceError::Validation(_))
         ));
     }
@@ -3775,6 +3892,12 @@ mod tests {
             workspace_root: "C:/workspace/missing".to_string(),
             active_tab_path: None,
             workspace_view_mode: "editor".to_string(),
+            active_view: "workspace".to_string(),
+            sidebar_collapsed: false,
+            context_drawer_open: true,
+            active_pulsation_id: None,
+            selected_vault_path: None,
+            active_chat_conversation_id: None,
             scroll_top: None,
             tabs: vec![],
         });
@@ -3802,6 +3925,12 @@ mod tests {
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("first.md".to_string()),
                 workspace_view_mode: "editor".to_string(),
+                active_view: "workspace".to_string(),
+                sidebar_collapsed: false,
+                context_drawer_open: true,
+                active_pulsation_id: None,
+                selected_vault_path: None,
+                active_chat_conversation_id: None,
                 scroll_top: Some(10.0),
                 tabs: vec![
                     UiTabSnapshot {
@@ -3830,6 +3959,12 @@ mod tests {
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("third.md".to_string()),
                 workspace_view_mode: "hitl".to_string(),
+                active_view: "vault".to_string(),
+                sidebar_collapsed: true,
+                context_drawer_open: false,
+                active_pulsation_id: Some("pulse-three".to_string()),
+                selected_vault_path: Some("third.md".to_string()),
+                active_chat_conversation_id: Some("chat-three".to_string()),
                 scroll_top: Some(20.0),
                 tabs: vec![
                     UiTabSnapshot {
@@ -3861,6 +3996,15 @@ mod tests {
             .expect("session should exist");
 
         assert_eq!(loaded.workspace_view_mode, "hitl");
+        assert_eq!(loaded.active_view, "vault");
+        assert!(loaded.sidebar_collapsed);
+        assert!(!loaded.context_drawer_open);
+        assert_eq!(loaded.active_pulsation_id.as_deref(), Some("pulse-three"));
+        assert_eq!(loaded.selected_vault_path.as_deref(), Some("third.md"));
+        assert_eq!(
+            loaded.active_chat_conversation_id.as_deref(),
+            Some("chat-three")
+        );
         assert_eq!(loaded.active_tab_path.as_deref(), Some("third.md"));
         assert_eq!(loaded.tabs.len(), 1);
         assert_eq!(loaded.tabs[0].relative_path, "third.md");
@@ -3884,6 +4028,12 @@ mod tests {
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("notes/todo.md".to_string()),
                 workspace_view_mode: "hitl".to_string(),
+                active_view: "chat".to_string(),
+                sidebar_collapsed: true,
+                context_drawer_open: false,
+                active_pulsation_id: Some("pulse-observe".to_string()),
+                selected_vault_path: Some("notes/todo.md".to_string()),
+                active_chat_conversation_id: Some("chat-observe".to_string()),
                 scroll_top: Some(112.5),
                 tabs: vec![
                     UiTabSnapshot {
@@ -3914,11 +4064,188 @@ mod tests {
         let session = loaded.session.expect("session should exist");
 
         assert_eq!(session.workspace_view_mode, "hitl");
+        assert_eq!(session.active_view, "chat");
+        assert!(session.sidebar_collapsed);
+        assert!(!session.context_drawer_open);
+        assert_eq!(
+            session.active_pulsation_id.as_deref(),
+            Some("pulse-observe")
+        );
+        assert_eq!(
+            session.selected_vault_path.as_deref(),
+            Some("notes/todo.md")
+        );
+        assert_eq!(
+            session.active_chat_conversation_id.as_deref(),
+            Some("chat-observe")
+        );
         assert_eq!(session.active_tab_path.as_deref(), Some("notes/todo.md"));
         assert_eq!(session.tabs.len(), 2);
         assert_eq!(session.tabs[0].relative_path, "notes/todo.md");
         assert_eq!(session.tabs[0].draft_content.as_deref(), Some("# Draft"));
         assert_eq!(session.tabs[1].relative_path, "README.md");
+    }
+
+    #[test]
+    fn failed_ui_session_save_rolls_back_layout_and_tabs_atomically() {
+        let (_root, service) = prepare_service();
+        let project = service
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: "C:/workspace/atomic-session".to_string(),
+                preferred_name: Some("Atomic Session".to_string()),
+            })
+            .expect("project should be created")
+            .project;
+
+        service
+            .save_ui_session(SaveUiSessionRequest {
+                project_id: project.id.clone(),
+                workspace_root: project.workspace_path.clone(),
+                active_tab_path: Some("stable.md".to_string()),
+                workspace_view_mode: "editor".to_string(),
+                active_view: "workspace".to_string(),
+                sidebar_collapsed: false,
+                context_drawer_open: true,
+                active_pulsation_id: Some("stable-pulse".to_string()),
+                selected_vault_path: Some("stable.md".to_string()),
+                active_chat_conversation_id: Some("stable-chat".to_string()),
+                scroll_top: Some(12.0),
+                tabs: vec![UiTabSnapshot {
+                    relative_path: "stable.md".to_string(),
+                    draft_content: Some("stable draft".to_string()),
+                    base_revision: Some("1:1".to_string()),
+                    cursor_line: Some(2),
+                    cursor_column: Some(3),
+                    scroll_top: Some(12.0),
+                }],
+            })
+            .expect("initial session should save");
+
+        let failed = service.save_ui_session(SaveUiSessionRequest {
+            project_id: project.id.clone(),
+            workspace_root: project.workspace_path,
+            active_tab_path: Some("duplicate.md".to_string()),
+            workspace_view_mode: "hitl".to_string(),
+            active_view: "chat".to_string(),
+            sidebar_collapsed: true,
+            context_drawer_open: false,
+            active_pulsation_id: Some("replacement-pulse".to_string()),
+            selected_vault_path: Some("duplicate.md".to_string()),
+            active_chat_conversation_id: Some("replacement-chat".to_string()),
+            scroll_top: Some(99.0),
+            tabs: vec![
+                UiTabSnapshot {
+                    relative_path: "duplicate.md".to_string(),
+                    draft_content: Some("first".to_string()),
+                    base_revision: None,
+                    cursor_line: None,
+                    cursor_column: None,
+                    scroll_top: None,
+                },
+                UiTabSnapshot {
+                    relative_path: "duplicate.md".to_string(),
+                    draft_content: Some("second".to_string()),
+                    base_revision: None,
+                    cursor_line: None,
+                    cursor_column: None,
+                    scroll_top: None,
+                },
+            ],
+        });
+        assert!(matches!(failed, Err(PersistenceServiceError::Db(_))));
+
+        let preserved = service
+            .load_ui_session(LoadUiSessionRequest {
+                project_id: project.id,
+            })
+            .expect("previous session should remain readable")
+            .session
+            .expect("previous session should remain present");
+        assert_eq!(preserved.active_view, "workspace");
+        assert!(!preserved.sidebar_collapsed);
+        assert!(preserved.context_drawer_open);
+        assert_eq!(
+            preserved.active_pulsation_id.as_deref(),
+            Some("stable-pulse")
+        );
+        assert_eq!(
+            preserved.active_chat_conversation_id.as_deref(),
+            Some("stable-chat")
+        );
+        assert_eq!(preserved.tabs.len(), 1);
+        assert_eq!(preserved.tabs[0].relative_path, "stable.md");
+        assert_eq!(
+            preserved.tabs[0].draft_content.as_deref(),
+            Some("stable draft")
+        );
+    }
+
+    #[test]
+    fn ui_sessions_remain_isolated_between_projects() {
+        let (_root, service) = prepare_service();
+        let project_a = service
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: "C:/workspace/session-a".to_string(),
+                preferred_name: Some("Session A".to_string()),
+            })
+            .unwrap()
+            .project;
+        let project_b = service
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: "C:/workspace/session-b".to_string(),
+                preferred_name: Some("Session B".to_string()),
+            })
+            .unwrap()
+            .project;
+
+        for (project, active_view, active_chat) in [
+            (&project_a, "workspace", "chat-a"),
+            (&project_b, "chat", "chat-b"),
+        ] {
+            service
+                .save_ui_session(SaveUiSessionRequest {
+                    project_id: project.id.clone(),
+                    workspace_root: project.workspace_path.clone(),
+                    active_tab_path: None,
+                    workspace_view_mode: "editor".to_string(),
+                    active_view: active_view.to_string(),
+                    sidebar_collapsed: active_view == "chat",
+                    context_drawer_open: active_view != "chat",
+                    active_pulsation_id: None,
+                    selected_vault_path: None,
+                    active_chat_conversation_id: Some(active_chat.to_string()),
+                    scroll_top: None,
+                    tabs: vec![],
+                })
+                .unwrap();
+        }
+
+        let session_a = service
+            .load_ui_session(LoadUiSessionRequest {
+                project_id: project_a.id,
+            })
+            .unwrap()
+            .session
+            .unwrap();
+        let session_b = service
+            .load_ui_session(LoadUiSessionRequest {
+                project_id: project_b.id,
+            })
+            .unwrap()
+            .session
+            .unwrap();
+        assert_eq!(session_a.active_view, "workspace");
+        assert_eq!(
+            session_a.active_chat_conversation_id.as_deref(),
+            Some("chat-a")
+        );
+        assert!(!session_a.sidebar_collapsed);
+        assert_eq!(session_b.active_view, "chat");
+        assert_eq!(
+            session_b.active_chat_conversation_id.as_deref(),
+            Some("chat-b")
+        );
+        assert!(session_b.sidebar_collapsed);
     }
 
     #[test]
@@ -4219,7 +4546,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_v4_database_to_v7_without_losing_legacy_settings() {
+    fn migrates_v4_database_to_v9_without_losing_legacy_settings() {
         let root = tempfile::tempdir().expect("tempdir should be created");
         let db_path = root.path().join("hard-vibe-code.db");
         let mut connection = Connection::open(&db_path).expect("v4 db should open");
@@ -4235,7 +4562,7 @@ mod tests {
             .expect("legacy setting should insert");
         drop(connection);
 
-        let service = PersistenceService::initialize(root.path()).expect("v5-v7 should apply");
+        let service = PersistenceService::initialize(root.path()).expect("v5-v9 should apply");
         let connection = service.connection().expect("migrated db should open");
         for table in [
             "provider_connections",
@@ -4248,6 +4575,10 @@ mod tests {
             "llm_attempts",
             "llm_route_affinity",
             "llm_compression_metrics",
+            "chat_conversations",
+            "chat_messages",
+            "chat_model_calls",
+            "chat_tool_calls",
         ] {
             let exists: bool = connection
                 .query_row(
@@ -4256,8 +4587,16 @@ mod tests {
                     |row| row.get(0),
                 )
                 .expect("schema lookup should work");
-            assert!(exists, "table {table} should exist after V7");
+            assert!(exists, "table {table} should exist after V9");
         }
+        let active_view_default: String = connection
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('ui_sessions') WHERE name='active_view'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("active_view should be added by V8");
+        assert_eq!(active_view_default, "'workspace'");
         let provider: String = connection
             .query_row(
                 "SELECT value FROM runtime_settings WHERE key='runtime.provider'",
@@ -4274,6 +4613,91 @@ mod tests {
             )
             .expect("legacy route should exist");
         assert_eq!(route_count, 1);
+    }
+
+    #[test]
+    fn migrates_v8_database_to_v9_without_losing_ui_session() {
+        let root = tempfile::tempdir().expect("tempdir should be created");
+        let db_path = root.path().join("hard-vibe-code.db");
+        let mut connection = Connection::open(&db_path).expect("v8 db should open");
+        embedded::migrations::runner()
+            .set_target(refinery::Target::Version(8))
+            .run(&mut connection)
+            .expect("v1-v8 should apply");
+        let now = Utc::now().to_rfc3339();
+        connection
+            .execute(
+                "INSERT INTO projects (id,name,workspace_path,is_archived,created_at,updated_at)
+                 VALUES ('project-v8','Projeto V8','C:/workspace/v8',0,?1,?1)",
+                params![now],
+            )
+            .expect("v8 project should insert");
+        connection
+            .execute(
+                "INSERT INTO ui_sessions (
+                   project_id,workspace_root,active_tab_path,workspace_view_mode,active_view,
+                   sidebar_collapsed,context_drawer_open,active_pulsation_id,selected_vault_path,
+                   scroll_top,updated_at
+                 ) VALUES (
+                   'project-v8','C:/workspace/v8','notes/draft.md','hitl','vault',1,0,
+                   'pulse-v8','notes/draft.md',81.5,?1
+                 )",
+                params![now],
+            )
+            .expect("v8 session should insert");
+        connection
+            .execute(
+                "INSERT INTO ui_session_tabs (
+                   project_id,tab_order,relative_path,draft_content,base_revision,
+                   cursor_line,cursor_column,scroll_top,created_at,updated_at
+                 ) VALUES (
+                   'project-v8',0,'notes/draft.md','# V8 draft','8:1',9,4,75.0,?1,?1
+                 )",
+                params![now],
+            )
+            .expect("v8 tab should insert");
+        drop(connection);
+
+        let service = PersistenceService::initialize(root.path()).expect("v9 should apply");
+        let migrated = service
+            .load_ui_session(LoadUiSessionRequest {
+                project_id: "project-v8".into(),
+            })
+            .expect("session should load")
+            .session
+            .expect("session should remain");
+        assert_eq!(migrated.active_view, "vault");
+        assert_eq!(migrated.workspace_view_mode, "hitl");
+        assert!(migrated.sidebar_collapsed);
+        assert!(!migrated.context_drawer_open);
+        assert_eq!(migrated.active_tab_path.as_deref(), Some("notes/draft.md"));
+        assert_eq!(migrated.active_pulsation_id.as_deref(), Some("pulse-v8"));
+        assert_eq!(
+            migrated.selected_vault_path.as_deref(),
+            Some("notes/draft.md")
+        );
+        assert_eq!(migrated.scroll_top, Some(81.5));
+        assert!(migrated.active_chat_conversation_id.is_none());
+        assert_eq!(migrated.tabs.len(), 1);
+        assert_eq!(migrated.tabs[0].relative_path, "notes/draft.md");
+        assert_eq!(
+            migrated.tabs[0].draft_content.as_deref(),
+            Some("# V8 draft")
+        );
+        assert_eq!(migrated.tabs[0].base_revision.as_deref(), Some("8:1"));
+        assert_eq!(migrated.tabs[0].cursor_line, Some(9));
+        assert_eq!(migrated.tabs[0].cursor_column, Some(4));
+        assert_eq!(migrated.tabs[0].scroll_top, Some(75.0));
+        let chat_table_exists: bool = service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_conversations')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(chat_table_exists);
     }
 
     #[test]
@@ -4805,5 +5229,733 @@ mod tests {
         assert!(!snapshot.visible_output_complete);
         assert_eq!(snapshot.attempts.len(), 1);
         stream_server.join().unwrap();
+    }
+
+    #[test]
+    fn router_blocks_connection_on_401_and_falls_back_to_second_target() {
+        use crate::llm::{
+            AgentRole, ExecutionId, GenerationId, LlmGateway, LlmRequest, ResponseFormat,
+        };
+        use std::time::Instant;
+
+        let (first_endpoint, first_server) = spawn_http_response(
+            "401 Unauthorized",
+            "",
+            r#"{"error":{"message":"Invalid API key","code":"invalid_api_key"}}"#,
+        );
+        let (second_endpoint, second_server) = spawn_http_response(
+            "200 OK",
+            "",
+            r#"{"choices":[{"message":{"content":"Auth fallback OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}"#,
+        );
+        let (workspace, service) = prepare_service();
+        let project = service
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace
+                    .path()
+                    .join("routing-401")
+                    .to_string_lossy()
+                    .to_string(),
+                name: Some("Routing 401".to_string()),
+            })
+            .expect("project should save")
+            .project;
+        let first = service
+            .upsert_provider_connection(UpsertProviderConnectionRequest {
+                id: Some("ollama-unauthorized".to_string()),
+                provider_id: "ollama".to_string(),
+                display_name: "Unauthorized".to_string(),
+                endpoint_url: Some(first_endpoint),
+                default_model: "fixture".to_string(),
+                enabled: Some(true),
+                max_concurrency: Some(1),
+                api_key: None,
+                version: None,
+            })
+            .unwrap()
+            .connection;
+        let second = service
+            .upsert_provider_connection(UpsertProviderConnectionRequest {
+                id: Some("ollama-auth-fallback".to_string()),
+                provider_id: "ollama".to_string(),
+                display_name: "Fallback Success".to_string(),
+                endpoint_url: Some(second_endpoint),
+                default_model: "fixture".to_string(),
+                enabled: Some(true),
+                max_concurrency: Some(1),
+                api_key: None,
+                version: None,
+            })
+            .unwrap()
+            .connection;
+        service
+            .upsert_provider_route(UpsertProviderRouteRequest {
+                id: Some("fallback-401".to_string()),
+                name: "Fallback 401".to_string(),
+                strategy: "priority".to_string(),
+                max_attempts: Some(3),
+                attempt_timeout_ms: Some(5_000),
+                route_timeout_ms: Some(10_000),
+                enabled: Some(true),
+                targets: vec![
+                    crate::llm::RouteTarget {
+                        position: 0,
+                        connection_id: first.id.clone(),
+                        model_id: "fixture".to_string(),
+                        enabled: true,
+                    },
+                    crate::llm::RouteTarget {
+                        position: 1,
+                        connection_id: second.id.clone(),
+                        model_id: "fixture".to_string(),
+                        enabled: true,
+                    },
+                ],
+                version: None,
+            })
+            .unwrap();
+        service
+            .upsert_provider_route_binding(UpsertProviderRouteBindingRequest {
+                project_id: project.id.clone(),
+                agent_role: "backend_agent".to_string(),
+                stage: "Code".to_string(),
+                route_id: "fallback-401".to_string(),
+                enabled: Some(true),
+                version: None,
+            })
+            .unwrap();
+        service.llm_repository.set_routing_mode("on").unwrap();
+
+        let request = LlmRequest {
+            execution_id: ExecutionId::new(Uuid::new_v4().to_string()),
+            generation_id: GenerationId::new(Uuid::new_v4().to_string()),
+            project_id: project.id.clone(),
+            pulsation_id: None,
+            job_id: None,
+            job_chain: "fallback-401".to_string(),
+            agent_role: AgentRole::BackendAgent,
+            stage: "Code".to_string(),
+            system_prompt: "test".to_string(),
+            user_prompt: "test".to_string(),
+            response_format: ResponseFormat::Text,
+            max_output_tokens: 8,
+            temperature: 0.0,
+            deadline: Instant::now() + Duration::from_secs(10),
+            stream: false,
+            legacy_provider: "openai".to_string(),
+            legacy_model: "unused".to_string(),
+        };
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let response = runtime
+            .block_on(
+                service
+                    .llm_router
+                    .execute(&request, &CancellationToken::new()),
+            )
+            .expect("second target should succeed after 401");
+        assert_eq!(response.connection_id.as_str(), second.id);
+        assert_eq!(response.content, "Auth fallback OK");
+
+        let first_after = service
+            .llm_repository
+            .find_resolved_connection(&first.id)
+            .unwrap();
+        assert_eq!(first_after.state, "blocked");
+
+        let attempts = service
+            .llm_repository
+            .execution_snapshot(request.execution_id.as_str())
+            .unwrap()
+            .attempts;
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("failed")
+        );
+        assert_eq!(
+            attempts[0].get("errorKind").and_then(Value::as_str),
+            Some("provider_blocked")
+        );
+        assert_eq!(
+            attempts[1].get("outcome").and_then(Value::as_str),
+            Some("success")
+        );
+
+        first_server.join().unwrap();
+        second_server.join().unwrap();
+    }
+
+    #[test]
+    fn router_locks_out_model_on_model_not_found_and_falls_back() {
+        use crate::llm::{
+            AgentRole, ExecutionId, GenerationId, LlmGateway, LlmRequest, ResponseFormat,
+        };
+        use std::time::Instant;
+
+        let (first_endpoint, first_server) = spawn_http_response(
+            "404 Not Found",
+            "",
+            r#"{"error":{"message":"The model bad-model does not exist","code":"model_not_found"}}"#,
+        );
+        let (second_endpoint, second_server) = spawn_http_response(
+            "200 OK",
+            "",
+            r#"{"choices":[{"message":{"content":"Model fallback OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}"#,
+        );
+        let (workspace, service) = prepare_service();
+        let project = service
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace
+                    .path()
+                    .join("routing-lockout")
+                    .to_string_lossy()
+                    .to_string(),
+                name: Some("Routing Lockout".to_string()),
+            })
+            .expect("project should save")
+            .project;
+        let first = service
+            .upsert_provider_connection(UpsertProviderConnectionRequest {
+                id: Some("ollama-bad-model".to_string()),
+                provider_id: "ollama".to_string(),
+                display_name: "Bad Model Conn".to_string(),
+                endpoint_url: Some(first_endpoint),
+                default_model: "bad-model".to_string(),
+                enabled: Some(true),
+                max_concurrency: Some(1),
+                api_key: None,
+                version: None,
+            })
+            .unwrap()
+            .connection;
+        let second = service
+            .upsert_provider_connection(UpsertProviderConnectionRequest {
+                id: Some("ollama-good-model".to_string()),
+                provider_id: "ollama".to_string(),
+                display_name: "Good Model Conn".to_string(),
+                endpoint_url: Some(second_endpoint),
+                default_model: "good-model".to_string(),
+                enabled: Some(true),
+                max_concurrency: Some(1),
+                api_key: None,
+                version: None,
+            })
+            .unwrap()
+            .connection;
+        service
+            .upsert_provider_route(UpsertProviderRouteRequest {
+                id: Some("fallback-lockout".to_string()),
+                name: "Fallback Lockout".to_string(),
+                strategy: "priority".to_string(),
+                max_attempts: Some(3),
+                attempt_timeout_ms: Some(5_000),
+                route_timeout_ms: Some(10_000),
+                enabled: Some(true),
+                targets: vec![
+                    crate::llm::RouteTarget {
+                        position: 0,
+                        connection_id: first.id.clone(),
+                        model_id: "bad-model".to_string(),
+                        enabled: true,
+                    },
+                    crate::llm::RouteTarget {
+                        position: 1,
+                        connection_id: second.id.clone(),
+                        model_id: "good-model".to_string(),
+                        enabled: true,
+                    },
+                ],
+                version: None,
+            })
+            .unwrap();
+        service
+            .upsert_provider_route_binding(UpsertProviderRouteBindingRequest {
+                project_id: project.id.clone(),
+                agent_role: "backend_agent".to_string(),
+                stage: "Code".to_string(),
+                route_id: "fallback-lockout".to_string(),
+                enabled: Some(true),
+                version: None,
+            })
+            .unwrap();
+        service.llm_repository.set_routing_mode("on").unwrap();
+
+        let request = LlmRequest {
+            execution_id: ExecutionId::new(Uuid::new_v4().to_string()),
+            generation_id: GenerationId::new(Uuid::new_v4().to_string()),
+            project_id: project.id.clone(),
+            pulsation_id: None,
+            job_id: None,
+            job_chain: "fallback-lockout".to_string(),
+            agent_role: AgentRole::BackendAgent,
+            stage: "Code".to_string(),
+            system_prompt: "test".to_string(),
+            user_prompt: "test".to_string(),
+            response_format: ResponseFormat::Text,
+            max_output_tokens: 8,
+            temperature: 0.0,
+            deadline: Instant::now() + Duration::from_secs(10),
+            stream: false,
+            legacy_provider: "openai".to_string(),
+            legacy_model: "unused".to_string(),
+        };
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let response = runtime
+            .block_on(
+                service
+                    .llm_router
+                    .execute(&request, &CancellationToken::new()),
+            )
+            .expect("second target should succeed after model lockout");
+        assert_eq!(response.connection_id.as_str(), second.id);
+        assert_eq!(response.content, "Model fallback OK");
+
+        let states = service.llm_repository.resilience_snapshot().unwrap().states;
+        assert!(states.iter().any(
+            |item| item.scope == "model" && item.scope_id == format!("{}@bad-model", first.id)
+        ));
+
+        first_server.join().unwrap();
+        second_server.join().unwrap();
+    }
+
+    #[test]
+    fn router_circuit_breaker_full_cycle_opens_and_lazy_recovers() {
+        let (_workspace, service) = prepare_service();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-18T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        service
+            .llm_repository
+            .record_health_failure("ollama", "http://127.0.0.1:11434", true, now)
+            .unwrap();
+        assert_eq!(
+            service
+                .llm_repository
+                .breaker_state("ollama", "http://127.0.0.1:11434")
+                .unwrap()
+                .as_deref(),
+            Some("degraded")
+        );
+
+        service
+            .llm_repository
+            .record_health_failure("ollama", "http://127.0.0.1:11434", true, now)
+            .unwrap();
+        assert_eq!(
+            service
+                .llm_repository
+                .breaker_state("ollama", "http://127.0.0.1:11434")
+                .unwrap()
+                .as_deref(),
+            Some("open")
+        );
+
+        assert!(!service
+            .llm_repository
+            .claim_breaker_probe(
+                "ollama",
+                "http://127.0.0.1:11434",
+                now + chrono::Duration::seconds(5)
+            )
+            .unwrap());
+
+        let probe_time = now + chrono::Duration::seconds(20);
+        assert!(service
+            .llm_repository
+            .claim_breaker_probe("ollama", "http://127.0.0.1:11434", probe_time)
+            .unwrap());
+
+        assert!(!service
+            .llm_repository
+            .claim_breaker_probe("ollama", "http://127.0.0.1:11434", probe_time)
+            .unwrap());
+
+        service
+            .llm_repository
+            .record_health_success("ollama", "http://127.0.0.1:11434", probe_time)
+            .unwrap();
+        assert_eq!(
+            service
+                .llm_repository
+                .breaker_state("ollama", "http://127.0.0.1:11434")
+                .unwrap()
+                .as_deref(),
+            Some("closed")
+        );
+    }
+
+    #[test]
+    fn router_respects_max_attempts_and_stops_without_calling_extra_targets() {
+        use crate::llm::{
+            AgentRole, ExecutionId, GenerationId, LlmErrorKind, LlmGateway, LlmRequest,
+            ResponseFormat,
+        };
+        use std::time::Instant;
+
+        let (first_endpoint, first_server) = spawn_http_response(
+            "500 Internal Server Error",
+            "",
+            r#"{"error":{"message":"Internal error 1","code":"internal_error"}}"#,
+        );
+        let (second_endpoint, second_server) = spawn_http_response(
+            "500 Internal Server Error",
+            "",
+            r#"{"error":{"message":"Internal error 2","code":"internal_error"}}"#,
+        );
+        let unused_listener =
+            TcpListener::bind("127.0.0.1:0").expect("unused endpoint should bind");
+        let unused_endpoint = format!(
+            "http://{}",
+            unused_listener
+                .local_addr()
+                .expect("unused endpoint should resolve")
+        );
+        drop(unused_listener);
+
+        let (workspace, service) = prepare_service();
+        let project = service
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace
+                    .path()
+                    .join("routing-max-attempts")
+                    .to_string_lossy()
+                    .to_string(),
+                name: Some("Routing Max Attempts".to_string()),
+            })
+            .expect("project should save")
+            .project;
+
+        let first = service
+            .upsert_provider_connection(UpsertProviderConnectionRequest {
+                id: Some("ollama-attempt-1".to_string()),
+                provider_id: "ollama".to_string(),
+                display_name: "Attempt 1".to_string(),
+                endpoint_url: Some(first_endpoint),
+                default_model: "fixture".to_string(),
+                enabled: Some(true),
+                max_concurrency: Some(1),
+                api_key: None,
+                version: None,
+            })
+            .unwrap()
+            .connection;
+        let second = service
+            .upsert_provider_connection(UpsertProviderConnectionRequest {
+                id: Some("ollama-attempt-2".to_string()),
+                provider_id: "ollama".to_string(),
+                display_name: "Attempt 2".to_string(),
+                endpoint_url: Some(second_endpoint),
+                default_model: "fixture".to_string(),
+                enabled: Some(true),
+                max_concurrency: Some(1),
+                api_key: None,
+                version: None,
+            })
+            .unwrap()
+            .connection;
+        let third = service
+            .upsert_provider_connection(UpsertProviderConnectionRequest {
+                id: Some("ollama-attempt-3-unreached".to_string()),
+                provider_id: "ollama".to_string(),
+                display_name: "Attempt 3 Unreached".to_string(),
+                endpoint_url: Some(unused_endpoint),
+                default_model: "fixture".to_string(),
+                enabled: Some(true),
+                max_concurrency: Some(1),
+                api_key: None,
+                version: None,
+            })
+            .unwrap()
+            .connection;
+
+        service
+            .upsert_provider_route(UpsertProviderRouteRequest {
+                id: Some("route-max-2".to_string()),
+                name: "Route Max 2".to_string(),
+                strategy: "priority".to_string(),
+                max_attempts: Some(2),
+                attempt_timeout_ms: Some(5_000),
+                route_timeout_ms: Some(10_000),
+                enabled: Some(true),
+                targets: vec![
+                    crate::llm::RouteTarget {
+                        position: 0,
+                        connection_id: first.id,
+                        model_id: "fixture".to_string(),
+                        enabled: true,
+                    },
+                    crate::llm::RouteTarget {
+                        position: 1,
+                        connection_id: second.id,
+                        model_id: "fixture".to_string(),
+                        enabled: true,
+                    },
+                    crate::llm::RouteTarget {
+                        position: 2,
+                        connection_id: third.id,
+                        model_id: "fixture".to_string(),
+                        enabled: true,
+                    },
+                ],
+                version: None,
+            })
+            .unwrap();
+        service
+            .upsert_provider_route_binding(UpsertProviderRouteBindingRequest {
+                project_id: project.id.clone(),
+                agent_role: "backend_agent".to_string(),
+                stage: "Code".to_string(),
+                route_id: "route-max-2".to_string(),
+                enabled: Some(true),
+                version: None,
+            })
+            .unwrap();
+        service.llm_repository.set_routing_mode("on").unwrap();
+
+        let request = LlmRequest {
+            execution_id: ExecutionId::new(Uuid::new_v4().to_string()),
+            generation_id: GenerationId::new(Uuid::new_v4().to_string()),
+            project_id: project.id,
+            pulsation_id: None,
+            job_id: None,
+            job_chain: "route-max-2".to_string(),
+            agent_role: AgentRole::BackendAgent,
+            stage: "Code".to_string(),
+            system_prompt: "test".to_string(),
+            user_prompt: "test".to_string(),
+            response_format: ResponseFormat::Text,
+            max_output_tokens: 8,
+            temperature: 0.0,
+            deadline: Instant::now() + Duration::from_secs(10),
+            stream: false,
+            legacy_provider: "openai".to_string(),
+            legacy_model: "unused".to_string(),
+        };
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(
+                service
+                    .llm_router
+                    .execute(&request, &CancellationToken::new()),
+            )
+            .expect_err("should exhaust targets after 2 attempts");
+        assert_eq!(error.kind, LlmErrorKind::AllTargetsExhausted);
+
+        let snapshot = service
+            .llm_repository
+            .execution_snapshot(request.execution_id.as_str())
+            .unwrap();
+        assert_eq!(snapshot.attempts.len(), 2);
+
+        first_server.join().unwrap();
+        second_server.join().unwrap();
+    }
+
+    #[test]
+    fn router_lkgp_promotes_affinity_target_and_respects_cooldown_gates() {
+        use crate::llm::{
+            AgentRole, ExecutionId, GenerationId, LlmGateway, LlmRequest, ResponseFormat,
+        };
+        use std::time::Instant;
+
+        let (first_endpoint, first_server) = spawn_http_response(
+            "429 Too Many Requests",
+            "Retry-After: 1\r\n",
+            r#"{"error":{"message":"Rate limit 1","code":"rate_limit"}}"#,
+        );
+        let (second_endpoint, second_server) = spawn_http_response(
+            "200 OK",
+            "",
+            r#"{"choices":[{"message":{"content":"LKGP Target 2 OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":4}}"#,
+        );
+
+        let (workspace, service) = prepare_service();
+        let project = service
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace
+                    .path()
+                    .join("routing-lkgp")
+                    .to_string_lossy()
+                    .to_string(),
+                name: Some("Routing LKGP".to_string()),
+            })
+            .expect("project should save")
+            .project;
+
+        let first = service
+            .upsert_provider_connection(UpsertProviderConnectionRequest {
+                id: Some("ollama-lkgp-1".to_string()),
+                provider_id: "ollama".to_string(),
+                display_name: "LKGP 1".to_string(),
+                endpoint_url: Some(first_endpoint),
+                default_model: "fixture".to_string(),
+                enabled: Some(true),
+                max_concurrency: Some(1),
+                api_key: None,
+                version: None,
+            })
+            .unwrap()
+            .connection;
+        let second = service
+            .upsert_provider_connection(UpsertProviderConnectionRequest {
+                id: Some("ollama-lkgp-2".to_string()),
+                provider_id: "ollama".to_string(),
+                display_name: "LKGP 2".to_string(),
+                endpoint_url: Some(second_endpoint),
+                default_model: "fixture".to_string(),
+                enabled: Some(true),
+                max_concurrency: Some(1),
+                api_key: None,
+                version: None,
+            })
+            .unwrap()
+            .connection;
+
+        service
+            .upsert_provider_route(UpsertProviderRouteRequest {
+                id: Some("route-lkgp".to_string()),
+                name: "Route LKGP".to_string(),
+                strategy: "lkgp".to_string(),
+                max_attempts: Some(3),
+                attempt_timeout_ms: Some(5_000),
+                route_timeout_ms: Some(10_000),
+                enabled: Some(true),
+                targets: vec![
+                    crate::llm::RouteTarget {
+                        position: 0,
+                        connection_id: first.id.clone(),
+                        model_id: "fixture".to_string(),
+                        enabled: true,
+                    },
+                    crate::llm::RouteTarget {
+                        position: 1,
+                        connection_id: second.id.clone(),
+                        model_id: "fixture".to_string(),
+                        enabled: true,
+                    },
+                ],
+                version: None,
+            })
+            .unwrap();
+        service
+            .upsert_provider_route_binding(UpsertProviderRouteBindingRequest {
+                project_id: project.id.clone(),
+                agent_role: "backend_agent".to_string(),
+                stage: "Code".to_string(),
+                route_id: "route-lkgp".to_string(),
+                enabled: Some(true),
+                version: None,
+            })
+            .unwrap();
+        service.llm_repository.set_routing_mode("on").unwrap();
+
+        let request = LlmRequest {
+            execution_id: ExecutionId::new(Uuid::new_v4().to_string()),
+            generation_id: GenerationId::new(Uuid::new_v4().to_string()),
+            project_id: project.id.clone(),
+            pulsation_id: None,
+            job_id: None,
+            job_chain: "route-lkgp".to_string(),
+            agent_role: AgentRole::BackendAgent,
+            stage: "Code".to_string(),
+            system_prompt: "test".to_string(),
+            user_prompt: "test".to_string(),
+            response_format: ResponseFormat::Text,
+            max_output_tokens: 8,
+            temperature: 0.0,
+            deadline: Instant::now() + Duration::from_secs(10),
+            stream: false,
+            legacy_provider: "openai".to_string(),
+            legacy_model: "unused".to_string(),
+        };
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let response = runtime
+            .block_on(
+                service
+                    .llm_router
+                    .execute(&request, &CancellationToken::new()),
+            )
+            .expect("fallback to second target should succeed");
+        assert_eq!(response.connection_id.as_str(), second.id);
+
+        first_server.join().unwrap();
+        second_server.join().unwrap();
+
+        let route = service
+            .llm_repository
+            .resolve_route(&project.id, AgentRole::BackendAgent, "Code")
+            .unwrap();
+        let targets = service.llm_repository.resolved_targets(&route.id).unwrap();
+        let decision = service
+            .llm_repository
+            .decide(&route, &targets, "some-affinity-hash", Utc::now())
+            .unwrap();
+        assert!(decision
+            .candidates
+            .iter()
+            .any(|c| c.connection_id == second.id));
+    }
+
+    #[test]
+    fn user_cancellation_does_not_affect_health_or_cooldown() {
+        use crate::llm::{
+            AgentRole, ExecutionId, GenerationId, LlmErrorKind, LlmGateway, LlmRequest,
+            ResponseFormat,
+        };
+        use std::time::Instant;
+
+        let (_workspace, service) = prepare_service();
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let request = LlmRequest {
+            execution_id: ExecutionId::new(Uuid::new_v4().to_string()),
+            generation_id: GenerationId::new(Uuid::new_v4().to_string()),
+            project_id: "cancel-test".to_string(),
+            pulsation_id: None,
+            job_id: None,
+            job_chain: "cancel-test".to_string(),
+            agent_role: AgentRole::BackendAgent,
+            stage: "Code".to_string(),
+            system_prompt: "test".to_string(),
+            user_prompt: "test".to_string(),
+            response_format: ResponseFormat::Text,
+            max_output_tokens: 8,
+            temperature: 0.0,
+            deadline: Instant::now() + Duration::from_secs(10),
+            stream: false,
+            legacy_provider: "openai".to_string(),
+            legacy_model: "unused".to_string(),
+        };
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(service.llm_router.execute(&request, &token))
+            .expect_err("cancelled token should return error");
+        assert_eq!(error.kind, LlmErrorKind::Cancelled);
+
+        let snapshot = service.llm_repository.resilience_snapshot().unwrap();
+        assert!(snapshot.states.is_empty());
     }
 }

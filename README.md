@@ -4,7 +4,9 @@ Base inicial do MVP do **Desktop Orchestrator**.
 
 ## Fase atual
 
-- Fase 6: Integração Obsidian + Context Vault UI
+- Marco UI Nativa: Migração para GPUI (Zed Framework)
+- Renderização GPU nativa em Rust puro (Metal/Vulkan/DirectX)
+- Editor de texto nativo com Tree-sitter para syntax highlighting
 - Índice incremental de notas Markdown com frontmatter YAML e wikilinks
 - Validação de links quebrados e grafo de contexto na navegação
 - Renomeio de nota com atualização automática de referências `[[wikilinks]]`
@@ -12,65 +14,40 @@ Base inicial do MVP do **Desktop Orchestrator**.
 
 ## Stack
 
-- Tauri 2
-- Rust 1.88.0
-- React 18 + TypeScript
-- Vite 5
-- Vitest 2 + Testing Library
+- GPUI (Zed Framework) — renderização GPU nativa
+- Rust 1.88.0 (100% do projeto: UI + core + workers)
+- gpui-component (biblioteca community de componentes)
+- SQLite via rusqlite + refinery
+- cargo test
 
-## Rodando com Docker (workflow padrão)
+## Build e execução
 
-1. Build da imagem:
+1. Build de verificação:
    ```bash
-   docker compose build
+   cargo check
    ```
-2. Subir frontend (hot reload):
+2. Executar em modo desenvolvimento:
    ```bash
-   docker compose up app
+   cargo run
    ```
-3. Validar backend Tauri/Rust:
+3. Build de produção:
    ```bash
-   docker compose --profile tools run --rm tauri-check
+   cargo build --release
    ```
-4. Build do frontend:
-   ```bash
-   docker compose --profile tools run --rm frontend-build
-   ```
-5. Executar testes frontend e Rust:
-   ```bash
-   docker compose --profile tools run --rm test-runner
-   ```
-
-## Ajustando versões
-
-- Copie `.env.example` para `.env` e ajuste:
-  - `NODE_IMAGE` (ex: `node:22-bookworm`)
-  - `RUST_TOOLCHAIN` (ex: `1.88.0`)
-
-## Execução da janela desktop
-
-Nesta etapa, o Docker controla versões e validações de build.
-Para abrir a janela nativa do Tauri localmente, rode no host:
-
-```bash
-npm install
-npm run tauri:dev
-```
 
 ## Comandos de validação
 
 ```bash
-npm run check:ts
-npm run check:tauri
-npm run test
-npm run test:rust
-npm run check:all
+cargo check
+cargo test
+cargo clippy
+cargo fmt --check
 ```
 
-Cobertura frontend:
+Testes do core:
 
 ```bash
-npm run test:coverage
+cargo test -p hvc-core
 ```
 
 ## Critério de aceite da Fase 1
@@ -82,10 +59,10 @@ npm run test:coverage
 
 ## Estrutura principal
 
-- `src/`: UI React
-- `src/ipc/`: contratos e client IPC tipados
-- `src/test/`: setup e mocks compartilhados do Vitest
-- `src-tauri/`: core Rust/Tauri
-- `src-tauri/tests/`: testes de integração e fixtures Rust
-- `docker-compose.yml`: serviços de desenvolvimento
-- `Dockerfile`: ambiente base do projeto
+- `src/`: Binário principal e ponto de entrada GPUI
+- `src/views/`: Views GPUI (WorkspaceView, PulsationsView, VaultView, SettingsView, LogsView)
+- `src/components/`: Componentes GPUI reutilizáveis (AppSidebar, StatusBar, etc.)
+- `src/state/`: Modelos de estado (Model<T> do GPUI)
+- `src/core/`: Lógica de negócio, orquestração, agentes
+- `src/editor/`: Editor nativo de texto + Tree-sitter
+- `src/knowledge/`: Camada de conhecimento (vault, embeddings, índices)

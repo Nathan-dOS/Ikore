@@ -19,6 +19,7 @@ pub struct ModelCatalogEntry {
     pub model_id: String,
     pub structured_output: bool,
     pub streaming: bool,
+    pub tool_calling: bool,
     pub input_usd_per_million: Option<f64>,
     pub output_usd_per_million: Option<f64>,
 }
@@ -69,7 +70,7 @@ mod tests {
 
     #[test]
     fn catalog_is_versioned_and_never_treats_unknown_price_as_zero() {
-        assert_eq!(catalog().schema_version, 1);
+        assert_eq!(catalog().schema_version, 2);
         assert!(!catalog().catalog_version.is_empty());
         assert!(!catalog().synchronized_automatically);
         assert_eq!(catalog().pricing_policy, "unknown_is_null");
@@ -86,5 +87,6 @@ mod tests {
         let entry = model_entry("openai", "gpt-4.1-mini").unwrap();
         assert!(entry.structured_output);
         assert!(entry.streaming);
+        assert!(entry.tool_calling);
     }
 }

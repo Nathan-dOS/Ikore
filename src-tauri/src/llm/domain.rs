@@ -203,6 +203,7 @@ pub struct ProviderConnection {
     pub max_concurrency: u32,
     pub version: u64,
     pub has_api_key: bool,
+    pub chat_eligible: bool,
     pub created_at: String,
     pub updated_at: String,
 }
