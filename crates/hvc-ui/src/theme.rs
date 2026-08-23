@@ -35,3 +35,15 @@ pub fn accent_soft() -> Rgba {
 pub fn danger() -> Rgba {
     rgb(0xff7b72)
 }
+
+pub fn warning() -> Rgba {
+    rgb(0xf2c66d)
+}
+
+pub fn warning_soft() -> Rgba {
+    rgb(0x40351f)
+}
+
+pub fn danger_soft() -> Rgba {
+    rgb(0x421f24)
+}

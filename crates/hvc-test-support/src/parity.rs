@@ -112,4 +112,21 @@ mod tests {
         ledger.validate().unwrap();
         assert!(ledger.covered_count() < 51);
     }
+
+    #[test]
+    fn stage_one_covers_every_shell_lifecycle_case() {
+        let ledger = ParityLedger::embedded();
+        let shell_cases = ledger
+            .cases
+            .iter()
+            .filter(|case| case.area == ParityArea::ShellLifecycle)
+            .collect::<Vec<_>>();
+
+        assert_eq!(shell_cases.len(), 8);
+        assert!(
+            shell_cases
+                .iter()
+                .all(|case| case.status == ParityStatus::Covered)
+        );
+    }
 }

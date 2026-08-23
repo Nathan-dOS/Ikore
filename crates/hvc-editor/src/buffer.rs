@@ -122,6 +122,21 @@ impl EditorBuffer {
         }
     }
 
+    pub fn restore_snapshot(&mut self, snapshot: EditorSnapshot) -> Result<(), EditorError> {
+        let rope = Rope::from_str(&snapshot.text);
+        let previous_rope = std::mem::replace(&mut self.rope, rope);
+        if let Err(error) = self.set_selection(snapshot.selection) {
+            self.rope = previous_rope;
+            return Err(error);
+        }
+        self.revision = snapshot.revision;
+        self.scroll_top = snapshot.scroll_top.max(0.0);
+        self.dirty = snapshot.dirty;
+        self.undo.clear();
+        self.redo.clear();
+        Ok(())
+    }
+
     pub fn set_selection(&mut self, selection: EditorSelection) -> Result<(), EditorError> {
         self.position_to_char(selection.anchor)?;
         self.position_to_char(selection.head)?;
@@ -362,5 +377,30 @@ mod tests {
         buffer.reload("server", "r3");
         assert_eq!(buffer.text(), "server");
         assert!(!buffer.is_dirty());
+    }
+
+    #[test]
+    fn restores_persisted_cursor_scroll_and_dirty_state() {
+        let mut buffer = EditorBuffer::new("stale", "old");
+        buffer
+            .restore_snapshot(EditorSnapshot {
+                text: "linha 1\nrascunho".into(),
+                revision: "r7".into(),
+                selection: EditorSelection::caret(TextPosition { line: 1, column: 4 }),
+                scroll_top: 44.0,
+                dirty: true,
+            })
+            .unwrap();
+
+        assert_eq!(
+            buffer.snapshot(),
+            EditorSnapshot {
+                text: "linha 1\nrascunho".into(),
+                revision: "r7".into(),
+                selection: EditorSelection::caret(TextPosition { line: 1, column: 4 }),
+                scroll_top: 44.0,
+                dirty: true,
+            }
+        );
     }
 }

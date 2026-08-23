@@ -358,7 +358,7 @@ pub struct LoadUiSessionResponse {
     pub session: Option<UiSessionState>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveUiSessionRequest {
     pub project_id: String,

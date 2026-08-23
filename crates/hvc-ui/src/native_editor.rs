@@ -8,6 +8,7 @@ use gpui::{
     Timer, UTF16Selection, Window, actions, div, fill, point, prelude::*, px, relative, rgba, size,
 };
 use hvc_editor::EditorBuffer;
+use hvc_editor::{EditorError, EditorSnapshot};
 
 use crate::theme;
 
@@ -48,6 +49,21 @@ impl NativeEditor {
             autosave_generation: 0,
             autosave_ready: false,
         }
+    }
+
+    pub fn restore_session_snapshot(
+        &mut self,
+        snapshot: EditorSnapshot,
+    ) -> Result<(), EditorError> {
+        self.buffer.restore_snapshot(snapshot)?;
+        self.marked_range = None;
+        self.autosave_generation = 0;
+        self.autosave_ready = false;
+        Ok(())
+    }
+
+    pub fn edit_generation(&self) -> u64 {
+        self.autosave_generation
     }
 
     fn backspace(&mut self, _: &Backspace, _: &mut Window, cx: &mut Context<Self>) {

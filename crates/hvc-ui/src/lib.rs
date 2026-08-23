@@ -2,7 +2,9 @@
 #![allow(clippy::result_large_err)]
 
 mod app_model;
+mod lifecycle;
 mod native_editor;
+mod session;
 mod shell;
 #[cfg(test)]
 mod test_support;
