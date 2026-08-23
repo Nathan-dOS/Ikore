@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::catalog::{model_entry, model_price_basis};
@@ -15,7 +15,7 @@ use super::domain::{
 };
 use super::error::{LlmError, LlmErrorKind};
 use super::profiles::{profile_by_id, profiles};
-use super::scoring::{normalize_metric, score, ScoreInput};
+use super::scoring::{ScoreInput, normalize_metric, score};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1469,13 +1469,13 @@ impl LlmRepository for SqliteLlmRepository {
             }
         }
         if route.strategy == "lkgp" {
-            if let Some((connection_id, model_id)) = affinity {
-                if let Some(index) = eligible_targets.iter().position(|target| {
+            if let Some((connection_id, model_id)) = affinity
+                && let Some(index) = eligible_targets.iter().position(|target| {
                     target.connection_id == connection_id && target.model_id == model_id
-                }) {
-                    let target = eligible_targets.remove(index);
-                    eligible_targets.insert(0, target);
-                }
+                })
+            {
+                let target = eligible_targets.remove(index);
+                eligible_targets.insert(0, target);
             }
         } else if route.strategy == "score" {
             eligible_targets.sort_by(|a, b| {

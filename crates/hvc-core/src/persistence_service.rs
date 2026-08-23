@@ -6,23 +6,23 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::agent_runtime::{
-    execute_stage, AgentRuntimeConfig, AgentRuntimeError, ContextStrategy, EmbeddingProvider,
-    GeneratedArtifact, LlmProvider, ProviderKeyStatus, StageExecutionInput, StageExecutionResult,
+    AgentRuntimeConfig, AgentRuntimeError, ContextStrategy, EmbeddingProvider, GeneratedArtifact,
+    LlmProvider, ProviderKeyStatus, StageExecutionInput, StageExecutionResult, execute_stage,
 };
 use crate::embedding_service::{EmbeddingGateway, OllamaEmbeddingGateway};
 use crate::llm::{
-    preview_compression, provider_profiles_for_ipc, CompressionPreview, CompressionPreviewRequest,
-    CredentialStore, DeleteProviderConnectionRequest, DeleteProviderRouteRequest,
-    KeyringCredentialStore, LlmError, LlmErrorKind, LlmEventSink, LlmExecutionSnapshot,
-    LlmResilienceSnapshot, LlmRoutingMetric, NoopEventSink, ProviderConnection, ProviderProfile,
-    ProviderRoute, ProviderRouteBinding, ProviderRouter, ResetLlmResilienceStateRequest,
-    RoutingMode, SqliteLlmRepository, StableJitter, SystemClock, TestProviderConnectionRequest,
-    TestProviderConnectionResponse, UpsertProviderConnectionRequest,
-    UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
+    CompressionPreview, CompressionPreviewRequest, CredentialStore,
+    DeleteProviderConnectionRequest, DeleteProviderRouteRequest, KeyringCredentialStore, LlmError,
+    LlmErrorKind, LlmEventSink, LlmExecutionSnapshot, LlmResilienceSnapshot, LlmRoutingMetric,
+    NoopEventSink, ProviderConnection, ProviderProfile, ProviderRoute, ProviderRouteBinding,
+    ProviderRouter, ResetLlmResilienceStateRequest, RoutingMode, SqliteLlmRepository, StableJitter,
+    SystemClock, TestProviderConnectionRequest, TestProviderConnectionResponse,
+    UpsertProviderConnectionRequest, UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
+    preview_compression, provider_profiles_for_ipc,
 };
 use chrono::Utc;
 use reqwest::Client;
-use rusqlite::{params, types::Type, Connection, Error as SqlError, ErrorCode, OptionalExtension};
+use rusqlite::{Connection, Error as SqlError, ErrorCode, OptionalExtension, params, types::Type};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -107,6 +107,8 @@ impl std::fmt::Display for PersistenceServiceError {
         }
     }
 }
+
+impl std::error::Error for PersistenceServiceError {}
 
 impl From<PersistenceServiceError> for PersistenceCommandError {
     fn from(value: PersistenceServiceError) -> Self {
@@ -1020,10 +1022,9 @@ impl PersistenceService {
 
         if let Some(raw_provider) =
             Self::read_runtime_setting(&connection, SETTING_RUNTIME_PROVIDER)?
+            && let Some(provider) = LlmProvider::parse(raw_provider.trim())
         {
-            if let Some(provider) = LlmProvider::parse(raw_provider.trim()) {
-                config.provider = provider;
-            }
+            config.provider = provider;
         }
 
         if let Some(raw_model) = Self::read_runtime_setting(&connection, SETTING_RUNTIME_MODEL)? {
@@ -1032,58 +1033,51 @@ impl PersistenceService {
 
         if let Some(raw_temperature) =
             Self::read_runtime_setting(&connection, SETTING_RUNTIME_TEMPERATURE)?
+            && let Ok(parsed) = raw_temperature.parse::<f32>()
         {
-            if let Ok(parsed) = raw_temperature.parse::<f32>() {
-                config.temperature = parsed;
-            }
+            config.temperature = parsed;
         }
 
         if let Some(raw_max_output_tokens) =
             Self::read_runtime_setting(&connection, SETTING_RUNTIME_MAX_OUTPUT_TOKENS)?
+            && let Ok(parsed) = raw_max_output_tokens.parse::<u32>()
         {
-            if let Ok(parsed) = raw_max_output_tokens.parse::<u32>() {
-                config.max_output_tokens = parsed;
-            }
+            config.max_output_tokens = parsed;
         }
 
         if let Some(raw_timeout_ms) =
             Self::read_runtime_setting(&connection, SETTING_RUNTIME_TIMEOUT_MS)?
+            && let Ok(parsed) = raw_timeout_ms.parse::<u64>()
         {
-            if let Ok(parsed) = raw_timeout_ms.parse::<u64>() {
-                config.timeout_ms = parsed;
-            }
+            config.timeout_ms = parsed;
         }
 
         if let Some(raw_max_retries) =
             Self::read_runtime_setting(&connection, SETTING_RUNTIME_MAX_RETRIES)?
+            && let Ok(parsed) = raw_max_retries.parse::<u8>()
         {
-            if let Ok(parsed) = raw_max_retries.parse::<u8>() {
-                config.max_retries = parsed;
-            }
+            config.max_retries = parsed;
         }
 
         if let Some(raw_context_limit) =
             Self::read_runtime_setting(&connection, SETTING_RUNTIME_CONTEXT_LIMIT)?
+            && let Ok(parsed) = raw_context_limit.parse::<usize>()
         {
-            if let Ok(parsed) = raw_context_limit.parse::<usize>() {
-                config.context_chars_limit = parsed;
-            }
+            config.context_chars_limit = parsed;
         }
 
         if let Some(raw_max_context_files) =
             Self::read_runtime_setting(&connection, SETTING_RUNTIME_MAX_CONTEXT_FILES)?
+            && let Ok(parsed) = raw_max_context_files.parse::<usize>()
         {
-            if let Ok(parsed) = raw_max_context_files.parse::<usize>() {
-                config.max_context_files = parsed;
-            }
+            config.max_context_files = parsed;
         }
 
         if let Some(raw_strategy) =
             Self::read_runtime_setting(&connection, SETTING_RUNTIME_CONTEXT_STRATEGY)?
+            && let Some(parsed) = ContextStrategy::parse(raw_strategy.trim())
         {
-            if let Some(parsed) = ContextStrategy::parse(raw_strategy.trim()) {
-                config.context_strategy = parsed;
-            }
+            config.context_strategy = parsed;
         }
 
         if let Some(raw_embedding_enabled) =
@@ -1097,10 +1091,9 @@ impl PersistenceService {
 
         if let Some(raw_embedding_provider) =
             Self::read_runtime_setting(&connection, SETTING_RUNTIME_EMBEDDING_PROVIDER)?
+            && let Some(parsed) = EmbeddingProvider::parse(raw_embedding_provider.trim())
         {
-            if let Some(parsed) = EmbeddingProvider::parse(raw_embedding_provider.trim()) {
-                config.embedding_provider = parsed;
-            }
+            config.embedding_provider = parsed;
         }
 
         if let Some(raw_embedding_model) =
@@ -1111,10 +1104,9 @@ impl PersistenceService {
 
         if let Some(raw_embedding_top_k) =
             Self::read_runtime_setting(&connection, SETTING_RUNTIME_EMBEDDING_TOP_K)?
+            && let Ok(parsed) = raw_embedding_top_k.parse::<usize>()
         {
-            if let Ok(parsed) = raw_embedding_top_k.parse::<usize>() {
-                config.embedding_top_k = parsed;
-            }
+            config.embedding_top_k = parsed;
         }
 
         if let Some(raw_mode) =
@@ -1220,11 +1212,11 @@ impl PersistenceService {
     }
 
     fn request_job_cancellation(&self, job_id: &str) -> bool {
-        if let Ok(guard) = self.runtime_control.cancellations.lock() {
-            if let Some(token) = guard.get(job_id) {
-                token.cancel();
-                return true;
-            }
+        if let Ok(guard) = self.runtime_control.cancellations.lock()
+            && let Some(token) = guard.get(job_id)
+        {
+            token.cancel();
+            return true;
         }
 
         false
@@ -3514,12 +3506,23 @@ impl PersistenceService {
     }
 
     pub async fn run_job_worker_loop(&self) {
-        loop {
-            if let Err(error) = self.process_next_pending_job().await {
-                eprintln!("job worker error: {error:?}");
-            }
+        self.run_job_worker_until(CancellationToken::new()).await;
+    }
 
-            sleep(Duration::from_millis(300)).await;
+    pub async fn run_job_worker_until(&self, cancellation: CancellationToken) {
+        loop {
+            tokio::select! {
+                _ = cancellation.cancelled() => break,
+                result = self.process_next_pending_job() => {
+                    if let Err(error) = result {
+                        eprintln!("job worker error: {error:?}");
+                    }
+                }
+            }
+            tokio::select! {
+                _ = cancellation.cancelled() => break,
+                _ = sleep(Duration::from_millis(300)) => {}
+            }
         }
     }
 }
@@ -4616,6 +4619,78 @@ mod tests {
     }
 
     #[test]
+    fn migrates_v1_database_to_v9_and_round_trips_legacy_session() {
+        let root = tempfile::tempdir().expect("tempdir should be created");
+        let db_path = root.path().join("hard-vibe-code.db");
+        let mut connection = Connection::open(&db_path).expect("v1 db should open");
+        embedded::migrations::runner()
+            .set_target(refinery::Target::Version(1))
+            .run(&mut connection)
+            .expect("v1 should apply");
+        let now = Utc::now().to_rfc3339();
+        connection
+            .execute(
+                "INSERT INTO projects (id,name,workspace_path,is_archived,created_at,updated_at)
+                 VALUES ('project-v1','Projeto V1','C:/workspace/v1',0,?1,?1)",
+                params![now],
+            )
+            .expect("v1 project should insert");
+        connection
+            .execute(
+                "INSERT INTO ui_sessions (
+                   project_id,workspace_root,active_tab_path,workspace_view_mode,scroll_top,updated_at
+                 ) VALUES (
+                   'project-v1','C:/workspace/v1','notes/legacy.md','editor',33.0,?1
+                 )",
+                params![now],
+            )
+            .expect("v1 session should insert");
+        connection
+            .execute(
+                "INSERT INTO ui_session_tabs (
+                   project_id,tab_order,relative_path,draft_content,base_revision,
+                   cursor_line,cursor_column,scroll_top,created_at,updated_at
+                 ) VALUES (
+                   'project-v1',0,'notes/legacy.md','# legado','1:1',3,7,31.0,?1,?1
+                 )",
+                params![now],
+            )
+            .expect("v1 tab should insert");
+        drop(connection);
+
+        let service = PersistenceService::initialize(root.path()).expect("v2-v9 should apply");
+        let migrated = service
+            .load_ui_session(LoadUiSessionRequest {
+                project_id: "project-v1".into(),
+            })
+            .expect("migrated session should load")
+            .session
+            .expect("legacy session should remain");
+
+        assert_eq!(migrated.active_view, "workspace");
+        assert_eq!(migrated.workspace_view_mode, "editor");
+        assert!(!migrated.sidebar_collapsed);
+        assert!(migrated.context_drawer_open);
+        assert_eq!(migrated.active_tab_path.as_deref(), Some("notes/legacy.md"));
+        assert_eq!(migrated.scroll_top, Some(33.0));
+        assert_eq!(migrated.tabs.len(), 1);
+        assert_eq!(migrated.tabs[0].draft_content.as_deref(), Some("# legado"));
+        assert_eq!(migrated.tabs[0].cursor_line, Some(3));
+        assert_eq!(migrated.tabs[0].cursor_column, Some(7));
+
+        let chat_table_exists: bool = service
+            .connection()
+            .expect("migrated db should open")
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_messages')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("chat schema lookup should work");
+        assert!(chat_table_exists);
+    }
+
+    #[test]
     fn migrates_v8_database_to_v9_without_losing_ui_session() {
         let root = tempfile::tempdir().expect("tempdir should be created");
         let db_path = root.path().join("hard-vibe-code.db");
@@ -4830,12 +4905,14 @@ mod tests {
             .expect("claim should run")
             .expect("job should be claimable");
         assert_eq!(job.id, "future-job");
-        assert!(service
-            .runtime_control
-            .cancellations
-            .lock()
-            .unwrap()
-            .contains_key("future-job"));
+        assert!(
+            service
+                .runtime_control
+                .cancellations
+                .lock()
+                .unwrap()
+                .contains_key("future-job")
+        );
         service.unregister_job_cancellation("future-job");
     }
 
@@ -4891,14 +4968,18 @@ mod tests {
                 params![past, Utc::now().to_rfc3339()],
             )
             .expect("breaker should insert");
-        assert!(service
-            .llm_repository
-            .claim_breaker_probe("openai", "https://api.openai.com/v1/responses", Utc::now())
-            .unwrap());
-        assert!(!service
-            .llm_repository
-            .claim_breaker_probe("openai", "https://api.openai.com/v1/responses", Utc::now())
-            .unwrap());
+        assert!(
+            service
+                .llm_repository
+                .claim_breaker_probe("openai", "https://api.openai.com/v1/responses", Utc::now())
+                .unwrap()
+        );
+        assert!(
+            !service
+                .llm_repository
+                .claim_breaker_probe("openai", "https://api.openai.com/v1/responses", Utc::now())
+                .unwrap()
+        );
     }
 
     #[test]
@@ -5560,25 +5641,31 @@ mod tests {
             Some("open")
         );
 
-        assert!(!service
-            .llm_repository
-            .claim_breaker_probe(
-                "ollama",
-                "http://127.0.0.1:11434",
-                now + chrono::Duration::seconds(5)
-            )
-            .unwrap());
+        assert!(
+            !service
+                .llm_repository
+                .claim_breaker_probe(
+                    "ollama",
+                    "http://127.0.0.1:11434",
+                    now + chrono::Duration::seconds(5)
+                )
+                .unwrap()
+        );
 
         let probe_time = now + chrono::Duration::seconds(20);
-        assert!(service
-            .llm_repository
-            .claim_breaker_probe("ollama", "http://127.0.0.1:11434", probe_time)
-            .unwrap());
+        assert!(
+            service
+                .llm_repository
+                .claim_breaker_probe("ollama", "http://127.0.0.1:11434", probe_time)
+                .unwrap()
+        );
 
-        assert!(!service
-            .llm_repository
-            .claim_breaker_probe("ollama", "http://127.0.0.1:11434", probe_time)
-            .unwrap());
+        assert!(
+            !service
+                .llm_repository
+                .claim_breaker_probe("ollama", "http://127.0.0.1:11434", probe_time)
+                .unwrap()
+        );
 
         service
             .llm_repository
@@ -5908,10 +5995,12 @@ mod tests {
             .llm_repository
             .decide(&route, &targets, "some-affinity-hash", Utc::now())
             .unwrap();
-        assert!(decision
-            .candidates
-            .iter()
-            .any(|c| c.connection_id == second.id));
+        assert!(
+            decision
+                .candidates
+                .iter()
+                .any(|c| c.connection_id == second.id)
+        );
     }
 
     #[test]

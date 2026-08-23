@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use chrono::Utc;
@@ -10,7 +11,6 @@ use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
 use tempfile::NamedTempFile;
 use walkdir::WalkDir;
 
@@ -89,8 +89,12 @@ impl From<WorkspaceServiceError> for WorkspaceCommandError {
                 message: format!(
                     "Conflito detectado: revisão esperada `{expected}` não corresponde à revisão atual `{actual}`."
                 ),
-                details: Some(serde_json::json!({"expectedRevision": expected, "actualRevision": actual})),
-                remediation: Some("Recarregue o arquivo, reconcilie as alterações e salve novamente.".to_string()),
+                details: Some(
+                    serde_json::json!({"expectedRevision": expected, "actualRevision": actual}),
+                ),
+                remediation: Some(
+                    "Recarregue o arquivo, reconcilie as alterações e salve novamente.".to_string(),
+                ),
             },
             WorkspaceServiceError::Io(error) => Self {
                 code: WorkspaceErrorCode::IoError,
@@ -216,17 +220,12 @@ pub struct WriteWorkspaceFileAtomicResponse {
     pub revision: String,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchMode {
+    #[default]
     Substring,
     Regex,
-}
-
-impl Default for SearchMode {
-    fn default() -> Self {
-        Self::Substring
-    }
 }
 
 fn default_max_results() -> usize {
@@ -478,8 +477,22 @@ pub struct WorkspaceWatcher {
     _watcher: RecommendedWatcher,
 }
 
+pub trait WorkspaceEventSink: Send + Sync {
+    fn emit(&self, event: WorkspaceChangedEvent);
+}
+
+#[derive(Debug, Default)]
+pub struct NoopWorkspaceEventSink;
+
+impl WorkspaceEventSink for NoopWorkspaceEventSink {
+    fn emit(&self, _event: WorkspaceChangedEvent) {}
+}
+
 impl WorkspaceWatcher {
-    pub fn start(root: PathBuf, app_handle: AppHandle) -> Result<Self, WorkspaceServiceError> {
+    pub fn start(
+        root: PathBuf,
+        event_sink: Arc<dyn WorkspaceEventSink>,
+    ) -> Result<Self, WorkspaceServiceError> {
         let watch_root = root.clone();
         let mut watcher =
             notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
@@ -509,7 +522,7 @@ impl WorkspaceWatcher {
                         timestamp: timestamp.clone(),
                     };
 
-                    let _ = app_handle.emit(WORKSPACE_CHANGED_EVENT, payload);
+                    event_sink.emit(payload);
                 }
             })
             .map_err(WorkspaceServiceError::Notify)?;
@@ -666,10 +679,7 @@ fn greenfield_file_specs() -> Vec<(&'static str, &'static str)> {
             "docs/PROJECT_AGENT.md",
             "# PROJECT_AGENT\n\nProjeto greenfield inicializado pelo Hard Vibe Code.\n",
         ),
-        (
-            "knowledge/indexes/.gitkeep",
-            "",
-        ),
+        ("knowledge/indexes/.gitkeep", ""),
         (
             "knowledge/obsidian/_templates/feature-template.md",
             "---\ntype: feature\ndomain: backend\nrisk: medium\nstatus: planned\ntested-by: []\naffects: []\ncontracts: []\nincidents: []\ndecisions: []\nlast-pulse: null\n---\n\n# Feature Name\n\n## Objective\n\n## Acceptance Criteria\n",
@@ -2523,20 +2533,22 @@ mod tests {
         assert_eq!(status.mode, "greenfield");
         assert!(status.initialized);
         assert!(root.path().join("docs").join("PROJECT_AGENT.md").is_file());
-        assert!(root
-            .path()
-            .join("knowledge")
-            .join("obsidian")
-            .join("_templates")
-            .join("feature-template.md")
-            .is_file());
-        assert!(root
-            .path()
-            .join("knowledge")
-            .join("obsidian")
-            .join("bases")
-            .join("backend-agent.base")
-            .is_file());
+        assert!(
+            root.path()
+                .join("knowledge")
+                .join("obsidian")
+                .join("_templates")
+                .join("feature-template.md")
+                .is_file()
+        );
+        assert!(
+            root.path()
+                .join("knowledge")
+                .join("obsidian")
+                .join("bases")
+                .join("backend-agent.base")
+                .is_file()
+        );
     }
 
     #[test]
@@ -2593,14 +2605,18 @@ mod tests {
         assert!(feature_a.frontmatter.is_some());
         assert!(feature_a.normalized_properties.is_some());
         assert!(!feature_a.schema_warnings.is_empty());
-        assert!(feature_a
-            .outgoing_paths
-            .iter()
-            .any(|path| path == "notes/feature-b.md"));
-        assert!(feature_a
-            .backlink_paths
-            .iter()
-            .any(|path| path == "notes/feature-b.md"));
+        assert!(
+            feature_a
+                .outgoing_paths
+                .iter()
+                .any(|path| path == "notes/feature-b.md")
+        );
+        assert!(
+            feature_a
+                .backlink_paths
+                .iter()
+                .any(|path| path == "notes/feature-b.md")
+        );
     }
 
     #[test]
@@ -2658,10 +2674,12 @@ mod tests {
             response.candidates[0].relative_path,
             "knowledge/obsidian/features/auth-login.md"
         );
-        assert!(response
-            .candidates
-            .iter()
-            .any(|item| item.relative_path == "knowledge/obsidian/tests/auth-login.test.md"));
+        assert!(
+            response
+                .candidates
+                .iter()
+                .any(|item| item.relative_path == "knowledge/obsidian/tests/auth-login.test.md")
+        );
     }
 
     #[test]
@@ -2699,8 +2717,10 @@ mod tests {
 
         let consumer_content = fs::read_to_string(root.path().join("notes").join("consumer.md"))
             .expect("read consumer after rename");
-        assert!(consumer_content
-            .contains("Link [[notes/new-name]] and [[notes/new-name#Section|Alias]]."));
+        assert!(
+            consumer_content
+                .contains("Link [[notes/new-name]] and [[notes/new-name#Section|Alias]].")
+        );
         assert!(consumer_content.starts_with("---\ntype: feature\n---\n"));
     }
 }

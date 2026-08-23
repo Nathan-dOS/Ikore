@@ -5,19 +5,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use futures::{stream, StreamExt};
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use futures::{StreamExt, stream};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use tauri::Emitter;
+use serde_json::{Value, json};
+use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::llm::catalog::{estimate_cost_usd, model_entry};
 use crate::llm::credentials::{CredentialStore, KeyringCredentialStore};
 use crate::llm::domain::{ProviderProtocol, ResolvedConnection};
-use crate::llm::profiles::{profile_by_id, AuthStyle, ProviderProfile};
+use crate::llm::profiles::{AuthStyle, ProviderProfile, profile_by_id};
 use crate::llm::repository::SqliteLlmRepository;
 use crate::llm::streaming::{ParsedStreamEvent, SseParser};
 use crate::repository_context::{
@@ -67,31 +67,113 @@ impl From<rusqlite::Error> for ChatCommandError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatEventKind {
+    TurnStarted,
+    ToolStarted,
+    ToolCompleted,
+    TokenDelta,
+    ContentReset,
+    TurnCompleted,
+    TurnFailed,
+    TurnCancelled,
+}
+
+impl ChatEventKind {
+    pub fn event_name(self) -> &'static str {
+        match self {
+            Self::TurnStarted => "chat://turn-started",
+            Self::ToolStarted => "chat://tool-started",
+            Self::ToolCompleted => "chat://tool-completed",
+            Self::TokenDelta => "chat://token-delta",
+            Self::ContentReset => "chat://content-reset",
+            Self::TurnCompleted => "chat://turn-completed",
+            Self::TurnFailed => "chat://turn-failed",
+            Self::TurnCancelled => "chat://turn-cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatEventError {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatToolStarted {
+    pub id: String,
+    pub name: String,
+    pub arguments: Value,
+    pub round_index: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatToolCompleted {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub summary: String,
+    pub result_bytes: usize,
+    pub round_index: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum ChatEventDetail {
+    Empty {},
+    ContentReset {
+        reason: String,
+    },
+    TokenDelta {
+        delta: String,
+    },
+    Failed {
+        error: ChatEventError,
+    },
+    ToolStarted {
+        #[serde(rename = "toolCall")]
+        tool_call: ChatToolStarted,
+    },
+    ToolCompleted {
+        #[serde(rename = "toolCall")]
+        tool_call: ChatToolCompleted,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatEventEnvelope {
+    #[serde(skip)]
+    pub kind: ChatEventKind,
+    pub schema_version: u8,
+    pub sequence: u64,
+    pub occurred_at: String,
+    pub conversation_id: String,
+    pub assistant_message_id: String,
+    pub execution_id: String,
+    pub generation_id: String,
+    pub detail: ChatEventDetail,
+}
+
+impl ChatEventEnvelope {
+    pub fn event_name(&self) -> &'static str {
+        self.kind.event_name()
+    }
+}
+
 pub trait ChatEventSink: Send + Sync {
-    fn emit(&self, event_name: &str, payload: &Value);
+    fn emit(&self, envelope: &ChatEventEnvelope);
 }
 
 #[derive(Default)]
 pub struct NoopChatEventSink;
 
 impl ChatEventSink for NoopChatEventSink {
-    fn emit(&self, _event_name: &str, _payload: &Value) {}
-}
-
-pub struct TauriChatEventSink {
-    app_handle: tauri::AppHandle,
-}
-
-impl TauriChatEventSink {
-    pub fn new(app_handle: tauri::AppHandle) -> Self {
-        Self { app_handle }
-    }
-}
-
-impl ChatEventSink for TauriChatEventSink {
-    fn emit(&self, event_name: &str, payload: &Value) {
-        let _ = self.app_handle.emit(event_name, payload);
-    }
+    fn emit(&self, _envelope: &ChatEventEnvelope) {}
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -258,6 +340,7 @@ pub struct ChatService {
     http_client: reqwest::Client,
     event_sink: Arc<dyn ChatEventSink>,
     runtime: Arc<ChatRuntime>,
+    runtime_handle: Option<Handle>,
 }
 
 impl ChatService {
@@ -274,11 +357,22 @@ impl ChatService {
             http_client: reqwest::Client::new(),
             event_sink,
             runtime: Arc::new(ChatRuntime::default()),
+            runtime_handle: Handle::try_current().ok(),
         }
     }
 
     pub fn with_keyring(db_path: impl AsRef<Path>, event_sink: Arc<dyn ChatEventSink>) -> Self {
         Self::new(db_path, Arc::new(KeyringCredentialStore), event_sink)
+    }
+
+    pub fn with_keyring_and_runtime(
+        db_path: impl AsRef<Path>,
+        event_sink: Arc<dyn ChatEventSink>,
+        runtime_handle: Handle,
+    ) -> Self {
+        let mut service = Self::with_keyring(db_path, event_sink);
+        service.runtime_handle = Some(runtime_handle);
+        service
     }
 
     fn connection(&self) -> Result<Connection, ChatCommandError> {
@@ -556,7 +650,7 @@ impl ChatService {
         };
         let service = Arc::clone(self);
         let root = workspace_root.to_path_buf();
-        tauri::async_runtime::spawn(async move {
+        let turn = async move {
             service
                 .run_turn(TurnContext {
                     conversation,
@@ -568,8 +662,37 @@ impl ChatService {
                     cancellation,
                 })
                 .await;
-        });
+        };
+        if let Some(handle) = &self.runtime_handle {
+            handle.spawn(turn);
+        } else {
+            std::thread::Builder::new()
+                .name("hvc-chat-turn".into())
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("runtime temporário de chat deve inicializar");
+                    runtime.block_on(turn);
+                })
+                .map_err(|error| {
+                    ChatCommandError::new(
+                        "runtime_unavailable",
+                        format!("Falha ao iniciar turno de chat: {error}"),
+                    )
+                })?;
+        }
         Ok(response)
+    }
+
+    pub fn cancel_all_turns(&self) -> usize {
+        let Ok(turns) = self.runtime.turns.lock() else {
+            return 0;
+        };
+        for turn in turns.values() {
+            turn.cancellation.cancel();
+        }
+        turns.len()
     }
 
     pub fn cancel_turn(
@@ -934,7 +1057,11 @@ struct ModelFailure {
 impl ChatService {
     async fn run_turn(&self, context: TurnContext) {
         let _ = self.set_message_status(&context.assistant_message_id, "streaming", None, None);
-        let _ = self.emit_turn_event("chat://turn-started", &context, json!({}));
+        let _ = self.emit_turn_event(
+            ChatEventKind::TurnStarted,
+            &context,
+            ChatEventDetail::Empty {},
+        );
 
         let result = tokio::select! {
             biased;
@@ -955,7 +1082,11 @@ impl ChatService {
             Ok(()) => {
                 let _ =
                     self.set_message_status(&context.assistant_message_id, "completed", None, None);
-                let _ = self.emit_turn_event("chat://turn-completed", &context, json!({}));
+                let _ = self.emit_turn_event(
+                    ChatEventKind::TurnCompleted,
+                    &context,
+                    ChatEventDetail::Empty {},
+                );
             }
             Err(TurnOutcome::Cancelled) => {
                 let _ = self.set_message_status(
@@ -964,7 +1095,11 @@ impl ChatService {
                     Some("cancelled"),
                     Some("Resposta cancelada pelo usuário."),
                 );
-                let _ = self.emit_turn_event("chat://turn-cancelled", &context, json!({}));
+                let _ = self.emit_turn_event(
+                    ChatEventKind::TurnCancelled,
+                    &context,
+                    ChatEventDetail::Empty {},
+                );
             }
             Err(TurnOutcome::Failed(error)) => {
                 let _ = self.set_message_status(
@@ -974,9 +1109,14 @@ impl ChatService {
                     Some(&error.message),
                 );
                 let _ = self.emit_turn_event(
-                    "chat://turn-failed",
+                    ChatEventKind::TurnFailed,
                     &context,
-                    json!({ "error": { "code": error.code, "message": error.message } }),
+                    ChatEventDetail::Failed {
+                        error: ChatEventError {
+                            code: error.code,
+                            message: error.message,
+                        },
+                    },
                 );
             }
         }
@@ -1114,9 +1254,11 @@ impl ChatService {
             if !response.content.trim().is_empty() {
                 self.replace_message_content(&context.assistant_message_id, &response.content)?;
                 self.emit_turn_event(
-                    "chat://content-reset",
+                    ChatEventKind::ContentReset,
                     context,
-                    json!({ "reason": "tool_round" }),
+                    ChatEventDetail::ContentReset {
+                        reason: "tool_round".into(),
+                    },
                 )?;
                 self.replace_message_content(&context.assistant_message_id, "")?;
             }
@@ -1196,16 +1338,16 @@ impl ChatService {
             )?;
             persisted_ids.insert(call.id.clone(), row_id);
             self.emit_turn_event(
-                "chat://tool-started",
+                ChatEventKind::ToolStarted,
                 context,
-                json!({
-                    "toolCall": {
-                        "id": call.id,
-                        "name": call.name,
-                        "arguments": call.arguments,
-                        "roundIndex": round_index
-                    }
-                }),
+                ChatEventDetail::ToolStarted {
+                    tool_call: ChatToolStarted {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        arguments: call.arguments.clone(),
+                        round_index,
+                    },
+                },
             )?;
         }
 
@@ -1254,18 +1396,18 @@ impl ChatService {
                 )?;
             }
             self.emit_turn_event(
-                "chat://tool-completed",
+                ChatEventKind::ToolCompleted,
                 context,
-                json!({
-                    "toolCall": {
-                        "id": result.call.id,
-                        "name": result.call.name,
-                        "status": status,
-                        "summary": summary,
-                        "resultBytes": result.content.len(),
-                        "roundIndex": round_index
-                    }
-                }),
+                ChatEventDetail::ToolCompleted {
+                    tool_call: ChatToolCompleted {
+                        id: result.call.id.clone(),
+                        name: result.call.name.clone(),
+                        status: status.into(),
+                        summary,
+                        result_bytes: result.content.len(),
+                        round_index,
+                    },
+                },
             )?;
         }
         Ok(executions)
@@ -1284,7 +1426,11 @@ impl ChatService {
             }
             let delta: String = chunk.iter().collect();
             self.append_message_content(&context.assistant_message_id, &delta)?;
-            self.emit_turn_event("chat://token-delta", context, json!({ "delta": delta }))?;
+            self.emit_turn_event(
+                ChatEventKind::TokenDelta,
+                context,
+                ChatEventDetail::TokenDelta { delta },
+            )?;
             tokio::task::yield_now().await;
         }
         Ok(())
@@ -1398,9 +1544,9 @@ impl ChatService {
 
     fn emit_turn_event(
         &self,
-        event_name: &str,
+        kind: ChatEventKind,
         context: &TurnContext,
-        detail: Value,
+        detail: ChatEventDetail,
     ) -> Result<(), ChatCommandError> {
         let sequence = {
             let mut sequences = self
@@ -1416,17 +1562,17 @@ impl ChatService {
             "UPDATE chat_messages SET last_sequence = ?1, updated_at = ?2 WHERE id = ?3",
             params![sequence as i64, now_iso(), context.assistant_message_id],
         )?;
-        let payload = json!({
-            "schemaVersion": 1,
-            "sequence": sequence,
-            "occurredAt": now_iso(),
-            "conversationId": context.conversation.id,
-            "assistantMessageId": context.assistant_message_id,
-            "executionId": context.execution_id,
-            "generationId": context.generation_id,
-            "detail": detail
+        self.event_sink.emit(&ChatEventEnvelope {
+            kind,
+            schema_version: 1,
+            sequence,
+            occurred_at: now_iso(),
+            conversation_id: context.conversation.id.clone(),
+            assistant_message_id: context.assistant_message_id.clone(),
+            execution_id: context.execution_id.clone(),
+            generation_id: context.generation_id.clone(),
+            detail,
         });
-        self.event_sink.emit(event_name, &payload);
         Ok(())
     }
 }
@@ -1717,8 +1863,12 @@ impl ChatService {
                     content.push_str(&delta);
                     self.append_message_content(&context.assistant_message_id, &delta)
                         .map_err(model_persistence_failure)?;
-                    self.emit_turn_event("chat://token-delta", context, json!({ "delta": delta }))
-                        .map_err(model_persistence_failure)?;
+                    self.emit_turn_event(
+                        ChatEventKind::TokenDelta,
+                        context,
+                        ChatEventDetail::TokenDelta { delta },
+                    )
+                    .map_err(model_persistence_failure)?;
                 }
                 ParsedStreamEvent::ToolCallStarted { index, id, name } => {
                     let partial = partial_calls.entry(index).or_default();
@@ -2264,13 +2414,15 @@ mod tests {
                 .len(),
             1
         );
-        assert!(service
-            .list_conversations(ListChatConversationsRequest {
-                project_id: "project-b".into()
-            })
-            .unwrap()
-            .conversations
-            .is_empty());
+        assert!(
+            service
+                .list_conversations(ListChatConversationsRequest {
+                    project_id: "project-b".into()
+                })
+                .unwrap()
+                .conversations
+                .is_empty()
+        );
 
         service
             .connection()
@@ -2295,11 +2447,13 @@ mod tests {
                 .unwrap()
                 .deleted
         );
-        assert!(service
-            .get_conversation(GetChatConversationRequest {
-                conversation_id: created.id
-            })
-            .is_err());
+        assert!(
+            service
+                .get_conversation(GetChatConversationRequest {
+                    conversation_id: created.id
+                })
+                .is_err()
+        );
     }
 
     #[test]

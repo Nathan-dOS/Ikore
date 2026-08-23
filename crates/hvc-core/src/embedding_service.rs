@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub type EmbeddingFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<f64>, EmbeddingError>> + Send + 'a>>;

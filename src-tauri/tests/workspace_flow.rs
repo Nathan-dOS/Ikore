@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use hard_vibe_code::workspace_service::{
-    build_workspace_tree, get_workspace_vault_index, GetWorkspaceVaultIndexRequest, VaultIndexCache,
+use hvc_core::workspace_service::{
+    GetWorkspaceVaultIndexRequest, VaultIndexCache, build_workspace_tree, get_workspace_vault_index,
 };
 
 fn fixture_root() -> PathBuf {

@@ -22,7 +22,7 @@ use super::domain::{
 use super::error::{LlmError, LlmErrorKind};
 use super::profiles::profile_by_id;
 use super::repository::TestProviderConnectionResponse;
-use super::repository::{endpoint_origin, LlmRepository, ResolvedRouteTarget, SqliteLlmRepository};
+use super::repository::{LlmRepository, ResolvedRouteTarget, SqliteLlmRepository, endpoint_origin};
 use super::resilience::{cooldown_ms, eligible_at};
 
 const CONNECTION_TEST_MAX_OUTPUT_TOKENS: u32 = 16;
@@ -451,10 +451,11 @@ impl ProviderRouter {
                 )
                 .with_target(&profile.id, target.connection.id.as_str(), &model)),
             };
-            if let Err(error) = &mut result {
-                if error.kind != LlmErrorKind::Cancelled && error.visible_partial.is_none() {
-                    error.visible_partial = visible_partial.clone();
-                }
+            if let Err(error) = &mut result
+                && error.kind != LlmErrorKind::Cancelled
+                && error.visible_partial.is_none()
+            {
+                error.visible_partial = visible_partial.clone();
             }
             match result {
                 Ok(output) => {
@@ -890,11 +891,11 @@ fn apply_runtime_gates_to_decision(
     gates: &HashMap<String, String>,
 ) {
     for candidate in &mut decision.candidates {
-        if candidate.eligible {
-            if let Some(reason) = gates.get(&candidate.connection_id) {
-                candidate.eligible = false;
-                candidate.gate_reason = Some(reason.clone());
-            }
+        if candidate.eligible
+            && let Some(reason) = gates.get(&candidate.connection_id)
+        {
+            candidate.eligible = false;
+            candidate.gate_reason = Some(reason.clone());
         }
     }
     decision
@@ -1073,7 +1074,7 @@ impl TokenDeltaSink for BatchingDeltaSink {
             let emitter = self.emitter.clone();
             let repository = self.repository.clone();
             let execution_id = self.execution_id.clone();
-            tauri::async_runtime::spawn(async move {
+            tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(25)).await;
                 flush_delta_state(&state, &emitter, &repository, &execution_id);
             });

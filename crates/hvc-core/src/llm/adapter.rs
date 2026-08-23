@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use reqwest::{Client, Response};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use super::domain::{LlmRequest, LlmUsage, ProviderProtocol, ResolvedConnection, ResponseFormat};

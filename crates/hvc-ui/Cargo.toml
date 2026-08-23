@@ -1,0 +1,17 @@
+[package]
+name = "hvc-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "GPUI views and native design system for Hard Vibe Code"
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+hvc-core.workspace = true
+hvc-editor.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

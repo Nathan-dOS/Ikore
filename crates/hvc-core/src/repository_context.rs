@@ -159,7 +159,7 @@ impl RepositoryContext {
             _ => {
                 return Err(RepositoryError(
                     "Modo de busca deve ser 'literal' ou 'regex'.".into(),
-                ))
+                ));
             }
         };
 
@@ -471,34 +471,42 @@ mod tests {
         fs::write(temp.path().join("binary.txt"), [0xff, 0xfe, 0xfd]).unwrap();
         let repository = RepositoryContext::new(temp.path()).unwrap();
 
-        assert!(repository
-            .read_file(ReadRepositoryFileArgs {
-                path: "../outside.ts".into(),
-                start_line: None,
-                end_line: None,
-            })
-            .is_err());
-        assert!(repository
-            .read_file(ReadRepositoryFileArgs {
-                path: "ignored.ts".into(),
-                start_line: None,
-                end_line: None,
-            })
-            .is_err());
-        assert!(repository
-            .read_file(ReadRepositoryFileArgs {
-                path: ".env".into(),
-                start_line: None,
-                end_line: None,
-            })
-            .is_err());
-        assert!(repository
-            .read_file(ReadRepositoryFileArgs {
-                path: "binary.txt".into(),
-                start_line: None,
-                end_line: None,
-            })
-            .is_err());
+        assert!(
+            repository
+                .read_file(ReadRepositoryFileArgs {
+                    path: "../outside.ts".into(),
+                    start_line: None,
+                    end_line: None,
+                })
+                .is_err()
+        );
+        assert!(
+            repository
+                .read_file(ReadRepositoryFileArgs {
+                    path: "ignored.ts".into(),
+                    start_line: None,
+                    end_line: None,
+                })
+                .is_err()
+        );
+        assert!(
+            repository
+                .read_file(ReadRepositoryFileArgs {
+                    path: ".env".into(),
+                    start_line: None,
+                    end_line: None,
+                })
+                .is_err()
+        );
+        assert!(
+            repository
+                .read_file(ReadRepositoryFileArgs {
+                    path: "binary.txt".into(),
+                    start_line: None,
+                    end_line: None,
+                })
+                .is_err()
+        );
 
         let tree = repository
             .list_tree(ListRepositoryTreeArgs {

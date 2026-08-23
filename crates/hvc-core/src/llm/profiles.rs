@@ -280,21 +280,31 @@ mod tests {
         ] {
             assert!(profiles.iter().any(|profile| profile.id == expected));
         }
-        assert!(profiles.iter().all(|profile| profile.capabilities.tool_calling));
+        assert!(
+            profiles
+                .iter()
+                .all(|profile| profile.capabilities.tool_calling)
+        );
     }
 
     #[test]
     fn ollama_rejects_non_loopback_http() {
         let ollama = profile_by_id("ollama").unwrap();
-        assert!(ollama
-            .resolved_endpoint(Some("http://example.com:11434"))
-            .is_err());
-        assert!(ollama
-            .resolved_endpoint(Some("http://127.0.0.1:11434"))
-            .is_ok());
-        assert!(ollama
-            .resolved_endpoint(Some("https://ollama.example.com"))
-            .is_ok());
+        assert!(
+            ollama
+                .resolved_endpoint(Some("http://example.com:11434"))
+                .is_err()
+        );
+        assert!(
+            ollama
+                .resolved_endpoint(Some("http://127.0.0.1:11434"))
+                .is_ok()
+        );
+        assert!(
+            ollama
+                .resolved_endpoint(Some("https://ollama.example.com"))
+                .is_ok()
+        );
     }
 
     #[test]

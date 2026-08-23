@@ -1,68 +1,78 @@
 # Hard Vibe Code
 
-Base inicial do MVP do **Desktop Orchestrator**.
+Desktop Orchestrator em migração lado a lado de Tauri/React para GPUI/Rust.
 
-## Fase atual
+## Estado atual
 
-- Marco UI Nativa: Migração para GPUI (Zed Framework)
-- Renderização GPU nativa em Rust puro (Metal/Vulkan/DirectX)
-- Editor de texto nativo com Tree-sitter para syntax highlighting
-- Índice incremental de notas Markdown com frontmatter YAML e wikilinks
-- Validação de links quebrados e grafo de contexto na navegação
-- Renomeio de nota com atualização automática de referências `[[wikilinks]]`
-- Resolução de conflitos de edição externa em abas abertas
+- A branch de migração é `codex/gpui-migration`.
+- O worktree anterior à migração foi preservado em um checkpoint Git.
+- O binário novo é `hard-vibe-code`, implementado pelo crate `hvc-app`.
+- Tauri/React continua funcional como adaptador legado até a paridade e aprovação dos gates.
+- Windows x64 é a plataforma do primeiro corte.
+- Chat Companion é uma das seis views obrigatórias.
 
-## Stack
+## Stack nativa
 
-- GPUI (Zed Framework) — renderização GPU nativa
-- Rust 1.88.0 (100% do projeto: UI + core + workers)
-- gpui-component (biblioteca community de componentes)
-- SQLite via rusqlite + refinery
-- cargo test
+- Rust 1.98.0, edition 2024 e Cargo resolver 3.
+- GPUI 0.2.2 com backend Windows integrado.
+- Tokio multi-thread para rede, streaming e workers.
+- SQLite via `rusqlite`/`refinery`, migrations V1–V9.
+- Rope + `EntityInputHandler` para editor Unicode/IME.
+- Tree-sitter Markdown incremental e `pulldown-cmark` para preview sem HTML bruto.
+- `notify` para filesystem e `keyring` para credenciais.
 
-## Build e execução
+Não são reutilizadas crates de editor/UI do Zed sujeitas a GPL. A distribuição externa permanece bloqueada até a auditoria de licenças e a resolução/decisão jurídica sobre dependências transitivas apontadas no issue Zed #55470.
 
-1. Build de verificação:
-   ```bash
-   cargo check
-   ```
-2. Executar em modo desenvolvimento:
-   ```bash
-   cargo run
-   ```
-3. Build de produção:
-   ```bash
-   cargo build --release
-   ```
+## Workspace Cargo
 
-## Comandos de validação
+- `crates/hvc-app`: composition root e binário GPUI.
+- `crates/hvc-core`: domínio, persistência, workspace, LLM, Chat e barramento tipado.
+- `crates/hvc-ui`: shell, design system, seis views e editor conectado ao GPUI.
+- `crates/hvc-editor`: Rope, seleção, undo/redo, diff, Markdown e Tree-sitter.
+- `src-tauri`: adaptador legado temporário, consumidor de `hvc-core`.
+- `src`: frontend React legado temporário.
 
-```bash
-cargo check
-cargo test
-cargo clippy
-cargo fmt --check
+O banco continua em `%APPDATA%\com.hardvibecode.desktop\hard-vibe-code.db`. `HVC_DATA_DIR` permite isolar dados de desenvolvimento/teste. Um lock exclusivo impede Tauri e GPUI de operar simultaneamente no mesmo diretório.
+
+## Executar o aplicativo GPUI
+
+```powershell
+cargo run -p hvc-app
 ```
 
-Testes do core:
+Build release do primeiro artefato Windows:
 
-```bash
-cargo test -p hvc-core
+```powershell
+cargo build --release -p hvc-app
+powershell -ExecutionPolicy Bypass -File scripts/smoke-windows.ps1
 ```
 
-## Critério de aceite da Fase 1
+Esse comando gera um executável; instalador NSIS/WiX e Authenticode pertencem à etapa posterior de distribuição.
 
-1. Abrir uma pasta via seletor nativo.
-2. Ver a árvore de arquivos `.md` e `.txt` na UI.
-3. Alterar um arquivo externamente (ex.: Obsidian) e confirmar evento no painel de watcher.
-4. Confirmar que a árvore atualiza automaticamente sem reload.
+## Gates Rust
 
-## Estrutura principal
+```powershell
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --release -p hvc-app
+```
 
-- `src/`: Binário principal e ponto de entrada GPUI
-- `src/views/`: Views GPUI (WorkspaceView, PulsationsView, VaultView, SettingsView, LogsView)
-- `src/components/`: Componentes GPUI reutilizáveis (AppSidebar, StatusBar, etc.)
-- `src/state/`: Modelos de estado (Model<T> do GPUI)
-- `src/core/`: Lógica de negócio, orquestração, agentes
-- `src/editor/`: Editor nativo de texto + Tree-sitter
-- `src/knowledge/`: Camada de conhecimento (vault, embeddings, índices)
+## Baseline Tauri/React durante a migração
+
+```powershell
+npm.cmd test
+npm.cmd run build
+cargo check -p hvc-tauri-legacy
+```
+
+O frontend, `package.json`, Vite, Monaco, Zustand, IPC e Tauri só serão removidos quando houver equivalência dos testes frontend, paridade funcional das seis views, smoke test Windows e aprovação dos benchmarks definidos na ADR-006.
+
+## Limitações atuais da migração
+
+- O shell GPUI, as seis rotas, o editor Rope/IME, a restauração V8/V9 e a ressincronização após atraso do barramento estão implementados.
+- A paridade funcional de Workspace ainda precisa ligar árvore, múltiplas abas, preview, autosave persistido e o fluxo completo de diff/HITL à UI nativa.
+- Pulsations, Vault, Settings, Logs e Chat já têm entidades e painéis próprios, mas suas operações completas, streaming/cancelamento e testes de fluxo ainda não substituem as views React.
+- Benchmarks comparativos, equivalência Rust dos 51 testes frontend, auditoria de licenças/advisories e decisão sobre a dependência GPL continuam pendentes.
+
+Última validação local desta etapa: 107 testes Rust do workspace e 51 testes frontend aprovados, além de Clippy com `-D warnings`, builds frontend/release e smoke Windows com shutdown gracioso.

@@ -1,0 +1,428 @@
+use std::collections::HashSet;
+use std::fs::{self, File, OpenOptions};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+
+use fs2::FileExt;
+use tokio::runtime::Handle;
+use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+use crate::chat_service::{ChatEventSink, ChatService};
+use crate::events::{AppEvent, AppEventBus};
+use crate::llm::LlmEventSink;
+use crate::persistence_service::{PersistenceService, PersistenceServiceError};
+use crate::workspace_service::{
+    self, BootstrapGreenfieldWorkspaceResponse, GetContextCandidatesRequest,
+    GetContextCandidatesResponse, GetWorkspaceVaultIndexRequest, GetWorkspaceVaultIndexResponse,
+    OpenWorkspaceRequest, OpenWorkspaceResponse, ReadWorkspaceFileRequest,
+    ReadWorkspaceFileResponse, RenameWorkspaceNoteRequest, RenameWorkspaceNoteResponse,
+    SearchWorkspaceTextRequest, SearchWorkspaceTextResponse, VaultIndexCache,
+    WorkspaceCommandError, WorkspaceEventSink, WorkspaceServiceError, WorkspaceTreeResponse,
+    WorkspaceWatcher, WriteWorkspaceFileAtomicRequest, WriteWorkspaceFileAtomicResponse,
+};
+
+const APP_IDENTIFIER: &str = "com.hardvibecode.desktop";
+const DATABASE_NAME: &str = "hard-vibe-code.db";
+const LOCK_NAME: &str = "hard-vibe-code.lock";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppPaths {
+    data_dir: PathBuf,
+}
+
+impl AppPaths {
+    pub fn resolve() -> Result<Self, AppCoreError> {
+        if let Some(override_dir) = std::env::var_os("HVC_DATA_DIR") {
+            return Ok(Self::from_data_dir(override_dir));
+        }
+
+        #[cfg(target_os = "windows")]
+        let base = std::env::var_os("APPDATA").ok_or(AppCoreError::DataDirectoryUnavailable)?;
+        #[cfg(not(target_os = "windows"))]
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| PathBuf::from(home).join(".local/share").into_os_string())
+            })
+            .ok_or(AppCoreError::DataDirectoryUnavailable)?;
+
+        Ok(Self::from_data_dir(
+            PathBuf::from(base).join(APP_IDENTIFIER),
+        ))
+    }
+
+    pub fn from_data_dir(path: impl Into<PathBuf>) -> Self {
+        Self {
+            data_dir: path.into(),
+        }
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    pub fn database_path(&self) -> PathBuf {
+        self.data_dir.join(DATABASE_NAME)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AppCoreError {
+    #[error("não foi possível resolver o diretório de dados da aplicação")]
+    DataDirectoryUnavailable,
+    #[error("outra instância do Hard Vibe Code já está usando este diretório de dados")]
+    DataDirectoryInUse,
+    #[error("falha de I/O no diretório de dados: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("falha ao inicializar persistência: {0}")]
+    Persistence(#[from] PersistenceServiceError),
+    #[error("falha ao recuperar o Chat Companion: {0}")]
+    Chat(#[from] crate::chat_service::ChatCommandError),
+}
+
+#[derive(Debug)]
+pub struct DataDirectoryLock {
+    file: File,
+    lock_path: PathBuf,
+}
+
+impl DataDirectoryLock {
+    pub fn acquire(paths: &AppPaths) -> Result<Self, AppCoreError> {
+        fs::create_dir_all(paths.data_dir())?;
+        let lock_path = fs::canonicalize(paths.data_dir())?.join(LOCK_NAME);
+
+        {
+            let mut held = process_locks()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !held.insert(lock_path.clone()) {
+                return Err(AppCoreError::DataDirectoryInUse);
+            }
+        }
+
+        let acquired = (|| {
+            let file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&lock_path)?;
+            file.try_lock_exclusive()
+                .map_err(|error| match error.kind() {
+                    std::io::ErrorKind::WouldBlock => AppCoreError::DataDirectoryInUse,
+                    _ => AppCoreError::Io(error),
+                })?;
+            Ok(Self {
+                file,
+                lock_path: lock_path.clone(),
+            })
+        })();
+
+        if acquired.is_err() {
+            process_locks()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&lock_path);
+        }
+        acquired
+    }
+}
+
+impl Drop for DataDirectoryLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+        process_locks()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.lock_path);
+    }
+}
+
+fn process_locks() -> &'static Mutex<HashSet<PathBuf>> {
+    static LOCKS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    LOCKS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[derive(Default)]
+struct WorkspaceContext {
+    root_path: Option<PathBuf>,
+    watcher: Option<WorkspaceWatcher>,
+    vault_index_cache: VaultIndexCache,
+}
+
+pub struct AppCore {
+    paths: AppPaths,
+    runtime: Handle,
+    _data_lock: DataDirectoryLock,
+    events: Arc<AppEventBus>,
+    persistence: PersistenceService,
+    chat: Arc<ChatService>,
+    workspace: Mutex<WorkspaceContext>,
+    worker_cancellation: CancellationToken,
+    worker_task: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl AppCore {
+    pub fn initialize(paths: AppPaths, runtime: Handle) -> Result<Arc<Self>, AppCoreError> {
+        let data_lock = DataDirectoryLock::acquire(&paths)?;
+        let events = Arc::new(AppEventBus::default());
+        let llm_sink: Arc<dyn LlmEventSink> = events.clone();
+        let persistence =
+            PersistenceService::initialize_with_event_sink(paths.data_dir(), llm_sink)?;
+        persistence.recover_interrupted_jobs()?;
+        let chat_sink: Arc<dyn ChatEventSink> = events.clone();
+        let chat = Arc::new(ChatService::with_keyring_and_runtime(
+            persistence.database_path(),
+            chat_sink,
+            runtime.clone(),
+        ));
+        chat.recover_interrupted_turns()?;
+        let worker_cancellation = CancellationToken::new();
+
+        let core = Arc::new(Self {
+            paths,
+            runtime: runtime.clone(),
+            _data_lock: data_lock,
+            events,
+            persistence,
+            chat,
+            workspace: Mutex::new(WorkspaceContext::default()),
+            worker_cancellation,
+            worker_task: Mutex::new(None),
+        });
+
+        let worker = core.persistence.clone();
+        let cancellation = core.worker_cancellation.clone();
+        let task = runtime.spawn(async move {
+            worker.run_job_worker_until(cancellation).await;
+        });
+        *core
+            .worker_task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(task);
+        Ok(core)
+    }
+
+    pub fn paths(&self) -> &AppPaths {
+        &self.paths
+    }
+
+    pub fn runtime_handle(&self) -> &Handle {
+        &self.runtime
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<AppEvent> {
+        self.events.subscribe()
+    }
+
+    pub fn persistence(&self) -> &PersistenceService {
+        &self.persistence
+    }
+
+    pub fn chat(&self) -> Arc<ChatService> {
+        Arc::clone(&self.chat)
+    }
+
+    pub fn open_workspace(
+        &self,
+        request: OpenWorkspaceRequest,
+    ) -> Result<OpenWorkspaceResponse, WorkspaceCommandError> {
+        let root_path = workspace_service::validate_workspace_root(&request.path)
+            .map_err(WorkspaceCommandError::from)?;
+        let greenfield = workspace_service::bootstrap_greenfield_workspace(&root_path)
+            .map_err(WorkspaceCommandError::from)?;
+        let tree = workspace_service::build_workspace_tree(&root_path)
+            .map_err(WorkspaceCommandError::from)?
+            .tree;
+        let sink: Arc<dyn WorkspaceEventSink> = self.events.clone();
+        let watcher = WorkspaceWatcher::start(root_path.clone(), sink)
+            .map_err(WorkspaceCommandError::from)?;
+
+        let mut workspace = self.workspace.lock().map_err(|_| workspace_lock_error())?;
+        workspace.root_path = Some(root_path.clone());
+        workspace.watcher = Some(watcher);
+        workspace.vault_index_cache = VaultIndexCache::default();
+        Ok(OpenWorkspaceResponse {
+            root_path: root_path.to_string_lossy().to_string(),
+            tree,
+            greenfield,
+        })
+    }
+
+    pub fn bootstrap_greenfield_workspace(
+        &self,
+        request: workspace_service::BootstrapGreenfieldWorkspaceRequest,
+    ) -> Result<BootstrapGreenfieldWorkspaceResponse, WorkspaceCommandError> {
+        workspace_service::bootstrap_greenfield_workspace_by_path(request)
+            .map_err(WorkspaceCommandError::from)
+    }
+
+    pub fn list_workspace_tree(&self) -> Result<WorkspaceTreeResponse, WorkspaceCommandError> {
+        workspace_service::build_workspace_tree(&self.workspace_root()?)
+            .map_err(WorkspaceCommandError::from)
+    }
+
+    pub fn read_workspace_file(
+        &self,
+        request: ReadWorkspaceFileRequest,
+    ) -> Result<ReadWorkspaceFileResponse, WorkspaceCommandError> {
+        workspace_service::read_workspace_file(&self.workspace_root()?, request)
+            .map_err(WorkspaceCommandError::from)
+    }
+
+    pub fn write_workspace_file_atomic(
+        &self,
+        request: WriteWorkspaceFileAtomicRequest,
+    ) -> Result<WriteWorkspaceFileAtomicResponse, WorkspaceCommandError> {
+        workspace_service::write_workspace_file_atomic(&self.workspace_root()?, request)
+            .map_err(WorkspaceCommandError::from)
+    }
+
+    pub fn search_workspace_text(
+        &self,
+        request: SearchWorkspaceTextRequest,
+    ) -> Result<SearchWorkspaceTextResponse, WorkspaceCommandError> {
+        workspace_service::search_workspace_text(&self.workspace_root()?, request)
+            .map_err(WorkspaceCommandError::from)
+    }
+
+    pub fn get_workspace_vault_index(
+        &self,
+        request: GetWorkspaceVaultIndexRequest,
+    ) -> Result<GetWorkspaceVaultIndexResponse, WorkspaceCommandError> {
+        let mut workspace = self.workspace.lock().map_err(|_| workspace_lock_error())?;
+        let root = workspace
+            .root_path
+            .clone()
+            .ok_or_else(|| WorkspaceCommandError::from(WorkspaceServiceError::WorkspaceNotOpen))?;
+        workspace_service::get_workspace_vault_index(
+            &root,
+            &mut workspace.vault_index_cache,
+            request,
+        )
+        .map_err(WorkspaceCommandError::from)
+    }
+
+    pub fn get_context_candidates(
+        &self,
+        request: GetContextCandidatesRequest,
+    ) -> Result<GetContextCandidatesResponse, WorkspaceCommandError> {
+        let mut workspace = self.workspace.lock().map_err(|_| workspace_lock_error())?;
+        let root = workspace
+            .root_path
+            .clone()
+            .ok_or_else(|| WorkspaceCommandError::from(WorkspaceServiceError::WorkspaceNotOpen))?;
+        workspace_service::get_context_candidates(&root, &mut workspace.vault_index_cache, request)
+            .map_err(WorkspaceCommandError::from)
+    }
+
+    pub fn rename_workspace_note(
+        &self,
+        request: RenameWorkspaceNoteRequest,
+    ) -> Result<RenameWorkspaceNoteResponse, WorkspaceCommandError> {
+        let mut workspace = self.workspace.lock().map_err(|_| workspace_lock_error())?;
+        let root = workspace
+            .root_path
+            .clone()
+            .ok_or_else(|| WorkspaceCommandError::from(WorkspaceServiceError::WorkspaceNotOpen))?;
+        workspace_service::rename_workspace_note(&root, &mut workspace.vault_index_cache, request)
+            .map_err(WorkspaceCommandError::from)
+    }
+
+    pub fn workspace_root(&self) -> Result<PathBuf, WorkspaceCommandError> {
+        self.workspace
+            .lock()
+            .map_err(|_| workspace_lock_error())?
+            .root_path
+            .clone()
+            .ok_or_else(|| WorkspaceCommandError::from(WorkspaceServiceError::WorkspaceNotOpen))
+    }
+
+    pub fn is_shutting_down(&self) -> bool {
+        self.worker_cancellation.is_cancelled()
+    }
+
+    pub async fn shutdown(&self) {
+        self.worker_cancellation.cancel();
+        self.chat.cancel_all_turns();
+        if let Ok(mut workspace) = self.workspace.lock() {
+            workspace.watcher = None;
+        }
+
+        let worker = self
+            .worker_task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(mut worker) = worker
+            && tokio::time::timeout(Duration::from_secs(3), &mut worker)
+                .await
+                .is_err()
+        {
+            worker.abort();
+            let _ = worker.await;
+        }
+    }
+}
+
+fn workspace_lock_error() -> WorkspaceCommandError {
+    WorkspaceCommandError {
+        code: workspace_service::WorkspaceErrorCode::IoError,
+        message: "Falha ao acessar o estado interno do workspace.".into(),
+        details: None,
+        remediation: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_directory_lock_is_exclusive_and_recoverable() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path());
+        let first = DataDirectoryLock::acquire(&paths).unwrap();
+        assert!(matches!(
+            DataDirectoryLock::acquire(&paths),
+            Err(AppCoreError::DataDirectoryInUse)
+        ));
+        drop(first);
+        DataDirectoryLock::acquire(&paths).unwrap();
+    }
+
+    #[test]
+    fn app_paths_preserve_existing_database_name() {
+        let paths = AppPaths::from_data_dir("C:/data/com.hardvibecode.desktop");
+        assert!(paths.database_path().ends_with(DATABASE_NAME));
+    }
+
+    #[test]
+    fn app_core_shutdown_cancels_and_joins_background_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let core = AppCore::initialize(
+            AppPaths::from_data_dir(temp.path()),
+            runtime.handle().clone(),
+        )
+        .unwrap();
+
+        runtime.block_on(core.shutdown());
+
+        assert!(core.is_shutting_down());
+        assert!(
+            core.worker_task
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none()
+        );
+        drop(core);
+        runtime.shutdown_timeout(Duration::from_secs(1));
+    }
+}

@@ -9,9 +9,9 @@ use crate::embedding_service::EmbeddingGateway;
 use crate::workspace_service::{self, GetContextCandidatesRequest, VaultIndexCache};
 use chrono::Utc;
 use jsonschema::validator_for;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -508,15 +508,12 @@ async fn tool_search_and_read_context(
     if config.context_strategy == ContextStrategy::YamlGraphRag
         && config.embedding_enabled
         && config.embedding_provider == EmbeddingProvider::Ollama
-    {
-        if let Ok(reranked) =
+        && let Ok(reranked) =
             rerank_candidates_with_rag(embedding_gateway, input, config, &candidates).await
-        {
-            if !reranked.is_empty() {
-                candidates = reranked;
-                strategy_used = ContextStrategy::YamlGraphRag.as_str().to_string();
-            }
-        }
+        && !reranked.is_empty()
+    {
+        candidates = reranked;
+        strategy_used = ContextStrategy::YamlGraphRag.as_str().to_string();
     }
 
     candidates.truncate(config.max_context_files.clamp(1, 12));
@@ -651,13 +648,13 @@ fn build_textual_candidates_for_context(
             }
         }
 
-        if score == 0 {
-            if let Ok(content) = fs::read_to_string(path) {
-                let lowered_content = content.to_ascii_lowercase();
-                for term in &terms {
-                    if lowered_content.contains(term) {
-                        score += 1;
-                    }
+        if score == 0
+            && let Ok(content) = fs::read_to_string(path)
+        {
+            let lowered_content = content.to_ascii_lowercase();
+            for term in &terms {
+                if lowered_content.contains(term) {
+                    score += 1;
                 }
             }
         }
@@ -896,12 +893,12 @@ fn parse_structured_output(raw_output: &str) -> Result<Value, AgentRuntimeError>
 
     let start = trimmed.find('{');
     let end = trimmed.rfind('}');
-    if let (Some(start), Some(end)) = (start, end) {
-        if end > start {
-            let slice = &trimmed[start..=end];
-            if let Ok(value) = serde_json::from_str::<Value>(slice) {
-                return Ok(value);
-            }
+    if let (Some(start), Some(end)) = (start, end)
+        && end > start
+    {
+        let slice = &trimmed[start..=end];
+        if let Ok(value) = serde_json::from_str::<Value>(slice) {
+            return Ok(value);
         }
     }
 

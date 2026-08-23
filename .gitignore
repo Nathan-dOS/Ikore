@@ -8,6 +8,7 @@ npm-debug.log*
 Thumbs.db
 
 # Rust / Tauri
+target/
 src-tauri/target/
 
 # Environment

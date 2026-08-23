@@ -1,21 +1,23 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Os handlers preservam DTOs de erro por valor enquanto o contrato IPC legado estiver ativo.
+#![allow(clippy::result_large_err)]
 
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use hard_vibe_code::{chat_service, llm::TauriEventSink, persistence_service, workspace_service};
+use hvc_core::{AppPaths, DataDirectoryLock, chat_service, persistence_service, workspace_service};
 
 use chat_service::{
-    CancelChatTurnRequest, CancelChatTurnResponse, ChatCommandError, ChatService,
-    CreateChatConversationRequest, CreateChatConversationResponse, DeleteChatConversationRequest,
-    DeleteChatConversationResponse, GetChatConversationRequest, GetChatConversationResponse,
-    GetChatTurnSnapshotRequest, GetChatTurnSnapshotResponse, ListChatConversationsRequest,
-    ListChatConversationsResponse, SendChatMessageRequest, SendChatMessageResponse,
-    TauriChatEventSink,
+    CancelChatTurnRequest, CancelChatTurnResponse, ChatCommandError, ChatEventEnvelope,
+    ChatEventSink, ChatService, CreateChatConversationRequest, CreateChatConversationResponse,
+    DeleteChatConversationRequest, DeleteChatConversationResponse, GetChatConversationRequest,
+    GetChatConversationResponse, GetChatTurnSnapshotRequest, GetChatTurnSnapshotResponse,
+    ListChatConversationsRequest, ListChatConversationsResponse, SendChatMessageRequest,
+    SendChatMessageResponse,
 };
 
-use hard_vibe_code::llm::{
+use hvc_core::llm::{
     CompressionPreviewRequest, DeleteProviderConnectionRequest, DeleteProviderRouteRequest,
     ResetLlmResilienceStateRequest, TestProviderConnectionRequest, TestProviderConnectionResponse,
     UpsertProviderConnectionRequest, UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
@@ -43,7 +45,7 @@ use persistence_service::{
     UpdateAgentRuntimeConfigResponse, UpsertProviderConnectionResponse,
     UpsertProviderRouteBindingResponse, UpsertProviderRouteResponse,
 };
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use workspace_service::{
     BootstrapGreenfieldWorkspaceRequest, BootstrapGreenfieldWorkspaceResponse,
     GetContextCandidatesRequest, GetContextCandidatesResponse, GetWorkspaceVaultIndexRequest,
@@ -54,7 +56,43 @@ use workspace_service::{
     WorkspaceWatcher, WriteWorkspaceFileAtomicRequest, WriteWorkspaceFileAtomicResponse,
 };
 
+#[derive(Clone)]
+struct TauriLlmEventSink {
+    app_handle: tauri::AppHandle,
+}
+
+impl hvc_core::llm::LlmEventSink for TauriLlmEventSink {
+    fn emit(&self, envelope: &hvc_core::llm::LlmEventEnvelope) {
+        let _ = self.app_handle.emit(envelope.event.event_name(), envelope);
+    }
+}
+
+#[derive(Clone)]
+struct TauriChatEventSink {
+    app_handle: tauri::AppHandle,
+}
+
+impl ChatEventSink for TauriChatEventSink {
+    fn emit(&self, envelope: &ChatEventEnvelope) {
+        let _ = self.app_handle.emit(envelope.event_name(), envelope);
+    }
+}
+
+#[derive(Clone)]
+struct TauriWorkspaceEventSink {
+    app_handle: tauri::AppHandle,
+}
+
+impl workspace_service::WorkspaceEventSink for TauriWorkspaceEventSink {
+    fn emit(&self, event: workspace_service::WorkspaceChangedEvent) {
+        let _ = self
+            .app_handle
+            .emit(workspace_service::WORKSPACE_CHANGED_EVENT, event);
+    }
+}
+
 struct AppState {
+    _data_lock: DataDirectoryLock,
     workspace: Mutex<WorkspaceContext>,
     persistence: PersistenceService,
     chat: Arc<ChatService>,
@@ -68,8 +106,13 @@ struct WorkspaceContext {
 }
 
 impl AppState {
-    fn new(persistence: PersistenceService, chat: Arc<ChatService>) -> Self {
+    fn new(
+        data_lock: DataDirectoryLock,
+        persistence: PersistenceService,
+        chat: Arc<ChatService>,
+    ) -> Self {
         Self {
+            _data_lock: data_lock,
             workspace: Mutex::new(WorkspaceContext::default()),
             persistence,
             chat,
@@ -90,8 +133,11 @@ fn open_workspace(
     let tree = workspace_service::build_workspace_tree(&root_path)
         .map_err(WorkspaceCommandError::from)?
         .tree;
-    let watcher = WorkspaceWatcher::start(root_path.clone(), app_handle)
-        .map_err(WorkspaceCommandError::from)?;
+    let watcher = WorkspaceWatcher::start(
+        root_path.clone(),
+        Arc::new(TauriWorkspaceEventSink { app_handle }),
+    )
+    .map_err(WorkspaceCommandError::from)?;
 
     let mut workspace = state.workspace.lock().map_err(|_| WorkspaceCommandError {
         code: workspace_service::WorkspaceErrorCode::IoError,
@@ -689,7 +735,12 @@ fn main() {
             let app_data_dir = app.path().app_data_dir().map_err(|error| {
                 io::Error::other(format!("Não foi possível resolver AppData: {error}"))
             })?;
-            let event_sink = Arc::new(TauriEventSink::new(app.handle().clone()));
+            let app_paths = AppPaths::from_data_dir(&app_data_dir);
+            let data_lock = DataDirectoryLock::acquire(&app_paths)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            let event_sink = Arc::new(TauriLlmEventSink {
+                app_handle: app.handle().clone(),
+            });
             let persistence =
                 PersistenceService::initialize_with_event_sink(&app_data_dir, event_sink).map_err(
                     |error| io::Error::other(PersistenceCommandError::from(error).message),
@@ -697,7 +748,9 @@ fn main() {
             persistence.recover_interrupted_jobs().map_err(|error| {
                 io::Error::other(PersistenceCommandError::from(error).message.clone())
             })?;
-            let chat_event_sink = Arc::new(TauriChatEventSink::new(app.handle().clone()));
+            let chat_event_sink = Arc::new(TauriChatEventSink {
+                app_handle: app.handle().clone(),
+            });
             let chat = Arc::new(ChatService::with_keyring(
                 persistence.database_path(),
                 chat_event_sink,
@@ -708,7 +761,7 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 worker_persistence.run_job_worker_loop().await;
             });
-            app.manage(AppState::new(persistence, chat));
+            app.manage(AppState::new(data_lock, persistence, chat));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

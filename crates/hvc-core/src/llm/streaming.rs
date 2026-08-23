@@ -362,10 +362,12 @@ mod tests {
     #[test]
     fn parses_fragmented_responses_sse() {
         let mut parser = SseParser::new(ProviderProtocol::OpenaiResponses);
-        assert!(parser
-            .push(b"event: response.output_text.delta\nda")
-            .unwrap()
-            .is_empty());
+        assert!(
+            parser
+                .push(b"event: response.output_text.delta\nda")
+                .unwrap()
+                .is_empty()
+        );
         let events = parser.push(b"ta: {\"delta\":\"ola\"}\n\n").unwrap();
         assert_eq!(events, vec![ParsedStreamEvent::Delta("ola".to_string())]);
     }
@@ -376,11 +378,16 @@ mod tests {
         let started = parser
             .push(b"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"read_repository_file\"}}\n\n")
             .unwrap();
-        assert!(matches!(started[0], ParsedStreamEvent::ToolCallStarted { index: 1, .. }));
-        assert!(parser
-            .push(b"event: response.function_call_arguments.delta\nda")
-            .unwrap()
-            .is_empty());
+        assert!(matches!(
+            started[0],
+            ParsedStreamEvent::ToolCallStarted { index: 1, .. }
+        ));
+        assert!(
+            parser
+                .push(b"event: response.function_call_arguments.delta\nda")
+                .unwrap()
+                .is_empty()
+        );
         let arguments = parser
             .push(b"ta: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{\\\"path\\\":\\\"src/lib.rs\\\"}\"}\n\n")
             .unwrap();
