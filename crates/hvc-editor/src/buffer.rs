@@ -104,6 +104,14 @@ impl EditorBuffer {
         &self.revision
     }
 
+    pub fn line_count(&self) -> usize {
+        self.rope.len_lines()
+    }
+
+    pub fn scroll_top(&self) -> f32 {
+        self.scroll_top
+    }
+
     pub fn selection(&self) -> EditorSelection {
         self.selection
     }
@@ -142,6 +150,87 @@ impl EditorBuffer {
         self.position_to_char(selection.head)?;
         self.selection = selection;
         Ok(())
+    }
+
+    pub fn move_left(&mut self, extend_selection: bool) {
+        let target = if !extend_selection && !self.selection.is_empty() {
+            self.selection.ordered().0
+        } else if self.selection.head.column > 0 {
+            TextPosition {
+                line: self.selection.head.line,
+                column: self.selection.head.column - 1,
+            }
+        } else if self.selection.head.line > 0 {
+            let line = self.selection.head.line - 1;
+            TextPosition {
+                line,
+                column: self.line_content_len(line),
+            }
+        } else {
+            self.selection.head
+        };
+        self.move_head(target, extend_selection);
+    }
+
+    pub fn move_right(&mut self, extend_selection: bool) {
+        let target = if !extend_selection && !self.selection.is_empty() {
+            self.selection.ordered().1
+        } else {
+            let line_length = self.line_content_len(self.selection.head.line);
+            if self.selection.head.column < line_length {
+                TextPosition {
+                    line: self.selection.head.line,
+                    column: self.selection.head.column + 1,
+                }
+            } else if self.selection.head.line + 1 < self.rope.len_lines() {
+                TextPosition {
+                    line: self.selection.head.line + 1,
+                    column: 0,
+                }
+            } else {
+                self.selection.head
+            }
+        };
+        self.move_head(target, extend_selection);
+    }
+
+    pub fn move_up(&mut self, extend_selection: bool) {
+        let line = self.selection.head.line.saturating_sub(1);
+        let target = TextPosition {
+            line,
+            column: self.selection.head.column.min(self.line_content_len(line)),
+        };
+        self.move_head(target, extend_selection);
+    }
+
+    pub fn move_down(&mut self, extend_selection: bool) {
+        let line = (self.selection.head.line + 1).min(self.rope.len_lines().saturating_sub(1));
+        let target = TextPosition {
+            line,
+            column: self.selection.head.column.min(self.line_content_len(line)),
+        };
+        self.move_head(target, extend_selection);
+    }
+
+    pub fn move_to_line_start(&mut self, extend_selection: bool) {
+        self.move_head(
+            TextPosition {
+                line: self.selection.head.line,
+                column: 0,
+            },
+            extend_selection,
+        );
+    }
+
+    pub fn move_to_line_end(&mut self, extend_selection: bool) {
+        let line = self.selection.head.line;
+        self.move_head(
+            TextPosition {
+                line,
+                column: self.line_content_len(line),
+            },
+            extend_selection,
+        );
     }
 
     pub fn set_scroll_top(&mut self, scroll_top: f32) {
@@ -223,6 +312,11 @@ impl EditorBuffer {
         self.dirty = false;
     }
 
+    pub fn acknowledge_save(&mut self, revision: impl Into<String>, still_dirty: bool) {
+        self.revision = revision.into();
+        self.dirty = still_dirty;
+    }
+
     pub fn reload(&mut self, text: impl AsRef<str>, revision: impl Into<String>) {
         self.rope = Rope::from_str(text.as_ref());
         self.revision = revision.into();
@@ -291,6 +385,25 @@ impl EditorBuffer {
             return Err(EditorError::PositionOutOfBounds);
         }
         Ok(line_start + position.column)
+    }
+
+    fn line_content_len(&self, line: usize) -> usize {
+        self.rope
+            .line(line.min(self.rope.len_lines().saturating_sub(1)))
+            .chars()
+            .take_while(|character| *character != '\n' && *character != '\r')
+            .count()
+    }
+
+    fn move_head(&mut self, target: TextPosition, extend_selection: bool) {
+        self.selection = if extend_selection {
+            EditorSelection {
+                anchor: self.selection.anchor,
+                head: target,
+            }
+        } else {
+            EditorSelection::caret(target)
+        };
     }
 
     fn char_to_position(&self, char_index: usize) -> TextPosition {
@@ -377,6 +490,41 @@ mod tests {
         buffer.reload("server", "r3");
         assert_eq!(buffer.text(), "server");
         assert!(!buffer.is_dirty());
+    }
+
+    #[test]
+    fn acknowledges_an_older_save_without_losing_newer_dirty_state() {
+        let mut buffer = EditorBuffer::new("draft", "r1");
+        buffer.insert("!").unwrap();
+        buffer.acknowledge_save("r2", true);
+        assert_eq!(buffer.revision(), "r2");
+        assert!(buffer.is_dirty());
+    }
+
+    #[test]
+    fn navigates_unicode_lines_and_extends_a_simple_selection() {
+        let mut buffer = EditorBuffer::new("Olá 👋\ncurta", "r1");
+        buffer
+            .set_selection(EditorSelection::caret(TextPosition { line: 0, column: 5 }))
+            .unwrap();
+        buffer.move_right(false);
+        assert_eq!(buffer.selection().head, TextPosition { line: 1, column: 0 });
+        buffer.move_down(false);
+        assert_eq!(buffer.selection().head, TextPosition { line: 1, column: 0 });
+        buffer.move_to_line_end(false);
+        buffer.move_left(true);
+        buffer.move_left(true);
+        assert_eq!(
+            buffer.selection(),
+            EditorSelection {
+                anchor: TextPosition { line: 1, column: 5 },
+                head: TextPosition { line: 1, column: 3 },
+            }
+        );
+        buffer.move_up(false);
+        assert_eq!(buffer.selection().head, TextPosition { line: 0, column: 3 });
+        buffer.move_to_line_start(false);
+        assert_eq!(buffer.selection().head, TextPosition { line: 0, column: 0 });
     }
 
     #[test]

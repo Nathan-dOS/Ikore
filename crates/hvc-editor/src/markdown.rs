@@ -53,6 +53,9 @@ pub fn parse_markdown(source: &str) -> Vec<MarkdownBlock> {
                 });
             }
             Event::Text(text) | Event::Code(text) => current.push_str(&text),
+            Event::TaskListMarker(checked) => {
+                current.push_str(if checked { "[x] " } else { "[ ] " });
+            }
             Event::SoftBreak | Event::HardBreak => current.push('\n'),
             Event::Rule => blocks.push(MarkdownBlock::Rule),
             Event::Html(_) | Event::InlineHtml(_) => {}
@@ -69,6 +72,22 @@ pub fn parse_markdown(source: &str) -> Vec<MarkdownBlock> {
         }
     }
     blocks
+}
+
+pub fn sanitize_link_destination(destination: &str) -> Option<String> {
+    let destination = destination.trim();
+    if destination.is_empty() || destination.chars().any(|character| character.is_control()) {
+        return None;
+    }
+    let normalized = destination.to_ascii_lowercase();
+    let scheme = normalized
+        .find(':')
+        .map(|separator| &normalized[..separator]);
+    match scheme {
+        None => Some(destination.to_owned()),
+        Some("http" | "https" | "mailto") => Some(destination.to_owned()),
+        Some(_) => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -135,5 +154,38 @@ mod tests {
             MarkdownBlock::CodeBlock { language: Some(language), code }
                 if language == "rust" && code.contains("fn main")
         )));
+
+        let tasks = parse_markdown("- [x] concluído\n- [ ] pendente");
+        assert!(tasks.iter().any(
+            |block| matches!(block, MarkdownBlock::ListItem(text) if text == "[x] concluído")
+        ));
+    }
+
+    #[test]
+    fn rejects_unsafe_link_protocols() {
+        assert_eq!(sanitize_link_destination("javascript:alert(1)"), None);
+        assert_eq!(
+            sanitize_link_destination("data:text/html;base64,eA=="),
+            None
+        );
+        assert_eq!(
+            sanitize_link_destination("https://example.com"),
+            Some("https://example.com".into())
+        );
+        assert_eq!(
+            sanitize_link_destination("notes/roadmap.md#stage-2"),
+            Some("notes/roadmap.md#stage-2".into())
+        );
+    }
+
+    #[test]
+    fn sanitizes_executable_markup_and_urls() {
+        let blocks =
+            parse_markdown("# Safe\n<script>alert(1)</script>\n[bad](javascript:alert(1))");
+        let rendered = format!("{blocks:?}");
+        assert!(rendered.contains("Safe"));
+        assert!(!rendered.contains("<script"));
+        assert!(!rendered.contains("javascript:"));
+        assert!(sanitize_link_destination("javascript:alert(1)").is_none());
     }
 }

@@ -1,20 +1,41 @@
 use std::ops::Range;
-use std::time::Duration;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, Element, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, InspectorElementId, KeyBinding,
-    LayoutId, MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, ShapedLine, Style, TextRun,
-    Timer, UTF16Selection, Window, actions, div, fill, point, prelude::*, px, relative, rgba, size,
+    LayoutId, MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine,
+    Style, TextRun, UTF16Selection, Window, actions, div, fill, point, prelude::*, px, relative,
+    rgba, size,
 };
 use hvc_editor::EditorBuffer;
-use hvc_editor::{EditorError, EditorSnapshot};
+use hvc_editor::{EditorError, EditorSnapshot, MarkdownSyntax, MarkdownSyntaxSnapshot};
 
 use crate::theme;
 
 actions!(
     native_editor,
-    [Backspace, Delete, Undo, Redo, SelectAll, Copy, Cut, Paste]
+    [
+        Backspace,
+        Delete,
+        Undo,
+        Redo,
+        SelectAll,
+        Copy,
+        Cut,
+        Paste,
+        MoveLeft,
+        MoveRight,
+        MoveUp,
+        MoveDown,
+        SelectLeft,
+        SelectRight,
+        SelectUp,
+        SelectDown,
+        LineStart,
+        LineEnd,
+        SelectLineStart,
+        SelectLineEnd
+    ]
 );
 
 pub fn register_editor_keybindings(cx: &mut App) {
@@ -27,6 +48,18 @@ pub fn register_editor_keybindings(cx: &mut App) {
         KeyBinding::new("ctrl-c", Copy, Some("NativeEditor")),
         KeyBinding::new("ctrl-x", Cut, Some("NativeEditor")),
         KeyBinding::new("ctrl-v", Paste, Some("NativeEditor")),
+        KeyBinding::new("left", MoveLeft, Some("NativeEditor")),
+        KeyBinding::new("right", MoveRight, Some("NativeEditor")),
+        KeyBinding::new("up", MoveUp, Some("NativeEditor")),
+        KeyBinding::new("down", MoveDown, Some("NativeEditor")),
+        KeyBinding::new("shift-left", SelectLeft, Some("NativeEditor")),
+        KeyBinding::new("shift-right", SelectRight, Some("NativeEditor")),
+        KeyBinding::new("shift-up", SelectUp, Some("NativeEditor")),
+        KeyBinding::new("shift-down", SelectDown, Some("NativeEditor")),
+        KeyBinding::new("home", LineStart, Some("NativeEditor")),
+        KeyBinding::new("end", LineEnd, Some("NativeEditor")),
+        KeyBinding::new("shift-home", SelectLineStart, Some("NativeEditor")),
+        KeyBinding::new("shift-end", SelectLineEnd, Some("NativeEditor")),
     ]);
 }
 
@@ -36,7 +69,7 @@ pub struct NativeEditor {
     marked_range: Option<Range<usize>>,
     last_bounds: Option<Bounds<Pixels>>,
     autosave_generation: u64,
-    pub autosave_ready: bool,
+    syntax: Option<MarkdownSyntax>,
 }
 
 impl NativeEditor {
@@ -47,7 +80,7 @@ impl NativeEditor {
             marked_range: None,
             last_bounds: None,
             autosave_generation: 0,
-            autosave_ready: false,
+            syntax: None,
         }
     }
 
@@ -58,12 +91,35 @@ impl NativeEditor {
         self.buffer.restore_snapshot(snapshot)?;
         self.marked_range = None;
         self.autosave_generation = 0;
-        self.autosave_ready = false;
         Ok(())
+    }
+
+    pub fn restore_workspace_snapshot(
+        &mut self,
+        relative_path: &str,
+        snapshot: EditorSnapshot,
+    ) -> Result<(), EditorError> {
+        self.restore_session_snapshot(snapshot)?;
+        self.syntax = if relative_path.to_ascii_lowercase().ends_with(".md") {
+            MarkdownSyntax::new(self.buffer.text()).ok()
+        } else {
+            None
+        };
+        Ok(())
+    }
+
+    pub fn syntax_snapshot(&self) -> Option<MarkdownSyntaxSnapshot> {
+        self.syntax.as_ref().and_then(MarkdownSyntax::snapshot)
     }
 
     pub fn edit_generation(&self) -> u64 {
         self.autosave_generation
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.buffer.insert(text).unwrap();
+        self.after_edit(cx);
     }
 
     fn backspace(&mut self, _: &Backspace, _: &mut Window, cx: &mut Context<Self>) {
@@ -117,8 +173,132 @@ impl NativeEditor {
         }
     }
 
-    fn mouse_down(&mut self, _: &MouseDownEvent, window: &mut Window, _cx: &mut Context<Self>) {
+    fn move_left(&mut self, _: &MoveLeft, window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.move_left(false);
+        self.after_cursor_move(window, cx);
+    }
+
+    fn move_right(&mut self, _: &MoveRight, window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.move_right(false);
+        self.after_cursor_move(window, cx);
+    }
+
+    fn move_up(&mut self, _: &MoveUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.move_up(false);
+        self.after_cursor_move(window, cx);
+    }
+
+    fn move_down(&mut self, _: &MoveDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.move_down(false);
+        self.after_cursor_move(window, cx);
+    }
+
+    fn select_left(&mut self, _: &SelectLeft, window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.move_left(true);
+        self.after_cursor_move(window, cx);
+    }
+
+    fn select_right(&mut self, _: &SelectRight, window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.move_right(true);
+        self.after_cursor_move(window, cx);
+    }
+
+    fn select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.move_up(true);
+        self.after_cursor_move(window, cx);
+    }
+
+    fn select_down(&mut self, _: &SelectDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.move_down(true);
+        self.after_cursor_move(window, cx);
+    }
+
+    fn line_start(&mut self, _: &LineStart, window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.move_to_line_start(false);
+        self.after_cursor_move(window, cx);
+    }
+
+    fn line_end(&mut self, _: &LineEnd, window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.move_to_line_end(false);
+        self.after_cursor_move(window, cx);
+    }
+
+    fn select_line_start(
+        &mut self,
+        _: &SelectLineStart,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.buffer.move_to_line_start(true);
+        self.after_cursor_move(window, cx);
+    }
+
+    fn select_line_end(&mut self, _: &SelectLineEnd, window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.move_to_line_end(true);
+        self.after_cursor_move(window, cx);
+    }
+
+    fn after_cursor_move(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let line_height = f32::from(window.line_height()).max(1.0);
+        let viewport_height = self
+            .last_bounds
+            .map(|bounds| f32::from(bounds.size.height))
+            .unwrap_or(line_height);
+        let cursor_top = self.buffer.selection().head.line as f32 * line_height;
+        let scroll_top = self.buffer.scroll_top();
+        if cursor_top < scroll_top {
+            self.buffer.set_scroll_top(cursor_top);
+        } else if cursor_top + line_height > scroll_top + viewport_height {
+            self.buffer
+                .set_scroll_top(cursor_top + line_height - viewport_height);
+        }
+        cx.notify();
+    }
+
+    fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window);
+        if let Some(bounds) = self.last_bounds {
+            let line_height = f32::from(window.line_height()).max(1.0);
+            let snapshot = self.buffer.snapshot();
+            let line = ((snapshot.scroll_top + f32::from(event.position.y - bounds.top()))
+                / line_height)
+                .floor()
+                .max(0.0) as usize;
+            let line = line.min(snapshot.text.lines().count().saturating_sub(1));
+            let text = snapshot.text.lines().nth(line).unwrap_or_default();
+            let approximate_character_width = f32::from(window.rem_size()) * 0.52;
+            let column = (f32::from(event.position.x - bounds.left())
+                / approximate_character_width.max(1.0))
+            .round()
+            .max(0.0) as usize;
+            let column = column.min(text.chars().count());
+            let _ = self
+                .buffer
+                .set_selection(hvc_editor::EditorSelection::caret(
+                    hvc_editor::TextPosition { line, column },
+                ));
+        }
+        cx.notify();
+    }
+
+    fn scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let delta = event.delta.pixel_delta(window.line_height());
+        let viewport_height = self
+            .last_bounds
+            .map(|bounds| f32::from(bounds.size.height))
+            .unwrap_or_default();
+        let document_height = self.buffer.line_count() as f32 * f32::from(window.line_height());
+        let maximum = (document_height - viewport_height).max(0.0);
+        let next = (self.buffer.scroll_top() - f32::from(delta.y)).clamp(0.0, maximum);
+        if (next - self.buffer.scroll_top()).abs() > f32::EPSILON {
+            self.buffer.set_scroll_top(next);
+            cx.notify();
+        }
     }
 
     fn selection_utf16(&self) -> Range<usize> {
@@ -137,19 +317,10 @@ impl NativeEditor {
 
     fn after_edit(&mut self, cx: &mut Context<Self>) {
         self.marked_range = None;
-        self.autosave_ready = false;
         self.autosave_generation = self.autosave_generation.saturating_add(1);
-        let generation = self.autosave_generation;
-        cx.spawn(async move |this, cx| {
-            Timer::after(Duration::from_secs(1)).await;
-            let _ = this.update(cx, |editor, cx| {
-                if editor.autosave_generation == generation && editor.buffer.is_dirty() {
-                    editor.autosave_ready = true;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.update(self.buffer.text());
+        }
         cx.notify();
     }
 }
@@ -269,7 +440,20 @@ impl Render for NativeEditor {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::move_left))
+            .on_action(cx.listener(Self::move_right))
+            .on_action(cx.listener(Self::move_up))
+            .on_action(cx.listener(Self::move_down))
+            .on_action(cx.listener(Self::select_left))
+            .on_action(cx.listener(Self::select_right))
+            .on_action(cx.listener(Self::select_up))
+            .on_action(cx.listener(Self::select_down))
+            .on_action(cx.listener(Self::line_start))
+            .on_action(cx.listener(Self::line_end))
+            .on_action(cx.listener(Self::select_line_start))
+            .on_action(cx.listener(Self::select_line_end))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+            .on_scroll_wheel(cx.listener(Self::scroll_wheel))
             .child(EditorElement {
                 editor: cx.entity(),
             })
@@ -283,7 +467,7 @@ struct EditorElement {
 struct EditorPaintState {
     lines: Vec<(ShapedLine, Pixels)>,
     cursor: Option<PaintQuad>,
-    selection: Option<PaintQuad>,
+    selections: Vec<PaintQuad>,
 }
 
 impl IntoElement for EditorElement {
@@ -384,36 +568,45 @@ impl Element for EditorElement {
         };
 
         let (selection_start, selection_end) = snapshot.selection.ordered();
-        let selection = if selection_start.line == selection_end.line
-            && selection_start != selection_end
-            && selection_start.line >= visible_start
-            && selection_start.line < visible_start + visible_count
-        {
-            let line_index = selection_start.line - visible_start;
-            lines.get(line_index).map(|(line, _)| {
-                let left =
-                    line.x_for_index(byte_offset_for_column(&line.text, selection_start.column));
-                let right =
-                    line.x_for_index(byte_offset_for_column(&line.text, selection_end.column));
-                fill(
+        let mut selections = Vec::new();
+        if selection_start != selection_end {
+            for line_number in selection_start.line..=selection_end.line {
+                if line_number < visible_start || line_number >= visible_start + visible_count {
+                    continue;
+                }
+                let line_index = line_number - visible_start;
+                let Some((line, _)) = lines.get(line_index) else {
+                    continue;
+                };
+                let start_column = if line_number == selection_start.line {
+                    selection_start.column
+                } else {
+                    0
+                };
+                let end_column = if line_number == selection_end.line {
+                    selection_end.column
+                } else {
+                    line.text.chars().count()
+                };
+                let left = line.x_for_index(byte_offset_for_column(&line.text, start_column));
+                let right = line.x_for_index(byte_offset_for_column(&line.text, end_column));
+                selections.push(fill(
                     Bounds::new(
                         point(
                             bounds.left() + left,
                             bounds.top() + line_height * line_index,
                         ),
-                        size(right - left, line_height),
+                        size((right - left).max(px(2.0)), line_height),
                     ),
                     rgba(0x54d6a244),
-                )
-            })
-        } else {
-            None
-        };
+                ));
+            }
+        }
 
         EditorPaintState {
             lines,
             cursor,
-            selection,
+            selections,
         }
     }
 
@@ -433,7 +626,7 @@ impl Element for EditorElement {
             ElementInputHandler::new(bounds, self.editor.clone()),
             cx,
         );
-        if let Some(selection) = state.selection.take() {
+        for selection in state.selections.drain(..) {
             window.paint_quad(selection);
         }
         for (line, y) in state.lines.drain(..) {
@@ -469,11 +662,69 @@ mod tests {
     use super::*;
 
     #[gpui::test]
-    fn native_editor_owns_a_rope_buffer_and_autosave_state(cx: &mut TestAppContext) {
+    fn native_editor_owns_a_rope_buffer_and_edit_generation(cx: &mut TestAppContext) {
         let editor = cx.new(NativeEditor::new);
         cx.read(|cx| {
             assert_eq!(editor.read(cx).buffer.text(), "");
-            assert!(!editor.read(cx).autosave_ready);
+            assert_eq!(editor.read(cx).edit_generation(), 0);
         });
+    }
+
+    #[gpui::test]
+    fn incrementally_tracks_markdown_but_keeps_text_files_plain(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| NativeEditor::new(cx));
+        window
+            .update(cx, |editor, window, cx| {
+                editor
+                    .restore_workspace_snapshot(
+                        "notes/one.md",
+                        EditorSnapshot {
+                            text: "# Título\n\nTexto".into(),
+                            revision: "r1".into(),
+                            selection: Default::default(),
+                            scroll_top: 0.0,
+                            dirty: false,
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(editor.syntax_snapshot().unwrap().root_kind, "document");
+                editor.insert_text(" novo", cx);
+                assert!(!editor.syntax_snapshot().unwrap().has_error);
+
+                editor
+                    .restore_workspace_snapshot(
+                        "notes/one.txt",
+                        EditorSnapshot {
+                            text: String::new(),
+                            revision: "r2".into(),
+                            selection: Default::default(),
+                            scroll_top: 0.0,
+                            dirty: false,
+                        },
+                    )
+                    .unwrap();
+                assert!(editor.syntax_snapshot().is_none());
+
+                editor.replace_and_mark_text_in_range(None, "cafe", Some(4..4), window, cx);
+                assert_eq!(editor.marked_text_range(window, cx), Some(0..4));
+                editor.replace_text_in_range(None, "café", window, cx);
+                assert_eq!(editor.buffer.text(), "café");
+                editor.buffer.set_selection_utf16(0, 4).unwrap();
+                editor.copy(&Copy, window, cx);
+            })
+            .unwrap();
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("café".into())
+        );
+
+        cx.write_to_clipboard(ClipboardItem::new_string(" 👋".into()));
+        window
+            .update(cx, |editor, window, cx| {
+                editor.buffer.set_selection_utf16(4, 4).unwrap();
+                editor.paste(&Paste, window, cx);
+                assert_eq!(editor.buffer.text(), "café 👋");
+            })
+            .unwrap();
     }
 }

@@ -168,16 +168,16 @@
       "area": "workspace_editor",
       "source": "src/components/editor/HitlActionBar.test.tsx::supports workspace review shortcuts while ignoring typing targets",
       "target": "hvc_ui::hitl::tests::handles_review_shortcuts_outside_typing_targets",
-      "status": "pending",
-      "rationale": "Atalhos HITL ainda não foram registrados no GPUI."
+      "status": "covered",
+      "rationale": "Enter e R são registrados no contexto GPUI HitlReview, separado do EntityInputHandler do editor."
     },
     {
       "id": "workspace-002",
       "area": "workspace_editor",
       "source": "src/components/editor/HitlActionBar.test.tsx::disables actions and shortcuts while a decision is pending",
       "target": "hvc_ui::hitl::tests::disables_decisions_while_request_is_pending",
-      "status": "pending",
-      "rationale": "A entidade HITL funcional será implementada na Etapa 3."
+      "status": "covered",
+      "rationale": "HitlReviewState bloqueia botões e atalhos enquanto a decisão persistida está em andamento."
     },
     {
       "id": "workspace-003",
@@ -200,48 +200,48 @@
       "area": "workspace_editor",
       "source": "src/markdown/renderMarkdown.test.ts::removes unsafe URL protocols",
       "target": "hvc_editor::markdown::tests::rejects_unsafe_link_protocols",
-      "status": "pending",
-      "rationale": "A política explícita de protocolos ainda precisa ser implementada e testada."
+      "status": "covered",
+      "rationale": "O renderer ignora HTML bruto e sanitize_link_destination aceita somente destinos relativos, HTTP(S) e mailto."
     },
     {
       "id": "workspace-006",
       "area": "workspace_editor",
       "source": "src/state/editorStore.test.ts::opens a tab once and makes it active",
       "target": "hvc_ui::workspace::tests::opens_each_tab_once_and_activates_it",
-      "status": "pending",
-      "rationale": "O modelo GPUI ainda representa somente a contagem de abas."
+      "status": "covered",
+      "rationale": "WorkspaceEditorModel abre cada caminho uma vez, mantém todas as abas e ativa a solicitada."
     },
     {
       "id": "workspace-007",
       "area": "workspace_editor",
       "source": "src/state/editorStore.test.ts::tracks dirty state relative to the saved base content",
-      "target": "hvc_editor::buffer::tests::tracks_dirty_state_against_saved_revision",
-      "status": "partial",
-      "rationale": "EditorBuffer cobre dirty/save, mas a integração por aba ainda não."
+      "target": "hvc_editor::buffer::tests::acknowledges_an_older_save_without_losing_newer_dirty_state",
+      "status": "covered",
+      "rationale": "O Rope e o modelo por aba comparam o conteúdo atual com a base efetivamente persistida, inclusive durante saves concorrentes."
     },
     {
       "id": "workspace-008",
       "area": "workspace_editor",
       "source": "src/state/editorStore.test.ts::clears transient state after a successful save",
       "target": "hvc_ui::workspace::tests::clears_saving_conflict_and_error_after_save",
-      "status": "pending",
-      "rationale": "Autosave persistido e estado transitório por aba ainda não estão ligados."
+      "status": "covered",
+      "rationale": "O autosave GPUI usa debounce determinístico de 1 s, escrita atômica no core e limpa saving, conflict e erro no sucesso."
     },
     {
       "id": "workspace-009",
       "area": "workspace_editor",
       "source": "src/state/editorStore.test.ts::activates the last remaining tab when the current tab closes",
       "target": "hvc_ui::workspace::tests::activates_last_remaining_tab_after_close",
-      "status": "pending",
-      "rationale": "Fechamento e fallback de aba aguardam a Etapa 2."
+      "status": "covered",
+      "rationale": "Fechar a aba ativa seleciona a última aba restante e restaura seu cursor, scroll e buffer."
     },
     {
       "id": "workspace-010",
       "area": "workspace_editor",
       "source": "src/components/SanitizedMarkdown.test.tsx::removes executable markup and unsafe URLs before DOM insertion",
       "target": "hvc_editor::markdown::tests::sanitizes_executable_markup_and_urls",
-      "status": "partial",
-      "rationale": "HTML é ignorado, porém a política de URLs ainda está pendente."
+      "status": "covered",
+      "rationale": "O preview nativo ignora markup executável e rejeita protocolos de URL não permitidos antes de qualquer renderização."
     },
 
     {

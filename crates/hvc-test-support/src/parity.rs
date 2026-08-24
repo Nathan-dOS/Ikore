@@ -129,4 +129,21 @@ mod tests {
                 .all(|case| case.status == ParityStatus::Covered)
         );
     }
+
+    #[test]
+    fn stage_two_covers_every_workspace_editor_case() {
+        let ledger = ParityLedger::embedded();
+        let workspace_cases = ledger
+            .cases
+            .iter()
+            .filter(|case| case.area == ParityArea::WorkspaceEditor)
+            .collect::<Vec<_>>();
+
+        assert_eq!(workspace_cases.len(), 10);
+        assert!(
+            workspace_cases
+                .iter()
+                .all(|case| case.status == ParityStatus::Covered)
+        );
+    }
 }

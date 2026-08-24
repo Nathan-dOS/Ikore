@@ -2,6 +2,7 @@
 #![allow(clippy::result_large_err)]
 
 mod app_model;
+mod hitl;
 mod lifecycle;
 mod native_editor;
 mod session;
@@ -10,6 +11,7 @@ mod shell;
 mod test_support;
 mod theme;
 mod views;
+mod workspace;
 
 pub use app_model::{AppModel, AppView};
 pub use native_editor::NativeEditor;

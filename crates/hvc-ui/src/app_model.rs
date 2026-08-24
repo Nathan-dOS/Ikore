@@ -1,13 +1,17 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
     AppContext as _, Context, Entity, PathPromptOptions, SharedString, Subscription, Task, Window,
 };
 use hvc_core::persistence_service::{
-    EnsureProjectForWorkspaceRequest, GetPulsationRuntimeSnapshotRequest, LoadUiSessionRequest,
-    SaveUiSessionRequest, UiSessionState, UiTabSnapshot,
+    ApplyHitlDecisionRequest, EnsureProjectForWorkspaceRequest, GetPulsationRuntimeSnapshotRequest,
+    HitlDecision, LoadUiSessionRequest, PulsationStatus, SaveUiSessionRequest, UiSessionState,
+    UiTabSnapshot,
 };
-use hvc_core::workspace_service::{OpenWorkspaceRequest, ReadWorkspaceFileRequest};
+use hvc_core::workspace_service::{
+    FileNode, OpenWorkspaceRequest, ReadWorkspaceFileRequest, WorkspaceChangedEvent,
+};
 use hvc_core::{AppCore, AppEvent};
 use hvc_editor::{EditorSelection, EditorSnapshot, TextPosition};
 use tokio::sync::broadcast::error::RecvError;
@@ -19,7 +23,10 @@ use crate::session::{
 };
 use crate::views::{
     ChatModel, LogsModel, NavigationModel, PulsationsModel, SettingsModel, VaultModel,
-    WorkspaceEditorModel, WorkspaceTabModel, WorkspaceViewMode,
+};
+use crate::workspace::{
+    AUTOSAVE_DEBOUNCE, CoreWorkspaceBackend, WorkspaceBackend, WorkspaceEditorModel,
+    WorkspaceTabModel, WorkspaceViewMode,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +128,7 @@ struct LoadedTab {
 struct RestoredSession {
     project_id: String,
     root_path: String,
+    tree: Vec<FileNode>,
     session: Option<UiSessionState>,
     tabs: Vec<LoadedTab>,
     notice: Option<String>,
@@ -129,6 +137,7 @@ struct RestoredSession {
 pub struct AppModel {
     core: Option<Arc<AppCore>>,
     session_persistence: Option<Arc<dyn SessionPersistence>>,
+    workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
     pub navigation: Entity<NavigationModel>,
     pub workspace: Entity<WorkspaceEditorModel>,
     pub pulsations: Entity<PulsationsModel>,
@@ -145,9 +154,14 @@ pub struct AppModel {
     hydrating: bool,
     session_generation: u64,
     session_dirty: bool,
+    workspace_save_generations: HashMap<String, u64>,
+    suppress_editor_sync: bool,
     event_task: Option<Task<()>>,
     polling_task: Option<Task<()>>,
     workspace_task: Option<Task<()>>,
+    file_tasks: HashMap<String, Task<()>>,
+    autosave_tasks: HashMap<String, Task<()>>,
+    hitl_task: Option<Task<()>>,
     session_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -156,7 +170,14 @@ impl AppModel {
     pub fn new(core: Arc<AppCore>, cx: &mut Context<Self>) -> Self {
         let session_persistence: Arc<dyn SessionPersistence> =
             Arc::new(CoreSessionPersistence::new(Arc::clone(&core)));
-        let mut model = Self::build(Some(core), Some(session_persistence), cx);
+        let workspace_backend: Arc<dyn WorkspaceBackend> =
+            Arc::new(CoreWorkspaceBackend::new(Arc::clone(&core)));
+        let mut model = Self::build(
+            Some(core),
+            Some(session_persistence),
+            Some(workspace_backend),
+            cx,
+        );
         model.start_lifecycle(cx);
         cx.on_app_quit(|model, cx| model.flush_pending_session(cx))
             .detach();
@@ -166,7 +187,7 @@ impl AppModel {
 
     #[cfg(test)]
     pub fn new_for_test(cx: &mut Context<Self>) -> Self {
-        Self::build(None, None, cx)
+        Self::build(None, None, None, cx)
     }
 
     #[cfg(test)]
@@ -174,12 +195,21 @@ impl AppModel {
         persistence: Arc<dyn SessionPersistence>,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::build(None, Some(persistence), cx)
+        Self::build(None, Some(persistence), None, cx)
+    }
+
+    #[cfg(test)]
+    fn new_for_test_with_workspace_backend(
+        backend: Arc<dyn WorkspaceBackend>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::build(None, None, Some(backend), cx)
     }
 
     fn build(
         core: Option<Arc<AppCore>>,
         session_persistence: Option<Arc<dyn SessionPersistence>>,
+        workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
         cx: &mut Context<Self>,
     ) -> Self {
         let active_view = AppView::Workspace;
@@ -190,11 +220,13 @@ impl AppModel {
         let workspace = cx.new(WorkspaceEditorModel::new);
         let editor = workspace.read(cx).editor.clone();
         let subscriptions = vec![cx.observe(&editor, |model, _, cx| {
+            model.handle_editor_update(cx);
             model.schedule_session_persistence(cx);
         })];
         Self {
             core,
             session_persistence,
+            workspace_backend,
             navigation,
             workspace,
             pulsations: cx.new(|_| PulsationsModel::default()),
@@ -211,9 +243,14 @@ impl AppModel {
             hydrating: false,
             session_generation: 0,
             session_dirty: false,
+            workspace_save_generations: HashMap::new(),
+            suppress_editor_sync: false,
             event_task: None,
             polling_task: None,
             workspace_task: None,
+            file_tasks: HashMap::new(),
+            autosave_tasks: HashMap::new(),
+            hitl_task: None,
             session_task: None,
             _subscriptions: subscriptions,
         }
@@ -340,6 +377,476 @@ impl AppModel {
         }));
     }
 
+    pub fn open_workspace_file(
+        &mut self,
+        relative_path: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let relative_path = relative_path.into();
+        if self.workspace.read(cx).tab(&relative_path).is_some() {
+            self.select_workspace_tab(&relative_path, cx);
+            return;
+        }
+        let Some(backend) = self.workspace_backend.clone() else {
+            self.status = "Leitura de arquivo indisponível no ambiente de teste".into();
+            cx.notify();
+            return;
+        };
+        self.status = format!("Abrindo {relative_path}…").into();
+        cx.notify();
+        let requested_path = relative_path.clone();
+        let task_key = format!("open:{relative_path}");
+        let task = cx.spawn(async move |this, cx| {
+            let result = backend.read(requested_path.clone()).await;
+            let _ = this.update(cx, |model, cx| match result {
+                Ok(snapshot) => {
+                    model.sync_active_editor(cx);
+                    model.workspace.update(cx, |workspace, _| {
+                        workspace.open_tab(
+                            requested_path.clone(),
+                            snapshot.content,
+                            snapshot.revision,
+                        );
+                    });
+                    model.restore_editor_for_active(cx);
+                    model.status = format!("Arquivo aberto: {requested_path}").into();
+                    model.schedule_session_persistence(cx);
+                    cx.notify();
+                }
+                Err(error) => {
+                    model.status = format!("Falha ao abrir {requested_path}").into();
+                    model.notices.push(HeaderNoticeKind::Error, error.message);
+                    cx.notify();
+                }
+            });
+        });
+        self.file_tasks.insert(task_key, task);
+    }
+
+    pub fn select_workspace_tab(&mut self, relative_path: &str, cx: &mut Context<Self>) {
+        let previous_path = self.active_workspace_path(cx);
+        if self.sync_active_editor(cx)
+            && let Some(previous_path) = previous_path
+        {
+            self.schedule_workspace_autosave_for_path(previous_path, cx);
+        }
+        let selected = self
+            .workspace
+            .update(cx, |workspace, _| workspace.select_tab(relative_path));
+        if selected {
+            self.restore_editor_for_active(cx);
+            self.status = format!("Aba ativa: {relative_path}").into();
+            self.schedule_session_persistence(cx);
+            cx.notify();
+        }
+    }
+
+    pub fn close_workspace_tab(&mut self, relative_path: &str, cx: &mut Context<Self>) {
+        self.sync_active_editor(cx);
+        self.workspace_save_generations.remove(relative_path);
+        self.autosave_tasks.remove(relative_path);
+        let closed = self
+            .workspace
+            .update(cx, |workspace, _| workspace.close_tab(relative_path));
+        if closed {
+            self.restore_editor_for_active(cx);
+            self.status = format!("Aba fechada: {relative_path}").into();
+            self.schedule_session_persistence(cx);
+            cx.notify();
+        }
+    }
+
+    pub fn set_workspace_view_mode(
+        &mut self,
+        view_mode: WorkspaceViewMode,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace.update(cx, |workspace, _| {
+            workspace.view_mode = view_mode;
+            if view_mode == WorkspaceViewMode::Editor {
+                workspace.diff_expanded = false;
+            }
+        });
+        self.schedule_session_persistence(cx);
+        cx.notify();
+    }
+
+    pub fn toggle_workspace_diff(&mut self, cx: &mut Context<Self>) {
+        self.workspace.update(cx, |workspace, _| {
+            workspace.diff_expanded = !workspace.diff_expanded;
+        });
+        cx.notify();
+    }
+
+    pub fn resolve_workspace_conflict_by_reload(
+        &mut self,
+        relative_path: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let relative_path = relative_path.into();
+        let Some(backend) = self.workspace_backend.clone() else {
+            return;
+        };
+        if !self.workspace.update(cx, |workspace, _| {
+            workspace.begin_conflict_resolution(&relative_path)
+        }) {
+            return;
+        }
+        cx.notify();
+        let task_key = format!("conflict:{relative_path}");
+        let task = cx.spawn(async move |this, cx| {
+            let result = backend.read(relative_path.clone()).await;
+            let _ = this.update(cx, |model, cx| match result {
+                Ok(snapshot) => {
+                    model.workspace.update(cx, |workspace, _| {
+                        workspace.replace_from_disk(&relative_path, snapshot);
+                    });
+                    if model.active_workspace_path(cx).as_deref() == Some(relative_path.as_str()) {
+                        model.restore_editor_for_active(cx);
+                    }
+                    model.status = format!("Arquivo recarregado: {relative_path}").into();
+                    model.schedule_session_persistence(cx);
+                    cx.notify();
+                }
+                Err(error) => {
+                    model.workspace.update(cx, |workspace, _| {
+                        workspace.mark_save_failed(&relative_path, error);
+                    });
+                    cx.notify();
+                }
+            });
+        });
+        self.file_tasks.insert(task_key, task);
+    }
+
+    pub fn resolve_workspace_conflict_by_overwrite(
+        &mut self,
+        relative_path: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let relative_path = relative_path.into();
+        let Some(backend) = self.workspace_backend.clone() else {
+            return;
+        };
+        if !self.workspace.update(cx, |workspace, _| {
+            workspace.begin_conflict_resolution(&relative_path)
+        }) {
+            return;
+        }
+        cx.notify();
+        let task_key = format!("conflict:{relative_path}");
+        let task = cx.spawn(async move |this, cx| {
+            let latest = backend.read(relative_path.clone()).await;
+            let latest = match latest {
+                Ok(latest) => latest,
+                Err(error) => {
+                    let _ = this.update(cx, |model, cx| {
+                        model.workspace.update(cx, |workspace, _| {
+                            workspace.mark_save_failed(&relative_path, error);
+                        });
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+            let content = this
+                .update(cx, |model, cx| {
+                    model
+                        .workspace
+                        .read(cx)
+                        .tab(&relative_path)
+                        .map(|tab| tab.content.clone())
+                })
+                .ok()
+                .flatten();
+            let Some(content) = content else {
+                return;
+            };
+            let result = backend
+                .write(relative_path.clone(), content.clone(), latest.revision)
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                model.finish_workspace_save(relative_path, content, result, cx);
+            });
+        });
+        self.file_tasks.insert(task_key, task);
+    }
+
+    pub(crate) fn apply_hitl_decision(&mut self, decision: HitlDecision, cx: &mut Context<Self>) {
+        let request = self
+            .pulsations
+            .update(cx, |pulsations, _| pulsations.hitl.begin(decision));
+        let Some((pulsation_id, decision)) = request else {
+            return;
+        };
+        let Some(core) = self.core.clone() else {
+            self.pulsations.update(cx, |pulsations, _| {
+                pulsations
+                    .hitl
+                    .finish(Err("Decisão HITL indisponível no ambiente de teste".into()));
+            });
+            cx.notify();
+            return;
+        };
+        self.status = "Aplicando decisão HITL…".into();
+        cx.notify();
+        let runtime = core.runtime_handle().clone();
+        self.hitl_task = Some(cx.spawn(async move |this, cx| {
+            let result = runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .apply_hitl_decision(ApplyHitlDecisionRequest {
+                            pulsation_id,
+                            decision,
+                        })
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("worker HITL interrompido: {error}"))
+                .and_then(|result| result);
+            let _ = this.update(cx, |model, cx| {
+                model.pulsations.update(cx, |pulsations, _| {
+                    pulsations.hitl.finish(result.clone());
+                    if result.is_ok() {
+                        pulsations.awaiting_hitl = pulsations.awaiting_hitl.saturating_sub(1);
+                    }
+                });
+                match result {
+                    Ok(()) => {
+                        model.workspace.update(cx, |workspace, _| {
+                            workspace.diff_expanded = false;
+                            workspace.view_mode = WorkspaceViewMode::Editor;
+                        });
+                        model.status = "Decisão HITL aplicada".into();
+                        model.schedule_session_persistence(cx);
+                    }
+                    Err(error) => {
+                        model.status = "Falha ao aplicar decisão HITL".into();
+                        model.notices.push(HeaderNoticeKind::Error, error);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn active_workspace_path(&self, cx: &gpui::App) -> Option<String> {
+        self.workspace
+            .read(cx)
+            .active_relative_path
+            .as_ref()
+            .map(ToString::to_string)
+    }
+
+    fn sync_active_editor(&mut self, cx: &mut Context<Self>) -> bool {
+        let snapshot = {
+            let workspace = self.workspace.read(cx);
+            workspace.editor.read(cx).buffer.snapshot()
+        };
+        self.workspace
+            .update(cx, |workspace, _| workspace.sync_active_editor(&snapshot))
+    }
+
+    fn handle_editor_update(&mut self, cx: &mut Context<Self>) {
+        if self.hydrating || self.lifecycle.is_disposed() {
+            return;
+        }
+        if self.suppress_editor_sync {
+            self.suppress_editor_sync = false;
+            let restored_without_edit = {
+                let workspace = self.workspace.read(cx);
+                workspace.editor.read(cx).edit_generation() == 0
+            };
+            if restored_without_edit {
+                return;
+            }
+        }
+        let content_changed = self.sync_active_editor(cx);
+        if content_changed {
+            self.schedule_workspace_autosave(cx);
+        }
+    }
+
+    fn restore_editor_for_active(&mut self, cx: &mut Context<Self>) {
+        let (editor, relative_path, snapshot) = {
+            let workspace = self.workspace.read(cx);
+            let snapshot = workspace
+                .active_tab()
+                .map(WorkspaceTabModel::editor_snapshot);
+            (
+                workspace.editor.clone(),
+                workspace
+                    .active_relative_path
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
+                snapshot,
+            )
+        };
+        let snapshot = snapshot.unwrap_or(EditorSnapshot {
+            text: String::new(),
+            revision: "new".into(),
+            selection: EditorSelection::default(),
+            scroll_top: 0.0,
+            dirty: false,
+        });
+        self.suppress_editor_sync = true;
+        editor.update(cx, |editor, cx| {
+            let mut snapshot = snapshot;
+            if editor
+                .restore_workspace_snapshot(&relative_path, snapshot.clone())
+                .is_err()
+            {
+                snapshot.selection = EditorSelection::default();
+                editor
+                    .restore_workspace_snapshot(&relative_path, snapshot)
+                    .expect("a seleção padrão deve ser válida");
+            }
+            cx.notify();
+        });
+    }
+
+    fn schedule_workspace_autosave(&mut self, cx: &mut Context<Self>) {
+        let Some(relative_path) = self.active_workspace_path(cx) else {
+            return;
+        };
+        self.schedule_workspace_autosave_for_path(relative_path, cx);
+    }
+
+    fn schedule_workspace_autosave_for_path(
+        &mut self,
+        relative_path: String,
+        cx: &mut Context<Self>,
+    ) {
+        let generation = self
+            .workspace_save_generations
+            .entry(relative_path.clone())
+            .and_modify(|generation| *generation = generation.saturating_add(1))
+            .or_insert(1)
+            .to_owned();
+        let eligible = self
+            .workspace
+            .read(cx)
+            .tab(&relative_path)
+            .is_some_and(|tab| tab.dirty && !tab.saving && tab.conflict.is_none());
+        let Some(backend) = self.workspace_backend.clone() else {
+            return;
+        };
+        if !eligible {
+            return;
+        }
+        let timer = cx.background_executor().timer(AUTOSAVE_DEBOUNCE);
+        let task_path = relative_path.clone();
+        let task = cx.spawn(async move |this, cx| {
+            timer.await;
+            let request = this
+                .update(cx, |model, cx| {
+                    model.begin_workspace_save(generation, &task_path, cx)
+                })
+                .ok()
+                .flatten();
+            let Some((relative_path, content, revision)) = request else {
+                return;
+            };
+            let result = backend
+                .write(relative_path.clone(), content.clone(), revision)
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                model.finish_workspace_save(relative_path, content, result, cx);
+            });
+        });
+        self.autosave_tasks.insert(relative_path, task);
+    }
+
+    fn begin_workspace_save(
+        &mut self,
+        generation: u64,
+        relative_path: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<(String, String, String)> {
+        if self.workspace_save_generations.get(relative_path).copied() != Some(generation)
+            || self.lifecycle.is_disposed()
+        {
+            return None;
+        }
+        let request = {
+            let workspace = self.workspace.read(cx);
+            let tab = workspace.tab(relative_path)?;
+            (
+                tab.relative_path.to_string(),
+                tab.content.clone(),
+                tab.revision.clone(),
+            )
+        };
+        let started = self
+            .workspace
+            .update(cx, |workspace, _| workspace.mark_saving(&request.0));
+        if started {
+            cx.notify();
+            Some(request)
+        } else {
+            None
+        }
+    }
+
+    fn finish_workspace_save(
+        &mut self,
+        relative_path: String,
+        saved_content: String,
+        result: Result<String, crate::workspace::WorkspaceOperationError>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(revision) => {
+                let active = self.active_workspace_path(cx).as_deref() == Some(&relative_path);
+                let (still_dirty, current_content) = self.workspace.update(cx, |workspace, _| {
+                    let still_dirty =
+                        workspace.mark_saved(&relative_path, &saved_content, revision.clone());
+                    let current_content =
+                        workspace.tab(&relative_path).map(|tab| tab.content.clone());
+                    (still_dirty, current_content)
+                });
+                if active {
+                    let editor = self.workspace.read(cx).editor.clone();
+                    editor.update(cx, |editor, _| {
+                        let editor_still_dirty = current_content
+                            .as_deref()
+                            .is_some_and(|content| content != saved_content);
+                        editor.buffer.acknowledge_save(revision, editor_still_dirty);
+                    });
+                }
+                self.status = format!("Arquivo salvo: {relative_path}").into();
+                self.schedule_session_persistence(cx);
+                if still_dirty {
+                    self.schedule_workspace_autosave_for_path(relative_path, cx);
+                }
+            }
+            Err(error) => {
+                let message = error.message.clone();
+                let conflict = error.is_conflict();
+                self.workspace.update(cx, |workspace, _| {
+                    workspace.mark_save_failed(&relative_path, error);
+                });
+                self.status = if conflict {
+                    format!("Conflito de revisão: {relative_path}")
+                } else {
+                    format!("Falha ao salvar: {relative_path}")
+                }
+                .into();
+                self.notices.push(
+                    if conflict {
+                        HeaderNoticeKind::Warning
+                    } else {
+                        HeaderNoticeKind::Error
+                    },
+                    message,
+                );
+            }
+        }
+        cx.notify();
+    }
+
     fn start_lifecycle(&mut self, cx: &mut Context<Self>) {
         let Some(core) = self.core.clone() else {
             return;
@@ -419,10 +926,22 @@ impl AppModel {
                         model.lifecycle.finish_poll();
                         match snapshot {
                             Ok(Ok(response)) => {
+                                let checkpoint = response
+                                    .snapshot
+                                    .pulsations
+                                    .iter()
+                                    .find(|pulsation| {
+                                        pulsation.status == PulsationStatus::Checkpoint
+                                    })
+                                    .cloned();
                                 model.pulsations.update(cx, |pulsations, _| {
                                     pulsations.awaiting_hitl = response.snapshot.hitl_waiting_count;
                                     pulsations.running_jobs =
                                         response.snapshot.background_agents_count;
+                                    pulsations.hitl.load_checkpoint(checkpoint.as_ref());
+                                    if let Some(checkpoint) = checkpoint {
+                                        pulsations.active_pulsation_id = Some(checkpoint.id.into());
+                                    }
                                 });
                             }
                             Ok(Err(error)) => model.notices.push(
@@ -504,6 +1023,7 @@ impl AppModel {
 
     fn apply_restored_session(&mut self, restored: RestoredSession, cx: &mut Context<Self>) {
         self.hydrating = true;
+        self.suppress_editor_sync = true;
         let session = restored.session.as_ref();
         let active_view = session
             .map(|session| AppView::from_id(&session.active_view))
@@ -522,10 +1042,12 @@ impl AppModel {
                 base_content: tab.base_content,
                 revision: tab.revision,
                 dirty: tab.dirty,
+                saving: false,
+                conflict: None,
+                save_error: tab.load_error,
                 cursor_line: tab.cursor_line,
                 cursor_column: tab.cursor_column,
                 scroll_top: tab.scroll_top,
-                load_error: tab.load_error,
             })
             .collect::<Vec<_>>();
 
@@ -536,6 +1058,7 @@ impl AppModel {
         self.workspace.update(cx, |workspace, cx| {
             workspace.project_id = Some(restored.project_id.clone().into());
             workspace.root_path = Some(restored.root_path.clone().into());
+            workspace.tree = restored.tree.clone();
             workspace.active_relative_path = active_path.clone().map(Into::into);
             workspace.tabs = tabs;
             workspace.view_mode = session
@@ -562,10 +1085,13 @@ impl AppModel {
                     dirty: tab.dirty,
                 };
                 workspace.editor.update(cx, |editor, cx| {
-                    if editor.restore_session_snapshot(snapshot.clone()).is_err() {
+                    if editor
+                        .restore_workspace_snapshot(active_path, snapshot.clone())
+                        .is_err()
+                    {
                         snapshot.selection = EditorSelection::default();
                         editor
-                            .restore_session_snapshot(snapshot)
+                            .restore_workspace_snapshot(active_path, snapshot)
                             .expect("a seleção padrão deve ser válida");
                     }
                     cx.notify();
@@ -714,8 +1240,12 @@ impl AppModel {
         self.event_task.take();
         self.polling_task.take();
         self.workspace_task.take();
+        self.file_tasks.clear();
+        self.autosave_tasks.clear();
+        self.hitl_task.take();
         self.session_task.take();
         self.session_generation = self.session_generation.saturating_add(1);
+        self.workspace_save_generations.clear();
 
         let request = self
             .session_dirty
@@ -745,13 +1275,43 @@ impl AppModel {
     fn handle_event(&mut self, event: AppEvent, cx: &mut Context<Self>) {
         self.event_count = self.event_count.saturating_add(1);
         self.status = format!("Evento recebido: {}", event.event_name()).into();
-        if matches!(event, AppEvent::WorkspaceChanged(_)) {
-            self.needs_resync = true;
+        if let AppEvent::WorkspaceChanged(event) = event {
+            self.handle_workspace_change(event, cx);
         }
         self.logs.update(cx, |logs, _| {
             logs.visible_entries = logs.visible_entries.saturating_add(1);
         });
         cx.notify();
+    }
+
+    fn handle_workspace_change(&mut self, event: WorkspaceChangedEvent, cx: &mut Context<Self>) {
+        let should_reload = self.workspace.update(cx, |workspace, _| {
+            workspace.mark_external_change(&event.relative_path, &event.kind)
+        });
+        if !should_reload {
+            return;
+        }
+        let Some(backend) = self.workspace_backend.clone() else {
+            return;
+        };
+        let relative_path = event.relative_path;
+        let task_key = format!("external:{relative_path}");
+        let task = cx.spawn(async move |this, cx| {
+            let result = backend.read(relative_path.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                if let Ok(snapshot) = result {
+                    model.workspace.update(cx, |workspace, _| {
+                        workspace.replace_from_disk(&relative_path, snapshot);
+                    });
+                    if model.active_workspace_path(cx).as_deref() == Some(relative_path.as_str()) {
+                        model.restore_editor_for_active(cx);
+                    }
+                    model.schedule_session_persistence(cx);
+                }
+                cx.notify();
+            });
+        });
+        self.file_tasks.insert(task_key, task);
     }
 }
 
@@ -789,6 +1349,7 @@ fn load_workspace(core: Arc<AppCore>, path: String) -> Result<RestoredSession, S
     Ok(RestoredSession {
         project_id: project.id,
         root_path: opened.root_path,
+        tree: opened.tree,
         session,
         tabs,
         notice: Some(opened.greenfield.message),
@@ -836,8 +1397,10 @@ mod tests {
     use std::sync::Mutex;
 
     use gpui::TestAppContext;
+    use hvc_core::workspace_service::WorkspaceErrorCode::Conflict;
 
     use super::*;
+    use crate::workspace::{WorkspaceFileSnapshot, WorkspaceFuture, WorkspaceOperationError};
 
     #[derive(Default)]
     struct RecordingSessionPersistence {
@@ -857,6 +1420,87 @@ mod tests {
         }
     }
 
+    struct RecordingWorkspaceBackend {
+        reads: Arc<Mutex<Vec<String>>>,
+        writes: Arc<Mutex<Vec<(String, String, String)>>>,
+        read_snapshot: WorkspaceFileSnapshot,
+        write_result: Arc<Mutex<Result<String, WorkspaceOperationError>>>,
+    }
+
+    impl RecordingWorkspaceBackend {
+        fn successful() -> Self {
+            Self {
+                reads: Arc::new(Mutex::new(Vec::new())),
+                writes: Arc::new(Mutex::new(Vec::new())),
+                read_snapshot: WorkspaceFileSnapshot {
+                    content: "# Disk".into(),
+                    revision: "rev-1".into(),
+                },
+                write_result: Arc::new(Mutex::new(Ok("rev-2".into()))),
+            }
+        }
+
+        fn conflicting() -> Self {
+            let backend = Self::successful();
+            *backend
+                .write_result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Err(WorkspaceOperationError {
+                    code: Conflict,
+                    message: "A revisão do arquivo mudou no disco.".into(),
+                });
+            backend
+        }
+    }
+
+    impl WorkspaceBackend for RecordingWorkspaceBackend {
+        fn read(&self, relative_path: String) -> WorkspaceFuture<WorkspaceFileSnapshot> {
+            self.reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(relative_path);
+            let snapshot = self.read_snapshot.clone();
+            Box::pin(async move { Ok(snapshot) })
+        }
+
+        fn write(
+            &self,
+            relative_path: String,
+            content: String,
+            expected_revision: String,
+        ) -> WorkspaceFuture<String> {
+            self.writes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((relative_path, content, expected_revision));
+            let result = self
+                .write_result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            Box::pin(async move { result })
+        }
+    }
+
+    fn configure_editable_tab(model: &mut AppModel, cx: &mut Context<AppModel>) {
+        model.workspace.update(cx, |workspace, _| {
+            workspace.open_tab("notes/one.md", "Inicial".into(), "rev-1".into());
+        });
+        model.restore_editor_for_active(cx);
+    }
+
+    fn edit_active_buffer(model: &AppModel, cx: &mut Context<AppModel>) {
+        let editor = model.workspace.read(cx).editor.clone();
+        editor.update(cx, |editor, cx| {
+            editor
+                .buffer
+                .set_selection(EditorSelection::caret(TextPosition { line: 0, column: 7 }))
+                .unwrap();
+            editor.insert_text(" alterado", cx);
+        });
+    }
+
     fn configure_restorable_state(model: &mut AppModel, cx: &mut Context<AppModel>) {
         let editor = model.workspace.read(cx).editor.clone();
         model.workspace.update(cx, |workspace, _| {
@@ -870,10 +1514,12 @@ mod tests {
                 base_content: "# Disk".into(),
                 revision: "2:1".into(),
                 dirty: true,
+                saving: false,
+                conflict: None,
+                save_error: None,
                 cursor_line: Some(6),
                 cursor_column: Some(2),
                 scroll_top: Some(44.0),
-                load_error: None,
             }];
         });
         editor.update(cx, |editor, _| {
@@ -1030,6 +1676,7 @@ mod tests {
                 RestoredSession {
                     project_id: "project-1".into(),
                     root_path: "C:\\vault".into(),
+                    tree: Vec::new(),
                     session: Some(session),
                     tabs: vec![LoadedTab {
                         relative_path: "Features/Login.md".into(),
@@ -1108,6 +1755,7 @@ mod tests {
                 RestoredSession {
                     project_id: "project-1".into(),
                     root_path: "C:\\vault".into(),
+                    tree: Vec::new(),
                     session: Some(UiSessionState {
                         project_id: "project-1".into(),
                         workspace_root: "C:\\vault".into(),
@@ -1136,6 +1784,127 @@ mod tests {
             assert!(model.navigation.read(cx).sidebar_collapsed);
             assert!(!model.workspace.read(cx).context_drawer_open);
             assert!(!model.workspace.read(cx).diff_expanded);
+        });
+    }
+
+    #[gpui::test]
+    fn persists_editor_changes_only_after_the_one_second_debounce(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingWorkspaceBackend::successful());
+        let writes = Arc::clone(&backend.writes);
+        let model = cx.new(|cx| AppModel::new_for_test_with_workspace_backend(backend, cx));
+        model.update(cx, |model, cx| {
+            configure_editable_tab(model, cx);
+            edit_active_buffer(model, cx);
+        });
+        cx.run_until_parked();
+
+        cx.executor()
+            .advance_clock(AUTOSAVE_DEBOUNCE - std::time::Duration::from_millis(1));
+        cx.run_until_parked();
+        assert!(
+            writes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(1));
+        cx.run_until_parked();
+        let writes = writes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, "notes/one.md");
+        assert_eq!(writes[0].2, "rev-1");
+        drop(writes);
+        cx.read(|cx| {
+            let workspace = model.read(cx).workspace.read(cx);
+            let tab = workspace.tab("notes/one.md").unwrap();
+            assert_eq!(tab.revision, "rev-2");
+            assert_eq!(tab.base_content, tab.content);
+            assert!(!tab.dirty);
+            assert!(!tab.saving);
+            assert!(tab.conflict.is_none());
+            assert!(tab.save_error.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn exposes_revision_conflicts_without_overwriting_the_disk(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingWorkspaceBackend::conflicting());
+        let model = cx.new(|cx| AppModel::new_for_test_with_workspace_backend(backend, cx));
+        model.update(cx, |model, cx| {
+            configure_editable_tab(model, cx);
+            edit_active_buffer(model, cx);
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(AUTOSAVE_DEBOUNCE);
+        cx.run_until_parked();
+
+        cx.read(|cx| {
+            let workspace = model.read(cx).workspace.read(cx);
+            let tab = workspace.tab("notes/one.md").unwrap();
+            assert!(tab.dirty);
+            assert!(!tab.saving);
+            assert_eq!(
+                tab.conflict.as_deref(),
+                Some("A revisão do arquivo mudou no disco.")
+            );
+            assert_eq!(tab.base_content, "Inicial");
+        });
+    }
+
+    #[gpui::test]
+    fn autosaves_dirty_tabs_independently(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingWorkspaceBackend::successful());
+        let writes = Arc::clone(&backend.writes);
+        let model = cx.new(|cx| AppModel::new_for_test_with_workspace_backend(backend, cx));
+        model.update(cx, |model, cx| {
+            model.workspace.update(cx, |workspace, _| {
+                workspace.open_tab("notes/one.md", "Primeira".into(), "rev-1".into());
+                workspace.open_tab("notes/two.md", "Segunda".into(), "rev-1".into());
+                workspace.select_tab("notes/one.md");
+            });
+            model.restore_editor_for_active(cx);
+            edit_active_buffer(model, cx);
+            model.select_workspace_tab("notes/two.md", cx);
+            edit_active_buffer(model, cx);
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(AUTOSAVE_DEBOUNCE);
+        cx.run_until_parked();
+
+        let mut paths = writes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|write| write.0.clone())
+            .collect::<Vec<_>>();
+        paths.sort();
+        assert_eq!(paths, vec!["notes/one.md", "notes/two.md"]);
+    }
+
+    #[gpui::test]
+    fn opens_a_workspace_file_through_the_async_backend(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingWorkspaceBackend::successful());
+        let reads = Arc::clone(&backend.reads);
+        let model = cx.new(|cx| AppModel::new_for_test_with_workspace_backend(backend, cx));
+        model.update(cx, |model, cx| {
+            model.open_workspace_file("notes/one.md", cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            *reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec!["notes/one.md"]
+        );
+        cx.read(|cx| {
+            let workspace = model.read(cx).workspace.read(cx);
+            assert_eq!(workspace.open_tab_count(), 1);
+            assert_eq!(workspace.active_tab().unwrap().content, "# Disk");
         });
     }
 }
