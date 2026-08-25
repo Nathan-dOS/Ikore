@@ -5,11 +5,16 @@ mod app_model;
 mod hitl;
 mod lifecycle;
 mod native_editor;
+mod pulsations;
+mod pulsations_view;
 mod session;
 mod shell;
 #[cfg(test)]
 mod test_support;
+mod text_input;
 mod theme;
+mod vault;
+mod vault_view;
 mod views;
 mod workspace;
 

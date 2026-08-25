@@ -73,13 +73,15 @@ O frontend, `package.json`, Vite, Monaco, Zustand, IPC e Tauri só serão removi
 
 O inventário versionado [`parity/gpui-frontend-ledger.json`](parity/gpui-frontend-ledger.json) mapeia nominalmente cada um dos 51 testes React para seu alvo Rust. A validação estrutural do ledger faz parte de `cargo test --workspace` e impede casos ausentes, duplicados ou sem justificativa.
 
-Estado ao concluir a Etapa 2: 19 casos cobertos, 18 parcialmente cobertos e 14 pendentes. Os oito casos de shell/lifecycle e os dez casos de workspace/editor estão integralmente cobertos. Esses estados registram equivalência funcional por cenário; não são uma contagem dos testes executados pelo Cargo.
+Estado ao concluir a Etapa 3: 25 casos cobertos, 14 parcialmente cobertos e 12 pendentes. Os oito casos de shell/lifecycle, os dez de workspace/editor e os seis de Pulsations/Vault estão integralmente cobertos. Esses estados registram equivalência funcional por cenário; não são uma contagem dos testes executados pelo Cargo.
 
 ## Limitações atuais da migração
 
 - O shell GPUI, as seis rotas, sidebar recolhível, badges semânticos, fila de avisos, polling serial, persistência com debounce/flush, restauração completa V8/V9 e ressincronização após atraso do barramento estão implementados.
 - Workspace possui árvore nativa, abas independentes, editor Rope virtualizado, cursor/scroll restauráveis, preview Markdown seguro, Tree-sitter incremental para `.md`, `.txt` plain text, autosave atômico de 1 segundo por arquivo, conflitos explícitos e diff/HITL com Enter/R.
-- Pulsations, Vault, Settings, Logs e Chat já têm entidades e painéis próprios, mas suas operações completas, streaming/cancelamento e testes de fluxo ainda não substituem as views React.
+- Pulsations possui criação, seleção, restauração, cancelamento de jobs, pipeline nativo de seis estágios, contadores e artefatos navegáveis sem bloquear a thread GPUI.
+- Vault possui árvore, índice, busca substring/regex, grafo determinístico clicável, links quebrados, frontmatter, preview seguro, renomeação coordenada, cache de documentos e refresh do watcher com debounce.
+- Settings, Logs e Chat já têm entidades e painéis próprios, mas suas operações completas, streaming/cancelamento e testes de fluxo ainda não substituem as views React.
 - Benchmarks comparativos, equivalência Rust completa dos 51 testes frontend, auditoria de licenças/advisories e decisão sobre a dependência GPL continuam pendentes.
 
-Última validação local da Etapa 2 de paridade: 140 testes Rust do workspace e 51 testes frontend aprovados, além de `cargo fmt --check`, Clippy com `-D warnings`, build frontend, check do adaptador Tauri, build release e smoke Windows com shutdown gracioso.
+Última validação local da Etapa 3 de paridade: 151 testes Rust do workspace e 51 testes frontend aprovados, além de `cargo fmt --check`, Clippy com `-D warnings`, build frontend, check do adaptador Tauri, build release e smoke Windows com banco isolado, shutdown gracioso e exit code 0.

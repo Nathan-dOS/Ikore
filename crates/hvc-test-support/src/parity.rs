@@ -146,4 +146,21 @@ mod tests {
                 .all(|case| case.status == ParityStatus::Covered)
         );
     }
+
+    #[test]
+    fn stage_three_covers_every_pulsations_and_vault_case() {
+        let ledger = ParityLedger::embedded();
+        let stage_three_cases = ledger
+            .cases
+            .iter()
+            .filter(|case| matches!(case.area, ParityArea::Pulsations | ParityArea::Vault))
+            .collect::<Vec<_>>();
+
+        assert_eq!(stage_three_cases.len(), 6);
+        assert!(
+            stage_three_cases
+                .iter()
+                .all(|case| case.status == ParityStatus::Covered)
+        );
+    }
 }

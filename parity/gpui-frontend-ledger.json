@@ -249,16 +249,16 @@
       "area": "pulsations",
       "source": "src/state/pulsationStore.test.ts::hydrates the active checkpoint, counters, and artifacts",
       "target": "hvc_ui::pulsations::tests::hydrates_checkpoint_counters_and_artifacts",
-      "status": "partial",
-      "rationale": "O core expõe snapshots e artifacts; a entidade GPUI ainda não os hidrata."
+      "status": "covered",
+      "rationale": "A entidade GPUI hidrata snapshot, checkpoint ativo, contadores e artefatos por um backend Rust tipado."
     },
     {
       "id": "pulsations-002",
       "area": "pulsations",
       "source": "src/state/pulsationStore.test.ts::refreshes artifacts for the same selected pulsation",
       "target": "hvc_ui::pulsations::tests::refreshes_artifacts_for_selected_pulsation",
-      "status": "pending",
-      "rationale": "Seleção e refresh funcional serão ligados na Etapa 3."
+      "status": "covered",
+      "rationale": "Seleção e refresh assíncrono preservam a pulsação ativa e descartam resultados de artefatos que já ficaram obsoletos."
     },
 
     {
@@ -266,32 +266,32 @@
       "area": "vault",
       "source": "src/state/vaultStore.test.ts::derives deterministic graph and context layouts",
       "target": "hvc_ui::vault::tests::derives_deterministic_graph_and_context_layouts",
-      "status": "partial",
-      "rationale": "O índice Rust é determinístico; o layout e o context drawer GPUI ainda não."
+      "status": "covered",
+      "rationale": "O índice alimenta um grafo GPUI determinístico e o context drawer seleciona e carrega documentos relacionados de forma estável."
     },
     {
       "id": "vault-002",
       "area": "vault",
       "source": "src/state/vaultStore.test.ts::delegates substring or regex search through the typed IPC boundary",
       "target": "hvc_ui::vault::tests::runs_typed_substring_and_regex_search",
-      "status": "partial",
-      "rationale": "A busca direta existe no AppCore, ainda sem modelo GPUI funcional."
+      "status": "covered",
+      "rationale": "A busca substring ou regex, inclusive case-sensitive, atravessa um backend Rust tipado e popula resultados navegáveis no modelo GPUI."
     },
     {
       "id": "vault-003",
       "area": "vault",
       "source": "src/state/vaultStore.test.ts::renames relative notes, updates cached documents, and refreshes tree and graph",
       "target": "hvc_ui::vault::tests::renames_note_and_refreshes_all_dependent_state",
-      "status": "partial",
-      "rationale": "O core renomeia e atualiza wikilinks; coordenação da UI continua pendente."
+      "status": "covered",
+      "rationale": "A coordenação GPUI renomeia a nota, move o cache, restaura a seleção e atualiza árvore, índice, grafo e abas abertas sem sobrescrever conteúdo sujo."
     },
     {
       "id": "vault-004",
       "area": "vault",
       "source": "src/state/vaultStore.test.ts::loads each context document once even when requests overlap",
       "target": "hvc_ui::vault::tests::deduplicates_overlapping_context_document_loads",
-      "status": "pending",
-      "rationale": "Ainda não há cache de carregamentos concorrentes na entidade GPUI."
+      "status": "covered",
+      "rationale": "O modelo GPUI mantém cache e conjunto de leituras em voo, deduplicando caminhos repetidos em solicitações concorrentes."
     },
 
     {

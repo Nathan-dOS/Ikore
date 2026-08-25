@@ -5,25 +5,28 @@ use gpui::{
     AppContext as _, Context, Entity, PathPromptOptions, SharedString, Subscription, Task, Window,
 };
 use hvc_core::persistence_service::{
-    ApplyHitlDecisionRequest, EnsureProjectForWorkspaceRequest, GetPulsationRuntimeSnapshotRequest,
-    HitlDecision, LoadUiSessionRequest, PulsationStatus, SaveUiSessionRequest, UiSessionState,
-    UiTabSnapshot,
+    ApplyHitlDecisionRequest, EnsureProjectForWorkspaceRequest, HitlDecision, LoadUiSessionRequest,
+    PulsationRuntimeSnapshot, SaveUiSessionRequest, UiSessionState, UiTabSnapshot,
 };
 use hvc_core::workspace_service::{
-    FileNode, OpenWorkspaceRequest, ReadWorkspaceFileRequest, WorkspaceChangedEvent,
+    FileNode, OpenWorkspaceRequest, ReadWorkspaceFileRequest, SearchMode, WorkspaceChangedEvent,
 };
 use hvc_core::{AppCore, AppEvent};
 use hvc_editor::{EditorSelection, EditorSnapshot, TextPosition};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::lifecycle::LifecycleState;
+use crate::pulsations::{CorePulsationsBackend, PulsationsBackend, PulsationsModel};
 use crate::session::{
     CoreSessionPersistence, HeaderNotice, HeaderNoticeKind, HeaderNoticeQueue, SESSION_DEBOUNCE,
     SessionPersistence,
 };
-use crate::views::{
-    ChatModel, LogsModel, NavigationModel, PulsationsModel, SettingsModel, VaultModel,
+use crate::text_input::NativeTextInput;
+use crate::vault::{
+    CONTEXT_DOCUMENTS_DEBOUNCE, CoreVaultBackend, VAULT_REFRESH_DEBOUNCE, VaultBackend, VaultModel,
+    normalize_rename_target,
 };
+use crate::views::{ChatModel, LogsModel, NavigationModel, SettingsModel};
 use crate::workspace::{
     AUTOSAVE_DEBOUNCE, CoreWorkspaceBackend, WorkspaceBackend, WorkspaceEditorModel,
     WorkspaceTabModel, WorkspaceViewMode,
@@ -138,10 +141,15 @@ pub struct AppModel {
     core: Option<Arc<AppCore>>,
     session_persistence: Option<Arc<dyn SessionPersistence>>,
     workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
+    pulsations_backend: Option<Arc<dyn PulsationsBackend>>,
+    vault_backend: Option<Arc<dyn VaultBackend>>,
     pub navigation: Entity<NavigationModel>,
     pub workspace: Entity<WorkspaceEditorModel>,
     pub pulsations: Entity<PulsationsModel>,
     pub vault: Entity<VaultModel>,
+    pub(crate) pulsation_feature_input: Entity<NativeTextInput>,
+    pub(crate) vault_search_input: Entity<NativeTextInput>,
+    pub(crate) vault_rename_input: Entity<NativeTextInput>,
     pub chat: Entity<ChatModel>,
     pub settings: Entity<SettingsModel>,
     pub logs: Entity<LogsModel>,
@@ -162,6 +170,13 @@ pub struct AppModel {
     file_tasks: HashMap<String, Task<()>>,
     autosave_tasks: HashMap<String, Task<()>>,
     hitl_task: Option<Task<()>>,
+    pulsations_task: Option<Task<()>>,
+    pulsation_artifacts_task: Option<Task<()>>,
+    vault_refresh_task: Option<Task<()>>,
+    vault_search_task: Option<Task<()>>,
+    vault_rename_task: Option<Task<()>>,
+    vault_context_task: Option<Task<()>>,
+    vault_document_tasks: HashMap<String, Task<()>>,
     session_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -172,12 +187,18 @@ impl AppModel {
             Arc::new(CoreSessionPersistence::new(Arc::clone(&core)));
         let workspace_backend: Arc<dyn WorkspaceBackend> =
             Arc::new(CoreWorkspaceBackend::new(Arc::clone(&core)));
+        let pulsations_backend: Arc<dyn PulsationsBackend> =
+            Arc::new(CorePulsationsBackend::new(Arc::clone(&core)));
+        let vault_backend: Arc<dyn VaultBackend> =
+            Arc::new(CoreVaultBackend::new(Arc::clone(&core)));
         let mut model = Self::build(
             Some(core),
             Some(session_persistence),
             Some(workspace_backend),
             cx,
         );
+        model.pulsations_backend = Some(pulsations_backend);
+        model.vault_backend = Some(vault_backend);
         model.start_lifecycle(cx);
         cx.on_app_quit(|model, cx| model.flush_pending_session(cx))
             .detach();
@@ -206,6 +227,18 @@ impl AppModel {
         Self::build(None, None, Some(backend), cx)
     }
 
+    #[cfg(test)]
+    fn new_for_test_with_domain_backends(
+        pulsations_backend: Arc<dyn PulsationsBackend>,
+        vault_backend: Arc<dyn VaultBackend>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut model = Self::build(None, None, None, cx);
+        model.pulsations_backend = Some(pulsations_backend);
+        model.vault_backend = Some(vault_backend);
+        model
+    }
+
     fn build(
         core: Option<Arc<AppCore>>,
         session_persistence: Option<Arc<dyn SessionPersistence>>,
@@ -219,18 +252,33 @@ impl AppModel {
         });
         let workspace = cx.new(WorkspaceEditorModel::new);
         let editor = workspace.read(cx).editor.clone();
-        let subscriptions = vec![cx.observe(&editor, |model, _, cx| {
-            model.handle_editor_update(cx);
-            model.schedule_session_persistence(cx);
-        })];
+        let pulsation_feature_input =
+            cx.new(|cx| NativeTextInput::new("Nome da funcionalidade", cx));
+        let vault_search_input = cx.new(|cx| NativeTextInput::new("Texto ou regex", cx));
+        let vault_rename_input = cx.new(|cx| NativeTextInput::new("Novo nome da nota", cx));
+        let subscriptions = vec![
+            cx.observe(&editor, |model, _, cx| {
+                model.handle_editor_update(cx);
+                model.schedule_vault_context_documents(cx);
+                model.schedule_session_persistence(cx);
+            }),
+            cx.observe(&pulsation_feature_input, |_, _, cx| cx.notify()),
+            cx.observe(&vault_search_input, |_, _, cx| cx.notify()),
+            cx.observe(&vault_rename_input, |_, _, cx| cx.notify()),
+        ];
         Self {
             core,
             session_persistence,
             workspace_backend,
+            pulsations_backend: None,
+            vault_backend: None,
             navigation,
             workspace,
             pulsations: cx.new(|_| PulsationsModel::default()),
             vault: cx.new(|_| VaultModel::default()),
+            pulsation_feature_input,
+            vault_search_input,
+            vault_rename_input,
             chat: cx.new(|_| ChatModel::default()),
             settings: cx.new(|_| SettingsModel::default()),
             logs: cx.new(|_| LogsModel::default()),
@@ -251,6 +299,13 @@ impl AppModel {
             file_tasks: HashMap::new(),
             autosave_tasks: HashMap::new(),
             hitl_task: None,
+            pulsations_task: None,
+            pulsation_artifacts_task: None,
+            vault_refresh_task: None,
+            vault_search_task: None,
+            vault_rename_task: None,
+            vault_context_task: None,
+            vault_document_tasks: HashMap::new(),
             session_task: None,
             _subscriptions: subscriptions,
         }
@@ -382,9 +437,22 @@ impl AppModel {
         relative_path: impl Into<String>,
         cx: &mut Context<Self>,
     ) {
+        self.open_workspace_file_at(relative_path, None, cx);
+    }
+
+    pub(crate) fn open_workspace_file_at(
+        &mut self,
+        relative_path: impl Into<String>,
+        cursor: Option<TextPosition>,
+        cx: &mut Context<Self>,
+    ) {
         let relative_path = relative_path.into();
         if self.workspace.read(cx).tab(&relative_path).is_some() {
             self.select_workspace_tab(&relative_path, cx);
+            if let Some(cursor) = cursor {
+                self.apply_workspace_cursor(cursor, cx);
+            }
+            self.select_view(AppView::Workspace, cx);
             return;
         }
         let Some(backend) = self.workspace_backend.clone() else {
@@ -409,6 +477,10 @@ impl AppModel {
                         );
                     });
                     model.restore_editor_for_active(cx);
+                    if let Some(cursor) = cursor {
+                        model.apply_workspace_cursor(cursor, cx);
+                    }
+                    model.select_view(AppView::Workspace, cx);
                     model.status = format!("Arquivo aberto: {requested_path}").into();
                     model.schedule_session_persistence(cx);
                     cx.notify();
@@ -421,6 +493,21 @@ impl AppModel {
             });
         });
         self.file_tasks.insert(task_key, task);
+    }
+
+    fn apply_workspace_cursor(&mut self, cursor: TextPosition, cx: &mut Context<Self>) {
+        let editor = self.workspace.read(cx).editor.clone();
+        editor.update(cx, |editor, cx| {
+            if editor
+                .buffer
+                .set_selection(EditorSelection::caret(cursor))
+                .is_ok()
+            {
+                editor.buffer.set_scroll_top(cursor.line as f32 * 20.0);
+                cx.notify();
+            }
+        });
+        self.sync_active_editor(cx);
     }
 
     pub fn select_workspace_tab(&mut self, relative_path: &str, cx: &mut Context<Self>) {
@@ -461,6 +548,24 @@ impl AppModel {
         view_mode: WorkspaceViewMode,
         cx: &mut Context<Self>,
     ) {
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.set_workspace_override(view_mode);
+        });
+        self.workspace.update(cx, |workspace, _| {
+            workspace.view_mode = view_mode;
+            if view_mode == WorkspaceViewMode::Editor {
+                workspace.diff_expanded = false;
+            }
+        });
+        self.schedule_session_persistence(cx);
+        cx.notify();
+    }
+
+    pub fn clear_workspace_view_override(&mut self, cx: &mut Context<Self>) {
+        let view_mode = self.pulsations.update(cx, |pulsations, _| {
+            pulsations.clear_workspace_override();
+            pulsations.derived_workspace_mode()
+        });
         self.workspace.update(cx, |workspace, _| {
             workspace.view_mode = view_mode;
             if view_mode == WorkspaceViewMode::Editor {
@@ -572,6 +677,515 @@ impl AppModel {
         self.file_tasks.insert(task_key, task);
     }
 
+    pub(crate) fn refresh_pulsations(&mut self, cx: &mut Context<Self>) {
+        let preferred = self.pulsations.read(cx).active_id();
+        self.refresh_pulsations_with_preferred(preferred, cx);
+    }
+
+    fn refresh_pulsations_with_preferred(
+        &mut self,
+        preferred_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.runtime_loading = true;
+            pulsations.error = None;
+        });
+        self.pulsations_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.runtime_snapshot(project_id.clone()).await;
+            let _ = this.update(cx, |model, cx| match result {
+                Ok(snapshot) => {
+                    let active_id = model.apply_pulsation_snapshot(
+                        project_id,
+                        snapshot,
+                        preferred_id.as_deref(),
+                        cx,
+                    );
+                    if let Some(active_id) = active_id {
+                        model.refresh_pulsation_artifacts(active_id, cx);
+                    }
+                }
+                Err(error) => {
+                    model.pulsations.update(cx, |pulsations, _| {
+                        pulsations.runtime_loading = false;
+                        pulsations.error = Some(error.clone());
+                    });
+                    model.notices.push(HeaderNoticeKind::Warning, error);
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    fn apply_pulsation_snapshot(
+        &mut self,
+        project_id: String,
+        snapshot: PulsationRuntimeSnapshot,
+        preferred_id: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let (active_id, workspace_mode) = self.pulsations.update(cx, |pulsations, _| {
+            let active_id = pulsations.apply_snapshot(project_id, snapshot, preferred_id);
+            (active_id, pulsations.derived_workspace_mode())
+        });
+        self.workspace.update(cx, |workspace, _| {
+            workspace.view_mode = workspace_mode;
+            if workspace_mode == WorkspaceViewMode::Editor {
+                workspace.diff_expanded = false;
+            }
+        });
+        cx.notify();
+        active_id
+    }
+
+    fn refresh_pulsation_artifacts(&mut self, pulsation_id: String, cx: &mut Context<Self>) {
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.artifacts_loading = true;
+        });
+        self.pulsation_artifacts_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.artifacts(pulsation_id.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                model.pulsations.update(cx, |pulsations, _| {
+                    pulsations.finish_artifacts(&pulsation_id, result);
+                });
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn select_pulsation(
+        &mut self,
+        pulsation_id: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let pulsation_id = pulsation_id.into();
+        let (selected, workspace_mode) = self.pulsations.update(cx, |pulsations, _| {
+            let selected = pulsations.select(&pulsation_id);
+            (selected, pulsations.derived_workspace_mode())
+        });
+        if !selected {
+            return;
+        }
+        self.workspace.update(cx, |workspace, _| {
+            workspace.view_mode = workspace_mode;
+            workspace.diff_expanded = false;
+        });
+        self.refresh_pulsation_artifacts(pulsation_id, cx);
+        self.schedule_session_persistence(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn create_pulsation(&mut self, cx: &mut Context<Self>) {
+        let feature_name = self
+            .pulsation_feature_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
+        if feature_name.is_empty() {
+            return;
+        }
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.runtime_loading = true;
+            pulsations.notice = None;
+            pulsations.error = None;
+        });
+        self.pulsations_task = Some(cx.spawn(async move |this, cx| {
+            let result = match backend
+                .create(project_id.clone(), feature_name.clone())
+                .await
+            {
+                Ok(created) => backend
+                    .runtime_snapshot(project_id.clone())
+                    .await
+                    .map(|snapshot| (created, snapshot)),
+                Err(error) => Err(error),
+            };
+            let _ = this.update(cx, |model, cx| match result {
+                Ok((created, snapshot)) => {
+                    let active_id =
+                        model.apply_pulsation_snapshot(project_id, snapshot, Some(&created.id), cx);
+                    model.pulsations.update(cx, |pulsations, _| {
+                        pulsations.notice =
+                            Some(format!("Pulsação “{}” iniciada.", created.feature_name));
+                    });
+                    model
+                        .pulsation_feature_input
+                        .update(cx, |input, cx| input.clear(cx));
+                    if let Some(active_id) = active_id {
+                        model.refresh_pulsation_artifacts(active_id, cx);
+                    }
+                    model.schedule_session_persistence(cx);
+                }
+                Err(error) => {
+                    model.pulsations.update(cx, |pulsations, _| {
+                        pulsations.runtime_loading = false;
+                        pulsations.error = Some(error.clone());
+                    });
+                    model.notices.push(HeaderNoticeKind::Error, error);
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_active_pulsation_jobs(&mut self, cx: &mut Context<Self>) {
+        let Some(pulsation_id) = self.pulsations.read(cx).active_id() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.runtime_loading = true;
+            pulsations.notice = None;
+        });
+        self.pulsations_task = Some(cx.spawn(async move |this, cx| {
+            let result = match backend.cancel_jobs(pulsation_id.clone()).await {
+                Ok(cancelled) => backend
+                    .runtime_snapshot(project_id.clone())
+                    .await
+                    .map(|snapshot| (cancelled, snapshot)),
+                Err(error) => Err(error),
+            };
+            let _ = this.update(cx, |model, cx| match result {
+                Ok((cancelled, snapshot)) => {
+                    let active_id = model.apply_pulsation_snapshot(
+                        project_id,
+                        snapshot,
+                        Some(&pulsation_id),
+                        cx,
+                    );
+                    model.pulsations.update(cx, |pulsations, _| {
+                        pulsations.notice =
+                            Some(format!("{cancelled} job(s) marcado(s) para cancelamento."));
+                    });
+                    if let Some(active_id) = active_id {
+                        model.refresh_pulsation_artifacts(active_id, cx);
+                    }
+                }
+                Err(error) => {
+                    model.pulsations.update(cx, |pulsations, _| {
+                        pulsations.runtime_loading = false;
+                        pulsations.error = Some(error.clone());
+                    });
+                    model.notices.push(HeaderNoticeKind::Error, error);
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    pub(crate) fn refresh_vault(&mut self, force_rebuild: bool, cx: &mut Context<Self>) {
+        if self.vault.read(cx).workspace_root.is_none() {
+            return;
+        }
+        let Some(backend) = self.vault_backend.clone() else {
+            return;
+        };
+        self.vault.update(cx, |vault, _| {
+            vault.refreshing_tree = true;
+            vault.indexing = true;
+            vault.error = None;
+        });
+        self.vault_refresh_task = Some(cx.spawn(async move |this, cx| {
+            let (tree, index) = tokio::join!(backend.tree(), backend.index(force_rebuild));
+            let _ = this.update(cx, |model, cx| {
+                let selected = model.vault.update(cx, |vault, _| {
+                    vault.apply_tree(tree);
+                    vault.apply_index(index);
+                    vault.selected_path.as_ref().map(ToString::to_string)
+                });
+                if let Some(selected) = selected {
+                    model.ensure_vault_documents(vec![selected], cx);
+                }
+                model.schedule_vault_context_documents(cx);
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn schedule_vault_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.vault.read(cx).workspace_root.is_none() {
+            return;
+        }
+        self.vault.update(cx, |vault, _| vault.stale = true);
+        let timer = cx.background_executor().timer(VAULT_REFRESH_DEBOUNCE);
+        self.vault_refresh_task = Some(cx.spawn(async move |this, cx| {
+            timer.await;
+            let _ = this.update(cx, |model, cx| model.refresh_vault(false, cx));
+        }));
+        cx.notify();
+    }
+
+    pub(crate) fn set_vault_search_mode(
+        &mut self,
+        search_mode: SearchMode,
+        cx: &mut Context<Self>,
+    ) {
+        self.vault.update(cx, |vault, _| {
+            vault.search_mode = search_mode;
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_vault_search_case(&mut self, cx: &mut Context<Self>) {
+        self.vault.update(cx, |vault, _| {
+            vault.search_case_sensitive = !vault.search_case_sensitive;
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn search_vault(&mut self, cx: &mut Context<Self>) {
+        let query = self.vault_search_input.read(cx).value().to_owned();
+        let request = self.vault.update(cx, |vault, _| {
+            vault.search_query = query;
+            let request = vault.search_request();
+            if request.is_some() {
+                vault.searching = true;
+                vault.error = None;
+            } else {
+                vault.search_response = None;
+            }
+            request
+        });
+        let Some(request) = request else {
+            cx.notify();
+            return;
+        };
+        let Some(backend) = self.vault_backend.clone() else {
+            return;
+        };
+        self.vault_search_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.search(request).await;
+            let _ = this.update(cx, |model, cx| {
+                model
+                    .vault
+                    .update(cx, |vault, _| vault.apply_search(result));
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    pub(crate) fn clear_vault_search(&mut self, cx: &mut Context<Self>) {
+        self.vault_search_task.take();
+        self.vault_search_input
+            .update(cx, |input, cx| input.clear(cx));
+        self.vault.update(cx, |vault, _| {
+            vault.search_query.clear();
+            vault.search_response = None;
+            vault.searching = false;
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn select_vault_path(
+        &mut self,
+        relative_path: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let relative_path = relative_path.into();
+        self.vault.update(cx, |vault, _| {
+            vault.select(Some(relative_path.clone()));
+        });
+        let file_name = relative_path.rsplit('/').next().unwrap_or(&relative_path);
+        self.vault_rename_input
+            .update(cx, |input, cx| input.set_value(file_name, cx));
+        self.ensure_vault_documents(vec![relative_path], cx);
+        self.schedule_session_persistence(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn ensure_vault_documents(
+        &mut self,
+        relative_paths: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.vault_backend.clone() else {
+            return;
+        };
+        let mut unique = relative_paths;
+        unique.sort();
+        unique.dedup();
+        for relative_path in unique {
+            let should_load = self
+                .vault
+                .update(cx, |vault, _| vault.begin_document_load(&relative_path));
+            if !should_load {
+                continue;
+            }
+            let document_backend = Arc::clone(&backend);
+            let task_path = relative_path.clone();
+            let task = cx.spawn(async move |this, cx| {
+                let result = document_backend.read(task_path.clone()).await;
+                let _ = this.update(cx, |model, cx| {
+                    model.vault.update(cx, |vault, _| {
+                        vault.finish_document_load(task_path, result);
+                    });
+                    cx.notify();
+                });
+            });
+            self.vault_document_tasks.insert(relative_path, task);
+        }
+        cx.notify();
+    }
+
+    fn schedule_vault_context_documents(&mut self, cx: &mut Context<Self>) {
+        if self.vault.read(cx).workspace_root.is_none() {
+            return;
+        }
+        let timer = cx.background_executor().timer(CONTEXT_DOCUMENTS_DEBOUNCE);
+        self.vault_context_task = Some(cx.spawn(async move |this, cx| {
+            timer.await;
+            let _ = this.update(cx, |model, cx| {
+                let active_path = model.active_workspace_path(cx);
+                let paths = model.vault.read(cx).context_paths(active_path.as_deref());
+                model.ensure_vault_documents(paths, cx);
+            });
+        }));
+    }
+
+    pub(crate) fn rename_selected_vault_note(&mut self, cx: &mut Context<Self>) {
+        let Some(from_relative_path) = self
+            .vault
+            .read(cx)
+            .selected_path
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let requested_name = self.vault_rename_input.read(cx).value().to_owned();
+        let target = match normalize_rename_target(&from_relative_path, &requested_name) {
+            Ok(Some(target)) => target,
+            Ok(None) => return,
+            Err(error) => {
+                self.vault.update(cx, |vault, _| vault.error = Some(error));
+                cx.notify();
+                return;
+            }
+        };
+        if self
+            .workspace
+            .read(cx)
+            .tab(&from_relative_path)
+            .is_some_and(|tab| tab.dirty || tab.saving)
+        {
+            self.vault.update(cx, |vault, _| {
+                vault.error = Some(
+                    "Salve a nota aberta antes de renomeá-la para evitar perda de alterações."
+                        .into(),
+                );
+            });
+            cx.notify();
+            return;
+        }
+        let Some(backend) = self.vault_backend.clone() else {
+            return;
+        };
+        let was_open = self.workspace.read(cx).tab(&from_relative_path).is_some();
+        self.vault.update(cx, |vault, _| {
+            vault.renaming = true;
+            vault.error = None;
+        });
+        self.vault_rename_task = Some(cx.spawn(async move |this, cx| {
+            let renamed = backend
+                .rename(hvc_core::workspace_service::RenameWorkspaceNoteRequest {
+                    from_relative_path: from_relative_path.clone(),
+                    to_relative_path: target,
+                })
+                .await;
+            let result = match renamed {
+                Ok(response) => {
+                    let (tree, index) = tokio::join!(backend.tree(), backend.index(true));
+                    Ok((response, tree, index))
+                }
+                Err(error) => Err(error),
+            };
+            let _ = this.update(cx, |model, cx| match result {
+                Ok((response, tree, index)) => {
+                    let renamed_to = response.renamed_to.clone();
+                    model.vault.update(cx, |vault, _| {
+                        vault.apply_rename(&from_relative_path, &response);
+                        vault.apply_tree(tree);
+                        vault.apply_index(index);
+                    });
+                    if was_open {
+                        model.close_workspace_tab(&from_relative_path, cx);
+                        model.open_workspace_file(renamed_to.clone(), cx);
+                    }
+                    let renamed_name = renamed_to
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&renamed_to)
+                        .to_owned();
+                    model
+                        .vault_rename_input
+                        .update(cx, |input, cx| input.set_value(renamed_name, cx));
+                    model.schedule_session_persistence(cx);
+                    cx.notify();
+                }
+                Err(error) => {
+                    model.vault.update(cx, |vault, _| {
+                        vault.renaming = false;
+                        vault.error = Some(error.clone());
+                    });
+                    model.notices.push(HeaderNoticeKind::Error, error);
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_vault_graph(&mut self, cx: &mut Context<Self>) {
+        self.vault.update(cx, |vault, _| {
+            vault.graph_expanded = !vault.graph_expanded;
+        });
+        cx.notify();
+    }
+
     pub(crate) fn apply_hitl_decision(&mut self, decision: HitlDecision, cx: &mut Context<Self>) {
         let request = self
             .pulsations
@@ -610,6 +1224,7 @@ impl AppModel {
                     pulsations.hitl.finish(result.clone());
                     if result.is_ok() {
                         pulsations.awaiting_hitl = pulsations.awaiting_hitl.saturating_sub(1);
+                        pulsations.clear_workspace_override();
                     }
                 });
                 match result {
@@ -620,6 +1235,7 @@ impl AppModel {
                         });
                         model.status = "Decisão HITL aplicada".into();
                         model.schedule_session_persistence(cx);
+                        model.refresh_pulsations(cx);
                     }
                     Err(error) => {
                         model.status = "Falha ao aplicar decisão HITL".into();
@@ -883,6 +1499,9 @@ impl AppModel {
             }
         }));
 
+        let Some(pulsations_backend) = self.pulsations_backend.clone() else {
+            return;
+        };
         let timer = cx.background_executor().clone();
         self.polling_task = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -912,45 +1531,23 @@ impl AppModel {
                     continue;
                 };
 
-                let worker_core = Arc::clone(&core);
-                let runtime = core.runtime_handle().clone();
-                let snapshot = runtime
-                    .spawn_blocking(move || {
-                        worker_core.persistence().get_pulsation_runtime_snapshot(
-                            GetPulsationRuntimeSnapshotRequest { project_id },
-                        )
-                    })
+                let snapshot = pulsations_backend
+                    .runtime_snapshot(project_id.clone())
                     .await;
                 if this
                     .update(cx, |model, cx| {
                         model.lifecycle.finish_poll();
                         match snapshot {
-                            Ok(Ok(response)) => {
-                                let checkpoint = response
-                                    .snapshot
-                                    .pulsations
-                                    .iter()
-                                    .find(|pulsation| {
-                                        pulsation.status == PulsationStatus::Checkpoint
-                                    })
-                                    .cloned();
-                                model.pulsations.update(cx, |pulsations, _| {
-                                    pulsations.awaiting_hitl = response.snapshot.hitl_waiting_count;
-                                    pulsations.running_jobs =
-                                        response.snapshot.background_agents_count;
-                                    pulsations.hitl.load_checkpoint(checkpoint.as_ref());
-                                    if let Some(checkpoint) = checkpoint {
-                                        pulsations.active_pulsation_id = Some(checkpoint.id.into());
-                                    }
-                                });
+                            Ok(snapshot) => {
+                                let active_id =
+                                    model.apply_pulsation_snapshot(project_id, snapshot, None, cx);
+                                if let Some(active_id) = active_id {
+                                    model.refresh_pulsation_artifacts(active_id, cx);
+                                }
                             }
-                            Ok(Err(error)) => model.notices.push(
-                                HeaderNoticeKind::Warning,
-                                format!("Falha ao atualizar runtime: {error}"),
-                            ),
                             Err(error) => model.notices.push(
                                 HeaderNoticeKind::Warning,
-                                format!("Worker de runtime interrompido: {error}"),
+                                format!("Falha ao atualizar runtime: {error}"),
                             ),
                         }
                         cx.notify();
@@ -1025,6 +1622,8 @@ impl AppModel {
         self.hydrating = true;
         self.suppress_editor_sync = true;
         let session = restored.session.as_ref();
+        let preferred_pulsation_id = session.and_then(|value| value.active_pulsation_id.clone());
+        let restored_vault_selection = session.and_then(|value| value.selected_vault_path.clone());
         let active_view = session
             .map(|session| AppView::from_id(&session.active_view))
             .unwrap_or(AppView::Workspace);
@@ -1099,14 +1698,15 @@ impl AppModel {
             }
         });
         self.pulsations.update(cx, |pulsations, _| {
-            pulsations.active_pulsation_id = session
-                .and_then(|value| value.active_pulsation_id.clone())
-                .map(Into::into);
+            pulsations.reset(Some(restored.project_id.clone()));
+            pulsations.active_pulsation_id = preferred_pulsation_id.clone().map(Into::into);
         });
         self.vault.update(cx, |vault, _| {
-            vault.selected_path = session
-                .and_then(|value| value.selected_vault_path.clone())
-                .map(Into::into);
+            vault.hydrate_workspace(
+                restored.root_path.clone(),
+                restored.tree.clone(),
+                restored_vault_selection.clone(),
+            );
         });
         self.chat.update(cx, |chat, _| {
             chat.active_conversation = session
@@ -1121,6 +1721,8 @@ impl AppModel {
             self.notices.push(HeaderNoticeKind::Notice, notice);
         }
         self.hydrating = false;
+        self.refresh_pulsations_with_preferred(preferred_pulsation_id, cx);
+        self.refresh_vault(true, cx);
         cx.notify();
     }
 
@@ -1243,6 +1845,13 @@ impl AppModel {
         self.file_tasks.clear();
         self.autosave_tasks.clear();
         self.hitl_task.take();
+        self.pulsations_task.take();
+        self.pulsation_artifacts_task.take();
+        self.vault_refresh_task.take();
+        self.vault_search_task.take();
+        self.vault_rename_task.take();
+        self.vault_context_task.take();
+        self.vault_document_tasks.clear();
         self.session_task.take();
         self.session_generation = self.session_generation.saturating_add(1);
         self.workspace_save_generations.clear();
@@ -1288,6 +1897,7 @@ impl AppModel {
         let should_reload = self.workspace.update(cx, |workspace, _| {
             workspace.mark_external_change(&event.relative_path, &event.kind)
         });
+        self.schedule_vault_refresh(cx);
         if !should_reload {
             return;
         }
@@ -1397,9 +2007,16 @@ mod tests {
     use std::sync::Mutex;
 
     use gpui::TestAppContext;
+    use hvc_core::persistence_service::{Artifact, Pulsation, PulsationStage, PulsationStatus};
     use hvc_core::workspace_service::WorkspaceErrorCode::Conflict;
+    use hvc_core::workspace_service::{
+        GetWorkspaceVaultIndexResponse, RenameWorkspaceNoteRequest, RenameWorkspaceNoteResponse,
+        SearchMatch, SearchWorkspaceTextRequest, SearchWorkspaceTextResponse, VaultNoteSummary,
+    };
 
     use super::*;
+    use crate::pulsations::PulsationsFuture;
+    use crate::vault::VaultFuture;
     use crate::workspace::{WorkspaceFileSnapshot, WorkspaceFuture, WorkspaceOperationError};
 
     #[derive(Default)]
@@ -1483,6 +2100,230 @@ mod tests {
         }
     }
 
+    struct RecordingPulsationsBackend {
+        snapshot_calls: Arc<Mutex<usize>>,
+        artifact_calls: Arc<Mutex<Vec<String>>>,
+        create_calls: Arc<Mutex<Vec<(String, String)>>>,
+        cancel_calls: Arc<Mutex<Vec<String>>>,
+        snapshot: Arc<Mutex<PulsationRuntimeSnapshot>>,
+        artifacts: Arc<Mutex<Vec<Artifact>>>,
+    }
+
+    impl RecordingPulsationsBackend {
+        fn new() -> Self {
+            Self {
+                snapshot_calls: Arc::new(Mutex::new(0)),
+                artifact_calls: Arc::new(Mutex::new(Vec::new())),
+                create_calls: Arc::new(Mutex::new(Vec::new())),
+                cancel_calls: Arc::new(Mutex::new(Vec::new())),
+                snapshot: Arc::new(Mutex::new(PulsationRuntimeSnapshot {
+                    pulsations: vec![test_pulsation()],
+                    hitl_waiting_count: 0,
+                    background_agents_count: 1,
+                })),
+                artifacts: Arc::new(Mutex::new(vec![test_artifact("Plan")])),
+            }
+        }
+    }
+
+    impl PulsationsBackend for RecordingPulsationsBackend {
+        fn runtime_snapshot(
+            &self,
+            _project_id: String,
+        ) -> PulsationsFuture<PulsationRuntimeSnapshot> {
+            *self
+                .snapshot_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+            let snapshot = self
+                .snapshot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            Box::pin(async move { Ok(snapshot) })
+        }
+
+        fn artifacts(&self, pulsation_id: String) -> PulsationsFuture<Vec<Artifact>> {
+            self.artifact_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(pulsation_id);
+            let artifacts = self
+                .artifacts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            Box::pin(async move { Ok(artifacts) })
+        }
+
+        fn create(&self, project_id: String, feature_name: String) -> PulsationsFuture<Pulsation> {
+            self.create_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((project_id, feature_name));
+            Box::pin(async { Ok(test_pulsation()) })
+        }
+
+        fn cancel_jobs(&self, pulsation_id: String) -> PulsationsFuture<usize> {
+            self.cancel_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(pulsation_id);
+            Box::pin(async { Ok(1) })
+        }
+    }
+
+    struct RecordingVaultBackend {
+        tree_calls: Arc<Mutex<usize>>,
+        index_calls: Arc<Mutex<Vec<bool>>>,
+        search_calls: Arc<Mutex<Vec<(String, bool, bool)>>>,
+        read_calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RecordingVaultBackend {
+        fn new() -> Self {
+            Self {
+                tree_calls: Arc::new(Mutex::new(0)),
+                index_calls: Arc::new(Mutex::new(Vec::new())),
+                search_calls: Arc::new(Mutex::new(Vec::new())),
+                read_calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl VaultBackend for RecordingVaultBackend {
+        fn tree(&self) -> VaultFuture<Vec<FileNode>> {
+            *self
+                .tree_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+            Box::pin(async { Ok(test_tree()) })
+        }
+
+        fn index(&self, force_rebuild: bool) -> VaultFuture<GetWorkspaceVaultIndexResponse> {
+            self.index_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(force_rebuild);
+            Box::pin(async { Ok(test_vault_index()) })
+        }
+
+        fn search(
+            &self,
+            request: SearchWorkspaceTextRequest,
+        ) -> VaultFuture<SearchWorkspaceTextResponse> {
+            self.search_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((
+                    request.query,
+                    matches!(request.mode, SearchMode::Regex),
+                    request.case_sensitive,
+                ));
+            Box::pin(async {
+                Ok(SearchWorkspaceTextResponse {
+                    matches: vec![SearchMatch {
+                        relative_path: "Features/Login.md".into(),
+                        line: 3,
+                        column: 4,
+                        line_text: "token".into(),
+                    }],
+                    truncated: false,
+                    scanned_files: 1,
+                })
+            })
+        }
+
+        fn read(&self, relative_path: String) -> VaultFuture<String> {
+            self.read_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(relative_path);
+            Box::pin(async { Ok("# Login".into()) })
+        }
+
+        fn rename(
+            &self,
+            request: RenameWorkspaceNoteRequest,
+        ) -> VaultFuture<RenameWorkspaceNoteResponse> {
+            Box::pin(async move {
+                Ok(RenameWorkspaceNoteResponse {
+                    renamed_to: request.to_relative_path,
+                    updated_references: 1,
+                    affected_files: 1,
+                })
+            })
+        }
+    }
+
+    fn test_pulsation() -> Pulsation {
+        Pulsation {
+            id: "pulse-1".into(),
+            project_id: "project-1".into(),
+            feature_name: "Login".into(),
+            stage: PulsationStage::Code,
+            status: PulsationStatus::Running,
+            created_at: "2026-08-22T00:00:00Z".into(),
+            updated_at: "2026-08-22T00:01:00Z".into(),
+        }
+    }
+
+    fn test_artifact(name: &str) -> Artifact {
+        Artifact {
+            id: format!("artifact-{name}"),
+            pulsation_id: "pulse-1".into(),
+            name: name.into(),
+            kind: "markdown".into(),
+            relative_path: Some("Features/Login.md".into()),
+            content_sha256: None,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        }
+    }
+
+    fn test_tree() -> Vec<FileNode> {
+        vec![FileNode {
+            name: "Login.md".into(),
+            relative_path: "Features/Login.md".into(),
+            kind: hvc_core::workspace_service::FileNodeKind::File,
+            children: Vec::new(),
+        }]
+    }
+
+    fn test_vault_index() -> GetWorkspaceVaultIndexResponse {
+        GetWorkspaceVaultIndexResponse {
+            notes: vec![VaultNoteSummary {
+                relative_path: "Features/Login.md".into(),
+                title: "Login".into(),
+                revision: "r1".into(),
+                frontmatter: None,
+                normalized_properties: None,
+                links: Vec::new(),
+                outgoing_paths: Vec::new(),
+                backlink_paths: Vec::new(),
+                schema_warnings: Vec::new(),
+            }],
+            edges: Vec::new(),
+            broken_links: Vec::new(),
+            indexed_at: "now".into(),
+        }
+    }
+
+    fn configure_domain_workspace(model: &mut AppModel, cx: &mut Context<AppModel>) {
+        model.workspace.update(cx, |workspace, _| {
+            workspace.project_id = Some("project-1".into());
+            workspace.root_path = Some("C:\\vault".into());
+            workspace.tree = test_tree();
+        });
+        model.vault.update(cx, |vault, _| {
+            vault.hydrate_workspace(
+                "C:\\vault".into(),
+                test_tree(),
+                Some("Features/Login.md".into()),
+            );
+        });
+    }
+
     fn configure_editable_tab(model: &mut AppModel, cx: &mut Context<AppModel>) {
         model.workspace.update(cx, |workspace, _| {
             workspace.open_tab("notes/one.md", "Inicial".into(), "rev-1".into());
@@ -1562,7 +2403,7 @@ mod tests {
             assert_eq!(model.workspace.read(cx).open_tab_count(), 0);
             assert_eq!(model.workspace.read(cx).editor.read(cx).buffer.text(), "");
             assert_eq!(model.pulsations.read(cx).running_jobs, 0);
-            assert_eq!(model.vault.read(cx).indexed_notes, 0);
+            assert!(model.vault.read(cx).index.is_none());
             assert!(!model.chat.read(cx).streaming);
             assert_eq!(model.settings.read(cx).configured_providers, 0);
             assert_eq!(model.logs.read(cx).visible_entries, 0);
@@ -1905,6 +2746,199 @@ mod tests {
             let workspace = model.read(cx).workspace.read(cx);
             assert_eq!(workspace.open_tab_count(), 1);
             assert_eq!(workspace.active_tab().unwrap().content, "# Disk");
+        });
+    }
+
+    #[gpui::test]
+    fn refreshes_pulsation_artifacts_through_the_typed_backend(cx: &mut TestAppContext) {
+        let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
+        let vault_backend = Arc::new(RecordingVaultBackend::new());
+        let snapshot_calls = Arc::clone(&pulsations_backend.snapshot_calls);
+        let artifact_calls = Arc::clone(&pulsations_backend.artifact_calls);
+        let artifacts = Arc::clone(&pulsations_backend.artifacts);
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                pulsations_backend.clone(),
+                vault_backend,
+                cx,
+            )
+        });
+
+        model.update(cx, |model, cx| {
+            configure_domain_workspace(model, cx);
+            model.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            *snapshot_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            1
+        );
+        assert_eq!(
+            *artifact_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec!["pulse-1"]
+        );
+        cx.read(|cx| {
+            assert_eq!(model.read(cx).pulsations.read(cx).artifacts[0].name, "Plan");
+        });
+
+        *artifacts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            vec![test_artifact("Generated code")];
+        model.update(cx, AppModel::refresh_pulsations);
+        cx.run_until_parked();
+
+        assert_eq!(
+            *artifact_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec!["pulse-1", "pulse-1"]
+        );
+        cx.read(|cx| {
+            assert_eq!(
+                model.read(cx).pulsations.read(cx).artifacts[0].name,
+                "Generated code"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn creates_and_cancels_pulsations_through_the_typed_backend(cx: &mut TestAppContext) {
+        let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
+        let vault_backend = Arc::new(RecordingVaultBackend::new());
+        let create_calls = Arc::clone(&pulsations_backend.create_calls);
+        let cancel_calls = Arc::clone(&pulsations_backend.cancel_calls);
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(pulsations_backend, vault_backend, cx)
+        });
+
+        model.update(cx, |model, cx| {
+            configure_domain_workspace(model, cx);
+            model
+                .pulsation_feature_input
+                .update(cx, |input, cx| input.set_value("Login", cx));
+            model.create_pulsation(cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            *create_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![("project-1".into(), "Login".into())]
+        );
+        cx.read(|cx| {
+            let model = model.read(cx);
+            assert!(model.pulsation_feature_input.read(cx).value().is_empty());
+            assert_eq!(
+                model.pulsations.read(cx).notice.as_deref(),
+                Some("Pulsação “Login” iniciada.")
+            );
+        });
+
+        model.update(cx, AppModel::cancel_active_pulsation_jobs);
+        cx.run_until_parked();
+
+        assert_eq!(
+            *cancel_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec!["pulse-1"]
+        );
+        cx.read(|cx| {
+            assert_eq!(
+                model.read(cx).pulsations.read(cx).notice.as_deref(),
+                Some("1 job(s) marcado(s) para cancelamento.")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn debounces_vault_refresh_and_deduplicates_document_reads(cx: &mut TestAppContext) {
+        let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
+        let vault_backend = Arc::new(RecordingVaultBackend::new());
+        let tree_calls = Arc::clone(&vault_backend.tree_calls);
+        let index_calls = Arc::clone(&vault_backend.index_calls);
+        let search_calls = Arc::clone(&vault_backend.search_calls);
+        let read_calls = Arc::clone(&vault_backend.read_calls);
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(pulsations_backend, vault_backend, cx)
+        });
+
+        model.update(cx, |model, cx| {
+            configure_domain_workspace(model, cx);
+            model
+                .vault_search_input
+                .update(cx, |input, cx| input.set_value("token", cx));
+            model.set_vault_search_mode(SearchMode::Regex, cx);
+            model.toggle_vault_search_case(cx);
+            model.search_vault(cx);
+            model.ensure_vault_documents(
+                vec!["Features/Login.md".into(), "Features/Login.md".into()],
+                cx,
+            );
+            model.ensure_vault_documents(vec!["Features/Login.md".into()], cx);
+            model.schedule_vault_refresh(cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            *search_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![("token".into(), true, true)]
+        );
+        assert_eq!(
+            *read_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec!["Features/Login.md"]
+        );
+
+        cx.executor()
+            .advance_clock(VAULT_REFRESH_DEBOUNCE - std::time::Duration::from_millis(1));
+        cx.run_until_parked();
+        assert_eq!(
+            *tree_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            0
+        );
+        assert!(
+            index_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(1));
+        cx.run_until_parked();
+        assert_eq!(
+            *tree_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            1
+        );
+        assert_eq!(
+            *index_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![false]
+        );
+        cx.read(|cx| {
+            let vault = model.read(cx).vault.read(cx);
+            assert!(!vault.stale);
+            assert_eq!(vault.search_response.as_ref().unwrap().matches.len(), 1);
+            assert_eq!(
+                vault.documents.get("Features/Login.md").map(String::as_str),
+                Some("# Login")
+            );
         });
     }
 }

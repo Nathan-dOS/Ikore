@@ -13,12 +13,16 @@ use hvc_editor::{DiffMark, MarkdownBlock, build_diff_rows, parse_markdown};
 use crate::app_model::{AppModel, AppView};
 use crate::hitl::{ApproveHitl, RequestHitlRevision, register_hitl_keybindings};
 use crate::native_editor::register_editor_keybindings;
+use crate::pulsations_view::pulsations_panel;
 use crate::session::{HeaderNotice, HeaderNoticeKind};
+use crate::text_input::register_text_input_keybindings;
 use crate::theme;
+use crate::vault_view::vault_panel;
 use crate::workspace::{WorkspaceTabModel, WorkspaceViewMode};
 
 pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> {
     register_editor_keybindings(cx);
+    register_text_input_keybindings(cx);
     register_hitl_keybindings(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
@@ -257,27 +261,17 @@ fn content_panel(model: &AppModel, active: AppView, cx: &mut Context<AppModel>) 
     if active == AppView::Workspace {
         return workspace_content_panel(model, cx).into_any_element();
     }
+    if active == AppView::Pulsations {
+        return pulsations_panel(model, cx);
+    }
+    if active == AppView::Vault {
+        return vault_panel(model, cx);
+    }
 
     let (metric, note) = match active {
         AppView::Workspace => unreachable!("workspace possui painel nativo específico"),
-        AppView::Pulsations => {
-            let view = model.pulsations.read(cx);
-            (
-                format!("{} job(s) em execução", view.running_jobs),
-                format!("{} decisão(ões) HITL aguardando", view.awaiting_hitl),
-            )
-        }
-        AppView::Vault => {
-            let view = model.vault.read(cx);
-            (
-                format!("{} nota(s) indexada(s)", view.indexed_notes),
-                if view.stale {
-                    "Snapshot desatualizado"
-                } else {
-                    "Índice sincronizado"
-                }
-                .into(),
-            )
+        AppView::Pulsations | AppView::Vault => {
+            unreachable!("views de domínio possuem painéis nativos específicos")
         }
         AppView::Chat => {
             let view = model.chat.read(cx);
@@ -405,16 +399,19 @@ fn workspace_content_panel(model: &AppModel, cx: &mut Context<AppModel>) -> impl
         .as_deref()
         .and_then(|path| tabs.iter().find(|tab| tab.relative_path.as_ref() == path))
         .cloned();
-    let hitl = {
+    let (hitl, workspace_mode_overridden) = {
         let pulsations = model.pulsations.read(cx);
-        HitlSurfaceContent {
-            checkpoint_id: pulsations.hitl.pulsation_id.clone(),
-            title: pulsations.hitl.title.clone(),
-            input: pulsations.hitl.input.clone(),
-            generated: pulsations.hitl.generated.clone(),
-            busy: pulsations.hitl.busy,
-            error: pulsations.hitl.error.clone(),
-        }
+        (
+            HitlSurfaceContent {
+                checkpoint_id: pulsations.hitl.pulsation_id.clone(),
+                title: pulsations.hitl.title.clone(),
+                input: pulsations.hitl.input.clone(),
+                generated: pulsations.hitl.generated.clone(),
+                busy: pulsations.hitl.busy,
+                error: pulsations.hitl.error.clone(),
+            },
+            pulsations.workspace_view_override.is_some(),
+        )
     };
     let mut tree_rows = Vec::new();
     flatten_workspace_tree(&tree, 0, &mut tree_rows);
@@ -423,6 +420,19 @@ fn workspace_content_panel(model: &AppModel, cx: &mut Context<AppModel>) -> impl
         .map(ToString::to_string)
         .unwrap_or_else(|| "Nenhum workspace selecionado".into());
     let active_for_conflict = active_path.clone();
+    let context_documents = {
+        let vault = model.vault.read(cx);
+        vault
+            .context_paths(active_path.as_deref())
+            .into_iter()
+            .filter_map(|path| {
+                vault
+                    .documents
+                    .get(&path)
+                    .map(|content| (path, content.clone()))
+            })
+            .collect::<Vec<_>>()
+    };
 
     div()
         .flex_1()
@@ -472,6 +482,22 @@ fn workspace_content_panel(model: &AppModel, cx: &mut Context<AppModel>) -> impl
                             WorkspaceViewMode::Hitl,
                             cx,
                         ))
+                        .when(workspace_mode_overridden, |controls| {
+                            controls.child(
+                                div()
+                                    .id("workspace-mode-auto")
+                                    .px_3()
+                                    .py_2()
+                                    .rounded_md()
+                                    .bg(theme::surface_raised())
+                                    .text_color(theme::text_muted())
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|model, _, _, cx| {
+                                        model.clear_workspace_view_override(cx);
+                                    }))
+                                    .child("Modo automático"),
+                            )
+                        })
                         .child(
                             div()
                                 .id("choose-workspace")
@@ -604,7 +630,7 @@ fn workspace_content_panel(model: &AppModel, cx: &mut Context<AppModel>) -> impl
                         }),
                 )
                 .when(!diff_expanded && context_drawer_open, |layout| {
-                    layout.child(context_drawer(active_tab.as_ref()))
+                    layout.child(context_drawer(active_tab.as_ref(), context_documents))
                 }),
         )
 }
@@ -817,7 +843,7 @@ fn workspace_editor_surface(
         })
 }
 
-fn render_markdown_block(block: MarkdownBlock) -> AnyElement {
+pub(crate) fn render_markdown_block(block: MarkdownBlock) -> AnyElement {
     match block {
         MarkdownBlock::Heading { level, text } => div()
             .mt_2()
@@ -1079,7 +1105,10 @@ fn hitl_button(
         .child(label)
 }
 
-fn context_drawer(active_tab: Option<&WorkspaceTabModel>) -> impl IntoElement {
+fn context_drawer(
+    active_tab: Option<&WorkspaceTabModel>,
+    documents: Vec<(String, String)>,
+) -> impl IntoElement {
     let (path, revision, state) = active_tab.map_or_else(
         || ("Nenhum arquivo".into(), "—".into(), "ocioso".into()),
         |tab| {
@@ -1117,6 +1146,35 @@ fn context_drawer(active_tab: Option<&WorkspaceTabModel>) -> impl IntoElement {
         .child(context_item("Arquivo", path))
         .child(context_item("Revisão", revision))
         .child(context_item("Estado", state))
+        .when(documents.is_empty(), |drawer| {
+            drawer.child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child("Contexto relacionado sendo carregado…"),
+            )
+        })
+        .children(documents.into_iter().take(4).map(|(path, content)| {
+            let excerpt = content
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("Documento sem conteúdo")
+                .chars()
+                .take(90)
+                .collect::<String>();
+            div()
+                .p_2()
+                .rounded_md()
+                .bg(theme::surface_raised())
+                .child(div().text_xs().text_color(theme::accent()).child(path))
+                .child(
+                    div()
+                        .mt_1()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(excerpt),
+                )
+        }))
 }
 
 fn context_item(label: &'static str, value: String) -> impl IntoElement {
