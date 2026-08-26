@@ -35,6 +35,7 @@ pub(crate) struct NativeTextInput {
     marked_range: Option<Range<usize>>,
     focus_handle: FocusHandle,
     placeholder: String,
+    obscured: bool,
     last_bounds: Option<Bounds<Pixels>>,
 }
 
@@ -46,8 +47,14 @@ impl NativeTextInput {
             marked_range: None,
             focus_handle: cx.focus_handle(),
             placeholder: placeholder.into(),
+            obscured: false,
             last_bounds: None,
         }
+    }
+
+    pub(crate) fn obscured(mut self) -> Self {
+        self.obscured = true;
+        self
     }
 
     pub(crate) fn value(&self) -> &str {
@@ -116,13 +123,15 @@ impl NativeTextInput {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selection.is_empty() {
+        if !self.obscured && !self.selection.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(self.selected_text()));
         }
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        self.copy(&Copy, window, cx);
+        if !self.obscured {
+            self.copy(&Copy, window, cx);
+        }
         if !self.selection.is_empty() {
             self.replace_range(self.selection.clone(), "");
             cx.notify();
@@ -342,6 +351,8 @@ impl Element for TextInputElement {
         let input = self.input.read(cx);
         let (text, color) = if input.value.is_empty() {
             (input.placeholder.clone(), theme::text_muted())
+        } else if input.obscured {
+            ("•".repeat(input.value.chars().count()), theme::text())
         } else {
             (input.value.clone(), theme::text())
         };

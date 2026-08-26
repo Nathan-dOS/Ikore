@@ -734,7 +734,7 @@ pub struct ReindexWorkspaceEmbeddingsRequest {
     pub model: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReindexWorkspaceEmbeddingsResponse {
     pub workspace_path: String,
@@ -886,7 +886,7 @@ pub struct ListAgentRunsRequest {
     pub pulsation_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRunListItem {
     pub id: String,

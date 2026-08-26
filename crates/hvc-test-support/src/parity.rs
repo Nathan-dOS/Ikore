@@ -163,4 +163,45 @@ mod tests {
                 .all(|case| case.status == ParityStatus::Covered)
         );
     }
+
+    #[test]
+    fn stage_four_covers_settings_and_all_non_chat_direct_contracts() {
+        let ledger = ParityLedger::embedded();
+        let settings = ledger
+            .cases
+            .iter()
+            .filter(|case| case.area == ParityArea::Settings)
+            .collect::<Vec<_>>();
+        let direct_contracts = ledger
+            .cases
+            .iter()
+            .filter(|case| case.area == ParityArea::RustContracts && case.id != "contract-005")
+            .collect::<Vec<_>>();
+        let partial = ledger
+            .cases
+            .iter()
+            .filter(|case| case.status == ParityStatus::Partial)
+            .count();
+        let pending = ledger
+            .cases
+            .iter()
+            .filter(|case| case.status == ParityStatus::Pending)
+            .count();
+
+        assert_eq!(settings.len(), 6);
+        assert!(
+            settings
+                .iter()
+                .all(|case| case.status == ParityStatus::Covered)
+        );
+        assert_eq!(direct_contracts.len(), 11);
+        assert!(
+            direct_contracts
+                .iter()
+                .all(|case| case.status == ParityStatus::Covered)
+        );
+        assert_eq!(ledger.covered_count(), 41);
+        assert_eq!(partial, 5);
+        assert_eq!(pending, 5);
+    }
 }

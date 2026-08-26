@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, Utc};
@@ -62,6 +63,7 @@ impl JitterSource for FixedJitter {
 pub struct MemoryCredentialStore {
     values: Arc<Mutex<HashMap<String, String>>>,
     failure: Arc<Mutex<Option<String>>>,
+    set_calls: Arc<AtomicUsize>,
 }
 
 impl MemoryCredentialStore {
@@ -84,6 +86,10 @@ impl MemoryCredentialStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(credential_ref)
+    }
+
+    pub fn set_call_count(&self) -> usize {
+        self.set_calls.load(Ordering::SeqCst)
     }
 
     #[allow(clippy::result_large_err)]
@@ -128,6 +134,7 @@ impl CredentialStore for MemoryCredentialStore {
     }
 
     fn set(&self, credential_ref: &str, secret: &str) -> Result<(), LlmError> {
+        self.set_calls.fetch_add(1, Ordering::SeqCst);
         self.configured_failure()?;
         let normalized = secret.trim();
         if normalized.is_empty() {

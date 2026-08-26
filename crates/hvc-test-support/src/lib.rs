@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod contracts;
 mod core_harness;
 mod doubles;
 mod http_fixture;

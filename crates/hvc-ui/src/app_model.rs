@@ -4,9 +4,16 @@ use std::sync::Arc;
 use gpui::{
     AppContext as _, Context, Entity, PathPromptOptions, SharedString, Subscription, Task, Window,
 };
+use hvc_core::agent_runtime::ContextStrategy;
+use hvc_core::llm::{
+    DeleteProviderConnectionRequest, DeleteProviderRouteRequest, ResetLlmResilienceStateRequest,
+    RouteTarget, RoutingMode, TestProviderConnectionRequest, UpsertProviderConnectionRequest,
+    UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
+};
 use hvc_core::persistence_service::{
     ApplyHitlDecisionRequest, EnsureProjectForWorkspaceRequest, HitlDecision, LoadUiSessionRequest,
     PulsationRuntimeSnapshot, SaveUiSessionRequest, UiSessionState, UiTabSnapshot,
+    UpdateAgentRuntimeConfigRequest,
 };
 use hvc_core::workspace_service::{
     FileNode, OpenWorkspaceRequest, ReadWorkspaceFileRequest, SearchMode, WorkspaceChangedEvent,
@@ -16,17 +23,19 @@ use hvc_editor::{EditorSelection, EditorSnapshot, TextPosition};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::lifecycle::LifecycleState;
+use crate::logs::{CoreLogsBackend, LogsBackend, LogsModel, SequenceClassification};
 use crate::pulsations::{CorePulsationsBackend, PulsationsBackend, PulsationsModel};
 use crate::session::{
     CoreSessionPersistence, HeaderNotice, HeaderNoticeKind, HeaderNoticeQueue, SESSION_DEBOUNCE,
     SessionPersistence,
 };
+use crate::settings::{CoreSettingsBackend, SettingsBackend, SettingsModel};
 use crate::text_input::NativeTextInput;
 use crate::vault::{
     CONTEXT_DOCUMENTS_DEBOUNCE, CoreVaultBackend, VAULT_REFRESH_DEBOUNCE, VaultBackend, VaultModel,
     normalize_rename_target,
 };
-use crate::views::{ChatModel, LogsModel, NavigationModel, SettingsModel};
+use crate::views::{ChatModel, NavigationModel};
 use crate::workspace::{
     AUTOSAVE_DEBOUNCE, CoreWorkspaceBackend, WorkspaceBackend, WorkspaceEditorModel,
     WorkspaceTabModel, WorkspaceViewMode,
@@ -143,6 +152,8 @@ pub struct AppModel {
     workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
     pulsations_backend: Option<Arc<dyn PulsationsBackend>>,
     vault_backend: Option<Arc<dyn VaultBackend>>,
+    settings_backend: Option<Arc<dyn SettingsBackend>>,
+    logs_backend: Option<Arc<dyn LogsBackend>>,
     pub navigation: Entity<NavigationModel>,
     pub workspace: Entity<WorkspaceEditorModel>,
     pub pulsations: Entity<PulsationsModel>,
@@ -150,9 +161,15 @@ pub struct AppModel {
     pub(crate) pulsation_feature_input: Entity<NativeTextInput>,
     pub(crate) vault_search_input: Entity<NativeTextInput>,
     pub(crate) vault_rename_input: Entity<NativeTextInput>,
+    pub(crate) settings_connection_name_input: Entity<NativeTextInput>,
+    pub(crate) settings_connection_model_input: Entity<NativeTextInput>,
+    pub(crate) settings_connection_endpoint_input: Entity<NativeTextInput>,
+    pub(crate) settings_connection_secret_input: Entity<NativeTextInput>,
+    pub(crate) settings_route_name_input: Entity<NativeTextInput>,
+    pub(crate) settings_embedding_model_input: Entity<NativeTextInput>,
     pub chat: Entity<ChatModel>,
-    pub settings: Entity<SettingsModel>,
-    pub logs: Entity<LogsModel>,
+    pub(crate) settings: Entity<SettingsModel>,
+    pub(crate) logs: Entity<LogsModel>,
     active_view: AppView,
     status: SharedString,
     event_count: u64,
@@ -177,6 +194,9 @@ pub struct AppModel {
     vault_rename_task: Option<Task<()>>,
     vault_context_task: Option<Task<()>>,
     vault_document_tasks: HashMap<String, Task<()>>,
+    settings_task: Option<Task<()>>,
+    logs_task: Option<Task<()>>,
+    logs_resync_tasks: HashMap<String, Task<()>>,
     session_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -191,6 +211,9 @@ impl AppModel {
             Arc::new(CorePulsationsBackend::new(Arc::clone(&core)));
         let vault_backend: Arc<dyn VaultBackend> =
             Arc::new(CoreVaultBackend::new(Arc::clone(&core)));
+        let settings_backend: Arc<dyn SettingsBackend> =
+            Arc::new(CoreSettingsBackend::new(Arc::clone(&core)));
+        let logs_backend: Arc<dyn LogsBackend> = Arc::new(CoreLogsBackend::new(Arc::clone(&core)));
         let mut model = Self::build(
             Some(core),
             Some(session_persistence),
@@ -199,10 +222,14 @@ impl AppModel {
         );
         model.pulsations_backend = Some(pulsations_backend);
         model.vault_backend = Some(vault_backend);
+        model.settings_backend = Some(settings_backend);
+        model.logs_backend = Some(logs_backend);
         model.start_lifecycle(cx);
         cx.on_app_quit(|model, cx| model.flush_pending_session(cx))
             .detach();
         model.restore_last_session(cx);
+        model.refresh_settings(cx);
+        model.refresh_logs(cx);
         model
     }
 
@@ -239,6 +266,16 @@ impl AppModel {
         model
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_settings_backend(
+        settings_backend: Arc<dyn SettingsBackend>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut model = Self::build(None, None, None, cx);
+        model.settings_backend = Some(settings_backend);
+        model
+    }
+
     fn build(
         core: Option<Arc<AppCore>>,
         session_persistence: Option<Arc<dyn SessionPersistence>>,
@@ -256,6 +293,17 @@ impl AppModel {
             cx.new(|cx| NativeTextInput::new("Nome da funcionalidade", cx));
         let vault_search_input = cx.new(|cx| NativeTextInput::new("Texto ou regex", cx));
         let vault_rename_input = cx.new(|cx| NativeTextInput::new("Novo nome da nota", cx));
+        let settings_connection_name_input =
+            cx.new(|cx| NativeTextInput::new("Nome da conexão", cx));
+        let settings_connection_model_input =
+            cx.new(|cx| NativeTextInput::new("Modelo padrão", cx));
+        let settings_connection_endpoint_input =
+            cx.new(|cx| NativeTextInput::new("Endpoint customizado", cx));
+        let settings_connection_secret_input = cx
+            .new(|cx| NativeTextInput::new("API key (não será exibida novamente)", cx).obscured());
+        let settings_route_name_input = cx.new(|cx| NativeTextInput::new("Nome da rota", cx));
+        let settings_embedding_model_input =
+            cx.new(|cx| NativeTextInput::new("Modelo de embeddings", cx));
         let subscriptions = vec![
             cx.observe(&editor, |model, _, cx| {
                 model.handle_editor_update(cx);
@@ -265,6 +313,12 @@ impl AppModel {
             cx.observe(&pulsation_feature_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_search_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_rename_input, |_, _, cx| cx.notify()),
+            cx.observe(&settings_connection_name_input, |_, _, cx| cx.notify()),
+            cx.observe(&settings_connection_model_input, |_, _, cx| cx.notify()),
+            cx.observe(&settings_connection_endpoint_input, |_, _, cx| cx.notify()),
+            cx.observe(&settings_connection_secret_input, |_, _, cx| cx.notify()),
+            cx.observe(&settings_route_name_input, |_, _, cx| cx.notify()),
+            cx.observe(&settings_embedding_model_input, |_, _, cx| cx.notify()),
         ];
         Self {
             core,
@@ -272,6 +326,8 @@ impl AppModel {
             workspace_backend,
             pulsations_backend: None,
             vault_backend: None,
+            settings_backend: None,
+            logs_backend: None,
             navigation,
             workspace,
             pulsations: cx.new(|_| PulsationsModel::default()),
@@ -279,6 +335,12 @@ impl AppModel {
             pulsation_feature_input,
             vault_search_input,
             vault_rename_input,
+            settings_connection_name_input,
+            settings_connection_model_input,
+            settings_connection_endpoint_input,
+            settings_connection_secret_input,
+            settings_route_name_input,
+            settings_embedding_model_input,
             chat: cx.new(|_| ChatModel::default()),
             settings: cx.new(|_| SettingsModel::default()),
             logs: cx.new(|_| LogsModel::default()),
@@ -306,6 +368,9 @@ impl AppModel {
             vault_rename_task: None,
             vault_context_task: None,
             vault_document_tasks: HashMap::new(),
+            settings_task: None,
+            logs_task: None,
+            logs_resync_tasks: HashMap::new(),
             session_task: None,
             _subscriptions: subscriptions,
         }
@@ -787,6 +852,7 @@ impl AppModel {
             workspace.diff_expanded = false;
         });
         self.refresh_pulsation_artifacts(pulsation_id, cx);
+        self.refresh_logs(cx);
         self.schedule_session_persistence(cx);
         cx.notify();
     }
@@ -1463,6 +1529,799 @@ impl AppModel {
         cx.notify();
     }
 
+    pub(crate) fn refresh_settings(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let generation = self.settings.update(cx, |settings, _| settings.begin(true));
+        cx.notify();
+        self.settings_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.snapshot().await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(snapshot) => {
+                        let embedding_model = snapshot.config.embedding_model.clone();
+                        let applied = model.settings.update(cx, |settings, _| {
+                            settings.apply_snapshot(generation, snapshot)
+                        });
+                        if applied
+                            && model
+                                .settings_embedding_model_input
+                                .read(cx)
+                                .value()
+                                .is_empty()
+                        {
+                            model
+                                .settings_embedding_model_input
+                                .update(cx, |input, cx| {
+                                    input.set_value(embedding_model, cx);
+                                });
+                        }
+                    }
+                    Err(error) => {
+                        model
+                            .settings
+                            .update(cx, |settings, _| settings.fail(generation, error));
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn run_settings_operation(
+        &mut self,
+        operation: crate::settings::SettingsFuture<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let generation = self
+            .settings
+            .update(cx, |settings, _| settings.begin(false));
+        cx.notify();
+        self.settings_task = Some(cx.spawn(async move |this, cx| {
+            let result = operation.await;
+            let _ = this.update(cx, |model, cx| match result {
+                Ok(message) => {
+                    let current = model.settings.read(cx).generation;
+                    if current == generation {
+                        model.settings.update(cx, |settings, _| {
+                            settings.notice = Some(message.into());
+                        });
+                        model.refresh_settings(cx);
+                    }
+                }
+                Err(error) => {
+                    let message = error.presentable();
+                    if model
+                        .settings
+                        .update(cx, |settings, _| settings.fail(generation, error))
+                    {
+                        model.notices.push(HeaderNoticeKind::Error, message);
+                    }
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    fn update_runtime_config(
+        &mut self,
+        request: UpdateAgentRuntimeConfigRequest,
+        success: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        self.run_settings_operation(
+            Box::pin(async move {
+                backend.update_config(request).await?;
+                Ok(success.to_string())
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_routing_mode(&mut self, cx: &mut Context<Self>) {
+        let current = self
+            .settings
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.config.routing_v2_mode)
+            .unwrap_or(RoutingMode::Off);
+        let next = match current {
+            RoutingMode::Off => RoutingMode::Shadow,
+            RoutingMode::Shadow => RoutingMode::On,
+            RoutingMode::On => RoutingMode::Off,
+        };
+        self.update_runtime_config(
+            runtime_config_update().with_routing_mode(next),
+            "Modo de roteamento atualizado.",
+            cx,
+        );
+    }
+
+    pub(crate) fn toggle_context_strategy(&mut self, cx: &mut Context<Self>) {
+        let current = self
+            .settings
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.config.context_strategy)
+            .unwrap_or(ContextStrategy::YamlGraph);
+        let next = match current {
+            ContextStrategy::YamlGraph => ContextStrategy::YamlGraphRag,
+            ContextStrategy::YamlGraphRag => ContextStrategy::YamlGraph,
+        };
+        self.update_runtime_config(
+            runtime_config_update().with_context_strategy(next),
+            "Estratégia de contexto atualizada.",
+            cx,
+        );
+    }
+
+    pub(crate) fn toggle_embeddings(&mut self, cx: &mut Context<Self>) {
+        let enabled = self
+            .settings
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.config.embedding_enabled);
+        self.update_runtime_config(
+            runtime_config_update().with_embedding_enabled(!enabled),
+            "Configuração de embeddings atualizada.",
+            cx,
+        );
+    }
+
+    pub(crate) fn reindex_embeddings(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(workspace_path) = self
+            .workspace
+            .read(cx)
+            .root_path
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            self.notices.push(
+                HeaderNoticeKind::Warning,
+                "Abra um workspace antes de reindexar embeddings.",
+            );
+            cx.notify();
+            return;
+        };
+        let model = self
+            .settings_embedding_model_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        self.run_settings_operation(
+            Box::pin(async move {
+                if !model.is_empty() {
+                    backend
+                        .update_config(runtime_config_update().with_embedding_model(model.clone()))
+                        .await?;
+                }
+                let response = backend
+                    .reindex(workspace_path, (!model.is_empty()).then_some(model))
+                    .await?;
+                Ok(format!(
+                    "Reindexação concluída: {} indexado(s), {} ignorado(s), {} falha(s).",
+                    response.indexed_count, response.skipped_count, response.failed_count
+                ))
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_embedding_top_k(&mut self, cx: &mut Context<Self>) {
+        let current = self
+            .settings
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.config.embedding_top_k)
+            .unwrap_or(5);
+        let next = match current {
+            1..=4 => 5,
+            5..=9 => 10,
+            10..=19 => 20,
+            _ => 3,
+        };
+        self.update_runtime_config(
+            runtime_config_update().with_embedding_top_k(next),
+            "Top K de embeddings atualizado.",
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_settings_provider(&mut self, cx: &mut Context<Self>) {
+        self.settings.update(cx, |settings, _| {
+            let ids = settings
+                .snapshot
+                .as_ref()
+                .map(|snapshot| {
+                    snapshot
+                        .profiles
+                        .iter()
+                        .map(|profile| profile.id.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if let Some(index) = ids
+                .iter()
+                .position(|id| id == settings.connection_provider_id.as_ref())
+                && let Some(next) = ids.get((index + 1) % ids.len().max(1))
+            {
+                settings.connection_provider_id = next.clone().into();
+            }
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn select_settings_connection(
+        &mut self,
+        connection_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let connection = self.settings.update(cx, |settings, _| {
+            settings.selected_connection_id = Some(connection_id.into());
+            settings.connection().cloned()
+        });
+        if let Some(connection) = connection {
+            self.settings.update(cx, |settings, _| {
+                settings.connection_provider_id = connection.provider_id.clone().into();
+            });
+            self.settings_connection_name_input
+                .update(cx, |input, cx| input.set_value(connection.display_name, cx));
+            self.settings_connection_model_input
+                .update(cx, |input, cx| {
+                    input.set_value(connection.default_model, cx)
+                });
+            self.settings_connection_endpoint_input
+                .update(cx, |input, cx| {
+                    input.set_value(connection.endpoint_url.unwrap_or_default(), cx)
+                });
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn new_settings_connection(&mut self, cx: &mut Context<Self>) {
+        self.settings.update(cx, |settings, _| {
+            settings.selected_connection_id = None;
+        });
+        for input in [
+            &self.settings_connection_name_input,
+            &self.settings_connection_model_input,
+            &self.settings_connection_endpoint_input,
+            &self.settings_connection_secret_input,
+        ] {
+            input.update(cx, |input, cx| input.clear(cx));
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn save_settings_connection(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let (existing, provider_id, endpoint_allowed, default_model) = {
+            let settings = self.settings.read(cx);
+            let provider_id = settings.connection_provider_id.to_string();
+            let profile = settings
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.profiles.iter().find(|item| item.id == provider_id));
+            (
+                settings.connection().cloned(),
+                provider_id,
+                profile.is_some_and(|item| item.endpoint_configurable),
+                profile
+                    .map(|item| item.default_model.clone())
+                    .unwrap_or_default(),
+            )
+        };
+        let display_name = self
+            .settings_connection_name_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let model = self
+            .settings_connection_model_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let endpoint = self
+            .settings_connection_endpoint_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let secret = self
+            .settings_connection_secret_input
+            .read(cx)
+            .value()
+            .to_string();
+        self.settings_connection_secret_input
+            .update(cx, |input, cx| input.clear(cx));
+        let request = UpsertProviderConnectionRequest {
+            id: existing.as_ref().map(|item| item.id.clone()),
+            provider_id,
+            display_name: if display_name.is_empty() {
+                "Conexão LLM".to_string()
+            } else {
+                display_name
+            },
+            endpoint_url: endpoint_allowed
+                .then_some(endpoint)
+                .filter(|value| !value.is_empty()),
+            default_model: if model.is_empty() {
+                default_model
+            } else {
+                model
+            },
+            enabled: Some(existing.as_ref().is_none_or(|item| item.enabled)),
+            max_concurrency: Some(existing.as_ref().map_or(2, |item| item.max_concurrency)),
+            api_key: (!secret.trim().is_empty()).then_some(secret),
+            version: existing.as_ref().map(|item| item.version),
+        };
+        self.run_settings_operation(
+            Box::pin(async move {
+                backend.upsert_connection(request).await?;
+                Ok("Conexão e credencial salvas com segurança.".to_string())
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn test_settings_connection(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(connection_id) = self
+            .settings
+            .read(cx)
+            .selected_connection_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        self.run_settings_operation(
+            Box::pin(async move {
+                let response = backend
+                    .test_connection(TestProviderConnectionRequest { connection_id })
+                    .await?;
+                Ok(format!(
+                    "Conexão {} em {} ms: {}",
+                    if response.reachable {
+                        "alcançável"
+                    } else {
+                        "indisponível"
+                    },
+                    response.latency_ms,
+                    response.message
+                ))
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn delete_settings_connection(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(connection) = self.settings.read(cx).connection().cloned() else {
+            return;
+        };
+        self.run_settings_operation(
+            Box::pin(async move {
+                backend
+                    .delete_connection(DeleteProviderConnectionRequest {
+                        connection_id: connection.id,
+                        version: connection.version,
+                    })
+                    .await?;
+                Ok("Conexão excluída.".to_string())
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn select_settings_route(&mut self, route_id: String, cx: &mut Context<Self>) {
+        let route = self.settings.update(cx, |settings, _| {
+            settings.selected_route_id = Some(route_id.into());
+            settings.route().cloned()
+        });
+        if let Some(route) = route {
+            self.settings.update(cx, |settings, _| {
+                settings.route_strategy = route.strategy.clone().into();
+                settings.route_max_attempts = route.max_attempts;
+                settings.route_attempt_timeout_ms = route.attempt_timeout_ms;
+                settings.route_timeout_ms = route.route_timeout_ms;
+                settings.route_targets = route.targets.clone();
+            });
+            self.settings_route_name_input
+                .update(cx, |input, cx| input.set_value(route.name, cx));
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn new_settings_route(&mut self, cx: &mut Context<Self>) {
+        self.settings.update(cx, |settings, _| {
+            settings.selected_route_id = None;
+            settings.route_strategy = "priority".into();
+            settings.route_max_attempts = 3;
+            settings.route_attempt_timeout_ms = 45_000;
+            settings.route_timeout_ms = 120_000;
+            settings.route_targets.clear();
+        });
+        self.settings_route_name_input
+            .update(cx, |input, cx| input.clear(cx));
+        cx.notify();
+    }
+
+    pub(crate) fn cycle_route_strategy(&mut self, cx: &mut Context<Self>) {
+        self.settings.update(cx, |settings, _| {
+            settings.route_strategy = match settings.route_strategy.as_ref() {
+                "priority" => "lkgp".into(),
+                "lkgp" => "score".into(),
+                _ => "priority".into(),
+            };
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn cycle_route_limits(&mut self, cx: &mut Context<Self>) {
+        self.settings.update(cx, |settings, _| {
+            let (attempts, attempt_timeout, route_timeout) = match settings.route_max_attempts {
+                1 => (2, 30_000, 60_000),
+                2 => (3, 45_000, 120_000),
+                _ => (1, 15_000, 30_000),
+            };
+            settings.route_max_attempts = attempts;
+            settings.route_attempt_timeout_ms = attempt_timeout;
+            settings.route_timeout_ms = route_timeout;
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn move_selected_route_target(&mut self, direction: isize, cx: &mut Context<Self>) {
+        let selected_connection = self
+            .settings
+            .read(cx)
+            .selected_connection_id
+            .as_ref()
+            .map(ToString::to_string);
+        let Some(selected_connection) = selected_connection else {
+            return;
+        };
+        self.settings.update(cx, |settings, _| {
+            let Some(index) = settings
+                .route_targets
+                .iter()
+                .position(|target| target.connection_id == selected_connection)
+            else {
+                return;
+            };
+            let next = index
+                .saturating_add_signed(direction)
+                .min(settings.route_targets.len() - 1);
+            if next != index {
+                settings.route_targets.swap(index, next);
+                for (position, target) in settings.route_targets.iter_mut().enumerate() {
+                    target.position = position as u32;
+                }
+            }
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn save_settings_route(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let (
+            existing,
+            strategy,
+            connection,
+            mut targets,
+            max_attempts,
+            attempt_timeout_ms,
+            route_timeout_ms,
+        ) = {
+            let settings = self.settings.read(cx);
+            (
+                settings.route().cloned(),
+                settings.route_strategy.to_string(),
+                settings.connection().cloned(),
+                settings.route_targets.clone(),
+                settings.route_max_attempts,
+                settings.route_attempt_timeout_ms,
+                settings.route_timeout_ms,
+            )
+        };
+        let Some(connection) = connection else {
+            return;
+        };
+        let name = self
+            .settings_route_name_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let requested_model = self
+            .settings_connection_model_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        if let Some(target) = targets
+            .iter_mut()
+            .find(|target| target.connection_id == connection.id)
+        {
+            target.model_id = if requested_model.is_empty() {
+                connection.default_model.clone()
+            } else {
+                requested_model.clone()
+            };
+            target.enabled = true;
+        } else {
+            targets.push(RouteTarget {
+                position: targets.len() as u32,
+                connection_id: connection.id,
+                model_id: if requested_model.is_empty() {
+                    connection.default_model
+                } else {
+                    requested_model
+                },
+                enabled: true,
+            });
+        }
+        targets.sort_by_key(|target| target.position);
+        for (position, target) in targets.iter_mut().enumerate() {
+            target.position = position as u32;
+        }
+        let request = UpsertProviderRouteRequest {
+            id: existing.as_ref().map(|route| route.id.clone()),
+            name: if name.is_empty() {
+                "Rota LLM".into()
+            } else {
+                name
+            },
+            strategy,
+            max_attempts: Some(max_attempts),
+            attempt_timeout_ms: Some(attempt_timeout_ms),
+            route_timeout_ms: Some(route_timeout_ms),
+            enabled: Some(existing.as_ref().is_none_or(|route| route.enabled)),
+            targets,
+            version: existing.as_ref().map(|route| route.version),
+        };
+        self.run_settings_operation(
+            Box::pin(async move {
+                backend.upsert_route(request).await?;
+                Ok("Rota salva com a ordem de alvos atual.".to_string())
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn delete_settings_route(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(route) = self.settings.read(cx).route().cloned() else {
+            return;
+        };
+        self.run_settings_operation(
+            Box::pin(async move {
+                backend
+                    .delete_route(DeleteProviderRouteRequest {
+                        route_id: route.id,
+                        version: route.version,
+                    })
+                    .await?;
+                Ok("Rota excluída.".to_string())
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_binding_role(&mut self, cx: &mut Context<Self>) {
+        const ROLES: [&str; 6] = [
+            "intake_router",
+            "task_specifier",
+            "contract_agent",
+            "backend_agent",
+            "test_agent",
+            "integrator",
+        ];
+        self.settings.update(cx, |settings, _| {
+            let current = ROLES
+                .iter()
+                .position(|role| *role == settings.binding_agent_role.as_ref())
+                .unwrap_or(0);
+            settings.binding_agent_role = ROLES[(current + 1) % ROLES.len()].into();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn cycle_binding_stage(&mut self, cx: &mut Context<Self>) {
+        const STAGES: [&str; 6] = [
+            "Intake",
+            "Specification",
+            "Contract",
+            "Code",
+            "Test",
+            "Integrator",
+        ];
+        self.settings.update(cx, |settings, _| {
+            let current = STAGES
+                .iter()
+                .position(|stage| *stage == settings.binding_stage.as_ref())
+                .unwrap_or(0);
+            settings.binding_stage = STAGES[(current + 1) % STAGES.len()].into();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn save_settings_binding(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            self.notices.push(
+                HeaderNoticeKind::Warning,
+                "Abra um projeto antes de criar o binding.",
+            );
+            cx.notify();
+            return;
+        };
+        let (route_id, agent_role, stage, version) = {
+            let settings = self.settings.read(cx);
+            let Some(route_id) = settings.selected_route_id.as_ref().map(ToString::to_string)
+            else {
+                return;
+            };
+            let agent_role = settings.binding_agent_role.to_string();
+            let stage = settings.binding_stage.to_string();
+            let version = settings.snapshot.as_ref().and_then(|snapshot| {
+                snapshot
+                    .bindings
+                    .iter()
+                    .find(|binding| {
+                        binding.project_id == project_id
+                            && binding.agent_role == agent_role
+                            && binding.stage == stage
+                    })
+                    .map(|binding| binding.version)
+            });
+            (route_id, agent_role, stage, version)
+        };
+        self.run_settings_operation(
+            Box::pin(async move {
+                backend
+                    .upsert_binding(UpsertProviderRouteBindingRequest {
+                        project_id,
+                        agent_role,
+                        stage,
+                        route_id,
+                        enabled: Some(true),
+                        version,
+                    })
+                    .await?;
+                Ok("Binding exato salvo.".to_string())
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn reset_settings_resilience(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let connection_id = self
+            .settings
+            .read(cx)
+            .selected_connection_id
+            .as_ref()
+            .map(ToString::to_string);
+        self.run_settings_operation(
+            Box::pin(async move {
+                let count = backend
+                    .reset_resilience(ResetLlmResilienceStateRequest {
+                        connection_id,
+                        provider_id: None,
+                    })
+                    .await?;
+                Ok(format!("{count} estado(s) de resiliência removido(s)."))
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn refresh_logs(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.logs_backend.clone() else {
+            return;
+        };
+        let generation = self.logs.update(cx, |logs, _| logs.begin_poll());
+        let Some(generation) = generation else {
+            return;
+        };
+        let pulsation_id = self
+            .pulsations
+            .read(cx)
+            .active_pulsation_id
+            .as_ref()
+            .map(ToString::to_string);
+        self.logs_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.observability(pulsation_id).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(snapshot) => {
+                        model.logs.update(cx, |logs, _| {
+                            logs.apply_poll(generation, snapshot);
+                        });
+                    }
+                    Err(error) => {
+                        model.logs.update(cx, |logs, _| {
+                            logs.fail_poll(generation, error);
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn select_log_run(&mut self, run_id: String, cx: &mut Context<Self>) {
+        self.logs.update(cx, |logs, _| {
+            logs.selected_run_id = Some(run_id.into());
+        });
+        cx.notify();
+    }
+
+    fn resync_llm_execution(&mut self, execution_id: String, cx: &mut Context<Self>) {
+        let Some(backend) = self.logs_backend.clone() else {
+            return;
+        };
+        let generation = self.logs.update(cx, |logs, _| logs.begin_resync());
+        let task_key = execution_id.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let result = backend.execution_snapshot(execution_id.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(snapshot) => {
+                        let applied = model.logs.update(cx, |logs, _| {
+                            logs.apply_execution_snapshot(generation, snapshot)
+                        });
+                        if applied {
+                            model.needs_resync = false;
+                            model.status = "Execução LLM ressincronizada".into();
+                        }
+                    }
+                    Err(error) => {
+                        model.logs.update(cx, |logs, _| logs.error = Some(error));
+                    }
+                }
+                cx.notify();
+            });
+        });
+        self.logs_resync_tasks.insert(task_key, task);
+    }
+
     fn start_lifecycle(&mut self, cx: &mut Context<Self>) {
         let Some(core) = self.core.clone() else {
             return;
@@ -1488,6 +2347,8 @@ impl AppModel {
                                 model.status =
                                     "Eventos atrasados; recarregando snapshot persistido".into();
                                 model.restore_last_session(cx);
+                                model.refresh_settings(cx);
+                                model.refresh_logs(cx);
                             })
                             .is_err()
                         {
@@ -1544,6 +2405,7 @@ impl AppModel {
                                 if let Some(active_id) = active_id {
                                     model.refresh_pulsation_artifacts(active_id, cx);
                                 }
+                                model.refresh_logs(cx);
                             }
                             Err(error) => model.notices.push(
                                 HeaderNoticeKind::Warning,
@@ -1852,6 +2714,9 @@ impl AppModel {
         self.vault_rename_task.take();
         self.vault_context_task.take();
         self.vault_document_tasks.clear();
+        self.settings_task.take();
+        self.logs_task.take();
+        self.logs_resync_tasks.clear();
         self.session_task.take();
         self.session_generation = self.session_generation.saturating_add(1);
         self.workspace_save_generations.clear();
@@ -1884,12 +2749,24 @@ impl AppModel {
     fn handle_event(&mut self, event: AppEvent, cx: &mut Context<Self>) {
         self.event_count = self.event_count.saturating_add(1);
         self.status = format!("Evento recebido: {}", event.event_name()).into();
-        if let AppEvent::WorkspaceChanged(event) = event {
-            self.handle_workspace_change(event, cx);
+        match event {
+            AppEvent::WorkspaceChanged(event) => {
+                self.logs.update(cx, |logs, _| {
+                    logs.record_workspace(event.clone());
+                });
+                self.handle_workspace_change(event, cx);
+            }
+            AppEvent::Llm(envelope) => {
+                let execution_id = envelope.execution_id.clone();
+                let classification = self.logs.update(cx, |logs, _| logs.record_llm(envelope));
+                if classification == SequenceClassification::Gap {
+                    self.needs_resync = true;
+                    self.status = "Lacuna LLM detectada; recarregando execução persistida".into();
+                    self.resync_llm_execution(execution_id, cx);
+                }
+            }
+            AppEvent::Chat(_) => {}
         }
-        self.logs.update(cx, |logs, _| {
-            logs.visible_entries = logs.visible_entries.saturating_add(1);
-        });
         cx.notify();
     }
 
@@ -1922,6 +2799,60 @@ impl AppModel {
             });
         });
         self.file_tasks.insert(task_key, task);
+    }
+}
+
+fn runtime_config_update() -> UpdateAgentRuntimeConfigRequest {
+    UpdateAgentRuntimeConfigRequest {
+        provider: None,
+        model: None,
+        temperature: None,
+        max_output_tokens: None,
+        timeout_ms: None,
+        max_retries: None,
+        context_chars_limit: None,
+        max_context_files: None,
+        context_strategy: None,
+        embedding_enabled: None,
+        embedding_provider: None,
+        embedding_model: None,
+        embedding_top_k: None,
+        routing_v2_mode: None,
+    }
+}
+
+trait RuntimeConfigUpdateExt {
+    fn with_routing_mode(self, mode: RoutingMode) -> Self;
+    fn with_context_strategy(self, strategy: ContextStrategy) -> Self;
+    fn with_embedding_enabled(self, enabled: bool) -> Self;
+    fn with_embedding_model(self, model: String) -> Self;
+    fn with_embedding_top_k(self, top_k: usize) -> Self;
+}
+
+impl RuntimeConfigUpdateExt for UpdateAgentRuntimeConfigRequest {
+    fn with_routing_mode(mut self, mode: RoutingMode) -> Self {
+        self.routing_v2_mode = Some(mode);
+        self
+    }
+
+    fn with_context_strategy(mut self, strategy: ContextStrategy) -> Self {
+        self.context_strategy = Some(strategy);
+        self
+    }
+
+    fn with_embedding_enabled(mut self, enabled: bool) -> Self {
+        self.embedding_enabled = Some(enabled);
+        self
+    }
+
+    fn with_embedding_model(mut self, model: String) -> Self {
+        self.embedding_model = Some(model);
+        self
+    }
+
+    fn with_embedding_top_k(mut self, top_k: usize) -> Self {
+        self.embedding_top_k = Some(top_k);
+        self
     }
 }
 
@@ -2008,7 +2939,6 @@ mod tests {
 
     use gpui::TestAppContext;
     use hvc_core::persistence_service::{Artifact, Pulsation, PulsationStage, PulsationStatus};
-    use hvc_core::workspace_service::WorkspaceErrorCode::Conflict;
     use hvc_core::workspace_service::{
         GetWorkspaceVaultIndexResponse, RenameWorkspaceNoteRequest, RenameWorkspaceNoteResponse,
         SearchMatch, SearchWorkspaceTextRequest, SearchWorkspaceTextResponse, VaultNoteSummary,
@@ -2064,8 +2994,10 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                 Err(WorkspaceOperationError {
-                    code: Conflict,
+                    code: "conflict".into(),
                     message: "A revisão do arquivo mudou no disco.".into(),
+                    details: None,
+                    remediation: Some("Recarregue o arquivo.".into()),
                 });
             backend
         }
@@ -2405,8 +3337,8 @@ mod tests {
             assert_eq!(model.pulsations.read(cx).running_jobs, 0);
             assert!(model.vault.read(cx).index.is_none());
             assert!(!model.chat.read(cx).streaming);
-            assert_eq!(model.settings.read(cx).configured_providers, 0);
-            assert_eq!(model.logs.read(cx).visible_entries, 0);
+            assert!(model.settings.read(cx).snapshot.is_none());
+            assert!(model.logs.read(cx).events.is_empty());
         });
     }
 

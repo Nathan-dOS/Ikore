@@ -12,13 +12,3 @@ pub struct ChatModel {
     pub active_conversation: Option<SharedString>,
     pub streaming: bool,
 }
-
-#[derive(Default)]
-pub struct SettingsModel {
-    pub configured_providers: usize,
-}
-
-#[derive(Default)]
-pub struct LogsModel {
-    pub visible_entries: usize,
-}

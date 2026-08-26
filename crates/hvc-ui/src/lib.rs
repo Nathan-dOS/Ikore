@@ -2,12 +2,17 @@
 #![allow(clippy::result_large_err)]
 
 mod app_model;
+mod errors;
 mod hitl;
 mod lifecycle;
+mod logs;
+mod logs_view;
 mod native_editor;
 mod pulsations;
 mod pulsations_view;
 mod session;
+mod settings;
+mod settings_view;
 mod shell;
 #[cfg(test)]
 mod test_support;

@@ -6,12 +6,12 @@ use std::time::Duration;
 use gpui::{AppContext as _, Context, Entity, SharedString};
 use hvc_core::AppCore;
 use hvc_core::workspace_service::{
-    FileNode, ReadWorkspaceFileRequest, WorkspaceCommandError, WorkspaceErrorCode,
-    WriteWorkspaceFileAtomicRequest,
+    FileNode, ReadWorkspaceFileRequest, WriteWorkspaceFileAtomicRequest,
 };
 use hvc_editor::{EditorSelection, EditorSnapshot, TextPosition};
 
 use crate::NativeEditor;
+use crate::errors::UiCommandError;
 
 pub(crate) const AUTOSAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 
@@ -21,31 +21,11 @@ pub(crate) struct WorkspaceFileSnapshot {
     pub(crate) revision: String,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct WorkspaceOperationError {
-    pub(crate) code: WorkspaceErrorCode,
-    pub(crate) message: String,
-}
+pub(crate) type WorkspaceOperationError = UiCommandError;
 
-impl WorkspaceOperationError {
+impl UiCommandError {
     pub(crate) fn is_conflict(&self) -> bool {
-        matches!(self.code, WorkspaceErrorCode::Conflict)
-    }
-
-    fn worker(message: impl Into<String>) -> Self {
-        Self {
-            code: WorkspaceErrorCode::IoError,
-            message: message.into(),
-        }
-    }
-}
-
-impl From<WorkspaceCommandError> for WorkspaceOperationError {
-    fn from(error: WorkspaceCommandError) -> Self {
-        Self {
-            code: error.code,
-            message: error.message,
-        }
+        self.is_code("conflict")
     }
 }
 

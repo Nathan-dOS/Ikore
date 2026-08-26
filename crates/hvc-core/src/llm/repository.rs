@@ -17,7 +17,7 @@ use super::error::{LlmError, LlmErrorKind};
 use super::profiles::{profile_by_id, profiles};
 use super::scoring::{ScoreInput, normalize_metric, score};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpsertProviderConnectionRequest {
     pub id: Option<String>,
@@ -29,6 +29,23 @@ pub struct UpsertProviderConnectionRequest {
     pub max_concurrency: Option<u32>,
     pub api_key: Option<String>,
     pub version: Option<u64>,
+}
+
+impl std::fmt::Debug for UpsertProviderConnectionRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UpsertProviderConnectionRequest")
+            .field("id", &self.id)
+            .field("provider_id", &self.provider_id)
+            .field("display_name", &self.display_name)
+            .field("endpoint_url", &self.endpoint_url)
+            .field("default_model", &self.default_model)
+            .field("enabled", &self.enabled)
+            .field("max_concurrency", &self.max_concurrency)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("version", &self.version)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

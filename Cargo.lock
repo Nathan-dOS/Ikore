@@ -3486,6 +3486,7 @@ dependencies = [
  "hvc-core",
  "hvc-editor",
  "hvc-test-support",
+ "serde_json",
  "tokio",
 ]
 

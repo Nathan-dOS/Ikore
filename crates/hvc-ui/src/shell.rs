@@ -12,9 +12,11 @@ use hvc_editor::{DiffMark, MarkdownBlock, build_diff_rows, parse_markdown};
 
 use crate::app_model::{AppModel, AppView};
 use crate::hitl::{ApproveHitl, RequestHitlRevision, register_hitl_keybindings};
+use crate::logs_view::logs_panel;
 use crate::native_editor::register_editor_keybindings;
 use crate::pulsations_view::pulsations_panel;
 use crate::session::{HeaderNotice, HeaderNoticeKind};
+use crate::settings_view::settings_panel;
 use crate::text_input::register_text_input_keybindings;
 use crate::theme;
 use crate::vault_view::vault_panel;
@@ -267,8 +269,14 @@ fn content_panel(model: &AppModel, active: AppView, cx: &mut Context<AppModel>) 
     if active == AppView::Vault {
         return vault_panel(model, cx);
     }
+    if active == AppView::Settings {
+        return settings_panel(model, cx);
+    }
+    if active == AppView::Logs {
+        return logs_panel(model, cx);
+    }
 
-    let (metric, note) = match active {
+    let (metric, note): (String, String) = match active {
         AppView::Workspace => unreachable!("workspace possui painel nativo específico"),
         AppView::Pulsations | AppView::Vault => {
             unreachable!("views de domínio possuem painéis nativos específicos")
@@ -288,20 +296,7 @@ fn content_panel(model: &AppModel, active: AppView, cx: &mut Context<AppModel>) 
                     .to_string(),
             )
         }
-        AppView::Settings => {
-            let view = model.settings.read(cx);
-            (
-                format!("{} provedor(es) configurado(s)", view.configured_providers),
-                "Rotas e credenciais permanecem no core/keyring".into(),
-            )
-        }
-        AppView::Logs => {
-            let view = model.logs.read(cx);
-            (
-                format!("{} evento(s) nesta sessão", view.visible_entries),
-                "Barramento tipado com capacidade para 1.024 eventos".into(),
-            )
-        }
+        AppView::Settings | AppView::Logs => unreachable!("view possui painel nativo específico"),
     };
 
     div()

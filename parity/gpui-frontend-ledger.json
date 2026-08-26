@@ -70,33 +70,33 @@
       "id": "contract-001",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::normalizes a serialized domain error",
-      "target": "hvc_core::contracts::tests::preserves_typed_domain_error_fields",
-      "status": "partial",
-      "rationale": "Os erros Rust são tipados, mas falta o contrato substituto explícito."
+      "target": "hvc_test_support::contracts::preserves_typed_domain_error_fields",
+      "status": "covered",
+      "rationale": "A fronteira direta preserva code, message, details e remediation em um conflito real de revisão."
     },
     {
       "id": "contract-002",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::falls back to io_error for a regular Error",
       "target": "hvc_ui::errors::tests::maps_untyped_failures_to_safe_io_error",
-      "status": "pending",
-      "rationale": "A fronteira direta ainda não possui normalizador único para falhas de task."
+      "status": "covered",
+      "rationale": "UiCommandError normaliza falhas de worker sem tipo como io_error seguro e remediável."
     },
     {
       "id": "contract-003",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::preserves enriched LLM error details and remediation",
-      "target": "hvc_core::contracts::tests::preserves_llm_details_and_remediation",
-      "status": "partial",
-      "rationale": "Os DTOs contêm detalhes e remediação, mas falta teste de contrato dedicado."
+      "target": "hvc_test_support::contracts::preserves_llm_details_and_remediation",
+      "status": "covered",
+      "rationale": "O teste público provoca missing_api_key e valida details e remediation sem expor a credencial."
     },
     {
       "id": "contract-004",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::invokes open_workspace with the request envelope",
-      "target": "hvc_ui::backend::tests::opens_workspace_through_typed_request",
-      "status": "partial",
-      "rationale": "A chamada direta tipada existe e precisa ser fixada como contrato substituto."
+      "target": "hvc_test_support::contracts::opens_workspace_through_typed_request",
+      "status": "covered",
+      "rationale": "OpenWorkspaceRequest atravessa diretamente AppCore e retorna árvore e root canônico sem envelope IPC."
     },
     {
       "id": "contract-005",
@@ -111,16 +111,16 @@
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::turns a backend domain error into WorkspaceClientError",
       "target": "hvc_ui::errors::tests::renders_workspace_command_error_without_losing_fields",
-      "status": "pending",
-      "rationale": "A UI GPUI ainda apresenta somente a mensagem simples."
+      "status": "covered",
+      "rationale": "UiCommandError mantém todos os campos do erro de workspace e produz apresentação com remediação."
     },
     {
       "id": "contract-007",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::sends a connection secret only in the write request",
-      "target": "hvc_core::contracts::tests::never_persists_or_logs_connection_secret",
-      "status": "partial",
-      "rationale": "A persistência já testa ausência da chave no SQLite; falta cobrir toda a nova fronteira direta."
+      "target": "hvc_test_support::contracts::never_persists_or_logs_connection_secret",
+      "status": "covered",
+      "rationale": "O request redige Debug, a resposta não serializa segredo e apenas o MemoryCredentialStore recebe a chave."
     },
     {
       "id": "contract-008",
@@ -134,33 +134,33 @@
       "id": "contract-009",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::tests a provider connection and deletes it",
-      "target": "hvc_core::contracts::tests::tests_and_deletes_provider_connection",
-      "status": "partial",
-      "rationale": "As operações existem e têm cobertura separada, mas falta o fluxo contratual equivalente."
+      "target": "hvc_test_support::contracts::tests_and_deletes_provider_connection",
+      "status": "covered",
+      "rationale": "O fluxo direto cria, testa em servidor loopback e exclui a mesma conexão tipada."
     },
     {
       "id": "contract-010",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::manages routes and bindings",
-      "target": "hvc_core::contracts::tests::manages_routes_targets_and_bindings",
-      "status": "partial",
-      "rationale": "O repositório cobre decisões e bindings; o fluxo público completo será consolidado."
+      "target": "hvc_test_support::contracts::manages_routes_targets_and_bindings",
+      "status": "covered",
+      "rationale": "A interface pública persiste conexão, rota ordenada e binding exato de projeto, agente e estágio."
     },
     {
       "id": "contract-011",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::handles resilience snapshots and reset",
-      "target": "hvc_core::contracts::tests::loads_and_resets_resilience_snapshot",
-      "status": "partial",
-      "rationale": "O ciclo de circuit breaker é coberto, mas snapshot/reset público ainda precisa equivalência."
+      "target": "hvc_test_support::contracts::loads_and_resets_resilience_snapshot",
+      "status": "covered",
+      "rationale": "Snapshot e reset de resiliência são exercitados pela interface pública tipada."
     },
     {
       "id": "contract-012",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::retrieves execution snapshot, metrics and compression preview",
-      "target": "hvc_core::contracts::tests::loads_execution_metrics_and_compression_preview",
-      "status": "partial",
-      "rationale": "As três capacidades possuem regras Rust, sem teste único da interface pública."
+      "target": "hvc_test_support::contracts::loads_execution_metrics_and_compression_preview",
+      "status": "covered",
+      "rationale": "Execution snapshot, routing metrics e compression preview são validados em um contrato direto consolidado."
     },
 
     {
@@ -299,48 +299,48 @@
       "area": "settings",
       "source": "src/components/LlmRoutingSettings.test.tsx::accepts consecutive events, discards stale events, and detects gaps",
       "target": "hvc_ui::logs::tests::classifies_consecutive_stale_and_gap_llm_events",
-      "status": "partial",
-      "rationale": "AppEventBus detecta Lagged e envelopes possuem sequência; falta a política completa na UI."
+      "status": "covered",
+      "rationale": "LogsModel aceita sequência consecutiva, descarta duplicata/stale, detecta gap e exige snapshot persistido."
     },
     {
       "id": "settings-002",
       "area": "settings",
       "source": "src/components/LlmRoutingSettings.test.tsx::renders the store-backed connections, routes, and bindings",
       "target": "hvc_ui::settings::tests::renders_connections_routes_and_bindings",
-      "status": "pending",
-      "rationale": "A view GPUI mostra somente uma métrica de providers."
+      "status": "covered",
+      "rationale": "A view GPUI renderiza snapshots reais de profiles, conexões, rotas, targets e bindings."
     },
     {
       "id": "settings-003",
       "area": "settings",
       "source": "src/components/LlmRoutingSettings.test.tsx::delegates routing mode changes to the runtime store",
       "target": "hvc_ui::settings::tests::updates_routing_mode_through_core",
-      "status": "pending",
-      "rationale": "Controles funcionais de runtime ainda não foram portados."
+      "status": "covered",
+      "rationale": "O controle nativo alterna off/shadow/on e persiste o modo pelo AppCore sem IPC."
     },
     {
       "id": "settings-004",
       "area": "settings",
       "source": "src/components/LlmRoutingSettings.test.tsx::tests the selected provider connection through the runtime store",
       "target": "hvc_ui::settings::tests::tests_selected_provider_connection",
-      "status": "pending",
-      "rationale": "A ação assíncrona e seu feedback aguardam a Etapa 5."
+      "status": "covered",
+      "rationale": "A conexão selecionada é testada assincronamente no Tokio com feedback tipado à UI."
     },
     {
       "id": "settings-005",
       "area": "settings",
       "source": "src/components/LlmRoutingSettings.test.tsx::sends a credential directly to the store and clears the uncontrolled field",
       "target": "hvc_ui::settings::tests::writes_secret_once_and_clears_input",
-      "status": "pending",
-      "rationale": "A interface nativa de credenciais ainda não existe."
+      "status": "covered",
+      "rationale": "O campo nativo mascarado envia a credencial uma vez ao keyring e é limpo antes do await."
     },
     {
       "id": "settings-006",
       "area": "settings",
       "source": "src/components/LlmRoutingSettings.test.tsx::clears the credential field even when persistence fails",
       "target": "hvc_ui::settings::tests::clears_secret_input_after_persistence_failure",
-      "status": "pending",
-      "rationale": "O double de keyring da Etapa 0 permitirá cobrir esse cenário sem credenciais reais."
+      "status": "covered",
+      "rationale": "O teste com MemoryCredentialStore em falha comprova que o campo secreto permanece vazio após o erro."
     },
 
     {
