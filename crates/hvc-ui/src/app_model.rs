@@ -238,8 +238,6 @@ impl AppModel {
         cx.on_app_quit(|model, cx| model.flush_pending_session(cx))
             .detach();
         model.restore_last_session(cx);
-        model.refresh_settings(cx);
-        model.refresh_logs(cx);
         model.performance_probe = crate::performance::start_probe();
         model
     }
@@ -468,6 +466,11 @@ impl AppModel {
             if let Some(project_id) = project_id {
                 self.hydrate_chat_project(project_id, active_conversation, cx);
             }
+        }
+        match view {
+            AppView::Settings => self.refresh_settings(cx),
+            AppView::Logs => self.refresh_logs(cx),
+            _ => {}
         }
         self.schedule_session_persistence(cx);
         cx.notify();
@@ -2977,6 +2980,11 @@ impl AppModel {
         self.hydrating = false;
         self.refresh_pulsations_with_preferred(preferred_pulsation_id, cx);
         self.refresh_vault(true, cx);
+        match active_view {
+            AppView::Settings => self.refresh_settings(cx),
+            AppView::Logs => self.refresh_logs(cx),
+            _ => {}
+        }
         cx.notify();
     }
 

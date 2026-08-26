@@ -205,6 +205,7 @@ impl AppCore {
         let data_lock = DataDirectoryLock::acquire(&paths)?;
         let events = Arc::new(AppEventBus::default());
         let llm_sink: Arc<dyn LlmEventSink> = events.clone();
+        let chat_http_client = dependencies.http_client.clone();
         let persistence = PersistenceService::initialize_with_dependencies(
             paths.data_dir(),
             llm_sink,
@@ -216,9 +217,10 @@ impl AppCore {
         )?;
         persistence.recover_interrupted_jobs()?;
         let chat_sink: Arc<dyn ChatEventSink> = events.clone();
-        let chat = Arc::new(ChatService::with_dependencies_and_runtime(
+        let chat = Arc::new(ChatService::with_http_client_and_runtime(
             persistence.database_path(),
             dependencies.credentials,
+            chat_http_client,
             chat_sink,
             runtime.clone(),
         ));

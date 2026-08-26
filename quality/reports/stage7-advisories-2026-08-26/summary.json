@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "auditedAt": "2026-08-26T22:17:08.9635727Z",
+  "cargoAuditExitCode": 0,
+  "cargoVulnerabilities": 0,
+  "cargoInformationalWarnings": {
+    "unmaintained": 10,
+    "unsound": 2
+  },
+  "rustSecLastCommit": "a7bfe16948bf6f3ee25bdee4822209f87da21b80",
+  "passed": true
+}

@@ -1,6 +1,6 @@
 fn main() {
     println!("cargo:rerun-if-changed=hard-vibe-code.rc");
-    println!("cargo:rerun-if-changed=../../src-tauri/icons/icon.ico");
+    println!("cargo:rerun-if-changed=assets/icon.ico");
 
     embed_resource::compile("hard-vibe-code.rc", embed_resource::NONE)
         .manifest_required()

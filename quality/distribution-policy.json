@@ -1,8 +1,7 @@
 {
   "schemaVersion": 1,
   "allowedRegistrySources": [
-    "registry+https://github.com/rust-lang/crates.io-index",
-    "https://registry.npmjs.org/"
+    "registry+https://github.com/rust-lang/crates.io-index"
   ],
   "legalBlockers": [
     {

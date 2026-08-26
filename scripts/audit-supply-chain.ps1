@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    $OutputPath = Join-Path $repositoryRoot 'target\stage6\supply-chain.json'
+    $OutputPath = Join-Path $repositoryRoot 'target\stage7\supply-chain.json'
 }
 if ([string]::IsNullOrWhiteSpace($PolicyPath)) {
     $PolicyPath = Join-Path $repositoryRoot 'quality\distribution-policy.json'
@@ -51,26 +51,10 @@ $rustSourceReview = @($rustPackages | Where-Object {
 })
 $rustNotice = @($rustPackages | Where-Object { $_.license -match 'LGPL-|MPL-|CDDL-|EPL-' })
 
-$npmLock = Get-Content -LiteralPath (Join-Path $repositoryRoot 'package-lock.json') -Raw |
-    ConvertFrom-Json -AsHashTable
-$npmPackages = @($npmLock.packages.GetEnumerator() |
-    Where-Object { $_.Key -ne '' } |
-    ForEach-Object { $_.Value })
-$npmDenied = @($npmPackages | Where-Object { $_.license -match '(?<!L)GPL-|AGPL-|SSPL-' })
-$npmMissing = @($npmPackages | Where-Object { [string]::IsNullOrWhiteSpace($_.license) })
-$npmSourceReview = @($npmPackages | Where-Object {
-    $resolvedSource = $_.resolved
-    -not [string]::IsNullOrWhiteSpace($resolvedSource) -and
-    -not ($policy.allowedRegistrySources | Where-Object { $resolvedSource.StartsWith($_) })
-})
-
 $technicalPassed = (
     $rustDenied.Count -eq 0 -and
     $rustMissing.Count -eq 0 -and
-    $rustSourceReview.Count -eq 0 -and
-    $npmDenied.Count -eq 0 -and
-    $npmMissing.Count -eq 0 -and
-    $npmSourceReview.Count -eq 0
+    $rustSourceReview.Count -eq 0
 )
 $legalBlockers = @($policy.legalBlockers | Where-Object {
     $_.disposition -eq 'distribution_blocking' -and $_.status -notin @('resolved', 'approved')
@@ -86,12 +70,6 @@ $report = [ordered]@{
         missingLicenseMetadata = @($rustMissing | Select-Object name, version, source)
         sourceReview = @($rustSourceReview | Select-Object name, version, license, source)
         noticeLicenses = @($rustNotice | Select-Object name, version, license, source)
-    }
-    npm = [ordered]@{
-        lockedPackages = $npmPackages.Count
-        deniedLicenses = @($npmDenied | Select-Object name, version, license, resolved)
-        missingLicenseMetadata = @($npmMissing | Select-Object name, version, resolved)
-        sourceReview = @($npmSourceReview | Select-Object name, version, license, resolved)
     }
     technicalPassed = $technicalPassed
     legalBlockers = $legalBlockers

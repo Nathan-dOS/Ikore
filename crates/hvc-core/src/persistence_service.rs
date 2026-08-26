@@ -19,7 +19,7 @@ use crate::llm::{
     RoutingMode, SqliteLlmRepository, StableJitter, SystemClock, TestProviderConnectionRequest,
     TestProviderConnectionResponse, UpsertProviderConnectionRequest,
     UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest, preview_compression,
-    provider_profiles_for_ipc,
+    provider_profiles,
 };
 use chrono::Utc;
 use reqwest::Client;
@@ -2585,7 +2585,7 @@ impl PersistenceService {
 
     pub fn list_provider_profiles(&self) -> ListProviderProfilesResponse {
         ListProviderProfilesResponse {
-            profiles: provider_profiles_for_ipc(),
+            profiles: provider_profiles(),
         }
     }
 

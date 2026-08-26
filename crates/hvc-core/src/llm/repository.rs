@@ -1529,7 +1529,7 @@ impl LlmRepository for SqliteLlmRepository {
     }
 }
 
-pub fn provider_profiles_for_ipc() -> Vec<super::profiles::ProviderProfile> {
+pub fn provider_profiles() -> Vec<super::profiles::ProviderProfile> {
     profiles()
         .into_iter()
         .filter(|profile| profile.id != "openai_legacy")

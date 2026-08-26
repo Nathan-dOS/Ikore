@@ -1,4 +1,5 @@
-// Os DTOs de erro Serde permanecem por valor para manter os contratos Tauri durante a migração.
+// Os DTOs de erro Serde permanecem por valor porque também são persistidos e
+// exercitados nos contratos tipados do core.
 #![allow(clippy::result_large_err)]
 #![allow(clippy::too_many_arguments)]
 

@@ -396,9 +396,32 @@ impl ChatService {
         event_sink: Arc<dyn ChatEventSink>,
         runtime_handle: Handle,
     ) -> Self {
-        let mut service = Self::new(db_path, credentials, event_sink);
-        service.runtime_handle = Some(runtime_handle);
-        service
+        Self::with_http_client_and_runtime(
+            db_path,
+            credentials,
+            reqwest::Client::new(),
+            event_sink,
+            runtime_handle,
+        )
+    }
+
+    pub fn with_http_client_and_runtime(
+        db_path: impl AsRef<Path>,
+        credentials: Arc<dyn CredentialStore>,
+        http_client: reqwest::Client,
+        event_sink: Arc<dyn ChatEventSink>,
+        runtime_handle: Handle,
+    ) -> Self {
+        let db_path = db_path.as_ref().to_path_buf();
+        Self {
+            llm_repository: SqliteLlmRepository::new(&db_path),
+            db_path,
+            credentials,
+            http_client,
+            event_sink,
+            runtime: Arc::new(ChatRuntime::default()),
+            runtime_handle: Some(runtime_handle),
+        }
     }
 
     fn connection(&self) -> Result<Connection, ChatCommandError> {
