@@ -1,91 +1,74 @@
 # Hard Vibe Code
 
-Base inicial do MVP do **Desktop Orchestrator**.
+Desktop Orchestrator nativo em GPUI/Rust para Windows x64.
 
-## Fase atual
+## Estado atual
 
-- Fase 6: Integração Obsidian + Context Vault UI
-- Índice incremental de notas Markdown com frontmatter YAML e wikilinks
-- Validação de links quebrados e grafo de contexto na navegação
-- Renomeio de nota com atualização automática de referências `[[wikilinks]]`
-- Resolução de conflitos de edição externa em abas abertas
+- `hvc-app` é o único binário desktop e gera `hard-vibe-code.exe`.
+- As seis views — Workspace, Pulsations, Vault, Chat Companion, Settings e Logs — são nativas.
+- UI e core compartilham o mesmo processo e usam chamadas Rust tipadas, sem JSON/IPC.
+- O banco permanece em `%APPDATA%\com.hardvibecode.desktop\hard-vibe-code.db`.
+- `HVC_DATA_DIR` permite isolar dados de desenvolvimento e teste.
+- Migrations V1–V9 e o serviço `hard-vibe-code.runtime` no keyring foram preservados.
 
 ## Stack
 
-- Tauri 2
-- Rust 1.88.0
-- React 18 + TypeScript
-- Vite 5
-- Vitest 2 + Testing Library
+- Rust 1.98.0, edition 2024 e Cargo resolver 3.
+- GPUI 0.2.2 com backend Windows e patch local auditável.
+- Tokio multi-thread para rede, streaming e workers.
+- SQLite via `rusqlite`/`refinery`.
+- Rope e `EntityInputHandler` para editor Unicode/IME.
+- Tree-sitter Markdown incremental e `pulldown-cmark` para preview sem HTML bruto.
+- `notify` para filesystem e `keyring` para credenciais.
 
-## Rodando com Docker (workflow padrão)
+Não são reutilizadas crates de editor/UI do Zed. A única fonte vendorizada é o
+próprio GPUI 0.2.2, sob Apache-2.0, documentado em
+[`third_party/gpui/HVC-PATCHES.md`](third_party/gpui/HVC-PATCHES.md).
 
-1. Build da imagem:
-   ```bash
-   docker compose build
-   ```
-2. Subir frontend (hot reload):
-   ```bash
-   docker compose up app
-   ```
-3. Validar backend Tauri/Rust:
-   ```bash
-   docker compose --profile tools run --rm tauri-check
-   ```
-4. Build do frontend:
-   ```bash
-   docker compose --profile tools run --rm frontend-build
-   ```
-5. Executar testes frontend e Rust:
-   ```bash
-   docker compose --profile tools run --rm test-runner
-   ```
+## Workspace Cargo
 
-## Ajustando versões
+- `crates/hvc-app`: composition root e binário GPUI.
+- `crates/hvc-core`: domínio, persistência, workspace, LLM, Chat e barramento tipado.
+- `crates/hvc-ui`: shell, design system e as seis views GPUI.
+- `crates/hvc-editor`: Rope, seleção, undo/redo, diff, Markdown e Tree-sitter.
+- `crates/hvc-test-support`: ambientes isolados, doubles e fixtures de paridade.
 
-- Copie `.env.example` para `.env` e ajuste:
-  - `NODE_IMAGE` (ex: `node:22-bookworm`)
-  - `RUST_TOOLCHAIN` (ex: `1.88.0`)
+## Executar
 
-## Execução da janela desktop
-
-Nesta etapa, o Docker controla versões e validações de build.
-Para abrir a janela nativa do Tauri localmente, rode no host:
-
-```bash
-npm install
-npm run tauri:dev
+```powershell
+cargo run -p hvc-app
 ```
 
-## Comandos de validação
+Build release e smoke Windows:
 
-```bash
-npm run check:ts
-npm run check:tauri
-npm run test
-npm run test:rust
-npm run check:all
+```powershell
+cargo build --release -p hvc-app
+powershell -ExecutionPolicy Bypass -File scripts/smoke-windows.ps1
 ```
 
-Cobertura frontend:
+O artefato atual é o executável release. Instalador NSIS/WiX e Authenticode
+pertencem à etapa posterior de distribuição.
 
-```bash
-npm run test:coverage
+## Gate da Etapa 7
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/gate-stage7.ps1
 ```
 
-## Critério de aceite da Fase 1
+O gate comprova estrutura exclusivamente GPUI/Rust, formatação, Clippy com
+`-D warnings`, testes do workspace, build release, smoke Windows e auditorias
+Rust de licenças, fontes e advisories.
 
-1. Abrir uma pasta via seletor nativo.
-2. Ver a árvore de arquivos `.md` e `.txt` na UI.
-3. Alterar um arquivo externamente (ex.: Obsidian) e confirmar evento no painel de watcher.
-4. Confirmar que a árvore atualiza automaticamente sem reload.
+## Paridade e desempenho
 
-## Estrutura principal
+O ledger [`parity/gpui-frontend-ledger.json`](parity/gpui-frontend-ledger.json)
+preserva a rastreabilidade dos 51 testes do frontend removido para seus testes
+Rust equivalentes.
 
-- `src/`: UI React
-- `src/ipc/`: contratos e client IPC tipados
-- `src/test/`: setup e mocks compartilhados do Vitest
-- `src-tauri/`: core Rust/Tauri
-- `src-tauri/tests/`: testes de integração e fixtures Rust
-- `docker-compose.yml`: serviços de desenvolvimento
-- `Dockerfile`: ambiente base do projeto
+No comparativo curto do corte, o P50 até janela visível + SQLite foi de
+247,498 ms no GPUI e 528,724 ms no Tauri, redução de 53,19%. A memória ociosa
+P50 caiu 61,129%. Os números descrevem a máquina e metodologia registradas no
+relatório; não são garantias universais.
+
+A distribuição externa permanece bloqueada até a auditoria final e a
+resolução ou decisão jurídica explícita sobre o issue Zed #55470.

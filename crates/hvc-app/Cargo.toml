@@ -1,0 +1,21 @@
+[package]
+name = "hvc-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Native GPUI desktop application for Hard Vibe Code"
+
+[[bin]]
+name = "hard-vibe-code"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+hvc-core.workspace = true
+hvc-ui.workspace = true
+tokio.workspace = true
+
+[build-dependencies]
+embed-resource = "3.0.8"

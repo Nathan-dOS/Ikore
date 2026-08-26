@@ -1,0 +1,226 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-08-26T22:02:56.4872002Z",
+  "machine": {
+    "os": "Microsoft Windows NT 10.0.26200.0",
+    "processorCount": 8,
+    "displayRefreshRatesHz": [
+      60
+    ]
+  },
+  "dataset": "C:\\Dev\\Hard-Vibe-Code\\target\\stage6\\empty-dataset",
+  "methodology": "Pronto = janela visível + SQLite criado; working set da árvore de processos após idle; ordem alternada; P50 usado no gate.",
+  "iterationsPerImplementation": 10,
+  "binaries": {
+    "gpui": {
+      "path": "C:\\Dev\\Hard-Vibe-Code\\target\\release\\hard-vibe-code.exe",
+      "executableBytes": 14979584
+    },
+    "tauri": {
+      "path": "C:\\Dev\\Hard-Vibe-Code\\target\\release\\hvc-tauri-legacy.exe",
+      "executableBytes": 11980800
+    }
+  },
+  "summaries": {
+    "gpui": {
+      "startupP50Ms": 247.498,
+      "startupP95Ms": 802.638,
+      "idleMemoryP50Mb": 140.422,
+      "idleMemoryP95Mb": 140.805
+    },
+    "tauri": {
+      "startupP50Ms": 528.724,
+      "startupP95Ms": 681.455,
+      "idleMemoryP50Mb": 361.254,
+      "idleMemoryP95Mb": 392.461
+    }
+  },
+  "reductions": {
+    "startupP50Percent": 53.19,
+    "idleMemoryP50Percent": 61.129
+  },
+  "thresholdPercent": 40,
+  "passed": true,
+  "runs": [
+    {
+      "implementation": "tauri",
+      "iteration": 1,
+      "startupMs": 681.455,
+      "idleWorkingSetBytes": 378863616,
+      "idleWorkingSetMb": 361.312,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "gpui",
+      "iteration": 1,
+      "startupMs": 802.638,
+      "idleWorkingSetBytes": 147058688,
+      "idleWorkingSetMb": 140.246,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "gpui",
+      "iteration": 2,
+      "startupMs": 446.116,
+      "idleWorkingSetBytes": 147644416,
+      "idleWorkingSetMb": 140.805,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "tauri",
+      "iteration": 2,
+      "startupMs": 528.724,
+      "idleWorkingSetBytes": 381534208,
+      "idleWorkingSetMb": 363.859,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "tauri",
+      "iteration": 3,
+      "startupMs": 537.343,
+      "idleWorkingSetBytes": 411525120,
+      "idleWorkingSetMb": 392.461,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "gpui",
+      "iteration": 3,
+      "startupMs": 275.906,
+      "idleWorkingSetBytes": 147025920,
+      "idleWorkingSetMb": 140.215,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "gpui",
+      "iteration": 4,
+      "startupMs": 412.566,
+      "idleWorkingSetBytes": 147386368,
+      "idleWorkingSetMb": 140.559,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "tauri",
+      "iteration": 4,
+      "startupMs": 505.388,
+      "idleWorkingSetBytes": 377593856,
+      "idleWorkingSetMb": 360.102,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "tauri",
+      "iteration": 5,
+      "startupMs": 475.993,
+      "idleWorkingSetBytes": 378060800,
+      "idleWorkingSetMb": 360.547,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "gpui",
+      "iteration": 5,
+      "startupMs": 247.049,
+      "idleWorkingSetBytes": 146788352,
+      "idleWorkingSetMb": 139.988,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "gpui",
+      "iteration": 6,
+      "startupMs": 238.53,
+      "idleWorkingSetBytes": 147206144,
+      "idleWorkingSetMb": 140.387,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "tauri",
+      "iteration": 6,
+      "startupMs": 533.981,
+      "idleWorkingSetBytes": 378802176,
+      "idleWorkingSetMb": 361.254,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "tauri",
+      "iteration": 7,
+      "startupMs": 486.246,
+      "idleWorkingSetBytes": 379789312,
+      "idleWorkingSetMb": 362.195,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "gpui",
+      "iteration": 7,
+      "startupMs": 247.498,
+      "idleWorkingSetBytes": 147574784,
+      "idleWorkingSetMb": 140.738,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "gpui",
+      "iteration": 8,
+      "startupMs": 233.307,
+      "idleWorkingSetBytes": 147243008,
+      "idleWorkingSetMb": 140.422,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "tauri",
+      "iteration": 8,
+      "startupMs": 543.004,
+      "idleWorkingSetBytes": 377667584,
+      "idleWorkingSetMb": 360.172,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "tauri",
+      "iteration": 9,
+      "startupMs": 481.455,
+      "idleWorkingSetBytes": 378408960,
+      "idleWorkingSetMb": 360.879,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "gpui",
+      "iteration": 9,
+      "startupMs": 261.201,
+      "idleWorkingSetBytes": 147267584,
+      "idleWorkingSetMb": 140.445,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "gpui",
+      "iteration": 10,
+      "startupMs": 238.628,
+      "idleWorkingSetBytes": 147480576,
+      "idleWorkingSetMb": 140.648,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    },
+    {
+      "implementation": "tauri",
+      "iteration": 10,
+      "startupMs": 635.584,
+      "idleWorkingSetBytes": 392454144,
+      "idleWorkingSetMb": 374.273,
+      "gracefulShutdown": true,
+      "exitCode": 0
+    }
+  ]
+}

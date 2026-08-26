@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "auditedAt": "2026-08-26T16:58:45.8847134Z",
+  "cargoAuditExitCode": 0,
+  "cargoVulnerabilities": 0,
+  "cargoInformationalWarnings": {
+    "unmaintained": 26,
+    "unsound": 3
+  },
+  "rustSecLastCommit": "a7bfe16948bf6f3ee25bdee4822209f87da21b80",
+  "npmAuditExitCode": 0,
+  "npmVulnerabilities": {
+    "info": 0,
+    "low": 0,
+    "moderate": 0,
+    "high": 0,
+    "critical": 0,
+    "total": 0
+  },
+  "passed": true
+}

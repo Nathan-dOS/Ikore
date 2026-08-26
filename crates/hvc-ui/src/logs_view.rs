@@ -1,0 +1,397 @@
+use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
+
+use crate::app_model::AppModel;
+use crate::theme;
+
+pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    let (
+        snapshot,
+        selected_run_id,
+        selected_run,
+        events,
+        visible_output,
+        output_complete,
+        loading,
+        poll_in_flight,
+        error,
+    ) = {
+        let logs = model.logs.read(cx);
+        (
+            logs.snapshot.clone(),
+            logs.selected_run_id.clone(),
+            logs.selected_run().cloned(),
+            logs.events.clone(),
+            logs.visible_output.clone(),
+            logs.visible_output_complete,
+            logs.loading,
+            logs.poll_in_flight,
+            logs.error.clone(),
+        )
+    };
+    let run_count = snapshot.runs.len();
+    let metric_count = snapshot.metrics.len();
+
+    div()
+        .flex_1()
+        .min_w_0()
+        .min_h_0()
+        .p_3()
+        .flex()
+        .gap_3()
+        .child(
+            div()
+                .w(px(320.0))
+                .min_h_0()
+                .p_3()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::surface())
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme::accent())
+                                        .child("AGENT RUNTIME"),
+                                )
+                                .child(
+                                    div()
+                                        .text_lg()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child("Execuções"),
+                                ),
+                        )
+                        .child(button(
+                            "logs-refresh",
+                            if poll_in_flight { "…" } else { "Atualizar" },
+                            !poll_in_flight,
+                            cx,
+                            |model, cx| model.refresh_logs(cx),
+                        )),
+                )
+                .when(loading, |panel| {
+                    panel.child(
+                        div()
+                            .text_sm()
+                            .text_color(theme::text_muted())
+                            .child("Carregando observabilidade…"),
+                    )
+                })
+                .when(!loading && snapshot.runs.is_empty(), |panel| {
+                    panel.child(
+                        div()
+                            .p_3()
+                            .text_sm()
+                            .text_color(theme::text_muted())
+                            .child("Selecione uma pulsation; os agent_runs aparecerão aqui."),
+                    )
+                })
+                .child(
+                    div()
+                        .id("logs-runs-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .children(snapshot.runs.into_iter().map(|run| {
+                            let id = run.id.clone();
+                            let selected = selected_run_id
+                                .as_ref()
+                                .is_some_and(|selected| selected.as_ref() == id);
+                            let provider = run.provider.as_deref().unwrap_or("provider pendente");
+                            let model_name = run.model.as_deref().unwrap_or("modelo pendente");
+                            div()
+                                .id(SharedString::from(format!("log-run:{id}")))
+                                .p_3()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(if selected {
+                                    theme::accent()
+                                } else {
+                                    theme::border()
+                                })
+                                .bg(if selected {
+                                    theme::accent_soft()
+                                } else {
+                                    theme::surface_raised()
+                                })
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |model, _, _, cx| {
+                                    model.select_log_run(id.clone(), cx)
+                                }))
+                                .child(
+                                    div()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(run.agent_name),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme::text_muted())
+                                        .child(format!("{} · {provider}/{model_name}", run.status)),
+                                )
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .id("logs-detail-scroll")
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .p_4()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::surface())
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap_4()
+                .child(
+                    div()
+                        .text_xl()
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .child("Logs & Observability"),
+                )
+                .when_some(error, |panel, error| {
+                    panel.child(
+                        div()
+                            .p_3()
+                            .rounded_md()
+                            .bg(theme::danger_soft())
+                            .text_color(theme::danger())
+                            .child(error.presentable()),
+                    )
+                })
+                .child(
+                    div()
+                        .grid()
+                        .grid_cols(3)
+                        .gap_2()
+                        .child(metric("RUNS", run_count.to_string()))
+                        .child(metric("MÉTRICAS", metric_count.to_string()))
+                        .child(metric("EVENTOS", events.len().to_string())),
+                )
+                .child(
+                    section("Routing metrics").children(snapshot.metrics.into_iter().map(
+                        |metric_item| {
+                            div()
+                                .mt_2()
+                                .p_2()
+                                .rounded_md()
+                                .bg(theme::surface())
+                                .child(format!(
+                                    "{}/{} · {} tentativa(s), {} sucesso(s)",
+                                    metric_item.provider_id,
+                                    metric_item.model_id,
+                                    metric_item.attempts,
+                                    metric_item.successes
+                                ))
+                                .child(div().text_xs().text_color(theme::text_muted()).child(
+                                    format!(
+                                            "latência média {} · tokens {}/{} · custo {}",
+                                            metric_item
+                                                .average_latency_ms
+                                                .map(|value| format!("{value:.1} ms"))
+                                                .unwrap_or_else(|| "—".into()),
+                                            metric_item.input_tokens,
+                                            metric_item.output_tokens,
+                                            metric_item
+                                                .estimated_cost_usd
+                                                .map(|value| format!("US$ {value:.6}"))
+                                                .unwrap_or_else(|| "—".into())
+                                        ),
+                                ))
+                        },
+                    )),
+                )
+                .when_some(selected_run, |panel, run| {
+                    panel.child(
+                        section("Run selecionado")
+                            .child(fact("STATUS", run.status))
+                            .child(fact(
+                                "PROVIDER / MODEL",
+                                format!(
+                                    "{} / {}",
+                                    run.provider.unwrap_or_else(|| "—".into()),
+                                    run.model.unwrap_or_else(|| "—".into())
+                                ),
+                            ))
+                            .child(fact(
+                                "TOKENS",
+                                format!(
+                                    "{} / {}",
+                                    run.input_tokens
+                                        .map_or_else(|| "—".into(), |value| value.to_string()),
+                                    run.output_tokens
+                                        .map_or_else(|| "—".into(), |value| value.to_string())
+                                ),
+                            ))
+                            .child(fact(
+                                "CUSTO",
+                                run.estimated_cost_usd
+                                    .map_or_else(|| "—".into(), |value| format!("US$ {value:.6}")),
+                            ))
+                            .child(fact(
+                                "TEMPO",
+                                format!(
+                                    "{} → {}",
+                                    run.started_at.unwrap_or_else(|| run.created_at.clone()),
+                                    run.finished_at.unwrap_or_else(|| "em andamento".into())
+                                ),
+                            ))
+                            .when_some(run.last_error, |section, value| {
+                                section.child(fact("ERRO", value))
+                            })
+                            .when_some(run.raw_output, |section, value| {
+                                section.child(fact("RAW OUTPUT", value))
+                            })
+                            .when_some(run.structured_output, |section, value| {
+                                section.child(fact("STRUCTURED OUTPUT", value.to_string()))
+                            }),
+                    )
+                })
+                .child(
+                    section("Saída LLM visível")
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(if output_complete {
+                                    theme::accent()
+                                } else {
+                                    theme::warning()
+                                })
+                                .child(if output_complete {
+                                    "completa"
+                                } else {
+                                    "incompleta / streaming"
+                                }),
+                        )
+                        .child(
+                            div()
+                                .mt_2()
+                                .p_3()
+                                .rounded_md()
+                                .bg(theme::surface())
+                                .font_family("Cascadia Mono")
+                                .text_sm()
+                                .child(if visible_output.is_empty() {
+                                    SharedString::from("Nenhuma saída visível nesta sessão.")
+                                } else {
+                                    visible_output
+                                }),
+                        ),
+                )
+                .child(
+                    section("Eventos watcher / LLM").child(
+                        div()
+                            .id("logs-events-scroll")
+                            .max_h(px(300.0))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .children(events.into_iter().rev().map(|event| {
+                                div()
+                                    .p_2()
+                                    .rounded_md()
+                                    .bg(theme::surface())
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .justify_between()
+                                            .child(format!("{} · {}", event.category, event.name))
+                                            .when_some(event.sequence, |row, sequence| {
+                                                row.child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(theme::text_muted())
+                                                        .child(format!("#{sequence}")),
+                                                )
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme::text_muted())
+                                            .child(event.summary),
+                                    )
+                            })),
+                    ),
+                ),
+        )
+        .into_any_element()
+}
+
+fn button(
+    id: &'static str,
+    label: &'static str,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+    handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .bg(if enabled {
+            theme::accent()
+        } else {
+            theme::surface_raised()
+        })
+        .text_color(if enabled {
+            theme::canvas()
+        } else {
+            theme::text_muted()
+        })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
+        })
+        .child(label)
+}
+
+fn section(title: &'static str) -> gpui::Div {
+    div()
+        .p_3()
+        .rounded_lg()
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::surface_raised())
+        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title))
+}
+
+fn metric(label: &'static str, value: String) -> impl IntoElement {
+    div()
+        .p_3()
+        .rounded_md()
+        .bg(theme::surface_raised())
+        .child(div().text_xs().text_color(theme::text_muted()).child(label))
+        .child(
+            div()
+                .text_lg()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(value),
+        )
+}
+
+fn fact(label: &'static str, value: String) -> impl IntoElement {
+    div()
+        .mt_2()
+        .child(div().text_xs().text_color(theme::text_muted()).child(label))
+        .child(div().font_family("Cascadia Mono").text_sm().child(value))
+}

@@ -1,0 +1,34 @@
+[package]
+name = "hvc-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Framework-agnostic domain and application core for Hard Vibe Code"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+fs2 = "0.4"
+futures.workspace = true
+ignore = "0.4"
+jsonschema = "0.30"
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service"] }
+notify = "8"
+refinery = { version = "0.8", features = ["rusqlite"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio.workspace = true
+tokio-util.workspace = true
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
