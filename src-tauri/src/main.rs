@@ -732,9 +732,12 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let app_data_dir = app.path().app_data_dir().map_err(|error| {
-                io::Error::other(format!("Não foi possível resolver AppData: {error}"))
-            })?;
+            let app_data_dir = match std::env::var_os("HVC_DATA_DIR") {
+                Some(path) => PathBuf::from(path),
+                None => app.path().app_data_dir().map_err(|error| {
+                    io::Error::other(format!("Não foi possível resolver AppData: {error}"))
+                })?,
+            };
             let app_paths = AppPaths::from_data_dir(&app_data_dir);
             let data_lock = DataDirectoryLock::acquire(&app_paths)
                 .map_err(|error| io::Error::other(error.to_string()))?;

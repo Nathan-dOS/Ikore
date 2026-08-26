@@ -389,7 +389,10 @@ impl AppCore {
     }
 
     pub async fn shutdown(&self) {
+        // Primeiro bloqueia novos claims; em seguida, cancela jobs/LLM já registrados. O worker
+        // continua vivo apenas o suficiente para persistir o estado terminal antes do join.
         self.worker_cancellation.cancel();
+        self.persistence.cancel_all_active_jobs();
         self.chat.cancel_all_turns();
         if let Ok(mut workspace) = self.workspace.lock() {
             workspace.watcher = None;
@@ -408,6 +411,7 @@ impl AppCore {
             worker.abort();
             let _ = worker.await;
         }
+        let _ = self.chat.wait_for_idle(Duration::from_secs(3)).await;
     }
 }
 

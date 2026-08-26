@@ -11,6 +11,7 @@ use hvc_core::workspace_service::{FileNode, FileNodeKind};
 use hvc_editor::{DiffMark, MarkdownBlock, build_diff_rows, parse_markdown};
 
 use crate::app_model::{AppModel, AppView};
+use crate::chat_view::chat_panel;
 use crate::hitl::{ApproveHitl, RequestHitlRevision, register_hitl_keybindings};
 use crate::logs_view::logs_panel;
 use crate::native_editor::register_editor_keybindings;
@@ -52,7 +53,8 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
 }
 
 impl Render for AppModel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.observe_performance_frame(window);
         let active = self.active_view();
         let status = self.status().clone();
         let event_count = self.event_count();
@@ -260,102 +262,14 @@ fn sidebar(
 }
 
 fn content_panel(model: &AppModel, active: AppView, cx: &mut Context<AppModel>) -> AnyElement {
-    if active == AppView::Workspace {
-        return workspace_content_panel(model, cx).into_any_element();
+    match active {
+        AppView::Workspace => workspace_content_panel(model, cx).into_any_element(),
+        AppView::Pulsations => pulsations_panel(model, cx),
+        AppView::Vault => vault_panel(model, cx),
+        AppView::Chat => chat_panel(model, cx),
+        AppView::Settings => settings_panel(model, cx),
+        AppView::Logs => logs_panel(model, cx),
     }
-    if active == AppView::Pulsations {
-        return pulsations_panel(model, cx);
-    }
-    if active == AppView::Vault {
-        return vault_panel(model, cx);
-    }
-    if active == AppView::Settings {
-        return settings_panel(model, cx);
-    }
-    if active == AppView::Logs {
-        return logs_panel(model, cx);
-    }
-
-    let (metric, note): (String, String) = match active {
-        AppView::Workspace => unreachable!("workspace possui painel nativo específico"),
-        AppView::Pulsations | AppView::Vault => {
-            unreachable!("views de domínio possuem painéis nativos específicos")
-        }
-        AppView::Chat => {
-            let view = model.chat.read(cx);
-            (
-                if view.streaming {
-                    "Streaming ativo"
-                } else {
-                    "Chat ocioso"
-                }
-                .into(),
-                view.active_conversation
-                    .clone()
-                    .unwrap_or_else(|| "Nenhuma conversa selecionada".into())
-                    .to_string(),
-            )
-        }
-        AppView::Settings | AppView::Logs => unreachable!("view possui painel nativo específico"),
-    };
-
-    div()
-        .flex_1()
-        .min_w_0()
-        .p_5()
-        .flex()
-        .flex_col()
-        .gap_4()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_2xl()
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .child(active.label()),
-                )
-                .when(active == AppView::Workspace, |row| {
-                    row.child(
-                        div()
-                            .id("choose-workspace")
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .bg(theme::accent())
-                            .text_color(theme::canvas())
-                            .cursor_pointer()
-                            .hover(|style| style.opacity(0.88))
-                            .on_click(cx.listener(|model, _, window, cx| {
-                                model.choose_workspace(window, cx);
-                            }))
-                            .child("Abrir workspace"),
-                    )
-                }),
-        )
-        .child(
-            div()
-                .p_5()
-                .rounded_lg()
-                .border_1()
-                .border_color(theme::border())
-                .bg(theme::surface_raised())
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(div().text_lg().child(metric))
-                .child(div().text_color(theme::text_muted()).child(note))
-                .child(
-                    div()
-                        .mt_3()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child(active.description()),
-                ),
-        )
-        .into_any_element()
 }
 
 #[derive(Clone)]

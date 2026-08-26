@@ -22,6 +22,15 @@ impl UiCommandError {
         }
     }
 
+    pub(crate) fn from_chat_parts(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            details: None,
+            remediation: None,
+        }
+    }
+
     pub(crate) fn is_code(&self, code: &str) -> bool {
         self.code == code
     }

@@ -25,8 +25,21 @@ pub fn parse_markdown(source: &str) -> Vec<MarkdownBlock> {
     let mut blocks = Vec::new();
     let mut current = String::new();
     let mut block = BlockKind::Paragraph;
+    let mut suppressed_raw_tag: Option<&'static str> = None;
 
     for event in parser {
+        if let Some(tag) = suppressed_raw_tag {
+            if let Event::Html(html) | Event::InlineHtml(html) = &event
+                && closes_raw_tag(html, tag)
+            {
+                suppressed_raw_tag = None;
+            }
+            continue;
+        }
+        if let Event::Html(html) | Event::InlineHtml(html) = &event {
+            suppressed_raw_tag = opens_executable_raw_tag(html);
+            continue;
+        }
         match event {
             Event::Start(Tag::Paragraph) => {
                 current.clear();
@@ -72,6 +85,25 @@ pub fn parse_markdown(source: &str) -> Vec<MarkdownBlock> {
         }
     }
     blocks
+}
+
+fn opens_executable_raw_tag(html: &str) -> Option<&'static str> {
+    let normalized = html.trim().to_ascii_lowercase();
+    for tag in ["script", "style"] {
+        if normalized.starts_with(&format!("<{tag}"))
+            && !normalized.contains(&format!("</{tag}>"))
+            && !normalized.ends_with("/>")
+        {
+            return Some(tag);
+        }
+    }
+    None
+}
+
+fn closes_raw_tag(html: &str, tag: &str) -> bool {
+    html.trim()
+        .to_ascii_lowercase()
+        .starts_with(&format!("</{tag}"))
 }
 
 pub fn sanitize_link_destination(destination: &str) -> Option<String> {
@@ -187,5 +219,10 @@ mod tests {
         assert!(!rendered.contains("<script"));
         assert!(!rendered.contains("javascript:"));
         assert!(sanitize_link_destination("javascript:alert(1)").is_none());
+
+        let inline = parse_markdown("Seguro<script>alert(1)</script> depois");
+        let rendered = format!("{inline:?}");
+        assert!(rendered.contains("Seguro"));
+        assert!(!rendered.contains("alert"));
     }
 }

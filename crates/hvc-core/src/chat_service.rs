@@ -11,6 +11,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::runtime::Handle;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -106,8 +107,18 @@ pub struct ChatEventError {
 pub struct ChatToolStarted {
     pub id: String,
     pub name: String,
-    pub arguments: Value,
+    pub arguments: ChatToolArguments,
     pub round_index: usize,
+}
+
+pub type ChatToolArguments = BTreeMap<String, ChatToolArgumentValue>;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ChatToolArgumentValue {
+    Text(String),
+    Integer(i64),
+    Boolean(bool),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -219,7 +230,7 @@ pub struct ChatToolCall {
     pub round_index: usize,
     pub tool_call_id: String,
     pub tool_name: String,
-    pub sanitized_arguments: Value,
+    pub sanitized_arguments: ChatToolArguments,
     pub result_summary: Option<String>,
     pub result_bytes: usize,
     pub status: String,
@@ -325,6 +336,7 @@ pub struct GetChatTurnSnapshotResponse {
 struct ChatRuntime {
     turns: Mutex<HashMap<String, ActiveTurn>>,
     sequences: Mutex<HashMap<String, u64>>,
+    turns_idle: Notify,
 }
 
 #[derive(Clone)]
@@ -709,6 +721,30 @@ impl ChatService {
         turns.len()
     }
 
+    pub async fn wait_for_idle(&self, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let notified = self.runtime.turns_idle.notified();
+            let is_idle = self
+                .runtime
+                .turns
+                .lock()
+                .map(|turns| turns.is_empty())
+                .unwrap_or(true);
+            if is_idle {
+                return true;
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline
+                || tokio::time::timeout(deadline - now, notified)
+                    .await
+                    .is_err()
+            {
+                return false;
+            }
+        }
+    }
+
     pub fn cancel_turn(
         &self,
         request: CancelChatTurnRequest,
@@ -969,13 +1005,14 @@ fn map_message(row: &Row<'_>) -> rusqlite::Result<ChatMessage> {
 
 fn map_tool_call(row: &Row<'_>) -> rusqlite::Result<ChatToolCall> {
     let arguments: String = row.get(5)?;
+    let arguments = serde_json::from_str(&arguments).unwrap_or_else(|_| json!({}));
     Ok(ChatToolCall {
         id: row.get(0)?,
         assistant_message_id: row.get(1)?,
         round_index: row.get::<_, i64>(2)?.max(0) as usize,
         tool_call_id: row.get(3)?,
         tool_name: row.get(4)?,
-        sanitized_arguments: serde_json::from_str(&arguments).unwrap_or_else(|_| json!({})),
+        sanitized_arguments: typed_tool_arguments(&arguments),
         result_summary: row.get(6)?,
         result_bytes: row.get::<_, i64>(7)?.max(0) as usize,
         status: row.get(8)?,
@@ -984,6 +1021,24 @@ fn map_tool_call(row: &Row<'_>) -> rusqlite::Result<ChatToolCall> {
         started_at: row.get(11)?,
         completed_at: row.get(12)?,
     })
+}
+
+fn typed_tool_arguments(arguments: &Value) -> ChatToolArguments {
+    let Some(arguments) = arguments.as_object() else {
+        return BTreeMap::new();
+    };
+    arguments
+        .iter()
+        .filter_map(|(key, value)| {
+            let value = match value {
+                Value::String(value) => ChatToolArgumentValue::Text(value.clone()),
+                Value::Number(value) => value.as_i64().map(ChatToolArgumentValue::Integer)?,
+                Value::Bool(value) => ChatToolArgumentValue::Boolean(*value),
+                Value::Null | Value::Array(_) | Value::Object(_) => return None,
+            };
+            Some((key.clone(), value))
+        })
+        .collect()
 }
 
 fn normalize_id(raw: &str, field: &str) -> Result<String, ChatCommandError> {
@@ -1138,6 +1193,7 @@ impl ChatService {
         if let Ok(mut turns) = self.runtime.turns.lock() {
             turns.remove(&context.execution_id);
         }
+        self.runtime.turns_idle.notify_waiters();
         if let Ok(mut sequences) = self.runtime.sequences.lock() {
             sequences.remove(&context.generation_id);
         }
@@ -1358,7 +1414,7 @@ impl ChatService {
                     tool_call: ChatToolStarted {
                         id: call.id.clone(),
                         name: call.name.clone(),
-                        arguments: call.arguments.clone(),
+                        arguments: typed_tool_arguments(&call.arguments),
                         round_index,
                     },
                 },
@@ -2733,6 +2789,49 @@ mod tests {
             .unwrap();
         assert_eq!(message_count, 0);
         assert_eq!(title, "Nova conversa");
+    }
+
+    #[test]
+    fn cancellation_finishes_the_turn_and_wait_for_idle_observes_it() {
+        let (_temp, workspace, service) = prepare_chat();
+        let conversation = service
+            .create_conversation(CreateChatConversationRequest {
+                project_id: "project-a".into(),
+                connection_id: "connection-a".into(),
+            })
+            .unwrap()
+            .conversation;
+        let started = service
+            .start_turn(
+                SendChatMessageRequest {
+                    conversation_id: conversation.id,
+                    content: "Cancele antes de iniciar a rede".into(),
+                },
+                &workspace,
+            )
+            .unwrap();
+
+        assert!(
+            service
+                .cancel_turn(CancelChatTurnRequest {
+                    execution_id: started.execution_id,
+                })
+                .unwrap()
+                .cancelled
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert!(runtime.block_on(service.wait_for_idle(Duration::from_secs(2))));
+
+        let snapshot = service
+            .get_turn_snapshot(GetChatTurnSnapshotRequest {
+                generation_id: started.generation_id,
+            })
+            .unwrap();
+        assert_eq!(snapshot.message.status, "cancelled");
+        assert_eq!(snapshot.message.error_code.as_deref(), Some("cancelled"));
     }
 
     #[test]

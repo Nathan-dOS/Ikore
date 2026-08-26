@@ -102,9 +102,9 @@
       "id": "contract-005",
       "area": "rust_contracts",
       "source": "src/ipc/client.test.ts::starts and cancels chat turns through read-only chat IPC",
-      "target": "hvc_core::contracts::tests::starts_and_cancels_typed_chat_turns",
-      "status": "partial",
-      "rationale": "ChatService suporta ambas operações; a equivalência conjunta ainda não está registrada em teste."
+      "target": "hvc_ui::chat::tests::starts_and_cancels_chat_turns_without_ipc",
+      "status": "covered",
+      "rationale": "O AppModel inicia e cancela o turno pelo backend Rust tipado, sem invoke, JSON ou IPC."
     },
     {
       "id": "contract-006",
@@ -348,72 +348,72 @@
       "area": "chat",
       "source": "src/views/ChatView.test.tsx::shows only connections explicitly eligible for chat tool calling",
       "target": "hvc_ui::chat::tests::filters_connections_by_chat_tool_capability",
-      "status": "pending",
-      "rationale": "A entidade Chat ainda não carrega connections."
+      "status": "covered",
+      "rationale": "A entidade Chat carrega as conexões persistidas e expõe somente as marcadas como chat_eligible."
     },
     {
       "id": "chat-002",
       "area": "chat",
       "source": "src/views/ChatView.test.tsx::requires a project before exposing the composer",
       "target": "hvc_ui::chat::tests::requires_active_project_before_composer",
-      "status": "pending",
-      "rationale": "O painel GPUI ainda não possui composer."
+      "status": "covered",
+      "rationale": "O composer nativo só fica disponível com projeto e conversa ativos."
     },
     {
       "id": "chat-003",
       "area": "chat",
       "source": "src/components/chat/ChatMessageContent.test.tsx::recognizes only unified diffs with matching a/ and b/ headers",
       "target": "hvc_editor::diff::tests::recognizes_only_matching_unified_diff_headers",
-      "status": "partial",
-      "rationale": "O contrato de diff existe, mas a validação exata dos headers ainda precisa equivalência."
+      "status": "covered",
+      "rationale": "O parser Rust reconhece apenas fences diff com headers --- a/ e +++ b/ apontando para o mesmo arquivo."
     },
     {
       "id": "chat-004",
       "area": "chat",
       "source": "src/components/chat/ChatMessageContent.test.tsx::sanitizes markdown and offers copy without any apply action",
-      "target": "hvc_ui::chat::tests::renders_safe_markdown_with_copy_only_diff",
-      "status": "partial",
-      "rationale": "Parser e clipboard double existem; apresentação Chat e ausência de apply ainda serão testadas."
+      "target": "hvc_ui::chat_view::tests::renders_safe_markdown_with_copy_only_diff",
+      "status": "covered",
+      "rationale": "A mensagem usa Markdown seguro, remove HTML executável e oferece apenas cópia da proposta de diff."
     },
     {
       "id": "chat-005",
       "area": "chat",
       "source": "src/state/chatStore.test.ts::classifies duplicate, next and gap sequences",
       "target": "hvc_ui::chat::tests::classifies_duplicate_next_and_gap_sequences",
-      "status": "partial",
-      "rationale": "Envelopes tipados têm sequência, porém o reconciliador GPUI ainda não."
+      "status": "covered",
+      "rationale": "O reconciliador Rust classifica eventos consecutivos, duplicados e lacunas antes de alterar a entidade."
     },
     {
       "id": "chat-006",
       "area": "chat",
       "source": "src/state/chatStore.test.ts::deduplicates deltas and reconciles a detected gap",
       "target": "hvc_ui::chat::tests::deduplicates_deltas_and_reconciles_gap_snapshot",
-      "status": "pending",
-      "rationale": "Streaming da entidade Chat será implementado na Etapa 7."
+      "status": "covered",
+      "rationale": "Deltas duplicados são descartados e lacunas recarregam o snapshot persistido sem aplicar o incremental inconsistente."
     },
     {
       "id": "chat-007",
       "area": "chat",
       "source": "src/state/chatStore.test.ts::cancels the active execution without changing provider state",
       "target": "hvc_ui::chat::tests::cancels_active_turn_without_mutating_provider_state",
-      "status": "partial",
-      "rationale": "ChatService cancela turns; falta o fluxo observável da UI."
+      "status": "covered",
+      "rationale": "A ação nativa cancela a execução ativa pelo backend sem alterar a configuração do provider."
     },
     {
       "id": "chat-008",
       "area": "chat",
       "source": "src/state/chatStore.test.ts::discards a late conversation response after switching projects",
       "target": "hvc_ui::chat::tests::discards_late_response_after_project_switch",
-      "status": "pending",
-      "rationale": "Ainda não existe generation token por hidratação no modelo GPUI."
+      "status": "covered",
+      "rationale": "O generation token da hidratação impede que uma resposta tardia do projeto anterior substitua o estado atual."
     },
     {
       "id": "chat-009",
       "area": "chat",
       "source": "src/state/chatStore.test.ts::falls back to the newest persisted conversation when the restored selection was deleted",
       "target": "hvc_ui::chat::tests::falls_back_to_newest_existing_conversation",
-      "status": "pending",
-      "rationale": "A restauração guarda o id, mas a entidade Chat ainda não reconcilia conversas removidas."
+      "status": "covered",
+      "rationale": "Quando a seleção restaurada não existe mais, a hidratação escolhe a conversa persistida mais recente."
     }
   ]
 }

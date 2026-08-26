@@ -59,6 +59,14 @@ cargo test --workspace
 cargo build --release -p hvc-app
 ```
 
+Gate agregado da Etapa 6:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/gate-stage6.ps1
+```
+
+O relatório, metodologia e evidências estão em [`quality/stage6-report.md`](quality/stage6-report.md). O gate integral está atualmente reprovado pelos thresholds de cold start/frame cadence; não use a mensagem do gate técnico sem benchmarks como autorização de corte.
+
 ## Baseline Tauri/React durante a migração
 
 ```powershell
@@ -73,7 +81,7 @@ O frontend, `package.json`, Vite, Monaco, Zustand, IPC e Tauri só serão removi
 
 O inventário versionado [`parity/gpui-frontend-ledger.json`](parity/gpui-frontend-ledger.json) mapeia nominalmente cada um dos 51 testes React para seu alvo Rust. A validação estrutural do ledger faz parte de `cargo test --workspace` e impede casos ausentes, duplicados ou sem justificativa.
 
-Estado ao concluir a Etapa 4: 41 casos cobertos, 5 parcialmente cobertos e 5 pendentes. Settings e todos os contratos diretos não dependentes de Chat estão integralmente cobertos; os dez casos ainda não cobertos pertencem à paridade do Chat Companion da Etapa 5. Esses estados registram equivalência funcional por cenário; não são uma contagem dos testes executados pelo Cargo.
+Estado ao concluir a Etapa 5: os 51 casos do baseline React estão cobertos por testes Rust equivalentes. O ledger não possui casos parciais ou pendentes; isso comprova paridade funcional por cenário, mas a remoção do legado continua bloqueada pelos gates das Etapas 6 e 7.
 
 ## Limitações atuais da migração
 
@@ -83,7 +91,7 @@ Estado ao concluir a Etapa 4: 41 casos cobertos, 5 parcialmente cobertos e 5 pen
 - Vault possui árvore, índice, busca substring/regex, grafo determinístico clicável, links quebrados, frontmatter, preview seguro, renomeação coordenada, cache de documentos e refresh do watcher com debounce.
 - Settings possui profiles, conexões/keyring, rotas e targets ordenados, bindings exatos, modos off/shadow/on, configuração YAML Graph/RAG, embeddings, teste assíncrono e reset de resiliência. Segredos são mascarados, redigidos de `Debug` e limpos antes do primeiro `await`.
 - Logs inspeciona `agent_runs`, payloads raw/estruturados, erros, tokens/custo, métricas de roteamento, saída visível e feeds watcher/LLM limitados a 200 registros. Duplicatas são descartadas e gaps recarregam o snapshot persistido sem aceitar resultados obsoletos.
-- Chat já tem entidade e rota próprias, mas composer, streaming, cancelamento, ferramentas read-only e recovery de UI ainda pertencem à Etapa 5.
-- Benchmarks comparativos, equivalência Rust completa dos 51 testes frontend, auditoria de licenças/advisories e decisão sobre a dependência GPL continuam pendentes.
+- Chat possui entidade, backend tipado e painel GPUI próprios, conversas por projeto, seleção restaurável, filtro de conexões elegíveis, disclosure, composer, streaming incremental, cancelamento, ferramentas read-only, Markdown seguro, diff somente para cópia e recovery por snapshot.
+- O hardening e as auditorias da Etapa 6 estão implementados. Licenças/fontes passaram tecnicamente, RustSec/npm ficaram em zero vulnerabilidades e memória melhorou 60,831%; cold start melhorou apenas 14,566% e frame cadence ficou em P95 18,2096 ms/P99 19,4284 ms num display de 60 Hz. Esses dois gates e o bloqueio jurídico do issue #55470 impedem o corte.
 
-Última validação local da Etapa 4 de paridade: 171 testes Rust do workspace e 51 testes frontend aprovados, além de `cargo fmt --check`, Clippy com `-D warnings`, build frontend, check do adaptador Tauri, build release e smoke Windows com banco isolado, shutdown gracioso e exit code 0.
+Validação da Etapa 6: 186 testes Rust (185 unitários e 1 integração), 51 testes frontend, formatação, Clippy com `-D warnings`, auditorias sem vulnerabilidades, builds release dos dois shells e smoke GPUI aprovados. Os resultados de desempenho permanecem formalmente reprovados conforme o relatório versionado.

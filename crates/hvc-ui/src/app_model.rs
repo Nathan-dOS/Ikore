@@ -2,9 +2,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
-    AppContext as _, Context, Entity, PathPromptOptions, SharedString, Subscription, Task, Window,
+    AppContext as _, ClipboardItem, Context, Entity, PathPromptOptions, SharedString, Subscription,
+    Task, Window,
 };
 use hvc_core::agent_runtime::ContextStrategy;
+use hvc_core::chat_service::ChatEventEnvelope;
 use hvc_core::llm::{
     DeleteProviderConnectionRequest, DeleteProviderRouteRequest, ResetLlmResilienceStateRequest,
     RouteTarget, RoutingMode, TestProviderConnectionRequest, UpsertProviderConnectionRequest,
@@ -22,6 +24,7 @@ use hvc_core::{AppCore, AppEvent};
 use hvc_editor::{EditorSelection, EditorSnapshot, TextPosition};
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::chat::{ChatBackend, ChatEventOutcome, ChatModel, CoreChatBackend};
 use crate::lifecycle::LifecycleState;
 use crate::logs::{CoreLogsBackend, LogsBackend, LogsModel, SequenceClassification};
 use crate::pulsations::{CorePulsationsBackend, PulsationsBackend, PulsationsModel};
@@ -35,7 +38,7 @@ use crate::vault::{
     CONTEXT_DOCUMENTS_DEBOUNCE, CoreVaultBackend, VAULT_REFRESH_DEBOUNCE, VaultBackend, VaultModel,
     normalize_rename_target,
 };
-use crate::views::{ChatModel, NavigationModel};
+use crate::views::NavigationModel;
 use crate::workspace::{
     AUTOSAVE_DEBOUNCE, CoreWorkspaceBackend, WorkspaceBackend, WorkspaceEditorModel,
     WorkspaceTabModel, WorkspaceViewMode,
@@ -154,6 +157,7 @@ pub struct AppModel {
     vault_backend: Option<Arc<dyn VaultBackend>>,
     settings_backend: Option<Arc<dyn SettingsBackend>>,
     logs_backend: Option<Arc<dyn LogsBackend>>,
+    chat_backend: Option<Arc<dyn ChatBackend>>,
     pub navigation: Entity<NavigationModel>,
     pub workspace: Entity<WorkspaceEditorModel>,
     pub pulsations: Entity<PulsationsModel>,
@@ -167,6 +171,7 @@ pub struct AppModel {
     pub(crate) settings_connection_secret_input: Entity<NativeTextInput>,
     pub(crate) settings_route_name_input: Entity<NativeTextInput>,
     pub(crate) settings_embedding_model_input: Entity<NativeTextInput>,
+    pub(crate) chat_draft_input: Entity<NativeTextInput>,
     pub chat: Entity<ChatModel>,
     pub(crate) settings: Entity<SettingsModel>,
     pub(crate) logs: Entity<LogsModel>,
@@ -197,7 +202,10 @@ pub struct AppModel {
     settings_task: Option<Task<()>>,
     logs_task: Option<Task<()>>,
     logs_resync_tasks: HashMap<String, Task<()>>,
+    chat_task: Option<Task<()>>,
+    chat_resync_tasks: HashMap<String, Task<()>>,
     session_task: Option<Task<()>>,
+    performance_probe: Option<crate::performance::FrameLatencyProbe>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -214,6 +222,7 @@ impl AppModel {
         let settings_backend: Arc<dyn SettingsBackend> =
             Arc::new(CoreSettingsBackend::new(Arc::clone(&core)));
         let logs_backend: Arc<dyn LogsBackend> = Arc::new(CoreLogsBackend::new(Arc::clone(&core)));
+        let chat_backend: Arc<dyn ChatBackend> = Arc::new(CoreChatBackend::new(Arc::clone(&core)));
         let mut model = Self::build(
             Some(core),
             Some(session_persistence),
@@ -224,12 +233,14 @@ impl AppModel {
         model.vault_backend = Some(vault_backend);
         model.settings_backend = Some(settings_backend);
         model.logs_backend = Some(logs_backend);
+        model.chat_backend = Some(chat_backend);
         model.start_lifecycle(cx);
         cx.on_app_quit(|model, cx| model.flush_pending_session(cx))
             .detach();
         model.restore_last_session(cx);
         model.refresh_settings(cx);
         model.refresh_logs(cx);
+        model.performance_probe = crate::performance::start_probe();
         model
     }
 
@@ -276,6 +287,16 @@ impl AppModel {
         model
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_chat_backend(
+        chat_backend: Arc<dyn ChatBackend>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut model = Self::build(None, None, None, cx);
+        model.chat_backend = Some(chat_backend);
+        model
+    }
+
     fn build(
         core: Option<Arc<AppCore>>,
         session_persistence: Option<Arc<dyn SessionPersistence>>,
@@ -304,6 +325,7 @@ impl AppModel {
         let settings_route_name_input = cx.new(|cx| NativeTextInput::new("Nome da rota", cx));
         let settings_embedding_model_input =
             cx.new(|cx| NativeTextInput::new("Modelo de embeddings", cx));
+        let chat_draft_input = cx.new(|cx| NativeTextInput::new("Mensagem para o Companion", cx));
         let subscriptions = vec![
             cx.observe(&editor, |model, _, cx| {
                 model.handle_editor_update(cx);
@@ -319,6 +341,7 @@ impl AppModel {
             cx.observe(&settings_connection_secret_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_route_name_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_embedding_model_input, |_, _, cx| cx.notify()),
+            cx.observe(&chat_draft_input, |_, _, cx| cx.notify()),
         ];
         Self {
             core,
@@ -328,6 +351,7 @@ impl AppModel {
             vault_backend: None,
             settings_backend: None,
             logs_backend: None,
+            chat_backend: None,
             navigation,
             workspace,
             pulsations: cx.new(|_| PulsationsModel::default()),
@@ -341,6 +365,7 @@ impl AppModel {
             settings_connection_secret_input,
             settings_route_name_input,
             settings_embedding_model_input,
+            chat_draft_input,
             chat: cx.new(|_| ChatModel::default()),
             settings: cx.new(|_| SettingsModel::default()),
             logs: cx.new(|_| LogsModel::default()),
@@ -371,7 +396,10 @@ impl AppModel {
             settings_task: None,
             logs_task: None,
             logs_resync_tasks: HashMap::new(),
+            chat_task: None,
+            chat_resync_tasks: HashMap::new(),
             session_task: None,
+            performance_probe: None,
             _subscriptions: subscriptions,
         }
     }
@@ -390,6 +418,16 @@ impl AppModel {
 
     pub fn needs_resync(&self) -> bool {
         self.needs_resync
+    }
+
+    pub(crate) fn observe_performance_frame(&mut self, window: &Window) {
+        if self
+            .performance_probe
+            .as_mut()
+            .is_some_and(|probe| probe.observe_render(window))
+        {
+            self.performance_probe = None;
+        }
     }
 
     pub fn sidebar_collapsed(&self, cx: &gpui::App) -> bool {
@@ -414,6 +452,23 @@ impl AppModel {
             workspace.diff_expanded = false;
         });
         self.status = format!("View {} ativa", view.short_label()).into();
+        if view == AppView::Chat {
+            let project_id = self
+                .workspace
+                .read(cx)
+                .project_id
+                .as_ref()
+                .map(ToString::to_string);
+            let active_conversation = self
+                .chat
+                .read(cx)
+                .active_conversation
+                .as_ref()
+                .map(ToString::to_string);
+            if let Some(project_id) = project_id {
+                self.hydrate_chat_project(project_id, active_conversation, cx);
+            }
+        }
         self.schedule_session_persistence(cx);
         cx.notify();
     }
@@ -1529,6 +1584,345 @@ impl AppModel {
         cx.notify();
     }
 
+    fn hydrate_chat_project(
+        &mut self,
+        project_id: String,
+        restored_conversation_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let generation = self.chat.update(cx, |chat, _| {
+            chat.begin_hydration(project_id.clone(), restored_conversation_id.clone())
+        });
+        let Some(backend) = self.chat_backend.clone() else {
+            self.chat.update(cx, |chat, _| chat.loading = false);
+            return;
+        };
+        self.chat_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .hydrate(project_id.clone(), restored_conversation_id)
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                let applied = match result {
+                    Ok(hydration) => model
+                        .chat
+                        .update(cx, |chat, _| chat.apply_hydration(generation, hydration)),
+                    Err(error) => model
+                        .chat
+                        .update(cx, |chat, _| chat.fail_hydration(generation, error)),
+                };
+                if applied {
+                    model.schedule_session_persistence(cx);
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn select_chat_conversation(
+        &mut self,
+        conversation_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.chat_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .chat
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        if !self.chat.update(cx, |chat, _| {
+            chat.select_conversation_locally(&conversation_id)
+        }) {
+            return;
+        }
+        self.schedule_session_persistence(cx);
+        cx.notify();
+        self.chat_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.load_conversation(conversation_id.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(snapshot) => {
+                        model.chat.update(cx, |chat, _| {
+                            chat.apply_selected_conversation(
+                                &project_id,
+                                &conversation_id,
+                                snapshot,
+                            );
+                        });
+                    }
+                    Err(error) => model.chat.update(cx, |chat, _| chat.set_error(error)),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn cycle_chat_connection(&mut self, cx: &mut Context<Self>) {
+        self.chat.update(cx, |chat, _| {
+            let eligible = chat
+                .eligible_connections()
+                .map(|connection| connection.id.clone())
+                .collect::<Vec<_>>();
+            if eligible.is_empty() {
+                chat.selected_connection_id = None;
+                return;
+            }
+            let current = chat
+                .selected_connection_id
+                .as_ref()
+                .and_then(|selected| eligible.iter().position(|id| id == selected.as_ref()))
+                .unwrap_or(eligible.len().saturating_sub(1));
+            chat.selected_connection_id =
+                Some(eligible[(current + 1) % eligible.len()].clone().into());
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn create_chat_conversation(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.chat_backend.clone() else {
+            return;
+        };
+        let (Some(project_id), Some(connection_id)) = ({
+            let chat = self.chat.read(cx);
+            (
+                chat.project_id.as_ref().map(ToString::to_string),
+                chat.selected_connection_id
+                    .as_ref()
+                    .map(ToString::to_string),
+            )
+        }) else {
+            return;
+        };
+        if !self.chat.update(cx, |chat, _| chat.begin_busy()) {
+            return;
+        }
+        cx.notify();
+        self.chat_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.create_conversation(project_id, connection_id).await;
+            let _ = this.update(cx, |model, cx| {
+                model.chat.update(cx, |chat, _| {
+                    chat.finish_busy();
+                    match result {
+                        Ok(snapshot) => chat.apply_created(snapshot),
+                        Err(error) => chat.set_error(error),
+                    }
+                });
+                model
+                    .chat_draft_input
+                    .update(cx, |input, cx| input.clear(cx));
+                model.schedule_session_persistence(cx);
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn delete_chat_conversation(
+        &mut self,
+        conversation_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let confirmed = self
+            .chat
+            .read(cx)
+            .pending_delete_conversation_id
+            .as_ref()
+            .is_some_and(|pending| pending.as_ref() == conversation_id);
+        if !confirmed {
+            self.chat.update(cx, |chat, _| {
+                chat.pending_delete_conversation_id = Some(conversation_id.into());
+            });
+            cx.notify();
+            return;
+        }
+        let Some(backend) = self.chat_backend.clone() else {
+            return;
+        };
+        if !self.chat.update(cx, |chat, _| chat.begin_busy()) {
+            return;
+        }
+        cx.notify();
+        self.chat_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.delete_conversation(conversation_id.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                let next = model.chat.update(cx, |chat, _| {
+                    chat.finish_busy();
+                    match result {
+                        Ok(true) => chat.apply_deleted(&conversation_id),
+                        Ok(false) => {
+                            chat.set_error(crate::errors::UiCommandError::from_chat_parts(
+                                "conversation_not_found",
+                                "Conversa não encontrada.",
+                            ));
+                            None
+                        }
+                        Err(error) => {
+                            chat.set_error(error);
+                            None
+                        }
+                    }
+                });
+                if let Some(next) = next {
+                    model.select_chat_conversation(next, cx);
+                }
+                model.schedule_session_persistence(cx);
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn acknowledge_chat_disclosure(&mut self, cx: &mut Context<Self>) {
+        self.chat
+            .update(cx, |chat, _| chat.acknowledge_disclosure());
+        cx.notify();
+    }
+
+    pub(crate) fn send_chat_message(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.chat_backend.clone() else {
+            return;
+        };
+        let content = self.chat_draft_input.read(cx).value().trim().to_string();
+        let conversation_id = {
+            let chat = self.chat.read(cx);
+            if content.is_empty()
+                || !chat.composer_available()
+                || !chat.disclosure_accepted()
+                || chat.streaming
+                || chat
+                    .active_conversation_record()
+                    .is_some_and(|conversation| !conversation.connection_available)
+            {
+                return;
+            }
+            chat.active_conversation.as_ref().map(ToString::to_string)
+        };
+        let Some(conversation_id) = conversation_id else {
+            return;
+        };
+        if !self.chat.update(cx, |chat, _| chat.begin_busy()) {
+            return;
+        }
+        self.chat_draft_input
+            .update(cx, |input, cx| input.clear(cx));
+        cx.notify();
+        self.chat_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .send_message(conversation_id.clone(), content.clone())
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                model.chat.update(cx, |chat, _| {
+                    chat.finish_busy();
+                    match result {
+                        Ok((started, snapshot)) => {
+                            chat.apply_started_snapshot(
+                                &conversation_id,
+                                &started.generation_id,
+                                snapshot,
+                            );
+                        }
+                        Err(error) => chat.set_error(error),
+                    }
+                });
+                if model.chat.read(cx).error.is_some()
+                    && model.chat_draft_input.read(cx).value().is_empty()
+                {
+                    model
+                        .chat_draft_input
+                        .update(cx, |input, cx| input.set_value(content, cx));
+                }
+                model.schedule_session_persistence(cx);
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn cancel_chat_turn(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.chat_backend.clone() else {
+            return;
+        };
+        let Some(execution_id) = self.chat.read(cx).active_execution_id() else {
+            return;
+        };
+        self.chat_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.cancel_turn(execution_id).await;
+            let _ = this.update(cx, |model, cx| {
+                if let Err(error) = result {
+                    model.chat.update(cx, |chat, _| chat.set_error(error));
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn copy_chat_diff(&mut self, diff: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(diff));
+        self.status = "Diff copiado; nenhuma alteração foi aplicada".into();
+        cx.notify();
+    }
+
+    fn handle_chat_event(&mut self, envelope: ChatEventEnvelope, cx: &mut Context<Self>) {
+        let outcome = self.chat.update(cx, |chat, _| chat.consume_event(envelope));
+        match outcome {
+            ChatEventOutcome::Ignored | ChatEventOutcome::Applied => {}
+            ChatEventOutcome::Reconcile {
+                generation_id,
+                conversation_id,
+            } => {
+                self.needs_resync = true;
+                self.resync_chat_turn(generation_id, conversation_id, cx);
+            }
+        }
+    }
+
+    fn resync_chat_turn(
+        &mut self,
+        generation_id: String,
+        conversation_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.chat_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .chat
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let task_key = generation_id.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let result = backend.turn_snapshot(generation_id.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(snapshot) => {
+                        let applied = model.chat.update(cx, |chat, _| {
+                            chat.apply_turn_snapshot(
+                                &project_id,
+                                &generation_id,
+                                &conversation_id,
+                                snapshot,
+                            )
+                        });
+                        if applied {
+                            model.needs_resync = false;
+                            model.status = "Turno do Chat ressincronizado".into();
+                        }
+                    }
+                    Err(error) => model.chat.update(cx, |chat, _| chat.set_error(error)),
+                }
+                cx.notify();
+            });
+        });
+        self.chat_resync_tasks.insert(task_key, task);
+    }
+
     pub(crate) fn refresh_settings(&mut self, cx: &mut Context<Self>) {
         let Some(backend) = self.settings_backend.clone() else {
             return;
@@ -2570,11 +2964,9 @@ impl AppModel {
                 restored_vault_selection.clone(),
             );
         });
-        self.chat.update(cx, |chat, _| {
-            chat.active_conversation = session
-                .and_then(|value| value.active_chat_conversation_id.clone())
-                .map(Into::into);
-        });
+        let restored_chat_conversation =
+            session.and_then(|value| value.active_chat_conversation_id.clone());
+        self.hydrate_chat_project(restored.project_id.clone(), restored_chat_conversation, cx);
         self.active_view = active_view;
         self.needs_resync = false;
         self.session_dirty = false;
@@ -2717,7 +3109,10 @@ impl AppModel {
         self.settings_task.take();
         self.logs_task.take();
         self.logs_resync_tasks.clear();
+        self.chat_task.take();
+        self.chat_resync_tasks.clear();
         self.session_task.take();
+        self.performance_probe.take();
         self.session_generation = self.session_generation.saturating_add(1);
         self.workspace_save_generations.clear();
 
@@ -2765,7 +3160,7 @@ impl AppModel {
                     self.resync_llm_execution(execution_id, cx);
                 }
             }
-            AppEvent::Chat(_) => {}
+            AppEvent::Chat(envelope) => self.handle_chat_event(envelope, cx),
         }
         cx.notify();
     }

@@ -2,12 +2,15 @@
 #![allow(clippy::result_large_err)]
 
 mod app_model;
+mod chat;
+mod chat_view;
 mod errors;
 mod hitl;
 mod lifecycle;
 mod logs;
 mod logs_view;
 mod native_editor;
+mod performance;
 mod pulsations;
 mod pulsations_view;
 mod session;

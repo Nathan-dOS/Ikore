@@ -110,7 +110,7 @@ mod tests {
     fn embedded_ledger_maps_the_complete_51_test_baseline() {
         let ledger = ParityLedger::embedded();
         ledger.validate().unwrap();
-        assert!(ledger.covered_count() < 51);
+        assert_eq!(ledger.covered_count(), 51);
     }
 
     #[test]
@@ -177,17 +177,6 @@ mod tests {
             .iter()
             .filter(|case| case.area == ParityArea::RustContracts && case.id != "contract-005")
             .collect::<Vec<_>>();
-        let partial = ledger
-            .cases
-            .iter()
-            .filter(|case| case.status == ParityStatus::Partial)
-            .count();
-        let pending = ledger
-            .cases
-            .iter()
-            .filter(|case| case.status == ParityStatus::Pending)
-            .count();
-
         assert_eq!(settings.len(), 6);
         assert!(
             settings
@@ -200,8 +189,23 @@ mod tests {
                 .iter()
                 .all(|case| case.status == ParityStatus::Covered)
         );
-        assert_eq!(ledger.covered_count(), 41);
-        assert_eq!(partial, 5);
-        assert_eq!(pending, 5);
+    }
+
+    #[test]
+    fn stage_five_covers_chat_and_the_last_direct_contract() {
+        let ledger = ParityLedger::embedded();
+        let stage_five_cases = ledger
+            .cases
+            .iter()
+            .filter(|case| case.area == ParityArea::Chat || case.id == "contract-005")
+            .collect::<Vec<_>>();
+
+        assert_eq!(stage_five_cases.len(), 10);
+        assert!(
+            stage_five_cases
+                .iter()
+                .all(|case| case.status == ParityStatus::Covered)
+        );
+        assert_eq!(ledger.covered_count(), 51);
     }
 }

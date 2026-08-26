@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "auditedAt": "2026-08-26T17:01:30.6388606Z",
+  "target": "x86_64-pc-windows-msvc",
+  "rust": {
+    "resolvedPackages": 656,
+    "deniedLicenses": [],
+    "missingLicenseMetadata": [],
+    "sourceReview": [],
+    "noticeLicenses": [
+      {
+        "name": "cssparser",
+        "version": "0.36.0",
+        "license": "MPL-2.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "cssparser-macros",
+        "version": "0.6.1",
+        "license": "MPL-2.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "dtoa-short",
+        "version": "0.3.5",
+        "license": "MPL-2.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "option-ext",
+        "version": "0.2.0",
+        "license": "MPL-2.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "selectors",
+        "version": "0.36.1",
+        "license": "MPL-2.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      }
+    ]
+  },
+  "npm": {
+    "lockedPackages": 412,
+    "deniedLicenses": [],
+    "missingLicenseMetadata": [],
+    "sourceReview": []
+  },
+  "technicalPassed": true,
+  "legalBlockers": [
+    {
+      "id": "zed-55470",
+      "title": "GPUI e dependências transitivas GPL relatadas no upstream",
+      "url": "https://github.com/zed-industries/zed/issues/55470",
+      "status": "open",
+      "verifiedAt": "2026-08-26",
+      "disposition": "distribution_blocking",
+      "note": "O grafo Windows fixado em gpui 0.2.2 não contém sum_tree/ztracing/zlog, mas a política aprovada mantém a distribuição bloqueada enquanto o issue upstream permanecer aberto ou sem decisão jurídica explícita."
+    }
+  ],
+  "distributionAllowed": false
+}

@@ -1229,6 +1229,16 @@ impl PersistenceService {
         }
     }
 
+    pub fn cancel_all_active_jobs(&self) -> usize {
+        let Ok(guard) = self.runtime_control.cancellations.lock() else {
+            return 0;
+        };
+        for cancellation in guard.values() {
+            cancellation.cancel();
+        }
+        guard.len()
+    }
+
     fn request_job_cancellation(&self, job_id: &str) -> bool {
         if let Ok(guard) = self.runtime_control.cancellations.lock()
             && let Some(token) = guard.get(job_id)
@@ -3456,10 +3466,24 @@ impl PersistenceService {
         Ok(())
     }
 
+    #[cfg(test)]
     async fn process_next_pending_job(&self) -> Result<(), PersistenceServiceError> {
+        self.process_next_pending_job_until(None).await
+    }
+
+    async fn process_next_pending_job_until(
+        &self,
+        shutdown: Option<&CancellationToken>,
+    ) -> Result<(), PersistenceServiceError> {
         let Some((job, cancellation)) = self.claim_next_pending_job()? else {
             return Ok(());
         };
+
+        // O token global impede novos claims. Esta segunda checagem fecha a corrida entre a
+        // checagem do loop e o registro do token específico do job.
+        if shutdown.is_some_and(CancellationToken::is_cancelled) {
+            cancellation.cancel();
+        }
 
         let runtime_config = self.load_runtime_config()?;
         let agent_run_id = self.start_agent_run_for_job(&job, &runtime_config)?;
@@ -3529,13 +3553,14 @@ impl PersistenceService {
 
     pub async fn run_job_worker_until(&self, cancellation: CancellationToken) {
         loop {
-            tokio::select! {
-                _ = cancellation.cancelled() => break,
-                result = self.process_next_pending_job() => {
-                    if let Err(error) = result {
-                        eprintln!("job worker error: {error:?}");
-                    }
-                }
+            if cancellation.is_cancelled() {
+                break;
+            }
+            if let Err(error) = self
+                .process_next_pending_job_until(Some(&cancellation))
+                .await
+            {
+                eprintln!("job worker error: {error:?}");
             }
             tokio::select! {
                 _ = cancellation.cancelled() => break,
@@ -4564,6 +4589,25 @@ mod tests {
             .expect("agent runs should load")
             .runs;
         assert!(runs.iter().any(|run| run.status == "interrupted"));
+    }
+
+    #[test]
+    fn shutdown_cancels_every_registered_job_token() {
+        let service_root = tempfile::tempdir().expect("service tempdir should be created");
+        let service = PersistenceService::initialize(service_root.path())
+            .expect("persistence service should initialize");
+        let first = CancellationToken::new();
+        let second = CancellationToken::new();
+        service.register_job_cancellation("job-a", first.clone());
+        service.register_job_cancellation("job-b", second.clone());
+
+        assert_eq!(service.cancel_all_active_jobs(), 2);
+        assert!(first.is_cancelled());
+        assert!(second.is_cancelled());
+
+        service.unregister_job_cancellation("job-a");
+        service.unregister_job_cancellation("job-b");
+        assert_eq!(service.cancel_all_active_jobs(), 0);
     }
 
     #[test]
