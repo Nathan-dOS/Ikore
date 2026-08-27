@@ -101,6 +101,7 @@ fn handoff() -> StageHandoffV1 {
     producer.job_id = "job-spec".into();
     producer.state_version = 2;
     StageHandoffV1 {
+        publication_bases: Vec::new(),
         schema_version: SchemaV1,
         recipient: fence(),
         stage: PulsationStage::Contract,

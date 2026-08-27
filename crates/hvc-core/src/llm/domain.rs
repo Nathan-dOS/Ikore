@@ -92,15 +92,7 @@ impl AgentRole {
     }
 
     pub fn for_stage(stage: &str) -> Self {
-        match stage {
-            "Intake" => Self::IntakeRouter,
-            "SPECIFICATION" | "Specification" => Self::TaskSpecifier,
-            "Contract" => Self::ContractAgent,
-            "Code" => Self::BackendAgent,
-            "Test" => Self::TestAgent,
-            "Integrator" => Self::Integrator,
-            _ => Self::TaskSpecifier,
-        }
+        crate::orchestration::catalog::stage_role(stage).unwrap_or(Self::TaskSpecifier)
     }
 }
 

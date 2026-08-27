@@ -416,6 +416,10 @@ pub struct StageHandoffV1 {
     pub context: Option<ContextPackageV1>,
     pub answers: Vec<SpecificationAnswer>,
     pub artifacts: Vec<ArtifactHandoff>,
+    /// Last host-published bytes, including superseded drafts, for optimistic replacement only.
+    /// These hashes do not promote the old content into normative context.
+    #[serde(default)]
+    pub publication_bases: Vec<SourceRevision>,
     pub revision_feedback: Option<String>,
 }
 

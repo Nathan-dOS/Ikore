@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 fn input(fixture: &PulsationFixture) -> StageExecutionInput {
     StageExecutionInput {
+        handoff: None,
         job_id: "job-pulse-a".into(),
         pulsation_id: "pulse-a".into(),
         project_id: "project-a".into(),
@@ -166,9 +167,8 @@ async fn production_runtime_uses_injected_gateway_and_validates_real_output() {
         "synthetic fallback must not bypass this integration test"
     );
     assert_eq!(result.provider_used, "fixture-provider");
-    // Characterize V9: the artifact parser trims whitespace; raw output retains it.
-    // M1 must reconcile these legacy bytes explicitly when persisting content.
-    assert_eq!(result.artifacts[0].content, "# Specification fixture");
+    // M1 preserves new bytes exactly. Historical V1 trimming is isolated in the upgrade adapter.
+    assert_eq!(result.artifacts[0].content, "# Specification fixture\n");
     assert_eq!(
         result.structured_output["artifacts"][0]["content"],
         "# Specification fixture\n"

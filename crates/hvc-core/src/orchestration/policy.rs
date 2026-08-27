@@ -131,6 +131,14 @@ impl StageHandoffV1 {
         recipient: &ExecutionFence,
         artifact_chars_budget: usize,
     ) -> Result<(), ContractError> {
+        let mut paths = HashSet::new();
+        for base in &self.publication_bases {
+            if base.project_id != recipient.project_id || !paths.insert(&base.relative_path) {
+                return Err(ContractError::Invalid(
+                    "bases de publicação duplicadas ou de outro projeto",
+                ));
+            }
+        }
         recipient.validate()?;
         if &self.recipient != recipient || recipient.pulsation_id.is_none() {
             return Err(ContractError::StaleExecution);

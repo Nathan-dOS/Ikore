@@ -1,12 +1,15 @@
-//! ADR-007 / M0: contracts for the next orchestration runtime.
+//! ADR-007: contracts and serial integrity (M0/M1).
 //!
-//! These types and pure checks do not schedule jobs, publish files or change the
-//! existing serial worker. M1 must enforce them inside its database transactions;
-//! M2/M3 will connect scheduling and context collection to the application.
+//! The persistence facade enforces acceptance and publication through `serial.rs`.
+//! M2/M3 will add ownership admission, background scheduling and code collection;
+//! neither concurrent preparation nor clarification checkpoints are enabled here.
 
+pub mod catalog;
 mod context;
 mod contracts;
 mod policy;
+pub(crate) mod publication;
+pub(crate) mod upgrade;
 
 #[cfg(test)]
 mod tests;

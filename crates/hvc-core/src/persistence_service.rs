@@ -1,13 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::agent_runtime::{
-    AgentRuntimeConfig, AgentRuntimeError, ContextStrategy, EmbeddingProvider, GeneratedArtifact,
-    LlmProvider, ProviderKeyStatus, StageExecutionInput, StageExecutionResult, execute_stage,
+    AgentRuntimeConfig, AgentRuntimeError, ContextStrategy, EmbeddingProvider, LlmProvider,
+    ProviderKeyStatus, StageExecutionInput, StageExecutionResult, execute_stage,
 };
 use crate::embedding_service::{EmbeddingGateway, OllamaEmbeddingGateway};
 use crate::llm::{
@@ -30,6 +30,9 @@ use sha2::{Digest, Sha256};
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+#[path = "orchestration/serial.rs"]
+mod serial;
 
 mod embedded {
     use refinery::embed_migrations;
@@ -405,27 +408,16 @@ pub enum PulsationStage {
 }
 
 impl PulsationStage {
-    fn as_db_value(self) -> &'static str {
-        match self {
-            Self::Intake => "Intake",
-            Self::Specification => "SPECIFICATION",
-            Self::Contract => "Contract",
-            Self::Code => "Code",
-            Self::Test => "Test",
-            Self::Integrator => "Integrator",
-        }
+    pub(crate) fn as_db_value(self) -> &'static str {
+        crate::orchestration::catalog::STAGES
+            .iter()
+            .find(|(stage, _, _)| *stage == self)
+            .expect("six stages")
+            .1
     }
 
     fn from_db_value(raw: &str) -> Option<Self> {
-        match raw {
-            "Intake" => Some(Self::Intake),
-            "SPECIFICATION" => Some(Self::Specification),
-            "Contract" => Some(Self::Contract),
-            "Code" => Some(Self::Code),
-            "Test" => Some(Self::Test),
-            "Integrator" => Some(Self::Integrator),
-            _ => None,
-        }
+        crate::orchestration::catalog::parse_stage(raw)
     }
 
     pub(crate) fn next(self) -> Option<Self> {
@@ -547,6 +539,7 @@ impl JobStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pulsation {
+    pub terminal_reason: Option<String>,
     pub id: String,
     pub project_id: String,
     pub feature_name: String,
@@ -630,6 +623,7 @@ pub struct PulseEvent {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PulsationRuntimeSnapshot {
+    pub hitl_checkpoints: Vec<HitlCheckpoint>,
     pub pulsations: Vec<Pulsation>,
     pub hitl_waiting_count: usize,
     pub background_agents_count: usize,
@@ -676,7 +670,18 @@ pub struct GetPulsationRuntimeSnapshotResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ApplyHitlDecisionRequest {
     pub pulsation_id: String,
+    pub checkpoint_id: String,
+    pub expected_state_version: u64,
+    pub feedback: Option<String>,
     pub decision: HitlDecision,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HitlCheckpoint {
+    pub pulsation_id: String,
+    pub checkpoint_id: String,
+    pub state_version: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -968,9 +973,11 @@ impl PersistenceService {
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.busy_timeout(Duration::from_secs(5))?;
 
+        crate::orchestration::upgrade::backup_before_upgrade(&connection, app_data_dir)?;
         embedded::migrations::runner()
             .run(&mut connection)
             .map_err(PersistenceServiceError::Migration)?;
+        crate::orchestration::upgrade::adapt_legacy(&mut connection)?;
 
         let llm_repository = SqliteLlmRepository::new(&db_path);
         llm_repository.ensure_legacy_configuration()?;
@@ -1233,10 +1240,15 @@ impl PersistenceService {
         let Ok(guard) = self.runtime_control.cancellations.lock() else {
             return 0;
         };
-        for cancellation in guard.values() {
+        let cancellations = guard.clone();
+        drop(guard);
+        for (id, cancellation) in &cancellations {
+            if let Ok(db) = self.connection() {
+                let _ = db.execute("UPDATE jobs SET cancellation_reason='shutdown',cancel_requested_at=?2 WHERE id=?1 AND status='running' AND cancellation_reason IS NULL",params![id,Self::now_iso()]);
+            }
             cancellation.cancel();
         }
-        guard.len()
+        cancellations.len()
     }
 
     fn request_job_cancellation(&self, job_id: &str) -> bool {
@@ -1370,6 +1382,7 @@ impl PersistenceService {
             .ok_or_else(|| Self::invalid_enum_error("status", &status_value))?;
 
         Ok(Pulsation {
+            terminal_reason: row.get("terminal_reason")?,
             id: row.get("id")?,
             project_id: row.get("project_id")?,
             feature_name: row.get("feature_name")?,
@@ -1419,7 +1432,7 @@ impl PersistenceService {
         pulsation_id: &str,
     ) -> Result<Option<Pulsation>, PersistenceServiceError> {
         let mut statement = connection.prepare(
-            "SELECT id, project_id, feature_name, stage, status, created_at, updated_at
+            "SELECT id, project_id, feature_name, stage, status, created_at, updated_at, terminal_reason
              FROM pulsations
              WHERE id = ?1",
         )?;
@@ -1473,7 +1486,7 @@ impl PersistenceService {
         let now = Self::now_iso();
         transaction.execute(
             "UPDATE pulsations
-             SET status = ?1, stage = ?2, updated_at = ?3
+             SET status = ?1, stage = ?2, updated_at = ?3, state_version = state_version + 1
              WHERE id = ?4",
             params![
                 next_status.as_db_value(),
@@ -1510,6 +1523,7 @@ impl PersistenceService {
         )?;
 
         Ok(Pulsation {
+            terminal_reason: current.terminal_reason.clone(),
             id: current.id.clone(),
             project_id: current.project_id.clone(),
             feature_name: current.feature_name.clone(),
@@ -1537,8 +1551,9 @@ impl PersistenceService {
                status,
                attempts,
                created_at,
-               updated_at
-             ) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)",
+               updated_at, project_id, input_revision, state_version, idempotency_key
+             ) SELECT ?1, ?2, ?3, ?4, 0, ?5, ?5, project_id, input_revision, state_version,
+               id || ':' || input_revision || ':' || state_version || ':' || ?3 FROM pulsations WHERE id=?2",
             params![
                 job_id,
                 pulsation_id,
@@ -1595,27 +1610,6 @@ impl PersistenceService {
             ],
         )?;
 
-        Ok(())
-    }
-
-    fn resolve_latest_checkpoint(
-        connection: &Connection,
-        pulsation_id: &str,
-        resolution: CheckpointStatus,
-    ) -> Result<(), PersistenceServiceError> {
-        let now = Self::now_iso();
-        connection.execute(
-            "UPDATE checkpoints
-             SET status = ?1, updated_at = ?2
-             WHERE id = (
-               SELECT id
-               FROM checkpoints
-               WHERE pulsation_id = ?3 AND status = 'waiting'
-               ORDER BY created_at DESC
-               LIMIT 1
-             )",
-            params![resolution.as_db_value(), now, pulsation_id],
-        )?;
         Ok(())
     }
 
@@ -2074,8 +2068,9 @@ impl PersistenceService {
                stage,
                status,
                created_at,
-               updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+               updated_at, queue_sequence, pipeline_version
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6,
+               (SELECT COALESCE(MAX(queue_sequence),0)+1 FROM pulsations WHERE project_id=?2), 2)",
             params![
                 pulsation_id.as_str(),
                 project_id.as_str(),
@@ -2109,6 +2104,7 @@ impl PersistenceService {
         )?;
 
         let mut current = Pulsation {
+            terminal_reason: None,
             id: pulsation_id.clone(),
             project_id: project_id.clone(),
             feature_name: feature_name.clone(),
@@ -2140,7 +2136,7 @@ impl PersistenceService {
         let project_id = Self::normalize_project_id(&request.project_id)?;
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT id, project_id, feature_name, stage, status, created_at, updated_at
+            "SELECT id, project_id, feature_name, stage, status, created_at, updated_at, terminal_reason
              FROM pulsations
              WHERE project_id = ?1
              ORDER BY updated_at DESC, created_at DESC",
@@ -2188,104 +2184,22 @@ impl PersistenceService {
 
         Ok(GetPulsationRuntimeSnapshotResponse {
             snapshot: PulsationRuntimeSnapshot {
+                hitl_checkpoints: {
+                    let mut stmt=connection.prepare("SELECT p.id,c.id,p.state_version FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.project_id=?1 AND p.status='checkpoint' AND c.status='waiting'")?;
+                    stmt.query_map([&project_id], |r| {
+                        Ok(HitlCheckpoint {
+                            pulsation_id: r.get(0)?,
+                            checkpoint_id: r.get(1)?,
+                            state_version: r.get(2)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?
+                },
                 pulsations,
                 hitl_waiting_count: hitl_waiting_count.max(0) as usize,
                 background_agents_count: background_agents_count.max(0) as usize,
             },
         })
-    }
-
-    pub fn apply_hitl_decision(
-        &self,
-        request: ApplyHitlDecisionRequest,
-    ) -> Result<ApplyHitlDecisionResponse, PersistenceServiceError> {
-        let pulsation_id = Self::normalize_pulsation_id(&request.pulsation_id)?;
-        let connection = self.connection()?;
-        let transaction = connection.unchecked_transaction()?;
-
-        let current =
-            Self::find_pulsation_by_id(&transaction, &pulsation_id)?.ok_or_else(|| {
-                PersistenceServiceError::NotFound("Pulsação não encontrada.".to_string())
-            })?;
-
-        if current.status != PulsationStatus::Checkpoint {
-            return Err(PersistenceServiceError::Validation(
-                "A decisão HITL só pode ser aplicada quando a pulsação está em checkpoint."
-                    .to_string(),
-            ));
-        }
-
-        let updated = match request.decision {
-            HitlDecision::Reject => {
-                Self::resolve_latest_checkpoint(
-                    &transaction,
-                    &current.id,
-                    CheckpointStatus::Rejected,
-                )?;
-                Self::transition_pulsation(
-                    &transaction,
-                    &current,
-                    PulsationStatus::Failed,
-                    current.stage,
-                    "hitl_rejected",
-                    Some("Checkpoint rejeitado pelo usuário."),
-                )?
-            }
-            HitlDecision::RequestRevision => {
-                Self::resolve_latest_checkpoint(
-                    &transaction,
-                    &current.id,
-                    CheckpointStatus::RevisionRequested,
-                )?;
-                let transitioned = Self::transition_pulsation(
-                    &transaction,
-                    &current,
-                    PulsationStatus::Planning,
-                    PulsationStage::Code,
-                    "hitl_revision_requested",
-                    Some("Revisão solicitada pelo usuário."),
-                )?;
-                Self::enqueue_stage_job(&transaction, &transitioned.id, transitioned.stage)?;
-                transitioned
-            }
-            HitlDecision::Approve => {
-                Self::resolve_latest_checkpoint(
-                    &transaction,
-                    &current.id,
-                    CheckpointStatus::Approved,
-                )?;
-
-                if current.stage == PulsationStage::Integrator {
-                    Self::transition_pulsation(
-                        &transaction,
-                        &current,
-                        PulsationStatus::Done,
-                        PulsationStage::Integrator,
-                        "hitl_approved_final",
-                        Some("Checkpoint final aprovado."),
-                    )?
-                } else {
-                    let next_stage = current.stage.next().ok_or_else(|| {
-                        PersistenceServiceError::Validation(
-                            "Não foi possível avançar para a próxima etapa.".to_string(),
-                        )
-                    })?;
-                    let transitioned = Self::transition_pulsation(
-                        &transaction,
-                        &current,
-                        PulsationStatus::Planning,
-                        next_stage,
-                        "hitl_approved",
-                        Some("Checkpoint aprovado. Avançando para próxima etapa."),
-                    )?;
-                    Self::enqueue_stage_job(&transaction, &transitioned.id, transitioned.stage)?;
-                    transitioned
-                }
-            }
-        };
-
-        transaction.commit()?;
-        Ok(ApplyHitlDecisionResponse { pulsation: updated })
     }
 
     pub fn list_pulsation_artifacts(
@@ -2724,33 +2638,42 @@ impl PersistenceService {
         &self,
         request: CancelPulsationJobsRequest,
     ) -> Result<CancelPulsationJobsResponse, PersistenceServiceError> {
-        let pulsation_id = Self::normalize_pulsation_id(&request.pulsation_id)?;
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT id
-             FROM jobs
-             WHERE pulsation_id = ?1 AND status = 'running'",
-        )?;
-        let mut rows = statement.query(params![pulsation_id.as_str()])?;
-        let mut job_ids = Vec::new();
-        while let Some(row) = rows.next()? {
-            let job_id: String = row.get("id")?;
-            job_ids.push(job_id);
+        let pulse = Self::normalize_pulsation_id(&request.pulsation_id)?;
+        let mut db = self.connection()?;
+        // Shared SQLite write serialization includes each atomic filesystem publication.
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current = Self::find_pulsation_by_id(&tx, &pulse)?
+            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação não encontrada.".into()))?;
+        if matches!(
+            current.status,
+            PulsationStatus::Done | PulsationStatus::Failed
+        ) {
+            return Ok(CancelPulsationJobsResponse { cancelled_jobs: 0 });
         }
-
+        let ids=tx.prepare("SELECT id FROM jobs WHERE pulsation_id=?1 AND status IN ('pending','running','interrupted')")?.query_map([&pulse],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
         let now = Self::now_iso();
-        for job_id in &job_ids {
-            connection.execute(
-                "UPDATE jobs
-                 SET cancel_requested_at = ?1, updated_at = ?1
-                 WHERE id = ?2 AND status = 'running'",
-                params![now, job_id],
-            )?;
-            self.request_job_cancellation(job_id);
+        tx.execute("UPDATE jobs SET status='failed',cancellation_reason='user_cancel',cancel_requested_at=?2,finished_at=?2,updated_at=?2 WHERE pulsation_id=?1 AND status IN ('pending','running','interrupted')",params![pulse,now])?;
+        Self::transition_pulsation(
+            &tx,
+            &current,
+            PulsationStatus::Failed,
+            current.stage,
+            "user_cancel",
+            Some("Pulsação cancelada pelo usuário; arquivos já publicados não foram desfeitos."),
+        )?;
+        tx.execute(
+            "UPDATE pulsations SET terminal_reason='user_cancel' WHERE id=?1",
+            [&pulse],
+        )?;
+        Self::mark_effects_for_review(&tx, &pulse, "user_cancel_with_effects")?;
+        tx.execute("UPDATE artifact_publications SET state='cancelled' WHERE pulsation_id=?1 AND state IN ('pending','applying')",[&pulse])?;
+        tx.execute("UPDATE checkpoints SET status='rejected',updated_at=?2 WHERE pulsation_id=?1 AND status='waiting'",params![pulse,now])?;
+        tx.commit()?;
+        for id in &ids {
+            self.request_job_cancellation(id);
         }
-
         Ok(CancelPulsationJobsResponse {
-            cancelled_jobs: job_ids.len(),
+            cancelled_jobs: ids.len(),
         })
     }
 
@@ -2821,41 +2744,53 @@ impl PersistenceService {
     }
 
     pub fn recover_interrupted_jobs(&self) -> Result<(), PersistenceServiceError> {
-        let connection = self.connection()?;
+        // The AppCore data-dir lock must be held by the caller. Never call an LLM here.
+        let mut db = self.connection()?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let now = Self::now_iso();
-        connection.execute(
-            "UPDATE jobs
-             SET status = ?1, updated_at = ?2, started_at = NULL, cancel_requested_at = NULL,
-                 available_at = ?2
-             WHERE status IN (?3, ?4)",
-            params![
-                JobStatus::Pending.as_db_value(),
-                now,
-                JobStatus::Running.as_db_value(),
-                JobStatus::Interrupted.as_db_value()
-            ],
-        )?;
-        connection.execute(
-            "UPDATE agent_runs
-             SET status = 'interrupted', updated_at = ?1
-             WHERE status = 'running'",
-            params![Self::now_iso()],
-        )?;
-        Ok(())
+        let legacy_cancelled=tx.prepare("SELECT id FROM pulsations p WHERE p.status NOT IN ('failed','done') AND EXISTS(SELECT 1 FROM jobs j WHERE j.pulsation_id=p.id AND j.cancellation_reason='user_cancel')")?.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+        for id in legacy_cancelled {
+            let current = Self::find_pulsation_by_id(&tx, &id)?
+                .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação ausente".into()))?;
+            Self::transition_pulsation(
+                &tx,
+                &current,
+                PulsationStatus::Failed,
+                current.stage,
+                "recovered_user_cancel",
+                Some("Cancelamento do usuário preservado durante recovery."),
+            )?;
+            tx.execute(
+                "UPDATE pulsations SET terminal_reason='user_cancel' WHERE id=?1",
+                [&id],
+            )?;
+            Self::mark_effects_for_review(&tx, &id, "recovered_user_cancel")?;
+        }
+        tx.execute("UPDATE project_pipeline_state SET base_state='needs_review',blocking_reason='stale_publication_uncertain' WHERE project_id IN (SELECT o.project_id FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN pulsations p ON p.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE o.state='applying' AND (a.input_revision<>p.input_revision OR a.generation<>j.generation OR a.acceptance='superseded' OR p.status='failed'))",[])?;
+        tx.execute("UPDATE artifact_publications SET state='cancelled' WHERE state IN ('pending','applying') AND artifact_id IN (SELECT a.id FROM artifacts a JOIN pulsations p ON p.id=a.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE a.input_revision<>p.input_revision OR a.generation<>j.generation OR a.acceptance='superseded' OR p.status='failed')",[])?;
+        tx.execute("UPDATE jobs SET status='failed',cancellation_reason=COALESCE(cancellation_reason,'superseded'),updated_at=?1 WHERE status IN ('pending','running','interrupted') AND (cancellation_reason IN ('user_cancel','superseded') OR EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND (p.status IN ('failed','done') OR p.input_revision<>jobs.input_revision)))",[&now])?;
+        tx.execute("UPDATE jobs SET status='pending',generation=generation+1,started_at=NULL,cancel_requested_at=NULL,cancellation_reason=NULL,available_at=?1,updated_at=?1 WHERE status IN ('running','interrupted') AND (cancellation_reason IS NULL OR cancellation_reason IN ('shutdown','preempted')) AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.job_id=jobs.id) AND EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND p.status IN ('planning','running') AND p.input_revision=jobs.input_revision)",[&now])?;
+        tx.execute("UPDATE agent_runs SET status='interrupted',updated_at=?1 WHERE status='running' AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.agent_run_id=agent_runs.id)",[&now])?;
+        tx.commit()?;
+        self.reconcile_publications()
     }
 
     fn claim_next_pending_job(
         &self,
     ) -> Result<Option<(Job, CancellationToken)>, PersistenceServiceError> {
-        let connection = self.connection()?;
-        let transaction = connection.unchecked_transaction()?;
+        let mut connection = self.connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let candidate = {
             let mut statement = transaction.prepare(
                 "SELECT id, pulsation_id, kind, status, attempts, last_error, created_at, updated_at, started_at, finished_at, cancel_requested_at, available_at
                  FROM jobs
                  WHERE status = 'pending'
+                   AND cancellation_reason IS NULL
+                   AND EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND p.status IN ('planning','running') AND p.input_revision=jobs.input_revision AND (jobs.kind='run_stage::' || p.stage OR (p.stage='SPECIFICATION' AND jobs.kind='run_stage::Specification')))
+                   AND NOT EXISTS(SELECT 1 FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id WHERE o.pulsation_id=jobs.pulsation_id AND a.acceptance='accepted' AND o.state NOT IN ('applied','cancelled'))
                    AND (available_at IS NULL OR available_at <= ?1)
-                 ORDER BY created_at ASC
+                 ORDER BY created_at ASC, id ASC
                  LIMIT 1",
             )?;
             statement
@@ -2876,6 +2811,7 @@ impl PersistenceService {
             "UPDATE jobs
              SET status = ?1,
                  attempts = attempts + 1,
+                 generation = generation + 1,
                  started_at = COALESCE(started_at, ?2),
                   cancel_requested_at = NULL,
                   available_at = NULL,
@@ -3027,11 +2963,10 @@ impl PersistenceService {
     }
 
     fn update_agent_run_metrics(
-        &self,
+        connection: &Connection,
         agent_run_id: &str,
         execution: &StageExecutionResult,
     ) -> Result<(), PersistenceServiceError> {
-        let connection = self.connection()?;
         connection.execute(
             "UPDATE agent_runs
              SET input_tokens = ?1,
@@ -3061,12 +2996,11 @@ impl PersistenceService {
     }
 
     fn persist_agent_run_output(
-        &self,
+        connection: &Connection,
         agent_run_id: &str,
         job: &Job,
         execution: &StageExecutionResult,
     ) -> Result<(), PersistenceServiceError> {
-        let connection = self.connection()?;
         let now = Self::now_iso();
         connection.execute(
             "INSERT INTO agent_run_outputs (
@@ -3108,113 +3042,6 @@ impl PersistenceService {
                 now
             ],
         )?;
-        Ok(())
-    }
-
-    fn normalize_artifact_relative_path(raw: &str) -> Result<PathBuf, PersistenceServiceError> {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Err(PersistenceServiceError::Validation(
-                "relativePath do artifact não pode ser vazio.".to_string(),
-            ));
-        }
-
-        let path = Path::new(trimmed);
-        if path.is_absolute() {
-            return Err(PersistenceServiceError::Validation(
-                "relativePath do artifact deve ser relativo ao workspace.".to_string(),
-            ));
-        }
-
-        let mut normalized = PathBuf::new();
-        for component in path.components() {
-            match component {
-                Component::Normal(segment) => normalized.push(segment),
-                Component::CurDir => {}
-                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                    return Err(PersistenceServiceError::Validation(
-                        "relativePath do artifact contém path traversal inválido.".to_string(),
-                    ));
-                }
-            }
-        }
-
-        if normalized.as_os_str().is_empty() {
-            return Err(PersistenceServiceError::Validation(
-                "relativePath do artifact é inválido.".to_string(),
-            ));
-        }
-
-        Ok(normalized)
-    }
-
-    fn write_artifact_file(
-        workspace_path: &str,
-        relative_path: &str,
-        content: &str,
-    ) -> Result<(), PersistenceServiceError> {
-        let root = PathBuf::from(workspace_path);
-        if !root.exists() || !root.is_dir() {
-            return Err(PersistenceServiceError::Validation(
-                "Workspace do projeto não encontrado para escrever artifact.".to_string(),
-            ));
-        }
-
-        let normalized_relative_path = Self::normalize_artifact_relative_path(relative_path)?;
-        let target = root.join(&normalized_relative_path);
-        let parent = target.parent().ok_or_else(|| {
-            PersistenceServiceError::Validation("Caminho inválido para artifact.".to_string())
-        })?;
-        fs::create_dir_all(parent)?;
-        fs::write(target, content)?;
-        Ok(())
-    }
-
-    fn persist_generated_artifacts(
-        &self,
-        pulsation_id: &str,
-        workspace_path: &str,
-        artifacts: &[GeneratedArtifact],
-    ) -> Result<(), PersistenceServiceError> {
-        if artifacts.is_empty() {
-            return Ok(());
-        }
-
-        let connection = self.connection()?;
-        let transaction = connection.unchecked_transaction()?;
-        let now = Self::now_iso();
-
-        for artifact in artifacts {
-            if let Some(relative_path) = artifact.relative_path.as_deref() {
-                Self::write_artifact_file(workspace_path, relative_path, &artifact.content)?;
-            }
-
-            let digest = Sha256::digest(artifact.content.as_bytes());
-            let sha = format!("{digest:x}");
-            transaction.execute(
-                "INSERT INTO artifacts (
-                   id,
-                   pulsation_id,
-                   name,
-                   kind,
-                   relative_path,
-                   content_sha256,
-                   created_at,
-                   updated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-                params![
-                    Uuid::new_v4().to_string(),
-                    pulsation_id,
-                    artifact.name.as_str(),
-                    artifact.kind.as_str(),
-                    artifact.relative_path.as_deref(),
-                    sha,
-                    now
-                ],
-            )?;
-        }
-
-        transaction.commit()?;
         Ok(())
     }
 
@@ -3267,6 +3094,7 @@ impl PersistenceService {
             event_type,
             Some(message),
         )?;
+        Self::mark_effects_for_review(&transaction, pulsation_id, "execution_failed_with_effects")?;
         transaction.commit()?;
         Ok(())
     }
@@ -3332,6 +3160,7 @@ impl PersistenceService {
                     Some("Job da etapa iniciado."),
                 )?;
             }
+            transaction.execute("UPDATE jobs SET state_version=(SELECT state_version FROM pulsations WHERE id=?2) WHERE id=?1 AND status='running'",params![job.id,pulsation_id])?;
 
             transaction.commit()?;
         }
@@ -3346,7 +3175,17 @@ impl PersistenceService {
 
             if current.status != PulsationStatus::Running || current.stage != stage {
                 transaction.commit()?;
-                return Ok(());
+                return Err(
+                    if cancellation.is_cancelled() || self.job_cancellation_requested(&job.id)? {
+                        PersistenceServiceError::Cancelled(
+                            "Execução cancelada antes de iniciar a etapa.".into(),
+                        )
+                    } else {
+                        PersistenceServiceError::Validation(
+                            "Execução obsoleta antes de iniciar a etapa.".into(),
+                        )
+                    },
+                );
             }
 
             transaction.commit()?;
@@ -3360,6 +3199,11 @@ impl PersistenceService {
             })?;
 
         let execution_input = StageExecutionInput {
+            handoff: Some(self.load_stage_handoff(
+                &Self::execution_fence(&connection, &job.id)?,
+                stage,
+                runtime_config.context_chars_limit,
+            )?),
             job_id: job.id.clone(),
             pulsation_id: current.id.clone(),
             project_id: current.project_id.clone(),
@@ -3401,68 +3245,20 @@ impl PersistenceService {
         )
         .await
         .map_err(PersistenceServiceError::from)?;
-        self.update_agent_run_metrics(agent_run_id, &execution)?;
-        self.persist_agent_run_output(agent_run_id, job, &execution)?;
-        self.persist_generated_artifacts(
-            &current.id,
-            &project.workspace_path,
-            &execution.artifacts,
-        )?;
 
         if cancellation.is_cancelled() {
             return Err(PersistenceServiceError::Cancelled(
-                "Execução cancelada após resposta do agente.".to_string(),
+                "Execução cancelada após resposta do agente.".into(),
             ));
         }
-
-        let connection = self.connection()?;
-        let transaction = connection.unchecked_transaction()?;
-        let current = Self::find_pulsation_by_id(&transaction, pulsation_id)?.ok_or_else(|| {
-            PersistenceServiceError::NotFound("Pulsação do job não encontrada.".to_string())
-        })?;
-
-        if current.status != PulsationStatus::Running || current.stage != stage {
-            transaction.commit()?;
-            return Ok(());
-        }
-
-        if stage.requires_checkpoint() {
-            let transitioned = Self::transition_pulsation(
-                &transaction,
-                &current,
-                PulsationStatus::Checkpoint,
-                stage,
-                "checkpoint_ready",
-                Some("Checkpoint pronto para revisão HITL."),
-            )?;
-            transaction.commit()?;
-            Self::open_checkpoint(&self.connection()?, &transitioned.id, transitioned.stage)?;
-            return Ok(());
-        }
-
-        if let Some(next_stage) = stage.next() {
-            let transitioned = Self::transition_pulsation(
-                &transaction,
-                &current,
-                PulsationStatus::Planning,
-                next_stage,
-                "stage_auto_advanced",
-                Some("Etapa automática finalizada. Próxima etapa enfileirada."),
-            )?;
-            Self::enqueue_stage_job(&transaction, &transitioned.id, transitioned.stage)?;
-            transaction.commit()?;
-            return Ok(());
-        }
-
-        let _ = Self::transition_pulsation(
-            &transaction,
-            &current,
-            PulsationStatus::Done,
-            stage,
-            "pulse_completed",
-            Some("Pulsação concluída automaticamente."),
+        self.accept_stage_result(
+            job,
+            agent_run_id,
+            execution_input.handoff.as_ref().expect("worker handoff"),
+            &execution,
+            Path::new(&project.workspace_path),
         )?;
-        transaction.commit()?;
+        self.reconcile_publications()?;
         Ok(())
     }
 
@@ -3475,6 +3271,7 @@ impl PersistenceService {
         &self,
         shutdown: Option<&CancellationToken>,
     ) -> Result<(), PersistenceServiceError> {
+        self.reconcile_publications()?;
         let Some((job, cancellation)) = self.claim_next_pending_job()? else {
             return Ok(());
         };
@@ -3513,11 +3310,44 @@ impl PersistenceService {
         };
 
         match execution_result {
-            Ok(()) => {
-                self.finish_agent_run(&agent_run_id, "done")?;
-                self.finalize_job(&job.id, JobStatus::Done, None)?;
-            }
+            Ok(()) => {}
             Err(error) => {
+                // An accepted result is durable even if publication/ACK failed afterward.
+                let accepted: bool = self.connection()?.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM stage_acceptances WHERE job_id=?1)",
+                    [&job.id],
+                    |r| r.get(0),
+                )?;
+                if accepted {
+                    return Err(error);
+                }
+                let reason: Option<String> = self.connection()?.query_row(
+                    "SELECT cancellation_reason FROM jobs WHERE id=?1",
+                    [&job.id],
+                    |r| r.get(0),
+                )?;
+                if reason.as_deref() == Some("user_cancel") {
+                    self.finish_agent_run(&agent_run_id, "interrupted")?;
+                    return Err(PersistenceServiceError::Cancelled(
+                        "Pulsação cancelada pelo usuário.".into(),
+                    ));
+                }
+                if cancellation.is_cancelled()
+                    || matches!(
+                        reason.as_deref(),
+                        Some("shutdown" | "preempted" | "superseded")
+                    )
+                {
+                    self.finish_agent_run(&agent_run_id, "interrupted")?;
+                    self.connection()?.execute("UPDATE jobs SET status='interrupted',cancellation_reason=COALESCE(cancellation_reason,'shutdown'),updated_at=?2 WHERE id=?1 AND status='running'",params![job.id,Self::now_iso()])?;
+                    return Err(error);
+                }
+                let current_execution:bool=self.connection()?.query_row("SELECT j.status='running' AND j.attempts=?2 AND j.state_version=p.state_version AND j.input_revision=p.input_revision FROM jobs j JOIN pulsations p ON p.id=j.pulsation_id WHERE j.id=?1",params![job.id,job.attempts],|r|r.get(0))?;
+                if !current_execution {
+                    self.finish_agent_run(&agent_run_id, "interrupted")?;
+                    self.connection()?.execute("UPDATE jobs SET status='failed',cancellation_reason='superseded' WHERE id=?1 AND status='running' AND attempts=?2",params![job.id,job.attempts])?;
+                    return Err(error);
+                }
                 let can_retry = self.should_retry(&error, job.attempts, &runtime_config);
                 self.transition_for_failed_job(&job, &error, can_retry)?;
 
@@ -4376,6 +4206,15 @@ mod tests {
 
         let approved = service
             .apply_hitl_decision(ApplyHitlDecisionRequest {
+                checkpoint_id: service
+                    .get_hitl_checkpoint(&created.id)
+                    .unwrap()
+                    .checkpoint_id,
+                expected_state_version: service
+                    .get_hitl_checkpoint(&created.id)
+                    .unwrap()
+                    .state_version,
+                feedback: None,
                 pulsation_id: created.id.clone(),
                 decision: HitlDecision::Approve,
             })
@@ -4402,6 +4241,15 @@ mod tests {
 
         let rejected = service
             .apply_hitl_decision(ApplyHitlDecisionRequest {
+                checkpoint_id: service
+                    .get_hitl_checkpoint(&created.id)
+                    .unwrap()
+                    .checkpoint_id,
+                expected_state_version: service
+                    .get_hitl_checkpoint(&created.id)
+                    .unwrap()
+                    .state_version,
+                feedback: None,
                 pulsation_id: created.id,
                 decision: HitlDecision::Reject,
             })
@@ -4580,7 +4428,10 @@ mod tests {
         assert!(cancelled.cancelled_jobs >= 1);
 
         let result = runtime.block_on(async { handle.await.expect("worker join should succeed") });
-        assert!(matches!(result, Err(PersistenceServiceError::Cancelled(_))));
+        assert!(
+            matches!(result, Err(PersistenceServiceError::Cancelled(_))),
+            "{result:?}"
+        );
 
         let runs = service
             .list_agent_runs(ListAgentRunsRequest {
@@ -4942,17 +4793,27 @@ mod tests {
 
     #[test]
     fn worker_does_not_claim_job_before_available_at() {
-        let (_root, service) = prepare_service();
+        let (root, service) = prepare_service();
+        let project = service
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: root.path().to_string_lossy().into_owned(),
+                preferred_name: None,
+            })
+            .unwrap()
+            .project;
+        let pulse = service
+            .create_pulsation(CreatePulsationRequest {
+                project_id: project.id,
+                feature_name: "Future job".into(),
+            })
+            .unwrap()
+            .pulsation;
         let connection = service.connection().expect("db should open");
         let now = Utc::now();
         connection
             .execute(
-                "INSERT INTO jobs(id,pulsation_id,kind,status,created_at,updated_at,available_at)
-                 VALUES ('future-job',NULL,'run_stage::Code','pending',?1,?1,?2)",
-                params![
-                    now.to_rfc3339(),
-                    (now + chrono::Duration::minutes(5)).to_rfc3339()
-                ],
+                "UPDATE jobs SET id='future-job',available_at=?2 WHERE pulsation_id=?1",
+                params![pulse.id, (now + chrono::Duration::minutes(5)).to_rfc3339()],
             )
             .expect("future job should insert");
         assert!(service.claim_next_pending_job().unwrap().is_none());

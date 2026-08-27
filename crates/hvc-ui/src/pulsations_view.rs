@@ -306,7 +306,7 @@ fn pulsation_card(
                 .child(format!(
                     "{} · {}",
                     stage_label(pulsation.stage),
-                    status_label(pulsation.status)
+                    status_label(pulsation.status, pulsation.terminal_reason.as_deref())
                 )),
         )
         .into_any_element()
@@ -348,7 +348,10 @@ fn pulsation_detail_header(
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(status_pill(pulsation.status))
+                .child(status_pill(
+                    pulsation.status,
+                    pulsation.terminal_reason.as_deref(),
+                ))
                 .child(
                     div()
                         .id("cancel-pulsation-jobs")
@@ -442,14 +445,14 @@ fn status_dot(status: PulsationStatus) -> impl IntoElement {
     div().size_2().rounded_full().bg(status_color(status))
 }
 
-fn status_pill(status: PulsationStatus) -> impl IntoElement {
+fn status_pill(status: PulsationStatus, terminal_reason: Option<&str>) -> impl IntoElement {
     div()
         .px_3()
         .py_1()
         .rounded_full()
         .bg(theme::surface_raised())
         .text_color(status_color(status))
-        .child(status_label(status))
+        .child(status_label(status, terminal_reason))
 }
 
 fn status_color(status: PulsationStatus) -> gpui::Rgba {

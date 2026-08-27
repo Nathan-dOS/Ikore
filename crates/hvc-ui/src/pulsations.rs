@@ -110,6 +110,7 @@ impl PulsationsBackend for CorePulsationsBackend {
 
 #[derive(Default)]
 pub struct PulsationsModel {
+    pub hitl_checkpoints: Vec<hvc_core::persistence_service::HitlCheckpoint>,
     pub project_id: Option<SharedString>,
     pub pulsations: Vec<Pulsation>,
     pub active_pulsation_id: Option<SharedString>,
@@ -160,6 +161,7 @@ impl PulsationsModel {
             .or_else(|| snapshot.pulsations.first().map(|item| item.id.clone()));
         self.project_id = Some(project_id.into());
         self.pulsations = snapshot.pulsations;
+        self.hitl_checkpoints = snapshot.hitl_checkpoints;
         self.awaiting_hitl = snapshot.hitl_waiting_count;
         self.running_jobs = snapshot.background_agents_count;
         self.active_pulsation_id = next_id.clone().map(Into::into);
@@ -170,6 +172,11 @@ impl PulsationsModel {
             .filter(|pulsation| pulsation.status == PulsationStatus::Checkpoint)
             .cloned();
         self.hitl.load_checkpoint(checkpoint.as_ref());
+        self.hitl.expected_checkpoint = self
+            .hitl_checkpoints
+            .iter()
+            .find(|c| Some(c.pulsation_id.as_str()) == self.hitl.pulsation_id.as_deref())
+            .cloned();
         next_id
     }
 
@@ -189,6 +196,11 @@ impl PulsationsModel {
             .filter(|pulsation| pulsation.status == PulsationStatus::Checkpoint)
             .cloned();
         self.hitl.load_checkpoint(checkpoint.as_ref());
+        self.hitl.expected_checkpoint = self
+            .hitl_checkpoints
+            .iter()
+            .find(|c| Some(c.pulsation_id.as_str()) == self.hitl.pulsation_id.as_deref())
+            .cloned();
         true
     }
 
@@ -252,7 +264,14 @@ pub(crate) fn stage_label(stage: PulsationStage) -> &'static str {
     }
 }
 
-pub(crate) fn status_label(status: PulsationStatus) -> &'static str {
+pub(crate) fn status_label(status: PulsationStatus, terminal_reason: Option<&str>) -> &'static str {
+    if status == PulsationStatus::Failed {
+        match terminal_reason {
+            Some("user_cancel") => return "Cancelada",
+            Some("publication_conflict") => return "Conflito de publicação",
+            _ => {}
+        }
+    }
     match status {
         PulsationStatus::Idle => "Idle",
         PulsationStatus::Planning => "Planning",
@@ -269,6 +288,7 @@ mod tests {
 
     fn pulsation(id: &str, status: PulsationStatus) -> Pulsation {
         Pulsation {
+            terminal_reason: None,
             id: id.into(),
             project_id: "project-1".into(),
             feature_name: "Login".into(),
@@ -298,6 +318,7 @@ mod tests {
         let active = model.apply_snapshot(
             "project-1".into(),
             PulsationRuntimeSnapshot {
+                hitl_checkpoints: Vec::new(),
                 pulsations: vec![pulsation("pulse-1", PulsationStatus::Checkpoint)],
                 hitl_waiting_count: 1,
                 background_agents_count: 2,
@@ -321,6 +342,7 @@ mod tests {
         model.apply_snapshot(
             "project-1".into(),
             PulsationRuntimeSnapshot {
+                hitl_checkpoints: Vec::new(),
                 pulsations: vec![pulsation("pulse-1", PulsationStatus::Running)],
                 hitl_waiting_count: 0,
                 background_agents_count: 1,

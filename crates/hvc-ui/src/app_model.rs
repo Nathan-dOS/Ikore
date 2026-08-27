@@ -13,9 +13,8 @@ use hvc_core::llm::{
     UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
 };
 use hvc_core::persistence_service::{
-    ApplyHitlDecisionRequest, EnsureProjectForWorkspaceRequest, HitlDecision, LoadUiSessionRequest,
-    PulsationRuntimeSnapshot, SaveUiSessionRequest, UiSessionState, UiTabSnapshot,
-    UpdateAgentRuntimeConfigRequest,
+    EnsureProjectForWorkspaceRequest, HitlDecision, LoadUiSessionRequest, PulsationRuntimeSnapshot,
+    SaveUiSessionRequest, UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
 };
 use hvc_core::workspace_service::{
     FileNode, OpenWorkspaceRequest, ReadWorkspaceFileRequest, SearchMode, WorkspaceChangedEvent,
@@ -1314,7 +1313,7 @@ impl AppModel {
         let request = self
             .pulsations
             .update(cx, |pulsations, _| pulsations.hitl.begin(decision));
-        let Some((pulsation_id, decision)) = request else {
+        let Some(request) = request else {
             return;
         };
         let Some(core) = self.core.clone() else {
@@ -1333,10 +1332,7 @@ impl AppModel {
             let result = runtime
                 .spawn_blocking(move || {
                     core.persistence()
-                        .apply_hitl_decision(ApplyHitlDecisionRequest {
-                            pulsation_id,
-                            decision,
-                        })
+                        .apply_hitl_decision(request)
                         .map(|_| ())
                         .map_err(|error| error.to_string())
                 })
@@ -3452,6 +3448,7 @@ mod tests {
                 create_calls: Arc::new(Mutex::new(Vec::new())),
                 cancel_calls: Arc::new(Mutex::new(Vec::new())),
                 snapshot: Arc::new(Mutex::new(PulsationRuntimeSnapshot {
+                    hitl_checkpoints: Vec::new(),
                     pulsations: vec![test_pulsation()],
                     hitl_waiting_count: 0,
                     background_agents_count: 1,
@@ -3593,6 +3590,7 @@ mod tests {
 
     fn test_pulsation() -> Pulsation {
         Pulsation {
+            terminal_reason: None,
             id: "pulse-1".into(),
             project_id: "project-1".into(),
             feature_name: "Login".into(),
