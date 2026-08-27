@@ -9,6 +9,7 @@ pub mod chat_service;
 pub mod embedding_service;
 pub mod events;
 pub mod llm;
+pub mod orchestration;
 pub mod persistence_service;
 pub mod repository_context;
 pub mod workspace_service;

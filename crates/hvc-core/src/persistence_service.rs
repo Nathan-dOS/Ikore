@@ -428,7 +428,7 @@ impl PulsationStage {
         }
     }
 
-    fn next(self) -> Option<Self> {
+    pub(crate) fn next(self) -> Option<Self> {
         match self {
             Self::Intake => Some(Self::Specification),
             Self::Specification => Some(Self::Contract),
@@ -439,7 +439,7 @@ impl PulsationStage {
         }
     }
 
-    fn requires_checkpoint(self) -> bool {
+    pub(crate) fn requires_checkpoint(self) -> bool {
         matches!(
             self,
             Self::Specification | Self::Contract | Self::Test | Self::Integrator
