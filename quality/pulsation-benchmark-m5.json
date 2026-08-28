@@ -1,0 +1,5559 @@
+{
+  "arch": "x86_64",
+  "code_base": "8167313feb7796ef873b5d11a828d3a584280530",
+  "embedding_enabled": false,
+  "fixture_version": "m5-128-sources-v1",
+  "generated_at": "2026-08-28T22:47:44.819994400+00:00",
+  "idle_window_ms": 1500,
+  "learning_enabled": false,
+  "notes": "Loopback synthetic provider/no-op delivery. Monotonic committed-state observations (poll + DB latency); no queue origin includes creation on an already-ready base. On/off OS cache counterbalanced, not cold-start. Token usage simulated chars/4; no claim about real-provider cost. No user profile or external service.",
+  "observer_poll_ms": 2,
+  "os": "windows",
+  "pairs": 12,
+  "percentile_method": "nearest_rank",
+  "provider_delay_ms": 10,
+  "release": true,
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-pc-windows-msvc\nrelease: 1.98.0\nLLVM version: 22.1.8",
+  "samples": [
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1083.8834
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 43279,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 0,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": true
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        981.3516
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 46671,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 0,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": true
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1125.5976
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 51277,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 1,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        986.1461
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 50299,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 1,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1023.9452
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 49640,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 2,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        895.2451
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 21742,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 2,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        941.4630000000001
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 23645,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 3,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        961.985
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 22796,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 3,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1745.8751000000002
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48256,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 4,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1019.4011
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 49815,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 4,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1070.7515
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 49853,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 5,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1344.6462000000001
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 58027,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 5,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1085.1618999999998
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 49594,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 6,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1104.0953
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48137,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 6,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1386.8583999999998
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 31425,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 7,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        978.9828
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48543,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 7,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        983.1521
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 25241,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 8,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1163.8889
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 47819,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 8,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1883.5747999999999
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 21977,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 9,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1056.7372
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 22790,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 9,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1097.2112
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 26193,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 10,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1423.6696
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 50292,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 10,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        920.0063
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 22141,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 11,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1139.2581
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 49500,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 11,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1308.1317000000001
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 23567,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 12,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [],
+      "base_to_spec_ms": [
+        1026.2911
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 24984,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [],
+      "iteration": 12,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [],
+      "provider_calls": 2,
+      "publication_conflicts": 0,
+      "scenario": "no_queue",
+      "simulated_input_tokens": 1589,
+      "simulated_output_tokens": 160,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        101.86059999999999,
+        125.95739999999999
+      ],
+      "base_to_spec_ms": [
+        1196.6619,
+        1181.0187
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 24096,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 49983,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48990,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2536,
+        1500.4119999999998
+      ],
+      "iteration": 0,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": true
+    },
+    {
+      "approval_to_base_ms": [
+        88.6893,
+        79.6499
+      ],
+      "base_to_spec_ms": [
+        469.98539999999997,
+        494.9792
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 58238,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 34517,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 35850,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 52694,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 34332,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2258,
+        1500.2178000000001
+      ],
+      "iteration": 0,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": true
+    },
+    {
+      "approval_to_base_ms": [
+        97.0481,
+        140.7069
+      ],
+      "base_to_spec_ms": [
+        586.5118,
+        607.5816000000001
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 30372,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 62371,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 49388,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 64561,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 43711,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1502.5949,
+        1500.2065
+      ],
+      "iteration": 1,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        162.125,
+        112.4
+      ],
+      "base_to_spec_ms": [
+        1006.659,
+        1083.3201999999999
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 59592,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 51372,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48171,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.4084,
+        1500.6405
+      ],
+      "iteration": 1,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        129.2052,
+        153.20919999999998
+      ],
+      "base_to_spec_ms": [
+        1258.4077,
+        1275.5608
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 47577,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 66569,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 47969,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.3278,
+        1500.5691
+      ],
+      "iteration": 2,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        121.31219999999999,
+        205.7748
+      ],
+      "base_to_spec_ms": [
+        1800.2974000000002,
+        557.4551
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 44867,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 45043,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 37863,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 53995,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 44839,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.3354,
+        1500.2676999999999
+      ],
+      "iteration": 2,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        179.001,
+        163.1393
+      ],
+      "base_to_spec_ms": [
+        1698.7660999999998,
+        1698.8659
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 26960,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 48615,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 40623,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 52365,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 56003,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1501.0618,
+        1500.6172
+      ],
+      "iteration": 3,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        140.42260000000002,
+        215.5482
+      ],
+      "base_to_spec_ms": [
+        1114.6578,
+        1211.7922
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 33842,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 49319,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 44783,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.5051,
+        1500.6414000000002
+      ],
+      "iteration": 3,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        418.9697,
+        114.11200000000001
+      ],
+      "base_to_spec_ms": [
+        1236.7987,
+        1100.3283
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 31120,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 54386,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 55501,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.3346,
+        1500.3646
+      ],
+      "iteration": 4,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        136.6407,
+        259.43739999999997
+      ],
+      "base_to_spec_ms": [
+        838.9118,
+        1604.0765999999999
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 46382,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 48905,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 37169,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 62073,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 36181,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2585000000001,
+        1500.2767999999999
+      ],
+      "iteration": 4,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        91.6941,
+        160.6781
+      ],
+      "base_to_spec_ms": [
+        786.0814,
+        596.6143999999999
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 45867,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 33952,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 55459,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 49429,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 49567,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.1989999999998,
+        1500.273
+      ],
+      "iteration": 5,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        158.85569999999998,
+        148.80669999999998
+      ],
+      "base_to_spec_ms": [
+        1434.6083,
+        1384.3975
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 28212,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 65372,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 47614,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2569,
+        1500.2365
+      ],
+      "iteration": 5,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        227.43859999999998,
+        159.9653
+      ],
+      "base_to_spec_ms": [
+        1002.4511,
+        1174.3736000000001
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 44337,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48634,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 55915,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.5994,
+        1500.4178000000002
+      ],
+      "iteration": 6,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        137.2919,
+        150.9017
+      ],
+      "base_to_spec_ms": [
+        507.38349999999997,
+        529.2895
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 25963,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 60713,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 36382,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 49240,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 44896,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.3387,
+        1500.3900999999998
+      ],
+      "iteration": 6,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        166.7431,
+        205.12800000000001
+      ],
+      "base_to_spec_ms": [
+        704.8528,
+        602.5654999999999
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 23915,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 54818,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 39095,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 27914,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 49523,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.5176,
+        1500.4247
+      ],
+      "iteration": 7,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        214.1449,
+        164.77939999999998
+      ],
+      "base_to_spec_ms": [
+        2081.6351,
+        1141.7827
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 47636,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 47700,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 69324,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2713,
+        1500.3243
+      ],
+      "iteration": 7,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        64.3072,
+        127.28429999999999
+      ],
+      "base_to_spec_ms": [
+        1356.3433,
+        1863.9744
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 30428,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 47347,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 43734,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.3616,
+        1500.3924
+      ],
+      "iteration": 8,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        122.1962,
+        114.23519999999999
+      ],
+      "base_to_spec_ms": [
+        555.2145,
+        584.7517
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 25130,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 57288,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 36065,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 53420,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 35724,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2453999999998,
+        1500.3373
+      ],
+      "iteration": 8,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        158.42999999999998,
+        227.2767
+      ],
+      "base_to_spec_ms": [
+        467.2848,
+        647.7796
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 29265,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 43893,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 38940,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 64969,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 54155,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.6279,
+        1500.3476999999998
+      ],
+      "iteration": 9,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        95.5264,
+        154.52759999999998
+      ],
+      "base_to_spec_ms": [
+        1056.6848,
+        947.9658
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 45855,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48529,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 46905,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.518,
+        1500.3836000000001
+      ],
+      "iteration": 9,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        133.7411,
+        185.0288
+      ],
+      "base_to_spec_ms": [
+        1084.1799,
+        1073.752
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 22174,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 59393,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 46974,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.4768,
+        1500.5228000000002
+      ],
+      "iteration": 10,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        189.7088,
+        170.1077
+      ],
+      "base_to_spec_ms": [
+        1640.7647000000002,
+        573.0773
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 45882,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 64774,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 49903,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 71849,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 36515,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2721000000001,
+        1500.3028
+      ],
+      "iteration": 10,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        193.6426,
+        156.89819999999997
+      ],
+      "base_to_spec_ms": [
+        855.6973,
+        639.6483
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48631,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 54279,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 34560,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 59258,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 45170,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.3201999999999,
+        1500.5458
+      ],
+      "iteration": 11,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        145.9771,
+        163.96099999999998
+      ],
+      "base_to_spec_ms": [
+        2150.7819,
+        1142.85
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 22726,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 64821,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 47688,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.7730999999999,
+        1500.1880999999998
+      ],
+      "iteration": 11,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        117.5274,
+        108.1551
+      ],
+      "base_to_spec_ms": [
+        1004.5473000000001,
+        1269.7704
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 49926,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 46304,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 60806,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.4277,
+        1500.2550999999999
+      ],
+      "iteration": 12,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        273.96169999999995,
+        112.4851
+      ],
+      "base_to_spec_ms": [
+        1580.0191,
+        607.4794999999999
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 26391,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 52413,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 32350,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 48049,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 38193,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.6184,
+        1500.6091000000001
+      ],
+      "iteration": 12,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "queue_abc",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        100.0358,
+        97.9825
+      ],
+      "base_to_spec_ms": [
+        1093.5819,
+        1013.0459000000001
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48623,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 46733,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48160,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.7738000000002,
+        1500.7614999999998
+      ],
+      "iteration": 0,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": true
+    },
+    {
+      "approval_to_base_ms": [
+        129.9709,
+        187.77089999999998
+      ],
+      "base_to_spec_ms": [
+        508.4193,
+        554.6126
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 31919,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 50176,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "stale_on_demand",
+          "elapsed_us": 53448,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 60828,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 33979,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.255,
+        1500.3571
+      ],
+      "iteration": 0,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": true
+    },
+    {
+      "approval_to_base_ms": [
+        107.714,
+        94.2905
+      ],
+      "base_to_spec_ms": [
+        1696.5227,
+        601.7249
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 58301,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 52668,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "stale_on_demand",
+          "elapsed_us": 66510,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 57156,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 47886,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2829,
+        1500.3354
+      ],
+      "iteration": 1,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        76.9499,
+        119.25800000000001
+      ],
+      "base_to_spec_ms": [
+        1106.892,
+        1223.7629000000002
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 44723,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48631,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 47319,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2654,
+        1500.4398999999999
+      ],
+      "iteration": 1,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        97.96480000000001,
+        199.1984
+      ],
+      "base_to_spec_ms": [
+        836.1906,
+        953.6209
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 41389,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 35224,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 19345,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2873000000002,
+        1500.2097999999999
+      ],
+      "iteration": 2,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        138.2524,
+        170.88
+      ],
+      "base_to_spec_ms": [
+        690.6311000000001,
+        489.1751
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 36725,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 33783,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "stale_on_demand",
+          "elapsed_us": 52144,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 45065,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 37952,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.4895000000001,
+        1500.3131
+      ],
+      "iteration": 2,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        112.7021,
+        96.8957
+      ],
+      "base_to_spec_ms": [
+        839.8031,
+        940.4968
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 51578,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 46092,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "stale_on_demand",
+          "elapsed_us": 53221,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 55587,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 41724,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1502.465,
+        1500.2457
+      ],
+      "iteration": 3,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        492.6356,
+        130.76670000000001
+      ],
+      "base_to_spec_ms": [
+        1147.4869,
+        1209.2603
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 52637,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 49931,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 50676,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.6575,
+        1500.3012
+      ],
+      "iteration": 3,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        106.36800000000001,
+        155.922
+      ],
+      "base_to_spec_ms": [
+        1177.8821,
+        2038.5258
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 54893,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 49291,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 50484,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.3001,
+        1500.3284999999998
+      ],
+      "iteration": 4,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        109.8553,
+        116.02220000000001
+      ],
+      "base_to_spec_ms": [
+        575.4393,
+        375.048
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 53786,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 57793,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "stale_on_demand",
+          "elapsed_us": 52766,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 55098,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 9313,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2898999999998,
+        1500.4243999999999
+      ],
+      "iteration": 4,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        178.8042,
+        93.4262
+      ],
+      "base_to_spec_ms": [
+        656.794,
+        1515.2169
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 14814,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 56292,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "stale_on_demand",
+          "elapsed_us": 59876,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 89735,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 39316,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.1945,
+        1500.3467
+      ],
+      "iteration": 5,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        135.8883,
+        183.554
+      ],
+      "base_to_spec_ms": [
+        1003.7343999999999,
+        1194.7497
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 51001,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 55871,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 49424,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2490000000003,
+        1500.3006
+      ],
+      "iteration": 5,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        176.6438,
+        183.5915
+      ],
+      "base_to_spec_ms": [
+        1023.5359,
+        1116.8637999999999
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 46858,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 50418,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48621,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2271999999998,
+        1500.674
+      ],
+      "iteration": 6,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        198.7954,
+        220.4548
+      ],
+      "base_to_spec_ms": [
+        1700.9766,
+        1831.8445
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 42350,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 58033,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "stale_on_demand",
+          "elapsed_us": 62265,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 60077,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 50057,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.6772,
+        1500.2948000000001
+      ],
+      "iteration": 6,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        146.0639,
+        122.352
+      ],
+      "base_to_spec_ms": [
+        663.4747,
+        573.1667
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 30212,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 48178,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "stale_on_demand",
+          "elapsed_us": 65069,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 61915,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 43484,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.7631999999999,
+        1500.4588
+      ],
+      "iteration": 7,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        195.76479999999998,
+        79.59769999999999
+      ],
+      "base_to_spec_ms": [
+        1164.8464999999999,
+        1163.8064
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 50469,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 65649,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 54058,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.6362,
+        1500.2629000000002
+      ],
+      "iteration": 7,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        124.7386,
+        150.5803
+      ],
+      "base_to_spec_ms": [
+        1138.4354,
+        984.1115
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 49027,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48915,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 47624,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.273,
+        1500.7424
+      ],
+      "iteration": 8,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        114.0125,
+        248.868
+      ],
+      "base_to_spec_ms": [
+        646.2491,
+        589.9406
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 24783,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 61321,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "stale_on_demand",
+          "elapsed_us": 62262,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 53520,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 48011,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2615,
+        1500.2197
+      ],
+      "iteration": 8,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        162.76760000000002,
+        119.20360000000001
+      ],
+      "base_to_spec_ms": [
+        676.7887999999999,
+        543.9016
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 54484,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 44881,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "stale_on_demand",
+          "elapsed_us": 69387,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 57960,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 51978,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1501.4999,
+        1500.5498
+      ],
+      "iteration": 9,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        72.19250000000001,
+        109.67830000000001
+      ],
+      "base_to_spec_ms": [
+        1030.4625999999998,
+        1164.1359
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 54190,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 47255,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 47597,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1501.2683,
+        1500.205
+      ],
+      "iteration": 9,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        205.3296,
+        127.27640000000001
+      ],
+      "base_to_spec_ms": [
+        1074.0502999999999,
+        1199.4456
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 77202,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48799,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 57864,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2619,
+        1500.5264
+      ],
+      "iteration": 10,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        127.0685,
+        199.3185
+      ],
+      "base_to_spec_ms": [
+        868.3507000000001,
+        547.7139
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 68585,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 67125,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "stale_on_demand",
+          "elapsed_us": 63346,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 57445,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 53867,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.2513,
+        1500.5180999999998
+      ],
+      "iteration": 10,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        176.2015,
+        156.7747
+      ],
+      "base_to_spec_ms": [
+        593.5709999999999,
+        464.404
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 31598,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 53891,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "stale_on_demand",
+          "elapsed_us": 48561,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 51452,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 39551,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.4832000000001,
+        1500.5117
+      ],
+      "iteration": 11,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        167.4174,
+        169.63500000000002
+      ],
+      "base_to_spec_ms": [
+        1055.1606,
+        1115.1902
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 26315,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 48183,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 57120,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.1948,
+        1500.1929
+      ],
+      "iteration": 11,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        78.11800000000001,
+        129.3246
+      ],
+      "base_to_spec_ms": [
+        1219.4389999999999,
+        1173.5848
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 34439,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 58632,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 62152,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.1533,
+        1500.2554
+      ],
+      "iteration": 12,
+      "preemptions": 0,
+      "preparation_enabled": false,
+      "preparation_ready_before_release": [
+        false,
+        false
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 11947,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    },
+    {
+      "approval_to_base_ms": [
+        401.4338,
+        153.9922
+      ],
+      "base_to_spec_ms": [
+        623.9524,
+        617.2028
+      ],
+      "context_metrics": [
+        {
+          "coverage": "complete",
+          "disposition": "on_demand",
+          "elapsed_us": 43091,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "A",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 45249,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "stale_on_demand",
+          "elapsed_us": 61340,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "B",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "prepared",
+          "elapsed_us": 51405,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "preparation",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        },
+        {
+          "coverage": "complete",
+          "disposition": "reused",
+          "elapsed_us": 47465,
+          "enumerated_files": 128,
+          "generation": 1,
+          "input_revision": 1,
+          "phase": "specification",
+          "pulse_label": "C",
+          "read_bytes": 460704,
+          "schema_version": 1,
+          "selected_files": 1,
+          "truncated": false
+        }
+      ],
+      "fixture_sha256": "afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf",
+      "hitl_hold_ms": [
+        1500.1747,
+        1500.2569
+      ],
+      "iteration": 12,
+      "preemptions": 0,
+      "preparation_enabled": true,
+      "preparation_ready_before_release": [
+        true,
+        true
+      ],
+      "provider_calls": 14,
+      "publication_conflicts": 0,
+      "scenario": "edit_while_waiting",
+      "simulated_input_tokens": 12009,
+      "simulated_output_tokens": 1120,
+      "warmup": false
+    }
+  ],
+  "schema_version": 1,
+  "summary": [
+    {
+      "approval_to_spec_upper_ms": {
+        "p50": 1056.7372,
+        "p95": 1745.8751000000002
+      },
+      "base_to_spec_observed_ms": {
+        "p50": 1056.7372,
+        "p95": 1745.8751000000002
+      },
+      "preparation_enabled": false,
+      "pulse": "A",
+      "samples": 12,
+      "scenario": "no_queue",
+      "spec_collection_ms": {
+        "p50": 48.256,
+        "p95": 58.027
+      }
+    },
+    {
+      "approval_to_spec_upper_ms": {
+        "p50": 1070.7515,
+        "p95": 1883.5747999999999
+      },
+      "base_to_spec_observed_ms": {
+        "p50": 1070.7515,
+        "p95": 1883.5747999999999
+      },
+      "preparation_enabled": true,
+      "pulse": "A",
+      "samples": 12,
+      "scenario": "no_queue",
+      "spec_collection_ms": {
+        "p50": 31.425,
+        "p95": 51.277
+      }
+    },
+    {
+      "approval_to_spec_upper_ms": {
+        "p50": 1255.0804,
+        "p95": 2296.759
+      },
+      "base_to_spec_observed_ms": {
+        "p50": 1114.6578,
+        "p95": 2150.7819
+      },
+      "preparation_enabled": false,
+      "pulse": "B",
+      "samples": 12,
+      "scenario": "queue_abc",
+      "spec_collection_ms": {
+        "p50": 49.319,
+        "p95": 66.569
+      }
+    },
+    {
+      "approval_to_spec_upper_ms": {
+        "p50": 1306.811,
+        "p95": 1991.2587
+      },
+      "base_to_spec_observed_ms": {
+        "p50": 1142.85,
+        "p95": 1863.9744
+      },
+      "preparation_enabled": false,
+      "pulse": "C",
+      "samples": 12,
+      "scenario": "queue_abc",
+      "spec_collection_ms": {
+        "p50": 47.688,
+        "p95": 69.324
+      }
+    },
+    {
+      "approval_to_spec_upper_ms": {
+        "p50": 877.7755000000001,
+        "p95": 1921.6096000000002
+      },
+      "base_to_spec_observed_ms": {
+        "p50": 786.0814,
+        "p95": 1800.2974000000002
+      },
+      "preparation_enabled": true,
+      "pulse": "B",
+      "samples": 12,
+      "scenario": "queue_abc",
+      "spec_collection_ms": {
+        "p50": 37.863,
+        "p95": 55.459
+      }
+    },
+    {
+      "approval_to_spec_upper_ms": {
+        "p50": 757.2924999999999,
+        "p95": 1863.514
+      },
+      "base_to_spec_observed_ms": {
+        "p50": 602.5654999999999,
+        "p95": 1698.8659
+      },
+      "preparation_enabled": true,
+      "pulse": "C",
+      "samples": 12,
+      "scenario": "queue_abc",
+      "spec_collection_ms": {
+        "p50": 44.839,
+        "p95": 56.003
+      }
+    },
+    {
+      "approval_to_spec_upper_ms": {
+        "p50": 1222.578,
+        "p95": 1640.1225000000002
+      },
+      "base_to_spec_observed_ms": {
+        "p50": 1074.0502999999999,
+        "p95": 1219.4389999999999
+      },
+      "preparation_enabled": false,
+      "pulse": "B",
+      "samples": 12,
+      "scenario": "edit_while_waiting",
+      "spec_collection_ms": {
+        "p50": 48.915,
+        "p95": 65.649
+      }
+    },
+    {
+      "approval_to_spec_upper_ms": {
+        "p50": 1300.4552999999999,
+        "p95": 2194.4478
+      },
+      "base_to_spec_observed_ms": {
+        "p50": 1164.1359,
+        "p95": 2038.5258
+      },
+      "preparation_enabled": false,
+      "pulse": "C",
+      "samples": 12,
+      "scenario": "edit_while_waiting",
+      "spec_collection_ms": {
+        "p50": 49.424,
+        "p95": 62.152
+      }
+    },
+    {
+      "approval_to_spec_upper_ms": {
+        "p50": 835.5982,
+        "p95": 1899.772
+      },
+      "base_to_spec_observed_ms": {
+        "p50": 663.4747,
+        "p95": 1700.9766
+      },
+      "preparation_enabled": true,
+      "pulse": "B",
+      "samples": 12,
+      "scenario": "edit_while_waiting",
+      "spec_collection_ms": {
+        "p50": 61.34,
+        "p95": 69.387
+      }
+    },
+    {
+      "approval_to_spec_upper_ms": {
+        "p50": 696.0154,
+        "p95": 2052.2993
+      },
+      "base_to_spec_observed_ms": {
+        "p50": 573.1667,
+        "p95": 1831.8445
+      },
+      "preparation_enabled": true,
+      "pulse": "C",
+      "samples": 12,
+      "scenario": "edit_while_waiting",
+      "spec_collection_ms": {
+        "p50": 43.484,
+        "p95": 53.867
+      }
+    }
+  ],
+  "working_diff": ""
+}
