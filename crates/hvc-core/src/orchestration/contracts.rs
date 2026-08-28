@@ -292,6 +292,41 @@ pub struct ConfirmBaseReconciliationRequest {
     pub expected_base_epoch: u64,
     pub expected_pipeline_state_version: u64,
     pub explanation: String,
+    /// Explicit choice when several preserved, advanced pulsations need reconciliation.
+    pub resume_pulsation_id: Option<String>,
+    /// Binds the confirmation to the displayed artifact states and observed file hashes.
+    pub expected_review_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuePosition {
+    pub pulsation_id: String,
+    pub sequence: u64,
+    pub blocking_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicationReview {
+    pub artifact_id: String,
+    pub pulsation_id: String,
+    pub relative_path: String,
+    pub state: String,
+    pub desired_sha256: Option<String>,
+    pub observed_sha256: Option<String>,
+    pub diagnostic: Option<String>,
+    pub observation_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCoordinationSnapshot {
+    pub pipeline: ProjectPipelineState,
+    pub queue: Vec<QueuePosition>,
+    pub owner_candidates: Vec<String>,
+    pub publications: Vec<PublicationReview>,
+    pub review_token: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

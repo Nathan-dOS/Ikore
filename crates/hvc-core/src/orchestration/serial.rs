@@ -1,11 +1,11 @@
-//! M1 transaction boundary, used by the existing (single-lane) worker.
+//! Atomic result acceptance, HITL and host publication, admitted by the M2 coordinator.
 use super::*;
 use crate::orchestration::*;
 use rusqlite::TransactionBehavior;
 
 #[cfg(test)]
 #[path = "serial_tests.rs"]
-mod tests;
+pub(super) mod tests;
 
 fn invalid(error: impl std::fmt::Display) -> PersistenceServiceError {
     PersistenceServiceError::Validation(error.to_string())
@@ -40,6 +40,9 @@ impl PersistenceService {
         let pulse = &request.pulsation_id;
         let current = Self::find_pulsation_by_id(&tx, pulse)?
             .ok_or_else(|| invalid("Pulsação não encontrada."))?;
+        if !matches!(request.decision, HitlDecision::Reject) {
+            Self::check_project_admission(&tx, pulse)?;
+        }
         let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM checkpoints c JOIN pulsations p ON p.id=c.pulsation_id WHERE c.id=?1 AND p.id=?2 AND p.state_version=?3 AND c.status='waiting' AND c.kind='artifact_review' AND p.status='checkpoint' AND c.input_revision=p.input_revision AND (c.stage=p.stage OR (c.stage='Specification' AND p.stage='SPECIFICATION')))",params![request.checkpoint_id,pulse,request.expected_state_version],|r|r.get(0))?;
         let waiting: i64 = tx.query_row(
             "SELECT COUNT(*) FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
@@ -79,6 +82,7 @@ impl PersistenceService {
                 tx.execute("UPDATE artifact_publications SET state='cancelled' WHERE pulsation_id=?1 AND state IN ('pending','applying')",[pulse])?;
             }
             HitlDecision::RequestRevision => {
+                tx.execute("UPDATE pulsations SET integration_checkpoint_id=NULL,integration_state_version=NULL WHERE id=?1", [pulse])?;
                 let target = revision_target(current.stage)
                     .ok_or_else(|| invalid("Este estágio não oferece revisão HITL."))?;
                 let target_index = catalog::STAGES
@@ -114,6 +118,8 @@ impl PersistenceService {
                         "integration_publication_pending",
                         Some("Aprovação registrada; reconciliando publicações."),
                     )?;
+                    tx.execute("UPDATE pulsations SET integration_checkpoint_id=?2,integration_state_version=state_version WHERE id=?1",params![pulse,request.checkpoint_id])?;
+                    tx.execute("UPDATE project_pipeline_state SET base_state='publishing',state_version=state_version+1 WHERE active_pulsation_id=?1",[pulse])?;
                 } else {
                     let next = current
                         .stage
@@ -132,6 +138,7 @@ impl PersistenceService {
             }
         }
         tx.commit()?;
+        self.wake_scheduler();
         self.reconcile_publications()?;
         let result = Self::find_pulsation_by_id(&self.connection()?, pulse)?
             .ok_or_else(|| invalid("Pulsação ausente"))?;
@@ -157,6 +164,9 @@ impl PersistenceService {
         fence: &ExecutionFence,
     ) -> Result<(), PersistenceServiceError> {
         let current = Self::execution_fence(db, &fence.job_id)?;
+        if let Some(pulse) = &fence.pulsation_id {
+            Self::check_project_admission(db, pulse)?;
+        }
         let (status, cancel, revision): (String, Option<String>, Option<u64>) = db.query_row(
             "SELECT status,cancellation_reason,input_revision FROM jobs WHERE id=?1",
             [&fence.job_id],
@@ -232,7 +242,7 @@ impl PersistenceService {
             artifact.source_revisions = serde_json::from_str(&sources).map_err(invalid)?;
             artifacts.push(artifact);
         }
-        let bases=db.prepare("SELECT a.relative_path,a.content_sha256 FROM artifacts a LEFT JOIN artifact_publications o ON o.artifact_id=a.id JOIN pulsations owner ON owner.id=a.pulsation_id WHERE owner.project_id=?1 AND a.publication_state='applied' AND a.relative_path IS NOT NULL ORDER BY COALESCE(o.updated_at,a.updated_at) DESC,a.id DESC")?.query_map([&fence.project_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
+        let bases=db.prepare("SELECT relative_path,content_sha256 FROM project_file_baselines WHERE project_id=?1 AND content_sha256 IS NOT NULL ORDER BY relative_path")?.query_map([&fence.project_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
         let mut seen = HashSet::new();
         let mut publication_bases = Vec::new();
         for (path, hash) in bases {
@@ -395,20 +405,51 @@ impl PersistenceService {
         reason: &str,
     ) -> Result<(), PersistenceServiceError> {
         db.execute("UPDATE project_pipeline_state SET base_state='needs_review',blocking_reason=?2,state_version=state_version+1 WHERE project_id=(SELECT project_id FROM pulsations WHERE id=?1) AND EXISTS(SELECT 1 FROM artifacts WHERE pulsation_id=?1 AND publication_state IN ('applied','applying','conflict'))",params![pulse,reason])?;
+        Self::release_safe_owner(db, pulse)?;
         Ok(())
     }
 
     /// Replays accepted intents only. Each unit holds an IMMEDIATE SQLite transaction
     /// across replace+ACK, serializing user cancellation without holding a lock over await.
     pub(super) fn reconcile_publications(&self) -> Result<(), PersistenceServiceError> {
-        loop {
+        self.reconcile_publications_until(None).map(|_| ())
+    }
+
+    pub(super) fn reconcile_publications_until(
+        &self,
+        shutdown: Option<&CancellationToken>,
+    ) -> Result<bool, PersistenceServiceError> {
+        let token = format!("publication:{}", Uuid::new_v4());
+        if shutdown.is_some_and(CancellationToken::is_cancelled) {
+            return Ok(false);
+        }
+        if !Self::reserve_slot(&self.connection()?, JobClass::Main, &token, None, None)? {
+            return Ok(false);
+        }
+        let _slot = self.slot_guard(token.clone()).quiet();
+        let mut progressed = false;
+        // Bounded reconciliation; supervisor notifications/timer continue any remaining work.
+        for _ in 0..8 {
+            if shutdown.is_some_and(CancellationToken::is_cancelled) {
+                break;
+            }
             let mut db = self.connection()?;
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let candidate=tx.query_row("SELECT o.artifact_id FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN pulsations p ON p.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE j.generation=a.generation AND j.status='done' AND o.state IN ('pending','applying') AND a.acceptance='accepted' AND a.input_revision=p.input_revision AND p.status<>'failed' ORDER BY o.updated_at,o.artifact_id LIMIT 1",[],|r|r.get::<_,String>(0)).optional()?;
+            let candidate=tx.query_row("SELECT o.artifact_id FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN pulsations p ON p.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE p.id IN (SELECT id FROM coordinated_pulsations) AND j.generation=a.generation AND j.status='done' AND o.state IN ('pending','applying') AND a.acceptance='accepted' AND a.input_revision=p.input_revision ORDER BY p.created_at,p.project_id,p.queue_sequence,o.updated_at,o.artifact_id LIMIT 1",[],|r|r.get::<_,String>(0)).optional()?;
             let Some(id) = candidate else {
                 tx.commit()?;
                 break;
             };
+            let pulse: String = tx.query_row(
+                "SELECT pulsation_id FROM artifact_publications WHERE artifact_id=?1",
+                [&id],
+                |r| r.get(0),
+            )?;
+            if self.user_cancellation_pending(&pulse) {
+                break;
+            }
+            tx.execute("UPDATE runtime_slots SET project_id=(SELECT project_id FROM artifact_publications WHERE artifact_id=?2) WHERE token=?1",params![token,id])?;
+            tx.execute("UPDATE project_pipeline_state SET base_state='publishing',state_version=state_version+1 WHERE base_state='ready' AND project_id=(SELECT project_id FROM artifact_publications WHERE artifact_id=?1)",[&id])?;
             tx.execute(
                 "UPDATE artifact_publications SET state='applying' WHERE artifact_id=?1",
                 [&id],
@@ -418,6 +459,7 @@ impl PersistenceService {
                 [&id],
             )?;
             tx.commit()?;
+            progressed = true;
             if let Err(error) = self.apply_publication_unit(&id) {
                 // A recorded terminal conflict must not prevent AppCore from opening its UI.
                 // Uncommitted database/I/O errors still abort recovery and preserve the outbox.
@@ -431,8 +473,14 @@ impl PersistenceService {
                 }
             }
         }
-        self.complete_serial_integrations()?;
-        Ok(())
+        if !shutdown.is_some_and(CancellationToken::is_cancelled) {
+            progressed |= self.complete_integrations()?;
+            self.connection()?.execute("UPDATE project_pipeline_state SET base_state='ready',state_version=state_version+1 WHERE base_state='publishing' AND NOT EXISTS(SELECT 1 FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id WHERE o.project_id=project_pipeline_state.project_id AND a.acceptance='accepted' AND o.state IN ('pending','applying')) AND NOT EXISTS(SELECT 1 FROM pulsations p WHERE p.id=active_pulsation_id AND p.integration_checkpoint_id IS NOT NULL AND p.status='running')",[])?;
+        }
+        if progressed {
+            self.wake_scheduler();
+        }
+        Ok(progressed)
     }
 
     fn apply_publication_unit(&self, id: &str) -> Result<(), PersistenceServiceError> {
@@ -443,6 +491,10 @@ impl PersistenceService {
             tx.commit()?;
             return Ok(());
         };
+        Self::check_project_admission(&tx, &pulse)?;
+        if self.user_cancellation_pending(&pulse) {
+            return Ok(());
+        }
         let expected = expected
             .map(ContentSha256::try_from)
             .transpose()
@@ -460,11 +512,19 @@ impl PersistenceService {
         };
         match result {
             Ok(()) => {
+                #[cfg(test)]
+                if let Some((entered, release)) =
+                    self.runtime_control.publication_gate.lock().unwrap().take()
+                {
+                    entered.wait();
+                    release.wait();
+                }
                 tx.execute("UPDATE artifact_publications SET state='applied',last_error=NULL,updated_at=?2 WHERE artifact_id=?1",params![id,Self::now_iso()])?;
                 tx.execute(
                     "UPDATE artifacts SET publication_state='applied' WHERE id=?1",
                     [id],
                 )?;
+                tx.execute("INSERT INTO project_file_baselines(project_id,relative_path,content_sha256,updated_at) SELECT project_id,relative_path,desired_sha256,?2 FROM artifact_publications WHERE artifact_id=?1 ON CONFLICT(project_id,relative_path) DO UPDATE SET content_sha256=excluded.content_sha256,updated_at=excluded.updated_at",params![id,Self::now_iso()])?;
             }
             Err(error) => {
                 tx.execute("UPDATE artifact_publications SET state='conflict',last_error=?2,updated_at=?3 WHERE artifact_id=?1",params![id,error.to_string(),Self::now_iso()])?;
@@ -496,26 +556,6 @@ impl PersistenceService {
                 tx.commit()?;
                 return Err(error);
             }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    fn complete_serial_integrations(&self) -> Result<(), PersistenceServiceError> {
-        let mut db = self.connection()?;
-        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let ids=tx.prepare("SELECT id FROM pulsations p WHERE p.stage='Integrator' AND p.status='running' AND EXISTS(SELECT 1 FROM checkpoints c WHERE c.pulsation_id=p.id AND c.stage='Integrator' AND c.status='approved' AND c.input_revision=p.input_revision) AND NOT EXISTS(SELECT 1 FROM artifact_publications o WHERE o.pulsation_id=p.id AND o.state NOT IN ('applied','cancelled'))")?.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
-        for id in ids {
-            let current =
-                Self::find_pulsation_by_id(&tx, &id)?.ok_or_else(|| invalid("Pulsação ausente"))?;
-            Self::transition_pulsation(
-                &tx,
-                &current,
-                PulsationStatus::Done,
-                current.stage,
-                "hitl_approved_final",
-                Some("Integração aprovada e publicações reconciliadas."),
-            )?;
         }
         tx.commit()?;
         Ok(())

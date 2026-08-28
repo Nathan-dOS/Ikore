@@ -22,7 +22,10 @@ pub struct DatabaseVersion(u32);
 
 impl DatabaseVersion {
     pub fn new(version: u32) -> Self {
-        assert!((1..=9).contains(&version), "fixture version must be V1-V9");
+        assert!(
+            (1..=11).contains(&version),
+            "fixture version must be V1-V11"
+        );
         Self(version)
     }
 

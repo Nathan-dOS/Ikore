@@ -4,6 +4,9 @@ use std::sync::Arc;
 
 use gpui::SharedString;
 use hvc_core::AppCore;
+use hvc_core::orchestration::{
+    BaseState, ConfirmBaseReconciliationRequest, ProjectCoordinationSnapshot,
+};
 use hvc_core::persistence_service::{
     Artifact, CancelPulsationJobsRequest, CreatePulsationRequest,
     GetPulsationRuntimeSnapshotRequest, ListPulsationArtifactsRequest, Pulsation,
@@ -21,6 +24,7 @@ pub(crate) trait PulsationsBackend: Send + Sync {
     fn artifacts(&self, pulsation_id: String) -> PulsationsFuture<Vec<Artifact>>;
     fn create(&self, project_id: String, feature_name: String) -> PulsationsFuture<Pulsation>;
     fn cancel_jobs(&self, pulsation_id: String) -> PulsationsFuture<usize>;
+    fn reconcile(&self, request: ConfirmBaseReconciliationRequest) -> PulsationsFuture<()>;
 }
 
 pub(crate) struct CorePulsationsBackend {
@@ -38,6 +42,22 @@ impl CorePulsationsBackend {
 }
 
 impl PulsationsBackend for CorePulsationsBackend {
+    fn reconcile(&self, request: ConfirmBaseReconciliationRequest) -> PulsationsFuture<()> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .confirm_base_reconciliation(request)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| Self::worker_error("reconciliação", e))?
+        })
+    }
+
     fn runtime_snapshot(&self, project_id: String) -> PulsationsFuture<PulsationRuntimeSnapshot> {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
@@ -110,6 +130,8 @@ impl PulsationsBackend for CorePulsationsBackend {
 
 #[derive(Default)]
 pub struct PulsationsModel {
+    pub coordination: Option<ProjectCoordinationSnapshot>,
+    pub reconciliation_busy: bool,
     pub hitl_checkpoints: Vec<hvc_core::persistence_service::HitlCheckpoint>,
     pub project_id: Option<SharedString>,
     pub pulsations: Vec<Pulsation>,
@@ -163,7 +185,8 @@ impl PulsationsModel {
         self.pulsations = snapshot.pulsations;
         self.hitl_checkpoints = snapshot.hitl_checkpoints;
         self.awaiting_hitl = snapshot.hitl_waiting_count;
-        self.running_jobs = snapshot.background_agents_count;
+        self.running_jobs = snapshot.main_agents_count + snapshot.background_agents_count;
+        self.coordination = snapshot.coordination;
         self.active_pulsation_id = next_id.clone().map(Into::into);
         self.runtime_loading = false;
         self.error = None;
@@ -202,6 +225,38 @@ impl PulsationsModel {
             .find(|c| Some(c.pulsation_id.as_str()) == self.hitl.pulsation_id.as_deref())
             .cloned();
         true
+    }
+
+    pub(crate) fn begin_reconciliation(
+        &mut self,
+        explanation: String,
+    ) -> Option<ConfirmBaseReconciliationRequest> {
+        if self.reconciliation_busy || explanation.trim().is_empty() {
+            return None;
+        }
+        let snapshot = self.coordination.as_ref()?;
+        if snapshot.pipeline.base_state != BaseState::NeedsReview {
+            return None;
+        }
+        let resume = if snapshot.owner_candidates.is_empty() {
+            None
+        } else {
+            let selected = self.active_id()?;
+            if !snapshot.owner_candidates.contains(&selected) {
+                return None;
+            }
+            Some(selected)
+        };
+        let request = ConfirmBaseReconciliationRequest {
+            project_id: snapshot.pipeline.project_id.clone(),
+            expected_base_epoch: snapshot.pipeline.base_epoch,
+            expected_pipeline_state_version: snapshot.pipeline.version,
+            explanation,
+            resume_pulsation_id: resume,
+            expected_review_token: snapshot.review_token.clone(),
+        };
+        self.reconciliation_busy = true;
+        Some(request)
     }
 
     pub(crate) fn finish_artifacts(
@@ -318,6 +373,8 @@ mod tests {
         let active = model.apply_snapshot(
             "project-1".into(),
             PulsationRuntimeSnapshot {
+                coordination: None,
+                main_agents_count: 0,
                 hitl_checkpoints: Vec::new(),
                 pulsations: vec![pulsation("pulse-1", PulsationStatus::Checkpoint)],
                 hitl_waiting_count: 1,
@@ -342,6 +399,8 @@ mod tests {
         model.apply_snapshot(
             "project-1".into(),
             PulsationRuntimeSnapshot {
+                coordination: None,
+                main_agents_count: 0,
                 hitl_checkpoints: Vec::new(),
                 pulsations: vec![pulsation("pulse-1", PulsationStatus::Running)],
                 hitl_waiting_count: 0,
@@ -358,5 +417,69 @@ mod tests {
 
         assert_eq!(model.artifacts.len(), 1);
         assert_eq!(model.artifacts[0].name, "Generated code");
+    }
+
+    fn blocked_model(candidates: Vec<String>) -> PulsationsModel {
+        PulsationsModel {
+            pulsations: vec![
+                pulsation("pulse-1", PulsationStatus::Checkpoint),
+                pulsation("pulse-2", PulsationStatus::Checkpoint),
+            ],
+            active_pulsation_id: Some("pulse-1".into()),
+            coordination: Some(ProjectCoordinationSnapshot {
+                pipeline: hvc_core::orchestration::ProjectPipelineState {
+                    project_id: "project-1".into(),
+                    active_pulsation_id: None,
+                    base_epoch: 2,
+                    base_state: BaseState::NeedsReview,
+                    version: 7,
+                    blocking_reason: Some("multiple_legacy_owners".into()),
+                },
+                queue: vec![],
+                owner_candidates: candidates,
+                publications: vec![],
+                review_token: "reviewed-files".into(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn reconciliation_requires_explanation_and_an_explicit_eligible_selection() {
+        let mut model = blocked_model(vec!["pulse-2".into()]);
+        assert!(model.begin_reconciliation(" ".into()).is_none());
+        assert!(model.begin_reconciliation("review".into()).is_none());
+        model.select("pulse-2");
+        let request = model.begin_reconciliation("review".into()).unwrap();
+        assert_eq!(request.resume_pulsation_id.as_deref(), Some("pulse-2"));
+        assert!(model.begin_reconciliation("duplicate".into()).is_none());
+    }
+
+    #[test]
+    fn reconciliation_freezes_project_epoch_version_hashes_and_owner() {
+        let mut model = blocked_model(vec!["pulse-1".into(), "pulse-2".into()]);
+        let request = model
+            .begin_reconciliation("reviewed manually".into())
+            .unwrap();
+        model.select("pulse-2");
+        model.coordination.as_mut().unwrap().pipeline.version = 8;
+        assert_eq!(request.project_id, "project-1");
+        assert_eq!(request.expected_base_epoch, 2);
+        assert_eq!(request.expected_pipeline_state_version, 7);
+        assert_eq!(request.expected_review_token, "reviewed-files");
+        assert_eq!(request.resume_pulsation_id.as_deref(), Some("pulse-1"));
+    }
+
+    #[test]
+    fn review_of_terminal_effects_never_revives_a_failed_pulsation() {
+        let mut model = blocked_model(vec![]);
+        model.pulsations[0].status = PulsationStatus::Failed;
+        let request = model
+            .begin_reconciliation("current files are correct".into())
+            .unwrap();
+        assert!(request.resume_pulsation_id.is_none());
+        model.reconciliation_busy = false;
+        model.coordination.as_mut().unwrap().pipeline.base_state = BaseState::Ready;
+        assert!(model.begin_reconciliation("not a review".into()).is_none());
     }
 }

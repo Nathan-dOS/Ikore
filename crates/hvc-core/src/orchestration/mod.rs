@@ -1,8 +1,8 @@
-//! ADR-007: contracts and serial integrity (M0/M1).
+//! ADR-007: contracts, integrity and bounded coordination (M0–M2).
 //!
 //! The persistence facade enforces acceptance and publication through `serial.rs`.
-//! M2/M3 will add ownership admission, background scheduling and code collection;
-//! neither concurrent preparation nor clarification checkpoints are enabled here.
+//! The persistence facade also owns FIFO admission, reconciliation and supervisor slots.
+//! Preparation, code collection, Learning execution and clarification remain disabled.
 
 pub mod catalog;
 mod context;

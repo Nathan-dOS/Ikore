@@ -2,18 +2,18 @@ use super::*;
 use crate::agent_runtime::GeneratedArtifact;
 use serde_json::json;
 
-struct Fixture {
+pub(crate) struct Fixture {
     _data: tempfile::TempDir,
-    workspace: tempfile::TempDir,
-    service: PersistenceService,
-    pulse: Pulsation,
-    job: Job,
-    run: String,
-    handoff: StageHandoffV1,
+    pub(crate) workspace: tempfile::TempDir,
+    pub(crate) service: PersistenceService,
+    pub(crate) pulse: Pulsation,
+    pub(crate) job: Job,
+    pub(crate) run: String,
+    pub(crate) handoff: StageHandoffV1,
 }
 
 impl Fixture {
-    fn new(stage: PulsationStage) -> Self {
+    pub(crate) fn new(stage: PulsationStage) -> Self {
         let data = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let service = PersistenceService::initialize(data.path()).unwrap();
@@ -72,7 +72,12 @@ impl Fixture {
             handoff,
         }
     }
-    fn output(&self, status: &str, path: Option<&str>, content: &str) -> StageExecutionResult {
+    pub(crate) fn output(
+        &self,
+        status: &str,
+        path: Option<&str>,
+        content: &str,
+    ) -> StageExecutionResult {
         let structured = json!({"summary":"Resultado rastreável","statusUpdate":status,"notes":[],"artifacts":[{"name":"draft","kind":"stage_output","relativePath":path,"content":content}]});
         StageExecutionResult {
             provider_used: "fixture".into(),
@@ -97,23 +102,32 @@ impl Fixture {
             }],
         }
     }
-    fn accept(&self, output: &StageExecutionResult) -> Result<(), PersistenceServiceError> {
-        self.service.accept_stage_result(
+    pub(crate) fn accept(
+        &self,
+        output: &StageExecutionResult,
+    ) -> Result<(), PersistenceServiceError> {
+        let result = self.service.accept_stage_result(
             &self.job,
             &self.run,
             &self.handoff,
             output,
             self.workspace.path(),
-        )
+        );
+        if result.is_ok() {
+            self.service
+                .release_runtime_slot(&PersistenceService::job_slot_token(&self.job))?;
+            self.service.unregister_job_cancellation(&self.job.id);
+        }
+        result
     }
-    fn count(&self, table: &str) -> i64 {
+    pub(crate) fn count(&self, table: &str) -> i64 {
         self.service
             .connection()
             .unwrap()
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
             .unwrap()
     }
-    fn decision(&self, decision: HitlDecision) -> ApplyHitlDecisionRequest {
+    pub(crate) fn decision(&self, decision: HitlDecision) -> ApplyHitlDecisionRequest {
         let c = self.service.get_hitl_checkpoint(&self.pulse.id).unwrap();
         ApplyHitlDecisionRequest {
             pulsation_id: self.pulse.id.clone(),
@@ -123,7 +137,7 @@ impl Fixture {
             feedback: Some("Revisar com evidência".into()),
         }
     }
-    fn state(&self) -> Pulsation {
+    pub(crate) fn state(&self) -> Pulsation {
         PersistenceService::find_pulsation_by_id(
             &self.service.connection().unwrap(),
             &self.pulse.id,

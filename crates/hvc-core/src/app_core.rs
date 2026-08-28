@@ -410,7 +410,9 @@ impl AppCore {
                 .await
                 .is_err()
         {
-            worker.abort();
+            // A started spawn_blocking filesystem unit cannot be aborted. Keep the data lock
+            // and join ownership until it has acknowledged completion; do not detach writes.
+            eprintln!("supervisor shutdown exceeded 3s; awaiting the owned atomic unit");
             let _ = worker.await;
         }
         let _ = self.chat.wait_for_idle(Duration::from_secs(3)).await;

@@ -1,4 +1,5 @@
 use gpui::{AnyElement, Context, IntoElement, div, prelude::*, px};
+use hvc_core::orchestration::BaseState;
 use hvc_core::persistence_service::{Pulsation, PulsationStage, PulsationStatus};
 
 use crate::app_model::AppModel;
@@ -9,6 +10,13 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
     let has_project = model.workspace.read(cx).project_id.is_some();
     let feature_input = model.pulsation_feature_input.clone();
     let feature_name_empty = feature_input.read(cx).value().trim().is_empty();
+    let queue = model
+        .pulsations
+        .read(cx)
+        .coordination
+        .as_ref()
+        .map(|s| s.queue.clone())
+        .unwrap_or_default();
     let (
         pulsations,
         active_id,
@@ -128,11 +136,17 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                     .child("Crie a primeira pulsação deste projeto."),
                             )
                         })
-                        .children(
-                            pulsations.into_iter().map(|pulsation| {
-                                pulsation_card(pulsation, active_id.as_deref(), cx)
-                            }),
-                        ),
+                        .children(pulsations.into_iter().map(|pulsation| {
+                            let position = queue.iter().find(|p| p.pulsation_id == pulsation.id);
+                            let label = position.map(|p| {
+                                format!(
+                                    "#{} · {}",
+                                    p.sequence,
+                                    blocking_label(p.blocking_reason.as_deref())
+                                )
+                            });
+                            pulsation_card(pulsation, active_id.as_deref(), label, cx)
+                        })),
                 ),
         )
         .child(
@@ -147,6 +161,7 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                 .border_color(theme::border())
                 .bg(theme::surface())
                 .overflow_y_scroll()
+                .child(coordination_panel(model, cx))
                 .when_some(active, |panel, active| {
                     panel
                         .child(pulsation_detail_header(active.clone(), runtime_loading, cx))
@@ -263,6 +278,7 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
 fn pulsation_card(
     pulsation: Pulsation,
     active_id: Option<&str>,
+    queue_label: Option<String>,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     let selected = active_id == Some(pulsation.id.as_str());
@@ -309,6 +325,80 @@ fn pulsation_card(
                     status_label(pulsation.status, pulsation.terminal_reason.as_deref())
                 )),
         )
+        .when_some(queue_label, |card, label| {
+            card.child(
+                div()
+                    .mt_1()
+                    .text_xs()
+                    .text_color(theme::warning())
+                    .child(label),
+            )
+        })
+        .into_any_element()
+}
+
+fn blocking_label(reason: Option<&str>) -> &'static str {
+    match reason {
+        Some("waiting_for_base") => "Aguardando base anterior",
+        Some("waiting_for_user") => "Aguardando você",
+        Some("needs_review" | "legacy_owner_selection") => "Reconciliação necessária",
+        Some("publishing") => "Conferindo publicações",
+        _ => "Fila persistida",
+    }
+}
+
+fn coordination_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    let state = model.pulsations.read(cx);
+    let Some(snapshot) = state.coordination.clone() else {
+        return div().into_any_element();
+    };
+    let active = state.active_id();
+    let blocked = snapshot.pipeline.base_state == BaseState::NeedsReview;
+    let input = model.reconciliation_input.clone();
+    let can_confirm = blocked
+        && !state.reconciliation_busy
+        && !input.read(cx).value().trim().is_empty()
+        && (snapshot.owner_candidates.is_empty()
+            || active
+                .as_ref()
+                .is_some_and(|id| snapshot.owner_candidates.contains(id)));
+    let candidates: Vec<_> = snapshot
+        .owner_candidates
+        .iter()
+        .filter_map(|id| state.pulsations.iter().find(|p| &p.id == id).cloned())
+        .collect();
+    div().mb_3().p_3().rounded_md().border_1().border_color(if blocked {theme::warning()} else {theme::border()})
+        .child(div().text_sm().child(format!("Base #{} · {} · proprietário: {}",snapshot.pipeline.base_epoch,
+            match snapshot.pipeline.base_state {BaseState::Ready=>"consistente",BaseState::Publishing=>"publicação em andamento",BaseState::NeedsReview=>"revisão necessária"},
+            snapshot.pipeline.active_pulsation_id.as_deref().unwrap_or("livre"))))
+        .when(blocked, |panel| panel
+            .child(div().mt_2().text_color(theme::warning()).child(snapshot.pipeline.blocking_reason.unwrap_or_default()))
+            .child(div().mt_2().text_sm().child("Confira os arquivos no seu editor externo; o editor do app abre .md/.txt. Adotar a base atual não desfaz alterações nem declara sucesso. Escolha qual trabalho avançado retomar; os demais continuarão preservados e bloqueados."))
+            .children(candidates.into_iter().map(|p| {
+                let id=p.id.clone();
+                div().id(gpui::SharedString::from(format!("resume:{}",p.id))).mt_2().p_2().rounded_md()
+                    .bg(if active.as_deref()==Some(p.id.as_str()) {theme::accent_soft()} else {theme::surface_raised()})
+                    .cursor_pointer().on_click(cx.listener(move |m,_,_,cx| m.select_pulsation(id.clone(),cx)))
+                    .child(format!("Retomar: {} · {}",p.feature_name,stage_label(p.stage)))
+            }))
+            .children(snapshot.publications.into_iter().map(|p| {
+                let path=p.relative_path.clone();
+                let openable=path.to_ascii_lowercase().ends_with(".md") || path.to_ascii_lowercase().ends_with(".txt");
+                div().id(gpui::SharedString::from(format!("review:{}",p.artifact_id))).mt_2().p_2().bg(theme::surface_raised())
+                    .when(openable,|row|row.cursor_pointer().on_click(cx.listener(move |m,_,_,cx| m.open_workspace_file(path.clone(),cx))))
+                    .child(div().text_sm().child(format!("{} · {}",p.relative_path,p.state)))
+                    .child(div().text_xs().child(format!("Hash proposto: {}",p.desired_sha256.unwrap_or_else(||"indisponível".into()))))
+                    .child(div().text_xs().child(format!("Hash observado: {}",p.observed_sha256.unwrap_or_else(||"ausente ou ilegível".into()))))
+                    .when_some(p.diagnostic,|row,error|row.child(div().text_xs().text_color(theme::danger()).child(error)))
+                    .when_some(p.observation_error,|row,error|row.child(div().text_xs().text_color(theme::danger()).child(error)))
+            }))
+            .child(div().mt_2().child(input))
+            .child(div().mt_2().flex().gap_2()
+                .child(div().id("refresh-base-review").p_2().cursor_pointer().bg(theme::surface_raised())
+                    .on_click(cx.listener(|m,_,_,cx|m.refresh_pulsations(cx))).child("Atualizar revisão"))
+                .child(div().id("confirm-base-review").p_2().bg(if can_confirm {theme::accent_soft()} else {theme::surface_raised()})
+                    .when(can_confirm,|b|b.cursor_pointer().on_click(cx.listener(|m,_,_,cx|m.reconcile_project_base(cx))))
+                    .child("Revisei: adotar base atual"))))
         .into_any_element()
 }
 
@@ -317,6 +407,11 @@ fn pulsation_detail_header(
     busy: bool,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
+    let busy = busy
+        || matches!(
+            pulsation.status,
+            PulsationStatus::Done | PulsationStatus::Failed
+        );
     div()
         .flex()
         .items_start()
@@ -375,7 +470,7 @@ fn pulsation_detail_header(
                                 }),
                             )
                         })
-                        .child("Cancelar jobs ativos"),
+                        .child("Cancelar pulsação"),
                 ),
         )
 }

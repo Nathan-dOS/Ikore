@@ -162,6 +162,7 @@ pub struct AppModel {
     pub pulsations: Entity<PulsationsModel>,
     pub vault: Entity<VaultModel>,
     pub(crate) pulsation_feature_input: Entity<NativeTextInput>,
+    pub(crate) reconciliation_input: Entity<NativeTextInput>,
     pub(crate) vault_search_input: Entity<NativeTextInput>,
     pub(crate) vault_rename_input: Entity<NativeTextInput>,
     pub(crate) settings_connection_name_input: Entity<NativeTextInput>,
@@ -192,6 +193,7 @@ pub struct AppModel {
     autosave_tasks: HashMap<String, Task<()>>,
     hitl_task: Option<Task<()>>,
     pulsations_task: Option<Task<()>>,
+    reconciliation_task: Option<Task<()>>,
     pulsation_artifacts_task: Option<Task<()>>,
     vault_refresh_task: Option<Task<()>>,
     vault_search_task: Option<Task<()>>,
@@ -309,6 +311,8 @@ impl AppModel {
         let editor = workspace.read(cx).editor.clone();
         let pulsation_feature_input =
             cx.new(|cx| NativeTextInput::new("Nome da funcionalidade", cx));
+        let reconciliation_input =
+            cx.new(|cx| NativeTextInput::new("O que você verificou ou corrigiu na base?", cx));
         let vault_search_input = cx.new(|cx| NativeTextInput::new("Texto ou regex", cx));
         let vault_rename_input = cx.new(|cx| NativeTextInput::new("Novo nome da nota", cx));
         let settings_connection_name_input =
@@ -330,6 +334,7 @@ impl AppModel {
                 model.schedule_session_persistence(cx);
             }),
             cx.observe(&pulsation_feature_input, |_, _, cx| cx.notify()),
+            cx.observe(&reconciliation_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_search_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_rename_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_connection_name_input, |_, _, cx| cx.notify()),
@@ -354,6 +359,7 @@ impl AppModel {
             pulsations: cx.new(|_| PulsationsModel::default()),
             vault: cx.new(|_| VaultModel::default()),
             pulsation_feature_input,
+            reconciliation_input,
             vault_search_input,
             vault_rename_input,
             settings_connection_name_input,
@@ -384,6 +390,7 @@ impl AppModel {
             autosave_tasks: HashMap::new(),
             hitl_task: None,
             pulsations_task: None,
+            reconciliation_task: None,
             pulsation_artifacts_task: None,
             vault_refresh_task: None,
             vault_search_task: None,
@@ -981,6 +988,60 @@ impl AppModel {
         cx.notify();
     }
 
+    pub(crate) fn reconcile_project_base(&mut self, cx: &mut Context<Self>) {
+        if self.reconciliation_task.is_some() || self.lifecycle.is_disposed() {
+            return;
+        }
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let explanation = self.reconciliation_input.read(cx).value().to_owned();
+        let Some(request) = self
+            .pulsations
+            .update(cx, |p, _| p.begin_reconciliation(explanation))
+        else {
+            return;
+        };
+        let project = request.project_id.clone();
+        // Separate from polling/refresh: a refresh must not detach an in-flight confirmation.
+        self.reconciliation_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.reconcile(request).await;
+            let _ = this.update(cx, |model, cx| {
+                model.reconciliation_task = None;
+                if model.lifecycle.is_disposed() {
+                    return;
+                }
+                if model
+                    .pulsations
+                    .read(cx)
+                    .project_id
+                    .as_ref()
+                    .is_none_or(|id| id.as_ref() != project.as_str())
+                {
+                    return;
+                }
+                model.pulsations.update(cx, |p, _| {
+                    p.reconciliation_busy = false;
+                    match &result {
+                        Ok(()) => p.notice = Some(
+                            "Base atual adotada. Saídas e pulsações anteriores foram preservadas."
+                                .into(),
+                        ),
+                        Err(e) => p.error = Some(e.clone()),
+                    }
+                });
+                if result.is_ok() {
+                    model
+                        .reconciliation_input
+                        .update(cx, |input, cx| input.set_value("", cx));
+                    model.refresh_pulsations(cx);
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     pub(crate) fn cancel_active_pulsation_jobs(&mut self, cx: &mut Context<Self>) {
         let Some(pulsation_id) = self.pulsations.read(cx).active_id() else {
             return;
@@ -1340,6 +1401,9 @@ impl AppModel {
                 .map_err(|error| format!("worker HITL interrompido: {error}"))
                 .and_then(|result| result);
             let _ = this.update(cx, |model, cx| {
+                if model.lifecycle.is_disposed() {
+                    return;
+                }
                 model.pulsations.update(cx, |pulsations, _| {
                     pulsations.hitl.finish(result.clone());
                     if result.is_ok() {
@@ -3102,8 +3166,9 @@ impl AppModel {
         self.workspace_task.take();
         self.file_tasks.clear();
         self.autosave_tasks.clear();
-        self.hitl_task.take();
+        let hitl = self.hitl_task.take();
         self.pulsations_task.take();
+        let reconciliation = self.reconciliation_task.take();
         self.pulsation_artifacts_task.take();
         self.vault_refresh_task.take();
         self.vault_search_task.take();
@@ -3126,6 +3191,13 @@ impl AppModel {
             .flatten();
         let persistence = self.session_persistence.clone();
         cx.spawn(async move |this, cx| {
+            // UI-originated confirmations/publications retain ownership through close as well.
+            if let Some(task) = hitl {
+                task.await;
+            }
+            if let Some(task) = reconciliation {
+                task.await;
+            }
             let result = match (persistence, request) {
                 (Some(persistence), Some(request)) => Some(persistence.save(request).await),
                 _ => None,
@@ -3448,6 +3520,8 @@ mod tests {
                 create_calls: Arc::new(Mutex::new(Vec::new())),
                 cancel_calls: Arc::new(Mutex::new(Vec::new())),
                 snapshot: Arc::new(Mutex::new(PulsationRuntimeSnapshot {
+                    coordination: None,
+                    main_agents_count: 0,
                     hitl_checkpoints: Vec::new(),
                     pulsations: vec![test_pulsation()],
                     hitl_waiting_count: 0,
@@ -3459,6 +3533,12 @@ mod tests {
     }
 
     impl PulsationsBackend for RecordingPulsationsBackend {
+        fn reconcile(
+            &self,
+            _request: hvc_core::orchestration::ConfirmBaseReconciliationRequest,
+        ) -> PulsationsFuture<()> {
+            Box::pin(async { Ok(()) })
+        }
         fn runtime_snapshot(
             &self,
             _project_id: String,

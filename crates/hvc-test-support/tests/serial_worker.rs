@@ -174,6 +174,8 @@ fn real_provider_results_are_accepted_failed_or_fenced_without_duplicate_effects
             );
         }
         if status == "advance" && !stale {
+            // Shutdown stops new publication units; startup replays the accepted outbox.
+            service.recover_interrupted_jobs().unwrap();
             assert_eq!(
                 std::fs::read_to_string(env.workspace_dir().join("generated.md")).unwrap(),
                 "  exact provider bytes\r\n"

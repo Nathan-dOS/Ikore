@@ -31,8 +31,16 @@ use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[path = "orchestration/coordination.rs"]
+mod coordination;
+#[path = "orchestration/integration.rs"]
+mod integration;
+#[path = "orchestration/reconciliation.rs"]
+mod reconciliation;
 #[path = "orchestration/serial.rs"]
 mod serial;
+#[path = "orchestration/supervisor.rs"]
+mod supervisor;
 
 mod embedded {
     use refinery::embed_migrations;
@@ -623,6 +631,8 @@ pub struct PulseEvent {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PulsationRuntimeSnapshot {
+    pub coordination: Option<crate::orchestration::ProjectCoordinationSnapshot>,
+    pub main_agents_count: usize,
     pub hitl_checkpoints: Vec<HitlCheckpoint>,
     pub pulsations: Vec<Pulsation>,
     pub hitl_waiting_count: usize,
@@ -921,6 +931,10 @@ pub struct ListAgentRunsResponse {
 #[derive(Debug, Default)]
 struct RuntimeControl {
     cancellations: Mutex<HashMap<String, CancellationToken>>,
+    wakeup: tokio::sync::Notify,
+    pending_user_cancels: Mutex<HashMap<String, usize>>,
+    #[cfg(test)]
+    publication_gate: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
 }
 
 #[derive(Clone)]
@@ -2126,6 +2140,7 @@ impl PersistenceService {
         Self::enqueue_stage_job(&transaction, &current.id, current.stage)?;
         transaction.commit()?;
 
+        self.wake_scheduler();
         Ok(CreatePulsationResponse { pulsation: current })
     }
 
@@ -2139,7 +2154,7 @@ impl PersistenceService {
             "SELECT id, project_id, feature_name, stage, status, created_at, updated_at, terminal_reason
              FROM pulsations
              WHERE project_id = ?1
-             ORDER BY updated_at DESC, created_at DESC",
+             ORDER BY queue_sequence ASC",
         )?;
         let rows = statement.query_map(params![project_id], Self::map_pulsation)?;
 
@@ -2156,13 +2171,10 @@ impl PersistenceService {
         request: GetPulsationRuntimeSnapshotRequest,
     ) -> Result<GetPulsationRuntimeSnapshotResponse, PersistenceServiceError> {
         let project_id = Self::normalize_project_id(&request.project_id)?;
-        let pulsations = self
-            .list_pulsations(ListPulsationsRequest {
-                project_id: project_id.clone(),
-            })?
-            .pulsations;
-
-        let connection = self.connection()?;
+        let db = self.connection()?;
+        let connection = db.unchecked_transaction()?;
+        let pulsations = connection.prepare("SELECT id,project_id,feature_name,stage,status,created_at,updated_at,terminal_reason FROM pulsations WHERE project_id=?1 ORDER BY queue_sequence")?
+            .query_map([&project_id],Self::map_pulsation)?.collect::<Result<Vec<_>,_>>()?;
         let hitl_waiting_count: i64 = connection.query_row(
             "SELECT COUNT(*)
              FROM pulsations
@@ -2173,17 +2185,20 @@ impl PersistenceService {
 
         let background_agents_count: i64 = connection.query_row(
             "SELECT COUNT(*)
-             FROM jobs
-             WHERE status = 'running'
-               AND pulsation_id IN (
-                 SELECT id FROM pulsations WHERE project_id = ?1
-               )",
+             FROM runtime_slots
+             WHERE job_class='background' AND project_id=?1",
             params![project_id.as_str()],
             |row| row.get(0),
         )?;
 
         Ok(GetPulsationRuntimeSnapshotResponse {
             snapshot: PulsationRuntimeSnapshot {
+                coordination: Some(Self::coordination_snapshot(&connection, &project_id)?),
+                main_agents_count: connection.query_row(
+                    "SELECT COUNT(*) FROM runtime_slots WHERE project_id=?1 AND job_class='main'",
+                    [&project_id],
+                    |r| r.get(0),
+                )?,
                 hitl_checkpoints: {
                     let mut stmt=connection.prepare("SELECT p.id,c.id,p.state_version FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.project_id=?1 AND p.status='checkpoint' AND c.status='waiting'")?;
                     stmt.query_map([&project_id], |r| {
@@ -2639,6 +2654,7 @@ impl PersistenceService {
         request: CancelPulsationJobsRequest,
     ) -> Result<CancelPulsationJobsResponse, PersistenceServiceError> {
         let pulse = Self::normalize_pulsation_id(&request.pulsation_id)?;
+        let _intent = self.begin_user_cancellation(&pulse);
         let mut db = self.connection()?;
         // Shared SQLite write serialization includes each atomic filesystem publication.
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -2672,6 +2688,7 @@ impl PersistenceService {
         for id in &ids {
             self.request_job_cancellation(id);
         }
+        self.wake_scheduler();
         Ok(CancelPulsationJobsResponse {
             cancelled_jobs: ids.len(),
         })
@@ -2769,73 +2786,11 @@ impl PersistenceService {
         tx.execute("UPDATE project_pipeline_state SET base_state='needs_review',blocking_reason='stale_publication_uncertain' WHERE project_id IN (SELECT o.project_id FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN pulsations p ON p.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE o.state='applying' AND (a.input_revision<>p.input_revision OR a.generation<>j.generation OR a.acceptance='superseded' OR p.status='failed'))",[])?;
         tx.execute("UPDATE artifact_publications SET state='cancelled' WHERE state IN ('pending','applying') AND artifact_id IN (SELECT a.id FROM artifacts a JOIN pulsations p ON p.id=a.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE a.input_revision<>p.input_revision OR a.generation<>j.generation OR a.acceptance='superseded' OR p.status='failed')",[])?;
         tx.execute("UPDATE jobs SET status='failed',cancellation_reason=COALESCE(cancellation_reason,'superseded'),updated_at=?1 WHERE status IN ('pending','running','interrupted') AND (cancellation_reason IN ('user_cancel','superseded') OR EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND (p.status IN ('failed','done') OR p.input_revision<>jobs.input_revision)))",[&now])?;
-        tx.execute("UPDATE jobs SET status='pending',generation=generation+1,started_at=NULL,cancel_requested_at=NULL,cancellation_reason=NULL,available_at=?1,updated_at=?1 WHERE status IN ('running','interrupted') AND (cancellation_reason IS NULL OR cancellation_reason IN ('shutdown','preempted')) AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.job_id=jobs.id) AND EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND p.status IN ('planning','running') AND p.input_revision=jobs.input_revision)",[&now])?;
+        tx.execute("UPDATE jobs SET status='pending',state_version=(SELECT state_version FROM pulsations WHERE id=jobs.pulsation_id),generation=generation+1,started_at=NULL,cancel_requested_at=NULL,cancellation_reason=NULL,available_at=?1,updated_at=?1 WHERE status IN ('running','interrupted') AND (cancellation_reason IS NULL OR cancellation_reason IN ('shutdown','preempted')) AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.job_id=jobs.id) AND EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND p.status IN ('planning','running') AND p.input_revision=jobs.input_revision)",[&now])?;
         tx.execute("UPDATE agent_runs SET status='interrupted',updated_at=?1 WHERE status='running' AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.agent_run_id=agent_runs.id)",[&now])?;
+        Self::recover_coordination(&tx)?;
         tx.commit()?;
         self.reconcile_publications()
-    }
-
-    fn claim_next_pending_job(
-        &self,
-    ) -> Result<Option<(Job, CancellationToken)>, PersistenceServiceError> {
-        let mut connection = self.connection()?;
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let candidate = {
-            let mut statement = transaction.prepare(
-                "SELECT id, pulsation_id, kind, status, attempts, last_error, created_at, updated_at, started_at, finished_at, cancel_requested_at, available_at
-                 FROM jobs
-                 WHERE status = 'pending'
-                   AND cancellation_reason IS NULL
-                   AND EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND p.status IN ('planning','running') AND p.input_revision=jobs.input_revision AND (jobs.kind='run_stage::' || p.stage OR (p.stage='SPECIFICATION' AND jobs.kind='run_stage::Specification')))
-                   AND NOT EXISTS(SELECT 1 FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id WHERE o.pulsation_id=jobs.pulsation_id AND a.acceptance='accepted' AND o.state NOT IN ('applied','cancelled'))
-                   AND (available_at IS NULL OR available_at <= ?1)
-                 ORDER BY created_at ASC, id ASC
-                 LIMIT 1",
-            )?;
-            statement
-                .query_row(params![Self::now_iso()], Self::map_job)
-                .optional()?
-        };
-
-        let Some(mut job) = candidate else {
-            transaction.commit()?;
-            return Ok(None);
-        };
-
-        let now = Self::now_iso();
-        let cancellation = CancellationToken::new();
-        self.register_job_cancellation(&job.id, cancellation.clone());
-
-        if let Err(error) = transaction.execute(
-            "UPDATE jobs
-             SET status = ?1,
-                 attempts = attempts + 1,
-                 generation = generation + 1,
-                 started_at = COALESCE(started_at, ?2),
-                  cancel_requested_at = NULL,
-                  available_at = NULL,
-                  updated_at = ?2
-             WHERE id = ?3",
-            params![JobStatus::Running.as_db_value(), now, job.id.as_str()],
-        ) {
-            self.unregister_job_cancellation(&job.id);
-            return Err(PersistenceServiceError::Db(error));
-        }
-
-        if let Err(error) = transaction.commit() {
-            self.unregister_job_cancellation(&job.id);
-            return Err(PersistenceServiceError::Db(error));
-        }
-
-        job.status = JobStatus::Running;
-        job.attempts += 1;
-        job.started_at = Some(now.clone());
-        job.updated_at = now;
-        job.cancel_requested_at = None;
-        job.available_at = None;
-
-        Ok(Some((job, cancellation)))
     }
 
     fn stage_from_job_kind(kind: &str) -> Option<PulsationStage> {
@@ -2949,7 +2904,8 @@ impl PersistenceService {
                  started_at = NULL,
                   finished_at = NULL,
                   cancel_requested_at = NULL,
-                  available_at = ?4
+                  available_at = ?4,
+                  state_version = (SELECT p.state_version FROM pulsations p WHERE p.id=jobs.pulsation_id)
               WHERE id = ?5",
             params![
                 JobStatus::Pending.as_db_value(),
@@ -3258,32 +3214,17 @@ impl PersistenceService {
             &execution,
             Path::new(&project.workspace_path),
         )?;
-        self.reconcile_publications()?;
+        self.wake_scheduler();
         Ok(())
     }
 
-    #[cfg(test)]
-    async fn process_next_pending_job(&self) -> Result<(), PersistenceServiceError> {
-        self.process_next_pending_job_until(None).await
-    }
-
-    async fn process_next_pending_job_until(
+    async fn process_claimed_job(
         &self,
-        shutdown: Option<&CancellationToken>,
+        job: &Job,
+        cancellation: &CancellationToken,
     ) -> Result<(), PersistenceServiceError> {
-        self.reconcile_publications()?;
-        let Some((job, cancellation)) = self.claim_next_pending_job()? else {
-            return Ok(());
-        };
-
-        // O token global impede novos claims. Esta segunda checagem fecha a corrida entre a
-        // checagem do loop e o registro do token específico do job.
-        if shutdown.is_some_and(CancellationToken::is_cancelled) {
-            cancellation.cancel();
-        }
-
         let runtime_config = self.load_runtime_config()?;
-        let agent_run_id = self.start_agent_run_for_job(&job, &runtime_config)?;
+        let agent_run_id = self.start_agent_run_for_job(job, &runtime_config)?;
         match self.job_cancellation_requested(&job.id) {
             Ok(true) => cancellation.cancel(),
             Ok(false) => {}
@@ -3295,7 +3236,7 @@ impl PersistenceService {
 
         let execution = timeout(
             Duration::from_millis(runtime_config.timeout_ms),
-            self.execute_claimed_job(&job, &agent_run_id, &runtime_config, &cancellation),
+            self.execute_claimed_job(job, &agent_run_id, &runtime_config, cancellation),
         )
         .await;
 
@@ -3349,7 +3290,7 @@ impl PersistenceService {
                     return Err(error);
                 }
                 let can_retry = self.should_retry(&error, job.attempts, &runtime_config);
-                self.transition_for_failed_job(&job, &error, can_retry)?;
+                self.transition_for_failed_job(job, &error, can_retry)?;
 
                 if can_retry {
                     self.finish_agent_run(&agent_run_id, "retrying")?;
@@ -3375,28 +3316,6 @@ impl PersistenceService {
         }
 
         Ok(())
-    }
-
-    pub async fn run_job_worker_loop(&self) {
-        self.run_job_worker_until(CancellationToken::new()).await;
-    }
-
-    pub async fn run_job_worker_until(&self, cancellation: CancellationToken) {
-        loop {
-            if cancellation.is_cancelled() {
-                break;
-            }
-            if let Err(error) = self
-                .process_next_pending_job_until(Some(&cancellation))
-                .await
-            {
-                eprintln!("job worker error: {error:?}");
-            }
-            tokio::select! {
-                _ = cancellation.cancelled() => break,
-                _ = sleep(Duration::from_millis(300)) => {}
-            }
-        }
     }
 }
 
@@ -4409,7 +4328,7 @@ mod tests {
                 })
                 .expect("snapshot should load")
                 .snapshot;
-            if snapshot.background_agents_count > 0 {
+            if snapshot.main_agents_count + snapshot.background_agents_count > 0 {
                 running_seen = true;
                 break;
             }

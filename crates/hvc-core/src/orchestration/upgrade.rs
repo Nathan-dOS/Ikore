@@ -18,13 +18,13 @@ pub(crate) fn backup_before_upgrade(db: &Connection, directory: &Path) -> Result
         [],
         |r| r.get(0),
     )?;
-    if version >= 10 {
+    if version >= 11 {
         return Ok(());
     }
     // VACUUM INTO captures a consistent SQLite snapshot, including WAL contents.
     // A unique destination never overwrites an earlier recovery point.
     let backup = directory.join(format!(
-        "hard-vibe-code.pre-v10.{}.db",
+        "hard-vibe-code.pre-v11.{}.db",
         uuid::Uuid::new_v4()
     ));
     db.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])?;
@@ -32,7 +32,7 @@ pub(crate) fn backup_before_upgrade(db: &Connection, directory: &Path) -> Result
     let integrity: String = check.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     if integrity != "ok" {
         return Err(Error::Validation(
-            "Backup anterior à V10 não passou na verificação de integridade.".into(),
+            "Backup anterior à V11 não passou na verificação de integridade.".into(),
         ));
     }
     std::fs::OpenOptions::new()
@@ -115,6 +115,8 @@ pub(crate) fn adapt_legacy(db: &mut Connection) -> Result<(), Error> {
     }
     // Repair the old crash window: status checkpoint committed before its row.
     tx.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,state_version) SELECT 'recovered:'||p.id,p.id,p.stage,'waiting',p.updated_at,p.updated_at,p.state_version FROM pulsations p WHERE p.status='checkpoint' AND NOT EXISTS(SELECT 1 FROM checkpoints c WHERE c.pulsation_id=p.id AND c.status='waiting')", [])?;
+    // V9 artifacts are adapted after migrations, so seed missing baselines here as well.
+    tx.execute("INSERT OR IGNORE INTO project_file_baselines(project_id,relative_path,content_sha256,updated_at) SELECT project_id,relative_path,content_sha256,updated_at FROM (SELECT p.project_id,a.relative_path,a.content_sha256,a.updated_at,ROW_NUMBER() OVER (PARTITION BY p.project_id,lower(a.relative_path) ORDER BY COALESCE(o.updated_at,a.updated_at) DESC,a.id DESC) AS position FROM artifacts a JOIN pulsations p ON p.id=a.pulsation_id LEFT JOIN artifact_publications o ON o.artifact_id=a.id WHERE a.publication_state='applied' AND a.relative_path IS NOT NULL) WHERE position=1",[])?;
     tx.commit()?;
     Ok(())
 }
