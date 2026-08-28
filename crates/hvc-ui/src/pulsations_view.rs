@@ -311,6 +311,9 @@ fn pulsation_card(
                 .gap_2()
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .child(pulsation.feature_name),
                 )
@@ -350,6 +353,12 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
     let artifact_review = state.hitl.expected_checkpoint.is_some();
     let review_busy = state.hitl.busy;
     let prep = &detail.preparation;
+    let main_actionable = !matches!(
+        detail.status,
+        PulsationStatus::Done | PulsationStatus::Failed
+    );
+    let description_pending =
+        main_actionable && prep.description_review == DescriptionReviewState::Pending;
     let label = match prep.prespec_state {
         PreSpecState::NotScheduled => "Não agendada",
         PreSpecState::Pending => "Aguardando slot local",
@@ -473,10 +482,10 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             )));
         }
     }
-    if prep.description_review == DescriptionReviewState::Pending {
+    if description_pending {
         panel=panel.child(div().text_color(theme::warning()).child("Aguardando você: revise o pedido ou confirme que deseja seguir. Isso não aprova a especificação."));
     }
-    if detail.description_editable {
+    if main_actionable && detail.description_editable {
         panel = panel
             .child(model.description_review_input.clone())
             .child(preparation_button(
@@ -487,7 +496,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                 |m, cx| m.revise_description(cx),
             ));
     }
-    if prep.description_review == DescriptionReviewState::Pending {
+    if description_pending {
         panel = panel.child(preparation_button(
             "description-confirm",
             "Continuar para especificação",
@@ -496,7 +505,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             |m, cx| m.confirm_description(cx),
         ));
     }
-    if let Some(questions) = detail.questions {
+    if let Some(questions) = detail.questions.filter(|_| main_actionable) {
         panel=panel.child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Specification aguarda suas respostas"))
             .child(div().text_sm().child("Perguntas produzidas pela Specification e apresentadas no Companion sem outra chamada LLM. Não há especificação completa para aprovar ainda."));
         let mut complete = true;
@@ -535,7 +544,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                 cx,
                 |m, cx| m.open_specification_conversation(cx),
             ));
-    } else if artifact_review {
+    } else if artifact_review && main_actionable {
         panel = panel
             .child(
                 div()
@@ -577,6 +586,7 @@ fn preparation_button(
 ) -> impl IntoElement {
     div()
         .id(id)
+        .debug_selector(|| id.into())
         .p_2()
         .rounded_md()
         .bg(theme::surface_raised())
@@ -736,11 +746,16 @@ fn pulsation_detail_header(
         );
     div()
         .flex()
+        .flex_col()
+        .w_full()
         .items_start()
-        .justify_between()
         .gap_3()
         .child(
             div()
+                .w_full()
+                .min_w_0()
+                .overflow_hidden()
+                .debug_selector(|| "pulsation-heading".into())
                 .child(
                     div()
                         .text_xs()
@@ -750,6 +765,7 @@ fn pulsation_detail_header(
                 .child(
                     div()
                         .text_2xl()
+                        .whitespace_normal()
                         .font_weight(gpui::FontWeight::BOLD)
                         .child(pulsation.feature_name),
                 )
@@ -763,6 +779,8 @@ fn pulsation_detail_header(
         .child(
             div()
                 .flex()
+                .flex_wrap()
+                .max_w_full()
                 .items_center()
                 .gap_2()
                 .child(status_pill(
@@ -772,6 +790,7 @@ fn pulsation_detail_header(
                 .child(
                     div()
                         .id("cancel-pulsation-jobs")
+                        .debug_selector(|| "pulsation-cancel".into())
                         .px_3()
                         .py_2()
                         .rounded_md()
@@ -948,4 +967,133 @@ fn empty_panel(title: &'static str, description: &'static str) -> impl IntoEleme
                 .text_sm()
                 .child(description),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Entity, Pixels, Render, TestAppContext, Window};
+
+    struct HeaderHarness {
+        model: Entity<AppModel>,
+        width: Pixels,
+    }
+
+    impl Render for HeaderHarness {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let pulse = Pulsation {
+                id: "pulse-layout".into(),
+                project_id: "project-layout".into(),
+                feature_name: "M5 Perguntas: validar token e rejeitar tokens inválidos. ".repeat(6),
+                stage: PulsationStage::Specification,
+                status: PulsationStatus::Checkpoint,
+                terminal_reason: None,
+                created_at: String::new(),
+                updated_at: String::new(),
+            };
+            div().w(self.width).child(self.model.update(cx, |_, cx| {
+                pulsation_detail_header(pulse, false, cx).into_any_element()
+            }))
+        }
+    }
+
+    #[gpui::test]
+    fn long_description_keeps_cancel_visible_inside_the_detail_width(cx: &mut TestAppContext) {
+        for width in [400.0, 680.0] {
+            let (_, visual) = cx.add_window_view(|_, cx| HeaderHarness {
+                model: cx.new(AppModel::new_for_test),
+                width: px(width),
+            });
+            let title = visual.debug_bounds("pulsation-heading").unwrap();
+            let cancel = visual.debug_bounds("pulsation-cancel").unwrap();
+            assert!(title.right() <= px(width));
+            assert!(cancel.left() >= px(0.0));
+            assert!(cancel.right() <= px(width));
+            assert!(cancel.top() >= title.bottom());
+            assert!(cancel.size.width > px(100.0));
+            assert!(cancel.size.height > px(20.0));
+        }
+    }
+
+    struct PreparationHarness(Entity<AppModel>);
+
+    impl Render for PreparationHarness {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(680.0))
+                .child(self.0.update(cx, |model, cx| preparation_panel(model, cx)))
+        }
+    }
+
+    #[gpui::test]
+    fn terminal_pulses_hide_description_actions_but_keep_optional_learning(
+        cx: &mut TestAppContext,
+    ) {
+        use hvc_core::orchestration::*;
+        for status in [
+            PulsationStatus::Planning,
+            PulsationStatus::Failed,
+            PulsationStatus::Done,
+        ] {
+            let (_, visual) = cx.add_window_view(|_, cx| {
+                let model = cx.new(AppModel::new_for_test);
+                model.update(cx, |model, cx| {
+                    model.pulsations.update(cx, |state, _| {
+                        state.pulsations = vec![Pulsation {
+                            id: "pulse-terminal".into(),
+                            project_id: "project-terminal".into(),
+                            feature_name: "melhore o sistema".into(),
+                            stage: PulsationStage::Intake,
+                            status,
+                            terminal_reason: (status == PulsationStatus::Failed)
+                                .then(|| "user_cancel".into()),
+                            created_at: String::new(),
+                            updated_at: String::new(),
+                        }];
+                        state.details = vec![PulsationCoordinationSnapshot {
+                            pulsation_id: "pulse-terminal".into(),
+                            project_id: "project-terminal".into(),
+                            queue_sequence: 1,
+                            pipeline_version: 2,
+                            input_revision: 1,
+                            state_version: 1,
+                            stage: PulsationStage::Intake,
+                            status,
+                            description_editable: true,
+                            context_disposition: None,
+                            diagnostic: None,
+                            blocking_reason: None,
+                            preparation: PreparationSnapshot {
+                                assessment: None,
+                                description_review: DescriptionReviewState::Pending,
+                                prespec_state: PreSpecState::NotScheduled,
+                                context_artifact_id: None,
+                                skip_reason: None,
+                            },
+                            questions: None,
+                            learning: LearningState::DeferredBudget,
+                            learning_run: Some(LearningRunSnapshot {
+                                job_id: "learning-test".into(),
+                                generation: 1,
+                                budget_calls: 3,
+                                total_calls: 3,
+                                budget_grants: 1,
+                                artifact_id: None,
+                                diagnostic: None,
+                            }),
+                            artifact_ids: vec![],
+                        }];
+                    });
+                });
+                PreparationHarness(model)
+            });
+            for selector in ["description-confirm", "description-edit"] {
+                assert_eq!(
+                    visual.debug_bounds(selector).is_some(),
+                    status == PulsationStatus::Planning
+                );
+            }
+            assert!(visual.debug_bounds("learning-retry").is_some());
+        }
+    }
 }

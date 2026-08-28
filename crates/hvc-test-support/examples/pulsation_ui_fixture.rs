@@ -5,6 +5,7 @@ use hvc_core::{
     llm::{LlmEventEnvelope, LlmEventSink},
     orchestration::PreparationSettings,
     persistence_service::*,
+    workspace_service::bootstrap_greenfield_workspace,
 };
 use hvc_test_support::{
     FixedEmbeddingGateway, MemoryCredentialStore, ScriptedHttpServer, ScriptedResponse,
@@ -12,7 +13,7 @@ use hvc_test_support::{
 };
 use serde_json::{Value, json};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -23,6 +24,35 @@ impl LlmEventSink for Quiet {
 }
 fn response(output: Value) -> ScriptedResponse {
     ScriptedResponse::json(200,json!({"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":40,"completion_tokens":80}}).to_string())
+}
+fn create_workspace(workspace: &Path) {
+    // Follow the real host's bootstrap before adding simulated project files.
+    // Seeding only persistence bypasses this guard and breaks session restore.
+    std::fs::create_dir_all(workspace).unwrap();
+    bootstrap_greenfield_workspace(workspace).unwrap();
+    std::fs::create_dir_all(workspace.join("notes")).unwrap();
+    std::fs::write(
+        workspace.join("auth.rs"),
+        "pub fn validate_token() -> bool { false }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("notes/conflict.md"),
+        "Edição humana preservada.\n",
+    )
+    .unwrap();
+}
+fn configure_ui_loopback(service: &PersistenceService, server: &ScriptedHttpServer) {
+    configure_loopback(service, server);
+    // The real GUI uses the OS credential store. Never resolve the user's legacy
+    // credential names, even for an unused route or a Settings status query.
+    let db = rusqlite::Connection::open(service.database_path()).unwrap();
+    db.execute(
+        "UPDATE provider_connections SET credential_ref='m5-ui-fixture:' || id,
+         enabled=(id='legacy-openai')",
+        [],
+    )
+    .unwrap();
 }
 fn main() {
     let root = PathBuf::from(std::env::args_os().nth(1).expect("new fixture directory"));
@@ -73,7 +103,7 @@ fn main() {
         deps.http_client,
     )
     .unwrap();
-    configure_loopback(&service, &server);
+    configure_ui_loopback(&service, &server);
     service
         .update_preparation_settings(PreparationSettings {
             preparation_enabled: true,
@@ -82,17 +112,7 @@ fn main() {
         .unwrap();
     for name in ["M5 Principal", "M5 Segundo"] {
         let workspace = root.join(name);
-        std::fs::create_dir_all(workspace.join("notes")).unwrap();
-        std::fs::write(
-            workspace.join("auth.rs"),
-            "pub fn validate_token() -> bool { false }\n",
-        )
-        .unwrap();
-        std::fs::write(
-            workspace.join("notes/conflict.md"),
-            "Edição humana preservada.\n",
-        )
-        .unwrap();
+        create_workspace(&workspace);
         let project = service
             .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
                 workspace_path: workspace.to_str().unwrap().into(),
@@ -114,5 +134,60 @@ fn main() {
     let deadline = Instant::now() + Duration::from_secs(45 * 60);
     while !root.join("STOP").exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ui_fixture_reopens_through_the_real_greenfield_guard() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("M5 Projeto");
+        create_workspace(&workspace);
+        let reopened = bootstrap_greenfield_workspace(&workspace).unwrap();
+        assert!(!reopened.initialized);
+        assert_eq!(reopened.mode, "greenfield");
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("notes/conflict.md")).unwrap(),
+            "Edição humana preservada.\n"
+        );
+    }
+
+    #[test]
+    fn ui_fixture_disables_remote_connections_and_uses_isolated_credential_names() {
+        let root = tempfile::tempdir().unwrap();
+        let deps = AppCoreDependencies::default();
+        let service = PersistenceService::initialize_with_dependencies(
+            root.path(),
+            Arc::new(Quiet),
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(FixedEmbeddingGateway::default()),
+            deps.clock,
+            deps.jitter,
+            deps.http_client,
+        )
+        .unwrap();
+        let server = ScriptedHttpServer::respond_with(stage_response);
+        configure_ui_loopback(&service, &server);
+        let db = rusqlite::Connection::open(service.database_path()).unwrap();
+        let unsafe_connections: u64 = db.query_row(
+            "SELECT COUNT(*) FROM provider_connections
+             WHERE credential_ref NOT LIKE 'm5-ui-fixture:%'
+                OR (enabled=1 AND (id<>'legacy-openai' OR provider_id<>'ollama' OR endpoint_url<>?1))",
+            [server.url("")],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(unsafe_connections, 0);
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM provider_connections WHERE enabled=1",
+                [],
+                |row| row.get::<_, u64>(0)
+            )
+            .unwrap(),
+            1
+        );
     }
 }

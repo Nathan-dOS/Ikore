@@ -270,10 +270,14 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         .child(
                             div()
                                 .flex()
+                                .flex_col()
+                                .gap_2()
                                 .items_start()
-                                .justify_between()
                                 .child(
                                     div()
+                                        .w_full()
+                                        .min_w_0()
+                                        .overflow_hidden()
                                         .child(
                                             div()
                                                 .text_xs()
@@ -283,13 +287,16 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                         .child(
                                             div()
                                                 .text_xl()
+                                                .whitespace_normal()
                                                 .font_weight(gpui::FontWeight::BOLD)
                                                 .child(conversation.title.clone()),
                                         ),
                                 )
                                 .child(
                                     div()
-                                        .text_right()
+                                        .w_full()
+                                        .min_w_0()
+                                        .overflow_hidden()
                                         .text_xs()
                                         .child(conversation.provider_id.clone())
                                         .child(
