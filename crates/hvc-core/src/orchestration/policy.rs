@@ -112,6 +112,7 @@ pub fn validate_specification_answers(
     if request.answers.len() != expected.len()
         || request.answers.iter().any(|answer| {
             answer.answer.trim().is_empty()
+                || answer.answer.chars().count() > 16_000
                 || !expected.contains(answer.question_id.as_str())
                 || !received.insert(answer.question_id.as_str())
         })
@@ -124,6 +125,27 @@ pub fn validate_specification_answers(
 }
 
 impl StageHandoffV1 {
+    pub fn normative_chars(&self) -> usize {
+        self.artifacts
+            .iter()
+            .map(|a| a.content.chars().count())
+            .sum::<usize>()
+            + self
+                .revision_feedback
+                .as_ref()
+                .map_or(0, |s| s.chars().count())
+            + if self.clarifications.is_empty() {
+                0
+            } else {
+                serde_json::to_string(&self.clarifications)
+                    .map_or(usize::MAX / 2, |s| s.chars().count())
+            }
+            + self
+                .answers
+                .iter()
+                .map(|a| a.answer.chars().count())
+                .sum::<usize>()
+    }
     /// Validates the envelope, not the external filesystem. M3 still revalidates
     /// selected sources; M1 loads artifact acceptance from authoritative rows.
     pub fn validate_for(
@@ -159,10 +181,37 @@ impl StageHandoffV1 {
             {
                 return Err(ContractError::StaleExecution);
             }
+            if self.normative_chars().saturating_add(
+                serde_json::to_string(context)
+                    .map_err(|_| ContractError::Invalid("contexto"))?
+                    .chars()
+                    .count(),
+            ) > artifact_chars_budget
+            {
+                return Err(ContractError::BudgetExceeded);
+            }
         }
         let mut artifact_ids = HashSet::new();
         let mut producer_positions = HashSet::new();
         let mut used_chars = 0usize;
+        used_chars += self
+            .answers
+            .iter()
+            .map(|a| a.answer.chars().count())
+            .sum::<usize>();
+        used_chars += self
+            .revision_feedback
+            .as_ref()
+            .map_or(0, |s| s.chars().count());
+        if !self.clarifications.is_empty() {
+            used_chars += serde_json::to_string(&self.clarifications)
+                .map_err(|_| ContractError::Invalid("histórico de esclarecimentos"))?
+                .chars()
+                .count();
+        }
+        if used_chars > artifact_chars_budget {
+            return Err(ContractError::BudgetExceeded);
+        }
         for artifact in &self.artifacts {
             artifact.producer.validate()?;
             if artifact.producer.project_id != recipient.project_id

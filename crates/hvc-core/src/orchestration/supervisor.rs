@@ -25,8 +25,7 @@ impl PersistenceService {
             }
             let result = match class {
                 JobClass::Main => self.process_next_pending_job_until(Some(shutdown)).await,
-                // M2 owns the lane, but no preparation/Learning executor is available until M3/M4.
-                JobClass::Background => Ok(false),
+                JobClass::Background => self.process_anticipation(shutdown).await,
             };
             match result {
                 Ok(true) => continue,

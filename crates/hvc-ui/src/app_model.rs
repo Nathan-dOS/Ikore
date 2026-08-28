@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[path = "preparation_ui.rs"]
+mod preparation_ui;
+
 use gpui::{
     AppContext as _, ClipboardItem, Context, Entity, PathPromptOptions, SharedString, Subscription,
     Task, Window,
@@ -163,6 +166,14 @@ pub struct AppModel {
     pub vault: Entity<VaultModel>,
     pub(crate) pulsation_feature_input: Entity<NativeTextInput>,
     pub(crate) reconciliation_input: Entity<NativeTextInput>,
+    pub(crate) description_review_input: Entity<NativeTextInput>,
+    pub(crate) specification_answer_inputs: Vec<(String, Entity<NativeTextInput>)>,
+    pub(crate) stage_feedback_input: Entity<NativeTextInput>,
+    pub(crate) preparation_threshold_input: Entity<NativeTextInput>,
+    pub(crate) context_limit_input: Entity<NativeTextInput>,
+    preparation_scope: Option<(String, u64, Option<String>)>,
+    question_subscriptions: Vec<Subscription>,
+    pub(crate) artifact_preview_page: usize,
     pub(crate) vault_search_input: Entity<NativeTextInput>,
     pub(crate) vault_rename_input: Entity<NativeTextInput>,
     pub(crate) settings_connection_name_input: Entity<NativeTextInput>,
@@ -194,6 +205,8 @@ pub struct AppModel {
     hitl_task: Option<Task<()>>,
     pulsations_task: Option<Task<()>>,
     reconciliation_task: Option<Task<()>>,
+    preparation_action_task: Option<Task<()>>,
+    artifact_preview_task: Option<Task<()>>,
     pulsation_artifacts_task: Option<Task<()>>,
     vault_refresh_task: Option<Task<()>>,
     vault_search_task: Option<Task<()>>,
@@ -313,6 +326,14 @@ impl AppModel {
             cx.new(|cx| NativeTextInput::new("Nome da funcionalidade", cx));
         let reconciliation_input =
             cx.new(|cx| NativeTextInput::new("O que você verificou ou corrigiu na base?", cx));
+        let description_review_input =
+            cx.new(|cx| NativeTextInput::new("Descreva a ação e o resultado esperado", cx));
+        let stage_feedback_input =
+            cx.new(|cx| NativeTextInput::new("Feedback para solicitar revisão do estágio", cx));
+        let preparation_threshold_input =
+            cx.new(|cx| NativeTextInput::new("Threshold de 0 a 100", cx));
+        let context_limit_input = cx
+            .new(|cx| NativeTextInput::new("Orçamento de contexto: 2.000 a 80.000 caracteres", cx));
         let vault_search_input = cx.new(|cx| NativeTextInput::new("Texto ou regex", cx));
         let vault_rename_input = cx.new(|cx| NativeTextInput::new("Novo nome da nota", cx));
         let settings_connection_name_input =
@@ -335,6 +356,10 @@ impl AppModel {
             }),
             cx.observe(&pulsation_feature_input, |_, _, cx| cx.notify()),
             cx.observe(&reconciliation_input, |_, _, cx| cx.notify()),
+            cx.observe(&description_review_input, |_, _, cx| cx.notify()),
+            cx.observe(&stage_feedback_input, |_, _, cx| cx.notify()),
+            cx.observe(&preparation_threshold_input, |_, _, cx| cx.notify()),
+            cx.observe(&context_limit_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_search_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_rename_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_connection_name_input, |_, _, cx| cx.notify()),
@@ -360,6 +385,14 @@ impl AppModel {
             vault: cx.new(|_| VaultModel::default()),
             pulsation_feature_input,
             reconciliation_input,
+            description_review_input,
+            stage_feedback_input,
+            preparation_threshold_input,
+            context_limit_input,
+            specification_answer_inputs: Vec::new(),
+            preparation_scope: None,
+            question_subscriptions: Vec::new(),
+            artifact_preview_page: 0,
             vault_search_input,
             vault_rename_input,
             settings_connection_name_input,
@@ -391,6 +424,8 @@ impl AppModel {
             hitl_task: None,
             pulsations_task: None,
             reconciliation_task: None,
+            preparation_action_task: None,
+            artifact_preview_task: None,
             pulsation_artifacts_task: None,
             vault_refresh_task: None,
             vault_search_task: None,
@@ -870,6 +905,7 @@ impl AppModel {
             let active_id = pulsations.apply_snapshot(project_id, snapshot, preferred_id);
             (active_id, pulsations.derived_workspace_mode())
         });
+        self.sync_preparation_inputs(cx);
         self.workspace.update(cx, |workspace, _| {
             workspace.view_mode = workspace_mode;
             if workspace_mode == WorkspaceViewMode::Editor {
@@ -911,6 +947,7 @@ impl AppModel {
         if !selected {
             return;
         }
+        self.sync_preparation_inputs(cx);
         self.workspace.update(cx, |workspace, _| {
             workspace.view_mode = workspace_mode;
             workspace.diff_expanded = false;
@@ -922,13 +959,8 @@ impl AppModel {
     }
 
     pub(crate) fn create_pulsation(&mut self, cx: &mut Context<Self>) {
-        let feature_name = self
-            .pulsation_feature_input
-            .read(cx)
-            .value()
-            .trim()
-            .to_owned();
-        if feature_name.is_empty() {
+        let feature_name = self.pulsation_feature_input.read(cx).value().to_owned();
+        if feature_name.trim().is_empty() {
             return;
         }
         let Some(project_id) = self
@@ -1374,6 +1406,12 @@ impl AppModel {
         let request = self
             .pulsations
             .update(cx, |pulsations, _| pulsations.hitl.begin(decision));
+        let request = request.map(|mut request| {
+            if decision == HitlDecision::RequestRevision {
+                request.feedback = Some(self.stage_feedback_input.read(cx).value().to_owned());
+            }
+            request
+        });
         let Some(request) = request else {
             return;
         };
@@ -1987,6 +2025,9 @@ impl AppModel {
     }
 
     pub(crate) fn refresh_settings(&mut self, cx: &mut Context<Self>) {
+        if self.lifecycle.is_disposed() {
+            return;
+        }
         let Some(backend) = self.settings_backend.clone() else {
             return;
         };
@@ -1995,9 +2036,13 @@ impl AppModel {
         self.settings_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.snapshot().await;
             let _ = this.update(cx, |model, cx| {
+                if model.lifecycle.is_disposed() {
+                    return;
+                }
                 match result {
                     Ok(snapshot) => {
                         let embedding_model = snapshot.config.embedding_model.clone();
+                        model.fill_preparation_threshold(&snapshot, cx);
                         let applied = model.settings.update(cx, |settings, _| {
                             settings.apply_snapshot(generation, snapshot)
                         });
@@ -2031,31 +2076,39 @@ impl AppModel {
         operation: crate::settings::SettingsFuture<String>,
         cx: &mut Context<Self>,
     ) {
+        if self.lifecycle.is_disposed() {
+            return;
+        }
         let generation = self
             .settings
             .update(cx, |settings, _| settings.begin(false));
         cx.notify();
         self.settings_task = Some(cx.spawn(async move |this, cx| {
             let result = operation.await;
-            let _ = this.update(cx, |model, cx| match result {
-                Ok(message) => {
-                    let current = model.settings.read(cx).generation;
-                    if current == generation {
-                        model.settings.update(cx, |settings, _| {
-                            settings.notice = Some(message.into());
-                        });
-                        model.refresh_settings(cx);
-                    }
+            let _ = this.update(cx, |model, cx| {
+                if model.lifecycle.is_disposed() {
+                    return;
                 }
-                Err(error) => {
-                    let message = error.presentable();
-                    if model
-                        .settings
-                        .update(cx, |settings, _| settings.fail(generation, error))
-                    {
-                        model.notices.push(HeaderNoticeKind::Error, message);
+                match result {
+                    Ok(message) => {
+                        let current = model.settings.read(cx).generation;
+                        if current == generation {
+                            model.settings.update(cx, |settings, _| {
+                                settings.notice = Some(message.into());
+                            });
+                            model.refresh_settings(cx);
+                        }
                     }
-                    cx.notify();
+                    Err(error) => {
+                        let message = error.presentable();
+                        if model
+                            .settings
+                            .update(cx, |settings, _| settings.fail(generation, error))
+                        {
+                            model.notices.push(HeaderNoticeKind::Error, message);
+                        }
+                        cx.notify();
+                    }
                 }
             });
         }));
@@ -3169,13 +3222,15 @@ impl AppModel {
         let hitl = self.hitl_task.take();
         self.pulsations_task.take();
         let reconciliation = self.reconciliation_task.take();
+        let preparation_action = self.preparation_action_task.take();
+        self.artifact_preview_task.take();
         self.pulsation_artifacts_task.take();
         self.vault_refresh_task.take();
         self.vault_search_task.take();
         self.vault_rename_task.take();
         self.vault_context_task.take();
         self.vault_document_tasks.clear();
-        self.settings_task.take();
+        let settings = self.settings_task.take();
         self.logs_task.take();
         self.logs_resync_tasks.clear();
         self.chat_task.take();
@@ -3196,6 +3251,12 @@ impl AppModel {
                 task.await;
             }
             if let Some(task) = reconciliation {
+                task.await;
+            }
+            if let Some(task) = preparation_action {
+                task.await;
+            }
+            if let Some(task) = settings {
                 task.await;
             }
             let result = match (persistence, request) {
@@ -3504,6 +3565,7 @@ mod tests {
     }
 
     struct RecordingPulsationsBackend {
+        actions: Arc<Mutex<Vec<crate::pulsations::PulsationAction>>>,
         snapshot_calls: Arc<Mutex<usize>>,
         artifact_calls: Arc<Mutex<Vec<String>>>,
         create_calls: Arc<Mutex<Vec<(String, String)>>>,
@@ -3515,11 +3577,13 @@ mod tests {
     impl RecordingPulsationsBackend {
         fn new() -> Self {
             Self {
+                actions: Arc::new(Mutex::new(Vec::new())),
                 snapshot_calls: Arc::new(Mutex::new(0)),
                 artifact_calls: Arc::new(Mutex::new(Vec::new())),
                 create_calls: Arc::new(Mutex::new(Vec::new())),
                 cancel_calls: Arc::new(Mutex::new(Vec::new())),
                 snapshot: Arc::new(Mutex::new(PulsationRuntimeSnapshot {
+                    details: Vec::new(),
                     coordination: None,
                     main_agents_count: 0,
                     hitl_checkpoints: Vec::new(),
@@ -3533,6 +3597,13 @@ mod tests {
     }
 
     impl PulsationsBackend for RecordingPulsationsBackend {
+        fn action(&self, action: crate::pulsations::PulsationAction) -> PulsationsFuture<()> {
+            self.actions.lock().unwrap().push(action);
+            Box::pin(async { Ok(()) })
+        }
+        fn artifact_content(&self, _pulse: String, _artifact: String) -> PulsationsFuture<String> {
+            Box::pin(async { Ok("Conteúdo persistido da fixture".into()) })
+        }
         fn reconcile(
             &self,
             _request: hvc_core::orchestration::ConfirmBaseReconciliationRequest,
@@ -4217,6 +4288,178 @@ mod tests {
                 model.read(cx).pulsations.read(cx).artifacts[0].name,
                 "Generated code"
             );
+        });
+    }
+
+    fn preparation_detail(
+        with_questions: bool,
+    ) -> hvc_core::orchestration::PulsationCoordinationSnapshot {
+        use hvc_core::orchestration::*;
+        PulsationCoordinationSnapshot {
+            description_editable: !with_questions,
+            context_disposition: None,
+            diagnostic: None,
+            pulsation_id: "pulse-1".into(),
+            project_id: "project-1".into(),
+            queue_sequence: 1,
+            pipeline_version: 2,
+            input_revision: 3,
+            state_version: 9,
+            stage: if with_questions {
+                PulsationStage::Specification
+            } else {
+                PulsationStage::Intake
+            },
+            status: if with_questions {
+                PulsationStatus::Checkpoint
+            } else {
+                PulsationStatus::Planning
+            },
+            blocking_reason: None,
+            preparation: PreparationSnapshot {
+                assessment: None,
+                description_review: DescriptionReviewState::Pending,
+                prespec_state: PreSpecState::NotScheduled,
+                context_artifact_id: None,
+                skip_reason: None,
+            },
+            questions: with_questions.then(|| SpecificationQuestionSet {
+                id: "questions-1".into(),
+                checkpoint_id: "clarification-1".into(),
+                fence: ExecutionFence {
+                    project_id: "project-1".into(),
+                    pulsation_id: Some("pulse-1".into()),
+                    input_revision: Some(3),
+                    job_id: "job-1".into(),
+                    generation: 2,
+                    state_version: 9,
+                },
+                conversation_id: "conversation-1".into(),
+                questions: vec![SpecificationQuestion {
+                    id: "token".into(),
+                    question: "Qual token?".into(),
+                    rationale: "Definir contrato".into(),
+                }],
+            }),
+            learning: LearningState::Unavailable,
+            artifact_ids: vec![],
+        }
+    }
+
+    #[gpui::test]
+    fn clarification_ui_preserves_drafts_and_submits_the_displayed_fence_once(
+        cx: &mut TestAppContext,
+    ) {
+        let backend = Arc::new(RecordingPulsationsBackend::new());
+        backend.snapshot.lock().unwrap().details = vec![preparation_detail(true)];
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                backend.clone(),
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |m, cx| {
+            configure_domain_workspace(m, cx);
+            m.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        model.update(cx, |m, cx| {
+            assert!(
+                m.pulsations
+                    .update(cx, |p, _| p.hitl.begin(HitlDecision::Approve))
+                    .is_none()
+            );
+            m.specification_answer_inputs[0]
+                .1
+                .update(cx, |i, cx| i.set_value("JWT assinado", cx));
+            m.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        model.update(cx, |m, cx| {
+            assert_eq!(
+                m.specification_answer_inputs[0].1.read(cx).value(),
+                "JWT assinado"
+            );
+            m.answer_specification(cx);
+            m.answer_specification(cx);
+        });
+        cx.run_until_parked();
+        let actions = backend.actions.lock().unwrap();
+        assert_eq!(actions.len(), 1);
+        let crate::pulsations::PulsationAction::Answer(request) = &actions[0] else {
+            panic!("answer action")
+        };
+        assert_eq!(request.question_set_id, "questions-1");
+        assert_eq!(request.expected_input_revision, 3);
+        assert_eq!(request.expected_state_version, 9);
+        assert_eq!(request.answers[0].answer, "JWT assinado");
+        drop(actions);
+        backend.snapshot.lock().unwrap().details[0]
+            .questions
+            .as_mut()
+            .unwrap()
+            .id = "questions-2".into();
+        model.update(cx, AppModel::refresh_pulsations);
+        cx.run_until_parked();
+        cx.read(|cx| {
+            assert!(
+                model.read(cx).specification_answer_inputs[0]
+                    .1
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            )
+        });
+    }
+
+    #[gpui::test]
+    fn description_ui_uses_its_own_revision_api_and_pathless_artifact_content(
+        cx: &mut TestAppContext,
+    ) {
+        let backend = Arc::new(RecordingPulsationsBackend::new());
+        backend.snapshot.lock().unwrap().details = vec![preparation_detail(false)];
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                backend.clone(),
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |m, cx| {
+            configure_domain_workspace(m, cx);
+            m.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        model.update(cx, |m, cx| {
+            m.description_review_input
+                .update(cx, |i, cx| i.set_value("  Crie ação Unicode  ", cx));
+            m.revise_description(cx);
+        });
+        cx.run_until_parked();
+        let actions = backend.actions.lock().unwrap();
+        let crate::pulsations::PulsationAction::Revise(request) = &actions[0] else {
+            panic!("description action")
+        };
+        assert_eq!(request.expected_input_revision, 3);
+        assert_eq!(request.description, "  Crie ação Unicode  ");
+        drop(actions);
+        model.update(cx, |m, cx| {
+            m.preview_artifact("pulse-1".into(), "internal-1".into(), cx)
+        });
+        cx.run_until_parked();
+        cx.read(|cx| {
+            assert_eq!(
+                model
+                    .read(cx)
+                    .pulsations
+                    .read(cx)
+                    .artifact_preview
+                    .as_ref()
+                    .unwrap()
+                    .1,
+                "Conteúdo persistido da fixture"
+            )
         });
     }
 

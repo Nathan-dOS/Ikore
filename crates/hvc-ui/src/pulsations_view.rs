@@ -166,6 +166,8 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                     panel
                         .child(pulsation_detail_header(active.clone(), runtime_loading, cx))
                         .child(pipeline(active.stage))
+                        .child(preparation_panel(model, cx))
+                        .child(artifact_preview_panel(model, cx))
                         .child(
                             div()
                                 .grid()
@@ -203,7 +205,8 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                     )
                                 })
                                 .children(artifacts.into_iter().map(|artifact| {
-                                    let path = artifact.relative_path.clone();
+                                    let pulse = artifact.pulsation_id.clone();
+                                    let artifact_id = artifact.id.clone();
                                     div()
                                         .id(gpui::SharedString::from(format!(
                                             "artifact:{}",
@@ -215,15 +218,14 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                         .border_1()
                                         .border_color(theme::border())
                                         .bg(theme::surface_raised())
-                                        .when(path.is_some(), |row| {
-                                            row.cursor_pointer().on_click(cx.listener(
-                                                move |model, _, _, cx| {
-                                                    if let Some(path) = path.clone() {
-                                                        model.open_workspace_file(path, cx);
-                                                    }
-                                                },
-                                            ))
-                                        })
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |model, _, _, cx| {
+                                            model.preview_artifact(
+                                                pulse.clone(),
+                                                artifact_id.clone(),
+                                                cx,
+                                            )
+                                        }))
                                         .child(
                                             div()
                                                 .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -334,6 +336,241 @@ fn pulsation_card(
                     .child(label),
             )
         })
+        .into_any_element()
+}
+
+fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    use hvc_core::orchestration::{DescriptionReviewState, PreSpecSkipReason, PreSpecState};
+    use hvc_core::persistence_service::HitlDecision;
+    let state = model.pulsations.read(cx);
+    let Some(detail) = state.detail().cloned() else {
+        return div().into_any_element();
+    };
+    let busy = state.action_busy;
+    let artifact_review = state.hitl.expected_checkpoint.is_some();
+    let review_busy = state.hitl.busy;
+    let prep = &detail.preparation;
+    let label = match prep.prespec_state {
+        PreSpecState::NotScheduled => "Não agendada",
+        PreSpecState::Pending => "Aguardando slot local",
+        PreSpecState::Running => "Coletando contexto local",
+        PreSpecState::Ready => "Pacote pronto para revalidação",
+        PreSpecState::Skipped => "Preparação dispensada",
+        PreSpecState::Stale => "Pacote obsoleto; contexto atual usado",
+        PreSpecState::Failed => "Coleta falhou; contexto sob demanda",
+        PreSpecState::Cancelled => "Preparação cancelada; contexto sob demanda",
+    };
+    let reason = prep.skip_reason.map(|r| match r {
+        PreSpecSkipReason::Disabled => "Desativada nas configurações",
+        PreSpecSkipReason::SkippedNoPredecessor => "Sem antecessora",
+        PreSpecSkipReason::AmbiguousRequest => "Pedido ainda vago após dispensa humana",
+        PreSpecSkipReason::NoMatches => "Sem matches no escopo limitado",
+        PreSpecSkipReason::BaseReleased => "Base liberada; Specification não espera",
+    });
+    let mut panel=div().mt_4().p_3().rounded_md().border_1().border_color(theme::border()).flex().flex_col().gap_2()
+        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Preparação · fora dos seis estágios"))
+        .child(format!("Revisão {} · {}",detail.input_revision,label))
+        .when_some(reason,|p,r|p.child(div().text_sm().text_color(theme::text_muted()).child(r)))
+        .when_some(detail.context_disposition.clone(),|p,d|p.child(format!("Contexto selecionado: {d}")))
+        .when_some(detail.diagnostic.clone(),|p,d|p.child(div().text_sm().child(d)))
+        .child(div().text_xs().text_color(theme::text_muted()).child("Learning: executor ainda indisponível (M4). Código contextual não exige vault nem AST."));
+    if let Some(assessment) = &prep.assessment {
+        panel = panel.child(format!(
+            "TaskRefine: {} / 100 · threshold {} · {}",
+            assessment.score.get(),
+            assessment.threshold.get(),
+            assessment.ruleset_version
+        ));
+        for contribution in &assessment.contributions {
+            panel = panel.child(div().text_sm().child(format!(
+                "+{} — {}",
+                contribution.weight, contribution.reason
+            )));
+        }
+    }
+    if prep.description_review == DescriptionReviewState::Pending {
+        panel=panel.child(div().text_color(theme::warning()).child("Aguardando você: revise o pedido ou confirme que deseja seguir. Isso não aprova a especificação."));
+    }
+    if detail.description_editable {
+        panel = panel
+            .child(model.description_review_input.clone())
+            .child(preparation_button(
+                "description-edit",
+                "Editar pedido",
+                !busy,
+                cx,
+                |m, cx| m.revise_description(cx),
+            ));
+    }
+    if prep.description_review == DescriptionReviewState::Pending {
+        panel = panel.child(preparation_button(
+            "description-confirm",
+            "Continuar para especificação",
+            !busy,
+            cx,
+            |m, cx| m.confirm_description(cx),
+        ));
+    }
+    if let Some(questions) = detail.questions {
+        panel=panel.child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Specification aguarda suas respostas"))
+            .child(div().text_sm().child("Perguntas produzidas pela Specification e apresentadas no Companion sem outra chamada LLM. Não há especificação completa para aprovar ainda."));
+        let mut complete = true;
+        for question in questions.questions {
+            panel = panel
+                .child(format!("[{}] {}", question.id, question.question))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child(question.rationale),
+                );
+            if let Some((_, input)) = model
+                .specification_answer_inputs
+                .iter()
+                .find(|(id, _)| id == &question.id)
+            {
+                complete &= !input.read(cx).value().trim().is_empty();
+                panel = panel.child(input.clone());
+            } else {
+                complete = false;
+            }
+        }
+        panel = panel
+            .child(preparation_button(
+                "specification-answer",
+                "Enviar respostas e retomar Specification",
+                !busy && complete,
+                cx,
+                |m, cx| m.answer_specification(cx),
+            ))
+            .child(preparation_button(
+                "specification-conversation",
+                "Ver conversa no Companion",
+                true,
+                cx,
+                |m, cx| m.open_specification_conversation(cx),
+            ));
+    } else if artifact_review {
+        panel = panel
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("Revisão de artefatos · confira o conteúdo abaixo"),
+            )
+            .child(model.stage_feedback_input.clone())
+            .child(preparation_button(
+                "artifact-approve",
+                "Aprovar estágio",
+                !review_busy,
+                cx,
+                |m, cx| m.apply_hitl_decision(HitlDecision::Approve, cx),
+            ))
+            .child(preparation_button(
+                "artifact-revise",
+                "Solicitar revisão com feedback",
+                !review_busy,
+                cx,
+                |m, cx| m.apply_hitl_decision(HitlDecision::RequestRevision, cx),
+            ))
+            .child(preparation_button(
+                "artifact-reject",
+                "Rejeitar estágio",
+                !review_busy,
+                cx,
+                |m, cx| m.apply_hitl_decision(HitlDecision::Reject, cx),
+            ));
+    }
+    panel.into_any_element()
+}
+
+fn preparation_button(
+    id: &'static str,
+    label: &'static str,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+    action: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .p_2()
+        .rounded_md()
+        .bg(theme::surface_raised())
+        .text_sm()
+        .opacity(if enabled { 1.0 } else { 0.5 })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .on_click(cx.listener(move |m, _, _, cx| action(m, cx)))
+        })
+        .child(label)
+}
+
+fn artifact_preview_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    let Some((id, content)) = model.pulsations.read(cx).artifact_preview.clone() else {
+        return div().into_any_element();
+    };
+    let pages = content.chars().count().max(1).div_ceil(8000);
+    let page = model.artifact_preview_page.min(pages - 1);
+    let text: String = content.chars().skip(page * 8000).take(8000).collect();
+    div()
+        .mt_3()
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(theme::accent())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(format!(
+            "Conteúdo persistido · {id} · página {}/{}",
+            page + 1,
+            pages
+        ))
+        .child(
+            div()
+                .id("artifact-preview-scroll")
+                .max_h(px(450.0))
+                .overflow_y_scroll()
+                .text_sm()
+                .child(text),
+        )
+        .child(preparation_button(
+            "artifact-prev",
+            "Página anterior",
+            page > 0,
+            cx,
+            |m, cx| {
+                m.artifact_preview_page = m.artifact_preview_page.saturating_sub(1);
+                cx.notify();
+            },
+        ))
+        .child(preparation_button(
+            "artifact-next",
+            "Próxima página",
+            page + 1 < pages,
+            cx,
+            |m, cx| {
+                m.artifact_preview_page += 1;
+                cx.notify();
+            },
+        ))
+        .child(preparation_button(
+            "artifact-copy",
+            "Copiar conteúdo integral",
+            true,
+            cx,
+            move |_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(content.clone())),
+        ))
+        .child(preparation_button(
+            "artifact-close",
+            "Fechar conteúdo",
+            true,
+            cx,
+            |m, cx| {
+                m.pulsations.update(cx, |p, _| p.artifact_preview = None);
+                cx.notify();
+            },
+        ))
         .into_any_element()
 }
 

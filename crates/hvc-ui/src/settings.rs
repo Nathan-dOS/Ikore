@@ -24,6 +24,7 @@ pub(crate) type SettingsFuture<T> =
 
 #[derive(Debug, Clone)]
 pub(crate) struct SettingsSnapshot {
+    pub(crate) preparation: hvc_core::orchestration::PreparationSettings,
     pub(crate) config: AgentRuntimeConfig,
     pub(crate) profiles: Vec<ProviderProfile>,
     pub(crate) connections: Vec<ProviderConnection>,
@@ -34,6 +35,10 @@ pub(crate) struct SettingsSnapshot {
 }
 
 pub(crate) trait SettingsBackend: Send + Sync {
+    fn update_preparation(
+        &self,
+        settings: hvc_core::orchestration::PreparationSettings,
+    ) -> SettingsFuture<()>;
     fn snapshot(&self) -> SettingsFuture<SettingsSnapshot>;
     fn update_config(
         &self,
@@ -77,6 +82,21 @@ fn command_error(error: hvc_core::persistence_service::PersistenceServiceError) 
 }
 
 impl SettingsBackend for CoreSettingsBackend {
+    fn update_preparation(
+        &self,
+        settings: hvc_core::orchestration::PreparationSettings,
+    ) -> SettingsFuture<()> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || core.persistence().update_preparation_settings(settings))
+                .await
+                .map_err(|e| UiCommandError::worker(e.to_string()))?
+                .map(|_| ())
+                .map_err(command_error)
+        })
+    }
     fn snapshot(&self) -> SettingsFuture<SettingsSnapshot> {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
@@ -85,6 +105,7 @@ impl SettingsBackend for CoreSettingsBackend {
                 .spawn_blocking(move || {
                     let persistence = core.persistence();
                     Ok(SettingsSnapshot {
+                        preparation: persistence.get_preparation_settings()?,
                         config: persistence.get_agent_runtime_config()?.config,
                         profiles: persistence.list_provider_profiles().profiles,
                         connections: persistence.list_provider_connections()?.connections,
@@ -406,6 +427,7 @@ mod tests {
         model.apply_snapshot(
             generation,
             SettingsSnapshot {
+                preparation: Default::default(),
                 config: AgentRuntimeConfig::default(),
                 profiles: Vec::new(),
                 connections: vec![ProviderConnection {

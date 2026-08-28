@@ -228,6 +228,14 @@ pub struct PreparationSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ClarificationExchange {
+    pub question_set_id: String,
+    pub questions: Vec<SpecificationQuestion>,
+    pub answers: Vec<SpecificationAnswer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContextPackageV1 {
     pub schema_version: SchemaV1,
     pub pulsation_id: String,
@@ -395,8 +403,12 @@ impl StageOutcome {
 pub(crate) fn validate_questions(questions: &[SpecificationQuestion]) -> Result<(), ContractError> {
     let mut ids = HashSet::new();
     if questions.is_empty()
+        || questions.len() > 8
         || questions.iter().any(|item| {
             item.id.trim().is_empty()
+                || item.id.chars().count() > 80
+                || item.question.chars().count() > 2000
+                || item.rationale.chars().count() > 1000
                 || item.question.trim().is_empty()
                 || item.rationale.trim().is_empty()
                 || !ids.insert(&item.id)
@@ -450,6 +462,8 @@ pub struct StageHandoffV1 {
     pub assessment: Option<VaguenessAssessment>,
     pub context: Option<ContextPackageV1>,
     pub answers: Vec<SpecificationAnswer>,
+    #[serde(default)]
+    pub clarifications: Vec<ClarificationExchange>,
     pub artifacts: Vec<ArtifactHandoff>,
     /// Last host-published bytes, including superseded drafts, for optimistic replacement only.
     /// These hashes do not promote the old content into normative context.
@@ -480,6 +494,7 @@ pub struct ArtifactPublicationIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LearningState {
+    Unavailable,
     NotScheduled,
     Pending,
     Running,
@@ -492,6 +507,9 @@ pub enum LearningState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PulsationCoordinationSnapshot {
+    pub description_editable: bool,
+    pub context_disposition: Option<String>,
+    pub diagnostic: Option<String>,
     pub pulsation_id: String,
     pub project_id: String,
     pub queue_sequence: u64,

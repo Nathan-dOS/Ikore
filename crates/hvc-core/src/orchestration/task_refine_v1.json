@@ -1,0 +1,15 @@
+{
+  "version": "task-refine-v1",
+  "stopwords": ["a", "o", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "e", "ou", "para", "por", "com", "que", "eu", "quero", "preciso", "favor", "porfavor", "the", "a", "an", "and", "or", "to", "of", "in", "on", "with", "i", "want", "please", "it", "this", "isso", "isto"],
+  "verbs": ["adicionar", "adicione", "adiciona", "criar", "crie", "cria", "implementar", "implemente", "implementa", "corrigir", "corrija", "corrige", "melhorar", "melhore", "melhora", "otimizar", "otimize", "otimiza", "remover", "remova", "remove", "permitir", "permita", "permite", "exibir", "exiba", "exibe", "retornar", "retorne", "retorna", "validar", "valide", "valida", "salvar", "salve", "salva", "mudar", "mude", "muda", "alterar", "altere", "altera", "atualizar", "atualize", "atualiza", "desabilitar", "desabilite", "rejeitar", "rejeite", "rejeita", "testar", "teste", "testa", "documentar", "documente", "fazer", "faça", "faz", "fix", "improve", "optimize", "add", "create", "implement", "allow", "show", "return", "validate", "save", "change", "update", "disable", "reject", "test", "document", "make"],
+  "generic": ["corrigir", "corrija", "corrige", "melhorar", "melhore", "melhora", "otimizar", "otimize", "otimiza", "fix", "improve", "optimize", "melhoria", "melhorias", "correção", "correções", "otimização", "otimizações", "fixes", "improvements", "optimization", "optimizations", "correction", "corrections"],
+  "open_phrases": ["o que achar melhor", "qualquer coisa", "algo melhor", "de algum jeito", "etc", "whatever", "somehow", "anything", "as you see fit"],
+  "expected": ["esperado", "esperada", "deve", "deveria", "expected", "should"],
+  "actual": ["atual", "atualmente", "hoje", "recebo", "recebe", "retorna", "actual", "currently", "instead", "returns"],
+  "condition": ["se", "quando", "caso", "if", "when"],
+  "outcome": ["erro", "falha", "exibir", "exiba", "exibe", "mostrar", "mostre", "retornar", "retorne", "retorna", "rejeitar", "rejeite", "rejeita", "salvar", "salve", "salva", "bloquear", "bloqueie", "bloqueia", "deve", "error", "fails", "show", "return", "returns", "reject", "save", "block", "should"],
+  "errors": ["erro", "error", "falha", "fails", "exception", "panic", "crash"],
+  "reproduction": ["ao", "após", "depois", "quando", "executar", "reproduzir", "after", "when", "running", "reproduce"],
+  "metrics": ["ms", "segundos", "seconds", "latência", "latency", "p95", "p99", "mb", "kb", "bytes", "requisições", "requests", "porcento"],
+  "comparators": ["menos", "mais", "abaixo", "acima", "reduzir", "reduza", "até", "menor", "maior", "under", "below", "above", "less", "more", "reduce", "than"]
+}

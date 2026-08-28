@@ -180,6 +180,17 @@ pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> An
                         .child(toggle("settings-embeddings", "EMBEDDINGS", if snapshot.config.embedding_enabled { "on" } else { "off" }, !busy, cx, |model, cx| model.toggle_embeddings(cx))),
                 )
                 .child(
+                    card("Preparação de pulsações · local e opcional")
+                        .child(toggle("preparation-enabled", "TASKREFINE / PRESPEC", if snapshot.preparation.preparation_enabled {"on"}else{"off"}, !busy,cx,|model,cx|model.save_preparation_settings(true,cx)))
+                        .child(div().text_sm().child(format!("Threshold atual: {}. Alterações valem para a próxima avaliação. Desligar não confirma uma revisão pendente.",snapshot.preparation.vagueness_threshold.get())))
+                        .child(model.preparation_threshold_input.clone())
+                        .child(action("preparation-save", "Salvar threshold (0–100)",!busy,cx,|model,cx|model.save_preparation_settings(false,cx)))
+                        .child(div().text_sm().child(format!("Orçamento atual do handoff: {} caracteres. Aumente aqui se artefatos/respostas obrigatórios não couberem.",snapshot.config.context_chars_limit)))
+                        .child(model.context_limit_input.clone())
+                        .child(action("context-budget-save","Salvar orçamento de contexto",!busy,cx,|model,cx|model.save_context_limit(cx)))
+                        .child(div().text_xs().text_color(theme::text_muted()).child("Sem fila: contexto sob demanda. PreSpec: somente o sucessor imediato, sem LLM ou publicação. Learning executável fica para M4.")),
+                )
+                .child(
                     card("RAG / YAML Graph")
                         .child(div().text_sm().text_color(theme::text_muted()).child(format!(
                             "Provider: {} · top K: {} · {} key(s) no keyring",

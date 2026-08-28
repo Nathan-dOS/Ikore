@@ -134,10 +134,12 @@ impl PersistenceService {
             "SELECT j.id,j.pulsation_id,j.kind,j.status,j.attempts,j.last_error,j.created_at,j.updated_at,j.started_at,j.finished_at,j.cancel_requested_at,j.available_at
              FROM jobs j JOIN pulsations p ON p.id=j.pulsation_id
              JOIN project_pipeline_state s ON s.project_id=p.project_id
-             WHERE j.status='pending' AND j.job_class='main' AND j.cancellation_reason IS NULL
+             WHERE j.status='pending' AND j.cancellation_reason IS NULL
                AND j.project_id=p.project_id AND j.input_revision=p.input_revision AND j.state_version=p.state_version
                AND p.status IN ('planning','running') AND p.id IN (SELECT id FROM coordinated_pulsations)
                AND s.base_state='ready'
+               AND NOT EXISTS(SELECT 1 FROM pulsation_preparation r WHERE r.pulsation_id=p.id AND r.review_state='pending')
+               AND NOT EXISTS(SELECT 1 FROM runtime_slots WHERE job_id=j.id)
                AND (j.kind='run_stage::'||p.stage OR (p.stage='SPECIFICATION' AND j.kind='run_stage::Specification'))
                AND (j.available_at IS NULL OR j.available_at<=?1)
                AND NOT EXISTS(SELECT 1 FROM runtime_slots WHERE job_class='main')
@@ -161,19 +163,29 @@ impl PersistenceService {
         if stage != "Intake" {
             tx.execute("UPDATE project_pipeline_state SET active_pulsation_id=?2,state_version=state_version+1 WHERE project_id=?1 AND active_pulsation_id IS NULL",params![project,pulse])?;
         }
+        let mut cancelled = Vec::new();
+        if stage == "SPECIFICATION" {
+            tx.execute(
+                "UPDATE pulsations SET specification_started=1 WHERE id=?1",
+                [pulse],
+            )?;
+            cancelled = Self::invalidate_preparation(&tx, pulse, "base_released")?;
+            tx.execute("UPDATE pulsation_preparation SET prespec_state='skipped',skip_reason='skipped_no_predecessor' WHERE pulsation_id=?1 AND prespec_state='not_scheduled'",[pulse])?;
+        }
         job.attempts += 1;
         let token = Self::job_slot_token(&job);
         if !Self::reserve_slot(&tx, JobClass::Main, &token, Some(&project), Some(&job.id))? {
             return Ok(None);
         }
         let now = Self::now_iso();
-        tx.execute("UPDATE jobs SET status='running',attempts=attempts+1,generation=generation+1,started_at=?2,cancel_requested_at=NULL,available_at=NULL,updated_at=?2 WHERE id=?1",params![job.id,now])?;
+        tx.execute("UPDATE jobs SET status='running',job_class='main',attempts=attempts+1,generation=generation+1,started_at=?2,cancel_requested_at=NULL,available_at=NULL,updated_at=?2 WHERE id=?1",params![job.id,now])?;
         let cancellation = CancellationToken::new();
         self.register_job_cancellation(&job.id, cancellation.clone());
         if let Err(error) = tx.commit() {
             self.unregister_job_cancellation(&job.id);
             return Err(error.into());
         }
+        self.signal_cancelled_jobs(&cancelled);
         job.status = JobStatus::Running;
         job.started_at = Some(now.clone());
         job.updated_at = now;

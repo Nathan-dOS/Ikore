@@ -1,19 +1,23 @@
-//! ADR-007: contracts, integrity and bounded coordination (M0–M2).
+//! ADR-007: contracts, integrity, coordination and usable preparation (M0–M3).
 //!
 //! The persistence facade enforces acceptance and publication through `serial.rs`.
 //! The persistence facade also owns FIFO admission, reconciliation and supervisor slots.
-//! Preparation, code collection, Learning execution and clarification remain disabled.
+//! Local preparation is opt-in; Specification uses safe code context independently.
+//! Learning execution and incremental indexing remain M4 work.
 
 pub mod catalog;
+mod code_context;
 mod context;
 mod contracts;
 mod policy;
 pub(crate) mod publication;
+pub mod task_refine;
 pub(crate) mod upgrade;
 
 #[cfg(test)]
 mod tests;
 
+pub use code_context::LexicalCodeContextService;
 pub use context::*;
 pub use contracts::*;
 pub use policy::*;

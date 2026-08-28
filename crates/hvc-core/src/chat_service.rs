@@ -565,6 +565,17 @@ impl ChatService {
         }
         let database = self.connection()?;
         let transaction = database.unchecked_transaction()?;
+        let specification_linked: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM specification_conversations WHERE conversation_id=?1)",
+            [&conversation_id],
+            |r| r.get(0),
+        )?;
+        if specification_linked {
+            return Err(ChatCommandError::new(
+                "specification_history",
+                "Esta conversa preserva perguntas/respostas de Specification. Consulte e responda pela view Pulsations.",
+            ));
+        }
         transaction.execute(
             "UPDATE ui_sessions SET active_chat_conversation_id = NULL
              WHERE active_chat_conversation_id = ?1",

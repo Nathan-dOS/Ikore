@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use ignore::{DirEntry, WalkBuilder};
@@ -120,6 +121,11 @@ impl RepositoryContext {
 
         for item in self.walk(&scope, depth).skip(1) {
             let entry = item.map_err(|error| RepositoryError(error.to_string()))?;
+            if entry.file_type().is_some_and(|kind| kind.is_file())
+                && self.read_safe_text(entry.path()).is_err()
+            {
+                continue;
+            }
             if entries.len() == max_entries {
                 truncated = true;
                 break;
@@ -300,7 +306,7 @@ impl RepositoryContext {
         for component in relative.components() {
             current.push(component.as_os_str());
             if fs::symlink_metadata(&current)
-                .map(|metadata| metadata.file_type().is_symlink())
+                .map(|metadata| is_link(&metadata))
                 .unwrap_or(false)
             {
                 return Err(RepositoryError("Links simbólicos não são seguidos.".into()));
@@ -319,12 +325,19 @@ impl RepositoryContext {
             .git_global(false)
             .require_git(false)
             .follow_links(false)
+            .sort_by_file_name(|a, b| a.cmp(b))
             .max_depth(Some(depth));
         builder.filter_entry(allowed_entry);
         builder.build()
     }
 
     fn read_safe_text(&self, path: &Path) -> Result<String, RepositoryError> {
+        self.read_bounded_text(path, MAX_FILE_BYTES)
+            .map(|(text, _)| text)
+    }
+
+    fn read_bounded_text(&self, path: &Path, limit: u64) -> Result<(String, u64), RepositoryError> {
+        self.reject_symlink_components(path)?;
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -335,17 +348,116 @@ impl RepositoryContext {
                 "Arquivo sensível, binário ou não suportado foi bloqueado.".into(),
             ));
         }
-        let metadata = fs::metadata(path)
+        let file = fs::File::open(path)
             .map_err(|error| RepositoryError(format!("Falha ao ler arquivo: {error}")))?;
-        if metadata.len() > MAX_FILE_BYTES {
+        let metadata = file
+            .metadata()
+            .map_err(|e| RepositoryError(e.to_string()))?;
+        if !metadata.is_file() || metadata.len() > limit.min(MAX_FILE_BYTES) {
             return Err(RepositoryError(
                 "Arquivos acima de 1 MiB não podem ser consultados.".into(),
             ));
         }
-        let bytes = fs::read(path)
+        let mut bytes = Vec::new();
+        file.take(limit.min(MAX_FILE_BYTES))
+            .read_to_end(&mut bytes)
             .map_err(|error| RepositoryError(format!("Falha ao ler arquivo: {error}")))?;
+        self.reject_symlink_components(path)?;
+        if bytes.contains(&0) || bytes.len() as u64 != metadata.len() {
+            return Err(RepositoryError(
+                "Arquivo binário ou alterado durante a leitura.".into(),
+            ));
+        }
+        let size = bytes.len() as u64;
         String::from_utf8(bytes)
+            .map(|text| (text, size))
             .map_err(|_| RepositoryError("Arquivo binário ou não UTF-8 foi bloqueado.".into()))
+    }
+
+    /// One bounded enumeration, no per-keyword scans and no file reads in the walker.
+    /// All evidence is derived downstream from these captured bytes.
+    pub(crate) fn capture_code_sources(
+        &self,
+        project: &str,
+        budget: crate::orchestration::CollectionBudget,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<
+        (
+            Vec<crate::orchestration::SourceSnapshot>,
+            crate::orchestration::ContextCoverage,
+        ),
+        crate::orchestration::ContractError,
+    > {
+        use crate::orchestration::*;
+        let started = std::time::Instant::now();
+        let mut coverage = ContextCoverage {
+            state: CoverageState::Complete,
+            documentation: DocumentationAvailability::Unknown,
+            enumerated_files: 0,
+            read_bytes: 0,
+            truncated: false,
+            diagnostics: vec![
+                "Coleta lexical limitada; não comprova dependências ausentes nem cobertura global."
+                    .into(),
+            ],
+        };
+        let mut sources = Vec::new();
+        for item in self.walk(&self.root, MAX_TREE_DEPTH + 64) {
+            if cancellation.is_cancelled() {
+                return Err(ContractError::Cancelled);
+            }
+            if started.elapsed().as_millis() >= u128::from(budget.max_duration_ms) {
+                coverage.truncated = true;
+                break;
+            }
+            let Ok(entry) = item else {
+                coverage.state = CoverageState::Partial;
+                continue;
+            };
+            if entry.depth() >= MAX_TREE_DEPTH + 64
+                && entry.file_type().is_some_and(|kind| kind.is_dir())
+            {
+                coverage.truncated = true;
+            }
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) || !is_code_path(entry.path())
+            {
+                continue;
+            }
+            if coverage.enumerated_files >= budget.max_files
+                || coverage.read_bytes >= budget.max_read_bytes
+            {
+                coverage.truncated = true;
+                break;
+            }
+            coverage.enumerated_files += 1;
+            let limit = budget
+                .max_file_bytes
+                .min(budget.max_read_bytes - coverage.read_bytes);
+            let read = self.read_bounded_text(entry.path(), limit);
+            // Includes failed UTF-8 reads and growth between enumeration and open.
+            coverage.read_bytes += read.as_ref().map_or(limit, |(_, size)| *size);
+            let Ok((content, _)) = read else {
+                coverage.state = CoverageState::Partial;
+                continue;
+            };
+            let Ok(path) = self.relative_display(entry.path()).and_then(|p| {
+                RelativeSourcePath::new(p).map_err(|e| RepositoryError(e.to_string()))
+            }) else {
+                coverage.state = CoverageState::Partial;
+                continue;
+            };
+            sources.push(SourceSnapshot::from_text(project, path, content)?);
+        }
+        if coverage.truncated {
+            coverage.state = CoverageState::Partial;
+            coverage
+                .diagnostics
+                .push("truncated: limite de enumeração, bytes ou tempo atingido.".into());
+        }
+        if coverage.state == CoverageState::Partial {
+            coverage.diagnostics.push("Algumas fontes não foram lidas; arquivos indisponíveis não são evidência negativa.".into());
+        }
+        Ok((sources, coverage))
     }
 
     fn relative_display(&self, path: &Path) -> Result<String, RepositoryError> {
@@ -356,6 +468,9 @@ impl RepositoryContext {
 }
 
 fn allowed_entry(entry: &DirEntry) -> bool {
+    if entry.metadata().is_ok_and(|m| is_link(&m)) {
+        return false;
+    }
     let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
     if entry.file_type().is_some_and(|kind| kind.is_dir()) {
         return !excluded_directories().contains(name.as_str())
@@ -364,13 +479,44 @@ fn allowed_entry(entry: &DirEntry) -> bool {
     !is_sensitive_name(&name)
         && allowed_text_name(&name)
         && !entry.file_type().is_some_and(|kind| kind.is_symlink())
-        && fs::metadata(entry.path()).is_ok_and(|metadata| metadata.len() <= MAX_FILE_BYTES)
-        && fs::read(entry.path()).is_ok_and(|bytes| String::from_utf8(bytes).is_ok())
+}
+
+fn is_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+fn is_code_path(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    !name.starts_with("readme")
+        && !matches!(
+            name.as_str(),
+            "license" | ".gitignore" | ".gitattributes" | ".editorconfig"
+        )
+        && ![".md", ".txt", ".csv", ".svg", ".min.js", ".min.css"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+        && !path
+            .components()
+            .any(|p| matches!(p.as_os_str().to_str(), Some("knowledge" | "docs" | "doc")))
 }
 
 fn excluded_directories() -> HashSet<&'static str> {
     HashSet::from([
         ".git",
+        ".aws",
+        ".ssh",
         "node_modules",
         "vendor",
         "target",
@@ -397,10 +543,11 @@ fn excluded_directories() -> HashSet<&'static str> {
 }
 
 fn is_sensitive_name(name: &str) -> bool {
+    if name.starts_with("credentials.") || name.starts_with("secrets.") {
+        return true;
+    }
     if name.starts_with(".env") {
-        return !["example", "template", "sample"]
-            .iter()
-            .any(|tag| name.contains(tag));
+        return true;
     }
     matches!(
         name,
@@ -521,7 +668,7 @@ mod tests {
             .map(|entry| entry.path.as_str())
             .collect();
         assert!(paths.contains(&"visible.ts"));
-        assert!(paths.contains(&".env.example"));
+        assert!(!paths.contains(&".env.example"));
         assert!(!paths.contains(&"ignored.ts"));
         assert!(!paths.contains(&".env"));
         assert!(!paths.contains(&"binary.txt"));

@@ -159,13 +159,16 @@ impl PersistenceService {
         }))?)
     }
 
-    fn check_execution(
+    pub(super) fn check_execution(
         db: &Connection,
         fence: &ExecutionFence,
     ) -> Result<(), PersistenceServiceError> {
         let current = Self::execution_fence(db, &fence.job_id)?;
         if let Some(pulse) = &fence.pulsation_id {
-            Self::check_project_admission(db, pulse)?;
+            let anticipated:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE id=?1 AND kind='run_stage::Intake' AND job_class='background' AND pulsation_id IN (SELECT id FROM anticipatable_pulsations))",[&fence.job_id],|r|r.get(0))?;
+            if !anticipated {
+                Self::check_project_admission(db, pulse)?;
+            }
         }
         let (status, cancel, revision): (String, Option<String>, Option<u64>) = db.query_row(
             "SELECT status,cancellation_reason,input_revision FROM jobs WHERE id=?1",
@@ -218,7 +221,7 @@ impl PersistenceService {
                 "Handoff legado indisponível ou ambíguo. Revise a etapa de origem antes de continuar.",
             ));
         }
-        let rows=db.prepare("SELECT id,producer_job_id,producer_stage,generation,input_revision,producer_state_version,output_position,name,kind,content,content_sha256,publication_state,source_revisions_json FROM artifacts WHERE pulsation_id=?1 AND input_revision=?2 AND acceptance='accepted' ORDER BY created_at,id")?
+        let rows=db.prepare("SELECT id,producer_job_id,producer_stage,generation,input_revision,producer_state_version,output_position,name,kind,content,content_sha256,publication_state,source_revisions_json FROM artifacts WHERE pulsation_id=?1 AND input_revision=?2 AND acceptance='accepted' AND kind!='code_context' ORDER BY created_at,id")?
             .query_map(params![pulse,fence.input_revision],|r| {
                 let stage:String=r.get(2)?;
                 let hash:String=r.get(10)?;
@@ -254,13 +257,22 @@ impl PersistenceService {
                 });
             }
         }
+        let clarifications = Self::clarification_history(&db, pulse, fence.input_revision)?;
+        let assessment:Option<String>=db.query_row("SELECT assessment_json FROM pulsation_preparation WHERE pulsation_id=?1 AND input_revision=?2",params![pulse,fence.input_revision],|r|r.get(0)).optional()?.flatten();
         let handoff = StageHandoffV1 {
             schema_version: SchemaV1,
             recipient: fence.clone(),
             stage,
-            assessment: None,
+            assessment: assessment
+                .map(|s| serde_json::from_str(&s))
+                .transpose()
+                .map_err(invalid)?,
             context: None,
-            answers: Vec::new(),
+            answers: clarifications
+                .iter()
+                .flat_map(|c| c.answers.clone())
+                .collect(),
+            clarifications,
             artifacts,
             publication_bases,
             revision_feedback: db.query_row(
@@ -304,6 +316,11 @@ impl PersistenceService {
         let now = Self::now_iso();
         tx.execute("INSERT INTO stage_acceptances(job_id,generation,agent_run_id,fence_json,outcome_json,handoff_json,accepted_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![job.id,handoff.recipient.generation,run_id,serde_json::to_string(&handoff.recipient).map_err(invalid)?,serde_json::to_string(&outcome).map_err(invalid)?,serde_json::to_string(handoff).map_err(invalid)?,now])?;
         let disposition = stage_disposition(current.stage, &outcome).map_err(invalid)?;
+        let anticipatory: bool = tx.query_row(
+            "SELECT job_class='background' FROM jobs WHERE id=?1",
+            [&job.id],
+            |r| r.get(0),
+        )?;
         if let StageOutcome::Completed { artifacts, .. } = &outcome {
             let mut paths = HashSet::new();
             for (position, artifact) in artifacts.iter().enumerate() {
@@ -315,6 +332,15 @@ impl PersistenceService {
                     .relative_path
                     .as_ref()
                     .map(RelativeSourcePath::as_str);
+                // Anticipated classification must never publish speculative workspace changes.
+                let path = if current.stage == PulsationStage::Intake && anticipatory {
+                    None
+                } else {
+                    path
+                };
+                if artifact.kind == "code_context" {
+                    return Err(invalid("Tipo de artifact reservado ao coletor do host."));
+                }
                 if let Some(path) = path {
                     publication::safe_target(root, path, false)?;
                     if !paths.insert(path.to_ascii_lowercase()) {
@@ -381,9 +407,10 @@ impl PersistenceService {
                 Self::mark_effects_for_review(&tx, pulse, "stage_failed")?;
             }
             StageDisposition::AwaitClarification => {
-                return Err(invalid(
-                    "Esclarecimentos só serão ativados com a experiência M3.",
-                ));
+                let StageOutcome::NeedsClarification { questions } = &outcome else {
+                    unreachable!()
+                };
+                Self::persist_questions(&tx, &current, &handoff.recipient, questions)?;
             }
         }
         let failed = matches!(outcome, StageOutcome::Failed { .. });

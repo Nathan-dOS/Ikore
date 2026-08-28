@@ -12,6 +12,7 @@ chrono.workspace = true
 fs2 = "0.4"
 futures.workspace = true
 ignore = "0.4"
+icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
 jsonschema = "0.30"
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service"] }
 notify = "8"

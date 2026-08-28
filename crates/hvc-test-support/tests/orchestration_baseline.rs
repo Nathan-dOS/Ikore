@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 fn input(fixture: &PulsationFixture) -> StageExecutionInput {
     StageExecutionInput {
+        anticipatory: false,
         handoff: None,
         job_id: "job-pulse-a".into(),
         pulsation_id: "pulse-a".into(),

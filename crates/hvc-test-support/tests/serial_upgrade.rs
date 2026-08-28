@@ -31,7 +31,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        11
+        12
     );
     assert_eq!(
         db.query_row(
@@ -78,7 +78,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
         .filter(|p| {
             p.file_name()
                 .to_string_lossy()
-                .starts_with("hard-vibe-code.pre-v11.")
+                .starts_with("hard-vibe-code.pre-v12.")
         })
         .collect::<Vec<_>>();
     assert_eq!(backups.len(), 1);
@@ -136,7 +136,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             .filter(|p| p
                 .file_name()
                 .to_string_lossy()
-                .starts_with("hard-vibe-code.pre-v11."))
+                .starts_with("hard-vibe-code.pre-v12."))
             .count(),
         1
     );

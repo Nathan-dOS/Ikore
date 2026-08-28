@@ -261,7 +261,14 @@ impl Default for CollectionBudget {
 
 impl CollectionBudget {
     pub fn validate(self) -> Result<(), ContractError> {
-        if self.max_enumerations == 0
+        let maximum = Self::default();
+        if self.max_enumerations != 1
+            || self.max_files > maximum.max_files
+            || self.max_read_bytes > maximum.max_read_bytes
+            || self.max_file_bytes > maximum.max_file_bytes
+            || self.max_package_files > maximum.max_package_files
+            || self.max_snippet_bytes > maximum.max_snippet_bytes
+            || self.max_duration_ms > maximum.max_duration_ms
             || self.max_files == 0
             || self.max_file_bytes == 0
             || self.max_file_bytes > self.max_read_bytes
@@ -283,6 +290,9 @@ pub struct CodeContextFacts {
     pub project_id: String,
     pub extractor: ExtractorRevision,
     pub scope: String,
+    /// Fingerprint of the bounded discovered set, including non-selected source content.
+    #[serde(default)]
+    pub candidate_set_sha256: Option<ContentSha256>,
     pub sources: Vec<SourceRevision>,
     pub snippets: Vec<CodeSnippet>,
     pub references: Vec<ObservedReference>,
@@ -375,7 +385,7 @@ pub type CodeContextFuture<'a> =
     Pin<Box<dyn Future<Output = Result<CodeContextFacts, ContractError>> + Send + 'a>>;
 
 /// Collection is independent of pulsations and can serve a first request without
-/// PreSpec or a vault. The safe lexical implementation is the M3 deliverable.
+/// PreSpec or a vault. LexicalCodeContextService supplies the safe bounded implementation.
 pub trait CodeContextService: Send + Sync {
     fn collect<'a>(
         &'a self,

@@ -302,7 +302,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         )
                         .when(!conversation.connection_available, |panel| {
                             panel.child(warning(
-                                "A conexão fixada foi removida ou bloqueada. O histórico permanece legível.",
+                                if conversation.provider_id=="specification" {"Perguntas apresentadas pela Specification, sem LLM extra. Responda na view Pulsations; esta conversa preserva o histórico."}else{"A conexão fixada foi removida ou bloqueada. O histórico permanece legível."},
                             ))
                         })
                         .child(

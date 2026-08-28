@@ -77,6 +77,7 @@ fn extractor() -> ExtractorRevision {
 
 fn facts(snapshot: &SourceSnapshot) -> CodeContextFacts {
     CodeContextFacts {
+        candidate_set_sha256: None,
         schema_version: SchemaV1,
         project_id: snapshot.revision().project_id.clone(),
         extractor: extractor(),
@@ -101,6 +102,7 @@ fn handoff() -> StageHandoffV1 {
     producer.job_id = "job-spec".into();
     producer.state_version = 2;
     StageHandoffV1 {
+        clarifications: Vec::new(),
         publication_bases: Vec::new(),
         schema_version: SchemaV1,
         recipient: fence(),
@@ -644,7 +646,7 @@ fn context_package_is_versioned_and_bound_to_the_current_request() {
     });
     let decoded: StageHandoffV1 =
         serde_json::from_value(serde_json::to_value(&value).unwrap()).unwrap();
-    decoded.validate_for(&fence(), 1_000).unwrap();
+    decoded.validate_for(&fence(), 4_000).unwrap();
     value.context.as_mut().unwrap().input_revision = 2;
     assert_eq!(
         value.validate_for(&fence(), 1_000),

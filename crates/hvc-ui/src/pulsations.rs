@@ -15,16 +15,29 @@ use hvc_core::persistence_service::{
 
 use crate::hitl::HitlReviewState;
 use crate::workspace::WorkspaceViewMode;
+use hvc_core::orchestration::{
+    ConfirmDescriptionReviewRequest, PulsationCoordinationSnapshot,
+    RevisePulsationDescriptionRequest, SubmitSpecificationAnswersRequest,
+};
 
 pub(crate) type PulsationsFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'static>>;
 
 pub(crate) trait PulsationsBackend: Send + Sync {
+    fn action(&self, action: PulsationAction) -> PulsationsFuture<()>;
+    fn artifact_content(&self, pulse: String, artifact: String) -> PulsationsFuture<String>;
     fn runtime_snapshot(&self, project_id: String) -> PulsationsFuture<PulsationRuntimeSnapshot>;
     fn artifacts(&self, pulsation_id: String) -> PulsationsFuture<Vec<Artifact>>;
     fn create(&self, project_id: String, feature_name: String) -> PulsationsFuture<Pulsation>;
     fn cancel_jobs(&self, pulsation_id: String) -> PulsationsFuture<usize>;
     fn reconcile(&self, request: ConfirmBaseReconciliationRequest) -> PulsationsFuture<()>;
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum PulsationAction {
+    Revise(RevisePulsationDescriptionRequest),
+    Confirm(ConfirmDescriptionReviewRequest),
+    Answer(SubmitSpecificationAnswersRequest),
 }
 
 pub(crate) struct CorePulsationsBackend {
@@ -42,6 +55,40 @@ impl CorePulsationsBackend {
 }
 
 impl PulsationsBackend for CorePulsationsBackend {
+    fn action(&self, action: PulsationAction) -> PulsationsFuture<()> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || match action {
+                    PulsationAction::Revise(request) => core
+                        .persistence()
+                        .revise_pulsation_description(request)
+                        .map(|_| ()),
+                    PulsationAction::Confirm(request) => {
+                        core.persistence().confirm_description_review(request)
+                    }
+                    PulsationAction::Answer(request) => core
+                        .persistence()
+                        .submit_specification_answers(request)
+                        .map(|_| ()),
+                })
+                .await
+                .map_err(|e| Self::worker_error("ação", e))?
+                .map_err(|e| e.to_string())
+        })
+    }
+    fn artifact_content(&self, pulse: String, artifact: String) -> PulsationsFuture<String> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || core.persistence().read_artifact_content(&pulse, &artifact))
+                .await
+                .map_err(|e| Self::worker_error("conteúdo", e))?
+                .map_err(|e| e.to_string())
+        })
+    }
     fn reconcile(&self, request: ConfirmBaseReconciliationRequest) -> PulsationsFuture<()> {
         let core = self.core.clone();
         let runtime = core.runtime_handle().clone();
@@ -130,6 +177,9 @@ impl PulsationsBackend for CorePulsationsBackend {
 
 #[derive(Default)]
 pub struct PulsationsModel {
+    pub details: Vec<PulsationCoordinationSnapshot>,
+    pub action_busy: bool,
+    pub artifact_preview: Option<(String, String)>,
     pub coordination: Option<ProjectCoordinationSnapshot>,
     pub reconciliation_busy: bool,
     pub hitl_checkpoints: Vec<hvc_core::persistence_service::HitlCheckpoint>,
@@ -148,6 +198,10 @@ pub struct PulsationsModel {
 }
 
 impl PulsationsModel {
+    pub(crate) fn detail(&self) -> Option<&PulsationCoordinationSnapshot> {
+        let active = self.active()?;
+        self.details.iter().find(|d| d.pulsation_id == active.id)
+    }
     pub(crate) fn reset(&mut self, project_id: Option<String>) {
         *self = Self {
             project_id: project_id.map(Into::into),
@@ -183,6 +237,7 @@ impl PulsationsModel {
             .or_else(|| snapshot.pulsations.first().map(|item| item.id.clone()));
         self.project_id = Some(project_id.into());
         self.pulsations = snapshot.pulsations;
+        self.details = snapshot.details;
         self.hitl_checkpoints = snapshot.hitl_checkpoints;
         self.awaiting_hitl = snapshot.hitl_waiting_count;
         self.running_jobs = snapshot.main_agents_count + snapshot.background_agents_count;
@@ -192,7 +247,13 @@ impl PulsationsModel {
         self.error = None;
         let checkpoint = self
             .active()
-            .filter(|pulsation| pulsation.status == PulsationStatus::Checkpoint)
+            .filter(|pulsation| {
+                pulsation.status == PulsationStatus::Checkpoint
+                    && self
+                        .hitl_checkpoints
+                        .iter()
+                        .any(|c| c.pulsation_id == pulsation.id)
+            })
             .cloned();
         self.hitl.load_checkpoint(checkpoint.as_ref());
         self.hitl.expected_checkpoint = self
@@ -213,10 +274,17 @@ impl PulsationsModel {
         }
         self.active_pulsation_id = Some(pulsation_id.to_owned().into());
         self.artifacts.clear();
+        self.artifact_preview = None;
         self.notice = None;
         let checkpoint = self
             .active()
-            .filter(|pulsation| pulsation.status == PulsationStatus::Checkpoint)
+            .filter(|pulsation| {
+                pulsation.status == PulsationStatus::Checkpoint
+                    && self
+                        .hitl_checkpoints
+                        .iter()
+                        .any(|c| c.pulsation_id == pulsation.id)
+            })
             .cloned();
         self.hitl.load_checkpoint(checkpoint.as_ref());
         self.hitl.expected_checkpoint = self
@@ -279,10 +347,13 @@ impl PulsationsModel {
 
     pub(crate) fn derived_workspace_mode(&self) -> WorkspaceViewMode {
         self.workspace_view_override.unwrap_or_else(|| {
-            if self
-                .active()
-                .is_some_and(|pulsation| pulsation.status == PulsationStatus::Checkpoint)
-            {
+            if self.active().is_some_and(|pulsation| {
+                pulsation.status == PulsationStatus::Checkpoint
+                    && self
+                        .hitl_checkpoints
+                        .iter()
+                        .any(|c| c.pulsation_id == pulsation.id)
+            }) {
                 WorkspaceViewMode::Hitl
             } else {
                 WorkspaceViewMode::Editor
@@ -373,9 +444,14 @@ mod tests {
         let active = model.apply_snapshot(
             "project-1".into(),
             PulsationRuntimeSnapshot {
+                details: Vec::new(),
                 coordination: None,
                 main_agents_count: 0,
-                hitl_checkpoints: Vec::new(),
+                hitl_checkpoints: vec![hvc_core::persistence_service::HitlCheckpoint {
+                    pulsation_id: "pulse-1".into(),
+                    checkpoint_id: "cp-1".into(),
+                    state_version: 1,
+                }],
                 pulsations: vec![pulsation("pulse-1", PulsationStatus::Checkpoint)],
                 hitl_waiting_count: 1,
                 background_agents_count: 2,
@@ -399,6 +475,7 @@ mod tests {
         model.apply_snapshot(
             "project-1".into(),
             PulsationRuntimeSnapshot {
+                details: Vec::new(),
                 coordination: None,
                 main_agents_count: 0,
                 hitl_checkpoints: Vec::new(),

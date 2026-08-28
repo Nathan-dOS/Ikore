@@ -31,10 +31,16 @@ use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[path = "orchestration/anticipation.rs"]
+mod anticipation;
+#[path = "orchestration/clarification.rs"]
+mod clarification;
 #[path = "orchestration/coordination.rs"]
 mod coordination;
 #[path = "orchestration/integration.rs"]
 mod integration;
+#[path = "orchestration/preparation.rs"]
+mod preparation;
 #[path = "orchestration/reconciliation.rs"]
 mod reconciliation;
 #[path = "orchestration/serial.rs"]
@@ -631,6 +637,7 @@ pub struct PulseEvent {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PulsationRuntimeSnapshot {
+    pub details: Vec<crate::orchestration::PulsationCoordinationSnapshot>,
     pub coordination: Option<crate::orchestration::ProjectCoordinationSnapshot>,
     pub main_agents_count: usize,
     pub hitl_checkpoints: Vec<HitlCheckpoint>,
@@ -935,6 +942,8 @@ struct RuntimeControl {
     pending_user_cancels: Mutex<HashMap<String, usize>>,
     #[cfg(test)]
     publication_gate: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
+    #[cfg(test)]
+    preparation_gate: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
 }
 
 #[derive(Clone)]
@@ -1367,13 +1376,15 @@ impl PersistenceService {
 
     fn normalize_feature_name(raw: &str) -> Result<String, PersistenceServiceError> {
         let normalized = raw.trim();
-        if normalized.is_empty() {
+        if normalized.is_empty()
+            || raw.chars().count() > crate::orchestration::MAX_DESCRIPTION_CHARS
+        {
             return Err(PersistenceServiceError::Validation(
-                "featureName não pode ser vazio.".to_string(),
+                "O pedido deve ter de 1 a 16.000 caracteres Unicode.".to_string(),
             ));
         }
 
-        Ok(normalized.to_string())
+        Ok(raw.to_string())
     }
 
     fn invalid_enum_error(column: &str, value: &str) -> SqlError {
@@ -1565,9 +1576,10 @@ impl PersistenceService {
                status,
                attempts,
                created_at,
-               updated_at, project_id, input_revision, state_version, idempotency_key
+               updated_at, project_id, input_revision, state_version, idempotency_key, generation
              ) SELECT ?1, ?2, ?3, ?4, 0, ?5, ?5, project_id, input_revision, state_version,
-               id || ':' || input_revision || ':' || state_version || ':' || ?3 FROM pulsations WHERE id=?2",
+               id || ':' || input_revision || ':' || state_version || ':' || ?3,
+               (SELECT COALESCE(MAX(generation),0) FROM jobs prior WHERE prior.pulsation_id=?2 AND prior.kind=?3) FROM pulsations WHERE id=?2",
             params![
                 job_id,
                 pulsation_id,
@@ -2138,6 +2150,7 @@ impl PersistenceService {
         )?;
 
         Self::enqueue_stage_job(&transaction, &current.id, current.stage)?;
+        Self::assess_description(&transaction, &current.id, &feature_name, 1)?;
         transaction.commit()?;
 
         self.wake_scheduler();
@@ -2193,6 +2206,7 @@ impl PersistenceService {
 
         Ok(GetPulsationRuntimeSnapshotResponse {
             snapshot: PulsationRuntimeSnapshot {
+                details: Self::coordination_details(&connection, &project_id)?,
                 coordination: Some(Self::coordination_snapshot(&connection, &project_id)?),
                 main_agents_count: connection.query_row(
                     "SELECT COUNT(*) FROM runtime_slots WHERE project_id=?1 AND job_class='main'",
@@ -2200,7 +2214,7 @@ impl PersistenceService {
                     |r| r.get(0),
                 )?,
                 hitl_checkpoints: {
-                    let mut stmt=connection.prepare("SELECT p.id,c.id,p.state_version FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.project_id=?1 AND p.status='checkpoint' AND c.status='waiting'")?;
+                    let mut stmt=connection.prepare("SELECT p.id,c.id,p.state_version FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.project_id=?1 AND p.status='checkpoint' AND c.status='waiting' AND c.kind='artifact_review'")?;
                     stmt.query_map([&project_id], |r| {
                         Ok(HitlCheckpoint {
                             pulsation_id: r.get(0)?,
@@ -2789,6 +2803,8 @@ impl PersistenceService {
         tx.execute("UPDATE jobs SET status='pending',state_version=(SELECT state_version FROM pulsations WHERE id=jobs.pulsation_id),generation=generation+1,started_at=NULL,cancel_requested_at=NULL,cancellation_reason=NULL,available_at=?1,updated_at=?1 WHERE status IN ('running','interrupted') AND (cancellation_reason IS NULL OR cancellation_reason IN ('shutdown','preempted')) AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.job_id=jobs.id) AND EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND p.status IN ('planning','running') AND p.input_revision=jobs.input_revision)",[&now])?;
         tx.execute("UPDATE agent_runs SET status='interrupted',updated_at=?1 WHERE status='running' AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.agent_run_id=agent_runs.id)",[&now])?;
         Self::recover_coordination(&tx)?;
+        tx.execute("UPDATE jobs SET status='failed',cancellation_reason='superseded',last_error='Preparação interrompida no restart; usar contexto sob demanda.' WHERE kind='prepare_context' AND status IN ('pending','running','interrupted')",[])?;
+        tx.execute("UPDATE pulsation_preparation SET prespec_state='cancelled',diagnostic='Preparação interrompida no restart; usar contexto sob demanda.' WHERE prespec_state IN ('pending','running')",[])?;
         tx.commit()?;
         self.reconcile_publications()
     }
@@ -3106,6 +3122,12 @@ impl PersistenceService {
                     PersistenceServiceError::NotFound("Pulsação do job não encontrada.".to_string())
                 })?;
 
+            let valid:bool=transaction.query_row("SELECT status='running' AND attempts=?2 AND input_revision=(SELECT input_revision FROM pulsations WHERE id=?3) AND cancellation_reason IS NULL FROM jobs WHERE id=?1",params![job.id,job.attempts,pulsation_id],|r|r.get(0))?;
+            if !valid {
+                return Err(PersistenceServiceError::Validation(
+                    "Execução superada antes da leitura de insumos.".into(),
+                ));
+            }
             if current.status == PulsationStatus::Planning {
                 let _ = Self::transition_pulsation(
                     &transaction,
@@ -3154,12 +3176,24 @@ impl PersistenceService {
                 PersistenceServiceError::NotFound("Projeto da pulsação não encontrado.".to_string())
             })?;
 
+        let mut handoff = self.load_stage_handoff(
+            &Self::execution_fence(&connection, &job.id)?,
+            stage,
+            runtime_config.context_chars_limit,
+        )?;
+        if stage == PulsationStage::Specification {
+            handoff = self
+                .enrich_specification(handoff, runtime_config.context_chars_limit, cancellation)
+                .await?;
+        }
+        let anticipatory: bool = connection.query_row(
+            "SELECT job_class='background' FROM jobs WHERE id=?1",
+            [&job.id],
+            |r| r.get(0),
+        )?;
         let execution_input = StageExecutionInput {
-            handoff: Some(self.load_stage_handoff(
-                &Self::execution_fence(&connection, &job.id)?,
-                stage,
-                runtime_config.context_chars_limit,
-            )?),
+            anticipatory,
+            handoff: Some(handoff),
             job_id: job.id.clone(),
             pulsation_id: current.id.clone(),
             project_id: current.project_id.clone(),
@@ -3169,7 +3203,8 @@ impl PersistenceService {
             runtime_db_path: self.db_path.to_string_lossy().to_string(),
         };
 
-        if runtime_config.context_strategy == ContextStrategy::YamlGraphRag
+        if !anticipatory
+            && runtime_config.context_strategy == ContextStrategy::YamlGraphRag
             && runtime_config.embedding_enabled
             && runtime_config.embedding_provider == EmbeddingProvider::Ollama
         {
@@ -3192,14 +3227,23 @@ impl PersistenceService {
             _ = sleep(Duration::from_millis(160)) => {}
         }
 
-        let execution = execute_stage(
-            self.embedding_gateway.as_ref(),
-            self.llm_router.as_ref(),
-            runtime_config,
-            &execution_input,
-            cancellation,
+        let execution = timeout(
+            Duration::from_millis(runtime_config.timeout_ms),
+            execute_stage(
+                self.embedding_gateway.as_ref(),
+                self.llm_router.as_ref(),
+                runtime_config,
+                &execution_input,
+                cancellation,
+            ),
         )
         .await
+        .map_err(|_| {
+            PersistenceServiceError::Retryable(format!(
+                "Tempo limite excedido ({}ms).",
+                runtime_config.timeout_ms
+            ))
+        })?
         .map_err(PersistenceServiceError::from)?;
 
         if cancellation.is_cancelled() {
@@ -3234,21 +3278,12 @@ impl PersistenceService {
             }
         }
 
-        let execution = timeout(
-            Duration::from_millis(runtime_config.timeout_ms),
-            self.execute_claimed_job(job, &agent_run_id, &runtime_config, cancellation),
-        )
-        .await;
+        // Context filesystem workers are bounded and awaited, never abandoned on timeout.
+        let execution_result = self
+            .execute_claimed_job(job, &agent_run_id, &runtime_config, cancellation)
+            .await;
 
         self.unregister_job_cancellation(&job.id);
-
-        let execution_result = match execution {
-            Ok(result) => result,
-            Err(_) => Err(PersistenceServiceError::Retryable(format!(
-                "Tempo limite excedido ({}ms) para job {}.",
-                runtime_config.timeout_ms, job.id
-            ))),
-        };
 
         match execution_result {
             Ok(()) => {}
