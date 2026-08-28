@@ -46,7 +46,7 @@ impl LexicalCodeContextService {
             extractor: ExtractorRevision {
                 name: "repository-lexical".into(),
                 version: "1".into(),
-                policy_version: "rsp12-v1".into(),
+                policy_version: "rsp12-v2".into(),
                 resolution_context: None,
             },
             scope: format!(
@@ -120,9 +120,17 @@ impl LexicalCodeContextService {
             let words: std::collections::HashSet<_> =
                 task_refine::tokens(source.content()).into_iter().collect();
             let symbol = terms.iter().filter(|term| words.contains(*term)).count();
+            // An explicit auth.rs hint must not match every Rust file through the "rs"
+            // extension and turn an otherwise complete package into artificial truncation.
+            // Keep directory/stem terms and exact-path priority; source symbols remain eligible.
+            let path_terms = task_refine::tokens(
+                &std::path::Path::new(path)
+                    .with_extension("")
+                    .to_string_lossy(),
+            );
             let path_match = terms
                 .iter()
-                .filter(|term| task_refine::tokens(path).contains(term))
+                .filter(|term| path_terms.contains(term))
                 .count();
             if explicit || symbol + path_match > 0 {
                 matches.push((
@@ -212,6 +220,30 @@ mod tests {
             hinted_paths: vec![],
             budget: CollectionBudget::default(),
         }
+    }
+
+    #[test]
+    fn explicit_file_extension_does_not_select_unrelated_files_or_force_partial_coverage() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("auth.rs"), "fn validate_token() {}\n").unwrap();
+        for index in 0..20 {
+            fs::write(
+                root.path().join(format!("unrelated_{index}.rs")),
+                "fn unrelated() {}\n",
+            )
+            .unwrap();
+        }
+        let req = request(root.path());
+        let token = CancellationToken::new();
+        let facts = LexicalCodeContextService::collect_blocking(&req, &token).unwrap();
+        assert_eq!(facts.coverage.enumerated_files, 21);
+        assert_eq!(facts.sources.len(), 1);
+        assert_eq!(facts.coverage.state, CoverageState::Complete);
+        assert!(
+            LexicalCodeContextService::collect_revalidated(&req, &token, Some(&facts))
+                .unwrap()
+                .1
+        );
     }
 
     #[tokio::test]

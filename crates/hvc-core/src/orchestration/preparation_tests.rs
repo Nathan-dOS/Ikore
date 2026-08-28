@@ -357,6 +357,20 @@ async fn completed_package_is_consumed_or_invalidated_by_body_and_candidate_chan
             "{change}"
         );
         let db = f.service.connection().unwrap();
+        let metrics: Vec<String> = db.prepare("SELECT message FROM pulse_events WHERE pulsation_id=?1 AND event_type='context_collected'").unwrap().query_map([&pulse.id], |r| r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+        assert_eq!(
+            metrics.len(),
+            2,
+            "one accepted preparation and one fenced revalidation"
+        );
+        for metric in metrics {
+            let value: serde_json::Value = serde_json::from_str(&metric).unwrap();
+            assert!(value["elapsed_us"].is_u64());
+            assert!(value["read_bytes"].is_u64());
+            assert!(value["enumerated_files"].is_u64());
+            assert!(!metric.contains("auth.rs") && !metric.contains("validate_token"));
+            assert!(value["snippets"].is_null() && value["diagnostics"].is_null());
+        }
         let json:String=db.query_row("SELECT handoff_json FROM stage_acceptances a JOIN jobs j ON j.id=a.job_id WHERE j.pulsation_id=?1 AND j.kind='run_stage::SPECIFICATION'",[&pulse.id],|r|r.get(0)).unwrap();
         let handoff: StageHandoffV1 = serde_json::from_str(&json).unwrap();
         assert!(handoff.context.is_some());

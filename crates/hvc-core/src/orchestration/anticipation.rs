@@ -121,7 +121,9 @@ impl PersistenceService {
         let db = self.connection()?;
         let fence = Self::execution_fence(&db, &job.id)?;
         let (request, epoch) = Self::context_request(&db, &fence)?;
+        let started = std::time::Instant::now();
         let facts = LexicalCodeContextService::collect_blocking(&request, cancellation);
+        let elapsed = started.elapsed();
         #[cfg(test)]
         if let Some((entered, release)) = self
             .runtime_control
@@ -144,6 +146,7 @@ impl PersistenceService {
             return Ok(());
         }
         let facts = facts.map_err(|e| invalid(e.to_string()))?;
+        Self::record_context_collection(&tx, &fence, "preparation", "prepared", elapsed, &facts)?;
         let package = ContextPackageV1 {
             schema_version: SchemaV1,
             pulsation_id: fence.pulsation_id.clone().expect("pulse"),
@@ -199,7 +202,10 @@ impl PersistenceService {
             let old=prepared.as_ref().filter(|(s,hash)|ContentSha256::of(s.as_bytes()).as_str()==hash).and_then(|(s,_)|serde_json::from_str::<ContextPackageV1>(s).ok());
             // Full bounded rediscovery detects additions/deletions/renames and changed match sets.
             let compatible=old.as_ref().filter(|old| old.pulsation_id==pulse && Some(old.input_revision)==handoff.recipient.input_revision && old.ruleset_version==task_refine::ruleset_version() && old.budget==request.budget);
+            let started=std::time::Instant::now();
             let (facts,reusable)=LexicalCodeContextService::collect_revalidated(&request,&stop,compatible.map(|p|&p.facts)).map_err(|e|invalid(e.to_string()))?;
+            let elapsed=started.elapsed();
+            let measured_facts=facts.clone();
             let disposition=if reusable {"reused"} else if prepared.is_some(){"stale_on_demand"}else{"on_demand"};
             let mut package=if reusable {old.expect("reusable")}else{ContextPackageV1{schema_version:SchemaV1,pulsation_id:pulse.into(),input_revision:handoff.recipient.input_revision.expect("revision"),ruleset_version:task_refine::ruleset_version().into(),observed_base_epoch:epoch,budget:request.budget,facts,created_at:Self::now_iso()}};
             // Only optional lexical evidence is trimmed. Approved artifacts/answers remain whole.
@@ -216,10 +222,39 @@ impl PersistenceService {
             let mut db=service.connection()?;
             let tx=db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             Self::check_execution(&tx,&handoff.recipient)?;
+            Self::record_context_collection(&tx,&handoff.recipient,"specification",disposition,elapsed,&measured_facts)?;
             let diagnostic=handoff.context.as_ref().map(|c|format!("Coleta/revalidação no epoch {epoch}, {}. {}",Self::now_iso(),c.facts.coverage.diagnostics.join(" ")));
             tx.execute("UPDATE pulsation_preparation SET consumed_job_id=?3,context_disposition=?4,diagnostic=?5,prespec_state=CASE WHEN ?4='stale_on_demand' THEN 'stale' ELSE prespec_state END WHERE pulsation_id=?1 AND input_revision=?2",params![pulse,handoff.recipient.input_revision,handoff.recipient.job_id,disposition,diagnostic])?;
             tx.commit()?;
             Ok(handoff)
         }).await.map_err(|e|invalid(e.to_string()))?
+    }
+
+    /// Operational counters only: never source paths, snippets, queries or diagnostics.
+    /// Written with the fenced acceptance, not for a cancelled/obsolete collection.
+    fn record_context_collection(
+        db: &Connection,
+        fence: &ExecutionFence,
+        phase: &str,
+        disposition: &str,
+        elapsed: std::time::Duration,
+        facts: &CodeContextFacts,
+    ) -> Result<(), PersistenceServiceError> {
+        let metrics = serde_json::json!({
+            "schema_version": 1,
+            "job_id": fence.job_id,
+            "generation": fence.generation,
+            "input_revision": fence.input_revision,
+            "phase": phase,
+            "disposition": disposition,
+            "elapsed_us": elapsed.as_micros().min(u128::from(u64::MAX)) as u64,
+            "enumerated_files": facts.coverage.enumerated_files,
+            "read_bytes": facts.coverage.read_bytes,
+            "selected_files": facts.sources.len(),
+            "coverage": facts.coverage.state,
+            "truncated": facts.coverage.truncated,
+        });
+        db.execute("INSERT INTO pulse_events(id,pulsation_id,event_type,message,created_at) VALUES(?1,?2,'context_collected',?3,?4)", params![Uuid::new_v4().to_string(),fence.pulsation_id,metrics.to_string(),Self::now_iso()])?;
+        Ok(())
     }
 }

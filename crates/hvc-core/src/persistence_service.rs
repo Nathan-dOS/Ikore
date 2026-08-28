@@ -2867,8 +2867,9 @@ impl PersistenceService {
             return Ok(());
         };
 
-        let connection = self.connection()?;
-        let transaction = connection.unchecked_transaction()?;
+        let mut connection = self.connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let current = Self::find_pulsation_by_id(&transaction, pulsation_id)?.ok_or_else(|| {
             PersistenceServiceError::NotFound("Pulsação do job não encontrada.".to_string())
         })?;
@@ -2952,8 +2953,12 @@ impl PersistenceService {
         })?;
 
         {
-            let connection = self.connection()?;
-            let transaction = connection.unchecked_transaction()?;
+            // Reserve the writer BEFORE reading the state. A deferred read-to-write upgrade
+            // can return SQLITE_BUSY immediately when the background lane holds a reservation,
+            // bypassing busy_timeout and incorrectly failing an otherwise valid stage.
+            let mut connection = self.connection()?;
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let current =
                 Self::find_pulsation_by_id(&transaction, pulsation_id)?.ok_or_else(|| {
                     PersistenceServiceError::NotFound("Pulsação do job não encontrada.".to_string())

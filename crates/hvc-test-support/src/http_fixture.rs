@@ -51,6 +51,18 @@ pub struct ScriptedHttpServer {
 
 impl ScriptedHttpServer {
     pub fn start(responses: impl IntoIterator<Item = ScriptedResponse>) -> Self {
+        let mut responses = responses.into_iter().collect::<VecDeque<_>>();
+        Self::respond_with(move |_| {
+            responses
+                .pop_front()
+                .unwrap_or_else(|| ScriptedResponse::json(500, r#"{"error":"fixture exhausted"}"#))
+        })
+    }
+
+    /// Loopback-only deterministic provider. The handler must be bounded; Drop joins it.
+    pub fn respond_with(
+        mut handler: impl FnMut(&RecordedRequest) -> ScriptedResponse + Send + 'static,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .expect("scripted HTTP fixture should bind to loopback");
         let address = listener
@@ -60,7 +72,6 @@ impl ScriptedHttpServer {
         let worker_requests = Arc::clone(&requests);
         let shutdown = Arc::new(AtomicBool::new(false));
         let worker_shutdown = Arc::clone(&shutdown);
-        let mut responses = responses.into_iter().collect::<VecDeque<_>>();
         let worker = thread::Builder::new()
             .name("hvc-http-fixture".into())
             .spawn(move || {
@@ -72,11 +83,9 @@ impl ScriptedHttpServer {
                     let (lock, changed) = &*worker_requests;
                     lock.lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(request);
+                        .push(request.clone());
                     changed.notify_all();
-                    let response = responses.pop_front().unwrap_or_else(|| {
-                        ScriptedResponse::json(500, r#"{"error":"fixture exhausted"}"#)
-                    });
+                    let response = handler(&request);
                     let _ = write_response(&mut stream, response);
                 }
             })
