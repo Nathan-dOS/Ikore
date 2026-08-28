@@ -77,6 +77,7 @@ pub enum AgentRole {
     BackendAgent,
     TestAgent,
     Integrator,
+    LearningAgent,
 }
 
 impl AgentRole {
@@ -88,6 +89,7 @@ impl AgentRole {
             Self::BackendAgent => "backend_agent",
             Self::TestAgent => "test_agent",
             Self::Integrator => "integrator",
+            Self::LearningAgent => "learning_agent",
         }
     }
 

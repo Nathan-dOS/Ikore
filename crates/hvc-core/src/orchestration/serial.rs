@@ -221,7 +221,7 @@ impl PersistenceService {
                 "Handoff legado indisponível ou ambíguo. Revise a etapa de origem antes de continuar.",
             ));
         }
-        let rows=db.prepare("SELECT id,producer_job_id,producer_stage,generation,input_revision,producer_state_version,output_position,name,kind,content,content_sha256,publication_state,source_revisions_json FROM artifacts WHERE pulsation_id=?1 AND input_revision=?2 AND acceptance='accepted' AND kind!='code_context' ORDER BY created_at,id")?
+        let rows=db.prepare("SELECT id,producer_job_id,producer_stage,generation,input_revision,producer_state_version,output_position,name,kind,content,content_sha256,publication_state,source_revisions_json FROM artifacts WHERE pulsation_id=?1 AND input_revision=?2 AND acceptance='accepted' AND kind NOT IN ('code_context','learning_report') ORDER BY created_at,id")?
             .query_map(params![pulse,fence.input_revision],|r| {
                 let stage:String=r.get(2)?;
                 let hash:String=r.get(10)?;
@@ -338,7 +338,7 @@ impl PersistenceService {
                 } else {
                     path
                 };
-                if artifact.kind == "code_context" {
+                if matches!(artifact.kind.as_str(), "code_context" | "learning_report") {
                     return Err(invalid("Tipo de artifact reservado ao coletor do host."));
                 }
                 if let Some(path) = path {
@@ -462,7 +462,7 @@ impl PersistenceService {
             }
             let mut db = self.connection()?;
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let candidate=tx.query_row("SELECT o.artifact_id FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN pulsations p ON p.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE p.id IN (SELECT id FROM coordinated_pulsations) AND j.generation=a.generation AND j.status='done' AND o.state IN ('pending','applying') AND a.acceptance='accepted' AND a.input_revision=p.input_revision ORDER BY p.created_at,p.project_id,p.queue_sequence,o.updated_at,o.artifact_id LIMIT 1",[],|r|r.get::<_,String>(0)).optional()?;
+            let candidate=tx.query_row("SELECT o.artifact_id FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN pulsations p ON p.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE o.job_class='main' AND p.id IN (SELECT id FROM coordinated_pulsations) AND j.generation=a.generation AND j.status='done' AND o.state IN ('pending','applying') AND a.acceptance='accepted' AND a.input_revision=p.input_revision ORDER BY p.created_at,p.project_id,p.queue_sequence,o.updated_at,o.artifact_id LIMIT 1",[],|r|r.get::<_,String>(0)).optional()?;
             let Some(id) = candidate else {
                 tx.commit()?;
                 break;
@@ -502,7 +502,7 @@ impl PersistenceService {
         }
         if !shutdown.is_some_and(CancellationToken::is_cancelled) {
             progressed |= self.complete_integrations()?;
-            self.connection()?.execute("UPDATE project_pipeline_state SET base_state='ready',state_version=state_version+1 WHERE base_state='publishing' AND NOT EXISTS(SELECT 1 FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id WHERE o.project_id=project_pipeline_state.project_id AND a.acceptance='accepted' AND o.state IN ('pending','applying')) AND NOT EXISTS(SELECT 1 FROM pulsations p WHERE p.id=active_pulsation_id AND p.integration_checkpoint_id IS NOT NULL AND p.status='running')",[])?;
+            self.connection()?.execute("UPDATE project_pipeline_state SET base_state='ready',state_version=state_version+1 WHERE base_state='publishing' AND NOT EXISTS(SELECT 1 FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id WHERE o.job_class='main' AND o.project_id=project_pipeline_state.project_id AND a.acceptance='accepted' AND o.state IN ('pending','applying')) AND NOT EXISTS(SELECT 1 FROM pulsations p WHERE p.id=active_pulsation_id AND p.integration_checkpoint_id IS NOT NULL AND p.status='running')",[])?;
         }
         if progressed {
             self.wake_scheduler();
@@ -510,15 +510,23 @@ impl PersistenceService {
         Ok(progressed)
     }
 
-    fn apply_publication_unit(&self, id: &str) -> Result<(), PersistenceServiceError> {
+    pub(super) fn apply_publication_unit(&self, id: &str) -> Result<(), PersistenceServiceError> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT p.workspace_path,o.relative_path,o.expected_sha256,a.content,o.pulsation_id,o.desired_sha256,a.content_sha256 FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN projects p ON p.id=o.project_id JOIN pulsations u ON u.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE j.generation=a.generation AND j.status='done' AND o.artifact_id=?1 AND o.state='applying' AND a.acceptance='accepted' AND a.input_revision=u.input_revision AND u.status<>'failed'",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?))).optional()?;
-        let Some((root, path, expected, content, pulse, desired, artifact_hash)) = row else {
+        let row=tx.query_row("SELECT p.workspace_path,o.relative_path,o.expected_sha256,a.content,o.pulsation_id,o.desired_sha256,a.content_sha256,o.job_class FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN projects p ON p.id=o.project_id JOIN pulsations u ON u.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE j.generation=a.generation AND j.status='done' AND o.artifact_id=?1 AND o.state='applying' AND a.acceptance='accepted' AND a.input_revision=u.input_revision AND u.status<>'failed'",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?))).optional()?;
+        let Some((root, path, expected, content, pulse, desired, artifact_hash, class)) = row
+        else {
             tx.commit()?;
             return Ok(());
         };
-        Self::check_project_admission(&tx, &pulse)?;
+        if class == "background" {
+            let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM learning_runs l JOIN pulsations p ON p.id=l.pulsation_id WHERE l.artifact_id=?1 AND l.state='publishing' AND p.status='done')",[id],|r|r.get(0))?;
+            if !valid || !Self::preparation_settings(&tx)?.learning_enabled {
+                return Ok(());
+            }
+        } else {
+            Self::check_project_admission(&tx, &pulse)?;
+        }
         if self.user_cancellation_pending(&pulse) {
             return Ok(());
         }
@@ -551,7 +559,19 @@ impl PersistenceService {
                     "UPDATE artifacts SET publication_state='applied' WHERE id=?1",
                     [id],
                 )?;
+                if class == "background" {
+                    tx.execute("UPDATE learning_runs SET state='published',diagnostic=NULL,updated_at=?2 WHERE artifact_id=?1",params![id,Self::now_iso()])?;
+                    tx.commit()?;
+                    return Ok(());
+                }
                 tx.execute("INSERT INTO project_file_baselines(project_id,relative_path,content_sha256,updated_at) SELECT project_id,relative_path,desired_sha256,?2 FROM artifact_publications WHERE artifact_id=?1 ON CONFLICT(project_id,relative_path) DO UPDATE SET content_sha256=excluded.content_sha256,updated_at=excluded.updated_at",params![id,Self::now_iso()])?;
+                if path.starts_with("knowledge/obsidian/")
+                    && Path::new(&path)
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+                {
+                    Self::mark_index_dirty(&tx, Path::new(&root))?;
+                }
             }
             Err(error) => {
                 tx.execute("UPDATE artifact_publications SET state='conflict',last_error=?2,updated_at=?3 WHERE artifact_id=?1",params![id,error.to_string(),Self::now_iso()])?;
@@ -559,6 +579,11 @@ impl PersistenceService {
                     "UPDATE artifacts SET publication_state='conflict' WHERE id=?1",
                     [id],
                 )?;
+                if class == "background" {
+                    tx.execute("UPDATE learning_runs SET state='conflict',diagnostic=?2,updated_at=?3 WHERE artifact_id=?1",params![id,error.to_string(),Self::now_iso()])?;
+                    tx.commit()?;
+                    return Err(error);
+                }
                 let current = Self::find_pulsation_by_id(&tx, &pulse)?
                     .ok_or_else(|| invalid("Pulsação ausente"))?;
                 if !matches!(

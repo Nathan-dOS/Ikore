@@ -18,13 +18,13 @@ pub(crate) fn backup_before_upgrade(db: &Connection, directory: &Path) -> Result
         [],
         |r| r.get(0),
     )?;
-    if version >= 12 {
+    if version >= 13 {
         return Ok(());
     }
     // VACUUM INTO captures a consistent SQLite snapshot, including WAL contents.
     // A unique destination never overwrites an earlier recovery point.
     let backup = directory.join(format!(
-        "hard-vibe-code.pre-v12.{}.db",
+        "hard-vibe-code.pre-v13.{}.db",
         uuid::Uuid::new_v4()
     ));
     db.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])?;
@@ -32,7 +32,7 @@ pub(crate) fn backup_before_upgrade(db: &Connection, directory: &Path) -> Result
     let integrity: String = check.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     if integrity != "ok" {
         return Err(Error::Validation(
-            "Backup anterior à V12 não passou na verificação de integridade.".into(),
+            "Backup anterior à V13 não passou na verificação de integridade.".into(),
         ));
     }
     std::fs::OpenOptions::new()

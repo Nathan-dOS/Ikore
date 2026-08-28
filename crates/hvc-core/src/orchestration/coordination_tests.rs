@@ -168,7 +168,7 @@ fn concurrent_claims_share_one_global_slot_and_cancel_keeps_live_reservation() {
 }
 
 #[test]
-fn approval_epoch_release_and_unavailable_learning_intent_are_atomic_idempotent() {
+fn approval_epoch_release_and_pending_learning_intent_are_atomic_idempotent() {
     let f = Fixture::new(PulsationStage::Integrator);
     f.accept(&f.output("advance", Some("integration.md"), "final"))
         .unwrap();
@@ -199,7 +199,7 @@ fn approval_epoch_release_and_unavailable_learning_intent_are_atomic_idempotent(
             r.get::<_, String>(0)
         })
         .unwrap(),
-        "unavailable"
+        "pending"
     );
 }
 

@@ -38,6 +38,8 @@ pub(crate) enum PulsationAction {
     Revise(RevisePulsationDescriptionRequest),
     Confirm(ConfirmDescriptionReviewRequest),
     Answer(SubmitSpecificationAnswersRequest),
+    RetryLearning(hvc_core::orchestration::LearningActionRequest),
+    DismissLearning(hvc_core::orchestration::LearningActionRequest),
 }
 
 pub(crate) struct CorePulsationsBackend {
@@ -61,6 +63,12 @@ impl PulsationsBackend for CorePulsationsBackend {
         Box::pin(async move {
             runtime
                 .spawn_blocking(move || match action {
+                    PulsationAction::RetryLearning(request) => {
+                        core.persistence().retry_learning(request)
+                    }
+                    PulsationAction::DismissLearning(request) => {
+                        core.persistence().dismiss_learning(request)
+                    }
                     PulsationAction::Revise(request) => core
                         .persistence()
                         .revise_pulsation_description(request)

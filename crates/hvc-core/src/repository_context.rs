@@ -315,6 +315,41 @@ impl RepositoryContext {
         Ok(())
     }
 
+    pub(crate) fn read_document(&self, relative: &str) -> Result<String, RepositoryError> {
+        let path = self.resolve_relative(relative, false)?;
+        self.read_safe_text(&path)
+    }
+
+    pub(crate) fn document_paths(
+        &self,
+        markdown_only: bool,
+    ) -> Result<Vec<String>, RepositoryError> {
+        let mut paths = Vec::new();
+        for entry in self.walk(&self.root, 72) {
+            let entry = entry.map_err(|e| RepositoryError(e.to_string()))?;
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let extension = entry
+                .path()
+                .extension()
+                .and_then(|v| v.to_str())
+                .unwrap_or("");
+            if extension.eq_ignore_ascii_case("md")
+                || (!markdown_only && extension.eq_ignore_ascii_case("txt"))
+            {
+                if paths.len() >= 10_000 {
+                    return Err(RepositoryError(
+                        "Catálogo documental excede 10.000 arquivos; escopo incompleto.".into(),
+                    ));
+                }
+                paths.push(self.relative_display(entry.path())?);
+            }
+        }
+        paths.sort();
+        Ok(paths)
+    }
+
     fn walk(&self, scope: &Path, depth: usize) -> ignore::Walk {
         let mut builder = WalkBuilder::new(scope);
         builder

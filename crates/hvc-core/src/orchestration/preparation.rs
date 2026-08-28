@@ -57,7 +57,7 @@ impl PersistenceService {
         ] {
             Self::upsert_runtime_setting(&tx, key, &value)?;
         }
-        let mut cancelled = Vec::new();
+        let mut cancelled = Self::configure_learning(&tx, settings.learning_enabled)?;
         if !settings.preparation_enabled {
             let pulses = tx
                 .prepare(
@@ -267,6 +267,7 @@ impl PersistenceService {
                 .prepare("SELECT id FROM artifacts WHERE pulsation_id=?1 ORDER BY created_at,id")?
                 .query_map([&pulse], |r| r.get(0))?
                 .collect::<Result<Vec<_>, _>>()?;
+            let (learning, learning_run) = Self::learning_snapshot(db, &pulse)?;
             result.push(PulsationCoordinationSnapshot {
                 description_editable: !started
                     && matches!(status, PulsationStatus::Planning | PulsationStatus::Running),
@@ -296,7 +297,8 @@ impl PersistenceService {
                     skip_reason,
                 },
                 questions: Self::pending_questions(db, &pulse)?,
-                learning: LearningState::Unavailable,
+                learning,
+                learning_run,
                 artifact_ids: artifacts,
             });
         }

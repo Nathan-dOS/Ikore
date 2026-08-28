@@ -502,6 +502,10 @@ pub enum LearningState {
     Failed,
     Cancelled,
     DeferredBudget,
+    Preempted,
+    Disabled,
+    Publishing,
+    Conflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -522,5 +526,6 @@ pub struct PulsationCoordinationSnapshot {
     pub preparation: PreparationSnapshot,
     pub questions: Option<SpecificationQuestionSet>,
     pub learning: LearningState,
+    pub learning_run: Option<super::LearningRunSnapshot>,
     pub artifact_ids: Vec<String>,
 }

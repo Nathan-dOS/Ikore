@@ -144,9 +144,9 @@ impl PersistenceService {
                AND (j.available_at IS NULL OR j.available_at<=?1)
                AND NOT EXISTS(SELECT 1 FROM runtime_slots WHERE job_class='main')
                AND NOT EXISTS(SELECT 1 FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id
-                   WHERE o.pulsation_id=p.id AND a.acceptance='accepted' AND o.state NOT IN ('applied','cancelled'))
+                   WHERE o.job_class='main' AND o.pulsation_id=p.id AND a.acceptance='accepted' AND o.state NOT IN ('applied','cancelled'))
                AND NOT EXISTS(SELECT 1 FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id
-                   WHERE o.pulsation_id IN (SELECT id FROM coordinated_pulsations) AND a.acceptance='accepted' AND o.state IN ('pending','applying'))
+                   WHERE o.job_class='main' AND o.pulsation_id IN (SELECT id FROM coordinated_pulsations) AND a.acceptance='accepted' AND o.state IN ('pending','applying'))
              ORDER BY CASE WHEN s.active_pulsation_id=p.id THEN 0 ELSE 1 END,p.created_at,p.project_id,p.queue_sequence,j.id LIMIT 1",
             [Self::now_iso()], Self::map_job,
         ).optional()?;

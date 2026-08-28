@@ -302,6 +302,7 @@ pub struct GetContextCandidatesRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ContextCandidate {
     pub relative_path: String,
+    pub content_sha256: String,
     pub score: usize,
 }
 
@@ -401,11 +402,15 @@ struct VaultCachedNote {
     title: String,
     frontmatter: Option<Value>,
     links: Vec<VaultLinkMatch>,
+    content: String,
 }
 
 #[derive(Debug, Default)]
 pub struct VaultIndexCache {
     notes: HashMap<String, VaultCachedNote>,
+    root: Option<PathBuf>,
+    #[cfg(test)]
+    parse_count: usize,
 }
 
 #[derive(Default)]
@@ -956,9 +961,19 @@ pub fn get_workspace_vault_index(
 ) -> Result<GetWorkspaceVaultIndexResponse, WorkspaceServiceError> {
     refresh_vault_index_cache(root, cache, request.force_rebuild)?;
 
-    let lookup =
-        build_vault_lookup_maps(cache.notes.values().map(|note| note.relative_path.as_str()));
-    let mut note_paths = cache.notes.keys().cloned().collect::<Vec<String>>();
+    let lookup = build_vault_lookup_maps(
+        cache
+            .notes
+            .values()
+            .filter(|note| is_markdown_extension(Path::new(&note.relative_path)))
+            .map(|note| note.relative_path.as_str()),
+    );
+    let mut note_paths = cache
+        .notes
+        .keys()
+        .filter(|path| is_markdown_extension(Path::new(path)))
+        .cloned()
+        .collect::<Vec<String>>();
     note_paths.sort();
 
     let mut notes = Vec::new();
@@ -1051,8 +1066,13 @@ pub fn get_context_candidates(
     }
 
     refresh_vault_index_cache(root, cache, request.force_rebuild)?;
-    let lookup =
-        build_vault_lookup_maps(cache.notes.values().map(|note| note.relative_path.as_str()));
+    let lookup = build_vault_lookup_maps(
+        cache
+            .notes
+            .values()
+            .filter(|note| normative_properties(&note.relative_path, note.frontmatter.as_ref()))
+            .map(|note| note.relative_path.as_str()),
+    );
     let base_scope_file = resolve_scope_file_name(
         request.agent_scope.as_deref(),
         request.stage_name.as_deref(),
@@ -1060,7 +1080,7 @@ pub fn get_context_candidates(
     let scope_filter = load_scope_filter(root, &base_scope_file)?;
     let scoped_paths = build_scoped_paths(cache, scope_filter.as_ref());
     let fallback_candidates =
-        build_textual_fallback_candidates(root, feature_name, request.stage_name.as_deref())?;
+        build_textual_fallback_candidates(cache, feature_name, request.stage_name.as_deref());
 
     let Some(feature_note_path) = resolve_feature_note_path(cache, feature_name) else {
         let max_candidates = request.max_candidates.clamp(1, 200);
@@ -1099,6 +1119,9 @@ pub fn get_context_candidates(
     let mut outgoing_map: HashMap<String, Vec<String>> = HashMap::new();
     let mut backlinks_map: HashMap<String, Vec<String>> = HashMap::new();
     for note in cache.notes.values() {
+        if !normative_properties(&note.relative_path, note.frontmatter.as_ref()) {
+            continue;
+        }
         let mut outgoing = Vec::new();
         for link in &note.links {
             if let Some(target_path) =
@@ -1146,6 +1169,13 @@ pub fn get_context_candidates(
     let mut candidates = score_by_path
         .into_iter()
         .filter(|(path, _)| {
+            if !cache
+                .notes
+                .get(path)
+                .is_some_and(|note| normative_properties(path, note.frontmatter.as_ref()))
+            {
+                return false;
+            }
             if path == &feature_scope_bypass {
                 return true;
             }
@@ -1155,6 +1185,7 @@ pub fn get_context_candidates(
             scoped_paths.contains(path)
         })
         .map(|(relative_path, score)| ContextCandidate {
+            content_sha256: cache.notes[&relative_path].revision.clone(),
             relative_path,
             score,
         })
@@ -1274,15 +1305,30 @@ fn refresh_vault_index_cache(
     cache: &mut VaultIndexCache,
     force_rebuild: bool,
 ) -> Result<(), WorkspaceServiceError> {
-    let markdown_paths = collect_markdown_relative_paths(root)?;
+    let canonical = root.canonicalize()?;
+    if cache.root.as_ref() != Some(&canonical) {
+        cache.notes.clear();
+        cache.root = Some(canonical);
+    }
+    let markdown_paths = crate::repository_context::RepositoryContext::new(root)
+        .and_then(|repository| repository.document_paths(false))
+        .map_err(|e| WorkspaceServiceError::PathForbidden(e.to_string()))?;
     let markdown_set = markdown_paths.iter().cloned().collect::<BTreeSet<String>>();
     cache
         .notes
         .retain(|relative_path, _| markdown_set.contains(relative_path));
 
     for relative_path in markdown_paths {
-        let absolute_path = root.join(&relative_path);
-        let revision = compute_revision(&absolute_path)?;
+        let content = match read_context_document(root, &relative_path) {
+            Ok(content) => content,
+            Err(_) => {
+                cache.notes.remove(&relative_path);
+                continue;
+            }
+        };
+        let revision = crate::orchestration::ContentSha256::of(content.as_bytes())
+            .as_str()
+            .to_string();
         let should_reparse = force_rebuild
             || cache
                 .notes
@@ -1294,27 +1340,29 @@ fn refresh_vault_index_cache(
             continue;
         }
 
-        let parsed = parse_vault_note(root, &relative_path, revision)?;
-        cache.notes.insert(relative_path, parsed);
+        match parse_vault_note(&relative_path, revision, &content) {
+            Ok(parsed) => {
+                #[cfg(test)]
+                {
+                    cache.parse_count += 1;
+                }
+                cache.notes.insert(relative_path, parsed);
+            }
+            Err(_) => {
+                cache.notes.remove(&relative_path);
+            }
+        }
     }
 
     Ok(())
 }
 
 fn parse_vault_note(
-    root: &Path,
     relative_path: &str,
     revision: String,
+    content: &str,
 ) -> Result<VaultCachedNote, WorkspaceServiceError> {
-    let absolute_path = root.join(relative_path);
-    let content = fs::read_to_string(&absolute_path).map_err(|error| {
-        if error.kind() == io::ErrorKind::InvalidData {
-            WorkspaceServiceError::InvalidUtf8(absolute_path.to_string_lossy().to_string())
-        } else {
-            WorkspaceServiceError::Io(error)
-        }
-    })?;
-    let parsed = parse_frontmatter_and_body(&content)?;
+    let parsed = parse_frontmatter_and_body(content)?;
     let links = extract_wikilinks(&parsed.body);
     let fallback_title = Path::new(relative_path)
         .file_stem()
@@ -1327,6 +1375,7 @@ fn parse_vault_note(
         title: extract_markdown_title(&parsed.body).unwrap_or(fallback_title),
         frontmatter: parsed.parsed,
         links,
+        content: content.chars().take(8192).collect(),
     })
 }
 
@@ -1501,22 +1550,9 @@ fn resolve_wikilink_path(
 }
 
 fn collect_markdown_relative_paths(root: &Path) -> Result<Vec<String>, WorkspaceServiceError> {
-    let mut markdown_paths = Vec::new();
-
-    for entry in WalkDir::new(root).min_depth(1).follow_links(false) {
-        let entry = entry.map_err(walkdir_to_io_error)?;
-        if !entry.file_type().is_file() || !is_markdown_extension(entry.path()) {
-            continue;
-        }
-
-        let relative_path = entry.path().strip_prefix(root).map_err(|_| {
-            WorkspaceServiceError::PathForbidden("Arquivo fora do workspace.".to_string())
-        })?;
-        markdown_paths.push(normalize_relative_path(relative_path));
-    }
-
-    markdown_paths.sort();
-    Ok(markdown_paths)
+    crate::repository_context::RepositoryContext::new(root)
+        .and_then(|repository| repository.document_paths(true))
+        .map_err(|e| WorkspaceServiceError::PathForbidden(e.to_string()))
 }
 
 fn rewrite_wikilinks_for_rename(
@@ -1860,6 +1896,9 @@ fn resolve_feature_note_path(cache: &VaultIndexCache, feature_name: &str) -> Opt
 
     let mut best: Option<(String, usize)> = None;
     for note in cache.notes.values() {
+        if !normative_properties(&note.relative_path, note.frontmatter.as_ref()) {
+            continue;
+        }
         let note_type = lookup_frontmatter_property(note.frontmatter.as_ref(), "type")
             .and_then(|value| value.as_str().map(|raw| raw.to_ascii_lowercase()));
         if note_type.as_deref() != Some("feature") {
@@ -1977,10 +2016,10 @@ fn update_score(score_by_path: &mut HashMap<String, usize>, path: String, score:
 }
 
 fn build_textual_fallback_candidates(
-    root: &Path,
+    cache: &VaultIndexCache,
     feature_name: &str,
     stage_name: Option<&str>,
-) -> Result<Vec<ContextCandidate>, WorkspaceServiceError> {
+) -> Vec<ContextCandidate> {
     let mut terms = feature_name
         .split(|ch: char| !ch.is_alphanumeric())
         .map(|token| token.trim().to_ascii_lowercase())
@@ -1999,15 +2038,11 @@ fn build_textual_fallback_candidates(
     terms.dedup();
 
     let mut candidates = Vec::new();
-    for entry in WalkDir::new(root).min_depth(1).follow_links(false) {
-        let entry = entry.map_err(walkdir_to_io_error)?;
-        if !entry.file_type().is_file() || !is_allowed_extension(entry.path()) {
+    for note in cache.notes.values() {
+        if !normative_properties(&note.relative_path, note.frontmatter.as_ref()) {
             continue;
         }
-
-        let relative = normalize_relative_path(entry.path().strip_prefix(root).map_err(|_| {
-            WorkspaceServiceError::PathForbidden("Arquivo fora do workspace.".to_string())
-        })?);
+        let relative = note.relative_path.clone();
         let lowered_path = relative.to_ascii_lowercase();
 
         let mut score = 0usize;
@@ -2018,9 +2053,7 @@ fn build_textual_fallback_candidates(
         }
 
         if score == 0 {
-            let content = fs::read_to_string(entry.path())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
+            let content = note.content.to_ascii_lowercase();
             for term in &terms {
                 if content.contains(term) {
                     score += 1;
@@ -2030,6 +2063,7 @@ fn build_textual_fallback_candidates(
 
         if score > 0 {
             candidates.push(ContextCandidate {
+                content_sha256: note.revision.clone(),
                 relative_path: relative,
                 score,
             });
@@ -2042,7 +2076,51 @@ fn build_textual_fallback_candidates(
             .cmp(&left.score)
             .then_with(|| left.relative_path.cmp(&right.relative_path))
     });
-    Ok(candidates)
+    candidates
+}
+
+/// Read the same bounded bytes for both the hash and the content supplied to a model.
+pub(crate) fn read_context_document(
+    root: &Path,
+    relative: &str,
+) -> Result<String, WorkspaceServiceError> {
+    crate::orchestration::publication::safe_target(root, relative, false)
+        .map_err(|e| WorkspaceServiceError::PathForbidden(e.to_string()))?;
+    crate::repository_context::RepositoryContext::new(root)
+        .and_then(|repository| repository.read_document(relative))
+        .map_err(|e| WorkspaceServiceError::PathForbidden(e.to_string()))
+}
+
+pub(crate) fn is_normative_document(relative: &str, content: &str) -> bool {
+    if relative
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+        .starts_with("knowledge/obsidian/learning/")
+    {
+        return false;
+    }
+    let Ok(parsed) = parse_frontmatter_and_body(content) else {
+        return false;
+    };
+    normative_properties(relative, parsed.parsed.as_ref())
+}
+
+fn normative_properties(relative: &str, properties: Option<&Value>) -> bool {
+    if relative
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+        .starts_with("knowledge/obsidian/learning/")
+    {
+        return false;
+    }
+    !lookup_frontmatter_property(properties, "type")
+        .as_ref()
+        .and_then(Value::as_str)
+        .is_some_and(|v| v.eq_ignore_ascii_case("learning_report"))
+        && !lookup_frontmatter_property(properties, "status")
+            .as_ref()
+            .and_then(Value::as_str)
+            .is_some_and(|v| v.eq_ignore_ascii_case("deprecated"))
 }
 
 fn split_wikilink_alias(target: &str) -> (&str, Option<&str>) {
@@ -2722,5 +2800,139 @@ mod tests {
                 .contains("Link [[notes/new-name]] and [[notes/new-name#Section|Alias]].")
         );
         assert!(consumer_content.starts_with("---\ntype: feature\n---\n"));
+    }
+}
+
+#[cfg(test)]
+mod document_cache_tests {
+    use super::*;
+    use crate::document_cache::SharedDocumentCache;
+    fn request() -> GetContextCandidatesRequest {
+        GetContextCandidatesRequest {
+            feature_name: "billing".into(),
+            stage_name: Some("SPECIFICATION".into()),
+            agent_scope: None,
+            max_candidates: 20,
+            force_rebuild: false,
+        }
+    }
+    #[test]
+    fn shared_cache_reuses_parsing_and_revalidates_same_size_edits_and_deletions() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("billing.md"), "billing alpha").unwrap();
+        let shared = SharedDocumentCache::default();
+        let first = shared
+            .with(root.path(), |cache| {
+                let result = get_context_candidates(root.path(), cache, request())?;
+                assert_eq!(cache.parse_count, 1);
+                Ok(result)
+            })
+            .unwrap();
+        shared
+            .clone()
+            .with(&root.path().join("."), |cache| {
+                get_context_candidates(root.path(), cache, request())?;
+                assert_eq!(cache.parse_count, 1);
+                Ok(())
+            })
+            .unwrap();
+        // No timestamp assumptions: different bytes of identical length.
+        fs::write(root.path().join("billing.md"), "billing bravo").unwrap();
+        let second = shared
+            .with(root.path(), |cache| {
+                let result = get_context_candidates(root.path(), cache, request())?;
+                assert_eq!(cache.parse_count, 2);
+                Ok(result)
+            })
+            .unwrap();
+        assert_ne!(
+            first.candidates[0].content_sha256,
+            second.candidates[0].content_sha256
+        );
+        fs::remove_file(root.path().join("billing.md")).unwrap();
+        shared
+            .with(root.path(), |cache| {
+                assert!(
+                    get_context_candidates(root.path(), cache, request())?
+                        .candidates
+                        .is_empty()
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+    #[test]
+    fn root_isolation_txt_fallback_and_ignored_documents_are_preserved() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        fs::write(left.path().join("billing.txt"), "left billing").unwrap();
+        fs::write(right.path().join("billing.txt"), "right billing").unwrap();
+        fs::write(left.path().join(".gitignore"), "ignored.md\n").unwrap();
+        fs::write(left.path().join("ignored.md"), "billing hidden").unwrap();
+        let shared = SharedDocumentCache::default();
+        let left_hash = shared
+            .with(left.path(), |cache| {
+                let result = get_context_candidates(left.path(), cache, request())?;
+                assert_eq!(result.candidates.len(), 1);
+                assert_eq!(result.candidates[0].relative_path, "billing.txt");
+                assert!(
+                    get_workspace_vault_index(
+                        left.path(),
+                        cache,
+                        GetWorkspaceVaultIndexRequest {
+                            force_rebuild: false
+                        }
+                    )?
+                    .notes
+                    .is_empty()
+                );
+                Ok(result.candidates[0].content_sha256.clone())
+            })
+            .unwrap();
+        shared
+            .with(right.path(), |cache| {
+                let result = get_context_candidates(right.path(), cache, request())?;
+                assert_ne!(left_hash, result.candidates[0].content_sha256);
+                Ok(())
+            })
+            .unwrap();
+        assert!(read_context_document(left.path(), "ignored.md").is_err());
+    }
+    #[test]
+    fn learning_and_deprecated_notes_cannot_seed_or_bridge_normative_graph() {
+        let root = tempfile::tempdir().unwrap();
+        for (path, content) in [
+            (
+                "billing.md",
+                "---\ntype: feature\nrisk: high\n---\n# billing\n[[proposal]]",
+            ),
+            (
+                "proposal.md",
+                "---\ntype: learning_report\nstatus: proposed\n---\nbilling [[unrelated]]",
+            ),
+            ("deprecated.md", "---\nstatus: deprecated\n---\nbilling"),
+            ("unrelated.md", "must not be reached through a proposal"),
+        ] {
+            fs::write(root.path().join(path), content).unwrap();
+        }
+        let mut cache = VaultIndexCache::default();
+        let result = get_context_candidates(root.path(), &mut cache, request()).unwrap();
+        assert_eq!(
+            result
+                .candidates
+                .iter()
+                .map(|c| c.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["billing.md"]
+        );
+        let mut query = request();
+        query.feature_name = "proposal".into();
+        let result = get_context_candidates(root.path(), &mut cache, query).unwrap();
+        assert!(
+            result
+                .candidates
+                .iter()
+                .all(|c| c.relative_path != "proposal.md")
+        );
     }
 }

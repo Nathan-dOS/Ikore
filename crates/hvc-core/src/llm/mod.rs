@@ -5,6 +5,7 @@ pub mod credentials;
 pub mod domain;
 pub mod error;
 pub mod events;
+mod priority;
 pub mod profiles;
 pub mod repository;
 pub mod resilience;

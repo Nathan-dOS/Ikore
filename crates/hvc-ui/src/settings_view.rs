@@ -188,7 +188,8 @@ pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> An
                         .child(div().text_sm().child(format!("Orçamento atual do handoff: {} caracteres. Aumente aqui se artefatos/respostas obrigatórios não couberem.",snapshot.config.context_chars_limit)))
                         .child(model.context_limit_input.clone())
                         .child(action("context-budget-save","Salvar orçamento de contexto",!busy,cx,|model,cx|model.save_context_limit(cx)))
-                        .child(div().text_xs().text_color(theme::text_muted()).child("Sem fila: contexto sob demanda. PreSpec: somente o sucessor imediato, sem LLM ou publicação. Learning executável fica para M4.")),
+                        .child(toggle("learning-enabled", "LEARNING CONSULTIVO", if snapshot.preparation.learning_enabled {"on"}else{"off"}, !busy,cx,|model,cx|model.toggle_learning(cx)))
+                        .child(div().text_xs().text_color(theme::text_muted()).child("Sem fila: contexto sob demanda. Learning produz propostas após Done, sem aplicar regras ou reprocessar histórico. Até 3 chamadas por ciclo; demanda principal tem prioridade.")),
                 )
                 .child(
                     card("RAG / YAML Graph")

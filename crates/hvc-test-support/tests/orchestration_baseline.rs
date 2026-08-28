@@ -156,6 +156,7 @@ async fn production_runtime_uses_injected_gateway_and_validates_real_output() {
     let result = execute_stage(
         &FixedEmbeddingGateway::default(),
         &gateway,
+        &hvc_core::document_cache::SharedDocumentCache::default(),
         &AgentRuntimeConfig::default(),
         &input(&fixture),
         &CancellationToken::new(),
@@ -187,6 +188,7 @@ async fn production_runtime_rejects_invalid_schema_from_the_provider() {
     let result = execute_stage(
         &FixedEmbeddingGateway::default(),
         &gateway,
+        &hvc_core::document_cache::SharedDocumentCache::default(),
         &AgentRuntimeConfig::default(),
         &input(&fixture),
         &CancellationToken::new(),
@@ -198,6 +200,7 @@ async fn production_runtime_rejects_invalid_schema_from_the_provider() {
 
 #[tokio::test]
 async fn controlled_late_response_is_rejected_after_input_revision_changes() {
+    let cache = hvc_core::document_cache::SharedDocumentCache::default();
     let fixture = PulsationFixture::new(LegacyPulseLayout::TwoQueued);
     let gateway = ControlledLlmGateway::new(valid_output());
     let embeddings = FixedEmbeddingGateway::default();
@@ -208,7 +211,14 @@ async fn controlled_late_response_is_rejected_after_input_revision_changes() {
     // Timeout is a deadlock guard only; the semaphore establishes the ordering.
     let (result, current) = tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(
-            execute_stage(&embeddings, &gateway, &config, &request, &cancellation),
+            execute_stage(
+                &embeddings,
+                &gateway,
+                &cache,
+                &config,
+                &request,
+                &cancellation
+            ),
             async {
                 gateway.wait_until_called().await;
                 let mut current = submitted.clone();
@@ -229,6 +239,7 @@ async fn controlled_late_response_is_rejected_after_input_revision_changes() {
 
 #[tokio::test]
 async fn controlled_provider_observes_cancellation_without_a_response_release() {
+    let cache = hvc_core::document_cache::SharedDocumentCache::default();
     let fixture = PulsationFixture::new(LegacyPulseLayout::TwoQueued);
     let gateway = ControlledLlmGateway::new(valid_output());
     let embeddings = FixedEmbeddingGateway::default();
@@ -237,7 +248,14 @@ async fn controlled_provider_observes_cancellation_without_a_response_release() 
     let cancellation = CancellationToken::new();
     let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(
-            execute_stage(&embeddings, &gateway, &config, &request, &cancellation),
+            execute_stage(
+                &embeddings,
+                &gateway,
+                &cache,
+                &config,
+                &request,
+                &cancellation
+            ),
             async {
                 gateway.wait_until_called().await;
                 cancellation.cancel();

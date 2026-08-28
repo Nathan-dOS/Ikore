@@ -24,9 +24,9 @@ use crate::workspace_service::{
     GetContextCandidatesResponse, GetWorkspaceVaultIndexRequest, GetWorkspaceVaultIndexResponse,
     OpenWorkspaceRequest, OpenWorkspaceResponse, ReadWorkspaceFileRequest,
     ReadWorkspaceFileResponse, RenameWorkspaceNoteRequest, RenameWorkspaceNoteResponse,
-    SearchWorkspaceTextRequest, SearchWorkspaceTextResponse, VaultIndexCache,
-    WorkspaceCommandError, WorkspaceEventSink, WorkspaceServiceError, WorkspaceTreeResponse,
-    WorkspaceWatcher, WriteWorkspaceFileAtomicRequest, WriteWorkspaceFileAtomicResponse,
+    SearchWorkspaceTextRequest, SearchWorkspaceTextResponse, WorkspaceCommandError,
+    WorkspaceEventSink, WorkspaceServiceError, WorkspaceTreeResponse, WorkspaceWatcher,
+    WriteWorkspaceFileAtomicRequest, WriteWorkspaceFileAtomicResponse,
 };
 
 const APP_IDENTIFIER: &str = "com.hardvibecode.desktop";
@@ -177,7 +177,6 @@ fn process_locks() -> &'static Mutex<HashSet<PathBuf>> {
 struct WorkspaceContext {
     root_path: Option<PathBuf>,
     watcher: Option<WorkspaceWatcher>,
-    vault_index_cache: VaultIndexCache,
 }
 
 pub struct AppCore {
@@ -289,7 +288,6 @@ impl AppCore {
         let mut workspace = self.workspace.lock().map_err(|_| workspace_lock_error())?;
         workspace.root_path = Some(root_path.clone());
         workspace.watcher = Some(watcher);
-        workspace.vault_index_cache = VaultIndexCache::default();
         Ok(OpenWorkspaceResponse {
             root_path: root_path.to_string_lossy().to_string(),
             tree,
@@ -338,29 +336,25 @@ impl AppCore {
         &self,
         request: GetWorkspaceVaultIndexRequest,
     ) -> Result<GetWorkspaceVaultIndexResponse, WorkspaceCommandError> {
-        let mut workspace = self.workspace.lock().map_err(|_| workspace_lock_error())?;
-        let root = workspace
-            .root_path
-            .clone()
-            .ok_or_else(|| WorkspaceCommandError::from(WorkspaceServiceError::WorkspaceNotOpen))?;
-        workspace_service::get_workspace_vault_index(
-            &root,
-            &mut workspace.vault_index_cache,
-            request,
-        )
-        .map_err(WorkspaceCommandError::from)
+        let root = self.workspace_root()?;
+        self.persistence
+            .document_cache
+            .with(&root, |cache| {
+                workspace_service::get_workspace_vault_index(&root, cache, request)
+            })
+            .map_err(WorkspaceCommandError::from)
     }
 
     pub fn get_context_candidates(
         &self,
         request: GetContextCandidatesRequest,
     ) -> Result<GetContextCandidatesResponse, WorkspaceCommandError> {
-        let mut workspace = self.workspace.lock().map_err(|_| workspace_lock_error())?;
-        let root = workspace
-            .root_path
-            .clone()
-            .ok_or_else(|| WorkspaceCommandError::from(WorkspaceServiceError::WorkspaceNotOpen))?;
-        workspace_service::get_context_candidates(&root, &mut workspace.vault_index_cache, request)
+        let root = self.workspace_root()?;
+        self.persistence
+            .document_cache
+            .with(&root, |cache| {
+                workspace_service::get_context_candidates(&root, cache, request)
+            })
             .map_err(WorkspaceCommandError::from)
     }
 
@@ -368,12 +362,12 @@ impl AppCore {
         &self,
         request: RenameWorkspaceNoteRequest,
     ) -> Result<RenameWorkspaceNoteResponse, WorkspaceCommandError> {
-        let mut workspace = self.workspace.lock().map_err(|_| workspace_lock_error())?;
-        let root = workspace
-            .root_path
-            .clone()
-            .ok_or_else(|| WorkspaceCommandError::from(WorkspaceServiceError::WorkspaceNotOpen))?;
-        workspace_service::rename_workspace_note(&root, &mut workspace.vault_index_cache, request)
+        let root = self.workspace_root()?;
+        self.persistence
+            .document_cache
+            .with(&root, |cache| {
+                workspace_service::rename_workspace_note(&root, cache, request)
+            })
             .map_err(WorkspaceCommandError::from)
     }
 

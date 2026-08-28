@@ -367,13 +367,98 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         PreSpecSkipReason::NoMatches => "Sem matches no escopo limitado",
         PreSpecSkipReason::BaseReleased => "Base liberada; Specification não espera",
     });
-    let mut panel=div().mt_4().p_3().rounded_md().border_1().border_color(theme::border()).flex().flex_col().gap_2()
-        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Preparação · fora dos seis estágios"))
-        .child(format!("Revisão {} · {}",detail.input_revision,label))
-        .when_some(reason,|p,r|p.child(div().text_sm().text_color(theme::text_muted()).child(r)))
-        .when_some(detail.context_disposition.clone(),|p,d|p.child(format!("Contexto selecionado: {d}")))
-        .when_some(detail.diagnostic.clone(),|p,d|p.child(div().text_sm().child(d)))
-        .child(div().text_xs().text_color(theme::text_muted()).child("Learning: executor ainda indisponível (M4). Código contextual não exige vault nem AST."));
+    let mut panel = div()
+        .mt_4()
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(theme::border())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child("Preparação · fora dos seis estágios"),
+        )
+        .child(format!("Revisão {} · {}", detail.input_revision, label))
+        .when_some(reason, |p, r| {
+            p.child(div().text_sm().text_color(theme::text_muted()).child(r))
+        })
+        .when_some(detail.context_disposition.clone(), |p, d| {
+            p.child(format!("Contexto selecionado: {d}"))
+        })
+        .when_some(detail.diagnostic.clone(), |p, d| {
+            p.child(div().text_sm().child(d))
+        })
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child("Código contextual não exige vault nem AST."),
+        );
+    use hvc_core::orchestration::LearningState;
+    let learning_label = match detail.learning {
+        LearningState::NotScheduled => "Não agendado",
+        LearningState::Unavailable => "Histórico sem executor (não será reprocessado)",
+        LearningState::Pending => "Aguardando prioridade e 5 s de silêncio na conexão",
+        LearningState::Running => "Gerando proposta consultiva",
+        LearningState::Preempted => "Interrompido pela demanda principal",
+        LearningState::DeferredBudget => "Orçamento esgotado; aguarda autorização",
+        LearningState::Disabled => "Desativado; orçamento preservado",
+        LearningState::Publishing => "Publicando proposta",
+        LearningState::Published => "Proposta publicada; confira o artefato abaixo",
+        LearningState::Conflict => "Conflito de publicação; arquivos preservados",
+        LearningState::Failed => "Falha opcional; pulsação concluída preservada",
+        LearningState::Cancelled => "Relatório dispensado",
+    };
+    panel = panel
+        .child(
+            div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(format!("Learning · {learning_label}")),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child("Propostas não alteram regras nem reabrem Done."),
+        );
+    if let Some(run) = &detail.learning_run {
+        panel = panel
+            .child(format!(
+                "Chamadas: {}/3 nesta versão · {} no histórico",
+                run.budget_calls, run.total_calls
+            ))
+            .when_some(run.diagnostic.clone(), |panel, diagnostic| {
+                panel.child(div().text_sm().child(diagnostic))
+            });
+        if matches!(
+            detail.learning,
+            LearningState::Failed | LearningState::DeferredBudget
+        ) && run.artifact_id.is_none()
+        {
+            panel = panel.child(preparation_button(
+                "learning-retry",
+                "Autorizar até 3 novas chamadas",
+                !busy,
+                cx,
+                |m, cx| m.learning_action(true, cx),
+            ));
+        }
+        if !matches!(
+            detail.learning,
+            LearningState::Published | LearningState::Cancelled
+        ) {
+            panel = panel.child(preparation_button(
+                "learning-dismiss",
+                "Dispensar relatório",
+                !busy,
+                cx,
+                |m, cx| m.learning_action(false, cx),
+            ));
+        }
+    }
     if let Some(assessment) = &prep.assessment {
         panel = panel.child(format!(
             "TaskRefine: {} / 100 · threshold {} · {}",

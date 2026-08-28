@@ -2219,10 +2219,7 @@ impl AppModel {
                 let response = backend
                     .reindex(workspace_path, (!model.is_empty()).then_some(model))
                     .await?;
-                Ok(format!(
-                    "Reindexação concluída: {} indexado(s), {} ignorado(s), {} falha(s).",
-                    response.indexed_count, response.skipped_count, response.failed_count
-                ))
+                Ok(format!("Reconciliação de embeddings solicitada para {}. O supervisor executará os deltas em segundo plano.", response.workspace_path))
             }),
             cx,
         );
@@ -2644,13 +2641,14 @@ impl AppModel {
     }
 
     pub(crate) fn cycle_binding_role(&mut self, cx: &mut Context<Self>) {
-        const ROLES: [&str; 6] = [
+        const ROLES: [&str; 7] = [
             "intake_router",
             "task_specifier",
             "contract_agent",
             "backend_agent",
             "test_agent",
             "integrator",
+            "learning_agent",
         ];
         self.settings.update(cx, |settings, _| {
             let current = ROLES
@@ -2663,13 +2661,14 @@ impl AppModel {
     }
 
     pub(crate) fn cycle_binding_stage(&mut self, cx: &mut Context<Self>) {
-        const STAGES: [&str; 6] = [
+        const STAGES: [&str; 7] = [
             "Intake",
             "Specification",
             "Contract",
             "Code",
             "Test",
             "Integrator",
+            "Learning",
         ];
         self.settings.update(cx, |settings, _| {
             let current = STAGES
@@ -4342,6 +4341,7 @@ mod tests {
                 }],
             }),
             learning: LearningState::Unavailable,
+            learning_run: None,
             artifact_ids: vec![],
         }
     }
@@ -4411,6 +4411,56 @@ mod tests {
                     .is_empty()
             )
         });
+    }
+
+    #[gpui::test]
+    fn learning_ui_submits_the_displayed_generation_once(cx: &mut TestAppContext) {
+        use hvc_core::orchestration::{LearningRunSnapshot, LearningState};
+        let backend = Arc::new(RecordingPulsationsBackend::new());
+        let mut detail = preparation_detail(false);
+        detail.learning = LearningState::DeferredBudget;
+        detail.learning_run = Some(LearningRunSnapshot {
+            job_id: "learning-1".into(),
+            generation: 7,
+            budget_calls: 3,
+            total_calls: 3,
+            budget_grants: 1,
+            artifact_id: None,
+            diagnostic: Some("budget".into()),
+        });
+        backend.snapshot.lock().unwrap().details = vec![detail];
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                backend.clone(),
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |m, cx| {
+            configure_domain_workspace(m, cx);
+            m.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        model.update(cx, |m, cx| {
+            m.learning_action(true, cx);
+            m.learning_action(true, cx);
+        });
+        cx.run_until_parked();
+        {
+            let actions = backend.actions.lock().unwrap();
+            assert_eq!(actions.len(), 1);
+            let crate::pulsations::PulsationAction::RetryLearning(request) = &actions[0] else {
+                panic!("retry learning");
+            };
+            assert_eq!(request.job_id, "learning-1");
+            assert_eq!(request.expected_generation, 7);
+        }
+        model.update(cx, |m, cx| m.learning_action(false, cx));
+        cx.run_until_parked();
+        assert!(matches!(
+            backend.actions.lock().unwrap()[1],
+            crate::pulsations::PulsationAction::DismissLearning(_)
+        ));
     }
 
     #[gpui::test]

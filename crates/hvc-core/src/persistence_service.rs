@@ -27,7 +27,7 @@ use rusqlite::{Connection, Error as SqlError, ErrorCode, OptionalExtension, para
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -37,8 +37,12 @@ mod anticipation;
 mod clarification;
 #[path = "orchestration/coordination.rs"]
 mod coordination;
+#[path = "orchestration/indexing.rs"]
+mod indexing;
 #[path = "orchestration/integration.rs"]
 mod integration;
+#[path = "orchestration/learning.rs"]
+mod learning;
 #[path = "orchestration/preparation.rs"]
 mod preparation;
 #[path = "orchestration/reconciliation.rs"]
@@ -759,6 +763,7 @@ pub struct ReindexWorkspaceEmbeddingsRequest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReindexWorkspaceEmbeddingsResponse {
+    pub queued_count: usize,
     pub workspace_path: String,
     pub model: String,
     pub indexed_count: usize,
@@ -954,6 +959,8 @@ pub struct PersistenceService {
     llm_repository: SqliteLlmRepository,
     credentials: Arc<dyn CredentialStore>,
     llm_router: Arc<ProviderRouter>,
+    pub(crate) document_cache: crate::document_cache::SharedDocumentCache,
+    clock: Arc<dyn Clock>,
 }
 
 impl PersistenceService {
@@ -1009,7 +1016,7 @@ impl PersistenceService {
             llm_client.clone(),
             credentials.clone(),
             event_sink,
-            clock,
+            clock.clone(),
             jitter,
         ));
         Ok(Self {
@@ -1019,6 +1026,8 @@ impl PersistenceService {
             llm_repository,
             credentials,
             llm_router,
+            document_cache: Default::default(),
+            clock,
         })
     }
 
@@ -2308,181 +2317,8 @@ impl PersistenceService {
         }
 
         let saved = self.persist_runtime_config(&config)?;
+        self.indexing_configuration_changed(&saved)?;
         Ok(UpdateAgentRuntimeConfigResponse { config: saved })
-    }
-
-    pub async fn reindex_workspace_embeddings_for_workspace(
-        &self,
-        workspace_path: &str,
-        request: ReindexWorkspaceEmbeddingsRequest,
-    ) -> Result<ReindexWorkspaceEmbeddingsResponse, PersistenceServiceError> {
-        let normalized_workspace_path = Self::normalize_workspace_path(workspace_path)?;
-        let runtime_config = self.load_runtime_config()?;
-        let model = request
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(runtime_config.embedding_model.as_str())
-            .to_string();
-        let workspace_root = PathBuf::from(&normalized_workspace_path);
-        let notes_root = workspace_root.join("knowledge/obsidian");
-
-        if !notes_root.exists() || !notes_root.is_dir() {
-            return Ok(ReindexWorkspaceEmbeddingsResponse {
-                workspace_path: normalized_workspace_path,
-                model,
-                indexed_count: 0,
-                skipped_count: 0,
-                deleted_count: 0,
-                failed_count: 0,
-            });
-        }
-
-        let connection = self.connection()?;
-        let mut indexed_count = 0usize;
-        let mut skipped_count = 0usize;
-        let mut failed_count = 0usize;
-        let mut deleted_count = 0usize;
-        let mut seen_paths = HashSet::new();
-
-        for entry in walkdir::WalkDir::new(&notes_root)
-            .min_depth(1)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let path = entry.path();
-            if path
-                .extension()
-                .and_then(|value| value.to_str())
-                .map(|value| value.to_ascii_lowercase())
-                != Some("md".to_string())
-            {
-                continue;
-            }
-
-            let relative_path = match path.strip_prefix(&workspace_root) {
-                Ok(value) => value.to_string_lossy().replace('\\', "/"),
-                Err(_) => {
-                    failed_count += 1;
-                    continue;
-                }
-            };
-            seen_paths.insert(relative_path.clone());
-
-            let raw = match fs::read_to_string(path) {
-                Ok(content) => content,
-                Err(_) => {
-                    failed_count += 1;
-                    continue;
-                }
-            };
-            let revision_hash = sha256_hex(raw.as_bytes());
-
-            let stored_hash = connection
-                .query_row(
-                    "SELECT revision_hash
-                     FROM workspace_note_embeddings
-                     WHERE workspace_path = ?1 AND relative_path = ?2 AND embedding_model = ?3
-                     LIMIT 1",
-                    params![
-                        normalized_workspace_path.as_str(),
-                        relative_path.as_str(),
-                        model.as_str()
-                    ],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?;
-            if stored_hash.as_deref() == Some(revision_hash.as_str()) {
-                skipped_count += 1;
-                continue;
-            }
-
-            let embedding_source = strip_frontmatter_for_embedding(&raw);
-            let embedding = match self
-                .embedding_gateway
-                .embed(model.as_str(), embedding_source.as_str())
-                .await
-            {
-                Ok(value) => value,
-                Err(_) => {
-                    failed_count += 1;
-                    continue;
-                }
-            };
-            let embedding_json = serde_json::to_string(&embedding).map_err(|error| {
-                PersistenceServiceError::Runtime(format!("Falha ao serializar embedding: {error}"))
-            })?;
-
-            connection.execute(
-                "INSERT INTO workspace_note_embeddings (
-                   id,
-                   workspace_path,
-                   relative_path,
-                   revision_hash,
-                   embedding_model,
-                   embedding_vector_json,
-                   updated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(workspace_path, relative_path, embedding_model)
-                 DO UPDATE SET
-                   revision_hash = excluded.revision_hash,
-                   embedding_vector_json = excluded.embedding_vector_json,
-                   updated_at = excluded.updated_at",
-                params![
-                    Uuid::new_v4().to_string(),
-                    normalized_workspace_path.as_str(),
-                    relative_path.as_str(),
-                    revision_hash.as_str(),
-                    model.as_str(),
-                    embedding_json.as_str(),
-                    Self::now_iso()
-                ],
-            )?;
-            indexed_count += 1;
-        }
-
-        let mut statement = connection.prepare(
-            "SELECT relative_path
-             FROM workspace_note_embeddings
-             WHERE workspace_path = ?1 AND embedding_model = ?2",
-        )?;
-        let stale_rows = statement.query_map(
-            params![normalized_workspace_path.as_str(), model.as_str()],
-            |row| row.get::<_, String>(0),
-        )?;
-        let mut stale_paths = Vec::new();
-        for row in stale_rows {
-            let relative_path = row?;
-            if !seen_paths.contains(&relative_path) {
-                stale_paths.push(relative_path);
-            }
-        }
-        for stale_relative_path in stale_paths {
-            connection.execute(
-                "DELETE FROM workspace_note_embeddings
-                 WHERE workspace_path = ?1 AND relative_path = ?2 AND embedding_model = ?3",
-                params![
-                    normalized_workspace_path.as_str(),
-                    stale_relative_path.as_str(),
-                    model.as_str()
-                ],
-            )?;
-            deleted_count += 1;
-        }
-
-        Ok(ReindexWorkspaceEmbeddingsResponse {
-            workspace_path: normalized_workspace_path,
-            model,
-            indexed_count,
-            skipped_count,
-            deleted_count,
-            failed_count,
-        })
     }
 
     pub fn save_provider_api_key(
@@ -2797,12 +2633,13 @@ impl PersistenceService {
             )?;
             Self::mark_effects_for_review(&tx, &id, "recovered_user_cancel")?;
         }
-        tx.execute("UPDATE project_pipeline_state SET base_state='needs_review',blocking_reason='stale_publication_uncertain' WHERE project_id IN (SELECT o.project_id FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN pulsations p ON p.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE o.state='applying' AND (a.input_revision<>p.input_revision OR a.generation<>j.generation OR a.acceptance='superseded' OR p.status='failed'))",[])?;
+        tx.execute("UPDATE project_pipeline_state SET base_state='needs_review',blocking_reason='stale_publication_uncertain' WHERE project_id IN (SELECT o.project_id FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN pulsations p ON p.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE o.job_class='main' AND o.state='applying' AND (a.input_revision<>p.input_revision OR a.generation<>j.generation OR a.acceptance='superseded' OR p.status='failed'))",[])?;
         tx.execute("UPDATE artifact_publications SET state='cancelled' WHERE state IN ('pending','applying') AND artifact_id IN (SELECT a.id FROM artifacts a JOIN pulsations p ON p.id=a.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE a.input_revision<>p.input_revision OR a.generation<>j.generation OR a.acceptance='superseded' OR p.status='failed')",[])?;
-        tx.execute("UPDATE jobs SET status='failed',cancellation_reason=COALESCE(cancellation_reason,'superseded'),updated_at=?1 WHERE status IN ('pending','running','interrupted') AND (cancellation_reason IN ('user_cancel','superseded') OR EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND (p.status IN ('failed','done') OR p.input_revision<>jobs.input_revision)))",[&now])?;
+        tx.execute("UPDATE jobs SET status='failed',cancellation_reason=COALESCE(cancellation_reason,'superseded'),updated_at=?1 WHERE status IN ('pending','running','interrupted') AND (cancellation_reason IN ('user_cancel','superseded') OR (kind!='learning_report' AND EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND (p.status IN ('failed','done') OR p.input_revision<>jobs.input_revision))))",[&now])?;
         tx.execute("UPDATE jobs SET status='pending',state_version=(SELECT state_version FROM pulsations WHERE id=jobs.pulsation_id),generation=generation+1,started_at=NULL,cancel_requested_at=NULL,cancellation_reason=NULL,available_at=?1,updated_at=?1 WHERE status IN ('running','interrupted') AND (cancellation_reason IS NULL OR cancellation_reason IN ('shutdown','preempted')) AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.job_id=jobs.id) AND EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND p.status IN ('planning','running') AND p.input_revision=jobs.input_revision)",[&now])?;
         tx.execute("UPDATE agent_runs SET status='interrupted',updated_at=?1 WHERE status='running' AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.agent_run_id=agent_runs.id)",[&now])?;
         Self::recover_coordination(&tx)?;
+        Self::recover_knowledge_background(&tx)?;
         tx.execute("UPDATE jobs SET status='failed',cancellation_reason='superseded',last_error='Preparação interrompida no restart; usar contexto sob demanda.' WHERE kind='prepare_context' AND status IN ('pending','running','interrupted')",[])?;
         tx.execute("UPDATE pulsation_preparation SET prespec_state='cancelled',diagnostic='Preparação interrompida no restart; usar contexto sob demanda.' WHERE prespec_state IN ('pending','running')",[])?;
         tx.commit()?;
@@ -3176,6 +3013,12 @@ impl PersistenceService {
                 PersistenceServiceError::NotFound("Projeto da pulsação não encontrado.".to_string())
             })?;
 
+        let _provider_demand = self.llm_router.foreground_demand(
+            &current.project_id,
+            crate::llm::AgentRole::for_stage(stage.as_db_value()),
+            stage.as_db_value(),
+            runtime_config.provider.as_str(),
+        )?;
         let mut handoff = self.load_stage_handoff(
             &Self::execution_fence(&connection, &job.id)?,
             stage,
@@ -3203,21 +3046,6 @@ impl PersistenceService {
             runtime_db_path: self.db_path.to_string_lossy().to_string(),
         };
 
-        if !anticipatory
-            && runtime_config.context_strategy == ContextStrategy::YamlGraphRag
-            && runtime_config.embedding_enabled
-            && runtime_config.embedding_provider == EmbeddingProvider::Ollama
-        {
-            let _ = self
-                .reindex_workspace_embeddings_for_workspace(
-                    project.workspace_path.as_str(),
-                    ReindexWorkspaceEmbeddingsRequest {
-                        model: Some(runtime_config.embedding_model.clone()),
-                    },
-                )
-                .await;
-        }
-
         tokio::select! {
             _ = cancellation.cancelled() => {
                 return Err(PersistenceServiceError::Cancelled(
@@ -3227,23 +3055,16 @@ impl PersistenceService {
             _ = sleep(Duration::from_millis(160)) => {}
         }
 
-        let execution = timeout(
-            Duration::from_millis(runtime_config.timeout_ms),
-            execute_stage(
-                self.embedding_gateway.as_ref(),
-                self.llm_router.as_ref(),
-                runtime_config,
-                &execution_input,
-                cancellation,
-            ),
+        // Never abandon an owned filesystem worker; the router bounds network attempts.
+        let execution = execute_stage(
+            self.embedding_gateway.as_ref(),
+            self.llm_router.as_ref(),
+            &self.document_cache,
+            runtime_config,
+            &execution_input,
+            cancellation,
         )
         .await
-        .map_err(|_| {
-            PersistenceServiceError::Retryable(format!(
-                "Tempo limite excedido ({}ms).",
-                runtime_config.timeout_ms
-            ))
-        })?
         .map_err(PersistenceServiceError::from)?;
 
         if cancellation.is_cancelled() {
@@ -3352,12 +3173,6 @@ impl PersistenceService {
 
         Ok(())
     }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
 }
 
 fn strip_frontmatter_for_embedding(content: &str) -> String {

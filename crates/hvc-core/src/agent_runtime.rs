@@ -1,12 +1,12 @@
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::fmt;
-use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+use crate::document_cache::SharedDocumentCache;
 use crate::embedding_service::EmbeddingGateway;
-use crate::workspace_service::{self, GetContextCandidatesRequest, VaultIndexCache};
+use crate::workspace_service::{self, GetContextCandidatesRequest};
 use chrono::Utc;
 use jsonschema::validator_for;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-use walkdir::WalkDir;
 
 use crate::llm::{
     AgentRole, ExecutionId, GenerationId, LlmError, LlmGateway, LlmRequest, ResponseFormat,
@@ -361,6 +360,7 @@ struct LlmCallOutput {
 pub async fn execute_stage(
     embedding_gateway: &dyn EmbeddingGateway,
     gateway: &dyn LlmGateway,
+    document_cache: &SharedDocumentCache,
     config: &AgentRuntimeConfig,
     input: &StageExecutionInput,
     cancellation: &CancellationToken,
@@ -396,8 +396,15 @@ pub async fn execute_stage(
                 });
             retrieval_config.context_chars_limit = config.context_chars_limit.saturating_sub(used);
         }
-        tool_search_and_read_context(embedding_gateway, input, &retrieval_config, &mut tool_trace)
-            .await?
+        tool_search_and_read_context(
+            embedding_gateway,
+            document_cache,
+            input,
+            &retrieval_config,
+            &mut tool_trace,
+            cancellation,
+        )
+        .await?
     };
     let schema_json = if input.stage_name == "SPECIFICATION" {
         specification_output_schema()
@@ -590,9 +597,11 @@ fn specification_output_schema() -> Value {
 
 async fn tool_search_and_read_context(
     embedding_gateway: &dyn EmbeddingGateway,
+    document_cache: &SharedDocumentCache,
     input: &StageExecutionInput,
     config: &AgentRuntimeConfig,
     tool_trace: &mut Vec<ToolTraceEntry>,
+    cancellation: &CancellationToken,
 ) -> Result<Vec<ContextDocument>, AgentRuntimeError> {
     let workspace_root = PathBuf::from(input.workspace_path.trim());
     if !workspace_root.exists() || !workspace_root.is_dir() {
@@ -608,33 +617,46 @@ async fn tool_search_and_read_context(
         force_rebuild: false,
     };
 
-    let (mut candidates, fallback_used) = match workspace_service::get_context_candidates(
-        &workspace_root,
-        &mut VaultIndexCache::default(),
-        context_request,
-    ) {
-        Ok(response) => (
-            response
-                .candidates
-                .into_iter()
-                .map(|candidate| (candidate.relative_path, candidate.score))
-                .collect::<Vec<(String, usize)>>(),
-            response.fallback_used,
-        ),
+    let cache = document_cache.clone();
+    let root = workspace_root.clone();
+    let response = tokio::task::spawn_blocking(move || {
+        cache.with(&root, |cache| {
+            workspace_service::get_context_candidates(&root, cache, context_request)
+        })
+    })
+    .await
+    .map_err(|e| AgentRuntimeError::Validation(e.to_string()))?;
+    let (selected, fallback_used) = match response {
+        Ok(response) => (response.candidates, response.fallback_used),
         Err(_) => (
             build_textual_candidates_for_context(input, &workspace_root)?,
             true,
         ),
     };
+    let expected_hashes = selected
+        .iter()
+        .map(|c| (c.relative_path.clone(), c.content_sha256.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut candidates = selected
+        .into_iter()
+        .map(|c| (c.relative_path, c.score))
+        .collect::<Vec<_>>();
 
+    if cancellation.is_cancelled() {
+        return Err(AgentRuntimeError::Cancelled);
+    }
     candidates.sort_by_key(|(_, score)| Reverse(*score));
 
     let mut strategy_used = ContextStrategy::YamlGraph.as_str().to_string();
     if config.context_strategy == ContextStrategy::YamlGraphRag
         && config.embedding_enabled
         && config.embedding_provider == EmbeddingProvider::Ollama
-        && let Ok(reranked) =
-            rerank_candidates_with_rag(embedding_gateway, input, config, &candidates).await
+        && let Ok(reranked) = tokio::select! {
+            _ = cancellation.cancelled() => return Err(AgentRuntimeError::Cancelled),
+            result = tokio::time::timeout(std::time::Duration::from_millis(config.timeout_ms),
+                rerank_candidates_with_rag(embedding_gateway, input, config, &candidates)) =>
+                result.unwrap_or_else(|_| Err(AgentRuntimeError::Provider("Timeout da consulta vetorial; fallback textual.".into())))
+        }
         && !reranked.is_empty()
     {
         candidates = reranked;
@@ -677,8 +699,20 @@ async fn tool_search_and_read_context(
             break;
         }
 
-        let path = workspace_root.join(&relative_path);
-        let content = fs::read_to_string(&path)?;
+        let Ok(content) = workspace_service::read_context_document(&workspace_root, &relative_path)
+        else {
+            continue;
+        };
+        if !workspace_service::is_normative_document(&relative_path, &content) {
+            continue;
+        }
+        let content_hash = crate::orchestration::ContentSha256::of(content.as_bytes());
+        if expected_hashes
+            .get(&relative_path)
+            .is_some_and(|expected| expected != content_hash.as_str())
+        {
+            continue; // Selection was made from another revision; never use stale graph evidence.
+        }
         let normalized = content.replace('\r', "");
         let clipped = clip_text(&normalized, chars_budget);
         if clipped.trim().is_empty() {
@@ -692,6 +726,7 @@ async fn tool_search_and_read_context(
             input: json!({ "relativePath": relative_path }),
             output: json!({
                 "chars": clipped.len(),
+                "contentSha256": content_hash,
                 "score": score
             }),
             at: Utc::now().to_rfc3339(),
@@ -730,38 +765,24 @@ fn scope_name_for_stage(stage_name: &str) -> Option<&'static str> {
 
 fn build_textual_candidates_for_context(
     input: &StageExecutionInput,
-    workspace_root: &PathBuf,
-) -> Result<Vec<(String, usize)>, AgentRuntimeError> {
+    workspace_root: &std::path::Path,
+) -> Result<Vec<workspace_service::ContextCandidate>, AgentRuntimeError> {
     let terms = search_terms_for_context(input);
-    let mut candidates: Vec<(String, usize)> = Vec::new();
+    let mut candidates = Vec::new();
     let mut seen = HashSet::new();
 
-    for entry in WalkDir::new(workspace_root)
-        .follow_links(false)
-        .max_depth(8)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        let path = entry.path();
-        let extension = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(|value| value.to_ascii_lowercase())
-            .unwrap_or_default();
-        if extension != "md" && extension != "txt" {
-            continue;
-        }
-
-        let relative = match path.strip_prefix(workspace_root) {
-            Ok(value) => value.to_string_lossy().replace('\\', "/"),
-            Err(_) => continue,
-        };
-
+    let paths = crate::repository_context::RepositoryContext::new(workspace_root)
+        .and_then(|repository| repository.document_paths(false))
+        .map_err(|e| AgentRuntimeError::Validation(e.to_string()))?;
+    for relative in paths {
         if seen.contains(&relative) {
+            continue;
+        }
+        let Ok(content) = workspace_service::read_context_document(workspace_root, &relative)
+        else {
+            continue;
+        };
+        if !workspace_service::is_normative_document(&relative, &content) {
             continue;
         }
 
@@ -773,9 +794,7 @@ fn build_textual_candidates_for_context(
             }
         }
 
-        if score == 0
-            && let Ok(content) = fs::read_to_string(path)
-        {
+        if score == 0 {
             let lowered_content = content.to_ascii_lowercase();
             for term in &terms {
                 if lowered_content.contains(term) {
@@ -786,11 +805,17 @@ fn build_textual_candidates_for_context(
 
         if score > 0 {
             seen.insert(relative.clone());
-            candidates.push((relative, score));
+            candidates.push(workspace_service::ContextCandidate {
+                relative_path: relative,
+                score,
+                content_sha256: crate::orchestration::ContentSha256::of(content.as_bytes())
+                    .as_str()
+                    .to_owned(),
+            });
         }
     }
 
-    candidates.sort_by_key(|(_, score)| Reverse(*score));
+    candidates.sort_by_key(|candidate| Reverse(candidate.score));
     Ok(candidates)
 }
 
@@ -815,29 +840,44 @@ async fn rerank_candidates_with_rag(
     let connection = Connection::open(&input.runtime_db_path).map_err(|error| {
         AgentRuntimeError::Provider(format!("Falha ao abrir DB para embeddings: {error}"))
     })?;
+    let canonical_root = PathBuf::from(&input.workspace_path)
+        .canonicalize()
+        .map_err(|e| AgentRuntimeError::Validation(e.to_string()))?;
+    let canonical_key = canonical_root.to_string_lossy();
     let mut scored = Vec::new();
 
     for (relative_path, base_score) in candidates {
-        let vector_json = connection
+        let vector = connection
             .query_row(
-                "SELECT embedding_vector_json
+                "SELECT embedding_vector_json, revision_hash
                  FROM workspace_note_embeddings
                  WHERE workspace_path = ?1 AND relative_path = ?2 AND embedding_model = ?3
                  LIMIT 1",
                 params![
-                    input.workspace_path.as_str(),
+                    canonical_key.as_ref(),
                     relative_path.as_str(),
                     config.embedding_model.as_str()
                 ],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
             .map_err(|error| {
                 AgentRuntimeError::Provider(format!("Falha ao ler embedding: {error}"))
             })?;
-        let Some(vector_json) = vector_json else {
+        let Some((vector_json, revision_hash)) = vector else {
             continue;
         };
+        let Ok(content) = workspace_service::read_context_document(
+            &PathBuf::from(&input.workspace_path),
+            relative_path,
+        ) else {
+            continue;
+        };
+        if !workspace_service::is_normative_document(relative_path, &content)
+            || crate::orchestration::ContentSha256::of(content.as_bytes()).as_str() != revision_hash
+        {
+            continue;
+        }
         let candidate_embedding =
             serde_json::from_str::<Vec<f64>>(&vector_json).map_err(|error| {
                 AgentRuntimeError::Provider(format!("Embedding inválido no banco: {error}"))
@@ -847,6 +887,12 @@ async fn rerank_candidates_with_rag(
         scored.push((relative_path.clone(), rag_score));
     }
 
+    // A missing/stale vector must not remove valid lexical candidates.
+    for candidate in candidates {
+        if !scored.iter().any(|(path, _)| path == &candidate.0) {
+            scored.push(candidate.clone());
+        }
+    }
     scored.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
     scored.truncate(
         config
@@ -858,7 +904,10 @@ async fn rerank_candidates_with_rag(
 }
 
 fn cosine_similarity(left: &[f64], right: &[f64]) -> f64 {
-    let length = left.len().min(right.len());
+    if left.len() != right.len() || left.iter().chain(right).any(|v| !v.is_finite()) {
+        return 0.0;
+    }
+    let length = left.len();
     if length == 0 {
         return 0.0;
     }
@@ -1139,5 +1188,119 @@ mod tests {
             validate_structured_output(&stage_output_schema(), &invalid),
             Err(AgentRuntimeError::Schema(_))
         ));
+    }
+}
+#[cfg(test)]
+mod m4_context_tests {
+    use super::*;
+    use crate::embedding_service::{EmbeddingError, EmbeddingFuture};
+    struct Query {
+        change: Option<PathBuf>,
+        fail: bool,
+    }
+    impl EmbeddingGateway for Query {
+        fn embed<'a>(&'a self, _: &'a str, _: &'a str) -> EmbeddingFuture<'a> {
+            Box::pin(async move {
+                if let Some(path) = &self.change {
+                    std::fs::write(path, "billing changed after selection").unwrap();
+                }
+                if self.fail {
+                    Err(EmbeddingError("offline fixture".into()))
+                } else {
+                    Ok(vec![1.0, 0.0])
+                }
+            })
+        }
+    }
+    fn input(root: &std::path::Path) -> StageExecutionInput {
+        StageExecutionInput {
+            anticipatory: false,
+            job_id: "j".into(),
+            pulsation_id: "p".into(),
+            project_id: "project".into(),
+            feature_name: "billing".into(),
+            stage_name: "SPECIFICATION".into(),
+            workspace_path: root.to_str().unwrap().into(),
+            runtime_db_path: root.join("test.db").to_str().unwrap().into(),
+            handoff: None,
+        }
+    }
+    fn db(input: &StageExecutionInput) -> Connection {
+        let db = Connection::open(&input.runtime_db_path).unwrap();
+        db.execute_batch("CREATE TABLE workspace_note_embeddings(workspace_path TEXT,relative_path TEXT,embedding_model TEXT,revision_hash TEXT,embedding_vector_json TEXT);").unwrap();
+        db
+    }
+    #[test]
+    fn stale_vectors_never_boost_ranking_or_remove_unembedded_lexical_candidates() {
+        let root = tempfile::tempdir().unwrap();
+        let input = input(root.path());
+        let db = db(&input);
+        std::fs::write(root.path().join("a.md"), "current billing").unwrap();
+        std::fs::write(root.path().join("b.md"), "billing").unwrap();
+        let config = AgentRuntimeConfig::default();
+        db.execute(
+            "INSERT INTO workspace_note_embeddings VALUES(?1,'a.md',?2,'old','[1,0]')",
+            params![
+                root.path().canonicalize().unwrap().to_string_lossy(),
+                config.embedding_model
+            ],
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime
+            .block_on(rerank_candidates_with_rag(
+                &Query {
+                    change: None,
+                    fail: false,
+                },
+                &input,
+                &config,
+                &[("a.md".into(), 1), ("b.md".into(), 2)],
+            ))
+            .unwrap();
+        assert_eq!(result, vec![("b.md".into(), 2), ("a.md".into(), 1)]);
+    }
+    #[test]
+    fn selected_note_changed_during_rag_is_skipped_but_provider_failure_keeps_textual_context() {
+        for fail in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let input = input(root.path());
+            let _db = db(&input);
+            let path = root.path().join("billing.md");
+            std::fs::write(&path, "billing original").unwrap();
+            let config = AgentRuntimeConfig {
+                embedding_enabled: true,
+                context_strategy: ContextStrategy::YamlGraphRag,
+                ..Default::default()
+            };
+            let query = Query {
+                change: if fail { None } else { Some(path) },
+                fail,
+            };
+            let mut trace = Vec::new();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let documents = runtime
+                .block_on(tool_search_and_read_context(
+                    &query,
+                    &SharedDocumentCache::default(),
+                    &input,
+                    &config,
+                    &mut trace,
+                    &CancellationToken::new(),
+                ))
+                .unwrap();
+            if fail {
+                assert_eq!(documents.len(), 1);
+                assert!(documents[0].content.contains("original"));
+            } else {
+                assert!(documents.is_empty());
+            }
+        }
     }
 }

@@ -54,11 +54,7 @@ impl PersistenceService {
                 ),
             )?;
             tx.execute("UPDATE project_pipeline_state SET base_epoch=base_epoch+1,active_pulsation_id=NULL,base_state='ready',blocking_reason=NULL,state_version=state_version+1 WHERE active_pulsation_id=?1", [&id])?;
-            // Availability is deliberately closed in M2. M4 may create executable jobs only for
-            // integrations performed with that feature available; these are not retroactive jobs.
-            tx.execute("INSERT OR IGNORE INTO integration_learning_intents(pulsation_id,integration_epoch,report_version,state,created_at)
-                SELECT p.id,s.base_epoch,1,'unavailable',?2 FROM pulsations p JOIN project_pipeline_state s ON s.project_id=p.project_id
-                WHERE p.id=?1 AND p.pipeline_version=2 AND EXISTS(SELECT 1 FROM runtime_settings WHERE key='orchestration.learning_enabled' AND value='true')",params![id,Self::now_iso()])?;
+            Self::enqueue_learning(&tx, &id)?;
             Self::block_held_successors(&tx)?;
         }
         tx.commit()?;

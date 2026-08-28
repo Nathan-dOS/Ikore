@@ -31,7 +31,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        12
+        13
     );
     assert_eq!(
         db.query_row(
@@ -78,7 +78,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
         .filter(|p| {
             p.file_name()
                 .to_string_lossy()
-                .starts_with("hard-vibe-code.pre-v12.")
+                .starts_with("hard-vibe-code.pre-v13.")
         })
         .collect::<Vec<_>>();
     assert_eq!(backups.len(), 1);
@@ -136,7 +136,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             .filter(|p| p
                 .file_name()
                 .to_string_lossy()
-                .starts_with("hard-vibe-code.pre-v12."))
+                .starts_with("hard-vibe-code.pre-v13."))
             .count(),
         1
     );
@@ -309,5 +309,58 @@ fn migration_preserves_conflicting_bindings_until_explicit_versioned_save() {
             .unwrap()
             .id,
         "route-b"
+    );
+}
+
+#[test]
+fn v12_upgrade_backs_up_and_never_replays_historical_learning_intents() {
+    use hvc_test_support::{DatabaseVersion, IsolatedTestEnvironment};
+    let env = IsolatedTestEnvironment::new();
+    env.prepare_database(DatabaseVersion::new(12));
+    let db = Connection::open(env.data_dir().join("hard-vibe-code.db")).unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('old-project','old',?1,'now','now')",[env.workspace_dir().to_str().unwrap()]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version,queue_sequence) VALUES('old-pulse','old-project','done','Integrator','done','now','now',2,1)",[]).unwrap();
+    db.execute("INSERT INTO integration_learning_intents(pulsation_id,integration_epoch,report_version,state,created_at) VALUES('old-pulse',1,1,'unavailable','now')",[]).unwrap();
+    let service = PersistenceService::initialize(env.data_dir()).unwrap();
+    service.recover_interrupted_jobs().unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM learning_runs", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row("SELECT state FROM integration_learning_intents", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        "unavailable"
+    );
+    let backups = fs::read_dir(env.data_dir())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|p| {
+            p.file_name()
+                .to_string_lossy()
+                .starts_with("hard-vibe-code.pre-v13.")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(backups.len(), 1);
+    let backup = Connection::open(backups[0].path()).unwrap();
+    assert_eq!(
+        backup
+            .query_row(
+                "SELECT MAX(version) FROM refinery_schema_history",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        12
+    );
+    assert_eq!(
+        backup
+            .query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "ok"
     );
 }

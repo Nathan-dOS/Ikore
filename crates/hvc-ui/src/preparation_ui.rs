@@ -104,6 +104,52 @@ impl AppModel {
         self.run_pulsation_action(PulsationAction::Answer(request), cx);
     }
 
+    pub(crate) fn learning_action(&mut self, retry: bool, cx: &mut Context<Self>) {
+        let Some(run) = self
+            .pulsations
+            .read(cx)
+            .detail()
+            .and_then(|d| d.learning_run.clone())
+        else {
+            return;
+        };
+        let request = LearningActionRequest {
+            job_id: run.job_id,
+            expected_generation: run.generation,
+        };
+        self.run_pulsation_action(
+            if retry {
+                PulsationAction::RetryLearning(request)
+            } else {
+                PulsationAction::DismissLearning(request)
+            },
+            cx,
+        );
+    }
+
+    pub(crate) fn toggle_learning(&mut self, cx: &mut Context<Self>) {
+        if self.settings.read(cx).busy {
+            return;
+        }
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(mut settings) = self
+            .settings
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .map(|s| s.preparation.clone())
+        else {
+            return;
+        };
+        settings.learning_enabled = !settings.learning_enabled;
+        self.run_settings_operation(Box::pin(async move {
+            backend.update_preparation(settings).await?;
+            Ok("Learning atualizado; nenhum histórico será reprocessado e os limites de chamadas são preservados.".into())
+        }), cx);
+    }
+
     fn run_pulsation_action(&mut self, action: PulsationAction, cx: &mut Context<Self>) {
         if self.preparation_action_task.is_some() || self.lifecycle.is_disposed() {
             return;

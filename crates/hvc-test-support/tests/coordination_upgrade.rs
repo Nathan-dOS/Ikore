@@ -100,7 +100,7 @@ fn v10_upgrade_backs_up_and_preserves_m1_checkpoint_identity_without_reexecution
         .filter(|p| {
             p.file_name()
                 .to_string_lossy()
-                .starts_with("hard-vibe-code.pre-v12.")
+                .starts_with("hard-vibe-code.pre-v13.")
         })
         .collect::<Vec<_>>();
     assert_eq!(backups.len(), 1);

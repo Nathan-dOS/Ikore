@@ -25,7 +25,7 @@ impl PersistenceService {
             }
             let result = match class {
                 JobClass::Main => self.process_next_pending_job_until(Some(shutdown)).await,
-                JobClass::Background => self.process_anticipation(shutdown).await,
+                JobClass::Background => self.process_knowledge_background(shutdown).await,
             };
             match result {
                 Ok(true) => continue,
@@ -43,6 +43,30 @@ impl PersistenceService {
     #[cfg(test)]
     pub(super) async fn process_next_pending_job(&self) -> Result<(), PersistenceServiceError> {
         self.process_next_pending_job_until(None).await.map(|_| ())
+    }
+
+    async fn process_knowledge_background(
+        &self,
+        shutdown: &CancellationToken,
+    ) -> Result<bool, PersistenceServiceError> {
+        if self.process_anticipation(shutdown).await? {
+            return Ok(true);
+        }
+        if shutdown.is_cancelled() {
+            return Ok(false);
+        }
+        let service = self.clone();
+        let stop = shutdown.clone();
+        if tokio::task::spawn_blocking(move || service.reconcile_learning_publication(&stop))
+            .await
+            .map_err(|e| coordination::invalid(e.to_string()))??
+        {
+            return Ok(true);
+        }
+        if self.process_learning(shutdown).await? {
+            return Ok(true);
+        }
+        self.process_indexing(shutdown).await
     }
 
     async fn process_next_pending_job_until(

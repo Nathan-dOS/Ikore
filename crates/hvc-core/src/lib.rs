@@ -6,6 +6,7 @@
 pub mod agent_runtime;
 pub mod app_core;
 pub mod chat_service;
+pub mod document_cache;
 pub mod embedding_service;
 pub mod events;
 pub mod llm;
