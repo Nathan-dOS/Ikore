@@ -3,7 +3,7 @@
 Data: 2026-08-28. Branch `gpui-migration`. Base M4: `c627837`. Implementação: `8167313`.
 ADR-007 / REGRAS de sincronização do cérebro do projeto.
 
-Status: **implementação e validação automatizada entregues; G5 aberto**. Benchmark concluído, rollout não autorizado; smoke visual ainda pendente. Preparação permanece desligada por default.
+Status: **implementação, validação automatizada e smoke visual entregues; G5 aberto**. O smoke isolado foi concluído após as correções `3a2e2f0`, `d5025c5` e `16a1706`; rollout não autorizado porque a cauda de latência com edição ainda não sustenta ativação. Preparação permanece desligada por default.
 Esta avaliação não habilita onboarding Brownfield nem remove a política de distribuição.
 
 ## Implementação
@@ -18,6 +18,7 @@ Esta avaliação não habilita onboarding Brownfield nem remove a política de d
 
 1. **Disputa de escrita SQLite no início do estágio.** A fila real reproduziu `Code/planning` com job falho `database is locked`. A transação deferred lia antes de obter a reserva de escrita; outra conexão do background podia impedir o upgrade. Início e transição de falha do worker agora usam `BEGIN IMMEDIATE`, antes das leituras, preservando as validações de versão. Não foi adicionado retry que pudesse repetir efeito aceito.
 2. **Extensão de arquivo como falso match.** `auth.rs` selecionava arquivos não relacionados pelo token `rs`, preenchia o limite de 12 fontes e impedia reuso por cobertura parcial. O ranking lexical usa diretório/stem sem extensão, mantendo prioridade do path exato e símbolos no código. Política `rsp12-v2` invalida pacotes antigos. Teste com 21 arquivos comprova uma fonte selecionada e revalidação reutilizável.
+3. **Starvation do Learning por revisão humana em outro projeto.** A consulta de admissão considerava qualquer job principal pendente como trabalho foreground, mesmo quando a descrição estava bloqueada em revisão humana e não podia ser reivindicada. O smoke mostrou uma pulsação `Done` cujo Learning não iniciava. A admissão agora cede somente a slot/publicação principal ou job principal efetivamente reivindicável; revisão humana pendente não bloqueia background indefinidamente. Regressão cobre tanto o caso bloqueado quanto um sucessor realmente elegível (`16a1706`).
 
 ## Reprodução do benchmark
 
@@ -68,18 +69,18 @@ Os nomes abaixo são testes executáveis; caminhos sob `crates/hvc-core/src/orch
 
 | Verificação | Resultado |
 |---|---|
-| `cargo test --workspace --locked --offline --quiet` | **313 aprovados**, zero falhas/ignorados; 196 core, 14 editor, 41 test-support (20 unitários + 21 integração), 62 UI. Reexecução posterior da integração `pulsation_m5` aprovada após separar métricas B/C. |
+| `cargo test --workspace` após as correções do smoke | **319 aprovados**, zero falhas/ignorados; 197 core, 14 editor, 41 test-support, 3 do fixture visual e 64 UI. |
 | `cargo clippy --workspace --all-targets --locked --offline --quiet -- -D warnings` | Aprovado |
 | `cargo fmt --all -- --check` | Aprovado |
 | `git -c core.excludesFile= -c core.autocrlf=false diff --check` | Aprovado |
 | `cargo build --release --locked --offline -p hvc-app` | Aprovado; aviso preexistente de futura incompatibilidade `proc-macro-error2 2.0.1` |
 | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/audit-supply-chain.ps1` | 549 pacotes, zero licenças negadas/metadata ausente/source review; gate técnico aprovado. Distribuição permanece bloqueada por `zed-55470`. |
 | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/audit-advisories.ps1 -OutputDirectory target/m5/advisories` | Zero vulnerabilidades; avisos informativos preexistentes 10 unmaintained, 2 unsound, 1 yanked. RustSec `6420e39260b3d771b049954cf5d52b57e2118da4`. |
-| Smoke visual GPUI e shutdown nativo gracioso | **Pendente**: a execução oculta inicializou DB/lock isolados, mas não expôs janela ao controle de aplicativos. Instância de teste encerrada; não contar como smoke aprovado. Solicitada autorização para janela visível. O script Win32 de smoke não foi combinado com a skill de controle de aplicativos nesta sessão. |
+| [Smoke visual GPUI](C:/Dev/Hard-Vibe-Code/quality/pulsation-smoke-m5.md) | **Aprovado nos fluxos exercitados**: revisão/perguntas/restart, FIFO/cancelamento, artifacts/HITL, Done/Learning, conflito/reconciliação, isolamento de projeto e shutdown/restauração. O script Win32 padronizado não foi combinado com Computer Use e permanece sem evidência nesta rodada. |
 
-Ambiente: Windows `10.0.26200.0`, x86_64; Intel Core Ultra 7 258V, 8 núcleos/8 processadores lógicos. Rust detalhado e modo release registrados no JSON comparativo. SHA-256 do executável GPUI: `6d16efb9023a6f075a18c675ac7ca27019bf167313173e4ad85c9e9a354b5436`.
+Ambiente: Windows `10.0.26200.0`, x86_64; Intel Core Ultra 7 258V, 8 núcleos/8 processadores lógicos. Rust detalhado e modo release registrados no JSON comparativo. SHA-256 do executável GPUI usado após a correção final: `ff623200fadf47d2ba7a56160470bea3a6df09b37d3789109725073d4043806b`.
 
-O smoke pendente inclui criação/revisão/perguntas/aprovações, artifacts, conflito e reconciliação de base, cancelamento, Learning, troca de projeto e restart. Testes automatizados não substituem essa evidência visual nem permitem declarar G5 aprovado.
+O smoke foi executado em janela GPUI real e perfil isolado. Confirmou criação/revisão/perguntas/aprovações, artifacts sem path, conflito e reconciliação de base, cancelamento terminal, Learning consultivo, troca de projeto e restart. Essa evidência fecha M5.2, mas não transforma a regressão de desempenho observada em ganho nem declara G5 aprovado.
 
 Fixture reproduzível (novo diretório, nunca perfil real):
 
@@ -91,9 +92,11 @@ cargo run --release --locked --offline -p hvc-test-support --example pulsation_u
 
 A fixture oferece dois projetos, revisão de pedido pendente, resposta de esclarecimento para tarefas contendo `M5 Perguntas` (responder `JWT assinado`), conflito preservando `notes/conflict.md` para `M5 Conflito`, e Learning consultivo após Done. Apenas configuração/semeadura; o supervisor pertence exclusivamente ao aplicativo.
 
+Uma retomada após expiração pode usar `--resume`, mas o auxiliar recusa qualquer raiz sem o marcador exato, os dois projetos sintéticos e as conexões loopback esperadas (`d5025c5`).
+
 ## Decisão de ativação
 
-**Manter `preparation_enabled=false`.** O ensaio mostra melhora de mediana em filas, mas não sustenta ativação geral: há piora observada da cauda no cenário com edição e a validação visual não foi concluída. Os defaults independentes de Learning/embeddings permanecem inalterados. Sem downgrade, troca de provider/modelo ou flexibilização de hashes/HITL para obter números melhores.
+**Manter `preparation_enabled=false`.** O smoke visual concluiu a validação funcional, mas o ensaio de desempenho não sustenta ativação geral: há piora observada da cauda no cenário com edição. Os defaults independentes de Learning/embeddings permanecem inalterados. Sem downgrade, troca de provider/modelo ou flexibilização de hashes/HITL para obter números melhores.
 
 ### Resultados medidos
 
@@ -122,4 +125,4 @@ O P95 observado de B com edição aumentou **39,5%**; considerando o intervalo c
 - Chamadas equivalentes: **2** sem fila e **14** por fila, on/off; **780 chamadas sintéticas** incluindo aquecimento, zero provider externo. Tokens de saída simulados iguais. Entrada simulada por 12 execuções em cada cenário de fila: 143.364 off e 144.108 on; não há economia de tokens demonstrada.
 - Learning/embeddings estavam desligados nas variantes comparativas: suas preempções/conflitos são zero por construção, não evidência de custo zero quando habilitados. Prioridade, orçamento, cancelamento e respostas tardias são cobertos separadamente por `learning_worker` e testes determinísticos M4/M5.
 
-Próximos passos para fechar G5: autorizar e executar o smoke visual isolado; investigar a variabilidade/cauda com edição (incluindo revalidação, contenção SQLite, acordar do scheduler e ruído do host) e repetir a comparação com amostra maior antes de propor ativação. Não promover a hipótese de causa a diagnóstico comprovado. Nenhum desses pontos autoriza antecipar onboarding Brownfield.
+Próximos passos para fechar G5: investigar a variabilidade/cauda com edição (incluindo revalidação, contenção SQLite, acordar do scheduler e ruído do host), repetir a comparação com amostra maior e executar separadamente o script nativo padronizado antes de propor ativação. Não promover hipótese de causa a diagnóstico comprovado. Nenhum desses pontos autoriza antecipar onboarding Brownfield.
