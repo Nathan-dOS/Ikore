@@ -1,5 +1,6 @@
 //! Isolated fixture provider for manual M5 GPUI smoke. No worker; the GUI owns the supervisor.
-//! Start with a NEW directory under target/. Close GUI then create STOP to terminate the fixture.
+//! Start with a NEW directory under target/. Pass --resume only for a marked fixture whose
+//! 45-minute server expired. Close GUI then create STOP to terminate the fixture.
 use hvc_core::{
     AppCoreDependencies,
     llm::{LlmEventEnvelope, LlmEventSink},
@@ -17,6 +18,8 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+
+const FIXTURE_MARKER: &str = "pulsation-ui-fixture-v1\n";
 
 struct Quiet;
 impl LlmEventSink for Quiet {
@@ -54,11 +57,58 @@ fn configure_ui_loopback(service: &PersistenceService, server: &ScriptedHttpServ
     )
     .unwrap();
 }
+fn validate_resume_root(root: &Path) -> Result<PathBuf, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("invalid resume root: {error}"))?;
+    match std::fs::read_to_string(root.join("M5_UI_FIXTURE")) {
+        Ok(marker) if marker == FIXTURE_MARKER => {}
+        _ => return Err("refuse to resume an unmarked profile".into()),
+    }
+    let db = rusqlite::Connection::open_with_flags(
+        root.join("data/hard-vibe-code.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|error| format!("invalid fixture database: {error}"))?;
+    let unsafe_connections: u64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM provider_connections
+             WHERE credential_ref NOT LIKE 'm5-ui-fixture:%'
+                OR (enabled=1 AND (id<>'legacy-openai' OR provider_id<>'ollama'))",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("invalid fixture connections: {error}"))?;
+    let projects: u64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM projects
+             WHERE name IN ('M5 Principal','M5 Segundo')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("invalid fixture projects: {error}"))?;
+    let all_projects: u64 = db
+        .query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))
+        .map_err(|error| format!("invalid fixture project count: {error}"))?;
+    if unsafe_connections != 0 || projects != 2 || all_projects != 2 {
+        return Err("refuse to resume a profile that is not the isolated M5 fixture".into());
+    }
+    Ok(root)
+}
 fn main() {
-    let root = PathBuf::from(std::env::args_os().nth(1).expect("new fixture directory"));
-    assert!(!root.exists(), "refuse to reuse or overwrite a profile");
-    std::fs::create_dir_all(&root).unwrap();
-    let root = root.canonicalize().unwrap();
+    let mut args = std::env::args_os().skip(1);
+    let requested_root = PathBuf::from(args.next().expect("fixture directory"));
+    let resume = args.any(|argument| argument == "--resume");
+    let root = if resume {
+        validate_resume_root(&requested_root).expect("refuse unsafe fixture resume")
+    } else {
+        assert!(
+            !requested_root.exists(),
+            "refuse to reuse or overwrite a profile"
+        );
+        std::fs::create_dir_all(&requested_root).unwrap();
+        requested_root.canonicalize().unwrap()
+    };
     let server = ScriptedHttpServer::respond_with(|request| {
         let body: Value = serde_json::from_str(&request.body).unwrap();
         let user = body["messages"]
@@ -110,26 +160,30 @@ fn main() {
             ..Default::default()
         })
         .unwrap();
-    for name in ["M5 Principal", "M5 Segundo"] {
-        let workspace = root.join(name);
-        create_workspace(&workspace);
-        let project = service
-            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
-                workspace_path: workspace.to_str().unwrap().into(),
-                preferred_name: Some(name.into()),
-            })
-            .unwrap()
-            .project;
-        let pulse = service
-            .create_pulsation(CreatePulsationRequest {
-                project_id: project.id.clone(),
-                feature_name: "melhore o sistema".into(),
-            })
-            .unwrap()
-            .pulsation;
-        service.save_ui_session(serde_json::from_value(json!({"projectId":project.id,"workspaceRoot":workspace,"workspaceViewMode":"editor","activeView":"pulsations","activePulsationId":pulse.id})).unwrap()).unwrap();
+    if !resume {
+        for name in ["M5 Principal", "M5 Segundo"] {
+            let workspace = root.join(name);
+            create_workspace(&workspace);
+            let project = service
+                .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                    workspace_path: workspace.to_str().unwrap().into(),
+                    preferred_name: Some(name.into()),
+                })
+                .unwrap()
+                .project;
+            let pulse = service
+                .create_pulsation(CreatePulsationRequest {
+                    project_id: project.id.clone(),
+                    feature_name: "melhore o sistema".into(),
+                })
+                .unwrap()
+                .pulsation;
+            service.save_ui_session(serde_json::from_value(json!({"projectId":project.id,"workspaceRoot":workspace,"workspaceViewMode":"editor","activeView":"pulsations","activePulsationId":pulse.id})).unwrap()).unwrap();
+        }
+        std::fs::write(root.join("M5_UI_FIXTURE"), FIXTURE_MARKER).unwrap();
     }
     println!("HVC_DATA_DIR={}", data.display());
+    println!("MODE={}", if resume { "resume" } else { "new" });
     println!("Loopback provider ready; GUI is the sole worker. STOP file or 45 min ends fixture.");
     let deadline = Instant::now() + Duration::from_secs(45 * 60);
     while !root.join("STOP").exists() && Instant::now() < deadline {
@@ -188,6 +242,43 @@ mod tests {
             )
             .unwrap(),
             1
+        );
+    }
+
+    #[test]
+    fn resume_requires_the_exact_marker_connections_and_two_fixture_projects() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("fixture");
+        let data = root.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let deps = AppCoreDependencies::default();
+        let service = PersistenceService::initialize_with_dependencies(
+            &data,
+            Arc::new(Quiet),
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(FixedEmbeddingGateway::default()),
+            deps.clock,
+            deps.jitter,
+            deps.http_client,
+        )
+        .unwrap();
+        let server = ScriptedHttpServer::respond_with(stage_response);
+        configure_ui_loopback(&service, &server);
+        assert!(validate_resume_root(&root).is_err());
+        for name in ["M5 Principal", "M5 Segundo"] {
+            let workspace = root.join(name);
+            create_workspace(&workspace);
+            service
+                .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                    workspace_path: workspace.to_str().unwrap().into(),
+                    preferred_name: Some(name.into()),
+                })
+                .unwrap();
+        }
+        std::fs::write(root.join("M5_UI_FIXTURE"), FIXTURE_MARKER).unwrap();
+        assert_eq!(
+            validate_resume_root(&root).unwrap(),
+            root.canonicalize().unwrap()
         );
     }
 }
