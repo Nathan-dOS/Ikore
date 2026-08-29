@@ -94,6 +94,69 @@ fn learning_intent_is_idempotent_and_disabled_completion_is_not_backfilled() {
 }
 
 #[test]
+fn human_blocked_foreground_does_not_starve_learning_but_claimable_work_does() {
+    let (f, learning_id, clock) = done();
+    let mut settings = f.service.get_preparation_settings().unwrap();
+    settings.preparation_enabled = true;
+    settings.vagueness_threshold = 40.try_into().unwrap();
+    f.service.update_preparation_settings(settings).unwrap();
+    let human_blocked_root = tempfile::tempdir().unwrap();
+    let human_blocked_project = f
+        .service
+        .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+            workspace_path: human_blocked_root.path().to_string_lossy().into_owned(),
+            preferred_name: None,
+        })
+        .unwrap()
+        .project;
+    let human_blocked = f
+        .service
+        .create_pulsation(CreatePulsationRequest {
+            project_id: human_blocked_project.id,
+            feature_name: "melhore o sistema".into(),
+        })
+        .unwrap()
+        .pulsation;
+    let db = f.service.connection().unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT review_state FROM pulsation_preparation WHERE pulsation_id=?1",
+            [&human_blocked.id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "pending"
+    );
+    assert_eq!(
+        PersistenceService::learning_candidate(&db, &clock.now().to_rfc3339())
+            .unwrap()
+            .map(|candidate| candidate.0),
+        Some(learning_id)
+    );
+
+    let claimable_root = tempfile::tempdir().unwrap();
+    let claimable_project = f
+        .service
+        .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+            workspace_path: claimable_root.path().to_string_lossy().into_owned(),
+            preferred_name: None,
+        })
+        .unwrap()
+        .project;
+    f.service
+        .create_pulsation(CreatePulsationRequest {
+            project_id: claimable_project.id,
+            feature_name: "Validar JWT em auth.rs e retornar false para token inválido".into(),
+        })
+        .unwrap();
+    assert!(
+        PersistenceService::learning_candidate(&db, &clock.now().to_rfc3339())
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn three_preemptions_defer_and_explicit_versioned_retry_preserves_total_usage() {
     let (f, id, clock) = done();
     for attempt in 1..=3 {

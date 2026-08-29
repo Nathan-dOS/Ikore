@@ -272,6 +272,81 @@ impl PersistenceService {
         Ok(input)
     }
 
+    fn learning_candidate(
+        db: &Connection,
+        now: &str,
+    ) -> Result<Option<(String, String, u64)>, PersistenceServiceError> {
+        db.query_row(
+            "SELECT j.id,j.project_id,j.generation
+             FROM jobs j
+             JOIN learning_runs l ON l.job_id=j.id
+             JOIN pulsations p ON p.id=l.pulsation_id
+             WHERE j.status='pending'
+               AND j.cancellation_reason IS NULL
+               AND l.state IN ('pending','preempted')
+               AND l.budget_calls<3
+               AND p.status='done'
+               AND (j.available_at IS NULL OR j.available_at<=?1)
+               AND NOT EXISTS(SELECT 1 FROM runtime_slots WHERE job_class='main')
+               AND NOT EXISTS(
+                   SELECT 1
+                   FROM artifact_publications o
+                   JOIN artifacts a ON a.id=o.artifact_id
+                   WHERE o.job_class='main'
+                     AND o.pulsation_id IN (SELECT id FROM coordinated_pulsations)
+                     AND a.acceptance='accepted'
+                     AND o.state IN ('pending','applying')
+               )
+               AND NOT EXISTS(
+                   SELECT 1
+                   FROM jobs main
+                   JOIN pulsations foreground ON foreground.id=main.pulsation_id
+                   JOIN project_pipeline_state foreground_state
+                     ON foreground_state.project_id=foreground.project_id
+                   WHERE main.status='pending'
+                     AND main.cancellation_reason IS NULL
+                     AND main.project_id=foreground.project_id
+                     AND main.input_revision=foreground.input_revision
+                     AND main.state_version=foreground.state_version
+                     AND foreground.status IN ('planning','running')
+                     AND foreground.id IN (SELECT id FROM coordinated_pulsations)
+                     AND foreground_state.base_state='ready'
+                     AND NOT EXISTS(
+                         SELECT 1
+                         FROM pulsation_preparation review
+                         WHERE review.pulsation_id=foreground.id
+                           AND review.review_state='pending'
+                     )
+                     AND NOT EXISTS(
+                         SELECT 1 FROM runtime_slots WHERE job_id=main.id
+                     )
+                     AND (
+                         main.kind='run_stage::'||foreground.stage
+                         OR (
+                             foreground.stage='SPECIFICATION'
+                             AND main.kind='run_stage::Specification'
+                         )
+                     )
+                     AND (main.available_at IS NULL OR main.available_at<=?1)
+                     AND NOT EXISTS(
+                         SELECT 1
+                         FROM artifact_publications publication
+                         JOIN artifacts artifact ON artifact.id=publication.artifact_id
+                         WHERE publication.job_class='main'
+                           AND publication.pulsation_id=foreground.id
+                           AND artifact.acceptance='accepted'
+                           AND publication.state NOT IN ('applied','cancelled')
+                     )
+               )
+             ORDER BY l.created_at,j.id
+             LIMIT 1",
+            [now],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
     pub(super) async fn process_learning(
         &self,
         shutdown: &CancellationToken,
@@ -281,7 +356,7 @@ impl PersistenceService {
         }
         let config = self.load_runtime_config()?;
         let db = self.connection()?;
-        let candidate:Option<(String,String,u64)>=db.query_row("SELECT j.id,j.project_id,j.generation FROM jobs j JOIN learning_runs l ON l.job_id=j.id JOIN pulsations p ON p.id=l.pulsation_id WHERE j.status='pending' AND j.cancellation_reason IS NULL AND l.state IN ('pending','preempted') AND l.budget_calls<3 AND p.status='done' AND (j.available_at IS NULL OR j.available_at<=?1) AND NOT EXISTS(SELECT 1 FROM jobs main WHERE main.kind LIKE 'run_stage::%' AND main.status='pending' AND main.pulsation_id IN (SELECT id FROM coordinated_pulsations)) ORDER BY l.created_at,j.id LIMIT 1",[self.clock.now().to_rfc3339()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        let candidate = Self::learning_candidate(&db, &self.clock.now().to_rfc3339())?;
         let Some((id, project, generation)) = candidate else {
             return Ok(false);
         };
