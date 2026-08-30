@@ -15,12 +15,14 @@ use hvc_core::llm::{
     RouteTarget, RoutingMode, TestProviderConnectionRequest, UpsertProviderConnectionRequest,
     UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
 };
+use hvc_core::orchestration::brownfield::BrownfieldOnboardingStatus;
 use hvc_core::persistence_service::{
     EnsureProjectForWorkspaceRequest, HitlDecision, LoadUiSessionRequest, PulsationRuntimeSnapshot,
     SaveUiSessionRequest, UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
 };
 use hvc_core::workspace_service::{
     FileNode, OpenWorkspaceRequest, ReadWorkspaceFileRequest, SearchMode, WorkspaceChangedEvent,
+    WorkspaceKind,
 };
 use hvc_core::{AppCore, AppEvent};
 use hvc_editor::{EditorSelection, EditorSnapshot, TextPosition};
@@ -42,8 +44,8 @@ use crate::vault::{
 };
 use crate::views::NavigationModel;
 use crate::workspace::{
-    AUTOSAVE_DEBOUNCE, CoreWorkspaceBackend, WorkspaceBackend, WorkspaceEditorModel,
-    WorkspaceTabModel, WorkspaceViewMode,
+    AUTOSAVE_DEBOUNCE, BrownfieldOnboardingState, CoreWorkspaceBackend, WorkspaceBackend,
+    WorkspaceEditorModel, WorkspaceTabModel, WorkspaceViewMode,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +151,7 @@ struct RestoredSession {
     session: Option<UiSessionState>,
     tabs: Vec<LoadedTab>,
     notice: Option<String>,
+    brownfield_status: Option<BrownfieldOnboardingStatus>,
 }
 
 pub struct AppModel {
@@ -200,6 +203,8 @@ pub struct AppModel {
     event_task: Option<Task<()>>,
     polling_task: Option<Task<()>>,
     workspace_task: Option<Task<()>>,
+    brownfield_task: Option<Task<()>>,
+    brownfield_generation: u64,
     file_tasks: HashMap<String, Task<()>>,
     autosave_tasks: HashMap<String, Task<()>>,
     hitl_task: Option<Task<()>>,
@@ -419,6 +424,8 @@ impl AppModel {
             event_task: None,
             polling_task: None,
             workspace_task: None,
+            brownfield_task: None,
+            brownfield_generation: 0,
             file_tasks: HashMap::new(),
             autosave_tasks: HashMap::new(),
             hitl_task: None,
@@ -592,6 +599,74 @@ impl AppModel {
                 .await;
             let _ = this.update(cx, |model, cx| {
                 model.finish_workspace_restore(restored.map(|result| result.map(Some)), cx);
+            });
+        }));
+    }
+
+    pub fn set_brownfield_mapping_enabled(&mut self, consent: bool, cx: &mut Context<Self>) {
+        let Some(backend) = self.workspace_backend.clone() else {
+            self.status = "Onboarding brownfield indisponível no ambiente de teste".into();
+            cx.notify();
+            return;
+        };
+        let (project_id, busy, state) = {
+            let workspace = self.workspace.read(cx);
+            (
+                workspace.project_id.as_ref().map(ToString::to_string),
+                workspace.brownfield.busy,
+                workspace.brownfield.state,
+            )
+        };
+        let Some(project_id) = project_id else {
+            return;
+        };
+        if busy || state == BrownfieldOnboardingState::NotApplicable {
+            return;
+        }
+
+        self.workspace.update(cx, |workspace, _| {
+            workspace.brownfield.busy = true;
+            workspace.brownfield.error = None;
+        });
+        self.brownfield_generation = self.brownfield_generation.saturating_add(1);
+        let generation = self.brownfield_generation;
+        let requested_project = project_id.clone();
+        self.status = if consent {
+            "Executando inventário brownfield limitado…".into()
+        } else {
+            "Revogando consentimento brownfield…".into()
+        };
+        cx.notify();
+
+        self.brownfield_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.set_brownfield_consent(project_id, consent).await;
+            let _ = this.update(cx, |model, cx| {
+                if generation != model.brownfield_generation
+                    || model
+                        .workspace
+                        .read(cx)
+                        .project_id
+                        .as_ref()
+                        .is_none_or(|active| active.as_ref() != requested_project)
+                {
+                    return;
+                }
+                let error_message = result.as_ref().err().map(|error| error.presentable());
+                model.workspace.update(cx, |workspace, _| match result {
+                    Ok(result) => workspace.brownfield.apply_result(result),
+                    Err(error) => {
+                        workspace.brownfield.busy = false;
+                        workspace.brownfield.error = Some(error.presentable());
+                    }
+                });
+                model.status = match error_message {
+                    Some(error) => format!("Falha no onboarding brownfield: {error}").into(),
+                    None if consent => {
+                        "Inventário concluído; mapeamento estrutural agendado".into()
+                    }
+                    None => "Mapeamento brownfield desativado".into(),
+                };
+                cx.notify();
             });
         }));
     }
@@ -2990,6 +3065,8 @@ impl AppModel {
     }
 
     fn apply_restored_session(&mut self, restored: RestoredSession, cx: &mut Context<Self>) {
+        self.brownfield_task.take();
+        self.brownfield_generation = self.brownfield_generation.saturating_add(1);
         self.hydrating = true;
         self.suppress_editor_sync = true;
         let session = restored.session.as_ref();
@@ -3036,6 +3113,9 @@ impl AppModel {
                 .unwrap_or(WorkspaceViewMode::Editor);
             workspace.context_drawer_open = session.is_none_or(|value| value.context_drawer_open);
             workspace.diff_expanded = false;
+            workspace.brownfield = crate::workspace::BrownfieldOnboardingModel::from_status(
+                restored.brownfield_status.clone(),
+            );
 
             if let Some(active_path) = &active_path
                 && let Some(tab) = workspace
@@ -3216,6 +3296,7 @@ impl AppModel {
         self.event_task.take();
         self.polling_task.take();
         self.workspace_task.take();
+        self.brownfield_task.take();
         self.file_tasks.clear();
         self.autosave_tasks.clear();
         let hitl = self.hitl_task.take();
@@ -3399,6 +3480,13 @@ fn load_workspace(core: Arc<AppCore>, path: String) -> Result<RestoredSession, S
         })
         .map_err(|error| error.to_string())?
         .project;
+    let brownfield_status = match opened.kind {
+        WorkspaceKind::Greenfield => None,
+        WorkspaceKind::Brownfield => Some(
+            core.get_brownfield_onboarding(&project.id)
+                .map_err(|error| error.message)?,
+        ),
+    };
     let session = core
         .persistence()
         .load_ui_session(LoadUiSessionRequest {
@@ -3418,13 +3506,20 @@ fn load_workspace(core: Arc<AppCore>, path: String) -> Result<RestoredSession, S
         })
         .unwrap_or_default();
 
+    let notice = opened.greenfield.map(|status| status.message).or_else(|| {
+        (opened.kind == WorkspaceKind::Brownfield).then(|| {
+            "Workspace existente detectado; escolha se deseja iniciar o mapeamento gradual."
+                .to_string()
+        })
+    });
     Ok(RestoredSession {
         project_id: project.id,
         root_path: opened.root_path,
         tree: opened.tree,
         session,
         tabs,
-        notice: Some(opened.greenfield.message),
+        notice,
+        brownfield_status,
     })
 }
 
@@ -3501,6 +3596,7 @@ mod tests {
     struct RecordingWorkspaceBackend {
         reads: Arc<Mutex<Vec<String>>>,
         writes: Arc<Mutex<Vec<(String, String, String)>>>,
+        consent_requests: Arc<Mutex<Vec<(String, bool)>>>,
         read_snapshot: WorkspaceFileSnapshot,
         write_result: Arc<Mutex<Result<String, WorkspaceOperationError>>>,
     }
@@ -3510,6 +3606,7 @@ mod tests {
             Self {
                 reads: Arc::new(Mutex::new(Vec::new())),
                 writes: Arc::new(Mutex::new(Vec::new())),
+                consent_requests: Arc::new(Mutex::new(Vec::new())),
                 read_snapshot: WorkspaceFileSnapshot {
                     content: "# Disk".into(),
                     revision: "rev-1".into(),
@@ -3560,6 +3657,34 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             Box::pin(async move { result })
+        }
+
+        fn set_brownfield_consent(
+            &self,
+            project_id: String,
+            consent: bool,
+        ) -> WorkspaceFuture<hvc_core::orchestration::brownfield::BrownfieldOnboardingResult>
+        {
+            self.consent_requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((project_id.clone(), consent));
+            Box::pin(async move {
+                Ok(
+                    hvc_core::orchestration::brownfield::BrownfieldOnboardingResult {
+                        status: BrownfieldOnboardingStatus {
+                            project_id,
+                            consent: if consent {
+                                hvc_core::orchestration::brownfield::BrownfieldConsentState::Granted
+                            } else {
+                                hvc_core::orchestration::brownfield::BrownfieldConsentState::Declined
+                            },
+                        },
+                        created_paths: Vec::new(),
+                        inventory: None,
+                    },
+                )
+            })
         }
     }
 
@@ -4014,6 +4139,7 @@ mod tests {
                         load_error: None,
                     }],
                     notice: None,
+                    brownfield_status: None,
                 },
                 cx,
             );
@@ -4097,6 +4223,7 @@ mod tests {
                     }),
                     tabs: Vec::new(),
                     notice: None,
+                    brownfield_status: None,
                 },
                 cx,
             );
@@ -4108,6 +4235,52 @@ mod tests {
             assert!(model.navigation.read(cx).sidebar_collapsed);
             assert!(!model.workspace.read(cx).context_drawer_open);
             assert!(!model.workspace.read(cx).diff_expanded);
+        });
+    }
+
+    #[gpui::test]
+    fn brownfield_consent_action_is_project_scoped_and_updates_visible_state(
+        cx: &mut TestAppContext,
+    ) {
+        let backend = Arc::new(RecordingWorkspaceBackend::successful());
+        let requests = Arc::clone(&backend.consent_requests);
+        let model = cx.new(|cx| AppModel::new_for_test_with_workspace_backend(backend, cx));
+        model.update(cx, |model, cx| {
+            model.apply_restored_session(
+                RestoredSession {
+                    project_id: "project-brownfield".into(),
+                    root_path: "C:\\existing".into(),
+                    tree: Vec::new(),
+                    session: None,
+                    tabs: Vec::new(),
+                    notice: None,
+                    brownfield_status: Some(BrownfieldOnboardingStatus {
+                        project_id: "project-brownfield".into(),
+                        consent:
+                            hvc_core::orchestration::brownfield::BrownfieldConsentState::NotDecided,
+                    }),
+                },
+                cx,
+            );
+            model.set_brownfield_mapping_enabled(true, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice(),
+            &[("project-brownfield".to_string(), true)]
+        );
+        cx.read(|cx| {
+            let workspace = model.read(cx).workspace.read(cx);
+            assert_eq!(
+                workspace.brownfield.state,
+                BrownfieldOnboardingState::Enabled
+            );
+            assert!(!workspace.brownfield.busy);
+            assert!(workspace.brownfield.error.is_none());
         });
     }
 

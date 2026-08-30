@@ -31,8 +31,12 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::orchestration::brownfield::{BrownfieldConsentState, BrownfieldOnboardingStatus};
+
 #[path = "orchestration/anticipation.rs"]
 mod anticipation;
+#[path = "orchestration/brownfield_mapping.rs"]
+mod brownfield_mapping;
 #[path = "orchestration/clarification.rs"]
 mod clarification;
 #[path = "orchestration/coordination.rs"]
@@ -1875,6 +1879,78 @@ impl PersistenceService {
         })
     }
 
+    pub fn get_brownfield_onboarding(
+        &self,
+        project_id: &str,
+    ) -> Result<BrownfieldOnboardingStatus, PersistenceServiceError> {
+        let project_id = Self::normalize_project_id(project_id)?;
+        let connection = self.connection()?;
+        Self::find_project_by_id(&connection, &project_id, false)?.ok_or_else(|| {
+            PersistenceServiceError::NotFound(
+                "Projeto ativo não encontrado para o onboarding brownfield.".to_string(),
+            )
+        })?;
+        let consent =
+            match Self::read_runtime_setting(&connection, &brownfield_consent_key(&project_id))? {
+                None => BrownfieldConsentState::NotDecided,
+                Some(value) if value == "true" => BrownfieldConsentState::Granted,
+                Some(value) if value == "false" => BrownfieldConsentState::Declined,
+                Some(_) => {
+                    return Err(PersistenceServiceError::Validation(
+                        "Consentimento brownfield persistido possui valor inválido.".to_string(),
+                    ));
+                }
+            };
+        Ok(BrownfieldOnboardingStatus {
+            project_id,
+            consent,
+        })
+    }
+
+    pub fn set_brownfield_onboarding_consent(
+        &self,
+        project_id: &str,
+        consent: bool,
+    ) -> Result<BrownfieldOnboardingStatus, PersistenceServiceError> {
+        let project_id = Self::normalize_project_id(project_id)?;
+        let mut connection = self.connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        Self::find_project_by_id(&transaction, &project_id, false)?.ok_or_else(|| {
+            PersistenceServiceError::NotFound(
+                "Projeto ativo não encontrado para o onboarding brownfield.".to_string(),
+            )
+        })?;
+        Self::upsert_runtime_setting(
+            &transaction,
+            &brownfield_consent_key(&project_id),
+            if consent { "true" } else { "false" },
+        )?;
+        transaction.commit()?;
+        if !consent {
+            self.cancel_brownfield_mapping(&project_id)?;
+        }
+        Ok(BrownfieldOnboardingStatus {
+            project_id,
+            consent: if consent {
+                BrownfieldConsentState::Granted
+            } else {
+                BrownfieldConsentState::Declined
+            },
+        })
+    }
+
+    pub(crate) fn active_project_by_id(
+        &self,
+        project_id: &str,
+    ) -> Result<Project, PersistenceServiceError> {
+        let project_id = Self::normalize_project_id(project_id)?;
+        let connection = self.connection()?;
+        Self::find_project_by_id(&connection, &project_id, false)?.ok_or_else(|| {
+            PersistenceServiceError::NotFound("Projeto ativo não encontrado.".to_string())
+        })
+    }
+
     pub fn get_last_active_project(
         &self,
     ) -> Result<GetLastActiveProjectResponse, PersistenceServiceError> {
@@ -3220,6 +3296,10 @@ fn is_unique_constraint(error: &SqlError) -> bool {
     }
 }
 
+fn brownfield_consent_key(project_id: &str) -> String {
+    format!("brownfield.onboarding_consent.{project_id}")
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
@@ -3361,6 +3441,61 @@ mod tests {
             })
             .expect("list archived projects should work");
         assert_eq!(listed_with_archived.projects.len(), 1);
+    }
+
+    #[test]
+    fn brownfield_consent_is_project_scoped_revocable_and_validated() {
+        let (_root, service) = prepare_service();
+        let first = service
+            .create_project(CreateProjectRequest {
+                workspace_path: "C:/workspace/brownfield-a".into(),
+                name: None,
+            })
+            .unwrap()
+            .project;
+        let second = service
+            .create_project(CreateProjectRequest {
+                workspace_path: "C:/workspace/brownfield-b".into(),
+                name: None,
+            })
+            .unwrap()
+            .project;
+
+        assert_eq!(
+            service
+                .get_brownfield_onboarding(&first.id)
+                .unwrap()
+                .consent,
+            BrownfieldConsentState::NotDecided
+        );
+        service
+            .set_brownfield_onboarding_consent(&first.id, true)
+            .unwrap();
+        assert_eq!(
+            service
+                .get_brownfield_onboarding(&first.id)
+                .unwrap()
+                .consent,
+            BrownfieldConsentState::Granted
+        );
+        assert_eq!(
+            service
+                .get_brownfield_onboarding(&second.id)
+                .unwrap()
+                .consent,
+            BrownfieldConsentState::NotDecided
+        );
+        assert_eq!(
+            service
+                .set_brownfield_onboarding_consent(&first.id, false)
+                .unwrap()
+                .consent,
+            BrownfieldConsentState::Declined
+        );
+        assert!(matches!(
+            service.set_brownfield_onboarding_consent("missing-project", true),
+            Err(PersistenceServiceError::NotFound(_))
+        ));
     }
 
     #[test]

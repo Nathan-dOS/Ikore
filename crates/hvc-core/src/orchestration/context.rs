@@ -183,6 +183,40 @@ pub struct CodeSnippet {
     pub content: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StructuredSymbolKind {
+    Function,
+    Method,
+    Struct,
+    Class,
+    Trait,
+    Interface,
+    Enum,
+    TypeAlias,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredSymbol {
+    pub source: SourceRevision,
+    pub kind: StructuredSymbolKind,
+    pub name: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    /// Bounded declaration header, never the entire symbol body.
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceRelation {
+    Import,
+    Call,
+    #[default]
+    Lexical,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "state",
@@ -201,6 +235,8 @@ pub struct ObservedReference {
     pub source: SourceRevision,
     pub line: u32,
     pub observed_text: String,
+    #[serde(default)]
+    pub relation: ReferenceRelation,
     pub resolution: ReferenceResolution,
 }
 
@@ -295,6 +331,8 @@ pub struct CodeContextFacts {
     pub candidate_set_sha256: Option<ContentSha256>,
     pub sources: Vec<SourceRevision>,
     pub snippets: Vec<CodeSnippet>,
+    #[serde(default)]
+    pub symbols: Vec<StructuredSymbol>,
     pub references: Vec<ObservedReference>,
     pub coverage: ContextCoverage,
 }
@@ -319,6 +357,13 @@ impl CodeContextFacts {
                 !self.sources.contains(&snippet.source)
                     || snippet.start_line == 0
                     || snippet.end_line < snippet.start_line
+            })
+            || self.symbols.iter().any(|symbol| {
+                !self.sources.contains(&symbol.source)
+                    || symbol.name.trim().is_empty()
+                    || symbol.start_line == 0
+                    || symbol.end_line < symbol.start_line
+                    || symbol.signature.len() > 512
             })
             || self.references.iter().any(|reference| {
                 !self.sources.contains(&reference.source)
@@ -368,6 +413,18 @@ impl CodeContextFacts {
                 ));
             }
         }
+        for symbol in &self.symbols {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.revision() == &symbol.source)
+                .ok_or(ContractError::StaleExecution)?;
+            let declaration = snapshot.snippet(symbol.start_line, symbol.end_line)?;
+            if !declaration.content.contains(&symbol.name) {
+                return Err(ContractError::Invalid(
+                    "símbolo divergente da fonte capturada",
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -385,7 +442,7 @@ pub type CodeContextFuture<'a> =
     Pin<Box<dyn Future<Output = Result<CodeContextFacts, ContractError>> + Send + 'a>>;
 
 /// Collection is independent of pulsations and can serve a first request without
-/// PreSpec or a vault. LexicalCodeContextService supplies the safe bounded implementation.
+/// PreSpec or a vault. RoutedCodeContextService adds structural extraction behind this contract.
 pub trait CodeContextService: Send + Sync {
     fn collect<'a>(
         &'a self,

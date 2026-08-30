@@ -5,6 +5,9 @@ use crate::repository_context::RepositoryContext;
 #[derive(Default)]
 pub struct LexicalCodeContextService;
 
+#[derive(Default)]
+pub struct RoutedCodeContextService;
+
 impl CodeContextService for LexicalCodeContextService {
     fn collect<'a>(
         &'a self,
@@ -22,6 +25,39 @@ impl CodeContextService for LexicalCodeContextService {
     }
 }
 
+impl CodeContextService for RoutedCodeContextService {
+    fn collect<'a>(
+        &'a self,
+        request: &'a CodeContextRequest,
+        cancellation: &'a tokio_util::sync::CancellationToken,
+    ) -> CodeContextFuture<'a> {
+        let request = request.clone();
+        let cancellation = cancellation.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || Self::collect_blocking(&request, &cancellation))
+                .await
+                .map_err(|_| ContractError::Invalid("worker de contexto interrompido"))?
+        })
+    }
+}
+
+impl RoutedCodeContextService {
+    pub(crate) fn collect_blocking(
+        request: &CodeContextRequest,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<CodeContextFacts, ContractError> {
+        Self::collect_revalidated(request, cancellation, None).map(|(facts, _)| facts)
+    }
+
+    pub(crate) fn collect_revalidated(
+        request: &CodeContextRequest,
+        cancellation: &tokio_util::sync::CancellationToken,
+        previous: Option<&CodeContextFacts>,
+    ) -> Result<(CodeContextFacts, bool), ContractError> {
+        LexicalCodeContextService::collect_revalidated_with(request, cancellation, previous, true)
+    }
+}
+
 impl LexicalCodeContextService {
     pub(crate) fn collect_blocking(
         request: &CodeContextRequest,
@@ -35,6 +71,15 @@ impl LexicalCodeContextService {
         cancellation: &tokio_util::sync::CancellationToken,
         previous: Option<&CodeContextFacts>,
     ) -> Result<(CodeContextFacts, bool), ContractError> {
+        Self::collect_revalidated_with(request, cancellation, previous, false)
+    }
+
+    fn collect_revalidated_with(
+        request: &CodeContextRequest,
+        cancellation: &tokio_util::sync::CancellationToken,
+        previous: Option<&CodeContextFacts>,
+        structural: bool,
+    ) -> Result<(CodeContextFacts, bool), ContractError> {
         request.budget.validate()?;
         let started = std::time::Instant::now();
         if cancellation.is_cancelled() {
@@ -43,11 +88,15 @@ impl LexicalCodeContextService {
         let mut facts = CodeContextFacts {
             schema_version: SchemaV1,
             project_id: request.project_id.clone(),
-            extractor: ExtractorRevision {
-                name: "repository-lexical".into(),
-                version: "1".into(),
-                policy_version: "rsp12-v2".into(),
-                resolution_context: None,
+            extractor: if structural {
+                TreeSitterExtractor::extractor_revision()
+            } else {
+                ExtractorRevision {
+                    name: "repository-lexical".into(),
+                    version: "1".into(),
+                    policy_version: "rsp12-v2".into(),
+                    resolution_context: None,
+                }
             },
             scope: format!(
                 "task:{}",
@@ -60,6 +109,7 @@ impl LexicalCodeContextService {
             candidate_set_sha256: None,
             sources: vec![],
             snippets: vec![],
+            symbols: vec![],
             references: vec![],
             coverage: ContextCoverage {
                 state: CoverageState::Unavailable,
@@ -144,6 +194,7 @@ impl LexicalCodeContextService {
         matches.sort_by(|a, b| (&a.0, &a.1, a.2).cmp(&(&b.0, &b.1, b.2)));
         let mut remaining = request.budget.max_snippet_bytes as usize;
         let match_count = matches.len();
+        let mut selected_snapshots = Vec::new();
         for (_, _, _, source) in matches
             .into_iter()
             .take(request.budget.max_package_files as usize)
@@ -170,27 +221,32 @@ impl LexicalCodeContextService {
                 continue;
             }
             let snippet = source.snippet(start as u32 + 1, end as u32)?;
-            for (index, line) in lines.iter().enumerate().take(end).skip(start) {
-                let observed = line.trim();
-                if ["import ", "from ", "use ", "#include ", "mod "]
-                    .iter()
-                    .any(|prefix| observed.starts_with(prefix))
-                    || observed.contains("require(")
-                {
-                    facts.references.push(ObservedReference {
-                        source: source.revision().clone(),
-                        line: index as u32 + 1,
-                        observed_text: observed.into(),
-                        resolution: ReferenceResolution::Unresolved {
-                            reason: "Referência lexical observada, sem resolvedor de linguagem."
-                                .into(),
-                        },
-                    });
+            if !structural {
+                for (index, line) in lines.iter().enumerate().take(end).skip(start) {
+                    let observed = line.trim();
+                    if ["import ", "from ", "use ", "#include ", "mod "]
+                        .iter()
+                        .any(|prefix| observed.starts_with(prefix))
+                        || observed.contains("require(")
+                    {
+                        facts.references.push(ObservedReference {
+                            source: source.revision().clone(),
+                            line: index as u32 + 1,
+                            observed_text: observed.into(),
+                            relation: ReferenceRelation::Lexical,
+                            resolution: ReferenceResolution::Unresolved {
+                                reason:
+                                    "Referência lexical observada, sem resolvedor de linguagem."
+                                        .into(),
+                            },
+                        });
+                    }
                 }
             }
             remaining -= size;
             facts.sources.push(source.revision().clone());
             facts.snippets.push(snippet);
+            selected_snapshots.push((*source).clone());
         }
         if match_count > facts.sources.len() {
             facts.coverage.truncated = true;
@@ -200,6 +256,22 @@ impl LexicalCodeContextService {
         }
         if facts.coverage.truncated {
             facts.coverage.state = CoverageState::Partial;
+        }
+        if structural && !selected_snapshots.is_empty() {
+            let extracted =
+                TreeSitterExtractor.extract(&selected_snapshots, request.budget, cancellation)?;
+            facts.symbols = extracted.symbols;
+            facts.references = extracted.references;
+            if extracted.coverage.state == CoverageState::Partial {
+                facts.coverage.state = CoverageState::Partial;
+            }
+            if extracted.coverage.truncated {
+                facts.coverage.truncated = true;
+            }
+            facts
+                .coverage
+                .diagnostics
+                .extend(extracted.coverage.diagnostics);
         }
         facts.validate_against(&snapshots)?;
         Ok((facts, false))
@@ -243,6 +315,68 @@ mod tests {
             LexicalCodeContextService::collect_revalidated(&req, &token, Some(&facts))
                 .unwrap()
                 .1
+        );
+    }
+
+    #[test]
+    fn routed_service_enriches_supported_sources_without_changing_the_context_contract() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("auth.rs"),
+            "use crate::token;\npub fn validate_token() { verify(); }\n",
+        )
+        .unwrap();
+        let request = request(root.path());
+        let snapshots = RepositoryContext::new(root.path())
+            .unwrap()
+            .capture_code_sources(
+                &request.project_id,
+                request.budget,
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .0;
+        let facts = RoutedCodeContextService::collect_blocking(&request, &CancellationToken::new())
+            .unwrap();
+        assert_eq!(facts.extractor.name, "tree-sitter-router");
+        assert!(facts.symbols.iter().any(|symbol| {
+            symbol.kind == StructuredSymbolKind::Function && symbol.name == "validate_token"
+        }));
+        assert!(
+            facts
+                .references
+                .iter()
+                .any(|reference| reference.relation == ReferenceRelation::Call)
+        );
+        facts.validate_against(&snapshots).unwrap();
+    }
+
+    #[test]
+    fn routed_service_keeps_unsupported_sources_on_the_lexical_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("auth.py"),
+            "from token import validate_token\nvalidate_token()\n",
+        )
+        .unwrap();
+        let facts = RoutedCodeContextService::collect_blocking(
+            &request(root.path()),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(facts.symbols.is_empty());
+        assert!(
+            facts
+                .references
+                .iter()
+                .any(|reference| reference.relation == ReferenceRelation::Lexical)
+        );
+        assert!(
+            facts
+                .coverage
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.starts_with("lexical_fallback:"))
         );
     }
 

@@ -122,7 +122,7 @@ impl PersistenceService {
         let fence = Self::execution_fence(&db, &job.id)?;
         let (request, epoch) = Self::context_request(&db, &fence)?;
         let started = std::time::Instant::now();
-        let facts = LexicalCodeContextService::collect_blocking(&request, cancellation);
+        let facts = RoutedCodeContextService::collect_blocking(&request, cancellation);
         let elapsed = started.elapsed();
         #[cfg(test)]
         if let Some((entered, release)) = self
@@ -203,7 +203,7 @@ impl PersistenceService {
             // Full bounded rediscovery detects additions/deletions/renames and changed match sets.
             let compatible=old.as_ref().filter(|old| old.pulsation_id==pulse && Some(old.input_revision)==handoff.recipient.input_revision && old.ruleset_version==task_refine::ruleset_version() && old.budget==request.budget);
             let started=std::time::Instant::now();
-            let (facts,reusable)=LexicalCodeContextService::collect_revalidated(&request,&stop,compatible.map(|p|&p.facts)).map_err(|e|invalid(e.to_string()))?;
+            let (facts,reusable)=RoutedCodeContextService::collect_revalidated(&request,&stop,compatible.map(|p|&p.facts)).map_err(|e|invalid(e.to_string()))?;
             let elapsed=started.elapsed();
             let measured_facts=facts.clone();
             let disposition=if reusable {"reused"} else if prepared.is_some(){"stale_on_demand"}else{"on_demand"};
@@ -214,6 +214,7 @@ impl PersistenceService {
             while serde_json::to_string(&package).map_err(|e|invalid(e.to_string()))?.chars().count()>remaining && !package.facts.sources.is_empty() {
                 let removed=package.facts.sources.pop().expect("source");
                 package.facts.snippets.retain(|s|s.source!=removed);
+                package.facts.symbols.retain(|s|s.source!=removed);
                 package.facts.references.retain(|r|r.source!=removed);
                 package.facts.coverage.truncated=true; package.facts.coverage.state=CoverageState::Partial;
             }

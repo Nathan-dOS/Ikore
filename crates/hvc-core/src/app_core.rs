@@ -18,7 +18,14 @@ use crate::llm::{
     Clock, CredentialStore, JitterSource, KeyringCredentialStore, LlmEventSink, StableJitter,
     SystemClock,
 };
-use crate::persistence_service::{PersistenceService, PersistenceServiceError};
+use crate::orchestration::CollectionBudget;
+use crate::orchestration::brownfield::{
+    BrownfieldOnboardingResult, BrownfieldOnboardingStatus, InventoryScanner,
+    SetBrownfieldConsentRequest,
+};
+use crate::persistence_service::{
+    PersistenceCommandError, PersistenceService, PersistenceServiceError,
+};
 use crate::workspace_service::{
     self, BootstrapGreenfieldWorkspaceResponse, GetContextCandidatesRequest,
     GetContextCandidatesResponse, GetWorkspaceVaultIndexRequest, GetWorkspaceVaultIndexResponse,
@@ -276,8 +283,15 @@ impl AppCore {
     ) -> Result<OpenWorkspaceResponse, WorkspaceCommandError> {
         let root_path = workspace_service::validate_workspace_root(&request.path)
             .map_err(WorkspaceCommandError::from)?;
-        let greenfield = workspace_service::bootstrap_greenfield_workspace(&root_path)
+        let kind = workspace_service::classify_workspace(&root_path)
             .map_err(WorkspaceCommandError::from)?;
+        let greenfield = match kind {
+            workspace_service::WorkspaceKind::Greenfield => Some(
+                workspace_service::bootstrap_greenfield_workspace(&root_path)
+                    .map_err(WorkspaceCommandError::from)?,
+            ),
+            workspace_service::WorkspaceKind::Brownfield => None,
+        };
         let tree = workspace_service::build_workspace_tree(&root_path)
             .map_err(WorkspaceCommandError::from)?
             .tree;
@@ -291,6 +305,7 @@ impl AppCore {
         Ok(OpenWorkspaceResponse {
             root_path: root_path.to_string_lossy().to_string(),
             tree,
+            kind,
             greenfield,
         })
     }
@@ -301,6 +316,85 @@ impl AppCore {
     ) -> Result<BootstrapGreenfieldWorkspaceResponse, WorkspaceCommandError> {
         workspace_service::bootstrap_greenfield_workspace_by_path(request)
             .map_err(WorkspaceCommandError::from)
+    }
+
+    pub fn get_brownfield_onboarding(
+        &self,
+        project_id: &str,
+    ) -> Result<BrownfieldOnboardingStatus, PersistenceCommandError> {
+        self.persistence
+            .get_brownfield_onboarding(project_id)
+            .map_err(PersistenceCommandError::from)
+    }
+
+    pub fn set_brownfield_onboarding_consent(
+        &self,
+        request: SetBrownfieldConsentRequest,
+    ) -> Result<BrownfieldOnboardingResult, WorkspaceCommandError> {
+        let root = self.workspace_root()?;
+        if workspace_service::classify_workspace(&root).map_err(WorkspaceCommandError::from)?
+            != workspace_service::WorkspaceKind::Brownfield
+        {
+            return Err(WorkspaceCommandError {
+                code: workspace_service::WorkspaceErrorCode::ValidationError,
+                message: "O onboarding brownfield só pode ser alterado em um workspace existente."
+                    .into(),
+                details: None,
+                remediation: None,
+            });
+        }
+        let project = self
+            .persistence
+            .active_project_by_id(&request.project_id)
+            .map_err(persistence_workspace_error)?;
+        let project_root = fs::canonicalize(&project.workspace_path)
+            .map_err(|error| WorkspaceCommandError::from(WorkspaceServiceError::Io(error)))?;
+        if project_root != root {
+            return Err(WorkspaceCommandError {
+                code: workspace_service::WorkspaceErrorCode::ValidationError,
+                message: "O projeto informado não corresponde ao workspace aberto.".into(),
+                details: None,
+                remediation: Some("Reabra o projeto correto e tente novamente.".into()),
+            });
+        }
+
+        if !request.consent {
+            let status = self
+                .persistence
+                .set_brownfield_onboarding_consent(&request.project_id, false)
+                .map_err(persistence_workspace_error)?;
+            return Ok(BrownfieldOnboardingResult {
+                status,
+                created_paths: Vec::new(),
+                inventory: None,
+            });
+        }
+
+        let created_paths = workspace_service::prepare_brownfield_knowledge_root(&root)
+            .map_err(WorkspaceCommandError::from)?;
+        let status = self
+            .persistence
+            .set_brownfield_onboarding_consent(&request.project_id, true)
+            .map_err(persistence_workspace_error)?;
+        let inventory = InventoryScanner::scan(
+            &root,
+            CollectionBudget::default(),
+            &CancellationToken::new(),
+        )
+        .map_err(|error| WorkspaceCommandError {
+            code: workspace_service::WorkspaceErrorCode::IoError,
+            message: error.to_string(),
+            details: None,
+            remediation: Some("Tente atualizar o inventário novamente.".into()),
+        })?;
+        self.persistence
+            .enqueue_brownfield_mapping(&request.project_id)
+            .map_err(persistence_workspace_error)?;
+        Ok(BrownfieldOnboardingResult {
+            status,
+            created_paths,
+            inventory: Some(inventory),
+        })
     }
 
     pub fn list_workspace_tree(&self) -> Result<WorkspaceTreeResponse, WorkspaceCommandError> {
@@ -422,6 +516,23 @@ fn workspace_lock_error() -> WorkspaceCommandError {
     }
 }
 
+fn persistence_workspace_error(error: PersistenceServiceError) -> WorkspaceCommandError {
+    let code = match &error {
+        PersistenceServiceError::Validation(_) => {
+            workspace_service::WorkspaceErrorCode::ValidationError
+        }
+        PersistenceServiceError::NotFound(_) => workspace_service::WorkspaceErrorCode::NotFound,
+        PersistenceServiceError::Cancelled(_) => workspace_service::WorkspaceErrorCode::Cancelled,
+        _ => workspace_service::WorkspaceErrorCode::IoError,
+    };
+    WorkspaceCommandError {
+        code,
+        message: error.to_string(),
+        details: None,
+        remediation: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,6 +578,132 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_none()
         );
+        drop(core);
+        runtime.shutdown_timeout(Duration::from_secs(1));
+    }
+
+    #[test]
+    fn brownfield_open_requires_scoped_consent_before_inventory_or_directories() {
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        fs::create_dir_all(workspace.path().join("src")).unwrap();
+        fs::write(
+            workspace.path().join("Cargo.toml"),
+            "[package]\nname='existing'\n",
+        )
+        .unwrap();
+        fs::write(workspace.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let core = AppCore::initialize(
+            AppPaths::from_data_dir(data.path()),
+            runtime.handle().clone(),
+        )
+        .unwrap();
+
+        let opened = core
+            .open_workspace(OpenWorkspaceRequest {
+                path: workspace.path().to_string_lossy().into_owned(),
+            })
+            .unwrap();
+        assert_eq!(opened.kind, workspace_service::WorkspaceKind::Brownfield);
+        assert!(opened.greenfield.is_none());
+        assert!(!workspace.path().join("knowledge").exists());
+        let project = core
+            .persistence()
+            .ensure_project_for_workspace(
+                crate::persistence_service::EnsureProjectForWorkspaceRequest {
+                    workspace_path: opened.root_path,
+                    preferred_name: None,
+                },
+            )
+            .unwrap()
+            .project;
+        let other_workspace = tempfile::tempdir().unwrap();
+        fs::write(other_workspace.path().join("package.json"), "{}\n").unwrap();
+        let other_project = core
+            .persistence()
+            .ensure_project_for_workspace(
+                crate::persistence_service::EnsureProjectForWorkspaceRequest {
+                    workspace_path: other_workspace.path().to_string_lossy().into_owned(),
+                    preferred_name: None,
+                },
+            )
+            .unwrap()
+            .project;
+        assert!(matches!(
+            core.set_brownfield_onboarding_consent(SetBrownfieldConsentRequest {
+                project_id: other_project.id,
+                consent: true,
+            }),
+            Err(WorkspaceCommandError {
+                code: workspace_service::WorkspaceErrorCode::ValidationError,
+                ..
+            })
+        ));
+        assert!(!other_workspace.path().join("knowledge").exists());
+        assert_eq!(
+            core.get_brownfield_onboarding(&project.id).unwrap().consent,
+            crate::orchestration::brownfield::BrownfieldConsentState::NotDecided
+        );
+
+        let declined = core
+            .set_brownfield_onboarding_consent(SetBrownfieldConsentRequest {
+                project_id: project.id.clone(),
+                consent: false,
+            })
+            .unwrap();
+        assert_eq!(
+            declined.status.consent,
+            crate::orchestration::brownfield::BrownfieldConsentState::Declined
+        );
+        assert!(declined.inventory.is_none());
+        assert!(!workspace.path().join("knowledge").exists());
+        let jobs: i64 = rusqlite::Connection::open(core.persistence().database_path())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE project_id = ?1",
+                [&project.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(jobs, 0);
+
+        let enabled = core
+            .set_brownfield_onboarding_consent(SetBrownfieldConsentRequest {
+                project_id: project.id.clone(),
+                consent: true,
+            })
+            .unwrap();
+        assert_eq!(
+            enabled.status.consent,
+            crate::orchestration::brownfield::BrownfieldConsentState::Granted
+        );
+        let inventory = enabled.inventory.expect("authorized inventory");
+        assert_eq!(inventory.manifests, ["Cargo.toml"]);
+        assert_eq!(inventory.source_files, 1);
+        let components = workspace.path().join("knowledge/obsidian/components");
+        assert!(components.is_dir());
+        assert_eq!(fs::read_dir(components).unwrap().count(), 0);
+        assert!(!workspace.path().join("docs/PROJECT_AGENT.md").exists());
+        let mapping_jobs: i64 = rusqlite::Connection::open(core.persistence().database_path())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE project_id=?1 AND kind='brownfield_map'",
+                [&project.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(mapping_jobs, 1);
+
+        core.set_brownfield_onboarding_consent(SetBrownfieldConsentRequest {
+            project_id: project.id,
+            consent: false,
+        })
+        .unwrap();
+        runtime.block_on(core.shutdown());
         drop(core);
         runtime.shutdown_timeout(Duration::from_secs(1));
     }

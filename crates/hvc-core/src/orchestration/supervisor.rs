@@ -66,6 +66,9 @@ impl PersistenceService {
         if self.process_learning(shutdown).await? {
             return Ok(true);
         }
+        if self.process_brownfield_mapping(shutdown).await? {
+            return Ok(true);
+        }
         self.process_indexing(shutdown).await
     }
 

@@ -7,6 +7,11 @@ use std::path::{Component, Path, PathBuf};
 use ignore::{DirEntry, WalkBuilder};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
+
+use crate::orchestration::{
+    CollectionBudget, ContextCoverage, CoverageState, DocumentationAvailability,
+};
 
 const MAX_TREE_DEPTH: usize = 8;
 const MAX_TREE_ENTRIES: usize = 1_000;
@@ -94,6 +99,12 @@ pub struct RepositoryFileResult {
 #[derive(Debug, Clone)]
 pub struct RepositoryContext {
     root: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InventoryFile {
+    pub(crate) relative_path: String,
+    pub(crate) size_bytes: u64,
 }
 
 impl RepositoryContext {
@@ -366,6 +377,95 @@ impl RepositoryContext {
         builder.build()
     }
 
+    pub(crate) fn inventory_files(
+        &self,
+        budget: CollectionBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<(Vec<InventoryFile>, ContextCoverage), RepositoryError> {
+        budget
+            .validate()
+            .map_err(|error| RepositoryError(error.to_string()))?;
+        let started = std::time::Instant::now();
+        let mut files = Vec::new();
+        let mut coverage = ContextCoverage {
+            state: CoverageState::Complete,
+            documentation: DocumentationAvailability::Absent,
+            enumerated_files: 0,
+            read_bytes: 0,
+            truncated: false,
+            diagnostics: vec![
+                "Inventário heurístico limitado; não comprova cobertura global do repositório."
+                    .into(),
+            ],
+        };
+
+        for item in self.walk(&self.root, MAX_TREE_DEPTH + 64) {
+            if cancellation.is_cancelled() {
+                return Err(RepositoryError("Coleta cancelada.".into()));
+            }
+            if started.elapsed().as_millis() >= u128::from(budget.max_duration_ms) {
+                coverage.truncated = true;
+                break;
+            }
+            let entry = match item {
+                Ok(entry) => entry,
+                Err(error) => {
+                    coverage.state = CoverageState::Partial;
+                    coverage
+                        .diagnostics
+                        .push(format!("Entrada indisponível durante enumeração: {error}"));
+                    continue;
+                }
+            };
+            if entry.depth() >= MAX_TREE_DEPTH + 64
+                && entry.file_type().is_some_and(|kind| kind.is_dir())
+            {
+                coverage.truncated = true;
+            }
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            if coverage.enumerated_files >= budget.max_files {
+                coverage.truncated = true;
+                break;
+            }
+            coverage.enumerated_files += 1;
+            let relative_path = match self.relative_display(entry.path()) {
+                Ok(path) => path,
+                Err(error) => {
+                    coverage.state = CoverageState::Partial;
+                    coverage.diagnostics.push(error.to_string());
+                    continue;
+                }
+            };
+            if is_documentation_path(&relative_path) {
+                coverage.documentation = DocumentationAvailability::Available;
+            }
+            let size_bytes = match entry.metadata() {
+                Ok(metadata) => metadata.len(),
+                Err(error) => {
+                    coverage.state = CoverageState::Partial;
+                    coverage.diagnostics.push(format!(
+                        "Metadados indisponíveis para `{relative_path}`: {error}"
+                    ));
+                    continue;
+                }
+            };
+            files.push(InventoryFile {
+                relative_path,
+                size_bytes,
+            });
+        }
+
+        if coverage.truncated {
+            coverage.state = CoverageState::Partial;
+            coverage
+                .diagnostics
+                .push("truncated: limite de arquivos, profundidade ou duração atingido.".into());
+        }
+        Ok((files, coverage))
+    }
+
     fn read_safe_text(&self, path: &Path) -> Result<String, RepositoryError> {
         self.read_bounded_text(path, MAX_FILE_BYTES)
             .map(|(text, _)| text)
@@ -616,11 +716,19 @@ fn allowed_text_name(name: &str) -> bool {
     const EXTENSIONS: &[&str] = &[
         "c", "cc", "cpp", "cs", "css", "csv", "go", "graphql", "h", "hpp", "html", "java", "js",
         "json", "jsx", "kt", "kts", "md", "php", "proto", "ps1", "py", "rb", "rs", "scss", "sh",
-        "sql", "svg", "swift", "toml", "ts", "tsx", "txt", "xml", "yaml", "yml",
+        "csproj", "gradle", "mod", "sln", "sql", "svg", "swift", "toml", "ts", "tsx", "txt", "xml",
+        "yaml", "yml",
     ];
     let special = matches!(
         name,
-        "dockerfile" | "makefile" | "license" | ".gitignore" | ".gitattributes" | ".editorconfig"
+        "dockerfile"
+            | "makefile"
+            | "license"
+            | "go.mod"
+            | "go.work"
+            | ".gitignore"
+            | ".gitattributes"
+            | ".editorconfig"
     ) || name.starts_with("readme")
         || (name.starts_with(".env") && !is_sensitive_name(name));
     special
@@ -628,6 +736,15 @@ fn allowed_text_name(name: &str) -> bool {
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| EXTENSIONS.contains(&extension))
+}
+
+fn is_documentation_path(relative_path: &str) -> bool {
+    let normalized = relative_path.to_ascii_lowercase();
+    let name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    name.starts_with("readme")
+        || name.ends_with(".md")
+        || normalized.starts_with("docs/")
+        || normalized.contains("/docs/")
 }
 
 fn truncate_chars(value: &str, max: usize) -> String {

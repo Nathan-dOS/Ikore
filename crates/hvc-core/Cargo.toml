@@ -28,6 +28,9 @@ tempfile = "3"
 thiserror = "2"
 tokio.workspace = true
 tokio-util.workspace = true
+tree-sitter = "=0.26.13"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-typescript = "=0.23.2"
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
 

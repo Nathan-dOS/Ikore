@@ -84,6 +84,7 @@ fn facts(snapshot: &SourceSnapshot) -> CodeContextFacts {
         scope: "src/auth.rs".into(),
         sources: vec![snapshot.revision().clone()],
         snippets: vec![snapshot.snippet(1, 1).unwrap()],
+        symbols: vec![],
         references: vec![],
         coverage: ContextCoverage {
             state: CoverageState::Partial,
@@ -594,6 +595,7 @@ fn context_rejects_duplicate_sources_and_missing_extractor_version() {
         source: captured.revision().clone(),
         line: 1,
         observed_text: "nonexistent_import".into(),
+        relation: ReferenceRelation::Lexical,
         resolution: ReferenceResolution::Unresolved {
             reason: "fixture".into(),
         },

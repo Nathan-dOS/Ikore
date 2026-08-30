@@ -69,11 +69,14 @@ impl From<PersistenceCommandError> for UiCommandError {
 
 fn workspace_code(code: WorkspaceErrorCode) -> &'static str {
     match code {
+        WorkspaceErrorCode::ValidationError => "validation_error",
+        WorkspaceErrorCode::NotFound => "not_found",
         WorkspaceErrorCode::InvalidRoot => "invalid_root",
         WorkspaceErrorCode::PathForbidden => "path_forbidden",
         WorkspaceErrorCode::InvalidExtension => "invalid_extension",
         WorkspaceErrorCode::InvalidQuery => "invalid_query",
         WorkspaceErrorCode::Conflict => "conflict",
+        WorkspaceErrorCode::Cancelled => "cancelled",
         WorkspaceErrorCode::IoError => "io_error",
     }
 }

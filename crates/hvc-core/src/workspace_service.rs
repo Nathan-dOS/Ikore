@@ -19,11 +19,14 @@ pub const WORKSPACE_CHANGED_EVENT: &str = "workspace://changed";
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceErrorCode {
+    ValidationError,
+    NotFound,
     InvalidRoot,
     PathForbidden,
     InvalidExtension,
     InvalidQuery,
     Conflict,
+    Cancelled,
     IoError,
 }
 
@@ -161,7 +164,16 @@ pub struct OpenWorkspaceRequest {
 pub struct OpenWorkspaceResponse {
     pub root_path: String,
     pub tree: Vec<FileNode>,
-    pub greenfield: GreenfieldBootstrapStatus,
+    pub kind: WorkspaceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub greenfield: Option<GreenfieldBootstrapStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceKind {
+    Greenfield,
+    Brownfield,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -628,6 +640,72 @@ pub fn bootstrap_greenfield_workspace(
             .to_string(),
         created_paths,
     })
+}
+
+pub fn classify_workspace(root: &Path) -> Result<WorkspaceKind, WorkspaceServiceError> {
+    if !root.exists() || !root.is_dir() {
+        return Err(WorkspaceServiceError::InvalidRoot(
+            "Workspace inválido para classificação.".to_string(),
+        ));
+    }
+    if is_greenfield_bootstrapped(root) || detect_disallowed_entries(root)?.is_empty() {
+        Ok(WorkspaceKind::Greenfield)
+    } else {
+        Ok(WorkspaceKind::Brownfield)
+    }
+}
+
+pub fn prepare_brownfield_knowledge_root(
+    root: &Path,
+) -> Result<Vec<String>, WorkspaceServiceError> {
+    let canonical_root = fs::canonicalize(root).map_err(WorkspaceServiceError::Io)?;
+    if !canonical_root.is_dir() {
+        return Err(WorkspaceServiceError::InvalidRoot(
+            "Workspace inválido para adoção brownfield.".to_string(),
+        ));
+    }
+
+    let mut created_paths = Vec::new();
+    let mut current = canonical_root.clone();
+    let mut relative = PathBuf::new();
+    for segment in ["knowledge", "obsidian", "components"] {
+        current.push(segment);
+        relative.push(segment);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if is_link_metadata(&metadata) || !metadata.is_dir() {
+                    return Err(WorkspaceServiceError::PathForbidden(format!(
+                        "`{}` precisa ser um diretório real dentro do workspace.",
+                        relative.to_string_lossy().replace('\\', "/")
+                    )));
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(&current).map_err(WorkspaceServiceError::Io)?;
+                created_paths.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+            Err(error) => return Err(WorkspaceServiceError::Io(error)),
+        }
+        let canonical = fs::canonicalize(&current).map_err(WorkspaceServiceError::Io)?;
+        if !canonical.starts_with(&canonical_root) {
+            return Err(WorkspaceServiceError::PathForbidden(
+                "A estrutura brownfield resolveria para fora do workspace.".to_string(),
+            ));
+        }
+    }
+    Ok(created_paths)
+}
+
+fn is_link_metadata(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
 }
 
 fn is_greenfield_bootstrapped(root: &Path) -> bool {
@@ -2641,6 +2719,64 @@ mod tests {
             }
             _ => panic!("expected invalid root error for legacy workspace"),
         }
+    }
+
+    #[test]
+    fn brownfield_classification_is_non_destructive_and_knowledge_root_is_minimal() {
+        let root = prepare_root();
+        fs::create_dir_all(root.path().join("src")).expect("create source directory");
+        let source = root.path().join("src/main.rs");
+        let original = b"fn main() { println!(\"human\"); }\n";
+        fs::write(&source, original).expect("write human source");
+
+        assert_eq!(
+            classify_workspace(root.path()).expect("classification should succeed"),
+            WorkspaceKind::Brownfield
+        );
+        assert!(!root.path().join("knowledge").exists());
+        assert_eq!(fs::read(&source).unwrap(), original);
+
+        let created = prepare_brownfield_knowledge_root(root.path())
+            .expect("authorized minimal structure should be created");
+        assert_eq!(
+            created,
+            [
+                "knowledge",
+                "knowledge/obsidian",
+                "knowledge/obsidian/components"
+            ]
+        );
+        let components = root.path().join("knowledge/obsidian/components");
+        assert!(components.is_dir());
+        assert_eq!(fs::read_dir(&components).unwrap().count(), 0);
+        assert!(!root.path().join("docs/PROJECT_AGENT.md").exists());
+        assert!(!root.path().join("knowledge/obsidian/_templates").exists());
+        assert_eq!(fs::read(&source).unwrap(), original);
+        assert!(
+            prepare_brownfield_knowledge_root(root.path())
+                .expect("minimal structure should be idempotent")
+                .is_empty()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn brownfield_knowledge_root_rejects_junction_components() {
+        let root = prepare_root();
+        let outside = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(root.path().join("knowledge"))
+            .arg(outside.path())
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "junction fixture creation");
+
+        assert!(matches!(
+            prepare_brownfield_knowledge_root(root.path()),
+            Err(WorkspaceServiceError::PathForbidden(_))
+        ));
+        assert!(!outside.path().join("obsidian").exists());
     }
 
     #[test]

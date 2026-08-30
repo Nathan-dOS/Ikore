@@ -5,6 +5,10 @@ use std::time::Duration;
 
 use gpui::{AppContext as _, Context, Entity, SharedString};
 use hvc_core::AppCore;
+use hvc_core::orchestration::brownfield::{
+    BrownfieldConsentState, BrownfieldInventory, BrownfieldOnboardingResult,
+    BrownfieldOnboardingStatus, SetBrownfieldConsentRequest,
+};
 use hvc_core::workspace_service::{
     FileNode, ReadWorkspaceFileRequest, WriteWorkspaceFileAtomicRequest,
 };
@@ -41,6 +45,12 @@ pub(crate) trait WorkspaceBackend: Send + Sync {
         content: String,
         expected_revision: String,
     ) -> WorkspaceFuture<String>;
+
+    fn set_brownfield_consent(
+        &self,
+        project_id: String,
+        consent: bool,
+    ) -> WorkspaceFuture<BrownfieldOnboardingResult>;
 }
 
 pub(crate) struct CoreWorkspaceBackend {
@@ -102,6 +112,76 @@ impl WorkspaceBackend for CoreWorkspaceBackend {
                     ))
                 })?
         })
+    }
+
+    fn set_brownfield_consent(
+        &self,
+        project_id: String,
+        consent: bool,
+    ) -> WorkspaceFuture<BrownfieldOnboardingResult> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.set_brownfield_onboarding_consent(SetBrownfieldConsentRequest {
+                        project_id,
+                        consent,
+                    })
+                    .map_err(WorkspaceOperationError::from)
+                })
+                .await
+                .map_err(|error| {
+                    WorkspaceOperationError::worker(format!(
+                        "worker do onboarding brownfield interrompido: {error}"
+                    ))
+                })?
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum BrownfieldOnboardingState {
+    #[default]
+    NotApplicable,
+    Pending,
+    Disabled,
+    Enabled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct BrownfieldOnboardingModel {
+    pub(crate) state: BrownfieldOnboardingState,
+    pub(crate) busy: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) inventory: Option<BrownfieldInventory>,
+}
+
+impl BrownfieldOnboardingModel {
+    pub(crate) fn from_status(status: Option<BrownfieldOnboardingStatus>) -> Self {
+        let state = status.map_or(
+            BrownfieldOnboardingState::NotApplicable,
+            |status| match status.consent {
+                BrownfieldConsentState::NotDecided => BrownfieldOnboardingState::Pending,
+                BrownfieldConsentState::Declined => BrownfieldOnboardingState::Disabled,
+                BrownfieldConsentState::Granted => BrownfieldOnboardingState::Enabled,
+            },
+        );
+        Self {
+            state,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn apply_result(&mut self, result: BrownfieldOnboardingResult) {
+        self.state = match result.status.consent {
+            BrownfieldConsentState::NotDecided => BrownfieldOnboardingState::Pending,
+            BrownfieldConsentState::Declined => BrownfieldOnboardingState::Disabled,
+            BrownfieldConsentState::Granted => BrownfieldOnboardingState::Enabled,
+        };
+        self.busy = false;
+        self.error = None;
+        self.inventory = result.inventory;
     }
 }
 
@@ -207,6 +287,7 @@ pub struct WorkspaceEditorModel {
     pub view_mode: WorkspaceViewMode,
     pub context_drawer_open: bool,
     pub diff_expanded: bool,
+    pub(crate) brownfield: BrownfieldOnboardingModel,
 }
 
 impl WorkspaceEditorModel {
@@ -221,6 +302,7 @@ impl WorkspaceEditorModel {
             view_mode: WorkspaceViewMode::Editor,
             context_drawer_open: true,
             diff_expanded: false,
+            brownfield: BrownfieldOnboardingModel::default(),
         }
     }
 
