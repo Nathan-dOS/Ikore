@@ -1,6 +1,5 @@
 //! Persistent BF2 structural cache and low-priority maintenance job.
 
-use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 
@@ -8,8 +7,9 @@ use rusqlite::TransactionBehavior;
 
 use super::*;
 use crate::orchestration::{
-    CollectionBudget, ReferenceRelation, ReferenceResolution, SourceLanguage, SourceSnapshot,
-    SourceStructuralFacts, StructuralParseStatus, TREE_SITTER_PARSER_VERSION, TreeSitterExtractor,
+    CollectionBudget, ReferenceRelation, ReferenceResolution, RelativeSourcePath, SourceLanguage,
+    SourceSnapshot, SourceStructuralFacts, StructuralParseStatus, TREE_SITTER_PARSER_VERSION,
+    TreeSitterExtractor,
 };
 use crate::repository_context::RepositoryContext;
 
@@ -47,23 +47,7 @@ impl PersistenceService {
                 "O mapeamento brownfield exige consentimento ativo para este projeto.".into(),
             ));
         }
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT id FROM jobs WHERE project_id=?1 AND kind='brownfield_map' AND status IN ('pending','running','interrupted') AND cancellation_reason IS NULL ORDER BY created_at,id LIMIT 1",
-                [&project_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(existing) = existing {
-            tx.commit()?;
-            return Ok(existing);
-        }
-        let id = Uuid::new_v4().to_string();
-        let now = Self::now_iso();
-        tx.execute(
-            "INSERT INTO jobs(id,kind,status,attempts,created_at,updated_at,project_id,job_class,idempotency_key) VALUES(?1,'brownfield_map','pending',0,?2,?2,?3,'background',?4)",
-            params![id, now, project_id, format!("brownfield-map:{project_id}:{id}")],
-        )?;
+        let id = Self::ensure_brownfield_mapping_job_tx(&tx, &project_id)?;
         tx.commit()?;
         self.wake_scheduler();
         Ok(id)
@@ -100,6 +84,10 @@ impl PersistenceService {
             "UPDATE brownfield_component_notes SET publication_state='not_scheduled',diagnostic='Consentimento brownfield revogado.',updated_at=?2 WHERE project_id=?1 AND publication_state IN ('pending','publishing')",
             params![project_id,now],
         )?;
+        tx.execute(
+            "UPDATE brownfield_refresh_queue SET state='superseded',diagnostic='Consentimento brownfield revogado.',updated_at=?2 WHERE project_id=?1 AND state IN ('pending','in_progress')",
+            params![project_id,now],
+        )?;
         tx.commit()?;
         self.signal_cancelled_jobs(&ids);
         self.wake_scheduler();
@@ -118,7 +106,7 @@ impl PersistenceService {
             let id: Option<String> = service
                 .connection()?
                 .query_row(
-                    "SELECT j.id FROM jobs j JOIN runtime_settings s ON s.key='brownfield.onboarding_consent.'||j.project_id AND s.value='true' WHERE j.kind='brownfield_map' AND j.job_class='background' AND j.status='pending' AND j.cancellation_reason IS NULL ORDER BY j.created_at,j.id LIMIT 1",
+                    "SELECT j.id FROM jobs j JOIN runtime_settings s ON s.key='brownfield.onboarding_consent.'||j.project_id AND s.value='true' WHERE j.kind='brownfield_map' AND j.job_class='background' AND j.status='pending' AND j.cancellation_reason IS NULL AND NOT EXISTS(SELECT 1 FROM runtime_slots WHERE job_class='main') AND NOT EXISTS(SELECT 1 FROM jobs foreground WHERE foreground.job_class='main' AND foreground.status='pending' AND foreground.cancellation_reason IS NULL) AND NOT EXISTS(SELECT 1 FROM artifact_publications WHERE job_class='main' AND state IN ('pending','applying')) ORDER BY j.created_at,j.id LIMIT 1",
                     [],
                     |row| row.get(0),
                 )
@@ -179,80 +167,74 @@ impl PersistenceService {
             params![job.id, generation],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let repository = RepositoryContext::new(Path::new(&root))
-            .map_err(|error| coordination::invalid(error.to_string()))?;
         let budget = CollectionBudget::default();
         let started = Instant::now();
-        let (sources, coverage) = repository
-            .capture_code_sources(&project_id, budget, cancellation)
-            .map_err(|error| coordination::invalid(error.to_string()))?;
         let extractor = TreeSitterExtractor;
-        let mut metrics = BrownfieldMappingMetrics {
-            coverage_partial: coverage.state != crate::orchestration::CoverageState::Complete,
-            diagnostics: coverage.diagnostics.clone(),
-            ..BrownfieldMappingMetrics::default()
-        };
-        let mut observed_paths = HashSet::new();
-        let mut processed_all_sources = true;
-
-        for source in &sources {
-            if cancellation.is_cancelled() {
-                return Err(PersistenceServiceError::Cancelled(
-                    "Mapeamento brownfield cancelado.".into(),
-                ));
-            }
-            if started.elapsed().as_millis() >= u128::from(budget.max_duration_ms) {
-                processed_all_sources = false;
-                metrics.coverage_partial = true;
-                metrics.diagnostics.push(
-                    "budget_exhausted: manutenção estrutural preservou o cache não visitado."
-                        .into(),
-                );
-                break;
-            }
-            observed_paths.insert(source.revision().relative_path.as_str().to_string());
-            if Self::cached_source_matches(
-                &db,
-                source,
-                TREE_SITTER_PARSER_VERSION,
-                SourceLanguage::detect(&source.revision().relative_path).query_version(),
-            )? {
-                metrics.cache_hits += 1;
-                continue;
-            }
-            metrics.cache_misses += 1;
-            let source_facts = extractor
-                .extract_source(source, cancellation)
+        let mut metrics = BrownfieldMappingMetrics::default();
+        let frontier_initialized: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM brownfield_frontier_state WHERE project_id=?1 AND initialized=1)",
+            [&project_id],
+            |row| row.get(0),
+        )?;
+        if !frontier_initialized {
+            let repository = RepositoryContext::new(Path::new(&root))
                 .map_err(|error| coordination::invalid(error.to_string()))?;
-            match source_facts.status {
-                StructuralParseStatus::Mapped => metrics.mapped_sources += 1,
-                StructuralParseStatus::Partial => metrics.partial_sources += 1,
-                StructuralParseStatus::Unsupported => metrics.unsupported_sources += 1,
+            let (sources, coverage) = repository
+                .capture_code_sources(&project_id, budget, cancellation)
+                .map_err(|error| coordination::invalid(error.to_string()))?;
+            metrics.coverage_partial =
+                coverage.state != crate::orchestration::CoverageState::Complete;
+            metrics.diagnostics.extend(coverage.diagnostics);
+            for source in &sources {
+                if cancellation.is_cancelled() {
+                    return Err(PersistenceServiceError::Cancelled(
+                        "Mapeamento brownfield cancelado.".into(),
+                    ));
+                }
+                if started.elapsed().as_millis() >= u128::from(budget.max_duration_ms) {
+                    metrics.coverage_partial = true;
+                    metrics.diagnostics.push(
+                        "budget_exhausted: bootstrap preservou uma fronteira parcial.".into(),
+                    );
+                    break;
+                }
+                self.process_brownfield_source(
+                    job,
+                    generation,
+                    source,
+                    &extractor,
+                    cancellation,
+                    &mut metrics,
+                )?;
             }
-            self.replace_source_structure(job, generation, &source_facts, cancellation)?;
+        } else {
+            self.process_brownfield_refreshes(
+                job,
+                generation,
+                Path::new(&root),
+                &project_id,
+                &extractor,
+                cancellation,
+                started,
+                budget,
+                &mut metrics,
+            )?;
         }
 
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::validate_mapping_fence(&tx, &job.id, generation, &project_id)?;
-        if coverage.state == crate::orchestration::CoverageState::Complete
-            && processed_all_sources
-            && !cancellation.is_cancelled()
-        {
-            let cached = tx
-                .prepare("SELECT relative_path FROM brownfield_source_cache WHERE project_id=?1")?
-                .query_map([&project_id], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            for path in cached {
-                if !observed_paths.contains(&path) {
-                    Self::mark_component_notes_stale(&tx, &project_id, &path, None)?;
-                    metrics.removed_sources += tx.execute(
-                        "DELETE FROM brownfield_source_cache WHERE project_id=?1 AND relative_path=?2",
-                        params![project_id, path],
-                    )? as u32;
-                }
-            }
+        if !frontier_initialized {
+            tx.execute(
+                "INSERT INTO brownfield_frontier_state(project_id,initialized,initialized_at,updated_at) VALUES(?1,1,?2,?2) ON CONFLICT(project_id) DO UPDATE SET initialized=1,initialized_at=COALESCE(initialized_at,excluded.initialized_at),updated_at=excluded.updated_at",
+                params![project_id, Self::now_iso()],
+            )?;
+            tx.execute(
+                "UPDATE brownfield_refresh_queue AS queue SET state='done',diagnostic=NULL,updated_at=?2 WHERE queue.project_id=?1 AND queue.state='pending' AND ((queue.content_sha256 IS NULL AND NOT EXISTS(SELECT 1 FROM brownfield_source_cache cache WHERE cache.project_id=queue.project_id AND cache.relative_path=queue.relative_path)) OR EXISTS(SELECT 1 FROM brownfield_source_cache cache WHERE cache.project_id=queue.project_id AND cache.relative_path=queue.relative_path AND cache.content_sha256=queue.content_sha256))",
+                params![project_id, Self::now_iso()],
+            )?;
         }
+        Self::recalculate_brownfield_frontier_tx(&tx, &project_id)?;
         metrics.elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         let output = serde_json::to_string(&metrics)
             .map_err(|error| coordination::invalid(error.to_string()))?;
@@ -260,8 +242,208 @@ impl PersistenceService {
             "UPDATE jobs SET status='done',maintenance_metrics_json=?2,finished_at=?3,updated_at=?3 WHERE id=?1 AND generation=?4 AND status='running'",
             params![job.id, output, Self::now_iso(), generation],
         )?;
+        let pending: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM brownfield_refresh_queue WHERE project_id=?1 AND state='pending')",
+            [&project_id],
+            |row| row.get(0),
+        )?;
+        if pending {
+            Self::ensure_brownfield_mapping_job_tx(&tx, &project_id)?;
+        }
         tx.commit()?;
         Ok(metrics)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_brownfield_refreshes(
+        &self,
+        job: &Job,
+        generation: u64,
+        root: &Path,
+        project_id: &str,
+        extractor: &TreeSitterExtractor,
+        cancellation: &CancellationToken,
+        started: Instant,
+        budget: CollectionBudget,
+        metrics: &mut BrownfieldMappingMetrics,
+    ) -> Result<(), PersistenceServiceError> {
+        loop {
+            if cancellation.is_cancelled() {
+                return Err(PersistenceServiceError::Cancelled(
+                    "Refresh brownfield cancelado.".into(),
+                ));
+            }
+            if started.elapsed().as_millis() >= u128::from(budget.max_duration_ms) {
+                metrics.coverage_partial = true;
+                metrics
+                    .diagnostics
+                    .push("budget_exhausted: refresh restante permaneceu na fila.".into());
+                return Ok(());
+            }
+            let mut db = self.connection()?;
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            Self::validate_mapping_fence(&tx, &job.id, generation, project_id)?;
+            Self::recalculate_brownfield_frontier_tx(&tx, project_id)?;
+            let next = Self::next_brownfield_refresh(&tx, project_id)?;
+            let Some((path, key, expected_hash)) = next else {
+                tx.commit()?;
+                return Ok(());
+            };
+            let changed = tx.execute(
+                "UPDATE brownfield_refresh_queue SET state='in_progress',attempts=attempts+1,updated_at=?4 WHERE project_id=?1 AND relative_path=?2 AND content_revision_key=?3 AND state='pending'",
+                params![project_id, path, key, Self::now_iso()],
+            )?;
+            if changed == 0 {
+                tx.commit()?;
+                continue;
+            }
+            tx.execute(
+                "UPDATE brownfield_frontier SET status='in_progress',attempts=attempts+1,updated_at=?3 WHERE project_id=?1 AND relative_path=?2 AND status<>'ignored'",
+                params![project_id, path, Self::now_iso()],
+            )?;
+            tx.commit()?;
+
+            let relative = RelativeSourcePath::new(path.clone())
+                .map_err(|error| coordination::invalid(error.to_string()))?;
+            let current = Self::capture_brownfield_revision(root, project_id, &relative)?;
+            let current_hash = current
+                .as_ref()
+                .map(|revision| revision.content_sha256.as_str());
+            if current_hash != expected_hash.as_deref() {
+                let mut db = self.connection()?;
+                let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                tx.execute(
+                    "UPDATE brownfield_refresh_queue SET state='superseded',diagnostic='Revisão mudou antes do refresh.',updated_at=?4 WHERE project_id=?1 AND relative_path=?2 AND content_revision_key=?3",
+                    params![project_id, path, key, Self::now_iso()],
+                )?;
+                Self::enqueue_brownfield_refresh_tx(
+                    &tx,
+                    project_id,
+                    &path,
+                    current_hash,
+                    "revision_advanced",
+                )?;
+                tx.commit()?;
+                continue;
+            }
+
+            if current.is_none() {
+                let mut db = self.connection()?;
+                let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                Self::validate_mapping_fence(&tx, &job.id, generation, project_id)?;
+                Self::mark_component_notes_stale(&tx, project_id, &path, None)?;
+                metrics.removed_sources += tx.execute(
+                    "DELETE FROM brownfield_source_cache WHERE project_id=?1 AND relative_path=?2",
+                    params![project_id, path],
+                )? as u32;
+                tx.execute(
+                    "UPDATE brownfield_frontier SET status='stale',content_sha256=NULL,priority_reason='source_deleted',updated_at=?3 WHERE project_id=?1 AND relative_path=?2 AND status<>'ignored'",
+                    params![project_id, path, Self::now_iso()],
+                )?;
+                tx.execute(
+                    "UPDATE brownfield_refresh_queue SET state='done',diagnostic=NULL,updated_at=?4 WHERE project_id=?1 AND relative_path=?2 AND content_revision_key=?3",
+                    params![project_id, path, key, Self::now_iso()],
+                )?;
+                Self::recalculate_brownfield_frontier_tx(&tx, project_id)?;
+                tx.commit()?;
+                continue;
+            }
+
+            let source = RepositoryContext::new(root)
+                .and_then(|repository| repository.capture_code_source(project_id, &relative))
+                .map_err(|error| coordination::invalid(error.to_string()))?;
+            if let Err(error) = self.process_brownfield_source(
+                job,
+                generation,
+                &source,
+                extractor,
+                cancellation,
+                metrics,
+            ) {
+                let db = self.connection()?;
+                db.execute(
+                    "UPDATE brownfield_refresh_queue SET state='failed',diagnostic=?4,updated_at=?5 WHERE project_id=?1 AND relative_path=?2 AND content_revision_key=?3 AND state='in_progress'",
+                    params![project_id, path, key, error.to_string(), Self::now_iso()],
+                )?;
+                db.execute(
+                    "UPDATE brownfield_frontier SET status='failed',priority_reason='refresh_failed',updated_at=?3 WHERE project_id=?1 AND relative_path=?2 AND status<>'ignored'",
+                    params![project_id, path, Self::now_iso()],
+                )?;
+                metrics.coverage_partial = true;
+                metrics
+                    .diagnostics
+                    .push(format!("refresh_failed:{path}: {error}"));
+                continue;
+            }
+            let db = self.connection()?;
+            db.execute(
+                "UPDATE brownfield_refresh_queue SET state='done',diagnostic=NULL,updated_at=?4 WHERE project_id=?1 AND relative_path=?2 AND content_revision_key=?3 AND state='in_progress'",
+                params![project_id, path, key, Self::now_iso()],
+            )?;
+        }
+    }
+
+    fn process_brownfield_source(
+        &self,
+        job: &Job,
+        generation: u64,
+        source: &SourceSnapshot,
+        extractor: &TreeSitterExtractor,
+        cancellation: &CancellationToken,
+        metrics: &mut BrownfieldMappingMetrics,
+    ) -> Result<(), PersistenceServiceError> {
+        let ignored: bool = self.connection()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM brownfield_frontier WHERE project_id=?1 AND relative_path=?2 AND status='ignored')",
+            params![source.revision().project_id, source.revision().relative_path.as_str()],
+            |row| row.get(0),
+        )?;
+        if ignored {
+            return Ok(());
+        }
+        let language = SourceLanguage::detect(&source.revision().relative_path);
+        if Self::cached_source_matches(
+            &self.connection()?,
+            source,
+            TREE_SITTER_PARSER_VERSION,
+            language.query_version(),
+        )? {
+            metrics.cache_hits += 1;
+            let db = self.connection()?;
+            db.execute(
+                "INSERT INTO brownfield_frontier(project_id,relative_path,status,content_sha256,priority_reason,priority_since,created_at,updated_at) SELECT project_id,relative_path,CASE WHEN status='mapped' THEN 'mapped' ELSE 'partial' END,content_sha256,'cache_hit',updated_at,updated_at,?3 FROM brownfield_source_cache WHERE project_id=?1 AND relative_path=?2 ON CONFLICT(project_id,relative_path) DO UPDATE SET status=CASE WHEN brownfield_frontier.status='ignored' THEN 'ignored' ELSE excluded.status END,content_sha256=excluded.content_sha256,priority_reason=CASE WHEN brownfield_frontier.status='ignored' THEN brownfield_frontier.priority_reason ELSE 'cache_hit' END,updated_at=excluded.updated_at",
+                params![source.revision().project_id, source.revision().relative_path.as_str(), Self::now_iso()],
+            )?;
+            return Ok(());
+        }
+        metrics.cache_misses += 1;
+        let facts = extractor
+            .extract_source(source, cancellation)
+            .map_err(|error| coordination::invalid(error.to_string()))?;
+        match facts.status {
+            StructuralParseStatus::Mapped => metrics.mapped_sources += 1,
+            StructuralParseStatus::Partial => metrics.partial_sources += 1,
+            StructuralParseStatus::Unsupported => metrics.unsupported_sources += 1,
+        }
+        self.replace_source_structure(job, generation, &facts, cancellation)
+    }
+
+    fn next_brownfield_refresh(
+        db: &Connection,
+        project_id: &str,
+    ) -> Result<Option<(String, String, Option<String>)>, PersistenceServiceError> {
+        db.query_row(
+            "SELECT queue.relative_path,queue.content_revision_key,queue.content_sha256 FROM brownfield_refresh_queue queue JOIN brownfield_frontier frontier ON frontier.project_id=queue.project_id AND frontier.relative_path=queue.relative_path WHERE queue.project_id=?1 AND queue.state='pending' AND frontier.status<>'ignored' ORDER BY (frontier.recent_use_count*100+frontier.in_degree*10+frontier.age_factor) DESC,frontier.priority_since,queue.created_at,queue.relative_path LIMIT 1",
+            [project_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(Into::into)
     }
 
     fn cached_source_matches(
@@ -299,6 +481,14 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::validate_mapping_fence(&tx, &job.id, generation, &facts.source.project_id)?;
+        let ignored: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM brownfield_frontier WHERE project_id=?1 AND relative_path=?2 AND status='ignored')",
+            params![facts.source.project_id, facts.source.relative_path.as_str()],
+            |row| row.get(0),
+        )?;
+        if ignored {
+            return Ok(());
+        }
         let symbols = serde_json::to_string(&facts.symbols)
             .map_err(|error| coordination::invalid(error.to_string()))?;
         let references = serde_json::to_string(&facts.references)
@@ -315,6 +505,21 @@ impl PersistenceService {
         tx.execute(
             "DELETE FROM brownfield_edges WHERE project_id=?1 AND source_path=?2",
             params![facts.source.project_id, facts.source.relative_path.as_str()],
+        )?;
+        let frontier_status = if facts.status == StructuralParseStatus::Mapped {
+            "mapped"
+        } else {
+            "partial"
+        };
+        tx.execute(
+            "INSERT INTO brownfield_frontier(project_id,relative_path,status,content_sha256,priority_reason,priority_since,created_at,updated_at) VALUES(?1,?2,?3,?4,'structural_refresh',?5,?5,?5) ON CONFLICT(project_id,relative_path) DO UPDATE SET status=CASE WHEN status='ignored' THEN status ELSE excluded.status END,content_sha256=CASE WHEN status='ignored' THEN content_sha256 ELSE excluded.content_sha256 END,priority_reason=CASE WHEN status='ignored' THEN priority_reason ELSE 'structural_refresh' END,updated_at=excluded.updated_at",
+            params![
+                facts.source.project_id,
+                facts.source.relative_path.as_str(),
+                frontier_status,
+                facts.source.content_sha256.as_str(),
+                now,
+            ],
         )?;
         tx.execute(
             "INSERT INTO brownfield_source_cache(project_id,relative_path,content_sha256,language,parser_version,query_version,status,symbols_json,references_json,parse_elapsed_us,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(project_id,relative_path) DO UPDATE SET content_sha256=excluded.content_sha256,language=excluded.language,parser_version=excluded.parser_version,query_version=excluded.query_version,status=excluded.status,symbols_json=excluded.symbols_json,references_json=excluded.references_json,parse_elapsed_us=excluded.parse_elapsed_us,updated_at=excluded.updated_at",
@@ -358,6 +563,7 @@ impl PersistenceService {
                 ],
             )?;
         }
+        Self::recalculate_brownfield_frontier_tx(&tx, &facts.source.project_id)?;
         tx.commit()?;
         Ok(())
     }
@@ -482,13 +688,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cold_then_warm_mapping_reports_misses_then_hits() {
+    async fn cold_mapping_then_idle_refresh_does_not_rescan_sources() {
         let (_data, _workspace, service, project) = fixture();
         let cold = run_mapping(&service, &project).await;
         assert_eq!(cold.cache_misses, 1);
         assert_eq!(cold.cache_hits, 0);
         let warm = run_mapping(&service, &project).await;
-        assert_eq!(warm.cache_hits, 1);
+        assert_eq!(warm.cache_hits, 0);
         assert_eq!(warm.cache_misses, 0);
         assert!(cold.elapsed_us > 0);
         assert!(warm.elapsed_us > 0);
@@ -525,6 +731,16 @@ mod tests {
             "use crate::auth::Token;\nfn run() { new_call(); }\n",
         )
         .unwrap();
+        service
+            .record_workspace_change(
+                workspace.path(),
+                &crate::workspace_service::WorkspaceChangedEvent {
+                    kind: "modify".into(),
+                    relative_path: "src/lib.rs".into(),
+                    timestamp: PersistenceService::now_iso(),
+                },
+            )
+            .unwrap();
         let changed = run_mapping(&service, &project).await;
         assert_eq!(changed.cache_misses, 1);
         let db = service.connection().unwrap();
@@ -633,5 +849,272 @@ mod tests {
             .unwrap();
         assert_eq!(status, "failed");
         assert_eq!(cached_after, cached_before);
+    }
+
+    fn emit_change(
+        service: &PersistenceService,
+        workspace: &Path,
+        kind: &str,
+        relative_path: &str,
+    ) {
+        service
+            .record_workspace_change(
+                workspace,
+                &crate::workspace_service::WorkspaceChangedEvent {
+                    kind: kind.into(),
+                    relative_path: relative_path.into(),
+                    timestamp: PersistenceService::now_iso(),
+                },
+            )
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn watcher_refresh_is_deduplicated_by_project_path_and_revision() {
+        let (_data, workspace, service, project) = fixture();
+        run_mapping(&service, &project).await;
+        fs::write(workspace.path().join("src/lib.rs"), "fn changed() {}\n").unwrap();
+        emit_change(&service, workspace.path(), "modify", "src/lib.rs");
+        emit_change(&service, workspace.path(), "modify", "src/lib.rs");
+
+        let db = service.connection().unwrap();
+        let queued: u32 = db
+            .query_row(
+                "SELECT COUNT(*) FROM brownfield_refresh_queue WHERE project_id=?1 AND relative_path='src/lib.rs' AND state='pending'",
+                [&project],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let jobs: u32 = db
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE project_id=?1 AND kind='brownfield_map' AND status='pending'",
+                [&project],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!((queued, jobs), (1, 1));
+        drop(db);
+
+        let metrics = run_mapping(&service, &project).await;
+        assert_eq!(metrics.cache_misses, 1);
+    }
+
+    #[tokio::test]
+    async fn watcher_event_before_bootstrap_does_not_hide_sibling_sources() {
+        let (_data, workspace, service, project) = fixture();
+        fs::write(workspace.path().join("src/auth.rs"), "pub struct Token;\n").unwrap();
+        emit_change(&service, workspace.path(), "create", "src/auth.rs");
+        run_mapping(&service, &project).await;
+        let cached: u32 = service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM brownfield_source_cache WHERE project_id=?1",
+                [&project],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cached, 2);
+    }
+
+    #[tokio::test]
+    async fn rename_and_delete_refresh_only_the_two_observed_paths() {
+        let (_data, workspace, service, project) = fixture();
+        run_mapping(&service, &project).await;
+        fs::rename(
+            workspace.path().join("src/lib.rs"),
+            workspace.path().join("src/main.rs"),
+        )
+        .unwrap();
+        emit_change(&service, workspace.path(), "remove", "src/lib.rs");
+        emit_change(&service, workspace.path(), "create", "src/main.rs");
+        let metrics = run_mapping(&service, &project).await;
+        assert_eq!(metrics.removed_sources, 1);
+        assert_eq!(metrics.cache_misses, 1);
+
+        let db = service.connection().unwrap();
+        let rows: (u32, u32) = db
+            .query_row(
+                "SELECT SUM(relative_path='src/lib.rs'),SUM(relative_path='src/main.rs') FROM brownfield_source_cache WHERE project_id=?1",
+                [&project],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, (0, 1));
+        let old_status: String = db
+            .query_row(
+                "SELECT status FROM brownfield_frontier WHERE project_id=?1 AND relative_path='src/lib.rs'",
+                [&project],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_status, "stale");
+    }
+
+    #[tokio::test]
+    async fn ignored_source_survives_events_and_reactivation_queues_latest_revision() {
+        let (_data, workspace, service, project) = fixture();
+        run_mapping(&service, &project).await;
+        let old_hash: String = service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT content_sha256 FROM brownfield_source_cache WHERE project_id=?1 AND relative_path='src/lib.rs'",
+                [&project],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let status = service
+            .set_brownfield_path_ignored(&project, "src/lib.rs", true)
+            .unwrap();
+        assert_eq!(status.ignored_paths, ["src/lib.rs"]);
+        fs::write(
+            workspace.path().join("src/lib.rs"),
+            "fn ignored_change() {}\n",
+        )
+        .unwrap();
+        emit_change(&service, workspace.path(), "modify", "src/lib.rs");
+        let db = service.connection().unwrap();
+        let pending: u32 = db
+            .query_row(
+                "SELECT COUNT(*) FROM brownfield_refresh_queue WHERE project_id=?1 AND relative_path='src/lib.rs' AND state='pending'",
+                [&project],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let cached: String = db
+            .query_row(
+                "SELECT content_sha256 FROM brownfield_source_cache WHERE project_id=?1 AND relative_path='src/lib.rs'",
+                [&project],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!((pending, cached.as_str()), (0, old_hash.as_str()));
+        drop(db);
+
+        let status = service
+            .set_brownfield_path_ignored(&project, "src/lib.rs", false)
+            .unwrap();
+        assert!(status.ignored_paths.is_empty());
+        run_mapping(&service, &project).await;
+        let refreshed: String = service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT content_sha256 FROM brownfield_source_cache WHERE project_id=?1 AND relative_path='src/lib.rs'",
+                [&project],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_ne!(refreshed, old_hash);
+    }
+
+    #[tokio::test]
+    async fn in_degree_is_recalculated_after_edge_removal_and_main_work_wins_admission() {
+        let (_data, workspace, service, project) = fixture();
+        fs::write(workspace.path().join("src/auth.rs"), "pub struct Token;\n").unwrap();
+        run_mapping(&service, &project).await;
+        let db = service.connection().unwrap();
+        let revision: String = db
+            .query_row(
+                "SELECT content_sha256 FROM brownfield_source_cache WHERE project_id=?1 AND relative_path='src/lib.rs'",
+                [&project],
+                |row| row.get(0),
+            )
+            .unwrap();
+        db.execute(
+            "INSERT INTO brownfield_edges(project_id,source_path,relation,observed_text,line,destination_path,resolution,source_revision_sha256,updated_at) VALUES(?1,'src/lib.rs','import','derived-test',999,'src/auth.rs','resolved',?2,?3)",
+            params![project, revision, PersistenceService::now_iso()],
+        )
+        .unwrap();
+        PersistenceService::recalculate_brownfield_frontier_tx(&db, &project).unwrap();
+        let before: u32 = db
+            .query_row(
+                "SELECT in_degree FROM brownfield_frontier WHERE project_id=?1 AND relative_path='src/auth.rs'",
+                [&project],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, 1);
+        db.execute(
+            "DELETE FROM brownfield_edges WHERE project_id=?1 AND observed_text='derived-test'",
+            [&project],
+        )
+        .unwrap();
+        PersistenceService::recalculate_brownfield_frontier_tx(&db, &project).unwrap();
+        let after: u32 = db
+            .query_row(
+                "SELECT in_degree FROM brownfield_frontier WHERE project_id=?1 AND relative_path='src/auth.rs'",
+                [&project],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, 0);
+
+        fs::write(workspace.path().join("src/lib.rs"), "fn queued() {}\n").unwrap();
+        emit_change(&service, workspace.path(), "modify", "src/lib.rs");
+        let main = Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO jobs(id,kind,status,attempts,created_at,updated_at,project_id,job_class,idempotency_key) VALUES(?1,'user_task','pending',0,?2,?2,?3,'main',?1)",
+            params![main, PersistenceService::now_iso(), project],
+        )
+        .unwrap();
+        drop(db);
+        assert!(
+            !service
+                .process_brownfield_mapping(&CancellationToken::new())
+                .await
+                .unwrap()
+        );
+        service
+            .connection()
+            .unwrap()
+            .execute("UPDATE jobs SET status='done' WHERE id=?1", [main])
+            .unwrap();
+        assert!(
+            service
+                .process_brownfield_mapping(&CancellationToken::new())
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_use_wins_first_but_aging_can_eventually_overtake_it() {
+        let (_data, workspace, service, project) = fixture();
+        fs::write(workspace.path().join("src/auth.rs"), "pub struct Token;\n").unwrap();
+        run_mapping(&service, &project).await;
+        fs::write(workspace.path().join("src/lib.rs"), "fn recent() {}\n").unwrap();
+        fs::write(
+            workspace.path().join("src/auth.rs"),
+            "pub struct NewToken;\n",
+        )
+        .unwrap();
+        emit_change(&service, workspace.path(), "modify", "src/lib.rs");
+        emit_change(&service, workspace.path(), "modify", "src/auth.rs");
+        let db = service.connection().unwrap();
+        db.execute(
+            "UPDATE brownfield_frontier SET recent_use_count=1,age_factor=0 WHERE project_id=?1 AND relative_path='src/lib.rs'",
+            [&project],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE brownfield_frontier SET recent_use_count=0,age_factor=50 WHERE project_id=?1 AND relative_path='src/auth.rs'",
+            [&project],
+        )
+        .unwrap();
+        let first = PersistenceService::next_brownfield_refresh(&db, &project)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.0, "src/lib.rs");
+        db.execute(
+            "UPDATE brownfield_frontier SET age_factor=200 WHERE project_id=?1 AND relative_path='src/auth.rs'",
+            [&project],
+        )
+        .unwrap();
+        let aged = PersistenceService::next_brownfield_refresh(&db, &project)
+            .unwrap()
+            .unwrap();
+        assert_eq!(aged.0, "src/auth.rs");
     }
 }

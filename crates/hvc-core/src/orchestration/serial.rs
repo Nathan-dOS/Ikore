@@ -593,6 +593,9 @@ impl PersistenceService {
                         tx.execute("UPDATE brownfield_component_notes SET publication_state='published',diagnostic=NULL,updated_at=?2 WHERE publication_artifact_id=?1",params![id,Self::now_iso()])?;
                     }
                     tx.commit()?;
+                    if kind == "component" {
+                        self.enqueue_embedding_path_change(Path::new(&root), &path)?;
+                    }
                     return Ok(());
                 }
                 tx.execute("INSERT INTO project_file_baselines(project_id,relative_path,content_sha256,updated_at) SELECT project_id,relative_path,desired_sha256,?2 FROM artifact_publications WHERE artifact_id=?1 ON CONFLICT(project_id,relative_path) DO UPDATE SET content_sha256=excluded.content_sha256,updated_at=excluded.updated_at",params![id,Self::now_iso()])?;

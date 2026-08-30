@@ -644,8 +644,14 @@ impl SqliteLlmRepository {
             }
         }
         let id = request.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let connection = self.connection()?;
-        let transaction = connection.unchecked_transaction().map_err(db_error)?;
+        let mut connection = self.connection()?;
+        // Reserve the writer before reading the current version. A deferred
+        // transaction can otherwise lose the read-to-write upgrade race to the
+        // workspace maintenance worker and report SQLITE_BUSY immediately,
+        // bypassing the configured busy timeout.
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_error)?;
         let actual_version = transaction
             .query_row(
                 "SELECT version FROM provider_routes WHERE id=?1",

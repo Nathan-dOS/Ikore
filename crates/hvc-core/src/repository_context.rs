@@ -108,6 +108,42 @@ pub(crate) struct InventoryFile {
 }
 
 impl RepositoryContext {
+    pub(crate) fn is_code_relative_path(relative: &str) -> bool {
+        let path = Path::new(relative);
+        !path.is_absolute()
+            && !relative.replace('\\', "/").starts_with("knowledge/")
+            && path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "rs" | "ts"
+                            | "tsx"
+                            | "js"
+                            | "jsx"
+                            | "py"
+                            | "go"
+                            | "java"
+                            | "kt"
+                            | "kts"
+                            | "cs"
+                            | "c"
+                            | "h"
+                            | "cc"
+                            | "cpp"
+                            | "hpp"
+                            | "rb"
+                            | "php"
+                            | "swift"
+                            | "sql"
+                            | "sh"
+                            | "ps1"
+                    )
+                })
+            && is_code_path(path)
+    }
+
     pub fn new(root: &Path) -> Result<Self, RepositoryError> {
         let canonical = root
             .canonicalize()

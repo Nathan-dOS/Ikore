@@ -37,6 +37,8 @@ use crate::orchestration::brownfield::{BrownfieldConsentState, BrownfieldOnboard
 mod anticipation;
 #[path = "orchestration/brownfield_enrichment.rs"]
 mod brownfield_enrichment;
+#[path = "orchestration/brownfield_maintenance.rs"]
+mod brownfield_maintenance;
 #[path = "orchestration/brownfield_mapping.rs"]
 mod brownfield_mapping;
 #[path = "orchestration/clarification.rs"]
@@ -1905,9 +1907,11 @@ impl PersistenceService {
                     ));
                 }
             };
+        let ignored_paths = Self::ignored_brownfield_paths(&connection, &project_id)?;
         Ok(BrownfieldOnboardingStatus {
             project_id,
             consent,
+            ignored_paths,
         })
     }
 
@@ -1934,7 +1938,9 @@ impl PersistenceService {
         if !consent {
             self.cancel_brownfield_mapping(&project_id)?;
         }
+        let ignored_paths = Self::ignored_brownfield_paths(&self.connection()?, &project_id)?;
         Ok(BrownfieldOnboardingStatus {
+            ignored_paths,
             project_id,
             consent: if consent {
                 BrownfieldConsentState::Granted

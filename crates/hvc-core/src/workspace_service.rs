@@ -529,7 +529,7 @@ impl WorkspaceWatcher {
                         continue;
                     };
 
-                    if !is_allowed_extension(Path::new(&relative_path)) {
+                    if !is_watched_path(Path::new(&relative_path)) {
                         continue;
                     }
 
@@ -2183,6 +2183,27 @@ pub(crate) fn is_normative_document(relative: &str, content: &str) -> bool {
     normative_properties(relative, parsed.parsed.as_ref())
 }
 
+pub(crate) fn is_embedding_document(relative: &str, content: &str) -> bool {
+    is_normative_document(relative, content) || is_component_document(relative, content)
+}
+
+fn is_component_document(relative: &str, content: &str) -> bool {
+    if !relative
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+        .starts_with("knowledge/obsidian/components/")
+    {
+        return false;
+    }
+    let Ok(parsed) = parse_frontmatter_and_body(content) else {
+        return false;
+    };
+    lookup_frontmatter_property(parsed.parsed.as_ref(), "type")
+        .as_ref()
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("component"))
+}
+
 fn normative_properties(relative: &str, properties: Option<&Value>) -> bool {
     if relative
         .replace('\\', "/")
@@ -2363,6 +2384,13 @@ fn is_allowed_extension(path: &Path) -> bool {
             normalized_extension == "md" || normalized_extension == "txt"
         })
         .unwrap_or(false)
+}
+
+fn is_watched_path(path: &Path) -> bool {
+    is_allowed_extension(path)
+        || crate::repository_context::RepositoryContext::is_code_relative_path(
+            &path.to_string_lossy(),
+        )
 }
 
 fn is_markdown_extension(path: &Path) -> bool {
@@ -3085,5 +3113,15 @@ mod document_cache_tests {
                 .iter()
                 .all(|candidate| candidate.relative_path != "component.md")
         );
+    }
+
+    #[test]
+    fn watcher_accepts_code_and_notes_without_broadening_editor_file_types() {
+        assert!(is_watched_path(Path::new("src/lib.rs")));
+        assert!(is_watched_path(Path::new(
+            "knowledge/obsidian/components/runtime.md"
+        )));
+        assert!(!is_watched_path(Path::new(".env")));
+        assert!(!is_allowed_extension(Path::new("src/lib.rs")));
     }
 }

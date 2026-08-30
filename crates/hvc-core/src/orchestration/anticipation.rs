@@ -157,6 +157,7 @@ impl PersistenceService {
             facts,
             created_at: Self::now_iso(),
         };
+        Self::record_brownfield_usage_tx(&tx, &fence.project_id, &package.facts.sources)?;
         let content = serde_json::to_string(&package).map_err(|e| invalid(e.to_string()))?;
         let artifact = Uuid::new_v4().to_string();
         tx.execute("INSERT INTO artifacts(id,pulsation_id,name,kind,content_sha256,created_at,updated_at,content,producer_job_id,producer_stage,generation,input_revision,producer_state_version,output_position,acceptance,publication_state) VALUES(?1,?2,'Contexto PreSpec','code_context',?3,?4,?4,?5,?6,'Intake',?7,?8,?9,0,'accepted','not_required')",params![artifact,package.pulsation_id,ContentSha256::of(content.as_bytes()).as_str(),Self::now_iso(),content,job.id,fence.generation,fence.input_revision,fence.state_version])?;

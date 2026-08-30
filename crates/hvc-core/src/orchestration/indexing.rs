@@ -24,6 +24,12 @@ impl PersistenceService {
         for id in &ids {
             tx.execute("UPDATE jobs SET status='failed',cancellation_reason='superseded',updated_at=?2 WHERE id=?1",params![id,Self::now_iso()])?;
         }
+        if config.embedding_enabled {
+            tx.execute(
+                "DELETE FROM workspace_note_embeddings WHERE embedding_model<>?1",
+                [&config.embedding_model],
+            )?;
+        }
         tx.execute(
             "UPDATE embedding_sync_state SET dirty=1,scan_cursor='',revision=revision+1",
             [],
@@ -82,6 +88,90 @@ impl PersistenceService {
         crate::orchestration::publication::safe_target(root, "knowledge/obsidian", false)?;
         let root = root.canonicalize()?.to_string_lossy().to_string();
         db.execute("INSERT INTO embedding_sync_state(workspace_path,next_reconcile_at) VALUES(?1,?2) ON CONFLICT(workspace_path) DO UPDATE SET dirty=1,scan_cursor=''",params![root,Self::now_iso()])?;
+        Ok(())
+    }
+
+    pub(super) fn enqueue_embedding_path_change(
+        &self,
+        root: &Path,
+        relative_path: &str,
+    ) -> Result<(), PersistenceServiceError> {
+        let root = root.canonicalize()?;
+        let key = root.to_string_lossy().to_string();
+        let content = read_optional_document(&root, relative_path)?;
+        let desired_hash = content
+            .as_ref()
+            .filter(|content| workspace_service::is_embedding_document(relative_path, content))
+            .map(|content| ContentSha256::of(content.as_bytes()).as_str().to_string());
+        let config = self.load_runtime_config()?;
+        let mut db = self.connection()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let project = tx
+            .prepare("SELECT id,workspace_path FROM projects WHERE is_archived=0")?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(Result::ok)
+            .find(|(_, path)| Path::new(path).canonicalize().ok().as_ref() == Some(&root))
+            .map(|(id, _)| id);
+        if !config.embedding_enabled {
+            if desired_hash.is_none() {
+                tx.execute(
+                    "DELETE FROM workspace_note_embeddings WHERE workspace_path=?1 AND relative_path=?2",
+                    params![key, relative_path],
+                )?;
+            }
+            tx.commit()?;
+            return Ok(());
+        }
+        let prior: Option<(String, Option<String>, String)> = tx
+            .query_row(
+                "SELECT delta.job_id,delta.desired_hash,job.status FROM embedding_deltas delta JOIN jobs job ON job.id=delta.job_id WHERE delta.workspace_path=?1 AND delta.relative_path=?2 AND delta.embedding_model=?3",
+                params![key, relative_path, config.embedding_model],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let stored: Option<String> = tx
+            .query_row(
+                "SELECT revision_hash FROM workspace_note_embeddings WHERE workspace_path=?1 AND relative_path=?2 AND embedding_model=?3",
+                params![key, relative_path, config.embedding_model],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if stored == desired_hash
+            && prior.as_ref().is_none_or(|(_, hash, status)| {
+                hash == &desired_hash && matches!(status.as_str(), "pending" | "running" | "done")
+            })
+        {
+            tx.commit()?;
+            return Ok(());
+        }
+        let mut cancelled = None;
+        if let Some((id, prior_hash, status)) = prior {
+            if prior_hash == desired_hash && matches!(status.as_str(), "pending" | "running") {
+                tx.commit()?;
+                return Ok(());
+            }
+            tx.execute(
+                "UPDATE jobs SET status='failed',cancellation_reason='superseded',updated_at=?2 WHERE id=?1 AND status IN ('pending','running','interrupted')",
+                params![id, Self::now_iso()],
+            )?;
+            cancelled = Some(id);
+        }
+        let id = Uuid::new_v4().to_string();
+        tx.execute(
+            "INSERT INTO jobs(id,kind,status,attempts,created_at,updated_at,job_class,idempotency_key,project_id) VALUES(?1,'index_embedding','pending',0,?2,?2,'background',?1,?3)",
+            params![id, Self::now_iso(), project],
+        )?;
+        tx.execute(
+            "INSERT INTO embedding_deltas(workspace_path,relative_path,embedding_model,desired_hash,job_id) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(workspace_path,relative_path,embedding_model) DO UPDATE SET desired_hash=excluded.desired_hash,job_id=excluded.job_id",
+            params![key, relative_path, config.embedding_model, desired_hash, id],
+        )?;
+        tx.commit()?;
+        if let Some(cancelled) = cancelled {
+            self.signal_cancelled_jobs(&[cancelled]);
+        }
+        self.wake_scheduler();
         Ok(())
     }
 
@@ -193,7 +283,7 @@ impl PersistenceService {
             match workspace_service::read_context_document(&root, path) {
                 Ok(content) => {
                     bytes += content.len();
-                    let hash = workspace_service::is_normative_document(path, &content)
+                    let hash = workspace_service::is_embedding_document(path, &content)
                         .then(|| ContentSha256::of(content.as_bytes()).as_str().to_string());
                     batch.push((path.clone(), hash));
                 }
@@ -291,7 +381,7 @@ impl PersistenceService {
         let stop = shutdown.clone();
         let reconciled = tokio::task::spawn_blocking(move || -> Result<bool,PersistenceServiceError> {
             let db = service.connection()?;
-            // Registered workspaces are discovered once; periodic reconciliation covers external edits.
+            // Registered workspaces are discovered once. Later edits arrive as exact watcher deltas.
             let roots = db.prepare("SELECT workspace_path FROM projects WHERE is_archived=0")?.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
             for root in roots {
                 if crate::orchestration::publication::safe_target(Path::new(&root), "knowledge/obsidian", false).is_err() { continue; }
@@ -299,7 +389,9 @@ impl PersistenceService {
                     db.execute("INSERT OR IGNORE INTO embedding_sync_state(workspace_path,next_reconcile_at) VALUES(?1,?2)",params![root.to_string_lossy(),service.clock.now().to_rfc3339()])?;
                 }
             }
-            let root: Option<String> = db.query_row("SELECT workspace_path FROM embedding_sync_state WHERE dirty=1 OR embedding_model!=?2 OR next_reconcile_at<=?1 ORDER BY next_reconcile_at,workspace_path LIMIT 1",params![service.clock.now().to_rfc3339(),model],|r|r.get(0)).optional()?;
+            let main_waiting:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM runtime_slots WHERE job_class='main') OR EXISTS(SELECT 1 FROM jobs WHERE job_class='main' AND status='pending' AND cancellation_reason IS NULL) OR EXISTS(SELECT 1 FROM artifact_publications WHERE job_class='main' AND state IN ('pending','applying'))",[],|r|r.get(0))?;
+            if main_waiting { return Ok(false); }
+            let root: Option<String> = db.query_row("SELECT workspace_path FROM embedding_sync_state WHERE dirty=1 OR embedding_model!=?1 ORDER BY workspace_path LIMIT 1",[&model],|r|r.get(0)).optional()?;
             let Some(root)=root else { return Ok(false); };
             let token = format!("index-scan:{}",Uuid::new_v4());
             if !Self::reserve_slot(&db,JobClass::Background,&token,None,None)? { return Ok(false); }
@@ -315,7 +407,7 @@ impl PersistenceService {
         let service = self.clone();
         let model = config.embedding_model.clone();
         let claim = tokio::task::spawn_blocking(move || {
-            let id:Option<String>=service.connection()?.query_row("SELECT j.id FROM jobs j JOIN embedding_deltas d ON d.job_id=j.id WHERE j.status='pending' AND j.kind='index_embedding' AND d.embedding_model=?1 ORDER BY j.created_at,j.id LIMIT 1",[model],|r|r.get(0)).optional()?;
+            let id:Option<String>=service.connection()?.query_row("SELECT j.id FROM jobs j JOIN embedding_deltas d ON d.job_id=j.id WHERE j.status='pending' AND j.kind='index_embedding' AND d.embedding_model=?1 AND NOT EXISTS(SELECT 1 FROM runtime_slots WHERE job_class='main') AND NOT EXISTS(SELECT 1 FROM jobs foreground WHERE foreground.job_class='main' AND foreground.status='pending' AND foreground.cancellation_reason IS NULL) AND NOT EXISTS(SELECT 1 FROM artifact_publications WHERE job_class='main' AND state IN ('pending','applying')) ORDER BY j.created_at,j.id LIMIT 1",[model],|r|r.get(0)).optional()?;
             id.map(|id|service.claim_background_id(&id)).transpose().map(Option::flatten)
         }).await.map_err(|e|invalid(e.to_string()))??;
         let Some(claim) = claim else {
@@ -348,7 +440,7 @@ impl PersistenceService {
         .map_err(|e| invalid(e.to_string()))??;
         let current = content
             .as_ref()
-            .filter(|c| workspace_service::is_normative_document(&path, c))
+            .filter(|c| workspace_service::is_embedding_document(&path, c))
             .map(|c| ContentSha256::of(c.as_bytes()).as_str().to_string());
         let vector = if hash.is_some() && current == hash {
             let prompt = strip_frontmatter_for_embedding(content.as_deref().unwrap_or(""));
@@ -373,7 +465,7 @@ impl PersistenceService {
             let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM jobs j JOIN embedding_deltas d ON d.job_id=j.id WHERE j.id=?1 AND j.generation=?2 AND j.status='running' AND j.cancellation_reason IS NULL)",params![id,generation],|r|r.get(0))?;
             if !valid { return Ok(()); }
             let content=read_optional_document(Path::new(&root),&path)?;
-            let fresh=content.as_ref().filter(|c|workspace_service::is_normative_document(&path,c)).map(|c|ContentSha256::of(c.as_bytes()).as_str().to_string());
+            let fresh=content.as_ref().filter(|c|workspace_service::is_embedding_document(&path,c)).map(|c|ContentSha256::of(c.as_bytes()).as_str().to_string());
             if !Self::embedding_config_matches(&tx,&model)? || fresh!=hash || (hash.is_some() && vector.is_none()) {
                 tx.execute("UPDATE jobs SET status='failed',cancellation_reason='superseded',updated_at=?2 WHERE id=?1",params![id,Self::now_iso()])?;
                 Self::mark_index_dirty(&tx,Path::new(&root))?;

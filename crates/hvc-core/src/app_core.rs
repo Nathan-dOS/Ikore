@@ -21,7 +21,7 @@ use crate::llm::{
 use crate::orchestration::CollectionBudget;
 use crate::orchestration::brownfield::{
     BrownfieldOnboardingResult, BrownfieldOnboardingStatus, InventoryScanner,
-    SetBrownfieldConsentRequest,
+    SetBrownfieldConsentRequest, SetBrownfieldIgnoredRequest,
 };
 use crate::persistence_service::{
     PersistenceCommandError, PersistenceService, PersistenceServiceError,
@@ -295,7 +295,12 @@ impl AppCore {
         let tree = workspace_service::build_workspace_tree(&root_path)
             .map_err(WorkspaceCommandError::from)?
             .tree;
-        let sink: Arc<dyn WorkspaceEventSink> = self.events.clone();
+        let sink: Arc<dyn WorkspaceEventSink> =
+            Arc::new(crate::events::MaintenanceWorkspaceEventSink::new(
+                self.events.clone(),
+                self.persistence.clone(),
+                root_path.clone(),
+            ));
         let watcher = WorkspaceWatcher::start(root_path.clone(), sink)
             .map_err(WorkspaceCommandError::from)?;
 
@@ -395,6 +400,34 @@ impl AppCore {
             created_paths,
             inventory: Some(inventory),
         })
+    }
+
+    pub fn set_brownfield_path_ignored(
+        &self,
+        request: SetBrownfieldIgnoredRequest,
+    ) -> Result<BrownfieldOnboardingStatus, WorkspaceCommandError> {
+        let root = self.workspace_root()?;
+        let project = self
+            .persistence
+            .active_project_by_id(&request.project_id)
+            .map_err(persistence_workspace_error)?;
+        let project_root = fs::canonicalize(&project.workspace_path)
+            .map_err(|error| WorkspaceCommandError::from(WorkspaceServiceError::Io(error)))?;
+        if project_root != root {
+            return Err(WorkspaceCommandError {
+                code: workspace_service::WorkspaceErrorCode::ValidationError,
+                message: "O módulo informado não pertence ao workspace aberto.".into(),
+                details: None,
+                remediation: None,
+            });
+        }
+        self.persistence
+            .set_brownfield_path_ignored(
+                &request.project_id,
+                &request.relative_path,
+                request.ignored,
+            )
+            .map_err(persistence_workspace_error)
     }
 
     pub fn list_workspace_tree(&self) -> Result<WorkspaceTreeResponse, WorkspaceCommandError> {

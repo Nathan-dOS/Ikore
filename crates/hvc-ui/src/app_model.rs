@@ -671,6 +671,84 @@ impl AppModel {
         }));
     }
 
+    pub(crate) fn set_active_brownfield_ignored(&mut self, ignored: bool, cx: &mut Context<Self>) {
+        let Some(backend) = self.workspace_backend.clone() else {
+            return;
+        };
+        let (project_id, relative_path, busy, enabled) = {
+            let workspace = self.workspace.read(cx);
+            (
+                workspace.project_id.as_ref().map(ToString::to_string),
+                workspace
+                    .active_relative_path
+                    .as_ref()
+                    .map(ToString::to_string),
+                workspace.brownfield.busy,
+                workspace.brownfield.state == BrownfieldOnboardingState::Enabled,
+            )
+        };
+        let (Some(project_id), Some(relative_path)) = (project_id, relative_path) else {
+            return;
+        };
+        if busy || !enabled {
+            return;
+        }
+        self.workspace.update(cx, |workspace, _| {
+            workspace.brownfield.busy = true;
+            workspace.brownfield.error = None;
+        });
+        self.brownfield_generation = self.brownfield_generation.saturating_add(1);
+        let generation = self.brownfield_generation;
+        let requested_project = project_id.clone();
+        self.status = if ignored {
+            format!("Ignorando `{relative_path}` no mapa brownfield…").into()
+        } else {
+            format!("Reativando `{relative_path}` no mapa brownfield…").into()
+        };
+        self.brownfield_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .set_brownfield_ignored(project_id, relative_path.clone(), ignored)
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                if model.brownfield_generation != generation
+                    || model
+                        .workspace
+                        .read(cx)
+                        .project_id
+                        .as_ref()
+                        .is_none_or(|active| active.as_ref() != requested_project)
+                {
+                    return;
+                }
+                let error_message = result.as_ref().err().map(|error| error.presentable());
+                model.workspace.update(cx, |workspace, _| {
+                    workspace.brownfield.busy = false;
+                    match result {
+                        Ok(status) => {
+                            workspace.brownfield.ignored_paths = status.ignored_paths;
+                            workspace.brownfield.error = None;
+                        }
+                        Err(error) => {
+                            workspace.brownfield.error = Some(error.presentable());
+                        }
+                    }
+                });
+                model.status = match error_message {
+                    Some(error) => format!("Falha ao atualizar ignore brownfield: {error}").into(),
+                    None if ignored => {
+                        format!("`{relative_path}` será ignorado por scans futuros.").into()
+                    }
+                    None => {
+                        format!("`{relative_path}` foi reativado e entrou na fila incremental.")
+                            .into()
+                    }
+                };
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     pub fn open_workspace_file(
         &mut self,
         relative_path: impl Into<String>,
@@ -3597,6 +3675,7 @@ mod tests {
         reads: Arc<Mutex<Vec<String>>>,
         writes: Arc<Mutex<Vec<(String, String, String)>>>,
         consent_requests: Arc<Mutex<Vec<(String, bool)>>>,
+        ignored_requests: Arc<Mutex<Vec<(String, String, bool)>>>,
         read_snapshot: WorkspaceFileSnapshot,
         write_result: Arc<Mutex<Result<String, WorkspaceOperationError>>>,
     }
@@ -3607,6 +3686,7 @@ mod tests {
                 reads: Arc::new(Mutex::new(Vec::new())),
                 writes: Arc::new(Mutex::new(Vec::new())),
                 consent_requests: Arc::new(Mutex::new(Vec::new())),
+                ignored_requests: Arc::new(Mutex::new(Vec::new())),
                 read_snapshot: WorkspaceFileSnapshot {
                     content: "# Disk".into(),
                     revision: "rev-1".into(),
@@ -3679,11 +3759,35 @@ mod tests {
                             } else {
                                 hvc_core::orchestration::brownfield::BrownfieldConsentState::Declined
                             },
+                            ignored_paths: Vec::new(),
                         },
                         created_paths: Vec::new(),
                         inventory: None,
                     },
                 )
+            })
+        }
+
+        fn set_brownfield_ignored(
+            &self,
+            project_id: String,
+            relative_path: String,
+            ignored: bool,
+        ) -> WorkspaceFuture<BrownfieldOnboardingStatus> {
+            self.ignored_requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((project_id.clone(), relative_path.clone(), ignored));
+            Box::pin(async move {
+                Ok(BrownfieldOnboardingStatus {
+                    project_id,
+                    consent: hvc_core::orchestration::brownfield::BrownfieldConsentState::Granted,
+                    ignored_paths: if ignored {
+                        vec![relative_path]
+                    } else {
+                        Vec::new()
+                    },
+                })
             })
         }
     }
@@ -4258,6 +4362,7 @@ mod tests {
                         project_id: "project-brownfield".into(),
                         consent:
                             hvc_core::orchestration::brownfield::BrownfieldConsentState::NotDecided,
+                        ignored_paths: Vec::new(),
                     }),
                 },
                 cx,
@@ -4281,6 +4386,39 @@ mod tests {
             );
             assert!(!workspace.brownfield.busy);
             assert!(workspace.brownfield.error.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn brownfield_ignore_action_is_scoped_to_the_selected_source(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingWorkspaceBackend::successful());
+        let requests = Arc::clone(&backend.ignored_requests);
+        let model = cx.new(|cx| AppModel::new_for_test_with_workspace_backend(backend, cx));
+        model.update(cx, |model, cx| {
+            model.workspace.update(cx, |workspace, _| {
+                workspace.project_id = Some("project-brownfield".into());
+                workspace.active_relative_path = Some("src/lib.rs".into());
+                workspace.brownfield.state = BrownfieldOnboardingState::Enabled;
+            });
+            model.set_active_brownfield_ignored(true, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice(),
+            &[(
+                "project-brownfield".to_string(),
+                "src/lib.rs".to_string(),
+                true,
+            )]
+        );
+        cx.read(|cx| {
+            let workspace = model.read(cx).workspace.read(cx);
+            assert_eq!(workspace.brownfield.ignored_paths, ["src/lib.rs"]);
+            assert!(!workspace.brownfield.busy);
         });
     }
 

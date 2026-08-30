@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context as _;
@@ -439,7 +440,13 @@ fn workspace_content_panel(model: &AppModel, cx: &mut Context<AppModel>) -> impl
         )
         .when(
             brownfield.state != BrownfieldOnboardingState::NotApplicable,
-            |panel| panel.child(brownfield_onboarding_card(brownfield, cx)),
+            |panel| {
+                panel.child(brownfield_onboarding_card(
+                    brownfield,
+                    active_path.clone(),
+                    cx,
+                ))
+            },
         )
         .when_some(
             active_tab.as_ref().and_then(|tab| tab.conflict.clone()),
@@ -563,6 +570,7 @@ fn workspace_content_panel(model: &AppModel, cx: &mut Context<AppModel>) -> impl
 
 fn brownfield_onboarding_card(
     onboarding: BrownfieldOnboardingModel,
+    active_path: Option<String>,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
     let (title, description) = match onboarding.state {
@@ -604,6 +612,10 @@ fn brownfield_onboarding_card(
             }
         )
     });
+    let active_source = active_path.filter(|path| is_brownfield_source_path(path));
+    let active_is_ignored = active_source
+        .as_ref()
+        .is_some_and(|path| onboarding.ignored_paths.binary_search(path).is_ok());
 
     div()
         .p_3()
@@ -624,6 +636,31 @@ fn brownfield_onboarding_card(
         .when_some(inventory_summary, |card, summary| {
             card.child(div().text_sm().child(summary))
         })
+        .when_some(
+            (onboarding.state == BrownfieldOnboardingState::Enabled)
+                .then_some(active_source)
+                .flatten(),
+            |card, path| {
+                card.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme::text_muted())
+                                .child(format!("Fonte selecionada: {path}")),
+                        )
+                        .child(brownfield_ignore_button(
+                            active_is_ignored,
+                            onboarding.busy,
+                            cx,
+                        )),
+                )
+            },
+        )
         .when_some(onboarding.error, |card, error| {
             card.child(div().text_sm().text_color(theme::danger()).child(error))
         })
@@ -697,6 +734,70 @@ fn brownfield_onboarding_card(
                     },
                 ),
         )
+}
+
+fn is_brownfield_source_path(path: &str) -> bool {
+    if path.replace('\\', "/").starts_with("knowledge/") {
+        return false;
+    }
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "rs" | "ts"
+                    | "tsx"
+                    | "js"
+                    | "jsx"
+                    | "py"
+                    | "go"
+                    | "java"
+                    | "kt"
+                    | "kts"
+                    | "cs"
+                    | "c"
+                    | "h"
+                    | "cc"
+                    | "cpp"
+                    | "hpp"
+                    | "rb"
+                    | "php"
+                    | "swift"
+                    | "sql"
+                    | "sh"
+                    | "ps1"
+            )
+        })
+}
+
+fn brownfield_ignore_button(
+    ignored: bool,
+    disabled: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    div()
+        .id("brownfield-ignore-source")
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .bg(theme::surface())
+        .text_color(theme::text())
+        .opacity(if disabled { 0.55 } else { 1.0 })
+        .when(!disabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(|style| style.opacity(0.88))
+                .on_click(cx.listener(move |model, _, _, cx| {
+                    model.set_active_brownfield_ignored(!ignored, cx);
+                }))
+        })
+        .child(if ignored {
+            "Reativar no mapa"
+        } else {
+            "Ignorar no mapa"
+        })
+        .into_any_element()
 }
 
 fn brownfield_action_button(

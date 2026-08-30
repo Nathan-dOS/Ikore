@@ -35,6 +35,27 @@ fn fixture() -> (Fixture, Arc<Embeddings>) {
     let mut config = f.service.load_runtime_config().unwrap();
     config.embedding_enabled = true;
     f.service.persist_runtime_config(&config).unwrap();
+    f.service
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE jobs SET status='done' WHERE job_class='main' AND status='pending'",
+            [],
+        )
+        .unwrap();
+    f.service
+        .connection()
+        .unwrap()
+        .execute("DELETE FROM runtime_slots WHERE job_class='main'", [])
+        .unwrap();
+    f.service
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE artifact_publications SET state='cancelled' WHERE job_class='main' AND state IN ('pending','applying')",
+            [],
+        )
+        .unwrap();
     (f, gateway)
 }
 fn write(f: &Fixture, body: &str) {
@@ -83,6 +104,8 @@ fn delta_queue_coalesces_changes_deletions_and_model_switches() {
         config.embedding_model="fixture-new-model".into();
         f.service.persist_runtime_config(&config).unwrap();
         f.service.indexing_configuration_changed(&config).unwrap();
+        let obsolete:i64=f.service.connection().unwrap().query_row("SELECT COUNT(*) FROM workspace_note_embeddings WHERE embedding_model<>'fixture-new-model'",[],|row|row.get(0)).unwrap();
+        assert_eq!(obsolete,0,"model switch invalidates old vectors");
         f.service.process_indexing(&CancellationToken::new()).await.unwrap();
         assert_eq!(gateway.calls.load(Ordering::SeqCst),2);
         fs::remove_file(f.workspace.path().join("knowledge/obsidian/note.md")).unwrap();
@@ -249,6 +272,97 @@ fn manual_request_only_marks_intent_and_waits_for_supervisor_slot() {
             .process_indexing(&CancellationToken::new())
             .await
             .unwrap();
+        assert_eq!(gateway.calls.load(Ordering::SeqCst), 1);
+    });
+}
+
+#[test]
+fn component_note_changes_use_exact_embedding_deltas_and_delete_vectors() {
+    let (f, gateway) = fixture();
+    fs::create_dir_all(f.workspace.path().join("knowledge/obsidian/components")).unwrap();
+    let relative = "knowledge/obsidian/components/runtime.md";
+    fs::write(
+        f.workspace.path().join(relative),
+        "---\ntype: component\nmapping-status: validated\n---\n# Runtime\n",
+    )
+    .unwrap();
+    runtime().block_on(async {
+        f.service
+            .enqueue_embedding_path_change(f.workspace.path(), relative)
+            .unwrap();
+        f.service
+            .process_indexing(&CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(gateway.calls.load(Ordering::SeqCst), 1);
+        let indexed: u32 = f
+            .service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM workspace_note_embeddings WHERE relative_path=?1",
+                [relative],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 1);
+
+        fs::remove_file(f.workspace.path().join(relative)).unwrap();
+        f.service
+            .enqueue_embedding_path_change(f.workspace.path(), relative)
+            .unwrap();
+        f.service
+            .process_indexing(&CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(gateway.calls.load(Ordering::SeqCst), 1);
+        let indexed: u32 = f
+            .service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM workspace_note_embeddings WHERE relative_path=?1",
+                [relative],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 0);
+    });
+}
+
+#[test]
+fn pending_user_job_always_wins_over_embedding_maintenance() {
+    let (f, gateway) = fixture();
+    write(&f, "queued note");
+    runtime().block_on(async {
+        enqueue(&f).await;
+        let main = Uuid::new_v4().to_string();
+        f.service
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO jobs(id,kind,status,attempts,created_at,updated_at,project_id,job_class,idempotency_key) VALUES(?1,'user_task','pending',0,?2,?2,?3,'main',?1)",
+                params![main, PersistenceService::now_iso(), f.pulse.project_id],
+            )
+            .unwrap();
+        assert!(
+            !f.service
+                .process_indexing(&CancellationToken::new())
+                .await
+                .unwrap()
+        );
+        assert_eq!(gateway.calls.load(Ordering::SeqCst), 0);
+        f.service
+            .connection()
+            .unwrap()
+            .execute("UPDATE jobs SET status='done' WHERE id=?1", [&main])
+            .unwrap();
+        assert!(
+            f.service
+                .process_indexing(&CancellationToken::new())
+                .await
+                .unwrap()
+        );
         assert_eq!(gateway.calls.load(Ordering::SeqCst), 1);
     });
 }

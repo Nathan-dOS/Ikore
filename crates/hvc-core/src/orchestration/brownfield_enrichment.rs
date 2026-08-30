@@ -317,6 +317,7 @@ impl PersistenceService {
         if charged != 1 {
             return Err(invalid("Orçamento ou geração de enriquecimento obsoleta."));
         }
+        Self::charge_brownfield_frontier_budget_tx(&tx, &project_id, &candidate_paths)?;
         tx.commit()?;
         Ok(Some(input))
     }
@@ -648,6 +649,15 @@ mod tests {
         fixture
             .service
             .apply_hitl_decision(fixture.decision(HitlDecision::Approve))
+            .unwrap();
+        fixture
+            .service
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET status='done' WHERE job_class='main' AND status='pending'",
+                [],
+            )
             .unwrap();
         assert!(
             !fixture

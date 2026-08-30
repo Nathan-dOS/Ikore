@@ -20,6 +20,8 @@ pub enum BrownfieldConsentState {
 pub struct BrownfieldOnboardingStatus {
     pub project_id: String,
     pub consent: BrownfieldConsentState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignored_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -27,6 +29,40 @@ pub struct BrownfieldOnboardingStatus {
 pub struct SetBrownfieldConsentRequest {
     pub project_id: String,
     pub consent: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetBrownfieldIgnoredRequest {
+    pub project_id: String,
+    pub relative_path: String,
+    pub ignored: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrownfieldFrontierStatus {
+    Pending,
+    InProgress,
+    Partial,
+    Mapped,
+    Stale,
+    Ignored,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrownfieldFrontierEntry {
+    pub project_id: String,
+    pub relative_path: String,
+    pub status: BrownfieldFrontierStatus,
+    pub content_sha256: Option<String>,
+    pub in_degree: u32,
+    pub priority_reason: String,
+    pub budget_consumed: u32,
+    pub attempts: u32,
+    pub last_used_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

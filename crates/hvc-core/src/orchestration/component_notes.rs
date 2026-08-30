@@ -415,6 +415,17 @@ mod tests {
         .unwrap();
         fixture
             .service
+            .record_workspace_change(
+                fixture.workspace.path(),
+                &crate::workspace_service::WorkspaceChangedEvent {
+                    kind: "modify".into(),
+                    relative_path: "src/lib.rs".into(),
+                    timestamp: PersistenceService::now_iso(),
+                },
+            )
+            .unwrap();
+        fixture
+            .service
             .apply_hitl_decision(fixture.decision(HitlDecision::Approve))
             .unwrap();
         let (mapping, publication, artifact): (String, String, Option<String>) = fixture
@@ -524,6 +535,15 @@ mod tests {
             .path()
             .join("knowledge/obsidian/components/core-runtime.md");
         let original_note = fs::read_to_string(&note_path).unwrap();
+        fixture
+            .service
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET status='done' WHERE job_class='main' AND status='pending'",
+                [],
+            )
+            .unwrap();
         let map = fixture
             .service
             .enqueue_brownfield_mapping(&fixture.pulse.project_id)
@@ -549,6 +569,17 @@ mod tests {
             "pub fn changed() {}\n",
         )
         .unwrap();
+        fixture
+            .service
+            .record_workspace_change(
+                fixture.workspace.path(),
+                &crate::workspace_service::WorkspaceChangedEvent {
+                    kind: "modify".into(),
+                    relative_path: "src/lib.rs".into(),
+                    timestamp: PersistenceService::now_iso(),
+                },
+            )
+            .unwrap();
         fixture
             .service
             .enqueue_brownfield_mapping(&fixture.pulse.project_id)

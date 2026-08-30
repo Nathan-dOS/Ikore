@@ -7,7 +7,7 @@ use gpui::{AppContext as _, Context, Entity, SharedString};
 use hvc_core::AppCore;
 use hvc_core::orchestration::brownfield::{
     BrownfieldConsentState, BrownfieldInventory, BrownfieldOnboardingResult,
-    BrownfieldOnboardingStatus, SetBrownfieldConsentRequest,
+    BrownfieldOnboardingStatus, SetBrownfieldConsentRequest, SetBrownfieldIgnoredRequest,
 };
 use hvc_core::workspace_service::{
     FileNode, ReadWorkspaceFileRequest, WriteWorkspaceFileAtomicRequest,
@@ -51,6 +51,13 @@ pub(crate) trait WorkspaceBackend: Send + Sync {
         project_id: String,
         consent: bool,
     ) -> WorkspaceFuture<BrownfieldOnboardingResult>;
+
+    fn set_brownfield_ignored(
+        &self,
+        project_id: String,
+        relative_path: String,
+        ignored: bool,
+    ) -> WorkspaceFuture<BrownfieldOnboardingStatus>;
 }
 
 pub(crate) struct CoreWorkspaceBackend {
@@ -138,6 +145,33 @@ impl WorkspaceBackend for CoreWorkspaceBackend {
                 })?
         })
     }
+
+    fn set_brownfield_ignored(
+        &self,
+        project_id: String,
+        relative_path: String,
+        ignored: bool,
+    ) -> WorkspaceFuture<BrownfieldOnboardingStatus> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.set_brownfield_path_ignored(SetBrownfieldIgnoredRequest {
+                        project_id,
+                        relative_path,
+                        ignored,
+                    })
+                    .map_err(WorkspaceOperationError::from)
+                })
+                .await
+                .map_err(|error| {
+                    WorkspaceOperationError::worker(format!(
+                        "worker de ignore brownfield interrompido: {error}"
+                    ))
+                })?
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -155,10 +189,15 @@ pub(crate) struct BrownfieldOnboardingModel {
     pub(crate) busy: bool,
     pub(crate) error: Option<String>,
     pub(crate) inventory: Option<BrownfieldInventory>,
+    pub(crate) ignored_paths: Vec<String>,
 }
 
 impl BrownfieldOnboardingModel {
     pub(crate) fn from_status(status: Option<BrownfieldOnboardingStatus>) -> Self {
+        let ignored_paths = status
+            .as_ref()
+            .map(|status| status.ignored_paths.clone())
+            .unwrap_or_default();
         let state = status.map_or(
             BrownfieldOnboardingState::NotApplicable,
             |status| match status.consent {
@@ -169,6 +208,7 @@ impl BrownfieldOnboardingModel {
         );
         Self {
             state,
+            ignored_paths,
             ..Self::default()
         }
     }
@@ -182,6 +222,7 @@ impl BrownfieldOnboardingModel {
         self.busy = false;
         self.error = None;
         self.inventory = result.inventory;
+        self.ignored_paths = result.status.ignored_paths;
     }
 }
 
