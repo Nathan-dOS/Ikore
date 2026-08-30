@@ -31,7 +31,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        14
+        15
     );
     assert_eq!(
         db.query_row(

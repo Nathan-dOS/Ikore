@@ -30,7 +30,7 @@ fn input(fixture: &PulsationFixture) -> StageExecutionInput {
 
 fn valid_output() -> String {
     json!({
-        "summary":"Specification fixture", "statusUpdate":"checkpoint_ready", "notes":[],
+        "summary":"Specification fixture", "statusUpdate":"checkpoint_ready", "notes":[], "componentProposals":[],
         "artifacts":[{"name":"spec","kind":"specification","content":"# Specification fixture\n"}]
     })
     .to_string()

@@ -35,6 +35,11 @@ impl PersistenceService {
         {
             return Err(invalid("Feedback excede 16.000 caracteres."));
         }
+        let fresh_component_proposals = if request.decision == HitlDecision::Approve {
+            self.preflight_component_proposals(&request.pulsation_id)?
+        } else {
+            HashSet::new()
+        };
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let pulse = &request.pulsation_id;
@@ -109,6 +114,13 @@ impl PersistenceService {
             }
             HitlDecision::Approve => {
                 tx.execute("UPDATE artifacts SET acceptance='accepted' WHERE pulsation_id=?1 AND producer_stage=?2 AND acceptance='candidate'",params![pulse,current.stage.as_db_value()])?;
+                if current.stage == PulsationStage::Specification {
+                    Self::materialize_component_proposals(
+                        &tx,
+                        &current,
+                        &fresh_component_proposals,
+                    )?;
+                }
                 if current.stage == PulsationStage::Integrator {
                     Self::transition_pulsation(
                         &tx,
@@ -221,7 +233,7 @@ impl PersistenceService {
                 "Handoff legado indisponível ou ambíguo. Revise a etapa de origem antes de continuar.",
             ));
         }
-        let rows=db.prepare("SELECT id,producer_job_id,producer_stage,generation,input_revision,producer_state_version,output_position,name,kind,content,content_sha256,publication_state,source_revisions_json FROM artifacts WHERE pulsation_id=?1 AND input_revision=?2 AND acceptance='accepted' AND kind NOT IN ('code_context','learning_report') ORDER BY created_at,id")?
+        let rows=db.prepare("SELECT id,producer_job_id,producer_stage,generation,input_revision,producer_state_version,output_position,name,kind,content,content_sha256,publication_state,source_revisions_json FROM artifacts WHERE pulsation_id=?1 AND input_revision=?2 AND acceptance='accepted' AND kind NOT IN ('code_context','learning_report','component_proposal','component') ORDER BY created_at,id")?
             .query_map(params![pulse,fence.input_revision],|r| {
                 let stage:String=r.get(2)?;
                 let hash:String=r.get(10)?;
@@ -338,7 +350,10 @@ impl PersistenceService {
                 } else {
                     path
                 };
-                if matches!(artifact.kind.as_str(), "code_context" | "learning_report") {
+                if matches!(
+                    artifact.kind.as_str(),
+                    "code_context" | "learning_report" | "component"
+                ) {
                     return Err(invalid("Tipo de artifact reservado ao coletor do host."));
                 }
                 if let Some(path) = path {
@@ -513,15 +528,27 @@ impl PersistenceService {
     pub(super) fn apply_publication_unit(&self, id: &str) -> Result<(), PersistenceServiceError> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT p.workspace_path,o.relative_path,o.expected_sha256,a.content,o.pulsation_id,o.desired_sha256,a.content_sha256,o.job_class FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN projects p ON p.id=o.project_id JOIN pulsations u ON u.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE j.generation=a.generation AND j.status='done' AND o.artifact_id=?1 AND o.state='applying' AND a.acceptance='accepted' AND a.input_revision=u.input_revision AND u.status<>'failed'",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?))).optional()?;
-        let Some((root, path, expected, content, pulse, desired, artifact_hash, class)) = row
+        let row=tx.query_row("SELECT p.workspace_path,o.relative_path,o.expected_sha256,a.content,o.pulsation_id,o.desired_sha256,a.content_sha256,o.job_class,a.kind FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN projects p ON p.id=o.project_id JOIN pulsations u ON u.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE j.generation=a.generation AND j.status='done' AND o.artifact_id=?1 AND o.state='applying' AND a.acceptance='accepted' AND a.input_revision=u.input_revision AND u.status<>'failed'",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?))).optional()?;
+        let Some((root, path, expected, content, pulse, desired, artifact_hash, class, kind)) = row
         else {
             tx.commit()?;
             return Ok(());
         };
         if class == "background" {
-            let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM learning_runs l JOIN pulsations p ON p.id=l.pulsation_id WHERE l.artifact_id=?1 AND l.state='publishing' AND p.status='done')",[id],|r|r.get(0))?;
-            if !valid || !Self::preparation_settings(&tx)?.learning_enabled {
+            let valid = match kind.as_str() {
+                "learning_report" => {
+                    let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM learning_runs l JOIN pulsations p ON p.id=l.pulsation_id WHERE l.artifact_id=?1 AND l.state='publishing' AND p.status='done')",[id],|r|r.get(0))?;
+                    valid && Self::preparation_settings(&tx)?.learning_enabled
+                }
+                "component" => tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM brownfield_component_notes note JOIN runtime_settings consent ON consent.key='brownfield.onboarding_consent.'||note.project_id AND consent.value='true' WHERE note.publication_artifact_id=?1 AND note.publication_state='publishing' AND note.mapping_status='proposed')",
+                    [id],
+                    |r| r.get(0),
+                )?,
+                _ => false,
+            };
+            if !valid {
+                tx.commit()?;
                 return Ok(());
             }
         } else {
@@ -560,7 +587,11 @@ impl PersistenceService {
                     [id],
                 )?;
                 if class == "background" {
-                    tx.execute("UPDATE learning_runs SET state='published',diagnostic=NULL,updated_at=?2 WHERE artifact_id=?1",params![id,Self::now_iso()])?;
+                    if kind == "learning_report" {
+                        tx.execute("UPDATE learning_runs SET state='published',diagnostic=NULL,updated_at=?2 WHERE artifact_id=?1",params![id,Self::now_iso()])?;
+                    } else if kind == "component" {
+                        tx.execute("UPDATE brownfield_component_notes SET publication_state='published',diagnostic=NULL,updated_at=?2 WHERE publication_artifact_id=?1",params![id,Self::now_iso()])?;
+                    }
                     tx.commit()?;
                     return Ok(());
                 }
@@ -580,7 +611,11 @@ impl PersistenceService {
                     [id],
                 )?;
                 if class == "background" {
-                    tx.execute("UPDATE learning_runs SET state='conflict',diagnostic=?2,updated_at=?3 WHERE artifact_id=?1",params![id,error.to_string(),Self::now_iso()])?;
+                    if kind == "learning_report" {
+                        tx.execute("UPDATE learning_runs SET state='conflict',diagnostic=?2,updated_at=?3 WHERE artifact_id=?1",params![id,error.to_string(),Self::now_iso()])?;
+                    } else if kind == "component" {
+                        tx.execute("UPDATE brownfield_component_notes SET publication_state='conflict',diagnostic=?2,updated_at=?3 WHERE publication_artifact_id=?1",params![id,error.to_string(),Self::now_iso()])?;
+                    }
                     tx.commit()?;
                     return Err(error);
                 }

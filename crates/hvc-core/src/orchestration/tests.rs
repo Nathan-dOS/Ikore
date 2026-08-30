@@ -655,3 +655,47 @@ fn context_package_is_versioned_and_bound_to_the_current_request() {
         Err(ContractError::StaleExecution)
     );
 }
+
+#[test]
+fn component_proposal_contract_is_specification_only_pathless_and_bounded() {
+    let proposal = ComponentProposalDraft {
+        component_id: "auth-runtime".into(),
+        title: "Auth Runtime".into(),
+        summary: "Valida tokens observados.".into(),
+        confidence: 90,
+        source_files: vec![ComponentSourceDraft {
+            relative_path: RelativeSourcePath::new("src/auth.rs").unwrap(),
+            content_sha256: ContentSha256::of(b"pub fn validate() {}\n"),
+        }],
+        related_components: vec![],
+    };
+    let wrapper = ComponentProposalArtifactV1::proposed(proposal.clone()).unwrap();
+    let draft = StageArtifactDraft {
+        name: "Auth Runtime".into(),
+        kind: "component_proposal".into(),
+        relative_path: None,
+        content: serde_json::to_string(&wrapper).unwrap(),
+    };
+    let valid = StageOutcome::Completed {
+        summary: "Specification".into(),
+        notes: vec![],
+        artifacts: vec![draft.clone()],
+    };
+    valid.validate_for(PulsationStage::Specification).unwrap();
+    assert!(valid.validate_for(PulsationStage::Contract).is_err());
+
+    let too_many = StageOutcome::Completed {
+        summary: "Specification".into(),
+        notes: vec![],
+        artifacts: vec![draft.clone(), draft.clone(), draft],
+    };
+    assert!(
+        too_many
+            .validate_for(PulsationStage::Specification)
+            .is_err()
+    );
+
+    let mut invalid_id = proposal;
+    invalid_id.component_id = "auth--runtime".into();
+    assert!(invalid_id.validate().is_err());
+}

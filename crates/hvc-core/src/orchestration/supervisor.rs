@@ -57,6 +57,14 @@ impl PersistenceService {
         }
         let service = self.clone();
         let stop = shutdown.clone();
+        if tokio::task::spawn_blocking(move || service.reconcile_component_publication(&stop))
+            .await
+            .map_err(|e| coordination::invalid(e.to_string()))??
+        {
+            return Ok(true);
+        }
+        let service = self.clone();
+        let stop = shutdown.clone();
         if tokio::task::spawn_blocking(move || service.reconcile_learning_publication(&stop))
             .await
             .map_err(|e| coordination::invalid(e.to_string()))??
@@ -64,6 +72,9 @@ impl PersistenceService {
             return Ok(true);
         }
         if self.process_learning(shutdown).await? {
+            return Ok(true);
+        }
+        if self.process_brownfield_enrichment(shutdown).await? {
             return Ok(true);
         }
         if self.process_brownfield_mapping(shutdown).await? {

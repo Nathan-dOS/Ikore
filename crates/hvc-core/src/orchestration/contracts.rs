@@ -48,6 +48,8 @@ pub struct PreparationSettings {
     pub vagueness_threshold: VaguenessScore,
     /// The final v2 default. M0 does not register a Learning worker or persist it.
     pub learning_enabled: bool,
+    pub brownfield_llm_budget: u8,
+    pub brownfield_expansion_radius: u8,
 }
 
 impl Default for PreparationSettings {
@@ -56,6 +58,8 @@ impl Default for PreparationSettings {
             preparation_enabled: false,
             vagueness_threshold: VaguenessScore(40),
             learning_enabled: true,
+            brownfield_llm_budget: 1,
+            brownfield_expansion_radius: 1,
         }
     }
 }
@@ -347,6 +351,105 @@ pub struct StageArtifactDraft {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComponentSourceDraft {
+    pub relative_path: RelativeSourcePath,
+    pub content_sha256: ContentSha256,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComponentProposalDraft {
+    pub component_id: String,
+    pub title: String,
+    pub summary: String,
+    pub confidence: u8,
+    pub source_files: Vec<ComponentSourceDraft>,
+    #[serde(default)]
+    pub related_components: Vec<String>,
+}
+
+impl ComponentProposalDraft {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        let valid_id = |value: &str| {
+            !value.is_empty()
+                && value.len() <= 80
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                && value
+                    .bytes()
+                    .next()
+                    .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                && value
+                    .bytes()
+                    .last()
+                    .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                && value.split('-').all(|part| !part.is_empty())
+        };
+        let mut sources = HashSet::new();
+        let mut related = HashSet::new();
+        if !valid_id(&self.component_id)
+            || self.title.trim().is_empty()
+            || self.title.chars().count() > 160
+            || self.summary.trim().is_empty()
+            || self.summary.chars().count() > 4_800
+            || self.confidence > 100
+            || self.source_files.is_empty()
+            || self.source_files.len() > 12
+            || self
+                .source_files
+                .iter()
+                .any(|source| !sources.insert(&source.relative_path))
+            || self.related_components.len() > 12
+            || self.related_components.iter().any(|component| {
+                component == &self.component_id
+                    || !valid_id(component)
+                    || !related.insert(component)
+            })
+        {
+            return Err(ContractError::Invalid("proposta de componente"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComponentProposalStatus {
+    Proposed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComponentProposalArtifactV1 {
+    pub schema_version: SchemaV1,
+    #[serde(rename = "type")]
+    pub artifact_type: String,
+    pub status: ComponentProposalStatus,
+    pub proposal: ComponentProposalDraft,
+}
+
+impl ComponentProposalArtifactV1 {
+    pub fn proposed(proposal: ComponentProposalDraft) -> Result<Self, ContractError> {
+        proposal.validate()?;
+        Ok(Self {
+            schema_version: SchemaV1,
+            artifact_type: "component_proposal".into(),
+            status: ComponentProposalStatus::Proposed,
+            proposal,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.artifact_type != "component_proposal" {
+            return Err(ContractError::Invalid("tipo da proposta de componente"));
+        }
+        self.proposal.validate()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "outcome",
     rename_all = "snake_case",
@@ -374,7 +477,12 @@ impl StageOutcome {
             Self::Completed {
                 summary, artifacts, ..
             } => {
+                let component_proposals = artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == "component_proposal")
+                    .count();
                 if summary.trim().is_empty()
+                    || component_proposals > 2
                     || artifacts.iter().any(|item| {
                         item.name.trim().is_empty()
                             || item.kind.trim().is_empty()
@@ -382,6 +490,20 @@ impl StageOutcome {
                     })
                 {
                     return Err(ContractError::Invalid("resultado/artefato vazio"));
+                }
+                for artifact in artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == "component_proposal")
+                {
+                    if stage != PulsationStage::Specification
+                        || artifact.relative_path.is_some()
+                        || serde_json::from_str::<ComponentProposalArtifactV1>(&artifact.content)
+                            .map_err(|_| ContractError::Invalid("artifact component_proposal"))?
+                            .validate()
+                            .is_err()
+                    {
+                        return Err(ContractError::Invalid("artifact component_proposal"));
+                    }
                 }
             }
             Self::NeedsClarification { questions } => {

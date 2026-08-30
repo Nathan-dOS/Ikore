@@ -331,6 +331,25 @@ impl RepositoryContext {
         self.read_safe_text(&path)
     }
 
+    pub(crate) fn capture_code_source(
+        &self,
+        project_id: &str,
+        relative: &crate::orchestration::RelativeSourcePath,
+    ) -> Result<crate::orchestration::SourceSnapshot, RepositoryError> {
+        let path = self.resolve_relative(relative.as_str(), false)?;
+        if !is_code_path(&path) {
+            return Err(RepositoryError(
+                "O path informado não é uma fonte de código elegível.".into(),
+            ));
+        }
+        crate::orchestration::SourceSnapshot::from_text(
+            project_id,
+            relative.clone(),
+            self.read_safe_text(&path)?,
+        )
+        .map_err(|error| RepositoryError(error.to_string()))
+    }
+
     pub(crate) fn document_paths(
         &self,
         markdown_only: bool,

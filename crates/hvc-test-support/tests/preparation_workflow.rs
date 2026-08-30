@@ -74,8 +74,8 @@ fn first_task_clarifies_through_companion_and_resumes_after_restart_without_extr
     assert!(!env.workspace_dir().join("knowledge/obsidian").exists());
     let outputs = [
         json!({"summary":"Intake concluído","statusUpdate":"advance","notes":[],"artifacts":[]}),
-        json!({"summary":"Falta formato","statusUpdate":"needs_clarification","notes":[],"artifacts":[],"questions":[{"id":"token_format","question":"Qual formato de token usar?","rationale":"Define validação de auth.rs"}]}),
-        json!({"summary":"Spec após resposta humana","statusUpdate":"checkpoint_ready","notes":[],"artifacts":[{"name":"Specification","kind":"specification","content":"JWT: rejeitar token expirado com 401."}]}),
+        json!({"summary":"Falta formato","statusUpdate":"needs_clarification","notes":[],"artifacts":[],"componentProposals":[],"questions":[{"id":"token_format","question":"Qual formato de token usar?","rationale":"Define validação de auth.rs"}]}),
+        json!({"summary":"Spec após resposta humana","statusUpdate":"checkpoint_ready","notes":[],"artifacts":[{"name":"Specification","kind":"specification","content":"JWT: rejeitar token expirado com 401."}],"componentProposals":[]}),
     ];
     let server=ScriptedHttpServer::start(outputs.map(|output|ScriptedResponse::json(200,json!({"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}).to_string())));
     let sink = Arc::new(StopEachResponse::default());

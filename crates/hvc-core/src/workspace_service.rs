@@ -2194,7 +2194,9 @@ fn normative_properties(relative: &str, properties: Option<&Value>) -> bool {
     !lookup_frontmatter_property(properties, "type")
         .as_ref()
         .and_then(Value::as_str)
-        .is_some_and(|v| v.eq_ignore_ascii_case("learning_report"))
+        .is_some_and(|v| {
+            v.eq_ignore_ascii_case("learning_report") || v.eq_ignore_ascii_case("component")
+        })
         && !lookup_frontmatter_property(properties, "status")
             .as_ref()
             .and_then(Value::as_str)
@@ -3046,6 +3048,10 @@ mod document_cache_tests {
                 "proposal.md",
                 "---\ntype: learning_report\nstatus: proposed\n---\nbilling [[unrelated]]",
             ),
+            (
+                "component.md",
+                "---\ntype: component\nmapping-status: proposed\n---\nbilling [[unrelated]]",
+            ),
             ("deprecated.md", "---\nstatus: deprecated\n---\nbilling"),
             ("unrelated.md", "must not be reached through a proposal"),
         ] {
@@ -3069,6 +3075,15 @@ mod document_cache_tests {
                 .candidates
                 .iter()
                 .all(|c| c.relative_path != "proposal.md")
+        );
+        let mut query = request();
+        query.feature_name = "component".into();
+        let result = get_context_candidates(root.path(), &mut cache, query).unwrap();
+        assert!(
+            result
+                .candidates
+                .iter()
+                .all(|candidate| candidate.relative_path != "component.md")
         );
     }
 }

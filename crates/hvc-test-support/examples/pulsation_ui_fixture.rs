@@ -131,7 +131,7 @@ fn main() {
             && !user.contains("JWT assinado")
         {
             return response(
-                json!({"summary":"Formato precisa de confirmação","statusUpdate":"needs_clarification","notes":[],"artifacts":[],"questions":[{"id":"token_format","question":"Qual formato de token usar?","rationale":"Responda JWT assinado para a fixture."}]}),
+                json!({"summary":"Formato precisa de confirmação","statusUpdate":"needs_clarification","notes":[],"artifacts":[],"componentProposals":[],"questions":[{"id":"token_format","question":"Qual formato de token usar?","rationale":"Responda JWT assinado para a fixture."}]}),
             );
         }
         if user.contains("- stage: Code") && user.contains("M5 Conflito") {

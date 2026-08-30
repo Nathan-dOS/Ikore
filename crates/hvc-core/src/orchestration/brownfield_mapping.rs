@@ -73,15 +73,34 @@ impl PersistenceService {
         &self,
         project_id: &str,
     ) -> Result<(), PersistenceServiceError> {
-        let db = self.connection()?;
-        let ids = db
-            .prepare("SELECT id FROM jobs WHERE project_id=?1 AND kind='brownfield_map' AND status IN ('pending','running','interrupted')")?
+        let mut db = self.connection()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let ids = tx
+            .prepare("SELECT id FROM jobs WHERE project_id=?1 AND kind IN ('brownfield_map','brownfield_enrich') AND status IN ('pending','running','interrupted')")?
             .query_map([project_id], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
-        db.execute(
-            "UPDATE jobs SET status='failed',cancellation_reason='superseded',finished_at=?2,updated_at=?2 WHERE project_id=?1 AND kind='brownfield_map' AND status IN ('pending','running','interrupted')",
+        let now = Self::now_iso();
+        tx.execute(
+            "UPDATE jobs SET status='failed',cancellation_reason='superseded',finished_at=?2,updated_at=?2 WHERE project_id=?1 AND kind IN ('brownfield_map','brownfield_enrich') AND status IN ('pending','running','interrupted')",
             params![project_id, Self::now_iso()],
         )?;
+        tx.execute(
+            "UPDATE brownfield_enrichment_runs SET state='cancelled',diagnostic='Consentimento brownfield revogado.',updated_at=?2 WHERE project_id=?1 AND state IN ('pending','running')",
+            params![project_id,now],
+        )?;
+        tx.execute(
+            "UPDATE artifact_publications SET state='cancelled',last_error='Consentimento brownfield revogado.',updated_at=?2 WHERE project_id=?1 AND artifact_id IN (SELECT publication_artifact_id FROM brownfield_component_notes WHERE project_id=?1) AND state IN ('pending','applying')",
+            params![project_id,now],
+        )?;
+        tx.execute(
+            "UPDATE artifacts SET publication_state='not_required' WHERE id IN (SELECT publication_artifact_id FROM brownfield_component_notes WHERE project_id=?1 AND publication_state IN ('pending','publishing'))",
+            [project_id],
+        )?;
+        tx.execute(
+            "UPDATE brownfield_component_notes SET publication_state='not_scheduled',diagnostic='Consentimento brownfield revogado.',updated_at=?2 WHERE project_id=?1 AND publication_state IN ('pending','publishing')",
+            params![project_id,now],
+        )?;
+        tx.commit()?;
         self.signal_cancelled_jobs(&ids);
         self.wake_scheduler();
         Ok(())
@@ -226,6 +245,7 @@ impl PersistenceService {
                 .collect::<Result<Vec<_>, _>>()?;
             for path in cached {
                 if !observed_paths.contains(&path) {
+                    Self::mark_component_notes_stale(&tx, &project_id, &path, None)?;
                     metrics.removed_sources += tx.execute(
                         "DELETE FROM brownfield_source_cache WHERE project_id=?1 AND relative_path=?2",
                         params![project_id, path],
@@ -285,6 +305,13 @@ impl PersistenceService {
             .map_err(|error| coordination::invalid(error.to_string()))?;
         let now = Self::now_iso();
 
+        Self::mark_component_notes_stale(
+            &tx,
+            &facts.source.project_id,
+            facts.source.relative_path.as_str(),
+            Some(facts.source.content_sha256.as_str()),
+        )?;
+
         tx.execute(
             "DELETE FROM brownfield_edges WHERE project_id=?1 AND source_path=?2",
             params![facts.source.project_id, facts.source.relative_path.as_str()],
@@ -332,6 +359,51 @@ impl PersistenceService {
             )?;
         }
         tx.commit()?;
+        Ok(())
+    }
+
+    fn mark_component_notes_stale(
+        db: &Connection,
+        project_id: &str,
+        relative_path: &str,
+        current_revision: Option<&str>,
+    ) -> Result<(), PersistenceServiceError> {
+        let affected = db
+            .prepare(
+                "SELECT note.id,note.publication_artifact_id,note.publication_state FROM brownfield_component_sources source JOIN brownfield_component_notes note ON note.id=source.note_id WHERE source.project_id=?1 AND source.relative_path=?2 AND note.mapping_status<>'stale' AND (?3 IS NULL OR source.observed_revision_sha256<>?3)",
+            )?
+            .query_map(params![project_id, relative_path, current_revision], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        if affected.is_empty() {
+            return Ok(());
+        }
+        let diagnostic = format!(
+            "Fonte `{relative_path}` mudou desde a revisão observada; regeneração não foi agendada."
+        );
+        let now = Self::now_iso();
+        for (note_id, artifact_id, publication_state) in affected {
+            let not_yet_published = matches!(publication_state.as_str(), "pending" | "publishing");
+            db.execute(
+                "UPDATE brownfield_component_notes SET mapping_status='stale',publication_state=CASE WHEN ?2 THEN 'not_scheduled' ELSE publication_state END,diagnostic=?3,updated_at=?4 WHERE id=?1",
+                params![note_id, not_yet_published, diagnostic, now],
+            )?;
+            if not_yet_published && let Some(artifact_id) = artifact_id {
+                db.execute(
+                    "UPDATE artifact_publications SET state='cancelled',last_error=?2,updated_at=?3 WHERE artifact_id=?1 AND state IN ('pending','applying')",
+                    params![artifact_id, diagnostic, now],
+                )?;
+                db.execute(
+                    "UPDATE artifacts SET publication_state='not_required' WHERE id=?1 AND publication_state IN ('pending','applying')",
+                    [artifact_id],
+                )?;
+            }
+        }
         Ok(())
     }
 

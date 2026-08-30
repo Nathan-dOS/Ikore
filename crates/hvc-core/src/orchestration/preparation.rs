@@ -32,13 +32,38 @@ impl PersistenceService {
                 .try_into()
                 .map_err(|e: ContractError| invalid(e.to_string()))?;
         }
+        if let Some(value) = Self::read_runtime_setting(db, "brownfield_llm_budget")? {
+            settings.brownfield_llm_budget = value
+                .parse::<u8>()
+                .map_err(|_| invalid("Orçamento LLM brownfield inválido."))?;
+        }
+        if let Some(value) = Self::read_runtime_setting(db, "brownfield_expansion_radius")? {
+            settings.brownfield_expansion_radius = value
+                .parse::<u8>()
+                .map_err(|_| invalid("Raio de expansão brownfield inválido."))?;
+        }
+        Self::validate_brownfield_settings(&settings)?;
         Ok(settings)
+    }
+
+    fn validate_brownfield_settings(
+        settings: &PreparationSettings,
+    ) -> Result<(), PersistenceServiceError> {
+        if settings.brownfield_llm_budget > 8
+            || !matches!(settings.brownfield_expansion_radius, 1 | 2)
+        {
+            return Err(invalid(
+                "Brownfield exige orçamento entre 0 e 8 e raio 1 ou 2.",
+            ));
+        }
+        Ok(())
     }
 
     pub fn update_preparation_settings(
         &self,
         settings: PreparationSettings,
     ) -> Result<PreparationSettings, PersistenceServiceError> {
+        Self::validate_brownfield_settings(&settings)?;
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         for (key, value) in [
@@ -54,10 +79,38 @@ impl PersistenceService {
                 "orchestration.learning_enabled",
                 settings.learning_enabled.to_string(),
             ),
+            (
+                "brownfield_llm_budget",
+                settings.brownfield_llm_budget.to_string(),
+            ),
+            (
+                "brownfield_expansion_radius",
+                settings.brownfield_expansion_radius.to_string(),
+            ),
         ] {
             Self::upsert_runtime_setting(&tx, key, &value)?;
         }
         let mut cancelled = Self::configure_learning(&tx, settings.learning_enabled)?;
+        if settings.brownfield_llm_budget == 0 {
+            let enrichment_jobs = tx
+                .prepare(
+                    "SELECT id FROM jobs WHERE kind='brownfield_enrich' AND status IN ('pending','running','interrupted')",
+                )?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            if !enrichment_jobs.is_empty() {
+                let now = Self::now_iso();
+                tx.execute(
+                    "UPDATE jobs SET status='failed',cancellation_reason='superseded',last_error='Orçamento LLM brownfield configurado como zero.',finished_at=?1,updated_at=?1 WHERE kind='brownfield_enrich' AND status IN ('pending','running','interrupted')",
+                    [&now],
+                )?;
+                tx.execute(
+                    "UPDATE brownfield_enrichment_runs SET state='budget_exhausted',diagnostic='Orçamento LLM brownfield configurado como zero; nenhuma chamada realizada.',updated_at=?1 WHERE state IN ('pending','running')",
+                    [&now],
+                )?;
+                cancelled.extend(enrichment_jobs);
+            }
+        }
         if !settings.preparation_enabled {
             let pulses = tx
                 .prepare(

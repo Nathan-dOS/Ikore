@@ -83,7 +83,7 @@ impl PulsationFixture {
                     params![run, job, timestamp],
                 ).expect("fixture run");
                 let output = json!({
-                    "summary":"Legacy specification", "statusUpdate":"checkpoint_ready", "notes":[],
+                    "summary":"Legacy specification", "statusUpdate":"checkpoint_ready", "notes":[], "componentProposals":[],
                     "artifacts":[{"name":"spec","kind":"specification","content":"# Legacy specification\n"}]
                 }).to_string();
                 transaction.execute(

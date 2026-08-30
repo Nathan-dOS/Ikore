@@ -150,6 +150,71 @@ impl AppModel {
         }), cx);
     }
 
+    pub(crate) fn cycle_brownfield_llm_budget(&mut self, cx: &mut Context<Self>) {
+        if self.settings.read(cx).busy {
+            return;
+        }
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(mut settings) = self
+            .settings
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.preparation.clone())
+        else {
+            return;
+        };
+        settings.brownfield_llm_budget = match settings.brownfield_llm_budget {
+            0 => 1,
+            1 => 2,
+            2 => 4,
+            4 => 8,
+            _ => 0,
+        };
+        self.run_settings_operation(
+            Box::pin(async move {
+                backend.update_preparation(settings).await?;
+                Ok(
+                    "Orçamento LLM brownfield atualizado; zero desativa chamadas oportunistas."
+                        .into(),
+                )
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn toggle_brownfield_expansion_radius(&mut self, cx: &mut Context<Self>) {
+        if self.settings.read(cx).busy {
+            return;
+        }
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(mut settings) = self
+            .settings
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.preparation.clone())
+        else {
+            return;
+        };
+        settings.brownfield_expansion_radius = if settings.brownfield_expansion_radius == 1 {
+            2
+        } else {
+            1
+        };
+        self.run_settings_operation(
+            Box::pin(async move {
+                backend.update_preparation(settings).await?;
+                Ok("Raio de expansão brownfield atualizado para os próximos lotes.".into())
+            }),
+            cx,
+        );
+    }
+
     fn run_pulsation_action(&mut self, action: PulsationAction, cx: &mut Context<Self>) {
         if self.preparation_action_task.is_some() || self.lifecycle.is_disposed() {
             return;

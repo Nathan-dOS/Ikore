@@ -35,10 +35,14 @@ use crate::orchestration::brownfield::{BrownfieldConsentState, BrownfieldOnboard
 
 #[path = "orchestration/anticipation.rs"]
 mod anticipation;
+#[path = "orchestration/brownfield_enrichment.rs"]
+mod brownfield_enrichment;
 #[path = "orchestration/brownfield_mapping.rs"]
 mod brownfield_mapping;
 #[path = "orchestration/clarification.rs"]
 mod clarification;
+#[path = "orchestration/component_notes.rs"]
+mod component_notes;
 #[path = "orchestration/coordination.rs"]
 mod coordination;
 #[path = "orchestration/indexing.rs"]

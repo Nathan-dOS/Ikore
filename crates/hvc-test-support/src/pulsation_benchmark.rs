@@ -81,7 +81,10 @@ pub fn stage_response(request: &RecordedRequest) -> ScriptedResponse {
     } else {
         json!([{"name":stage,"kind":kind,"content":format!("# {stage}\nFixture: rejeitar token expirado com 401. No-op, sem execução Git/testes.")}])
     };
-    let output = json!({"summary":format!("{stage} fixture"),"statusUpdate":if stage=="Intake" {"advance"}else{"checkpoint_ready"},"notes":[],"artifacts":artifacts});
+    let mut output = json!({"summary":format!("{stage} fixture"),"statusUpdate":if stage=="Intake" {"advance"}else{"checkpoint_ready"},"notes":[],"artifacts":artifacts});
+    if stage == "SPECIFICATION" {
+        output["componentProposals"] = json!([]);
+    }
     // Simulated usage, not a tokenizer or a price estimate.
     ScriptedResponse::json(200, json!({"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":prompt.chars().count().div_ceil(4),"completion_tokens":80}}).to_string())
 }

@@ -189,7 +189,10 @@ pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> An
                         .child(model.context_limit_input.clone())
                         .child(action("context-budget-save","Salvar orçamento de contexto",!busy,cx,|model,cx|model.save_context_limit(cx)))
                         .child(toggle("learning-enabled", "LEARNING CONSULTIVO", if snapshot.preparation.learning_enabled {"on"}else{"off"}, !busy,cx,|model,cx|model.toggle_learning(cx)))
-                        .child(div().text_xs().text_color(theme::text_muted()).child("Sem fila: contexto sob demanda. Learning produz propostas após Done, sem aplicar regras ou reprocessar histórico. Até 3 chamadas por ciclo; demanda principal tem prioridade.")),
+                        .child(div().text_xs().text_color(theme::text_muted()).child("Sem fila: contexto sob demanda. Learning produz propostas após Done, sem aplicar regras ou reprocessar histórico. Até 3 chamadas por ciclo; demanda principal tem prioridade."))
+                        .child(toggle("brownfield-llm-budget", "BROWNFIELD · CHAMADAS POR PULSAÇÃO", snapshot.preparation.brownfield_llm_budget.to_string(), !busy,cx,|model,cx|model.cycle_brownfield_llm_budget(cx)))
+                        .child(toggle("brownfield-expansion-radius", "BROWNFIELD · RAIO", format!("k={}", snapshot.preparation.brownfield_expansion_radius), !busy,cx,|model,cx|model.toggle_brownfield_expansion_radius(cx)))
+                        .child(div().text_xs().text_color(theme::text_muted()).child("Enriquecimento é oportunista: 0 não chama LLM; k=1 usa vizinhos diretos e k=2 permite um segundo salto. Cada lote publica no máximo duas propostas.")),
                 )
                 .child(
                     card("RAG / YAML Graph")
