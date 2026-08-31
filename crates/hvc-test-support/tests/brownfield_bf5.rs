@@ -1,7 +1,7 @@
 use hvc_test_support::brownfield_benchmark::{VaultMode, run_sample};
 
 #[test]
-fn paired_bf5_fixture_measures_exact_mapping_and_equivalent_task_quality() {
+fn paired_rs1_fixture_measures_exact_resolution_and_equivalent_task_quality() {
     let empty = run_sample(VaultMode::EmptyVault, 1, false);
     let mapped = run_sample(VaultMode::PartialCoverage, 1, false);
 
@@ -18,5 +18,10 @@ fn paired_bf5_fixture_measures_exact_mapping_and_equivalent_task_quality() {
     let mapping = mapped.mapping.expect("partial-coverage mapping evidence");
     assert_eq!(mapping.warm.cache_misses, 0);
     assert_eq!(mapping.exact_invalidation.cache_misses, 1);
+    assert!(mapping.warm_resolution_reused);
+    assert_eq!(mapping.resolution.precision_basis_points, 10_000);
+    assert_eq!(mapping.resolution.recall_basis_points, 10_000);
+    assert_eq!(mapping.resolution.false_resolved, 0);
+    assert!(mapping.resolution.classification_mismatches.is_empty());
     assert!(mapping.extracted_partial_sources > 0);
 }

@@ -1,4 +1,4 @@
-//! BF5: auditable structural-mapping and same-task comparison on isolated repositories.
+//! RS1: auditable structural resolution and the retained BF5 task control.
 //! The benchmark uses the real AppCore worker, watcher and SQLite persistence with a loopback LLM.
 
 use crate::{CoreTestHarness, ScriptedHttpServer, pulsation_benchmark};
@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const FIXTURE_VERSION: &str = "bf5-multilang-v1";
+pub const FIXTURE_VERSION: &str = "rs1-structural-multilang-v2";
 pub const TASK_DESCRIPTION: &str = "Em src/auth.rs, especifique que validate_token deve retornar 401 quando o token estiver expirado.";
 const TARGET_PATH: &str = "src/auth.rs";
 const CURRENT_MARKER: &str = "BF5_CURRENT";
@@ -59,8 +59,18 @@ pub struct LanguageObservation {
 pub struct ResolutionObservation {
     pub references: u32,
     pub resolved: u32,
+    pub ambiguous: u32,
     pub unresolved: u32,
     pub external: u32,
+    pub state: String,
+    pub resolver_version: String,
+    pub elapsed_us: u64,
+    pub precision_basis_points: u32,
+    pub recall_basis_points: u32,
+    pub expected_resolved: u32,
+    pub true_resolved: u32,
+    pub false_resolved: u32,
+    pub classification_mismatches: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,6 +78,7 @@ pub struct MappingObservation {
     pub cold: MappingJobObservation,
     pub warm: MappingJobObservation,
     pub exact_invalidation: MappingJobObservation,
+    pub warm_resolution_reused: bool,
     pub languages: Vec<LanguageObservation>,
     pub resolution: ResolutionObservation,
     pub inventory_known_sources: u32,
@@ -117,6 +128,16 @@ fn write_fixture(root: &Path) -> String {
     )
     .expect("fixture manifest");
     fs::write(root.join(TARGET_PATH), initial_target()).expect("target fixture");
+    fs::write(
+        root.join("src/token.ts"),
+        "export function validateToken(expired: boolean): number { return expired ? 403 : 200; }\n",
+    )
+    .expect("typescript target");
+    fs::write(
+        root.join("src/check-token.ts"),
+        "export function checkToken(): boolean { return true; }\n",
+    )
+    .expect("tsx target");
     for index in 0..16 {
         fs::write(
             root.join(format!("src/rust_{index:02}.rs")),
@@ -135,11 +156,21 @@ fn write_fixture(root: &Path) -> String {
         fs::write(
             root.join(format!("src/component_{index:02}.tsx")),
             format!(
-                "import React from 'react';\nexport function Component{index:02}() {{ return <span>{{String(checkToken())}}</span>; }}\n"
+                "import * as React from 'react';\nimport {{ checkToken }} from './check-token';\nexport function Component{index:02}() {{ return <span data-kind={{React.createElement('i')}}>{{String(checkToken())}}</span>; }}\n"
             ),
         )
         .expect("tsx corpus");
     }
+    fs::write(
+        root.join("src/ambiguous.ts"),
+        "import { validateToken as choose } from './token';\nimport { checkToken as choose } from './check-token';\nexport function ambiguous() { return choose(false); }\n",
+    )
+    .expect("ambiguous negative");
+    fs::write(
+        root.join("src/instance.ts"),
+        "class Session { run() { return true; } }\nexport function instanceCall() { return new Session().run(); }\n",
+    )
+    .expect("instance dispatch negative");
     for index in 0..8 {
         fs::write(
             root.join(format!("src/python_{index:02}.py")),
@@ -183,7 +214,7 @@ fn wait_until(label: &str, mut predicate: impl FnMut() -> bool) -> Instant {
         }
         assert!(
             Instant::now() < deadline,
-            "BF5 timed out waiting for {label}"
+            "RS1 timed out waiting for {label}"
         );
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -277,20 +308,183 @@ fn mapping_corpus(service: &PersistenceService, project_id: &str) -> Vec<Languag
     grouped.into_values().collect()
 }
 
+fn wait_resolution_complete(service: &PersistenceService, project_id: &str) {
+    let db = Connection::open(service.database_path()).unwrap();
+    wait_until("brownfield structural resolution", || {
+        db.query_row(
+            "SELECT state='complete' FROM brownfield_resolution_state WHERE project_id=?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(false)
+    });
+}
+
+fn resolution_job_count(service: &PersistenceService, project_id: &str) -> u32 {
+    Connection::open(service.database_path())
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM jobs WHERE project_id=?1 AND kind='brownfield_resolve'",
+            [project_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[derive(Clone, Copy)]
+enum ExpectedResolution<'a> {
+    Resolved { path: &'a str, symbol: bool },
+    Ambiguous,
+    External(&'a str),
+    Unresolved,
+}
+
+fn expected_resolution(
+    source: &str,
+    relation: &str,
+    observed: &str,
+) -> ExpectedResolution<'static> {
+    if source.starts_with("src/rust_") {
+        return ExpectedResolution::Resolved {
+            path: "src/auth.rs",
+            symbol: relation == "call",
+        };
+    }
+    if source.starts_with("src/typescript_") {
+        return ExpectedResolution::Resolved {
+            path: "src/token.ts",
+            symbol: relation == "call",
+        };
+    }
+    if source.starts_with("src/component_") {
+        if relation == "import" && observed.contains("react") {
+            return ExpectedResolution::External("react");
+        }
+        if relation == "import" || observed == "checkToken" {
+            return ExpectedResolution::Resolved {
+                path: "src/check-token.ts",
+                symbol: relation == "call",
+            };
+        }
+        if observed == "String" {
+            return ExpectedResolution::External("String");
+        }
+        return ExpectedResolution::Unresolved;
+    }
+    if source == "src/ambiguous.ts" {
+        if relation == "call" {
+            return ExpectedResolution::Ambiguous;
+        }
+        return ExpectedResolution::Resolved {
+            path: if observed.contains("./token") {
+                "src/token.ts"
+            } else {
+                "src/check-token.ts"
+            },
+            symbol: false,
+        };
+    }
+    ExpectedResolution::Unresolved
+}
+
 fn resolution(service: &PersistenceService, project_id: &str) -> ResolutionObservation {
     let db = Connection::open(service.database_path()).unwrap();
-    let (references, resolved, unresolved, external): (u32, u32, u32, u32) = db
+    let (state, resolver_version, elapsed_us): (String, String, u64) = db
         .query_row(
-            "SELECT COUNT(*),COALESCE(SUM(resolution='resolved'),0),COALESCE(SUM(resolution='unresolved'),0),COALESCE(SUM(resolution='external'),0) FROM brownfield_edges WHERE project_id=?1",
+            "SELECT state,resolver_version,elapsed_us FROM brownfield_resolution_state WHERE project_id=?1",
             [project_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
+    let rows = db
+        .prepare(
+            "SELECT source_path,relation,observed_text,resolution,destination_path,destination_symbol_key,external_module,candidate_count FROM brownfield_edges WHERE project_id=?1 ORDER BY source_path,line,reference_key",
+        )
+        .unwrap()
+        .query_map([project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, u32>(7)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let mut resolved = 0;
+    let mut ambiguous = 0;
+    let mut unresolved = 0;
+    let mut external = 0;
+    let mut expected_resolved = 0;
+    let mut true_resolved = 0;
+    let mut false_resolved = 0;
+    let mut classification_mismatches = Vec::new();
+    for (source, relation, observed, actual, destination, symbol, module, candidates) in &rows {
+        match actual.as_str() {
+            "resolved" => resolved += 1,
+            "ambiguous" => ambiguous += 1,
+            "external" => external += 1,
+            "unresolved" => unresolved += 1,
+            other => panic!("unexpected resolution state {other}"),
+        }
+        let expected = expected_resolution(source, relation, observed);
+        let correct = match expected {
+            ExpectedResolution::Resolved {
+                path,
+                symbol: requires_symbol,
+            } => {
+                expected_resolved += 1;
+                let matches = actual == "resolved"
+                    && destination.as_deref() == Some(path)
+                    && (!requires_symbol || symbol.is_some());
+                if matches {
+                    true_resolved += 1;
+                }
+                matches
+            }
+            ExpectedResolution::Ambiguous => {
+                actual == "ambiguous" && *candidates >= 2 && destination.is_none()
+            }
+            ExpectedResolution::External(expected) => {
+                actual == "external" && module.as_deref() == Some(expected)
+            }
+            ExpectedResolution::Unresolved => actual == "unresolved",
+        };
+        if actual == "resolved" && !correct {
+            false_resolved += 1;
+        }
+        if !correct {
+            classification_mismatches.push(format!(
+                "{source}:{relation}:{observed} actual={actual} destination={destination:?} module={module:?}"
+            ));
+        }
+    }
+    let basis_points = |numerator: u32, denominator: u32| {
+        numerator
+            .saturating_mul(10_000)
+            .checked_div(denominator)
+            .unwrap_or(0)
+    };
     ResolutionObservation {
-        references,
+        references: rows.len() as u32,
         resolved,
+        ambiguous,
         unresolved,
         external,
+        state,
+        resolver_version,
+        elapsed_us,
+        precision_basis_points: basis_points(true_resolved, resolved),
+        recall_basis_points: basis_points(true_resolved, expected_resolved),
+        expected_resolved,
+        true_resolved,
+        false_resolved,
+        classification_mismatches,
     }
 }
 
@@ -303,12 +497,16 @@ fn benchmark_mapping(harness: &CoreTestHarness, project_id: &str) -> MappingObse
     .unwrap();
     let cold_id = latest_mapping_job(core.persistence(), project_id);
     let cold = wait_mapping_job(core.persistence(), &cold_id);
+    wait_resolution_complete(core.persistence(), project_id);
+    let cold_resolution_jobs = resolution_job_count(core.persistence(), project_id);
 
     let warm_id = core
         .persistence()
         .enqueue_brownfield_mapping(project_id)
         .unwrap();
     let warm = wait_mapping_job(core.persistence(), &warm_id);
+    let warm_resolution_reused =
+        resolution_job_count(core.persistence(), project_id) == cold_resolution_jobs;
 
     fs::write(harness.workspace_dir().join(TARGET_PATH), current_target()).unwrap();
     let current_sha = ContentSha256::of(current_target().as_bytes());
@@ -324,6 +522,7 @@ fn benchmark_mapping(harness: &CoreTestHarness, project_id: &str) -> MappingObse
     let invalidation_id = latest_mapping_job(core.persistence(), project_id);
     assert_ne!(invalidation_id, warm_id, "watcher must enqueue a fresh job");
     let exact_invalidation = wait_mapping_job(core.persistence(), &invalidation_id);
+    wait_resolution_complete(core.persistence(), project_id);
     let coverage = core
         .get_brownfield_onboarding(project_id)
         .unwrap()
@@ -332,6 +531,10 @@ fn benchmark_mapping(harness: &CoreTestHarness, project_id: &str) -> MappingObse
 
     assert_eq!(cold.cache_misses, coverage.inventory_known_sources);
     assert_eq!((warm.cache_hits, warm.cache_misses), (0, 0));
+    assert!(
+        warm_resolution_reused,
+        "warm mapping must reuse the complete fingerprint"
+    );
     assert_eq!(exact_invalidation.cache_misses, 1);
     assert_eq!(
         exact_invalidation.mapped_sources
@@ -339,12 +542,19 @@ fn benchmark_mapping(harness: &CoreTestHarness, project_id: &str) -> MappingObse
             + exact_invalidation.unsupported_sources,
         1
     );
+    let resolution = resolution(core.persistence(), project_id);
+    assert_eq!(resolution.state, "complete");
+    assert_eq!(resolution.precision_basis_points, 10_000);
+    assert_eq!(resolution.recall_basis_points, 10_000);
+    assert_eq!(resolution.false_resolved, 0);
+    assert!(resolution.classification_mismatches.is_empty());
     MappingObservation {
         cold,
         warm,
         exact_invalidation,
+        warm_resolution_reused,
         languages: mapping_corpus(core.persistence(), project_id),
-        resolution: resolution(core.persistence(), project_id),
+        resolution,
         inventory_known_sources: coverage.inventory_known_sources,
         eligible_source_denominator: coverage.eligible_source_denominator,
         extracted_valid_sources: coverage.extracted_valid_sources,
@@ -451,7 +661,7 @@ fn benchmark_task(service: &PersistenceService, project_id: &str) -> TaskObserva
 }
 
 pub fn run_sample(mode: VaultMode, iteration: usize, warmup: bool) -> BrownfieldSample {
-    eprintln!("BF5 fixture {mode:?} iteration={iteration} warmup={warmup}");
+    eprintln!("RS1 fixture {mode:?} iteration={iteration} warmup={warmup}");
     let harness = CoreTestHarness::new();
     let initial_fixture_sha256 = write_fixture(harness.workspace_dir());
     let server = ScriptedHttpServer::respond_with(|request| {

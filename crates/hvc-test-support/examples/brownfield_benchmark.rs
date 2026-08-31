@@ -116,6 +116,7 @@ fn mapping_summary(samples: &[BrownfieldSample]) -> Value {
         "cold_sources": representative.cold.cache_misses,
         "warm_processed_sources": representative.warm.cache_hits + representative.warm.cache_misses,
         "exact_invalidation_processed_sources": representative.exact_invalidation.cache_hits + representative.exact_invalidation.cache_misses,
+        "warm_resolution_reused": representative.warm_resolution_reused,
         "inventory_known_sources": representative.inventory_known_sources,
         "eligible_source_denominator": representative.eligible_source_denominator,
         "extracted_valid_sources": representative.extracted_valid_sources,
@@ -124,9 +125,19 @@ fn mapping_summary(samples: &[BrownfieldSample]) -> Value {
         "resolution": {
             "references": representative.resolution.references,
             "resolved": representative.resolution.resolved,
+            "ambiguous": representative.resolution.ambiguous,
             "unresolved": representative.resolution.unresolved,
             "external": representative.resolution.external,
-            "resolved_ratio": resolution_ratio
+            "resolved_ratio": resolution_ratio,
+            "state": representative.resolution.state,
+            "resolver_version": representative.resolution.resolver_version,
+            "elapsed_us": representative.resolution.elapsed_us,
+            "precision_basis_points": representative.resolution.precision_basis_points,
+            "recall_basis_points": representative.resolution.recall_basis_points,
+            "expected_resolved": representative.resolution.expected_resolved,
+            "true_resolved": representative.resolution.true_resolved,
+            "false_resolved": representative.resolution.false_resolved,
+            "classification_mismatches": representative.resolution.classification_mismatches
         },
         "languages": languages
     })
@@ -223,7 +234,7 @@ fn main() {
         "max_total_read_bytes": 16 * 1024 * 1024,
         "max_file_bytes": 1024 * 1024,
         "max_duration_ms": 2000,
-        "reason": "O corpus BF5 permanece abaixo do orçamento temporal e a invalidação é exata; o corpus não sustenta reduzir os limites de segurança nem ampliá-los sem evidência de repositórios maiores."
+        "reason": "O corpus RS1 permanece abaixo do orçamento temporal e a invalidação é exata; o corpus não sustenta reduzir os limites de segurança nem ampliá-los sem evidência de repositórios maiores."
     });
     let report = json!({
         "schema_version": 1,
@@ -249,7 +260,7 @@ fn main() {
         "samples": samples
     });
     std::fs::write(&output, serde_json::to_string_pretty(&report).unwrap())
-        .expect("write BF5 report");
+        .expect("write RS1 report");
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({

@@ -1,0 +1,1435 @@
+{
+  "activation_decision": {
+    "architectural_observation": "A coleta segura da Specification permanece on-demand e não reutiliza o cache estrutural brownfield; portanto igualdade de qualidade/tokens é esperada até uma integração explicitamente projetada e cercada.",
+    "automatic_activation": false,
+    "evidence": {
+      "clarification_max_delta": 0,
+      "material_benefit": false,
+      "quality_min_delta": 0,
+      "regression": false,
+      "simulated_input_token_p50_delta_percent": 0.0,
+      "specification_latency_p50_delta_percent": 2.469958807114603
+    },
+    "mode": "keep_opt_in_disabled_by_default",
+    "rule": "Ativar automaticamente somente com benefício material (qualidade maior, menos perguntas, >=5% menos tokens ou >=10% menor latência) e sem regressão simétrica."
+  },
+  "arch": "x86_64",
+  "calibrated_limits": {
+    "decision": "retain_bounded_defaults",
+    "max_duration_ms": 2000,
+    "max_file_bytes": 1048576,
+    "max_files": 2000,
+    "max_total_read_bytes": 16777216,
+    "reason": "O corpus RS1 permanece abaixo do orçamento temporal e a invalidação é exata; o corpus não sustenta reduzir os limites de segurança nem ampliá-los sem evidência de repositórios maiores."
+  },
+  "code_base": "2dbc9d6b21988f2c6dbd7497f5e2a924ddde63af",
+  "fixture_version": "rs1-structural-multilang-v2",
+  "generated_at": "2026-08-31T17:03:50.253733200+00:00",
+  "mapping_summary": {
+    "cold_elapsed_us": {
+      "p50": 1032493,
+      "p95": 1052009
+    },
+    "cold_sources": 62,
+    "eligible_source_denominator": 62,
+    "exact_invalidation_elapsed_us": {
+      "p50": 49756,
+      "p95": 64198
+    },
+    "exact_invalidation_processed_sources": 1,
+    "extracted_partial_sources": 9,
+    "extracted_valid_sources": 53,
+    "extraction_progress_basis_points": 8548,
+    "inventory_known_sources": 62,
+    "languages": [
+      {
+        "language": "rust",
+        "observations": 85,
+        "parse_elapsed_us": {
+          "p50": 3418,
+          "p95": 4785
+        }
+      },
+      {
+        "language": "tsx",
+        "observations": 80,
+        "parse_elapsed_us": {
+          "p50": 6865,
+          "p95": 9758
+        }
+      },
+      {
+        "language": "typescript",
+        "observations": 100,
+        "parse_elapsed_us": {
+          "p50": 6772,
+          "p95": 9445
+        }
+      },
+      {
+        "language": "unsupported",
+        "observations": 45,
+        "parse_elapsed_us": {
+          "p50": 2,
+          "p95": 3
+        }
+      }
+    ],
+    "resolution": {
+      "ambiguous": 1,
+      "classification_mismatches": [],
+      "elapsed_us": 20356,
+      "expected_resolved": 98,
+      "external": 32,
+      "false_resolved": 0,
+      "precision_basis_points": 10000,
+      "recall_basis_points": 10000,
+      "references": 148,
+      "resolved": 98,
+      "resolved_ratio": 0.6621621621621622,
+      "resolver_version": "brownfield-project-resolver-v1",
+      "state": "complete",
+      "true_resolved": 98,
+      "unresolved": 17
+    },
+    "samples": 5,
+    "warm_elapsed_us": {
+      "p50": 22146,
+      "p95": 44785
+    },
+    "warm_processed_sources": 0,
+    "warm_resolution_reused": true
+  },
+  "os": "windows",
+  "pair_order": "counterbalanced; one excluded warmup per mode",
+  "pairs": 5,
+  "percentile_method": "nearest_rank",
+  "provider": "loopback synthetic provider with fixed 10 ms delay",
+  "release": true,
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-pc-windows-msvc\nrelease: 1.98.0\nLLVM version: 22.1.8",
+  "samples": [
+    {
+      "initial_fixture_sha256": "4a022f2393032757eef29f6fd3069e22d92c23e488d8d794f039b50258f89a5b",
+      "iteration": 0,
+      "knowledge_root_exists": false,
+      "mapping": null,
+      "mode": "empty_vault",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5187,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 767.9784,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "69ba2829463502150dbd1ca7cd2dcf7c7c8875e7cf8336c4fa71556622a74817",
+      "warmup": true
+    },
+    {
+      "initial_fixture_sha256": "4a022f2393032757eef29f6fd3069e22d92c23e488d8d794f039b50258f89a5b",
+      "iteration": 0,
+      "knowledge_root_exists": true,
+      "mapping": {
+        "cold": {
+          "cache_hits": 0,
+          "cache_misses": 62,
+          "coverage_partial": false,
+          "elapsed_us": 1062891,
+          "mapped_sources": 53,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 9
+        },
+        "eligible_source_denominator": 62,
+        "exact_invalidation": {
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "coverage_partial": false,
+          "elapsed_us": 54434,
+          "mapped_sources": 1,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "extracted_partial_sources": 9,
+        "extracted_valid_sources": 53,
+        "extraction_progress_basis_points": 8548,
+        "inventory_known_sources": 62,
+        "languages": [
+          {
+            "language": "rust",
+            "mapped": 17,
+            "parse_elapsed_us": [
+              4135,
+              3941,
+              3168,
+              3395,
+              3215,
+              3384,
+              3157,
+              4035,
+              3376,
+              4580,
+              3060,
+              3612,
+              3473,
+              3233,
+              3720,
+              3991,
+              3221
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 17,
+            "symbols": 17,
+            "unsupported": 0
+          },
+          {
+            "language": "tsx",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              7631,
+              8634,
+              11385,
+              7114,
+              10914,
+              9757,
+              9958,
+              6728,
+              6735,
+              6579,
+              7638,
+              6583,
+              6793,
+              11264,
+              7059,
+              9968
+            ],
+            "partial": 0,
+            "references": 80,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "typescript",
+            "mapped": 20,
+            "parse_elapsed_us": [
+              8418,
+              11499,
+              7395,
+              7664,
+              6600,
+              9538,
+              7055,
+              7026,
+              6871,
+              7329,
+              6689,
+              6763,
+              6983,
+              12054,
+              6935,
+              6225,
+              6345,
+              9028,
+              6925,
+              6967
+            ],
+            "partial": 0,
+            "references": 36,
+            "sources": 20,
+            "symbols": 22,
+            "unsupported": 0
+          },
+          {
+            "language": "unsupported",
+            "mapped": 0,
+            "parse_elapsed_us": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              5,
+              2,
+              4,
+              5
+            ],
+            "partial": 0,
+            "references": 0,
+            "sources": 9,
+            "symbols": 0,
+            "unsupported": 9
+          }
+        ],
+        "resolution": {
+          "ambiguous": 1,
+          "classification_mismatches": [],
+          "elapsed_us": 19672,
+          "expected_resolved": 98,
+          "external": 32,
+          "false_resolved": 0,
+          "precision_basis_points": 10000,
+          "recall_basis_points": 10000,
+          "references": 148,
+          "resolved": 98,
+          "resolver_version": "brownfield-project-resolver-v1",
+          "state": "complete",
+          "true_resolved": 98,
+          "unresolved": 17
+        },
+        "warm": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "coverage_partial": false,
+          "elapsed_us": 14218,
+          "mapped_sources": 0,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "warm_resolution_reused": true
+      },
+      "mode": "partial_coverage",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5187,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 770.5621,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "69ba2829463502150dbd1ca7cd2dcf7c7c8875e7cf8336c4fa71556622a74817",
+      "warmup": true
+    },
+    {
+      "initial_fixture_sha256": "4a022f2393032757eef29f6fd3069e22d92c23e488d8d794f039b50258f89a5b",
+      "iteration": 1,
+      "knowledge_root_exists": true,
+      "mapping": {
+        "cold": {
+          "cache_hits": 0,
+          "cache_misses": 62,
+          "coverage_partial": false,
+          "elapsed_us": 1052009,
+          "mapped_sources": 53,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 9
+        },
+        "eligible_source_denominator": 62,
+        "exact_invalidation": {
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "coverage_partial": false,
+          "elapsed_us": 64198,
+          "mapped_sources": 1,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "extracted_partial_sources": 9,
+        "extracted_valid_sources": 53,
+        "extraction_progress_basis_points": 8548,
+        "inventory_known_sources": 62,
+        "languages": [
+          {
+            "language": "rust",
+            "mapped": 17,
+            "parse_elapsed_us": [
+              4530,
+              3667,
+              3616,
+              4785,
+              3510,
+              3405,
+              3449,
+              3340,
+              3431,
+              3290,
+              3780,
+              3228,
+              3820,
+              3463,
+              3259,
+              4883,
+              3143
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 17,
+            "symbols": 17,
+            "unsupported": 0
+          },
+          {
+            "language": "tsx",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              6683,
+              6657,
+              6757,
+              8966,
+              6582,
+              6534,
+              7459,
+              6927,
+              6569,
+              6414,
+              7288,
+              6859,
+              9551,
+              7347,
+              9758,
+              8327
+            ],
+            "partial": 0,
+            "references": 80,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "typescript",
+            "mapped": 20,
+            "parse_elapsed_us": [
+              6538,
+              6563,
+              6355,
+              6504,
+              7885,
+              7178,
+              6266,
+              7268,
+              6917,
+              6288,
+              6843,
+              6204,
+              9271,
+              6693,
+              6907,
+              6774,
+              9445,
+              6274,
+              7060,
+              6801
+            ],
+            "partial": 0,
+            "references": 36,
+            "sources": 20,
+            "symbols": 22,
+            "unsupported": 0
+          },
+          {
+            "language": "unsupported",
+            "mapped": 0,
+            "parse_elapsed_us": [
+              2,
+              3,
+              2,
+              6,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "partial": 0,
+            "references": 0,
+            "sources": 9,
+            "symbols": 0,
+            "unsupported": 9
+          }
+        ],
+        "resolution": {
+          "ambiguous": 1,
+          "classification_mismatches": [],
+          "elapsed_us": 20356,
+          "expected_resolved": 98,
+          "external": 32,
+          "false_resolved": 0,
+          "precision_basis_points": 10000,
+          "recall_basis_points": 10000,
+          "references": 148,
+          "resolved": 98,
+          "resolver_version": "brownfield-project-resolver-v1",
+          "state": "complete",
+          "true_resolved": 98,
+          "unresolved": 17
+        },
+        "warm": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "coverage_partial": false,
+          "elapsed_us": 24686,
+          "mapped_sources": 0,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "warm_resolution_reused": true
+      },
+      "mode": "partial_coverage",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5187,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 881.6975,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "69ba2829463502150dbd1ca7cd2dcf7c7c8875e7cf8336c4fa71556622a74817",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "4a022f2393032757eef29f6fd3069e22d92c23e488d8d794f039b50258f89a5b",
+      "iteration": 1,
+      "knowledge_root_exists": false,
+      "mapping": null,
+      "mode": "empty_vault",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5187,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1034.0369,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "69ba2829463502150dbd1ca7cd2dcf7c7c8875e7cf8336c4fa71556622a74817",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "4a022f2393032757eef29f6fd3069e22d92c23e488d8d794f039b50258f89a5b",
+      "iteration": 2,
+      "knowledge_root_exists": false,
+      "mapping": null,
+      "mode": "empty_vault",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5187,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 735.2853,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "69ba2829463502150dbd1ca7cd2dcf7c7c8875e7cf8336c4fa71556622a74817",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "4a022f2393032757eef29f6fd3069e22d92c23e488d8d794f039b50258f89a5b",
+      "iteration": 2,
+      "knowledge_root_exists": true,
+      "mapping": {
+        "cold": {
+          "cache_hits": 0,
+          "cache_misses": 62,
+          "coverage_partial": false,
+          "elapsed_us": 1032493,
+          "mapped_sources": 53,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 9
+        },
+        "eligible_source_denominator": 62,
+        "exact_invalidation": {
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "coverage_partial": false,
+          "elapsed_us": 49756,
+          "mapped_sources": 1,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "extracted_partial_sources": 9,
+        "extracted_valid_sources": 53,
+        "extraction_progress_basis_points": 8548,
+        "inventory_known_sources": 62,
+        "languages": [
+          {
+            "language": "rust",
+            "mapped": 17,
+            "parse_elapsed_us": [
+              3338,
+              3644,
+              4780,
+              3353,
+              3370,
+              3183,
+              3867,
+              3693,
+              3260,
+              3418,
+              3021,
+              3534,
+              3339,
+              4777,
+              3098,
+              3287,
+              3136
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 17,
+            "symbols": 17,
+            "unsupported": 0
+          },
+          {
+            "language": "tsx",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              6492,
+              6326,
+              7121,
+              7345,
+              6876,
+              6933,
+              6511,
+              7151,
+              6687,
+              6736,
+              6828,
+              10139,
+              6519,
+              7009,
+              8471,
+              6587
+            ],
+            "partial": 0,
+            "references": 80,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "typescript",
+            "mapped": 20,
+            "parse_elapsed_us": [
+              10395,
+              6619,
+              6699,
+              9088,
+              6240,
+              6126,
+              6282,
+              6579,
+              6361,
+              7033,
+              7521,
+              9010,
+              9478,
+              7112,
+              6351,
+              9118,
+              9646,
+              6690,
+              6395,
+              6090
+            ],
+            "partial": 0,
+            "references": 36,
+            "sources": 20,
+            "symbols": 22,
+            "unsupported": 0
+          },
+          {
+            "language": "unsupported",
+            "mapped": 0,
+            "parse_elapsed_us": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "partial": 0,
+            "references": 0,
+            "sources": 9,
+            "symbols": 0,
+            "unsupported": 9
+          }
+        ],
+        "resolution": {
+          "ambiguous": 1,
+          "classification_mismatches": [],
+          "elapsed_us": 14665,
+          "expected_resolved": 98,
+          "external": 32,
+          "false_resolved": 0,
+          "precision_basis_points": 10000,
+          "recall_basis_points": 10000,
+          "references": 148,
+          "resolved": 98,
+          "resolver_version": "brownfield-project-resolver-v1",
+          "state": "complete",
+          "true_resolved": 98,
+          "unresolved": 17
+        },
+        "warm": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "coverage_partial": false,
+          "elapsed_us": 14926,
+          "mapped_sources": 0,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "warm_resolution_reused": true
+      },
+      "mode": "partial_coverage",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5187,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 723.7292,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "69ba2829463502150dbd1ca7cd2dcf7c7c8875e7cf8336c4fa71556622a74817",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "4a022f2393032757eef29f6fd3069e22d92c23e488d8d794f039b50258f89a5b",
+      "iteration": 3,
+      "knowledge_root_exists": true,
+      "mapping": {
+        "cold": {
+          "cache_hits": 0,
+          "cache_misses": 62,
+          "coverage_partial": false,
+          "elapsed_us": 1038951,
+          "mapped_sources": 53,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 9
+        },
+        "eligible_source_denominator": 62,
+        "exact_invalidation": {
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "coverage_partial": false,
+          "elapsed_us": 48861,
+          "mapped_sources": 1,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "extracted_partial_sources": 9,
+        "extracted_valid_sources": 53,
+        "extraction_progress_basis_points": 8548,
+        "inventory_known_sources": 62,
+        "languages": [
+          {
+            "language": "rust",
+            "mapped": 17,
+            "parse_elapsed_us": [
+              3221,
+              3201,
+              5309,
+              3213,
+              3243,
+              3345,
+              3047,
+              3253,
+              3191,
+              3899,
+              3145,
+              3630,
+              3690,
+              3258,
+              3614,
+              5179,
+              4185
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 17,
+            "symbols": 17,
+            "unsupported": 0
+          },
+          {
+            "language": "tsx",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              6915,
+              6980,
+              6599,
+              6422,
+              6980,
+              6859,
+              6697,
+              6576,
+              6221,
+              6665,
+              6491,
+              8891,
+              7517,
+              6797,
+              6823,
+              6395
+            ],
+            "partial": 0,
+            "references": 80,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "typescript",
+            "mapped": 20,
+            "parse_elapsed_us": [
+              6953,
+              6664,
+              7995,
+              6787,
+              6754,
+              8918,
+              6679,
+              6288,
+              6290,
+              6419,
+              6993,
+              7048,
+              8548,
+              6619,
+              6033,
+              8784,
+              6446,
+              7053,
+              6720,
+              9783
+            ],
+            "partial": 0,
+            "references": 36,
+            "sources": 20,
+            "symbols": 22,
+            "unsupported": 0
+          },
+          {
+            "language": "unsupported",
+            "mapped": 0,
+            "parse_elapsed_us": [
+              3,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "partial": 0,
+            "references": 0,
+            "sources": 9,
+            "symbols": 0,
+            "unsupported": 9
+          }
+        ],
+        "resolution": {
+          "ambiguous": 1,
+          "classification_mismatches": [],
+          "elapsed_us": 16351,
+          "expected_resolved": 98,
+          "external": 32,
+          "false_resolved": 0,
+          "precision_basis_points": 10000,
+          "recall_basis_points": 10000,
+          "references": 148,
+          "resolved": 98,
+          "resolver_version": "brownfield-project-resolver-v1",
+          "state": "complete",
+          "true_resolved": 98,
+          "unresolved": 17
+        },
+        "warm": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "coverage_partial": false,
+          "elapsed_us": 16288,
+          "mapped_sources": 0,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "warm_resolution_reused": true
+      },
+      "mode": "partial_coverage",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5187,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 728.4413,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "69ba2829463502150dbd1ca7cd2dcf7c7c8875e7cf8336c4fa71556622a74817",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "4a022f2393032757eef29f6fd3069e22d92c23e488d8d794f039b50258f89a5b",
+      "iteration": 3,
+      "knowledge_root_exists": false,
+      "mapping": null,
+      "mode": "empty_vault",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5187,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 748.9042999999999,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "69ba2829463502150dbd1ca7cd2dcf7c7c8875e7cf8336c4fa71556622a74817",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "4a022f2393032757eef29f6fd3069e22d92c23e488d8d794f039b50258f89a5b",
+      "iteration": 4,
+      "knowledge_root_exists": false,
+      "mapping": null,
+      "mode": "empty_vault",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5187,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 771.7612,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "69ba2829463502150dbd1ca7cd2dcf7c7c8875e7cf8336c4fa71556622a74817",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "4a022f2393032757eef29f6fd3069e22d92c23e488d8d794f039b50258f89a5b",
+      "iteration": 4,
+      "knowledge_root_exists": true,
+      "mapping": {
+        "cold": {
+          "cache_hits": 0,
+          "cache_misses": 62,
+          "coverage_partial": false,
+          "elapsed_us": 1000117,
+          "mapped_sources": 53,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 9
+        },
+        "eligible_source_denominator": 62,
+        "exact_invalidation": {
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "coverage_partial": false,
+          "elapsed_us": 48244,
+          "mapped_sources": 1,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "extracted_partial_sources": 9,
+        "extracted_valid_sources": 53,
+        "extraction_progress_basis_points": 8548,
+        "inventory_known_sources": 62,
+        "languages": [
+          {
+            "language": "rust",
+            "mapped": 17,
+            "parse_elapsed_us": [
+              4960,
+              3871,
+              3136,
+              4126,
+              3171,
+              4754,
+              4564,
+              3377,
+              3515,
+              3890,
+              3344,
+              3279,
+              3333,
+              3214,
+              3257,
+              3636,
+              3128
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 17,
+            "symbols": 17,
+            "unsupported": 0
+          },
+          {
+            "language": "tsx",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              6880,
+              6516,
+              6659,
+              6525,
+              6865,
+              6394,
+              7196,
+              6578,
+              7334,
+              10517,
+              6627,
+              6630,
+              6637,
+              9880,
+              7453,
+              7467
+            ],
+            "partial": 0,
+            "references": 80,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "typescript",
+            "mapped": 20,
+            "parse_elapsed_us": [
+              6136,
+              6114,
+              6697,
+              7966,
+              6844,
+              6361,
+              6815,
+              6353,
+              6643,
+              8651,
+              6296,
+              7322,
+              7092,
+              6745,
+              6904,
+              6996,
+              6591,
+              8178,
+              6538,
+              6719
+            ],
+            "partial": 0,
+            "references": 36,
+            "sources": 20,
+            "symbols": 22,
+            "unsupported": 0
+          },
+          {
+            "language": "unsupported",
+            "mapped": 0,
+            "parse_elapsed_us": [
+              3,
+              2,
+              2,
+              2,
+              3,
+              2,
+              2,
+              2,
+              2
+            ],
+            "partial": 0,
+            "references": 0,
+            "sources": 9,
+            "symbols": 0,
+            "unsupported": 9
+          }
+        ],
+        "resolution": {
+          "ambiguous": 1,
+          "classification_mismatches": [],
+          "elapsed_us": 17372,
+          "expected_resolved": 98,
+          "external": 32,
+          "false_resolved": 0,
+          "precision_basis_points": 10000,
+          "recall_basis_points": 10000,
+          "references": 148,
+          "resolved": 98,
+          "resolver_version": "brownfield-project-resolver-v1",
+          "state": "complete",
+          "true_resolved": 98,
+          "unresolved": 17
+        },
+        "warm": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "coverage_partial": false,
+          "elapsed_us": 44785,
+          "mapped_sources": 0,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "warm_resolution_reused": true
+      },
+      "mode": "partial_coverage",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5187,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 774.4037000000001,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "69ba2829463502150dbd1ca7cd2dcf7c7c8875e7cf8336c4fa71556622a74817",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "4a022f2393032757eef29f6fd3069e22d92c23e488d8d794f039b50258f89a5b",
+      "iteration": 5,
+      "knowledge_root_exists": true,
+      "mapping": {
+        "cold": {
+          "cache_hits": 0,
+          "cache_misses": 62,
+          "coverage_partial": false,
+          "elapsed_us": 1023238,
+          "mapped_sources": 53,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 9
+        },
+        "eligible_source_denominator": 62,
+        "exact_invalidation": {
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "coverage_partial": false,
+          "elapsed_us": 61017,
+          "mapped_sources": 1,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "extracted_partial_sources": 9,
+        "extracted_valid_sources": 53,
+        "extraction_progress_basis_points": 8548,
+        "inventory_known_sources": 62,
+        "languages": [
+          {
+            "language": "rust",
+            "mapped": 17,
+            "parse_elapsed_us": [
+              3188,
+              3315,
+              3284,
+              3703,
+              3466,
+              3421,
+              4666,
+              3623,
+              3345,
+              4717,
+              3138,
+              4379,
+              3780,
+              3468,
+              3357,
+              3795,
+              3169
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 17,
+            "symbols": 17,
+            "unsupported": 0
+          },
+          {
+            "language": "tsx",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              6257,
+              7526,
+              8050,
+              9764,
+              6580,
+              7035,
+              7596,
+              9672,
+              6500,
+              7061,
+              6956,
+              7121,
+              6854,
+              6961,
+              9705,
+              8093
+            ],
+            "partial": 0,
+            "references": 80,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "typescript",
+            "mapped": 20,
+            "parse_elapsed_us": [
+              6402,
+              7010,
+              6772,
+              6337,
+              6834,
+              8174,
+              6655,
+              6917,
+              6442,
+              9736,
+              6428,
+              6919,
+              9253,
+              7187,
+              7789,
+              6639,
+              6557,
+              8769,
+              6298,
+              7633
+            ],
+            "partial": 0,
+            "references": 36,
+            "sources": 20,
+            "symbols": 22,
+            "unsupported": 0
+          },
+          {
+            "language": "unsupported",
+            "mapped": 0,
+            "parse_elapsed_us": [
+              5,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              1
+            ],
+            "partial": 0,
+            "references": 0,
+            "sources": 9,
+            "symbols": 0,
+            "unsupported": 9
+          }
+        ],
+        "resolution": {
+          "ambiguous": 1,
+          "classification_mismatches": [],
+          "elapsed_us": 16010,
+          "expected_resolved": 98,
+          "external": 32,
+          "false_resolved": 0,
+          "precision_basis_points": 10000,
+          "recall_basis_points": 10000,
+          "references": 148,
+          "resolved": 98,
+          "resolver_version": "brownfield-project-resolver-v1",
+          "state": "complete",
+          "true_resolved": 98,
+          "unresolved": 17
+        },
+        "warm": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "coverage_partial": false,
+          "elapsed_us": 22146,
+          "mapped_sources": 0,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "warm_resolution_reused": true
+      },
+      "mode": "partial_coverage",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5186,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1473.6154,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "69ba2829463502150dbd1ca7cd2dcf7c7c8875e7cf8336c4fa71556622a74817",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "4a022f2393032757eef29f6fd3069e22d92c23e488d8d794f039b50258f89a5b",
+      "iteration": 5,
+      "knowledge_root_exists": false,
+      "mapping": null,
+      "mode": "empty_vault",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5187,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 755.7372999999999,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "69ba2829463502150dbd1ca7cd2dcf7c7c8875e7cf8336c4fa71556622a74817",
+      "warmup": false
+    }
+  ],
+  "schema_version": 1,
+  "scope": "real AppCore worker, watcher and SQLite; isolated equivalent repositories; no external service, profile or arbitrary generated write",
+  "task_description": "Em src/auth.rs, especifique que validate_token deve retornar 401 quando o token estiver expirado.",
+  "task_summary": [
+    {
+      "clarification_questions": {
+        "max": 0,
+        "min": 0
+      },
+      "mode": "empty_vault",
+      "samples": 5,
+      "simulated_input_tokens": {
+        "p50": 5187,
+        "p95": 5187
+      },
+      "simulated_output_tokens": {
+        "p50": 160,
+        "p95": 160
+      },
+      "specification_checkpoint_ms": {
+        "p50": 755.7372999999999,
+        "p95": 1034.0369
+      },
+      "specification_quality_score": {
+        "max": 5,
+        "min": 5,
+        "rubric_max": 5
+      }
+    },
+    {
+      "clarification_questions": {
+        "max": 0,
+        "min": 0
+      },
+      "mode": "partial_coverage",
+      "samples": 5,
+      "simulated_input_tokens": {
+        "p50": 5187,
+        "p95": 5187
+      },
+      "simulated_output_tokens": {
+        "p50": 160,
+        "p95": 160
+      },
+      "specification_checkpoint_ms": {
+        "p50": 774.4037000000001,
+        "p95": 1473.6154
+      },
+      "specification_quality_score": {
+        "max": 5,
+        "min": 5,
+        "rubric_max": 5
+      }
+    }
+  ],
+  "token_measurement": "provider-reported fixture usage: prompt chars/4; not a tokenizer or cost estimate",
+  "working_diff": ".../examples/brownfield_benchmark.rs               |  13 +-\n .../hvc-test-support/src/brownfield_benchmark.rs   | 224 ++++++++++++++++++++-\n crates/hvc-test-support/tests/brownfield_bf5.rs    |   7 +-\n 3 files changed, 235 insertions(+), 9 deletions(-)"
+}
