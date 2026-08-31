@@ -726,6 +726,7 @@ impl AppModel {
                     match result {
                         Ok(status) => {
                             workspace.brownfield.ignored_paths = status.ignored_paths;
+                            workspace.brownfield.coverage = status.coverage;
                             workspace.brownfield.error = None;
                         }
                         Err(error) => {
@@ -3760,6 +3761,7 @@ mod tests {
                                 hvc_core::orchestration::brownfield::BrownfieldConsentState::Declined
                             },
                             ignored_paths: Vec::new(),
+                            coverage: None,
                         },
                         created_paths: Vec::new(),
                         inventory: None,
@@ -3787,6 +3789,7 @@ mod tests {
                     } else {
                         Vec::new()
                     },
+                    coverage: None,
                 })
             })
         }
@@ -3818,6 +3821,7 @@ mod tests {
                     pulsations: vec![test_pulsation()],
                     hitl_waiting_count: 0,
                     background_agents_count: 1,
+                    brownfield_coverage: None,
                 })),
                 artifacts: Arc::new(Mutex::new(vec![test_artifact("Plan")])),
             }
@@ -4363,6 +4367,7 @@ mod tests {
                         consent:
                             hvc_core::orchestration::brownfield::BrownfieldConsentState::NotDecided,
                         ignored_paths: Vec::new(),
+                        coverage: None,
                     }),
                 },
                 cx,

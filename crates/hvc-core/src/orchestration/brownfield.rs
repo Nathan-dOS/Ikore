@@ -22,6 +22,38 @@ pub struct BrownfieldOnboardingStatus {
     pub consent: BrownfieldConsentState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ignored_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<BrownfieldCoverageMetrics>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrownfieldCoverageMetrics {
+    /// True only after the bounded structural bootstrap committed successfully.
+    pub frontier_initialized: bool,
+    /// Every source currently known by the persisted frontier, including ignored sources.
+    pub inventory_known_sources: u32,
+    /// Explicit denominator for every ratio: known sources minus ignored sources.
+    pub eligible_source_denominator: u32,
+    pub ignored_sources: u32,
+    pub extracted_valid_sources: u32,
+    pub extracted_partial_sources: u32,
+    pub extracted_stale_sources: u32,
+    pub extraction_failed_sources: u32,
+    /// Integer basis points (0..=10_000), avoiding floating-point serialization drift.
+    pub extraction_progress_basis_points: u32,
+    /// Documentation counts distinct eligible sources and assigns one state per source.
+    pub documentation_proposed_sources: u32,
+    pub documentation_validated_sources: u32,
+    pub documentation_stale_sources: u32,
+}
+
+impl BrownfieldCoverageMetrics {
+    pub const SCALE_BASIS_POINTS: u32 = 10_000;
+
+    pub fn extraction_percent(&self) -> u32 {
+        self.extraction_progress_basis_points / 100
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

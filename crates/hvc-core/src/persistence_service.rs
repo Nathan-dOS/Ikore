@@ -31,7 +31,9 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::orchestration::brownfield::{BrownfieldConsentState, BrownfieldOnboardingStatus};
+use crate::orchestration::brownfield::{
+    BrownfieldConsentState, BrownfieldCoverageMetrics, BrownfieldOnboardingStatus,
+};
 
 #[path = "orchestration/anticipation.rs"]
 mod anticipation;
@@ -658,6 +660,8 @@ pub struct PulsationRuntimeSnapshot {
     pub pulsations: Vec<Pulsation>,
     pub hitl_waiting_count: usize,
     pub background_agents_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brownfield_coverage: Option<BrownfieldCoverageMetrics>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1908,10 +1912,14 @@ impl PersistenceService {
                 }
             };
         let ignored_paths = Self::ignored_brownfield_paths(&connection, &project_id)?;
+        let coverage = (consent == BrownfieldConsentState::Granted)
+            .then(|| Self::brownfield_coverage_metrics(&connection, &project_id))
+            .transpose()?;
         Ok(BrownfieldOnboardingStatus {
             project_id,
             consent,
             ignored_paths,
+            coverage,
         })
     }
 
@@ -1938,7 +1946,11 @@ impl PersistenceService {
         if !consent {
             self.cancel_brownfield_mapping(&project_id)?;
         }
-        let ignored_paths = Self::ignored_brownfield_paths(&self.connection()?, &project_id)?;
+        let connection = self.connection()?;
+        let ignored_paths = Self::ignored_brownfield_paths(&connection, &project_id)?;
+        let coverage = consent
+            .then(|| Self::brownfield_coverage_metrics(&connection, &project_id))
+            .transpose()?;
         Ok(BrownfieldOnboardingStatus {
             ignored_paths,
             project_id,
@@ -1947,6 +1959,7 @@ impl PersistenceService {
             } else {
                 BrownfieldConsentState::Declined
             },
+            coverage,
         })
     }
 
@@ -2322,6 +2335,17 @@ impl PersistenceService {
                 pulsations,
                 hitl_waiting_count: hitl_waiting_count.max(0) as usize,
                 background_agents_count: background_agents_count.max(0) as usize,
+                brownfield_coverage: if Self::read_runtime_setting(
+                    &connection,
+                    &brownfield_consent_key(&project_id),
+                )?
+                .as_deref()
+                    == Some("true")
+                {
+                    Some(Self::brownfield_coverage_metrics(&connection, &project_id)?)
+                } else {
+                    None
+                },
             },
         })
     }

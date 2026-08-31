@@ -2204,6 +2204,22 @@ fn is_component_document(relative: &str, content: &str) -> bool {
         .is_some_and(|value| value.eq_ignore_ascii_case("component"))
 }
 
+pub(crate) fn component_mapping_status(relative: &str, content: &str) -> Option<&'static str> {
+    if !is_component_document(relative, content) {
+        return None;
+    }
+    let parsed = parse_frontmatter_and_body(content).ok()?;
+    match lookup_frontmatter_property(parsed.parsed.as_ref(), "mapping-status")
+        .as_ref()
+        .and_then(Value::as_str)
+    {
+        Some(value) if value.eq_ignore_ascii_case("proposed") => Some("proposed"),
+        Some(value) if value.eq_ignore_ascii_case("validated") => Some("validated"),
+        Some(value) if value.eq_ignore_ascii_case("stale") => Some("stale"),
+        _ => None,
+    }
+}
+
 fn normative_properties(relative: &str, properties: Option<&Value>) -> bool {
     if relative
         .replace('\\', "/")

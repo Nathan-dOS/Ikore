@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use gpui::SharedString;
 use hvc_core::AppCore;
+use hvc_core::orchestration::brownfield::BrownfieldCoverageMetrics;
 use hvc_core::orchestration::{
     BaseState, ConfirmBaseReconciliationRequest, ProjectCoordinationSnapshot,
 };
@@ -185,6 +186,7 @@ impl PulsationsBackend for CorePulsationsBackend {
 
 #[derive(Default)]
 pub struct PulsationsModel {
+    pub brownfield_coverage: Option<BrownfieldCoverageMetrics>,
     pub details: Vec<PulsationCoordinationSnapshot>,
     pub action_busy: bool,
     pub artifact_preview: Option<(String, String)>,
@@ -250,6 +252,7 @@ impl PulsationsModel {
         self.awaiting_hitl = snapshot.hitl_waiting_count;
         self.running_jobs = snapshot.main_agents_count + snapshot.background_agents_count;
         self.coordination = snapshot.coordination;
+        self.brownfield_coverage = snapshot.brownfield_coverage;
         self.active_pulsation_id = next_id.clone().map(Into::into);
         self.runtime_loading = false;
         self.error = None;
@@ -452,6 +455,20 @@ mod tests {
         let active = model.apply_snapshot(
             "project-1".into(),
             PulsationRuntimeSnapshot {
+                brownfield_coverage: Some(BrownfieldCoverageMetrics {
+                    frontier_initialized: true,
+                    inventory_known_sources: 4,
+                    eligible_source_denominator: 3,
+                    ignored_sources: 1,
+                    extracted_valid_sources: 2,
+                    extracted_partial_sources: 1,
+                    extracted_stale_sources: 0,
+                    extraction_failed_sources: 0,
+                    extraction_progress_basis_points: 6_666,
+                    documentation_proposed_sources: 1,
+                    documentation_validated_sources: 0,
+                    documentation_stale_sources: 0,
+                }),
                 details: Vec::new(),
                 coordination: None,
                 main_agents_count: 0,
@@ -475,6 +492,14 @@ mod tests {
         assert_eq!(model.derived_workspace_mode(), WorkspaceViewMode::Hitl);
         assert_eq!(model.artifacts[0].name, "Login plan");
         assert_eq!(model.hitl.pulsation_id.as_deref(), Some("pulse-1"));
+        assert_eq!(
+            model
+                .brownfield_coverage
+                .as_ref()
+                .unwrap()
+                .eligible_source_denominator,
+            3
+        );
     }
 
     #[test]
@@ -483,6 +508,7 @@ mod tests {
         model.apply_snapshot(
             "project-1".into(),
             PulsationRuntimeSnapshot {
+                brownfield_coverage: None,
                 details: Vec::new(),
                 coordination: None,
                 main_agents_count: 0,

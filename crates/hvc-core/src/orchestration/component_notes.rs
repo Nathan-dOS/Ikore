@@ -602,4 +602,86 @@ mod tests {
         assert_eq!(mapping, "stale");
         assert_eq!(fs::read_to_string(note_path).unwrap(), original_note);
     }
+
+    #[tokio::test]
+    async fn component_frontmatter_validation_updates_auditable_coverage() {
+        let fixture = accepted_component_fixture("pub fn run() {}\n", &[]);
+        fixture
+            .service
+            .reconcile_component_publication(&CancellationToken::new())
+            .unwrap();
+        fixture
+            .service
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET status='done' WHERE job_class='main' AND status='pending'",
+                [],
+            )
+            .unwrap();
+        fixture
+            .service
+            .enqueue_brownfield_mapping(&fixture.pulse.project_id)
+            .unwrap();
+        fixture
+            .service
+            .process_brownfield_mapping(&CancellationToken::new())
+            .await
+            .unwrap();
+
+        let relative = "knowledge/obsidian/components/core-runtime.md";
+        let note_path = fixture.workspace.path().join(relative);
+        let proposed = fixture
+            .service
+            .get_brownfield_onboarding(&fixture.pulse.project_id)
+            .unwrap()
+            .coverage
+            .unwrap();
+        assert_eq!(proposed.documentation_proposed_sources, 1);
+
+        let validated = fs::read_to_string(&note_path)
+            .unwrap()
+            .replace("mapping-status: proposed", "mapping-status: validated");
+        fs::write(&note_path, validated).unwrap();
+        fixture
+            .service
+            .record_workspace_change(
+                fixture.workspace.path(),
+                &crate::workspace_service::WorkspaceChangedEvent {
+                    kind: "modify".into(),
+                    relative_path: relative.into(),
+                    timestamp: PersistenceService::now_iso(),
+                },
+            )
+            .unwrap();
+        let coverage = fixture
+            .service
+            .get_brownfield_onboarding(&fixture.pulse.project_id)
+            .unwrap()
+            .coverage
+            .unwrap();
+        assert_eq!(coverage.documentation_proposed_sources, 0);
+        assert_eq!(coverage.documentation_validated_sources, 1);
+
+        fs::remove_file(note_path).unwrap();
+        fixture
+            .service
+            .record_workspace_change(
+                fixture.workspace.path(),
+                &crate::workspace_service::WorkspaceChangedEvent {
+                    kind: "remove".into(),
+                    relative_path: relative.into(),
+                    timestamp: PersistenceService::now_iso(),
+                },
+            )
+            .unwrap();
+        let coverage = fixture
+            .service
+            .get_brownfield_onboarding(&fixture.pulse.project_id)
+            .unwrap()
+            .coverage
+            .unwrap();
+        assert_eq!(coverage.documentation_validated_sources, 0);
+        assert_eq!(coverage.documentation_stale_sources, 1);
+    }
 }

@@ -1,3 +1,4 @@
+pub mod brownfield_benchmark;
 #[cfg(test)]
 mod contracts;
 mod controlled_gateway;

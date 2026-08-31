@@ -6,8 +6,9 @@ use std::time::Duration;
 use gpui::{AppContext as _, Context, Entity, SharedString};
 use hvc_core::AppCore;
 use hvc_core::orchestration::brownfield::{
-    BrownfieldConsentState, BrownfieldInventory, BrownfieldOnboardingResult,
-    BrownfieldOnboardingStatus, SetBrownfieldConsentRequest, SetBrownfieldIgnoredRequest,
+    BrownfieldConsentState, BrownfieldCoverageMetrics, BrownfieldInventory,
+    BrownfieldOnboardingResult, BrownfieldOnboardingStatus, SetBrownfieldConsentRequest,
+    SetBrownfieldIgnoredRequest,
 };
 use hvc_core::workspace_service::{
     FileNode, ReadWorkspaceFileRequest, WriteWorkspaceFileAtomicRequest,
@@ -190,6 +191,7 @@ pub(crate) struct BrownfieldOnboardingModel {
     pub(crate) error: Option<String>,
     pub(crate) inventory: Option<BrownfieldInventory>,
     pub(crate) ignored_paths: Vec<String>,
+    pub(crate) coverage: Option<BrownfieldCoverageMetrics>,
 }
 
 impl BrownfieldOnboardingModel {
@@ -198,6 +200,7 @@ impl BrownfieldOnboardingModel {
             .as_ref()
             .map(|status| status.ignored_paths.clone())
             .unwrap_or_default();
+        let coverage = status.as_ref().and_then(|status| status.coverage.clone());
         let state = status.map_or(
             BrownfieldOnboardingState::NotApplicable,
             |status| match status.consent {
@@ -209,6 +212,7 @@ impl BrownfieldOnboardingModel {
         Self {
             state,
             ignored_paths,
+            coverage,
             ..Self::default()
         }
     }
@@ -223,6 +227,7 @@ impl BrownfieldOnboardingModel {
         self.error = None;
         self.inventory = result.inventory;
         self.ignored_paths = result.status.ignored_paths;
+        self.coverage = result.status.coverage;
     }
 }
 

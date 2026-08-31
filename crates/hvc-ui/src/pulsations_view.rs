@@ -1,5 +1,6 @@
-use gpui::{AnyElement, Context, IntoElement, div, prelude::*, px};
+use gpui::{AnyElement, Context, IntoElement, div, prelude::*, px, relative};
 use hvc_core::orchestration::BaseState;
+use hvc_core::orchestration::brownfield::BrownfieldCoverageMetrics;
 use hvc_core::persistence_service::{Pulsation, PulsationStage, PulsationStatus};
 
 use crate::app_model::AppModel;
@@ -28,6 +29,7 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
         running_jobs,
         notice,
         error,
+        brownfield_coverage,
     ) = {
         let state = model.pulsations.read(cx);
         (
@@ -41,6 +43,7 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
             state.running_jobs,
             state.notice.clone(),
             state.error.clone(),
+            state.brownfield_coverage.clone(),
         )
     };
 
@@ -161,6 +164,9 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                 .border_color(theme::border())
                 .bg(theme::surface())
                 .overflow_y_scroll()
+                .when_some(brownfield_coverage, |panel, coverage| {
+                    panel.child(brownfield_progress_panel(coverage))
+                })
                 .child(coordination_panel(model, cx))
                 .when_some(active, |panel, active| {
                     panel
@@ -677,6 +683,102 @@ fn blocking_label(reason: Option<&str>) -> &'static str {
         Some("publishing") => "Conferindo publicações",
         _ => "Fila persistida",
     }
+}
+
+fn brownfield_progress_panel(coverage: BrownfieldCoverageMetrics) -> impl IntoElement {
+    let basis_points = coverage
+        .extraction_progress_basis_points
+        .min(BrownfieldCoverageMetrics::SCALE_BASIS_POINTS);
+    let progress = basis_points as f32 / BrownfieldCoverageMetrics::SCALE_BASIS_POINTS as f32;
+    let percentage = format!("{:.2}%", basis_points as f32 / 100.0);
+    let bootstrap = if coverage.frontier_initialized {
+        "Inventário estrutural inicial concluído"
+    } else {
+        "Inventário estrutural inicial pendente"
+    };
+
+    div()
+        .id("brownfield-progress")
+        .mb_3()
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::surface_raised())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child("MAPEAMENTO BROWNFIELD"),
+                )
+                .child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(percentage),
+                ),
+        )
+        .child(
+            div()
+                .mt_2()
+                .h(px(8.0))
+                .w_full()
+                .rounded_full()
+                .overflow_hidden()
+                .bg(theme::canvas())
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(progress))
+                        .rounded_full()
+                        .bg(theme::accent()),
+                ),
+        )
+        .child(div().mt_2().text_sm().child(format!(
+            "{} de {} fontes elegíveis com extração válida",
+            coverage.extracted_valid_sources, coverage.eligible_source_denominator
+        )))
+        .child(
+            div()
+                .mt_1()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child("Denominador: fontes conhecidas no inventário, menos as ignoradas."),
+        )
+        .child(
+            div()
+                .mt_1()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(bootstrap),
+        )
+        .child(
+            div()
+                .mt_2()
+                .flex()
+                .flex_wrap()
+                .gap_x_3()
+                .gap_y_1()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(format!(
+                    "Extração: {} parcial · {} obsoleta · {} falhou",
+                    coverage.extracted_partial_sources,
+                    coverage.extracted_stale_sources,
+                    coverage.extraction_failed_sources
+                ))
+                .child(format!(
+                    "Documentação: {} proposta · {} validada · {} obsoleta",
+                    coverage.documentation_proposed_sources,
+                    coverage.documentation_validated_sources,
+                    coverage.documentation_stale_sources
+                ))
+                .child(format!("Ignoradas: {}", coverage.ignored_sources)),
+        )
 }
 
 fn coordination_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {

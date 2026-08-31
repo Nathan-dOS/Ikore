@@ -723,6 +723,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn coverage_uses_known_non_ignored_sources_as_its_explicit_denominator() {
+        let (_data, workspace, service, project) = fixture();
+        fs::write(
+            workspace.path().join("src/auth.rs"),
+            "pub fn validate_token() -> bool { true }\n",
+        )
+        .unwrap();
+        let cold = run_mapping(&service, &project).await;
+        assert_eq!(cold.mapped_sources, 2);
+
+        service
+            .set_brownfield_path_ignored(&project, "src/auth.rs", true)
+            .unwrap();
+        let coverage = service
+            .get_brownfield_onboarding(&project)
+            .unwrap()
+            .coverage
+            .expect("granted onboarding exposes coverage");
+
+        assert!(coverage.frontier_initialized);
+        assert_eq!(coverage.inventory_known_sources, 2);
+        assert_eq!(coverage.ignored_sources, 1);
+        assert_eq!(coverage.eligible_source_denominator, 1);
+        assert_eq!(coverage.extracted_valid_sources, 1);
+        assert_eq!(coverage.extraction_progress_basis_points, 10_000);
+    }
+
+    #[tokio::test]
     async fn body_hash_change_replaces_edges_instead_of_accumulating() {
         let (_data, workspace, service, project) = fixture();
         run_mapping(&service, &project).await;

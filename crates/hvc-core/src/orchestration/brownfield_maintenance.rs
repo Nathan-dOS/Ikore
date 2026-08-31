@@ -6,7 +6,8 @@ use rusqlite::TransactionBehavior;
 
 use super::*;
 use crate::orchestration::brownfield::{
-    BrownfieldFrontierEntry, BrownfieldFrontierStatus, BrownfieldOnboardingStatus,
+    BrownfieldCoverageMetrics, BrownfieldFrontierEntry, BrownfieldFrontierStatus,
+    BrownfieldOnboardingStatus,
 };
 use crate::orchestration::{RelativeSourcePath, SourceRevision};
 use crate::repository_context::RepositoryContext;
@@ -15,6 +16,61 @@ use crate::workspace_service::WorkspaceChangedEvent;
 const DELETED_REVISION_KEY: &str = "deleted";
 
 impl PersistenceService {
+    pub(super) fn brownfield_coverage_metrics(
+        db: &Connection,
+        project_id: &str,
+    ) -> Result<BrownfieldCoverageMetrics, PersistenceServiceError> {
+        let frontier_initialized = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM brownfield_frontier_state WHERE project_id=?1 AND initialized=1)",
+            [project_id],
+            |row| row.get(0),
+        )?;
+        let (known, ignored, mapped, partial, stale, failed): (i64, i64, i64, i64, i64, i64) =
+            db.query_row(
+                "SELECT COUNT(*),COALESCE(SUM(CASE WHEN status='ignored' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='mapped' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='partial' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='stale' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0) FROM brownfield_frontier WHERE project_id=?1",
+                [project_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )?;
+        let (documented_stale, documented_validated, documented_proposed): (i64, i64, i64) =
+            db.query_row(
+                "WITH source_states AS (SELECT frontier.relative_path,COALESCE(MAX(CASE WHEN note.mapping_status='stale' THEN 1 ELSE 0 END),0) AS has_stale,COALESCE(MAX(CASE WHEN note.mapping_status='validated' THEN 1 ELSE 0 END),0) AS has_validated,COALESCE(MAX(CASE WHEN note.mapping_status='proposed' THEN 1 ELSE 0 END),0) AS has_proposed FROM brownfield_frontier frontier LEFT JOIN brownfield_component_sources source ON source.project_id=frontier.project_id AND source.relative_path=frontier.relative_path LEFT JOIN brownfield_component_notes note ON note.id=source.note_id AND note.project_id=frontier.project_id WHERE frontier.project_id=?1 AND frontier.status<>'ignored' GROUP BY frontier.relative_path) SELECT COALESCE(SUM(has_stale),0),COALESCE(SUM(CASE WHEN has_stale=0 AND has_validated=1 THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN has_stale=0 AND has_validated=0 AND has_proposed=1 THEN 1 ELSE 0 END),0) FROM source_states",
+                [project_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        let count = |value: i64| value.clamp(0, i64::from(u32::MAX)) as u32;
+        let inventory_known_sources = count(known);
+        let ignored_sources = count(ignored);
+        let eligible_source_denominator = inventory_known_sources.saturating_sub(ignored_sources);
+        let extracted_valid_sources = count(mapped).min(eligible_source_denominator);
+        let extraction_progress_basis_points = extracted_valid_sources
+            .saturating_mul(BrownfieldCoverageMetrics::SCALE_BASIS_POINTS)
+            .checked_div(eligible_source_denominator)
+            .unwrap_or(0);
+        Ok(BrownfieldCoverageMetrics {
+            frontier_initialized,
+            inventory_known_sources,
+            eligible_source_denominator,
+            ignored_sources,
+            extracted_valid_sources,
+            extracted_partial_sources: count(partial),
+            extracted_stale_sources: count(stale),
+            extraction_failed_sources: count(failed),
+            extraction_progress_basis_points,
+            documentation_proposed_sources: count(documented_proposed),
+            documentation_validated_sources: count(documented_validated),
+            documentation_stale_sources: count(documented_stale),
+        })
+    }
+
     pub fn list_brownfield_frontier(
         &self,
         project_id: &str,
@@ -160,7 +216,41 @@ impl PersistenceService {
             .to_ascii_lowercase()
             .starts_with("knowledge/obsidian/components/")
         {
+            self.synchronize_component_mapping_status(&db, &root, &project_id, event)?;
             self.enqueue_embedding_path_change(&root, &event.relative_path)?;
+        }
+        Ok(())
+    }
+
+    fn synchronize_component_mapping_status(
+        &self,
+        db: &Connection,
+        workspace_root: &Path,
+        project_id: &str,
+        event: &WorkspaceChangedEvent,
+    ) -> Result<(), PersistenceServiceError> {
+        let target = crate::orchestration::publication::safe_target(
+            workspace_root,
+            &event.relative_path,
+            false,
+        )?;
+        let mapping_status = if target.is_file() {
+            let content = crate::workspace_service::read_context_document(
+                workspace_root,
+                &event.relative_path,
+            )
+            .map_err(|error| {
+                coordination::invalid(format!("Nota de componente inválida: {error:?}"))
+            })?;
+            crate::workspace_service::component_mapping_status(&event.relative_path, &content)
+        } else {
+            Some("stale")
+        };
+        if let Some(mapping_status) = mapping_status {
+            db.execute(
+                "UPDATE brownfield_component_notes SET mapping_status=?3,updated_at=?4 WHERE project_id=?1 AND relative_path=?2",
+                params![project_id, event.relative_path.replace('\\', "/"), mapping_status, Self::now_iso()],
+            )?;
         }
         Ok(())
     }
