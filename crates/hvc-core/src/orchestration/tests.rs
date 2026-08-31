@@ -596,6 +596,12 @@ fn context_rejects_duplicate_sources_and_missing_extractor_version() {
         line: 1,
         observed_text: "nonexistent_import".into(),
         relation: ReferenceRelation::Lexical,
+        reference_key: None,
+        descriptor: None,
+        source_symbol_key: None,
+        target_symbol_key: None,
+        target_revision: None,
+        resolution_evidence: None,
         resolution: ReferenceResolution::Unresolved {
             reason: "fixture".into(),
         },

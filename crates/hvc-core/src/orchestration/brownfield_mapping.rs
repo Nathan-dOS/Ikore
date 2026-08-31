@@ -7,9 +7,9 @@ use rusqlite::TransactionBehavior;
 
 use super::*;
 use crate::orchestration::{
-    CollectionBudget, ReferenceRelation, ReferenceResolution, RelativeSourcePath, SourceLanguage,
-    SourceSnapshot, SourceStructuralFacts, StructuralParseStatus, TREE_SITTER_PARSER_VERSION,
-    TreeSitterExtractor,
+    CollectionBudget, ContentSha256, ReferenceRelation, ReferenceResolution, RelativeSourcePath,
+    SourceLanguage, SourceSnapshot, SourceStructuralFacts, StructuralParseStatus,
+    StructuredSymbolKind, SymbolVisibility, TREE_SITTER_PARSER_VERSION, TreeSitterExtractor,
 };
 use crate::repository_context::RepositoryContext;
 
@@ -506,6 +506,10 @@ impl PersistenceService {
             "DELETE FROM brownfield_edges WHERE project_id=?1 AND source_path=?2",
             params![facts.source.project_id, facts.source.relative_path.as_str()],
         )?;
+        tx.execute(
+            "DELETE FROM brownfield_symbols WHERE project_id=?1 AND source_path=?2",
+            params![facts.source.project_id, facts.source.relative_path.as_str()],
+        )?;
         let frontier_status = if facts.status == StructuralParseStatus::Mapped {
             "mapped"
         } else {
@@ -537,27 +541,123 @@ impl PersistenceService {
                 now,
             ],
         )?;
-        for reference in &facts.references {
-            let (resolution, destination): (&str, Option<&str>) = match &reference.resolution {
-                ReferenceResolution::Unresolved { .. } => ("unresolved", None),
-                ReferenceResolution::External { .. } => ("external", None),
-                ReferenceResolution::Resolved { target } => ("resolved", Some(target.as_str())),
+        for symbol in &facts.symbols {
+            let symbol_key = symbol
+                .symbol_key
+                .as_deref()
+                .unwrap_or_else(|| symbol.name.as_str());
+            let qualified_name = symbol
+                .qualified_name
+                .as_deref()
+                .unwrap_or_else(|| symbol.name.as_str());
+            let kind = match symbol.kind {
+                StructuredSymbolKind::Function => "function",
+                StructuredSymbolKind::Method => "method",
+                StructuredSymbolKind::Struct => "struct",
+                StructuredSymbolKind::Class => "class",
+                StructuredSymbolKind::Trait => "trait",
+                StructuredSymbolKind::Interface => "interface",
+                StructuredSymbolKind::Enum => "enum",
+                StructuredSymbolKind::TypeAlias => "type_alias",
             };
-            let relation = match reference.relation {
-                ReferenceRelation::Import => "import",
-                ReferenceRelation::Call => "call",
-                ReferenceRelation::Lexical => "lexical",
+            let visibility = match symbol.visibility {
+                SymbolVisibility::Unknown => "unknown",
+                SymbolVisibility::Private => "private",
+                SymbolVisibility::Project => "project",
+                SymbolVisibility::Public => "public",
+                SymbolVisibility::Exported => "exported",
             };
             tx.execute(
-                "INSERT INTO brownfield_edges(project_id,source_path,relation,observed_text,line,destination_path,resolution,source_revision_sha256,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                "INSERT INTO brownfield_symbols(project_id,source_path,symbol_key,language,kind,name,qualified_name,owner_symbol_key,visibility,signature,start_line,end_line,source_revision_sha256,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
                 params![
                     facts.source.project_id,
                     facts.source.relative_path.as_str(),
+                    symbol_key,
+                    facts.language.as_str(),
+                    kind,
+                    symbol.name,
+                    qualified_name,
+                    symbol.owner_symbol_key,
+                    visibility,
+                    symbol.signature,
+                    symbol.start_line,
+                    symbol.end_line,
+                    facts.source.content_sha256.as_str(),
+                    now,
+                ],
+            )?;
+        }
+        for reference in &facts.references {
+            let (resolution, destination, external_module, reason, candidate_count): (
+                &str,
+                Option<&str>,
+                Option<&str>,
+                Option<&str>,
+                u32,
+            ) = match &reference.resolution {
+                ReferenceResolution::Unresolved { reason } => {
+                    ("unresolved", None, None, Some(reason.as_str()), 0)
+                }
+                ReferenceResolution::Ambiguous { candidates, reason } => {
+                    ("ambiguous", None, None, Some(reason.as_str()), *candidates)
+                }
+                ReferenceResolution::External { module } => {
+                    ("external", None, Some(module.as_str()), None, 0)
+                }
+                ReferenceResolution::Resolved { target } => {
+                    ("resolved", Some(target.as_str()), None, None, 1)
+                }
+            };
+            let relation = match reference.relation {
+                ReferenceRelation::Import => "import",
+                ReferenceRelation::Reexport => "reexport",
+                ReferenceRelation::Call => "call",
+                ReferenceRelation::TypeUse => "type_use",
+                ReferenceRelation::Inherits => "inherits",
+                ReferenceRelation::Implements => "implements",
+                ReferenceRelation::Lexical => "lexical",
+            };
+            let descriptor = reference
+                .descriptor
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| coordination::invalid(error.to_string()))?;
+            let reference_key = reference.reference_key.clone().unwrap_or_else(|| {
+                ContentSha256::of(
+                    format!(
+                        "{}:{relation}:{}:{}",
+                        facts.source.relative_path.as_str(),
+                        reference.line,
+                        reference.observed_text
+                    )
+                    .as_bytes(),
+                )
+                .as_str()
+                .to_string()
+            });
+            let evidence = reference.resolution_evidence.as_ref();
+            tx.execute(
+                "INSERT INTO brownfield_edges(project_id,source_path,reference_key,relation,observed_text,line,normalized_reference_json,source_symbol_key,destination_path,destination_revision_sha256,destination_symbol_key,resolution,external_module,resolution_method,resolution_reason,candidate_count,resolver_version,resolution_context_sha256,source_revision_sha256,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+                params![
+                    facts.source.project_id,
+                    facts.source.relative_path.as_str(),
+                    reference_key,
                     relation,
                     reference.observed_text,
                     reference.line,
+                    descriptor,
+                    reference.source_symbol_key,
                     destination,
+                    reference.target_revision.as_ref().map(ContentSha256::as_str),
+                    reference.target_symbol_key,
                     resolution,
+                    external_module,
+                    evidence.map(|evidence| evidence.method.as_str()),
+                    reason,
+                    evidence.map_or(candidate_count, |evidence| evidence.candidate_count),
+                    evidence.map(|evidence| evidence.resolver_version.as_str()),
+                    evidence.map(|evidence| evidence.context_sha256.as_str()),
                     facts.source.content_sha256.as_str(),
                     now,
                 ],
@@ -1051,7 +1151,7 @@ mod tests {
             )
             .unwrap();
         db.execute(
-            "INSERT INTO brownfield_edges(project_id,source_path,relation,observed_text,line,destination_path,resolution,source_revision_sha256,updated_at) VALUES(?1,'src/lib.rs','import','derived-test',999,'src/auth.rs','resolved',?2,?3)",
+            "INSERT INTO brownfield_edges(project_id,source_path,reference_key,relation,observed_text,line,destination_path,resolution,candidate_count,source_revision_sha256,updated_at) VALUES(?1,'src/lib.rs','derived-test','import','derived-test',999,'src/auth.rs','resolved',1,?2,?3)",
             params![project, revision, PersistenceService::now_iso()],
         )
         .unwrap();

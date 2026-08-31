@@ -196,12 +196,31 @@ pub enum StructuredSymbolKind {
     TypeAlias,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SymbolVisibility {
+    #[default]
+    Unknown,
+    Private,
+    Project,
+    Public,
+    Exported,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StructuredSymbol {
     pub source: SourceRevision,
     pub kind: StructuredSymbolKind,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualified_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_symbol_key: Option<String>,
+    #[serde(default)]
+    pub visibility: SymbolVisibility,
     pub start_line: u32,
     pub end_line: u32,
     /// Bounded declaration header, never the entire symbol body.
@@ -212,9 +231,66 @@ pub struct StructuredSymbol {
 #[serde(rename_all = "snake_case")]
 pub enum ReferenceRelation {
     Import,
+    Reexport,
     Call,
+    TypeUse,
+    Inherits,
+    Implements,
     #[default]
     Lexical,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceBindingKind {
+    Default,
+    Namespace,
+    Type,
+    #[default]
+    Named,
+    Glob,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferenceBinding {
+    pub imported: String,
+    pub local: String,
+    #[serde(default)]
+    pub kind: ReferenceBindingKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ReferenceDescriptor {
+    Module {
+        specifier: String,
+        #[serde(default)]
+        bindings: Vec<ReferenceBinding>,
+    },
+    Symbol {
+        path: Vec<String>,
+    },
+    Type {
+        path: Vec<String>,
+    },
+    Implementation {
+        trait_path: Vec<String>,
+        for_type_path: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolutionEvidence {
+    pub method: String,
+    pub resolver_version: String,
+    pub context_sha256: ContentSha256,
+    pub candidate_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +301,7 @@ pub enum ReferenceRelation {
 )]
 pub enum ReferenceResolution {
     Unresolved { reason: String },
+    Ambiguous { candidates: u32, reason: String },
     External { module: String },
     Resolved { target: RelativeSourcePath },
 }
@@ -237,6 +314,18 @@ pub struct ObservedReference {
     pub observed_text: String,
     #[serde(default)]
     pub relation: ReferenceRelation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor: Option<ReferenceDescriptor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_symbol_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_symbol_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_revision: Option<ContentSha256>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_evidence: Option<ResolutionEvidence>,
     pub resolution: ReferenceResolution,
 }
 
@@ -361,6 +450,16 @@ impl CodeContextFacts {
             || self.symbols.iter().any(|symbol| {
                 !self.sources.contains(&symbol.source)
                     || symbol.name.trim().is_empty()
+                    || symbol.symbol_key.as_deref().is_some_and(|key| {
+                        key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit())
+                    })
+                    || symbol
+                        .qualified_name
+                        .as_deref()
+                        .is_some_and(|name| name.trim().is_empty())
+                    || symbol.owner_symbol_key.as_deref().is_some_and(|key| {
+                        key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit())
+                    })
                     || symbol.start_line == 0
                     || symbol.end_line < symbol.start_line
                     || symbol.signature.len() > 512
@@ -369,6 +468,14 @@ impl CodeContextFacts {
                 !self.sources.contains(&reference.source)
                     || reference.line == 0
                     || reference.observed_text.trim().is_empty()
+                    || reference.reference_key.as_deref().is_some_and(|key| {
+                        key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit())
+                    })
+                    || reference
+                        .descriptor
+                        .as_ref()
+                        .is_some_and(|descriptor| !reference_descriptor_is_valid(descriptor))
+                    || !reference_resolution_is_valid(reference)
             })
             || (self.coverage.truncated && self.coverage.state == CoverageState::Complete)
             || (self.coverage.state == CoverageState::Unavailable && !self.sources.is_empty())
@@ -412,6 +519,28 @@ impl CodeContextFacts {
                     "referência divergente da linha observada",
                 ));
             }
+            if let ReferenceResolution::Resolved { target } = &reference.resolution
+                && let Some(target_revision) = &reference.target_revision
+            {
+                let target_snapshot = snapshots
+                    .iter()
+                    .find(|candidate| {
+                        candidate.revision().project_id == reference.source.project_id
+                            && candidate.revision().relative_path == *target
+                    })
+                    .ok_or(ContractError::StaleExecution)?;
+                if &target_snapshot.revision().content_sha256 != target_revision {
+                    return Err(ContractError::StaleExecution);
+                }
+                if let Some(target_symbol_key) = &reference.target_symbol_key
+                    && !self.symbols.iter().any(|symbol| {
+                        symbol.source == *target_snapshot.revision()
+                            && symbol.symbol_key.as_ref() == Some(target_symbol_key)
+                    })
+                {
+                    return Err(ContractError::StaleExecution);
+                }
+            }
         }
         for symbol in &self.symbols {
             let snapshot = snapshots
@@ -427,6 +556,54 @@ impl CodeContextFacts {
         }
         Ok(())
     }
+}
+
+fn reference_descriptor_is_valid(descriptor: &ReferenceDescriptor) -> bool {
+    match descriptor {
+        ReferenceDescriptor::Module {
+            specifier,
+            bindings,
+        } => {
+            !specifier.trim().is_empty()
+                && bindings.iter().all(|binding| {
+                    !binding.imported.trim().is_empty() && !binding.local.trim().is_empty()
+                })
+        }
+        ReferenceDescriptor::Symbol { path } | ReferenceDescriptor::Type { path } => {
+            !path.is_empty() && path.iter().all(|part| !part.trim().is_empty())
+        }
+        ReferenceDescriptor::Implementation {
+            trait_path,
+            for_type_path,
+        } => {
+            !trait_path.is_empty()
+                && !for_type_path.is_empty()
+                && trait_path.iter().all(|part| !part.trim().is_empty())
+                && for_type_path.iter().all(|part| !part.trim().is_empty())
+        }
+    }
+}
+
+fn reference_resolution_is_valid(reference: &ObservedReference) -> bool {
+    let target_metadata =
+        reference.target_symbol_key.is_some() || reference.target_revision.is_some();
+    let target_key_valid = reference
+        .target_symbol_key
+        .as_deref()
+        .is_none_or(|key| key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit()));
+    target_key_valid
+        && match &reference.resolution {
+            ReferenceResolution::Resolved { .. } => true,
+            ReferenceResolution::Ambiguous { candidates, reason } => {
+                *candidates >= 2 && !reason.trim().is_empty() && !target_metadata
+            }
+            ReferenceResolution::External { module } => {
+                !module.trim().is_empty() && !target_metadata
+            }
+            ReferenceResolution::Unresolved { reason } => {
+                !reason.trim().is_empty() && !target_metadata
+            }
+        }
 }
 
 #[derive(Debug, Clone)]

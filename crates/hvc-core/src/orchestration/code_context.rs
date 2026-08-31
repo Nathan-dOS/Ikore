@@ -234,6 +234,12 @@ impl LexicalCodeContextService {
                             line: index as u32 + 1,
                             observed_text: observed.into(),
                             relation: ReferenceRelation::Lexical,
+                            reference_key: None,
+                            descriptor: None,
+                            source_symbol_key: None,
+                            target_symbol_key: None,
+                            target_revision: None,
+                            resolution_evidence: None,
                             resolution: ReferenceResolution::Unresolved {
                                 reason:
                                     "Referência lexical observada, sem resolvedor de linguagem."

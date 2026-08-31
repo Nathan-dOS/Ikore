@@ -31,8 +31,33 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        16
+        17
     );
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('brownfield_symbols','brownfield_edges','brownfield_resolution_state')",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        3
+    );
+    let edge_columns = db
+        .prepare("PRAGMA table_info(brownfield_edges)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    for required in [
+        "reference_key",
+        "normalized_reference_json",
+        "destination_symbol_key",
+        "destination_revision_sha256",
+        "resolution_context_sha256",
+    ] {
+        assert!(edge_columns.iter().any(|column| column == required));
+    }
     assert_eq!(
         db.query_row(
             "SELECT raw_output FROM agent_run_outputs WHERE id='output-pulse-a'",
