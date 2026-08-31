@@ -468,6 +468,7 @@ mod tests {
                     documentation_proposed_sources: 1,
                     documentation_validated_sources: 0,
                     documentation_stale_sources: 0,
+                    ..Default::default()
                 }),
                 details: Vec::new(),
                 coordination: None,

@@ -43,6 +43,8 @@ mod brownfield_enrichment;
 mod brownfield_maintenance;
 #[path = "orchestration/brownfield_mapping.rs"]
 mod brownfield_mapping;
+#[path = "orchestration/brownfield_resolution.rs"]
+mod brownfield_resolution;
 #[path = "orchestration/clarification.rs"]
 mod clarification;
 #[path = "orchestration/component_notes.rs"]

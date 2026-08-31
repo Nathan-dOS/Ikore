@@ -163,9 +163,24 @@ impl PersistenceService {
         db: &Connection,
     ) -> Result<(), PersistenceServiceError> {
         db.execute("UPDATE jobs SET status='pending',generation=generation+1,cancellation_reason=NULL,cancel_requested_at=NULL,available_at=NULL WHERE kind IN ('learning_report','index_embedding') AND status IN ('pending','running','interrupted') AND (status IN ('running','interrupted') OR cancellation_reason='shutdown') AND (cancellation_reason IS NULL OR cancellation_reason IN ('shutdown','preempted'))",[])?;
-        db.execute("UPDATE jobs SET status='pending',generation=generation+1,cancellation_reason=NULL,cancel_requested_at=NULL,started_at=NULL,finished_at=NULL,available_at=NULL WHERE kind IN ('brownfield_map','brownfield_enrich') AND status IN ('pending','running','interrupted') AND (status IN ('running','interrupted') OR cancellation_reason='shutdown') AND (cancellation_reason IS NULL OR cancellation_reason IN ('shutdown','preempted')) AND EXISTS(SELECT 1 FROM runtime_settings s WHERE s.key='brownfield.onboarding_consent.'||jobs.project_id AND s.value='true')",[])?;
+        db.execute("UPDATE jobs SET status='pending',generation=generation+1,cancellation_reason=NULL,cancel_requested_at=NULL,started_at=NULL,finished_at=NULL,available_at=NULL WHERE kind IN ('brownfield_map','brownfield_resolve','brownfield_enrich') AND status IN ('pending','running','interrupted') AND (status IN ('running','interrupted') OR cancellation_reason='shutdown') AND (cancellation_reason IS NULL OR cancellation_reason IN ('shutdown','preempted')) AND EXISTS(SELECT 1 FROM runtime_settings s WHERE s.key='brownfield.onboarding_consent.'||jobs.project_id AND s.value='true')",[])?;
         db.execute("UPDATE brownfield_refresh_queue SET state='pending',diagnostic='Refresh interrompido; retomada segura agendada.',updated_at=?1 WHERE state='in_progress' AND EXISTS(SELECT 1 FROM jobs WHERE kind='brownfield_map' AND project_id=brownfield_refresh_queue.project_id AND status='pending')",[Self::now_iso()])?;
         db.execute("UPDATE brownfield_frontier SET status='stale',priority_reason='recovered_refresh',updated_at=?1 WHERE status='in_progress' AND EXISTS(SELECT 1 FROM brownfield_refresh_queue queue WHERE queue.project_id=brownfield_frontier.project_id AND queue.relative_path=brownfield_frontier.relative_path AND queue.state='pending')",[Self::now_iso()])?;
+        db.execute("UPDATE brownfield_resolution_state SET state='pending',diagnostic='Resolução interrompida; cursor preservado.',updated_at=?1 WHERE state='running' AND EXISTS(SELECT 1 FROM jobs WHERE kind='brownfield_resolve' AND project_id=brownfield_resolution_state.project_id AND status='pending')",[Self::now_iso()])?;
+        let now = Self::now_iso();
+        db.execute(
+            "INSERT INTO brownfield_refresh_queue(project_id,relative_path,content_revision_key,content_sha256,event_kind,state,created_at,updated_at) SELECT cache.project_id,cache.relative_path,cache.content_sha256,cache.content_sha256,'query_version_upgrade','pending',?1,?1 FROM brownfield_source_cache cache JOIN runtime_settings consent ON consent.key='brownfield.onboarding_consent.'||cache.project_id AND consent.value='true' WHERE (cache.language='rust' AND cache.query_version<>?2) OR (cache.language IN ('typescript','tsx') AND cache.query_version<>?3) ON CONFLICT(project_id,relative_path,content_revision_key) DO UPDATE SET event_kind='query_version_upgrade',state='pending',diagnostic=NULL,updated_at=excluded.updated_at",
+            params![now, crate::orchestration::RUST_QUERY_VERSION, crate::orchestration::TYPESCRIPT_QUERY_VERSION],
+        )?;
+        let query_upgrade_projects = db
+            .prepare(
+                "SELECT DISTINCT queue.project_id FROM brownfield_refresh_queue queue JOIN runtime_settings consent ON consent.key='brownfield.onboarding_consent.'||queue.project_id AND consent.value='true' WHERE queue.event_kind='query_version_upgrade' AND queue.state='pending' ORDER BY queue.project_id",
+            )?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for project_id in query_upgrade_projects {
+            Self::ensure_brownfield_mapping_job_tx(db, &project_id)?;
+        }
         db.execute("UPDATE brownfield_enrichment_runs SET state=CASE WHEN budget_calls>=budget_limit THEN 'budget_exhausted' ELSE 'pending' END,diagnostic='Execução interrompida; orçamento consumido foi preservado.',updated_at=?1 WHERE state='running' AND job_id IN (SELECT id FROM jobs WHERE status='pending')",[Self::now_iso()])?;
         db.execute("UPDATE jobs SET status='failed',finished_at=?1,updated_at=?1 WHERE id IN (SELECT job_id FROM brownfield_enrichment_runs WHERE state='budget_exhausted') AND status='pending'",[Self::now_iso()])?;
         db.execute("UPDATE learning_runs SET state=CASE WHEN budget_calls>=3 THEN 'deferred_budget' ELSE 'pending' END,diagnostic='Execução interrompida; orçamento anterior preservado.' WHERE state='running' AND job_id IN (SELECT id FROM jobs WHERE status='pending')",[])?;

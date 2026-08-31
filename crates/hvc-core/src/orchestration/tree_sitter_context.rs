@@ -234,7 +234,13 @@ impl TreeSitterExtractor {
                             signature,
                         });
                     }
-                } else if let Some(relation) = reference_relation(capture_name) {
+                } else if let Some(mut relation) = reference_relation(capture_name) {
+                    if source_language == SourceLanguage::Rust
+                        && relation == ReferenceRelation::Import
+                        && node_text(source.content(), capture.node).starts_with("pub use ")
+                    {
+                        relation = ReferenceRelation::Reexport;
+                    }
                     let Some(descriptor) = reference_descriptor(
                         source_language,
                         relation,
@@ -549,12 +555,7 @@ fn reference_descriptor(
                 SourceLanguage::Rust if node.kind() == "mod_item" => node
                     .child_by_field_name("name")
                     .map(|child| node_text(content, child))?,
-                SourceLanguage::Rust => text
-                    .trim_start_matches("pub ")
-                    .trim_start_matches("use ")
-                    .trim_end_matches(';')
-                    .trim()
-                    .to_string(),
+                SourceLanguage::Rust => rust_import_specifier(text),
                 SourceLanguage::TypeScript | SourceLanguage::Tsx => {
                     node.child_by_field_name("source").map(|child| {
                         node_text(content, child)
@@ -665,43 +666,75 @@ fn rust_import_bindings(text: &str) -> Vec<ReferenceBinding> {
         .trim_start_matches("use ")
         .trim_end_matches(';')
         .trim();
+    let items = if let Some((_, group)) = body.split_once('{') {
+        group.trim_end_matches('}').to_string()
+    } else {
+        body.rsplit("::").next().unwrap_or(body).to_string()
+    };
+    let module_local = body
+        .split_once('{')
+        .map(|(prefix, _)| prefix.trim_end_matches("::"))
+        .and_then(|prefix| prefix.rsplit("::").next())
+        .unwrap_or("self");
     let mut bindings = Vec::new();
-    let terminal = body
-        .rsplit("::")
-        .next()
-        .unwrap_or(body)
-        .trim_matches(['{', '}']);
-    for item in terminal
+    for item in items
         .split(',')
         .map(str::trim)
         .filter(|item| !item.is_empty())
     {
-        let (imported, local) = item
+        let item = item.rsplit("::").next().unwrap_or(item).trim();
+        let (imported, mut local) = item
             .split_once(" as ")
             .map_or((item, item), |(imported, local)| {
                 (imported.trim(), local.trim())
             });
+        if imported == "self" && local == "self" {
+            local = module_local;
+        }
         bindings.push(ReferenceBinding {
             imported: imported.to_string(),
             local: local.to_string(),
-            kind: if imported == "*" {
-                ReferenceBindingKind::Glob
-            } else {
-                ReferenceBindingKind::Named
+            kind: match imported {
+                "*" => ReferenceBindingKind::Glob,
+                "self" => ReferenceBindingKind::Namespace,
+                _ => ReferenceBindingKind::Named,
             },
         });
     }
     bindings
 }
 
+fn rust_import_specifier(text: &str) -> String {
+    let body = text
+        .trim_start_matches("pub ")
+        .trim_start_matches("use ")
+        .trim_end_matches(';')
+        .trim();
+    let grouped = body.contains('{');
+    let base = body
+        .split_once('{')
+        .map_or(body, |(prefix, _)| prefix)
+        .trim_end_matches("::")
+        .trim_end_matches("::*");
+    if grouped {
+        base.to_string()
+    } else {
+        base.split_once(" as ")
+            .map_or(base, |(path, _)| path)
+            .trim()
+            .to_string()
+    }
+}
+
 fn typescript_import_bindings(text: &str) -> Vec<ReferenceBinding> {
-    let head = text
+    let raw_head = text
         .split_once(" from ")
         .map_or(text, |(head, _)| head)
         .trim_start_matches("import ")
         .trim_start_matches("export ")
-        .trim_start_matches("type ")
         .trim();
+    let type_only = raw_head.starts_with("type ");
+    let head = raw_head.trim_start_matches("type ").trim();
     let mut bindings = Vec::new();
     if let Some(namespace) = head.strip_prefix("* as ") {
         bindings.push(ReferenceBinding {
@@ -720,6 +753,7 @@ fn typescript_import_bindings(text: &str) -> Vec<ReferenceBinding> {
             .map(str::trim)
             .filter(|item| !item.is_empty())
         {
+            let item_type_only = item.starts_with("type ");
             let item = item.trim_start_matches("type ");
             let (imported, local) = item
                 .split_once(" as ")
@@ -729,7 +763,7 @@ fn typescript_import_bindings(text: &str) -> Vec<ReferenceBinding> {
             bindings.push(ReferenceBinding {
                 imported: imported.to_string(),
                 local: local.to_string(),
-                kind: if head.starts_with("type ") {
+                kind: if type_only || item_type_only {
                     ReferenceBindingKind::Type
                 } else {
                     ReferenceBindingKind::Named
@@ -763,7 +797,7 @@ fn node_text(content: &str, node: tree_sitter::Node<'_>) -> String {
 
 fn declaration_signature(content: &str, node: tree_sitter::Node<'_>) -> String {
     let declaration = content.get(node.byte_range()).unwrap_or_default();
-    declaration
+    let signature = declaration
         .split_once('{')
         .map_or(declaration, |(header, _)| header)
         .split_whitespace()
@@ -771,7 +805,26 @@ fn declaration_signature(content: &str, node: tree_sitter::Node<'_>) -> String {
         .join(" ")
         .chars()
         .take(512)
-        .collect()
+        .collect::<String>();
+    if is_default_export(node, content) {
+        format!("export default {signature}")
+    } else {
+        signature
+    }
+}
+
+fn is_default_export(mut node: tree_sitter::Node<'_>, content: &str) -> bool {
+    while let Some(parent) = node.parent() {
+        if parent.kind() == "export_statement" {
+            return content
+                .get(parent.byte_range())
+                .unwrap_or_default()
+                .trim_start()
+                .starts_with("export default ");
+        }
+        node = parent;
+    }
+    false
 }
 
 fn lexical_fallback(source: &SourceSnapshot) -> SourceStructuralFacts {

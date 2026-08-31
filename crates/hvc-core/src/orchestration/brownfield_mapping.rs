@@ -60,16 +60,20 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let ids = tx
-            .prepare("SELECT id FROM jobs WHERE project_id=?1 AND kind IN ('brownfield_map','brownfield_enrich') AND status IN ('pending','running','interrupted')")?
+            .prepare("SELECT id FROM jobs WHERE project_id=?1 AND kind IN ('brownfield_map','brownfield_resolve','brownfield_enrich') AND status IN ('pending','running','interrupted')")?
             .query_map([project_id], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         let now = Self::now_iso();
         tx.execute(
-            "UPDATE jobs SET status='failed',cancellation_reason='superseded',finished_at=?2,updated_at=?2 WHERE project_id=?1 AND kind IN ('brownfield_map','brownfield_enrich') AND status IN ('pending','running','interrupted')",
+            "UPDATE jobs SET status='failed',cancellation_reason='superseded',finished_at=?2,updated_at=?2 WHERE project_id=?1 AND kind IN ('brownfield_map','brownfield_resolve','brownfield_enrich') AND status IN ('pending','running','interrupted')",
             params![project_id, Self::now_iso()],
         )?;
         tx.execute(
             "UPDATE brownfield_enrichment_runs SET state='cancelled',diagnostic='Consentimento brownfield revogado.',updated_at=?2 WHERE project_id=?1 AND state IN ('pending','running')",
+            params![project_id,now],
+        )?;
+        tx.execute(
+            "UPDATE brownfield_resolution_state SET state='failed',diagnostic='Consentimento brownfield revogado.',updated_at=?2 WHERE project_id=?1 AND state IN ('pending','running','partial')",
             params![project_id,now],
         )?;
         tx.execute(
@@ -221,6 +225,8 @@ impl PersistenceService {
             )?;
         }
 
+        let resolution_context =
+            Self::resolution_context(&self.connection()?, Path::new(&root), &project_id)?;
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::validate_mapping_fence(&tx, &job.id, generation, &project_id)?;
@@ -250,6 +256,7 @@ impl PersistenceService {
         if pending {
             Self::ensure_brownfield_mapping_job_tx(&tx, &project_id)?;
         }
+        Self::ensure_brownfield_resolution_job_tx(&tx, &project_id, &resolution_context.sha256)?;
         tx.commit()?;
         Ok(metrics)
     }
@@ -542,14 +549,11 @@ impl PersistenceService {
             ],
         )?;
         for symbol in &facts.symbols {
-            let symbol_key = symbol
-                .symbol_key
-                .as_deref()
-                .unwrap_or_else(|| symbol.name.as_str());
+            let symbol_key = symbol.symbol_key.as_deref().unwrap_or(symbol.name.as_str());
             let qualified_name = symbol
                 .qualified_name
                 .as_deref()
-                .unwrap_or_else(|| symbol.name.as_str());
+                .unwrap_or(symbol.name.as_str());
             let kind = match symbol.kind {
                 StructuredSymbolKind::Function => "function",
                 StructuredSymbolKind::Method => "method",
@@ -966,6 +970,15 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
+        let (resolver_status, resolution_state): (String, String) = service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT job.status,state.state FROM jobs job JOIN brownfield_resolution_state state ON state.project_id=job.project_id WHERE job.project_id=?1 AND job.kind='brownfield_resolve' ORDER BY job.created_at DESC LIMIT 1",
+                [&project],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         let cached_after: u32 = service
             .connection()
             .unwrap()
@@ -976,6 +989,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "failed");
+        assert_eq!(resolver_status, "failed");
+        assert_eq!(resolution_state, "failed");
         assert_eq!(cached_after, cached_before);
     }
 

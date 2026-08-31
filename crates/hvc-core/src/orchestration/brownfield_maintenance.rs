@@ -46,6 +46,25 @@ impl PersistenceService {
                 [project_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
+        let resolution_state = db
+            .query_row(
+                "SELECT state,resolver_version,elapsed_us FROM brownfield_resolution_state WHERE project_id=?1",
+                [project_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let (resolved, ambiguous, external, unresolved): (i64, i64, i64, i64) = db
+            .query_row(
+                "SELECT COALESCE(SUM(edge.resolution='resolved'),0),COALESCE(SUM(edge.resolution='ambiguous'),0),COALESCE(SUM(edge.resolution='external'),0),COALESCE(SUM(edge.resolution='unresolved'),0) FROM brownfield_edges edge LEFT JOIN brownfield_frontier frontier ON frontier.project_id=edge.project_id AND frontier.relative_path=edge.source_path WHERE edge.project_id=?1 AND COALESCE(frontier.status,'mapped')<>'ignored'",
+                [project_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
         let count = |value: i64| value.clamp(0, i64::from(u32::MAX)) as u32;
         let inventory_known_sources = count(known);
         let ignored_sources = count(ignored);
@@ -68,6 +87,19 @@ impl PersistenceService {
             documentation_proposed_sources: count(documented_proposed),
             documentation_validated_sources: count(documented_validated),
             documentation_stale_sources: count(documented_stale),
+            resolution_complete: resolution_state
+                .as_ref()
+                .is_some_and(|(state, _, _)| state == "complete"),
+            resolution_state: resolution_state.as_ref().map(|(state, _, _)| state.clone()),
+            resolver_version: resolution_state
+                .as_ref()
+                .map(|(_, version, _)| version.clone()),
+            resolved_references: count(resolved),
+            ambiguous_references: count(ambiguous),
+            external_references: count(external),
+            unresolved_references: count(unresolved),
+            resolution_elapsed_us: resolution_state
+                .map_or(0, |(_, _, elapsed)| elapsed.max(0) as u64),
         })
     }
 
@@ -167,6 +199,7 @@ impl PersistenceService {
             Self::ensure_brownfield_mapping_job_tx(&tx, &project_id)?;
         }
         tx.commit()?;
+        self.ensure_brownfield_resolution_job(&project_id)?;
         self.wake_scheduler();
         self.get_brownfield_onboarding(&project_id)
     }
@@ -188,11 +221,11 @@ impl PersistenceService {
         let Some((project_id, _)) = project else {
             return Ok(());
         };
+        let consented = Self::read_runtime_setting(&db, &brownfield_consent_key(&project_id))?
+            .as_deref()
+            == Some("true");
 
-        if RepositoryContext::is_code_relative_path(&event.relative_path)
-            && Self::read_runtime_setting(&db, &brownfield_consent_key(&project_id))?.as_deref()
-                == Some("true")
-        {
+        if RepositoryContext::is_code_relative_path(&event.relative_path) && consented {
             let path = RelativeSourcePath::new(event.relative_path.clone())
                 .map_err(|error| coordination::invalid(error.to_string()))?;
             let revision = Self::capture_brownfield_revision(&root, &project_id, &path)?;
@@ -210,12 +243,17 @@ impl PersistenceService {
             self.wake_scheduler();
         }
 
-        if event
-            .relative_path
-            .replace('\\', "/")
-            .to_ascii_lowercase()
-            .starts_with("knowledge/obsidian/components/")
+        let normalized_path = event.relative_path.replace('\\', "/").to_ascii_lowercase();
+        if consented
+            && matches!(
+                normalized_path.rsplit('/').next(),
+                Some("cargo.toml" | "package.json" | "tsconfig.json" | "jsconfig.json")
+            )
         {
+            self.ensure_brownfield_resolution_job(&project_id)?;
+        }
+
+        if normalized_path.starts_with("knowledge/obsidian/components/") {
             self.synchronize_component_mapping_status(&db, &root, &project_id, event)?;
             self.enqueue_embedding_path_change(&root, &event.relative_path)?;
         }
@@ -388,7 +426,7 @@ impl PersistenceService {
             params![project_id, now],
         )?;
         db.execute(
-            "UPDATE brownfield_frontier AS frontier SET in_degree=(SELECT COUNT(*) FROM brownfield_edges edge WHERE edge.project_id=frontier.project_id AND edge.resolution='resolved' AND edge.destination_path=frontier.relative_path),age_factor=MAX(0,CAST(julianday(?2)-julianday(frontier.priority_since) AS INTEGER)),priority_reason=CASE WHEN frontier.status='ignored' THEN 'ignored_by_user' WHEN frontier.recent_use_count>0 THEN 'recent_use='||frontier.recent_use_count||';in_degree='||(SELECT COUNT(*) FROM brownfield_edges edge WHERE edge.project_id=frontier.project_id AND edge.resolution='resolved' AND edge.destination_path=frontier.relative_path)||';aging' ELSE 'in_degree='||(SELECT COUNT(*) FROM brownfield_edges edge WHERE edge.project_id=frontier.project_id AND edge.resolution='resolved' AND edge.destination_path=frontier.relative_path)||';aging' END,updated_at=?2 WHERE frontier.project_id=?1",
+            "UPDATE brownfield_frontier AS frontier SET in_degree=(SELECT COUNT(DISTINCT edge.source_path) FROM brownfield_edges edge LEFT JOIN brownfield_frontier source ON source.project_id=edge.project_id AND source.relative_path=edge.source_path WHERE edge.project_id=frontier.project_id AND edge.resolution='resolved' AND edge.destination_path=frontier.relative_path AND edge.source_path<>edge.destination_path AND COALESCE(source.status,'mapped')<>'ignored'),age_factor=MAX(0,CAST(julianday(?2)-julianday(frontier.priority_since) AS INTEGER)),priority_reason=CASE WHEN frontier.status='ignored' THEN 'ignored_by_user' WHEN frontier.recent_use_count>0 THEN 'recent_use='||frontier.recent_use_count||';in_degree='||(SELECT COUNT(DISTINCT edge.source_path) FROM brownfield_edges edge LEFT JOIN brownfield_frontier source ON source.project_id=edge.project_id AND source.relative_path=edge.source_path WHERE edge.project_id=frontier.project_id AND edge.resolution='resolved' AND edge.destination_path=frontier.relative_path AND edge.source_path<>edge.destination_path AND COALESCE(source.status,'mapped')<>'ignored')||';aging' ELSE 'in_degree='||(SELECT COUNT(DISTINCT edge.source_path) FROM brownfield_edges edge LEFT JOIN brownfield_frontier source ON source.project_id=edge.project_id AND source.relative_path=edge.source_path WHERE edge.project_id=frontier.project_id AND edge.resolution='resolved' AND edge.destination_path=frontier.relative_path AND edge.source_path<>edge.destination_path AND COALESCE(source.status,'mapped')<>'ignored')||';aging' END,updated_at=?2 WHERE frontier.project_id=?1",
             params![project_id, now],
         )?;
         Ok(())

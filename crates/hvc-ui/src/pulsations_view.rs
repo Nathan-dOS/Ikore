@@ -777,6 +777,17 @@ fn brownfield_progress_panel(coverage: BrownfieldCoverageMetrics) -> impl IntoEl
                     coverage.documentation_validated_sources,
                     coverage.documentation_stale_sources
                 ))
+                .child(format!(
+                    "Relações: {} resolvidas · {} ambíguas · {} externas · {} pendentes{}",
+                    coverage.resolved_references,
+                    coverage.ambiguous_references,
+                    coverage.external_references,
+                    coverage.unresolved_references,
+                    coverage
+                        .resolver_version
+                        .as_deref()
+                        .map_or(String::new(), |version| format!(" · {version}"))
+                ))
                 .child(format!("Ignoradas: {}", coverage.ignored_sources)),
         )
 }

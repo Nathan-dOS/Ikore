@@ -112,7 +112,7 @@ impl PersistenceService {
         let candidate: Option<(String, String, u64)> = self
             .connection()?
             .query_row(
-                "SELECT job.id,job.project_id,job.generation FROM jobs job JOIN brownfield_enrichment_runs run ON run.job_id=job.id JOIN runtime_settings consent ON consent.key='brownfield.onboarding_consent.'||job.project_id AND consent.value='true' WHERE job.kind='brownfield_enrich' AND job.job_class='background' AND job.status='pending' AND job.cancellation_reason IS NULL AND run.state='pending' AND run.budget_calls<run.budget_limit AND NOT EXISTS(SELECT 1 FROM runtime_slots WHERE job_class='main') AND NOT EXISTS(SELECT 1 FROM jobs foreground WHERE foreground.job_class='main' AND foreground.status='pending' AND foreground.cancellation_reason IS NULL) AND NOT EXISTS(SELECT 1 FROM artifact_publications WHERE job_class='main' AND state IN ('pending','applying')) ORDER BY run.created_at,job.id LIMIT 1",
+                "SELECT job.id,job.project_id,job.generation FROM jobs job JOIN brownfield_enrichment_runs run ON run.job_id=job.id JOIN runtime_settings consent ON consent.key='brownfield.onboarding_consent.'||job.project_id AND consent.value='true' JOIN brownfield_resolution_state resolution ON resolution.project_id=job.project_id AND resolution.state='complete' WHERE job.kind='brownfield_enrich' AND job.job_class='background' AND job.status='pending' AND job.cancellation_reason IS NULL AND run.state='pending' AND run.budget_calls<run.budget_limit AND NOT EXISTS(SELECT 1 FROM runtime_slots WHERE job_class='main') AND NOT EXISTS(SELECT 1 FROM jobs foreground WHERE foreground.job_class='main' AND foreground.status='pending' AND foreground.cancellation_reason IS NULL) AND NOT EXISTS(SELECT 1 FROM artifact_publications WHERE job_class='main' AND state IN ('pending','applying')) ORDER BY run.created_at,job.id LIMIT 1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
@@ -328,34 +328,14 @@ impl PersistenceService {
         seeds: &[RelativeSourcePath],
         radius: u8,
     ) -> Result<Vec<RelativeSourcePath>, PersistenceServiceError> {
-        let raw_edges = db
+        let edges = db
             .prepare(
-                "SELECT source_path,destination_path,observed_text FROM brownfield_edges WHERE project_id=?1 AND relation='import' ORDER BY source_path,observed_text",
+                "SELECT edge.source_path,edge.destination_path FROM brownfield_edges edge LEFT JOIN brownfield_frontier source ON source.project_id=edge.project_id AND source.relative_path=edge.source_path LEFT JOIN brownfield_frontier destination ON destination.project_id=edge.project_id AND destination.relative_path=edge.destination_path WHERE edge.project_id=?1 AND edge.relation IN ('import','reexport') AND edge.resolution='resolved' AND edge.destination_path IS NOT NULL AND COALESCE(source.status,'mapped')<>'ignored' AND COALESCE(destination.status,'mapped')<>'ignored' ORDER BY edge.source_path,edge.destination_path,edge.reference_key",
             )?
             .query_map([project_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        let cached_paths = db
-            .prepare(
-                "SELECT relative_path FROM brownfield_source_cache WHERE project_id=?1 ORDER BY relative_path",
-            )?
-            .query_map([project_id], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        let edges = raw_edges
-            .into_iter()
-            .filter_map(|(source, destination, observed)| {
-                destination
-                    .or_else(|| {
-                        Self::infer_brownfield_destination(&source, &observed, &cached_paths)
-                    })
-                    .map(|destination| (source, destination))
-            })
-            .collect::<Vec<_>>();
         let seed_set = seeds
             .iter()
             .map(|path| path.as_str().to_string())
@@ -391,78 +371,6 @@ impl PersistenceService {
         candidates.sort_by(|left, right| left.as_str().cmp(right.as_str()));
         candidates.truncate(ENRICHMENT_K);
         Ok(candidates)
-    }
-
-    fn infer_brownfield_destination(
-        source: &str,
-        observed: &str,
-        cached_paths: &[String],
-    ) -> Option<String> {
-        let observed = observed.trim().trim_matches(['\'', '"']).replace('\\', "/");
-        let source_parent = source.rsplit_once('/').map_or("", |(parent, _)| parent);
-        let source_extension = Path::new(source)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or("rs");
-        let mut exact = HashSet::new();
-        let mut push_variants = |stem: String| {
-            let stem = stem.trim_matches('/').to_string();
-            if stem.is_empty() || stem.split('/').any(|part| part == "..") {
-                return;
-            }
-            exact.insert(stem.clone());
-            exact.insert(format!("{stem}.{source_extension}"));
-            exact.insert(format!("{stem}/mod.rs"));
-            for extension in ["rs", "ts", "tsx", "js", "jsx", "py", "go", "java"] {
-                exact.insert(format!("{stem}.{extension}"));
-            }
-        };
-        if let Some(relative) = observed.strip_prefix("./") {
-            push_variants(format!("{source_parent}/{relative}"));
-        } else if observed.starts_with("../") {
-            let mut parts = source_parent.split('/').collect::<Vec<_>>();
-            let mut relative = observed.as_str();
-            while let Some(rest) = relative.strip_prefix("../") {
-                parts.pop();
-                relative = rest;
-            }
-            push_variants(format!("{}/{relative}", parts.join("/")));
-        } else {
-            let logical = observed
-                .trim_start_matches("crate::")
-                .trim_start_matches("self::")
-                .trim_start_matches("super::")
-                .replace("::", "/");
-            let segments = logical.split('/').collect::<Vec<_>>();
-            for length in (1..=segments.len()).rev() {
-                let prefix = segments[..length].join("/");
-                push_variants(format!("src/{prefix}"));
-                push_variants(format!("{source_parent}/{prefix}"));
-            }
-        }
-        let mut matches = cached_paths
-            .iter()
-            .filter(|path| exact.contains(path.as_str()))
-            .cloned()
-            .collect::<HashSet<_>>();
-        if matches.is_empty() {
-            let tokens = observed
-                .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-                .filter(|token| !token.is_empty())
-                .collect::<HashSet<_>>();
-            matches.extend(
-                cached_paths
-                    .iter()
-                    .filter(|path| {
-                        Path::new(path)
-                            .file_stem()
-                            .and_then(|stem| stem.to_str())
-                            .is_some_and(|stem| tokens.contains(stem))
-                    })
-                    .cloned(),
-            );
-        }
-        (matches.len() == 1).then(|| matches.into_iter().next().expect("one destination"))
     }
 
     fn accept_brownfield_enrichment(
@@ -673,6 +581,11 @@ mod tests {
         fixture
             .service
             .process_brownfield_mapping(&CancellationToken::new())
+            .await
+            .unwrap();
+        fixture
+            .service
+            .process_brownfield_resolution(&CancellationToken::new())
             .await
             .unwrap();
 

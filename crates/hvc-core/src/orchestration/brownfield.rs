@@ -26,7 +26,7 @@ pub struct BrownfieldOnboardingStatus {
     pub coverage: Option<BrownfieldCoverageMetrics>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrownfieldCoverageMetrics {
     /// True only after the bounded structural bootstrap committed successfully.
@@ -46,6 +46,22 @@ pub struct BrownfieldCoverageMetrics {
     pub documentation_proposed_sources: u32,
     pub documentation_validated_sources: u32,
     pub documentation_stale_sources: u32,
+    #[serde(default)]
+    pub resolution_complete: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolver_version: Option<String>,
+    #[serde(default)]
+    pub resolved_references: u32,
+    #[serde(default)]
+    pub ambiguous_references: u32,
+    #[serde(default)]
+    pub external_references: u32,
+    #[serde(default)]
+    pub unresolved_references: u32,
+    #[serde(default)]
+    pub resolution_elapsed_us: u64,
 }
 
 impl BrownfieldCoverageMetrics {
