@@ -20,7 +20,8 @@ O `StageHandoffV1` persiste corretamente o `CodeContextFacts` completo, porém a
   - símbolos que aparecem nos snippets ou participam de relações resolvidas;
   - relações `resolved` cujas duas pontas estão no pacote;
   - contagens de referências `ambiguous`, `external` e `unresolved`;
-  - estado/truncamento/diagnósticos de cobertura e `resolutionContext`.
+  - estado, truncamento e diagnósticos acionáveis de cobertura.
+- Manter `resolutionContext` no contrato persistido e na validação do host, mas fora do prompt: o hash interno não oferece informação acionável ao modelo e a projeção já contém os hashes atuais das fontes.
 - Nunca transformar uma referência ambígua ou não resolvida em relação do prompt.
 - Usar o tamanho da projeção, e não o envelope persistido, ao reservar o orçamento do contexto complementar do runtime.
 - Manter o conteúdo normativo de artifacts, respostas, esclarecimentos e feedback sem compactação semântica.

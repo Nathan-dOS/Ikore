@@ -663,6 +663,35 @@ fn context_package_is_versioned_and_bound_to_the_current_request() {
 }
 
 #[test]
+fn prompt_handoff_compacts_only_context_and_preserves_normative_content() {
+    let snapshot = source("project-a", "fn current_auth() { /* S3_CURRENT */ }\n");
+    let hash = snapshot.revision().content_sha256.as_str().to_owned();
+    let mut value = handoff();
+    value.context = Some(ContextPackageV1 {
+        schema_version: SchemaV1,
+        pulsation_id: "pulse-a".into(),
+        input_revision: 1,
+        ruleset_version: "1".into(),
+        observed_base_epoch: 0,
+        budget: CollectionBudget::default(),
+        facts: facts(&snapshot),
+        created_at: "2026-09-01T12:00:00Z".into(),
+    });
+    let persisted = serde_json::to_value(&value).unwrap();
+    let prompt_json = value.prompt_json().unwrap();
+    let prompt: serde_json::Value = serde_json::from_str(&prompt_json).unwrap();
+
+    assert_eq!(prompt["artifacts"], persisted["artifacts"]);
+    assert_eq!(prompt["answers"], persisted["answers"]);
+    assert_eq!(prompt["clarifications"], persisted["clarifications"]);
+    assert!(prompt["context"]["facts"].is_null());
+    assert_eq!(prompt["context"]["sourceFiles"][0]["path"], "src/auth.rs");
+    assert_eq!(prompt["context"]["sourceFiles"][0]["sha256"], hash);
+    assert!(prompt_json.contains("S3_CURRENT"));
+    assert_eq!(prompt_json.matches("project-a").count(), 2);
+}
+
+#[test]
 fn component_proposal_contract_is_specification_only_pathless_and_bounded() {
     let proposal = ComponentProposalDraft {
         component_id: "auth-runtime".into(),

@@ -230,7 +230,7 @@ impl PersistenceService {
             // Only optional lexical evidence is trimmed. Approved artifacts/answers remain whole.
             let normative=handoff.normative_chars();
             let remaining=budget.saturating_sub(normative);
-            while serde_json::to_string(&package).map_err(|e|invalid(e.to_string()))?.chars().count()>remaining && !package.facts.sources.is_empty() {
+            while package.prompt_projection_chars().map_err(|e|invalid(e.to_string()))?>remaining && !package.facts.sources.is_empty() {
                 let removed=package.facts.sources.pop().expect("source");
                 package.facts.snippets.retain(|s|s.source!=removed);
                 package.facts.symbols.retain(|s|s.source!=removed);

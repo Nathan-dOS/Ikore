@@ -226,6 +226,10 @@ impl PersistenceService {
                     .sum(),
             );
         let mut candidate_paths = Vec::new();
+        let semantic_candidate_available = edges.iter().any(|edge| {
+            edge.neighbor(&seed_paths).is_some() && edge.priority_rank(&seed_paths) <= 2
+        });
+        let mut pruned_module_edges = 0usize;
         for edge in &edges {
             if facts.sources.len() >= source_limit
                 || candidate_paths.len() >= MAX_GRAPH_ADDITIONS
@@ -237,6 +241,10 @@ impl PersistenceService {
             let Some((path, target_symbol)) = edge.neighbor(&seed_paths) else {
                 continue;
             };
+            if semantic_candidate_available && edge.priority_rank(&seed_paths) > 2 {
+                pruned_module_edges = pruned_module_edges.saturating_add(1);
+                continue;
+            }
             if snapshots.contains_key(path) || candidate_paths.iter().any(|value| value == path) {
                 continue;
             }
@@ -371,9 +379,10 @@ impl PersistenceService {
             mark_graph_partial(&mut facts, "graph_expansion_partial: budget_or_edge_limit");
         } else {
             facts.coverage.diagnostics.push(format!(
-                "graph_expansion_complete: one_hop_sources={}; candidate_edges={}",
+                "graph_expansion_complete: one_hop_sources={}; candidate_edges={}; pruned_module_edges={}",
                 candidate_paths.len(),
-                edges.len()
+                edges.len(),
+                pruned_module_edges
             ));
         }
         let validation = snapshots.into_values().collect::<Vec<_>>();

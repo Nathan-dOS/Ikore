@@ -12,6 +12,7 @@ mod context;
 mod contracts;
 pub mod learning_report;
 mod policy;
+mod prompt_context;
 mod tree_sitter_context;
 pub use learning_report::{LearningActionRequest, LearningRunSnapshot};
 pub(crate) mod publication;

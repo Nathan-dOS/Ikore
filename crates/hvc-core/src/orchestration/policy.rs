@@ -182,10 +182,9 @@ impl StageHandoffV1 {
                 return Err(ContractError::StaleExecution);
             }
             if self.normative_chars().saturating_add(
-                serde_json::to_string(context)
-                    .map_err(|_| ContractError::Invalid("contexto"))?
-                    .chars()
-                    .count(),
+                context
+                    .prompt_projection_chars()
+                    .map_err(|_| ContractError::Invalid("contexto"))?,
             ) > artifact_chars_budget
             {
                 return Err(ContractError::BudgetExceeded);
