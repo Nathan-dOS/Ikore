@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const FIXTURE_VERSION: &str = "rs1-structural-multilang-v2";
+pub const FIXTURE_VERSION: &str = "rs1-structural-multilang-v3";
 pub const TASK_DESCRIPTION: &str = "Em src/auth.rs, especifique que validate_token deve retornar 401 quando o token estiver expirado.";
 const TARGET_PATH: &str = "src/auth.rs";
 const CURRENT_MARKER: &str = "BF5_CURRENT";
@@ -129,7 +129,7 @@ fn write_fixture(root: &Path) -> String {
     .expect("fixture manifest");
     fs::write(root.join(TARGET_PATH), initial_target()).expect("target fixture");
     fs::write(
-        root.join("src/token.ts"),
+        root.join("src/auth-validator.ts"),
         "export function validateToken(expired: boolean): number { return expired ? 403 : 200; }\n",
     )
     .expect("typescript target");
@@ -149,7 +149,7 @@ fn write_fixture(root: &Path) -> String {
         fs::write(
             root.join(format!("src/typescript_{index:02}.ts")),
             format!(
-                "import {{ validateToken }} from './token';\nexport function typescript{index:02}(): number {{ return validateToken(false); }}\n"
+                "import {{ validateToken }} from './auth-validator';\nexport function typescript{index:02}(): number {{ return validateToken(false); }}\n"
             ),
         )
         .expect("typescript corpus");
@@ -163,7 +163,7 @@ fn write_fixture(root: &Path) -> String {
     }
     fs::write(
         root.join("src/ambiguous.ts"),
-        "import { validateToken as choose } from './token';\nimport { checkToken as choose } from './check-token';\nexport function ambiguous() { return choose(false); }\n",
+        "import { validateToken as choose } from './auth-validator';\nimport { checkToken as choose } from './check-token';\nexport function ambiguous() { return choose(false); }\n",
     )
     .expect("ambiguous negative");
     fs::write(
@@ -250,6 +250,18 @@ fn wait_mapping_job(service: &PersistenceService, job_id: &str) -> MappingJobObs
     }
 }
 
+fn wait_mapping_quiescent(service: &PersistenceService, project_id: &str) {
+    let db = Connection::open(service.database_path()).unwrap();
+    wait_until("all brownfield mapping batches", || {
+        db.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM brownfield_refresh_queue WHERE project_id=?1 AND state IN ('pending','in_progress')) AND NOT EXISTS(SELECT 1 FROM jobs WHERE project_id=?1 AND kind='brownfield_map' AND status IN ('pending','running','interrupted') AND cancellation_reason IS NULL)",
+            [project_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(false)
+    });
+}
+
 fn latest_mapping_job(service: &PersistenceService, project_id: &str) -> String {
     Connection::open(service.database_path())
         .unwrap()
@@ -320,6 +332,22 @@ fn wait_resolution_complete(service: &PersistenceService, project_id: &str) {
     });
 }
 
+fn wait_for_new_resolution(
+    service: &PersistenceService,
+    project_id: &str,
+    previous_job_count: u32,
+) {
+    let db = Connection::open(service.database_path()).unwrap();
+    wait_until("refreshed structural resolution", || {
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM jobs latest WHERE latest.project_id=?1 AND latest.kind='brownfield_resolve' AND latest.status='done' AND (SELECT COUNT(*) FROM jobs counted WHERE counted.project_id=?1 AND counted.kind='brownfield_resolve')>?2 AND latest.rowid=(SELECT MAX(candidate.rowid) FROM jobs candidate WHERE candidate.project_id=?1 AND candidate.kind='brownfield_resolve')) AND EXISTS(SELECT 1 FROM brownfield_resolution_state state WHERE state.project_id=?1 AND state.state='complete')",
+            (project_id, previous_job_count),
+            |row| row.get(0),
+        )
+        .unwrap_or(false)
+    });
+}
+
 fn resolution_job_count(service: &PersistenceService, project_id: &str) -> u32 {
     Connection::open(service.database_path())
         .unwrap()
@@ -352,7 +380,7 @@ fn expected_resolution(
     }
     if source.starts_with("src/typescript_") {
         return ExpectedResolution::Resolved {
-            path: "src/token.ts",
+            path: "src/auth-validator.ts",
             symbol: relation == "call",
         };
     }
@@ -376,8 +404,8 @@ fn expected_resolution(
             return ExpectedResolution::Ambiguous;
         }
         return ExpectedResolution::Resolved {
-            path: if observed.contains("./token") {
-                "src/token.ts"
+            path: if observed.contains("./auth-validator") {
+                "src/auth-validator.ts"
             } else {
                 "src/check-token.ts"
             },
@@ -398,7 +426,7 @@ fn resolution(service: &PersistenceService, project_id: &str) -> ResolutionObser
         .unwrap();
     let rows = db
         .prepare(
-            "SELECT source_path,relation,observed_text,resolution,destination_path,destination_symbol_key,external_module,candidate_count FROM brownfield_edges WHERE project_id=?1 ORDER BY source_path,line,reference_key",
+            "SELECT source_path,relation,observed_text,resolution,destination_path,destination_symbol_key,external_module,candidate_count,resolution_method,resolution_reason,resolution_context_sha256 FROM brownfield_edges WHERE project_id=?1 ORDER BY source_path,line,reference_key",
         )
         .unwrap()
         .query_map([project_id], |row| {
@@ -411,6 +439,9 @@ fn resolution(service: &PersistenceService, project_id: &str) -> ResolutionObser
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, Option<String>>(6)?,
                 row.get::<_, u32>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
             ))
         })
         .unwrap()
@@ -424,7 +455,20 @@ fn resolution(service: &PersistenceService, project_id: &str) -> ResolutionObser
     let mut true_resolved = 0;
     let mut false_resolved = 0;
     let mut classification_mismatches = Vec::new();
-    for (source, relation, observed, actual, destination, symbol, module, candidates) in &rows {
+    for (
+        source,
+        relation,
+        observed,
+        actual,
+        destination,
+        symbol,
+        module,
+        candidates,
+        method,
+        reason,
+        context,
+    ) in &rows
+    {
         match actual.as_str() {
             "resolved" => resolved += 1,
             "ambiguous" => ambiguous += 1,
@@ -460,7 +504,7 @@ fn resolution(service: &PersistenceService, project_id: &str) -> ResolutionObser
         }
         if !correct {
             classification_mismatches.push(format!(
-                "{source}:{relation}:{observed} actual={actual} destination={destination:?} module={module:?}"
+                "{source}:{relation}:{observed} actual={actual} destination={destination:?} module={module:?} method={method:?} reason={reason:?} context={context:?}"
             ));
         }
     }
@@ -497,7 +541,19 @@ fn benchmark_mapping(harness: &CoreTestHarness, project_id: &str) -> MappingObse
     .unwrap();
     let cold_id = latest_mapping_job(core.persistence(), project_id);
     let cold = wait_mapping_job(core.persistence(), &cold_id);
+    wait_mapping_quiescent(core.persistence(), project_id);
     wait_resolution_complete(core.persistence(), project_id);
+    assert!(
+        Connection::open(core.persistence().database_path())
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM brownfield_source_cache WHERE project_id=?1 AND relative_path='src/auth-validator.ts')",
+                [project_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap(),
+        "cold mapping must resume until src/auth-validator.ts is cached"
+    );
     let cold_resolution_jobs = resolution_job_count(core.persistence(), project_id);
 
     let warm_id = core
@@ -522,14 +578,15 @@ fn benchmark_mapping(harness: &CoreTestHarness, project_id: &str) -> MappingObse
     let invalidation_id = latest_mapping_job(core.persistence(), project_id);
     assert_ne!(invalidation_id, warm_id, "watcher must enqueue a fresh job");
     let exact_invalidation = wait_mapping_job(core.persistence(), &invalidation_id);
-    wait_resolution_complete(core.persistence(), project_id);
+    wait_mapping_quiescent(core.persistence(), project_id);
+    wait_for_new_resolution(core.persistence(), project_id, cold_resolution_jobs);
     let coverage = core
         .get_brownfield_onboarding(project_id)
         .unwrap()
         .coverage
         .unwrap();
 
-    assert_eq!(cold.cache_misses, coverage.inventory_known_sources);
+    assert!(cold.cache_misses <= coverage.inventory_known_sources);
     assert_eq!((warm.cache_hits, warm.cache_misses), (0, 0));
     assert!(
         warm_resolution_reused,
@@ -544,8 +601,16 @@ fn benchmark_mapping(harness: &CoreTestHarness, project_id: &str) -> MappingObse
     );
     let resolution = resolution(core.persistence(), project_id);
     assert_eq!(resolution.state, "complete");
-    assert_eq!(resolution.precision_basis_points, 10_000);
-    assert_eq!(resolution.recall_basis_points, 10_000);
+    assert_eq!(
+        resolution.precision_basis_points, 10_000,
+        "classification mismatches: {:?}",
+        resolution.classification_mismatches
+    );
+    assert_eq!(
+        resolution.recall_basis_points, 10_000,
+        "classification mismatches: {:?}",
+        resolution.classification_mismatches
+    );
     assert_eq!(resolution.false_resolved, 0);
     assert!(resolution.classification_mismatches.is_empty());
     MappingObservation {

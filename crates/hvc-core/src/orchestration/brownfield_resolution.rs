@@ -1544,18 +1544,25 @@ mod tests {
 
     async fn map_and_resolve(service: &PersistenceService, project_id: &str) {
         service.enqueue_brownfield_mapping(project_id).unwrap();
-        assert!(
-            service
-                .process_brownfield_mapping(&CancellationToken::new())
-                .await
-                .unwrap()
-        );
-        assert!(
-            service
-                .process_brownfield_resolution(&CancellationToken::new())
-                .await
-                .unwrap()
-        );
+        let cancellation = CancellationToken::new();
+        let mut mapped = false;
+        while service
+            .process_brownfield_mapping(&cancellation)
+            .await
+            .unwrap()
+        {
+            mapped = true;
+        }
+        assert!(mapped);
+        let mut resolved = false;
+        while service
+            .process_brownfield_resolution(&cancellation)
+            .await
+            .unwrap()
+        {
+            resolved = true;
+        }
+        assert!(resolved);
     }
 
     #[test]

@@ -200,7 +200,13 @@ impl TreeSitterExtractor {
                     let name = node_text(source.content(), name_capture.node);
                     let start_line = capture.node.start_position().row as u32 + 1;
                     let end_line = capture.node.end_position().row as u32 + 1;
-                    if seen_symbols.insert((kind, name.clone(), start_line, end_line)) {
+                    if seen_symbols.insert((
+                        kind,
+                        name.clone(),
+                        start_line,
+                        end_line,
+                        capture.node.start_byte(),
+                    )) {
                         let signature = declaration_signature(source.content(), capture.node);
                         let qualified_name = qualified_symbol_name(
                             source.revision().relative_path.as_str(),
@@ -294,6 +300,37 @@ impl TreeSitterExtractor {
         }
 
         symbols.sort_by_key(|symbol| (symbol.start_line, symbol.end_line, symbol.name.clone()));
+        let key_counts = symbols
+            .iter()
+            .filter_map(|symbol| symbol.symbol_key.clone())
+            .fold(
+                std::collections::HashMap::<String, usize>::new(),
+                |mut counts, key| {
+                    *counts.entry(key).or_default() += 1;
+                    counts
+                },
+            );
+        let mut collision_ordinals = std::collections::HashMap::<String, usize>::new();
+        for symbol in &mut symbols {
+            let Some(base_key) = symbol.symbol_key.clone() else {
+                continue;
+            };
+            if key_counts.get(&base_key).copied().unwrap_or_default() > 1 {
+                let ordinal = collision_ordinals.entry(base_key.clone()).or_default();
+                symbol.symbol_key = Some(
+                    ContentSha256::of(
+                        format!(
+                            "{base_key}:{}:{}:{ordinal}",
+                            symbol.start_line, symbol.end_line
+                        )
+                        .as_bytes(),
+                    )
+                    .as_str()
+                    .to_owned(),
+                );
+                *ordinal += 1;
+            }
+        }
         references.sort_by_key(|reference| (reference.line, reference.observed_text.clone()));
         let owner_keys = symbols
             .iter()
@@ -971,6 +1008,35 @@ mod tests {
                 && reference.descriptor.is_some()
         }));
         facts.validate_against(&[rust, typescript]).unwrap();
+    }
+
+    #[test]
+    fn duplicate_declarations_receive_distinct_deterministic_symbol_keys() {
+        let duplicate = source(
+            "src/ambiguous.ts",
+            "function choose(): number { return 1; } function choose(): number { return 2; }\nexport function run(): number { return choose(); }\n",
+        );
+        let extract = || {
+            TreeSitterExtractor
+                .extract(
+                    std::slice::from_ref(&duplicate),
+                    CollectionBudget::default(),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+        };
+        let first = extract();
+        let second = extract();
+        let choose_keys: Vec<_> = first
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.name == "choose")
+            .map(|symbol| symbol.symbol_key.clone().unwrap())
+            .collect();
+        assert_eq!(choose_keys.len(), 2);
+        assert_ne!(choose_keys[0], choose_keys[1]);
+        assert_eq!(first.symbols, second.symbols);
+        first.validate_against(&[duplicate]).unwrap();
     }
 
     #[test]
