@@ -99,14 +99,19 @@ fn delta_percent(after: f64, before: f64) -> f64 {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let output = args
-        .next()
-        .expect("usage: brownfield_graph_benchmark OUTPUT.json [pairs=5]");
+    let output = args.next().expect(
+        "usage: brownfield_graph_benchmark OUTPUT.json [pairs=5] [evaluate_only|consented_default]",
+    );
     let pairs: usize = args
         .next()
         .map(|value| value.parse().expect("pairs integer"))
         .unwrap_or(5);
+    let activation_policy = args.next().unwrap_or_else(|| "evaluate_only".into());
     assert!((1..=16).contains(&pairs));
+    assert!(matches!(
+        activation_policy.as_str(),
+        "evaluate_only" | "consented_default"
+    ));
     let mut samples = Vec::new();
     for iteration in 0..=pairs {
         for case in RelationalCase::ALL {
@@ -186,8 +191,10 @@ fn main() {
     let material_benefit =
         relational_quality_benefit || token_delta <= -5.0 || latency_delta <= -10.0;
     let gate_passed = material_benefit && no_regression;
+    let default_changed = gate_passed && activation_policy == "consented_default";
     let report = json!({
         "schema_version": 1,
+        "experiment_version": if activation_policy == "consented_default" {"s3-context-efficiency-v1"} else {"rs2-structural-benefit-v1"},
         "fixture_version": FIXTURE_VERSION,
         "generated_at": chrono::Utc::now().to_rfc3339(),
         "code_base": command("git", &["rev-parse", "HEAD"]),
@@ -217,8 +224,15 @@ fn main() {
             "rule": "benefit by quality, fewer questions, >=5% token reduction or >=10% latency reduction, with no quality/safety regression and <=5% token / <=10% latency increase"
         },
         "activation_decision": {
-            "default_changed": false,
-            "mode": if gate_passed {"eligible_for_separate_activation_decision"} else {"keep_opt_in_disabled_by_default"}
+            "default_changed": default_changed,
+            "brownfield_consent_required": true,
+            "mode": if default_changed {
+                "resolved_graph_default_after_project_consent"
+            } else if gate_passed {
+                "eligible_for_separate_activation_decision"
+            } else {
+                "keep_opt_in_disabled_by_default"
+            }
         },
         "samples": samples
     });

@@ -1,0 +1,3009 @@
+{
+  "activation_decision": {
+    "brownfield_consent_required": true,
+    "default_changed": true,
+    "mode": "resolved_graph_default_after_project_consent"
+  },
+  "arch": "x86_64",
+  "case_summaries": [
+    {
+      "case": "callee_without_explicit_path",
+      "on_demand": {
+        "all_graph_context_current": false,
+        "all_grounded": false,
+        "case": "callee_without_explicit_path",
+        "clarification_questions": {
+          "max": 0,
+          "min": 0
+        },
+        "context_sources": {
+          "max": 1,
+          "min": 1
+        },
+        "mode": "on_demand",
+        "quality": {
+          "max": 3,
+          "min": 3,
+          "rubric_max": 7
+        },
+        "representative_quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "representative_sources": [
+          "src/api.rs"
+        ],
+        "samples": 5,
+        "simulated_input_tokens": {
+          "p50": 1759,
+          "p95": 1759
+        },
+        "simulated_output_tokens": {
+          "p50": 160,
+          "p95": 160
+        },
+        "specification_checkpoint_ms": {
+          "p50": 740.6831000000001,
+          "p95": 752.3255
+        }
+      },
+      "resolved_graph": {
+        "all_graph_context_current": true,
+        "all_grounded": true,
+        "case": "callee_without_explicit_path",
+        "clarification_questions": {
+          "max": 0,
+          "min": 0
+        },
+        "context_sources": {
+          "max": 2,
+          "min": 2
+        },
+        "mode": "resolved_graph",
+        "quality": {
+          "max": 7,
+          "min": 7,
+          "rubric_max": 7
+        },
+        "representative_quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "representative_sources": [
+          "src/api.rs",
+          "src/auth.rs"
+        ],
+        "samples": 5,
+        "simulated_input_tokens": {
+          "p50": 1882,
+          "p95": 1882
+        },
+        "simulated_output_tokens": {
+          "p50": 160,
+          "p95": 160
+        },
+        "specification_checkpoint_ms": {
+          "p50": 752.5003,
+          "p95": 1654.2829000000002
+        }
+      }
+    },
+    {
+      "case": "rust_call_chain",
+      "on_demand": {
+        "all_graph_context_current": false,
+        "all_grounded": false,
+        "case": "rust_call_chain",
+        "clarification_questions": {
+          "max": 0,
+          "min": 0
+        },
+        "context_sources": {
+          "max": 2,
+          "min": 2
+        },
+        "mode": "on_demand",
+        "quality": {
+          "max": 3,
+          "min": 3,
+          "rubric_max": 7
+        },
+        "representative_quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "representative_sources": [
+          "src/entry.rs",
+          "src/service.rs"
+        ],
+        "samples": 5,
+        "simulated_input_tokens": {
+          "p50": 1826,
+          "p95": 1826
+        },
+        "simulated_output_tokens": {
+          "p50": 160,
+          "p95": 160
+        },
+        "specification_checkpoint_ms": {
+          "p50": 711.4759,
+          "p95": 739.5147
+        }
+      },
+      "resolved_graph": {
+        "all_graph_context_current": true,
+        "all_grounded": true,
+        "case": "rust_call_chain",
+        "clarification_questions": {
+          "max": 0,
+          "min": 0
+        },
+        "context_sources": {
+          "max": 3,
+          "min": 3
+        },
+        "mode": "resolved_graph",
+        "quality": {
+          "max": 7,
+          "min": 7,
+          "rubric_max": 7
+        },
+        "representative_quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "representative_sources": [
+          "src/entry.rs",
+          "src/service.rs",
+          "src/policy.rs"
+        ],
+        "samples": 5,
+        "simulated_input_tokens": {
+          "p50": 1984,
+          "p95": 1984
+        },
+        "simulated_output_tokens": {
+          "p50": 160,
+          "p95": 160
+        },
+        "specification_checkpoint_ms": {
+          "p50": 731.2199,
+          "p95": 1370.3061
+        }
+      }
+    },
+    {
+      "case": "type_script_alias_reexport",
+      "on_demand": {
+        "all_graph_context_current": false,
+        "all_grounded": false,
+        "case": "type_script_alias_reexport",
+        "clarification_questions": {
+          "max": 0,
+          "min": 0
+        },
+        "context_sources": {
+          "max": 1,
+          "min": 1
+        },
+        "mode": "on_demand",
+        "quality": {
+          "max": 3,
+          "min": 3,
+          "rubric_max": 7
+        },
+        "representative_quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "representative_sources": [
+          "src/alias-consumer.ts"
+        ],
+        "samples": 5,
+        "simulated_input_tokens": {
+          "p50": 1760,
+          "p95": 1760
+        },
+        "simulated_output_tokens": {
+          "p50": 160,
+          "p95": 160
+        },
+        "specification_checkpoint_ms": {
+          "p50": 676.2549,
+          "p95": 1291.901
+        }
+      },
+      "resolved_graph": {
+        "all_graph_context_current": true,
+        "all_grounded": true,
+        "case": "type_script_alias_reexport",
+        "clarification_questions": {
+          "max": 0,
+          "min": 0
+        },
+        "context_sources": {
+          "max": 2,
+          "min": 2
+        },
+        "mode": "resolved_graph",
+        "quality": {
+          "max": 7,
+          "min": 7,
+          "rubric_max": 7
+        },
+        "representative_quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "representative_sources": [
+          "src/alias-consumer.ts",
+          "src/token.ts"
+        ],
+        "samples": 5,
+        "simulated_input_tokens": {
+          "p50": 1846,
+          "p95": 1846
+        },
+        "simulated_output_tokens": {
+          "p50": 160,
+          "p95": 160
+        },
+        "specification_checkpoint_ms": {
+          "p50": 829.0236,
+          "p95": 1309.7177
+        }
+      }
+    },
+    {
+      "case": "extends_implements_contract",
+      "on_demand": {
+        "all_graph_context_current": false,
+        "all_grounded": false,
+        "case": "extends_implements_contract",
+        "clarification_questions": {
+          "max": 0,
+          "min": 0
+        },
+        "context_sources": {
+          "max": 1,
+          "min": 1
+        },
+        "mode": "on_demand",
+        "quality": {
+          "max": 3,
+          "min": 3,
+          "rubric_max": 7
+        },
+        "representative_quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "representative_sources": [
+          "src/controller.ts"
+        ],
+        "samples": 5,
+        "simulated_input_tokens": {
+          "p50": 1785,
+          "p95": 1785
+        },
+        "simulated_output_tokens": {
+          "p50": 160,
+          "p95": 160
+        },
+        "specification_checkpoint_ms": {
+          "p50": 710.3811,
+          "p95": 727.0659
+        }
+      },
+      "resolved_graph": {
+        "all_graph_context_current": true,
+        "all_grounded": true,
+        "case": "extends_implements_contract",
+        "clarification_questions": {
+          "max": 0,
+          "min": 0
+        },
+        "context_sources": {
+          "max": 2,
+          "min": 2
+        },
+        "mode": "resolved_graph",
+        "quality": {
+          "max": 7,
+          "min": 7,
+          "rubric_max": 7
+        },
+        "representative_quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "representative_sources": [
+          "src/controller.ts",
+          "src/contracts.ts"
+        ],
+        "samples": 5,
+        "simulated_input_tokens": {
+          "p50": 1946,
+          "p95": 1946
+        },
+        "simulated_output_tokens": {
+          "p50": 160,
+          "p95": 160
+        },
+        "specification_checkpoint_ms": {
+          "p50": 747.4475,
+          "p95": 1622.6913
+        }
+      }
+    },
+    {
+      "case": "ambiguous_does_not_expand",
+      "on_demand": {
+        "all_graph_context_current": false,
+        "all_grounded": true,
+        "case": "ambiguous_does_not_expand",
+        "clarification_questions": {
+          "max": 0,
+          "min": 0
+        },
+        "context_sources": {
+          "max": 1,
+          "min": 1
+        },
+        "mode": "on_demand",
+        "quality": {
+          "max": 7,
+          "min": 7,
+          "rubric_max": 7
+        },
+        "representative_quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "representative_sources": [
+          "src/ambiguous.ts"
+        ],
+        "samples": 5,
+        "simulated_input_tokens": {
+          "p50": 1797,
+          "p95": 1797
+        },
+        "simulated_output_tokens": {
+          "p50": 160,
+          "p95": 160
+        },
+        "specification_checkpoint_ms": {
+          "p50": 675.5926,
+          "p95": 1566.9480999999998
+        }
+      },
+      "resolved_graph": {
+        "all_graph_context_current": true,
+        "all_grounded": true,
+        "case": "ambiguous_does_not_expand",
+        "clarification_questions": {
+          "max": 0,
+          "min": 0
+        },
+        "context_sources": {
+          "max": 1,
+          "min": 1
+        },
+        "mode": "resolved_graph",
+        "quality": {
+          "max": 7,
+          "min": 7,
+          "rubric_max": 7
+        },
+        "representative_quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "representative_sources": [
+          "src/ambiguous.ts"
+        ],
+        "samples": 5,
+        "simulated_input_tokens": {
+          "p50": 1797,
+          "p95": 1797
+        },
+        "simulated_output_tokens": {
+          "p50": 160,
+          "p95": 160
+        },
+        "specification_checkpoint_ms": {
+          "p50": 720.8522,
+          "p95": 1373.8169
+        }
+      }
+    },
+    {
+      "case": "simple_control",
+      "on_demand": {
+        "all_graph_context_current": false,
+        "all_grounded": true,
+        "case": "simple_control",
+        "clarification_questions": {
+          "max": 0,
+          "min": 0
+        },
+        "context_sources": {
+          "max": 1,
+          "min": 1
+        },
+        "mode": "on_demand",
+        "quality": {
+          "max": 7,
+          "min": 7,
+          "rubric_max": 7
+        },
+        "representative_quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "representative_sources": [
+          "src/control.rs"
+        ],
+        "samples": 5,
+        "simulated_input_tokens": {
+          "p50": 1744,
+          "p95": 1744
+        },
+        "simulated_output_tokens": {
+          "p50": 160,
+          "p95": 160
+        },
+        "specification_checkpoint_ms": {
+          "p50": 723.2682,
+          "p95": 1426.6957
+        }
+      },
+      "resolved_graph": {
+        "all_graph_context_current": true,
+        "all_grounded": true,
+        "case": "simple_control",
+        "clarification_questions": {
+          "max": 0,
+          "min": 0
+        },
+        "context_sources": {
+          "max": 1,
+          "min": 1
+        },
+        "mode": "resolved_graph",
+        "quality": {
+          "max": 7,
+          "min": 7,
+          "rubric_max": 7
+        },
+        "representative_quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "representative_sources": [
+          "src/control.rs"
+        ],
+        "samples": 5,
+        "simulated_input_tokens": {
+          "p50": 1744,
+          "p95": 1744
+        },
+        "simulated_output_tokens": {
+          "p50": 160,
+          "p95": 160
+        },
+        "specification_checkpoint_ms": {
+          "p50": 748.4689,
+          "p95": 826.1028
+        }
+      }
+    }
+  ],
+  "code_base": "65e0ac632b759ccc83ace924b8d7b037da3006dc",
+  "experiment_version": "s3-context-efficiency-v1",
+  "fixture_version": "rs2-relational-tasks-v1",
+  "gate": {
+    "aggregate_input_token_p50_delta_percent": 4.947989879111603,
+    "aggregate_specification_latency_p50_delta_percent": 6.887218164344544,
+    "ambiguous_case_did_not_expand": true,
+    "material_benefit": true,
+    "no_regression": true,
+    "passed": true,
+    "quality_improved_cases": [
+      "callee_without_explicit_path",
+      "rust_call_chain",
+      "type_script_alias_reexport",
+      "extends_implements_contract"
+    ],
+    "quality_regressed_cases": [],
+    "relational_quality_benefit": true,
+    "rule": "benefit by quality, fewer questions, >=5% token reduction or >=10% latency reduction, with no quality/safety regression and <=5% token / <=10% latency increase",
+    "simple_control_no_quality_regression": true
+  },
+  "generated_at": "2026-09-01T11:20:29.096488600+00:00",
+  "os": "windows",
+  "pair_order": "counterbalanced per case; one excluded warmup per mode",
+  "pairs": 5,
+  "percentile_method": "nearest_rank",
+  "provider": "loopback deterministic provider with fixed 10 ms delay; identical response policy per paired mode",
+  "release": true,
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-pc-windows-msvc\nrelease: 1.98.0\nLLVM version: 22.1.8",
+  "samples": [
+    {
+      "case": "callee_without_explicit_path",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 0,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/api.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1759,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 674.6351000000001,
+        "specification_grounded": false
+      },
+      "warmup": true
+    },
+    {
+      "case": "callee_without_explicit_path",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 0,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/api.rs",
+          "src/auth.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 2,
+        "simulated_input_tokens": 1882,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 764.3479,
+        "specification_grounded": true
+      },
+      "warmup": true
+    },
+    {
+      "case": "rust_call_chain",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 0,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/entry.rs",
+          "src/service.rs",
+          "src/policy.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 4,
+        "simulated_input_tokens": 1984,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 697.2969,
+        "specification_grounded": true
+      },
+      "warmup": true
+    },
+    {
+      "case": "rust_call_chain",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 0,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/entry.rs",
+          "src/service.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1826,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 748.3847000000001,
+        "specification_grounded": false
+      },
+      "warmup": true
+    },
+    {
+      "case": "type_script_alias_reexport",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 0,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/alias-consumer.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1760,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1259.7295,
+        "specification_grounded": false
+      },
+      "warmup": true
+    },
+    {
+      "case": "type_script_alias_reexport",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 0,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/alias-consumer.ts",
+          "src/token.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 1,
+        "simulated_input_tokens": 1846,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 652.2705,
+        "specification_grounded": true
+      },
+      "warmup": true
+    },
+    {
+      "case": "extends_implements_contract",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 0,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/controller.ts",
+          "src/contracts.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 3,
+        "simulated_input_tokens": 1946,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 839.5631999999999,
+        "specification_grounded": true
+      },
+      "warmup": true
+    },
+    {
+      "case": "extends_implements_contract",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 0,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/controller.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1785,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 782.0922,
+        "specification_grounded": false
+      },
+      "warmup": true
+    },
+    {
+      "case": "ambiguous_does_not_expand",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 0,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/ambiguous.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1797,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1169.6526000000001,
+        "specification_grounded": true
+      },
+      "warmup": true
+    },
+    {
+      "case": "ambiguous_does_not_expand",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 0,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/ambiguous.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 1,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1797,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 746.4897000000001,
+        "specification_grounded": true
+      },
+      "warmup": true
+    },
+    {
+      "case": "simple_control",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 0,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/control.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1744,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 714.4346,
+        "specification_grounded": true
+      },
+      "warmup": true
+    },
+    {
+      "case": "simple_control",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 0,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/control.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1744,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 737.1588999999999,
+        "specification_grounded": true
+      },
+      "warmup": true
+    },
+    {
+      "case": "callee_without_explicit_path",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 1,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/api.rs",
+          "src/auth.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 2,
+        "simulated_input_tokens": 1882,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 744.9559999999999,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "callee_without_explicit_path",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 1,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/api.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1759,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 740.6831000000001,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "rust_call_chain",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 1,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/entry.rs",
+          "src/service.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1826,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 739.5147,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "rust_call_chain",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 1,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/entry.rs",
+          "src/service.rs",
+          "src/policy.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 4,
+        "simulated_input_tokens": 1984,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 703.7339000000001,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "type_script_alias_reexport",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 1,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/alias-consumer.ts",
+          "src/token.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 1,
+        "simulated_input_tokens": 1846,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 749.6504000000001,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "type_script_alias_reexport",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 1,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/alias-consumer.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1760,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 663.5631,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "extends_implements_contract",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 1,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/controller.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1785,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 727.0659,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "extends_implements_contract",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 1,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/controller.ts",
+          "src/contracts.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 3,
+        "simulated_input_tokens": 1946,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 743.8766,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "ambiguous_does_not_expand",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 1,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/ambiguous.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 1,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1797,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 750.2689,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "ambiguous_does_not_expand",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 1,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/ambiguous.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1797,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 675.5926,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "simple_control",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 1,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/control.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1744,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 658.2206,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "simple_control",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 1,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/control.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1744,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 826.1028,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "callee_without_explicit_path",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 2,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/api.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1759,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 752.3255,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "callee_without_explicit_path",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 2,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/api.rs",
+          "src/auth.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 2,
+        "simulated_input_tokens": 1882,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 752.5003,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "rust_call_chain",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 2,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/entry.rs",
+          "src/service.rs",
+          "src/policy.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 4,
+        "simulated_input_tokens": 1984,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 731.2199,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "rust_call_chain",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 2,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/entry.rs",
+          "src/service.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1826,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 707.9858999999999,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "type_script_alias_reexport",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 2,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/alias-consumer.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1760,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1291.901,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "type_script_alias_reexport",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 2,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/alias-consumer.ts",
+          "src/token.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 1,
+        "simulated_input_tokens": 1846,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 717.2653,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "extends_implements_contract",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 2,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/controller.ts",
+          "src/contracts.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 3,
+        "simulated_input_tokens": 1946,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 781.0188,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "extends_implements_contract",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 2,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/controller.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1785,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 644.7467,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "ambiguous_does_not_expand",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 2,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/ambiguous.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1797,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1566.9480999999998,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "ambiguous_does_not_expand",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 2,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/ambiguous.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 1,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1797,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 720.3810000000001,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "simple_control",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 2,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/control.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1744,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 748.4689,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "simple_control",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 2,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/control.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1744,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1426.6957,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "callee_without_explicit_path",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 3,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/api.rs",
+          "src/auth.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 2,
+        "simulated_input_tokens": 1882,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 698.8877,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "callee_without_explicit_path",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 3,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/api.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1759,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 751.5444,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "rust_call_chain",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 3,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/entry.rs",
+          "src/service.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1826,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 711.4759,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "rust_call_chain",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 3,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/entry.rs",
+          "src/service.rs",
+          "src/policy.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 4,
+        "simulated_input_tokens": 1984,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1370.3061,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "type_script_alias_reexport",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 3,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/alias-consumer.ts",
+          "src/token.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 1,
+        "simulated_input_tokens": 1846,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 829.0236,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "type_script_alias_reexport",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 3,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/alias-consumer.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1760,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 714.1437999999999,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "extends_implements_contract",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 3,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/controller.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1785,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 710.3811,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "extends_implements_contract",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 3,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/controller.ts",
+          "src/contracts.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 3,
+        "simulated_input_tokens": 1946,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1622.6913,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "ambiguous_does_not_expand",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 3,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/ambiguous.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 1,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1797,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 671.8221,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "ambiguous_does_not_expand",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 3,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/ambiguous.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1797,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 691.6118,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "simple_control",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 3,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/control.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1744,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1134.0428,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "simple_control",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 3,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/control.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1744,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 747.2736,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "callee_without_explicit_path",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 4,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/api.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1759,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 723.5661,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "callee_without_explicit_path",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 4,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/api.rs",
+          "src/auth.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 2,
+        "simulated_input_tokens": 1882,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 764.8395999999999,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "rust_call_chain",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 4,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/entry.rs",
+          "src/service.rs",
+          "src/policy.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 4,
+        "simulated_input_tokens": 1984,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 661.5287,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "rust_call_chain",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 4,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/entry.rs",
+          "src/service.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1826,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 651.0665,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "type_script_alias_reexport",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 4,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/alias-consumer.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1760,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 676.2549,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "type_script_alias_reexport",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 4,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/alias-consumer.ts",
+          "src/token.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 1,
+        "simulated_input_tokens": 1846,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1155.8074000000001,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "extends_implements_contract",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 4,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/controller.ts",
+          "src/contracts.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 3,
+        "simulated_input_tokens": 1946,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 747.4475,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "extends_implements_contract",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 4,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/controller.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1785,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 691.3524,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "ambiguous_does_not_expand",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 4,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/ambiguous.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1797,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 651.3371999999999,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "ambiguous_does_not_expand",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 4,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/ambiguous.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 1,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1797,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1373.8169,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "simple_control",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 4,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/control.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1744,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 750.8407000000001,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "simple_control",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 4,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/control.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1744,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 723.2682,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "callee_without_explicit_path",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 5,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/api.rs",
+          "src/auth.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 2,
+        "simulated_input_tokens": 1882,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1654.2829000000002,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "callee_without_explicit_path",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 5,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/api.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1759,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 729.0591,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "rust_call_chain",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 5,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/entry.rs",
+          "src/service.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1826,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 720.0833,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "rust_call_chain",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 5,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/entry.rs",
+          "src/service.rs",
+          "src/policy.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 4,
+        "simulated_input_tokens": 1984,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 748.8601,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "type_script_alias_reexport",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 5,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/alias-consumer.ts",
+          "src/token.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 1,
+        "simulated_input_tokens": 1846,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1309.7177,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "type_script_alias_reexport",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 5,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/alias-consumer.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1760,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 658.421,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "extends_implements_contract",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 5,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/controller.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": false,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": false,
+          "specification_grounded": false,
+          "target_symbol_present": false
+        },
+        "quality_max": 7,
+        "quality_score": 3,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1785,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 725.497,
+        "specification_grounded": false
+      },
+      "warmup": false
+    },
+    {
+      "case": "extends_implements_contract",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 5,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/controller.ts",
+          "src/contracts.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 3,
+        "simulated_input_tokens": 1946,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 694.7819,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "ambiguous_does_not_expand",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 5,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/ambiguous.ts"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 1,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1797,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 720.8522,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "ambiguous_does_not_expand",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 5,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/ambiguous.ts"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1797,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 661.6296000000001,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "simple_control",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 5,
+      "mode": "on_demand",
+      "resolution_state": null,
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/control.rs"
+        ],
+        "graph_resolution_context": null,
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1744,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 694.1818,
+        "specification_grounded": true
+      },
+      "warmup": false
+    },
+    {
+      "case": "simple_control",
+      "fixture_sha256": "597b680c31bc79f7a3a3a989689312e8604ded924981a3bfd81873976cbf1e55",
+      "iteration": 5,
+      "mode": "resolved_graph",
+      "resolution_state": "complete",
+      "task": {
+        "clarification_questions": 0,
+        "context_sources": [
+          "src/control.rs"
+        ],
+        "graph_resolution_context": "23b74ec2b535a48dfdd4368b77a6480aa9db277602c312c3c663688ffd86c5ca",
+        "persisted_ambiguous_edges": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "current_target_bytes_present": true,
+          "no_clarification_needed": true,
+          "no_unsafe_expansion": true,
+          "seed_source_present": true,
+          "semantic_target_present": true,
+          "specification_grounded": true,
+          "target_symbol_present": true
+        },
+        "quality_max": 7,
+        "quality_score": 7,
+        "resolved_references": 0,
+        "simulated_input_tokens": 1744,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 684.8832,
+        "specification_grounded": true
+      },
+      "warmup": false
+    }
+  ],
+  "schema_version": 1,
+  "scope": "real AppCore worker, SQLite and repository rereads; isolated repositories with identical hashes; graph mapping excluded from task latency",
+  "token_measurement": "provider-reported fixture usage: prompt chars/4; not a tokenizer or cost estimate",
+  "working_diff": ".../examples/brownfield_graph_benchmark.rs         | 24 +++++++++++++++++-----\n 1 file changed, 19 insertions(+), 5 deletions(-)"
+}
