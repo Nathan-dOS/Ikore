@@ -37,6 +37,8 @@ use crate::orchestration::brownfield::{
 
 #[path = "orchestration/anticipation.rs"]
 mod anticipation;
+#[path = "orchestration/brownfield_context.rs"]
+mod brownfield_context;
 #[path = "orchestration/brownfield_enrichment.rs"]
 mod brownfield_enrichment;
 #[path = "orchestration/brownfield_maintenance.rs"]

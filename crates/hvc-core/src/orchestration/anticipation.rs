@@ -122,7 +122,22 @@ impl PersistenceService {
         let fence = Self::execution_fence(&db, &job.id)?;
         let (request, epoch) = Self::context_request(&db, &fence)?;
         let started = std::time::Instant::now();
-        let facts = RoutedCodeContextService::collect_blocking(&request, cancellation);
+        let collected = RoutedCodeContextService::collect_blocking(&request, cancellation);
+        let facts = match collected {
+            Ok(facts) if !cancellation.is_cancelled() => {
+                let remaining = std::time::Duration::from_millis(request.budget.max_duration_ms)
+                    .saturating_sub(started.elapsed());
+                self.expand_context_through_brownfield_graph(
+                    &request,
+                    facts,
+                    cancellation,
+                    remaining,
+                )
+                .map(|(facts, _)| facts)
+            }
+            Ok(facts) => Ok(facts),
+            Err(error) => Err(invalid(error.to_string())),
+        };
         let elapsed = started.elapsed();
         #[cfg(test)]
         if let Some((entered, release)) = self
@@ -145,7 +160,7 @@ impl PersistenceService {
             tx.commit()?;
             return Ok(());
         }
-        let facts = facts.map_err(|e| invalid(e.to_string()))?;
+        let facts = facts?;
         Self::record_context_collection(&tx, &fence, "preparation", "prepared", elapsed, &facts)?;
         let package = ContextPackageV1 {
             schema_version: SchemaV1,
@@ -205,6 +220,9 @@ impl PersistenceService {
             let compatible=old.as_ref().filter(|old| old.pulsation_id==pulse && Some(old.input_revision)==handoff.recipient.input_revision && old.ruleset_version==task_refine::ruleset_version() && old.budget==request.budget);
             let started=std::time::Instant::now();
             let (facts,reusable)=RoutedCodeContextService::collect_revalidated(&request,&stop,compatible.map(|p|&p.facts)).map_err(|e|invalid(e.to_string()))?;
+            let remaining=std::time::Duration::from_millis(request.budget.max_duration_ms).saturating_sub(started.elapsed());
+            let (facts,graph_applied)=service.expand_context_through_brownfield_graph(&request,facts,&stop,remaining)?;
+            let reusable=reusable && !graph_applied;
             let elapsed=started.elapsed();
             let measured_facts=facts.clone();
             let disposition=if reusable {"reused"} else if prepared.is_some(){"stale_on_demand"}else{"on_demand"};
@@ -224,6 +242,9 @@ impl PersistenceService {
             let mut db=service.connection()?;
             let tx=db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             Self::check_execution(&tx,&handoff.recipient)?;
+            if let Some(context)=&handoff.context {
+                Self::record_brownfield_usage_tx(&tx,&handoff.recipient.project_id,&context.facts.sources)?;
+            }
             Self::record_context_collection(&tx,&handoff.recipient,"specification",disposition,elapsed,&measured_facts)?;
             let diagnostic=handoff.context.as_ref().map(|c|format!("Coleta/revalidação no epoch {epoch}, {}. {}",Self::now_iso(),c.facts.coverage.diagnostics.join(" ")));
             tx.execute("UPDATE pulsation_preparation SET consumed_job_id=?3,context_disposition=?4,diagnostic=?5,prespec_state=CASE WHEN ?4='stale_on_demand' THEN 'stale' ELSE prespec_state END WHERE pulsation_id=?1 AND input_revision=?2",params![pulse,handoff.recipient.input_revision,handoff.recipient.job_id,disposition,diagnostic])?;
