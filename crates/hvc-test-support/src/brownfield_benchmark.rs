@@ -207,7 +207,9 @@ fn repository_fingerprint(root: &Path) -> String {
 }
 
 fn wait_until(label: &str, mut predicate: impl FnMut() -> bool) -> Instant {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // This is a harness watchdog, not a product timeout. Leave enough headroom for
+    // Windows CI contention while still failing boundedly on a stalled worker.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if predicate() {
             return Instant::now();

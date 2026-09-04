@@ -73,9 +73,9 @@ fn first_task_clarifies_through_companion_and_resumes_after_restart_without_extr
     .unwrap();
     assert!(!env.workspace_dir().join("knowledge/obsidian").exists());
     let outputs = [
-        json!({"summary":"Intake concluído","statusUpdate":"advance","notes":[],"artifacts":[]}),
-        json!({"summary":"Falta formato","statusUpdate":"needs_clarification","notes":[],"artifacts":[],"componentProposals":[],"questions":[{"id":"token_format","question":"Qual formato de token usar?","rationale":"Define validação de auth.rs"}]}),
-        json!({"summary":"Spec após resposta humana","statusUpdate":"checkpoint_ready","notes":[],"artifacts":[{"name":"Specification","kind":"specification","content":"JWT: rejeitar token expirado com 401."}],"componentProposals":[]}),
+        json!({"outputLanguage":"en","summary":"Intake completed","statusUpdate":"advance","contextUsage":[],"notes":[],"artifacts":[]}),
+        json!({"outputLanguage":"en","summary":"The token format is missing","statusUpdate":"needs_clarification","contextUsage":[],"notes":[],"artifacts":[],"componentProposals":[],"questions":[{"id":"token_format","question":"Which token format should be used?","rationale":"Defines validation in auth.rs"}]}),
+        json!({"outputLanguage":"en","summary":"Specification completed after the human response","statusUpdate":"checkpoint_ready","contextUsage":[],"notes":[],"artifacts":[{"name":"Specification","kind":"specification","content":"JWT: reject an expired token with status 401."}],"componentProposals":[]}),
     ];
     let server=ScriptedHttpServer::start(outputs.map(|output|ScriptedResponse::json(200,json!({"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}).to_string())));
     let sink = Arc::new(StopEachResponse::default());
@@ -170,7 +170,11 @@ fn first_task_clarifies_through_companion_and_resumes_after_restart_without_extr
     let requests = server.wait_for_requests(3, Duration::from_secs(1));
     assert_eq!(requests.len(), 3);
     assert!(requests[2].body.contains("JWT assinado"));
-    assert!(requests[2].body.contains("Qual formato de token usar?"));
+    assert!(
+        requests[2]
+            .body
+            .contains("Which token format should be used?")
+    );
     assert_eq!(
         db.query_row(
             "SELECT COUNT(*) FROM specification_question_sets",

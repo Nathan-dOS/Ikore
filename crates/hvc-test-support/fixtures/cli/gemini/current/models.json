@@ -1,0 +1,9 @@
+{
+  "adapterContractVersion": 1,
+  "catalogSource": "preset",
+  "models": [
+    { "id": "auto", "name": "Gemini Auto", "profiles": [] },
+    { "id": "pro", "name": "Gemini Pro", "profiles": [] },
+    { "id": "flash", "name": "Gemini Flash", "profiles": [] }
+  ]
+}

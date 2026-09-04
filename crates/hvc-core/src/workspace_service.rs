@@ -14,6 +14,9 @@ use serde_json::Value;
 use tempfile::NamedTempFile;
 use walkdir::WalkDir;
 
+use crate::orchestration::RelativeSourcePath;
+use crate::repository_context::RepositoryContext;
+
 pub const WORKSPACE_CHANGED_EVENT: &str = "workspace://changed";
 
 #[derive(Debug, Clone, Serialize)]
@@ -326,6 +329,19 @@ pub struct GetContextCandidatesResponse {
     pub feature_note_path: Option<String>,
     pub scope_file: Option<String>,
     pub candidates: Vec<ContextCandidate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_context_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub physical_file_references: Vec<ContextPhysicalFileReference>,
+    pub expansion_depth: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextPhysicalFileReference {
+    pub note_path: String,
+    pub relative_path: String,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -367,6 +383,19 @@ pub struct VaultNoteSummary {
     pub backlink_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub schema_warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultBrokenFileReference {
+    pub source_path: String,
+    pub field: String,
+    pub target: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -375,6 +404,8 @@ pub struct GetWorkspaceVaultIndexResponse {
     pub notes: Vec<VaultNoteSummary>,
     pub edges: Vec<VaultEdge>,
     pub broken_links: Vec<VaultBrokenLink>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub broken_file_references: Vec<VaultBrokenFileReference>,
     pub indexed_at: String,
 }
 
@@ -414,6 +445,8 @@ struct VaultCachedNote {
     title: String,
     frontmatter: Option<Value>,
     links: Vec<VaultLinkMatch>,
+    source_files: Vec<String>,
+    test_files: Vec<String>,
     content: String,
 }
 
@@ -1057,6 +1090,9 @@ pub fn get_workspace_vault_index(
     let mut notes = Vec::new();
     let mut edges_set = BTreeSet::new();
     let mut broken_links = Vec::new();
+    let mut broken_file_references = Vec::new();
+    let repository = RepositoryContext::new(root)
+        .map_err(|error| WorkspaceServiceError::InvalidRoot(error.to_string()))?;
 
     for note_path in note_paths {
         let Some(note) = cache.notes.get(&note_path) else {
@@ -1087,6 +1123,33 @@ pub fn get_workspace_vault_index(
             });
         }
 
+        let mut schema_warnings = schema_warnings_for_note(note.frontmatter.as_ref());
+        for (field, paths) in [
+            ("source-files", &note.source_files),
+            ("test-files", &note.test_files),
+        ] {
+            for target in paths {
+                let validation = RelativeSourcePath::new(target.clone())
+                    .map_err(|error| error.to_string())
+                    .and_then(|path| {
+                        repository
+                            .validate_code_source_path(&path)
+                            .map_err(|error| error.to_string())
+                    });
+                if let Err(reason) = validation {
+                    schema_warnings.push(format!(
+                        "referência física quebrada em `{field}`: `{target}`."
+                    ));
+                    broken_file_references.push(VaultBrokenFileReference {
+                        source_path: note.relative_path.clone(),
+                        field: field.to_string(),
+                        target: target.clone(),
+                        reason,
+                    });
+                }
+            }
+        }
+
         notes.push(VaultNoteSummary {
             relative_path: note.relative_path.clone(),
             title: note.title.clone(),
@@ -1096,7 +1159,9 @@ pub fn get_workspace_vault_index(
             links,
             outgoing_paths: outgoing_set.into_iter().collect(),
             backlink_paths: Vec::new(),
-            schema_warnings: schema_warnings_for_note(note.frontmatter.as_ref()),
+            schema_warnings,
+            source_files: note.source_files.clone(),
+            test_files: note.test_files.clone(),
         });
     }
 
@@ -1127,6 +1192,7 @@ pub fn get_workspace_vault_index(
         notes,
         edges,
         broken_links,
+        broken_file_references,
         indexed_at: Utc::now().to_rfc3339(),
     })
 }
@@ -1135,6 +1201,30 @@ pub fn get_context_candidates(
     root: &Path,
     cache: &mut VaultIndexCache,
     request: GetContextCandidatesRequest,
+) -> Result<GetContextCandidatesResponse, WorkspaceServiceError> {
+    get_context_candidates_inner(root, cache, request, None)
+}
+
+pub fn get_context_candidates_with_expansion(
+    root: &Path,
+    cache: &mut VaultIndexCache,
+    request: GetContextCandidatesRequest,
+    expansion_depth: usize,
+    beam_width: usize,
+) -> Result<GetContextCandidatesResponse, WorkspaceServiceError> {
+    get_context_candidates_inner(
+        root,
+        cache,
+        request,
+        Some((expansion_depth.clamp(1, 3), beam_width.clamp(1, 64))),
+    )
+}
+
+fn get_context_candidates_inner(
+    root: &Path,
+    cache: &mut VaultIndexCache,
+    request: GetContextCandidatesRequest,
+    expansion: Option<(usize, usize)>,
 ) -> Result<GetContextCandidatesResponse, WorkspaceServiceError> {
     let feature_name = request.feature_name.trim();
     if feature_name.is_empty() {
@@ -1171,6 +1261,9 @@ pub fn get_context_candidates(
                 .into_iter()
                 .take(max_candidates)
                 .collect(),
+            required_context_paths: Vec::new(),
+            physical_file_references: Vec::new(),
+            expansion_depth: 0,
         });
     };
 
@@ -1190,6 +1283,9 @@ pub fn get_context_candidates(
                     .into_iter()
                     .take(max_candidates)
                     .collect(),
+                required_context_paths: Vec::new(),
+                physical_file_references: Vec::new(),
+                expansion_depth: 0,
             });
         }
     };
@@ -1215,11 +1311,15 @@ pub fn get_context_candidates(
         outgoing_map.insert(note.relative_path.clone(), outgoing);
     }
 
-    for path in direct_context_links(feature_note, &lookup) {
-        update_score(&mut score_by_path, path, 85);
+    let required_context_paths = direct_context_links(feature_note, &lookup);
+    for path in &required_context_paths {
+        update_score(&mut score_by_path, path.clone(), 85);
     }
 
-    let expansion_depth = expansion_depth_from_risk(feature_note.frontmatter.as_ref());
+    let expansion_depth = expansion
+        .map(|(depth, _)| depth)
+        .unwrap_or_else(|| expansion_depth_from_risk(feature_note.frontmatter.as_ref()));
+    let beam_width = expansion.map(|(_, width)| width).unwrap_or(usize::MAX);
     let mut frontier = vec![feature_note_path.clone()];
     let mut visited: HashSet<String> = HashSet::new();
 
@@ -1240,6 +1340,14 @@ pub fn get_context_candidates(
                 next_frontier.push(neighbor);
             }
         }
+        next_frontier.sort_by(|left, right| {
+            score_by_path
+                .get(right)
+                .cmp(&score_by_path.get(left))
+                .then_with(|| left.cmp(right))
+        });
+        next_frontier.dedup();
+        next_frontier.truncate(beam_width);
         frontier = next_frontier;
     }
 
@@ -1276,6 +1384,7 @@ pub fn get_context_candidates(
             .then_with(|| left.relative_path.cmp(&right.relative_path))
     });
     candidates.truncate(request.max_candidates.clamp(1, 200));
+    let physical_file_references = physical_references_for_candidates(cache, &candidates);
 
     Ok(GetContextCandidatesResponse {
         strategy: "yaml_graph".to_string(),
@@ -1283,7 +1392,35 @@ pub fn get_context_candidates(
         feature_note_path: Some(feature_note_path),
         scope_file: Some(base_scope_file),
         candidates,
+        required_context_paths,
+        physical_file_references,
+        expansion_depth,
     })
+}
+
+fn physical_references_for_candidates(
+    cache: &VaultIndexCache,
+    candidates: &[ContextCandidate],
+) -> Vec<ContextPhysicalFileReference> {
+    let mut seen = HashSet::new();
+    let mut references = Vec::new();
+    for candidate in candidates {
+        let Some(note) = cache.notes.get(&candidate.relative_path) else {
+            continue;
+        };
+        for (kind, paths) in [("source", &note.source_files), ("test", &note.test_files)] {
+            for path in paths {
+                if seen.insert((candidate.relative_path.clone(), kind, path.clone())) {
+                    references.push(ContextPhysicalFileReference {
+                        note_path: candidate.relative_path.clone(),
+                        relative_path: path.clone(),
+                        kind: kind.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    references
 }
 
 pub fn rename_workspace_note(
@@ -1447,12 +1584,17 @@ fn parse_vault_note(
         .map(|value| value.to_string_lossy().to_string())
         .unwrap_or_else(|| relative_path.to_string());
 
+    let source_files = frontmatter_string_list(parsed.parsed.as_ref(), "source-files");
+    let test_files = frontmatter_string_list(parsed.parsed.as_ref(), "test-files");
+
     Ok(VaultCachedNote {
         relative_path: relative_path.to_string(),
         revision,
         title: extract_markdown_title(&parsed.body).unwrap_or(fallback_title),
         frontmatter: parsed.parsed,
         links,
+        source_files,
+        test_files,
         content: content.chars().take(8192).collect(),
     })
 }
@@ -1738,6 +1880,8 @@ fn normalize_frontmatter_properties(frontmatter: Option<&Value>) -> Option<Value
         "covers",
         "scope",
         "last-pulse",
+        "source-files",
+        "test-files",
     ] {
         if let Some(value) = object.get(key) {
             normalized.insert(key.replace('-', "_"), value.clone());
@@ -1784,13 +1928,73 @@ fn schema_warnings_for_note(frontmatter: Option<&Value>) -> Vec<String> {
         if !has_tested_by {
             warnings.push("feature sem `tested-by` vinculado.".to_string());
         }
+        if frontmatter_string_list(Some(frontmatter), "source-files").is_empty() {
+            warnings.push("feature sem `source-files` definido.".to_string());
+        }
+        if frontmatter_string_list(Some(frontmatter), "test-files").is_empty() {
+            warnings.push("feature sem `test-files` definido.".to_string());
+        }
     }
 
-    if note_type == "test" && object.get("covers").is_none() {
-        warnings.push("test sem `covers` vinculado.".to_string());
+    if note_type == "test" {
+        if object.get("covers").is_none() {
+            warnings.push("test sem `covers` vinculado.".to_string());
+        }
+        if frontmatter_string_list(Some(frontmatter), "source-files").is_empty() {
+            warnings.push("test sem `source-files` definido.".to_string());
+        }
+        if frontmatter_string_list(Some(frontmatter), "test-files").is_empty() {
+            warnings.push("test sem `test-files` definido.".to_string());
+        }
     }
 
     warnings
+}
+
+fn frontmatter_string_list(frontmatter: Option<&Value>, key: &str) -> Vec<String> {
+    let Some(value) = frontmatter
+        .and_then(Value::as_object)
+        .and_then(|object| object.get(key))
+    else {
+        return Vec::new();
+    };
+    let mut values = match value {
+        Value::Array(values) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        Value::String(value) if !value.trim().is_empty() => vec![value.trim().to_string()],
+        _ => Vec::new(),
+    };
+    values.sort();
+    values.dedup();
+    values
+}
+
+pub(crate) fn validate_generated_vault_note(
+    _root: &Path,
+    relative_path: &str,
+    content: &str,
+) -> Result<(), WorkspaceServiceError> {
+    let normalized = relative_path.replace('\\', "/").to_ascii_lowercase();
+    let strict_note = normalized.starts_with("knowledge/obsidian/features/")
+        || normalized.starts_with("knowledge/obsidian/tests/");
+    if !strict_note || !normalized.ends_with(".md") {
+        return Ok(());
+    }
+    let parsed = parse_frontmatter_and_body(content)?;
+    for field in ["source-files", "test-files"] {
+        let paths = frontmatter_string_list(parsed.parsed.as_ref(), field);
+        if paths.is_empty() {
+            return Err(WorkspaceServiceError::InvalidQuery(format!(
+                "Nota gerada em `{relative_path}` deve preencher `{field}`."
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn resolve_scope_file_name(agent_scope: Option<&str>, stage_name: Option<&str>) -> String {
@@ -2181,6 +2385,208 @@ pub(crate) fn is_normative_document(relative: &str, content: &str) -> bool {
         return false;
     };
     normative_properties(relative, parsed.parsed.as_ref())
+}
+
+pub(crate) fn patch_learning_graph_relation(
+    content: &str,
+    relation: &str,
+    target_path: &str,
+) -> Result<String, WorkspaceServiceError> {
+    let target = target_path
+        .replace('\\', "/")
+        .strip_suffix(".md")
+        .unwrap_or(&target_path.replace('\\', "/"))
+        .to_string();
+    let link = format!("[[{target}]]");
+    if relation == "wikilink" {
+        let start = "<!-- hvc:learning-relations:start -->";
+        let end = "<!-- hvc:learning-relations:end -->";
+        if content
+            .lines()
+            .filter_map(|line| line.split("[[").nth(1))
+            .filter_map(|tail| tail.split("]]").next())
+            .any(|raw| same_wikilink_target(raw, &target))
+        {
+            return Ok(content.to_string());
+        }
+        let newline = if content.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        if let Some(end_offset) = content.find(end) {
+            if !content[..end_offset].contains(start) {
+                return Err(WorkspaceServiceError::InvalidQuery(
+                    "Seção gerenciada de relações está incompleta.".to_string(),
+                ));
+            }
+            let mut patched = content.to_string();
+            patched.insert_str(end_offset, &format!("- {link}{newline}"));
+            return Ok(patched);
+        }
+        let separator = if content.is_empty() || content.ends_with(newline) {
+            ""
+        } else {
+            newline
+        };
+        return Ok(format!(
+            "{content}{separator}{newline}{start}{newline}## Relações sugeridas{newline}{newline}- {link}{newline}{end}{newline}"
+        ));
+    }
+    if !matches!(relation, "tested-by" | "contracts" | "affects") {
+        return Err(WorkspaceServiceError::InvalidQuery(
+            "Relação de grafo não suportada.".to_string(),
+        ));
+    }
+    let parsed = parse_frontmatter_and_body(content)?;
+    let Some(frontmatter) = parsed.parsed.as_ref() else {
+        return Err(WorkspaceServiceError::InvalidQuery(
+            "Nota normativa sem frontmatter editável.".to_string(),
+        ));
+    };
+    let Some(object) = frontmatter.as_object() else {
+        return Err(WorkspaceServiceError::InvalidQuery(
+            "Frontmatter complexo recusado.".to_string(),
+        ));
+    };
+    if let Some(value) = object.get(relation) {
+        let existing = match value {
+            Value::String(value) => vec![value.as_str()],
+            Value::Array(values) if values.iter().all(Value::is_string) => {
+                values.iter().filter_map(Value::as_str).collect()
+            }
+            _ => {
+                return Err(WorkspaceServiceError::InvalidQuery(format!(
+                    "Campo `{relation}` usa construção YAML complexa; edição recusada."
+                )));
+            }
+        };
+        if existing
+            .iter()
+            .any(|value| same_wikilink_target(value, &target))
+        {
+            return Ok(content.to_string());
+        }
+    }
+    let newline = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut lines = content
+        .split(newline)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if lines.first().map(String::as_str) != Some("---") {
+        return Err(WorkspaceServiceError::InvalidQuery(
+            "Frontmatter precisa iniciar na primeira linha.".to_string(),
+        ));
+    }
+    let Some(end_index) = lines
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find_map(|(index, line)| (line.trim() == "---").then_some(index))
+    else {
+        return Err(WorkspaceServiceError::InvalidQuery(
+            "Frontmatter sem delimitador final.".to_string(),
+        ));
+    };
+    let key_prefix = format!("{relation}:");
+    if let Some(key_index) = (1..end_index).find(|index| {
+        lines[*index].starts_with(&key_prefix) && !lines[*index].starts_with(char::is_whitespace)
+    }) {
+        let raw = lines[key_index][key_prefix.len()..].to_string();
+        let (value_part, comment) = split_yaml_comment(&raw);
+        let value = object
+            .get(relation)
+            .expect("frontmatter key found in parsed mapping");
+        if value_part.trim().is_empty() {
+            let insert_at = ((key_index + 1)..end_index)
+                .find(|index| {
+                    let line = &lines[*index];
+                    !line.trim().is_empty()
+                        && !line.starts_with(' ')
+                        && !line.starts_with('\t')
+                        && !line.trim_start().starts_with('#')
+                })
+                .unwrap_or(end_index);
+            lines.insert(insert_at, format!("  - {}", yaml_quote(&link)));
+        } else if value_part.trim().starts_with('[') && value_part.trim().ends_with(']') {
+            let trimmed = value_part.trim();
+            let inner = trimmed[1..trimmed.len() - 1].trim();
+            let appended = if inner.is_empty() {
+                yaml_quote(&link)
+            } else {
+                format!("{inner}, {}", yaml_quote(&link))
+            };
+            lines[key_index] = format!("{key_prefix} [{appended}]{}", comment);
+        } else if let Value::String(existing) = value {
+            lines[key_index] = format!(
+                "{key_prefix} [{}, {}]{}",
+                yaml_quote(existing),
+                yaml_quote(&link),
+                comment
+            );
+        } else {
+            return Err(WorkspaceServiceError::InvalidQuery(format!(
+                "Campo `{relation}` não é lista inline/bloco simples; edição recusada."
+            )));
+        }
+    } else {
+        lines.insert(end_index, format!("{relation}: [{}]", yaml_quote(&link)));
+    }
+    let patched = lines.join(newline);
+    let reparsed = parse_frontmatter_and_body(&patched)?;
+    if reparsed
+        .parsed
+        .as_ref()
+        .and_then(Value::as_object)
+        .is_none()
+    {
+        return Err(WorkspaceServiceError::InvalidQuery(
+            "Patch produziria frontmatter YAML inválido.".to_string(),
+        ));
+    }
+    Ok(patched)
+}
+
+fn same_wikilink_target(raw: &str, expected: &str) -> bool {
+    let normalize = |value: &str| {
+        value
+            .trim()
+            .trim_start_matches("[[")
+            .trim_end_matches("]]")
+            .split('|')
+            .next()
+            .unwrap_or("")
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .replace('\\', "/")
+            .trim_end_matches(".md")
+            .to_ascii_lowercase()
+    };
+    normalize(raw) == normalize(expected)
+}
+
+fn split_yaml_comment(raw: &str) -> (&str, &str) {
+    let mut single = false;
+    let mut double = false;
+    for (index, ch) in raw.char_indices() {
+        match ch {
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            '#' if !single && !double => return (&raw[..index], &raw[index..]),
+            _ => {}
+        }
+    }
+    (raw, "")
+}
+
+fn yaml_quote(value: &str) -> String {
+    serde_json::to_string(value).expect("string serialization")
 }
 
 pub(crate) fn is_embedding_document(relative: &str, content: &str) -> bool {
@@ -2880,6 +3286,63 @@ mod tests {
     }
 
     #[test]
+    fn vault_index_reports_broken_physical_references_without_rejecting_existing_notes() {
+        let root = prepare_root();
+        fs::create_dir_all(root.path().join("src")).unwrap();
+        fs::create_dir_all(root.path().join("tests")).unwrap();
+        fs::create_dir_all(root.path().join("knowledge/obsidian/features")).unwrap();
+        fs::write(root.path().join("src/lib.rs"), "pub fn live() {}\n").unwrap();
+        fs::write(root.path().join("tests/live.rs"), "#[test] fn live() {}\n").unwrap();
+        fs::write(
+            root.path().join("knowledge/obsidian/features/live.md"),
+            "---\ntype: feature\nrisk: medium\nstatus: done\ntested-by: ['[[tests/live]]']\nsource-files:\n  - src/lib.rs\n  - src/missing.rs\ntest-files:\n  - tests/live.rs\n---\n# Live\n",
+        )
+        .unwrap();
+
+        let mut cache = VaultIndexCache::default();
+        let response = get_workspace_vault_index(
+            root.path(),
+            &mut cache,
+            GetWorkspaceVaultIndexRequest {
+                force_rebuild: true,
+            },
+        )
+        .unwrap();
+
+        let note = &response.notes[0];
+        assert_eq!(note.source_files, vec!["src/lib.rs", "src/missing.rs"]);
+        assert_eq!(note.test_files, vec!["tests/live.rs"]);
+        assert_eq!(response.broken_file_references.len(), 1);
+        assert_eq!(response.broken_file_references[0].target, "src/missing.rs");
+        assert!(
+            note.schema_warnings
+                .iter()
+                .any(|warning| warning.contains("src/missing.rs"))
+        );
+    }
+
+    #[test]
+    fn generated_feature_and_test_notes_require_both_physical_fields() {
+        let root = prepare_root();
+        let missing = validate_generated_vault_note(
+            root.path(),
+            "knowledge/obsidian/features/new.md",
+            "---\ntype: feature\nsource-files: [src/lib.rs]\n---\n# New\n",
+        );
+        assert!(matches!(
+            missing,
+            Err(WorkspaceServiceError::InvalidQuery(_))
+        ));
+
+        validate_generated_vault_note(
+            root.path(),
+            "knowledge/obsidian/tests/new.test.md",
+            "---\ntype: test\nsource-files: [src/lib.rs]\ntest-files: [tests/new.rs]\n---\n# Test\n",
+        )
+        .expect("new notes with both fields should pass schema validation");
+    }
+
+    #[test]
     fn context_candidates_follow_yaml_graph_with_scope() {
         let root = prepare_root();
         fs::write(root.path().join(".gitignore"), "node_modules/\n").expect("write gitignore");
@@ -2940,6 +3403,63 @@ mod tests {
                 .iter()
                 .any(|item| item.relative_path == "knowledge/obsidian/tests/auth-login.test.md")
         );
+    }
+
+    #[test]
+    fn explicit_graph_expansion_increases_depth_and_returns_physical_targets() {
+        let root = prepare_root();
+        fs::create_dir_all(root.path().join("knowledge/obsidian/features")).unwrap();
+        fs::write(root.path().join("src.rs"), "pub fn entry() {}\n").unwrap();
+        let notes = [
+            (
+                "root.md",
+                "---\ntype: feature\nrisk: low\nstatus: active\nsource-files: [src.rs]\ntest-files: [src.rs]\n---\n# Root\n[[knowledge/obsidian/features/one]]\n",
+            ),
+            (
+                "one.md",
+                "---\ntype: feature\nrisk: low\nstatus: active\n---\n# One\n[[knowledge/obsidian/features/two]]\n",
+            ),
+            (
+                "two.md",
+                "---\ntype: feature\nrisk: low\nstatus: active\n---\n# Two\n",
+            ),
+        ];
+        for (name, content) in notes {
+            fs::write(
+                root.path().join("knowledge/obsidian/features").join(name),
+                content,
+            )
+            .unwrap();
+        }
+        let request = || GetContextCandidatesRequest {
+            feature_name: "Root".to_string(),
+            stage_name: Some("Code".to_string()),
+            agent_scope: None,
+            max_candidates: 10,
+            force_rebuild: true,
+        };
+        let mut cache = VaultIndexCache::default();
+        let depth_one =
+            get_context_candidates_with_expansion(root.path(), &mut cache, request(), 1, 8)
+                .unwrap();
+        let depth_two =
+            get_context_candidates_with_expansion(root.path(), &mut cache, request(), 2, 8)
+                .unwrap();
+
+        assert!(
+            !depth_one
+                .candidates
+                .iter()
+                .any(|item| item.relative_path.ends_with("two.md"))
+        );
+        assert!(
+            depth_two
+                .candidates
+                .iter()
+                .any(|item| item.relative_path.ends_with("two.md"))
+        );
+        assert_eq!(depth_two.expansion_depth, 2);
+        assert_eq!(depth_two.physical_file_references.len(), 2);
     }
 
     #[test]
@@ -3128,6 +3648,56 @@ mod document_cache_tests {
                 .candidates
                 .iter()
                 .all(|candidate| candidate.relative_path != "component.md")
+        );
+    }
+
+    #[test]
+    fn learning_graph_patcher_preserves_yaml_shapes_comments_crlf_and_aliases() {
+        let missing = "---\ntype: feature\nrisk: low\n---\n# Root\n";
+        let patched =
+            patch_learning_graph_relation(missing, "tested-by", "knowledge/obsidian/tests/auth.md")
+                .unwrap();
+        assert!(patched.contains("tested-by: [\"[[knowledge/obsidian/tests/auth]]\"]"));
+
+        let inline = "---\ntype: feature\naffects: [\"[[one]]\"] # keep\n---\n# Root\n";
+        let patched =
+            patch_learning_graph_relation(inline, "affects", "knowledge/obsidian/features/two.md")
+                .unwrap();
+        assert!(
+            patched
+                .contains("affects: [\"[[one]]\", \"[[knowledge/obsidian/features/two]]\"]# keep")
+        );
+
+        let block = "---\r\ntype: feature\r\ncontracts: # retained\r\n  - \"[[knowledge/obsidian/contracts/api|API]]\"\r\nrisk: low\r\n---\r\n# Root\r\n";
+        let duplicate = patch_learning_graph_relation(
+            block,
+            "contracts",
+            "knowledge/obsidian/contracts/api.md",
+        )
+        .unwrap();
+        assert_eq!(duplicate, block);
+        let patched = patch_learning_graph_relation(
+            block,
+            "contracts",
+            "knowledge/obsidian/contracts/events.md",
+        )
+        .unwrap();
+        assert!(patched.contains("  - \"[[knowledge/obsidian/contracts/events]]\"\r\nrisk: low"));
+        assert!(patched.contains("contracts: # retained"));
+    }
+
+    #[test]
+    fn learning_graph_patcher_refuses_complex_yaml_and_manages_body_links() {
+        let complex = "---\ntype: feature\naffects:\n  nested: value\n---\n# Root\n";
+        assert!(patch_learning_graph_relation(complex, "affects", "target.md").is_err());
+
+        let body = "---\ntype: decision\n---\n# Root\n";
+        let patched = patch_learning_graph_relation(body, "wikilink", "target.md").unwrap();
+        assert!(patched.contains("<!-- hvc:learning-relations:start -->"));
+        assert!(patched.contains("- [[target]]"));
+        assert_eq!(
+            patch_learning_graph_relation(&patched, "wikilink", "target.md").unwrap(),
+            patched
         );
     }
 

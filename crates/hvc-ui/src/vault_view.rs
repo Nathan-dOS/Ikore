@@ -83,6 +83,10 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         .as_ref()
         .map(|index| index.broken_links.clone())
         .unwrap_or_default();
+    let broken_file_references = index
+        .as_ref()
+        .map(|index| index.broken_file_references.clone())
+        .unwrap_or_default();
 
     div()
         .flex_1()
@@ -309,6 +313,41 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                                     .child(format!(
                                         "{}:{} → [[{}]]",
                                         link.source_path, link.line, link.target
+                                    ))
+                            })),
+                    )
+                })
+                .when(!broken_file_references.is_empty(), |panel| {
+                    panel.child(
+                        div()
+                            .p_3()
+                            .rounded_md()
+                            .bg(theme::warning_soft())
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(theme::warning())
+                                    .child(format!(
+                                        "{} referência(s) física(s) quebrada(s)",
+                                        broken_file_references.len()
+                                    )),
+                            )
+                            .children(broken_file_references.into_iter().map(|reference| {
+                                let source = reference.source_path.clone();
+                                div()
+                                    .id(gpui::SharedString::from(format!(
+                                        "broken-file:{}:{}:{}",
+                                        source, reference.field, reference.target
+                                    )))
+                                    .mt_1()
+                                    .text_sm()
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |model, _, _, cx| {
+                                        model.select_vault_path(source.clone(), cx);
+                                    }))
+                                    .child(format!(
+                                        "{} · {} → {}",
+                                        reference.source_path, reference.field, reference.target
                                     ))
                             })),
                     )

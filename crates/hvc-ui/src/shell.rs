@@ -11,6 +11,7 @@ use hvc_core::persistence_service::HitlDecision;
 use hvc_core::workspace_service::{FileNode, FileNodeKind};
 use hvc_editor::{DiffMark, MarkdownBlock, build_diff_rows, parse_markdown};
 
+use crate::agents_view::agents_panel;
 use crate::app_model::{AppModel, AppView};
 use crate::chat_view::chat_panel;
 use crate::hitl::{ApproveHitl, RequestHitlRevision, register_hitl_keybindings};
@@ -36,7 +37,8 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
         }
     })
     .detach();
-    let bounds = Bounds::centered(None, size(px(1280.0), px(820.0)), cx);
+    let (window_width, window_height) = initial_window_size();
+    let bounds = Bounds::centered(None, size(px(window_width), px(window_height)), cx);
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -53,6 +55,29 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
     .context("GPUI recusou a criação da janela principal")?;
     cx.activate(true);
     Ok(())
+}
+
+fn initial_window_size() -> (f32, f32) {
+    #[cfg(debug_assertions)]
+    if let Some(size) = std::env::var("HVC_QA_WINDOW_SIZE")
+        .ok()
+        .and_then(|value| parse_qa_window_size(&value))
+    {
+        return size;
+    }
+    (1280.0, 820.0)
+}
+
+#[cfg(any(debug_assertions, test))]
+fn parse_qa_window_size(value: &str) -> Option<(f32, f32)> {
+    let (width, height) = value.trim().split_once(['x', 'X'])?;
+    let width = width.trim().parse::<f32>().ok()?;
+    let height = height.trim().parse::<f32>().ok()?;
+    (width.is_finite()
+        && height.is_finite()
+        && (960.0..=3840.0).contains(&width)
+        && (640.0..=2160.0).contains(&height))
+    .then_some((width, height))
 }
 
 impl Render for AppModel {
@@ -270,6 +295,7 @@ fn content_panel(model: &AppModel, active: AppView, cx: &mut Context<AppModel>) 
         AppView::Pulsations => pulsations_panel(model, cx),
         AppView::Vault => vault_panel(model, cx),
         AppView::Chat => chat_panel(model, cx),
+        AppView::Agents => agents_panel(model, cx),
         AppView::Settings => settings_panel(model, cx),
         AppView::Logs => logs_panel(model, cx),
     }
@@ -1415,6 +1441,19 @@ mod tests {
     use gpui::TestAppContext;
 
     use super::*;
+
+    #[test]
+    fn qa_window_size_accepts_only_supported_finite_dimensions() {
+        assert_eq!(parse_qa_window_size("1024x768"), Some((1024.0, 768.0)));
+        assert_eq!(
+            parse_qa_window_size(" 2560 X 1440 "),
+            Some((2560.0, 1440.0))
+        );
+        assert_eq!(parse_qa_window_size("959x768"), None);
+        assert_eq!(parse_qa_window_size("1024x639"), None);
+        assert_eq!(parse_qa_window_size("NaNx768"), None);
+        assert_eq!(parse_qa_window_size("invalid"), None);
+    }
 
     #[gpui::test]
     fn preserves_collapsed_navigation_and_semantic_badges(cx: &mut TestAppContext) {

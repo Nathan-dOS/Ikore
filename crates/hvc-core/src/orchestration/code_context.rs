@@ -130,8 +130,19 @@ impl LexicalCodeContextService {
                 return Ok((facts, false));
             }
         };
-        let (snapshots, coverage) =
-            repository.capture_code_sources(&request.project_id, request.budget, cancellation)?;
+        let (snapshots, coverage) = match request.discovery_mode {
+            CodeContextDiscoveryMode::RepositoryScan => repository.capture_code_sources(
+                &request.project_id,
+                request.budget,
+                cancellation,
+            )?,
+            CodeContextDiscoveryMode::ExactPaths => repository.capture_exact_code_sources(
+                &request.project_id,
+                &request.hinted_paths,
+                request.budget,
+                cancellation,
+            )?,
+        };
         facts.coverage = coverage;
         let fingerprint: Vec<_> = snapshots.iter().map(SourceSnapshot::revision).collect();
         facts.candidate_set_sha256 = Some(ContentSha256::of(
@@ -296,6 +307,7 @@ mod tests {
             workspace_root: root.into(),
             query: "adicione validate_token em auth.rs".into(),
             hinted_paths: vec![],
+            discovery_mode: CodeContextDiscoveryMode::RepositoryScan,
             budget: CollectionBudget::default(),
         }
     }
@@ -321,6 +333,31 @@ mod tests {
             LexicalCodeContextService::collect_revalidated(&req, &token, Some(&facts))
                 .unwrap()
                 .1
+        );
+    }
+
+    #[test]
+    fn exact_path_mode_reads_only_vault_targets_without_repository_discovery() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("target.rs"), "pub fn selected() {}\n").unwrap();
+        fs::write(root.path().join("unrelated.rs"), "pub fn selected() {}\n").unwrap();
+        let mut request = request(root.path());
+        request.query = "selected".to_string();
+        request.discovery_mode = CodeContextDiscoveryMode::ExactPaths;
+        request.hinted_paths = vec![RelativeSourcePath::new("target.rs").unwrap()];
+
+        let facts = RoutedCodeContextService::collect_blocking(&request, &CancellationToken::new())
+            .unwrap();
+
+        assert_eq!(facts.coverage.enumerated_files, 1);
+        assert_eq!(facts.sources.len(), 1);
+        assert_eq!(facts.sources[0].relative_path.as_str(), "target.rs");
+        assert!(
+            facts
+                .coverage
+                .diagnostics
+                .iter()
+                .any(|message| message.starts_with("exact_paths:"))
         );
     }
 

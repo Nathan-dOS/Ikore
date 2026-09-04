@@ -17,6 +17,7 @@ impl AppModel {
             return;
         }
         self.preparation_scope = key;
+        self.learning_graph_decisions.clear();
         self.question_subscriptions.clear();
         self.specification_answer_inputs.clear();
         let description = self
@@ -148,6 +149,92 @@ impl AppModel {
             backend.update_preparation(settings).await?;
             Ok("Learning atualizado; nenhum histórico será reprocessado e os limites de chamadas são preservados.".into())
         }), cx);
+    }
+
+    pub(crate) fn toggle_learning_refinement_mode(&mut self, cx: &mut Context<Self>) {
+        if self.settings.read(cx).busy {
+            return;
+        }
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(mut settings) = self
+            .settings
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.preparation.clone())
+        else {
+            return;
+        };
+        settings.learning_refinement_mode = match settings.learning_refinement_mode {
+            LearningRefinementMode::Observe => LearningRefinementMode::Propose,
+            LearningRefinementMode::Propose => LearningRefinementMode::Observe,
+        };
+        self.run_settings_operation(
+            Box::pin(async move {
+                backend.update_preparation(settings).await?;
+                Ok("Modo de refinamento Learning atualizado; publicações não iniciadas respeitam o kill switch.".into())
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn choose_learning_graph_decision(
+        &mut self,
+        proposal_id: String,
+        decision: LearningGraphDecision,
+        cx: &mut Context<Self>,
+    ) {
+        self.learning_graph_decisions.insert(proposal_id, decision);
+        cx.notify();
+    }
+
+    pub(crate) fn submit_learning_graph_review(&mut self, cx: &mut Context<Self>) {
+        let Some(run) = self
+            .pulsations
+            .read(cx)
+            .detail()
+            .and_then(|detail| detail.learning_run.clone())
+        else {
+            return;
+        };
+        let pending = run
+            .graph_proposals
+            .iter()
+            .filter(|proposal| proposal.decision == "pending")
+            .collect::<Vec<_>>();
+        if pending.is_empty()
+            || pending
+                .iter()
+                .any(|proposal| !self.learning_graph_decisions.contains_key(&proposal.id))
+        {
+            self.pulsations.update(cx, |pulsations, _| {
+                pulsations.error =
+                    Some("Aprove ou rejeite individualmente todas as propostas pendentes.".into());
+            });
+            cx.notify();
+            return;
+        }
+        let decisions = pending
+            .into_iter()
+            .map(|proposal| ReviewLearningGraphDecision {
+                proposal_id: proposal.id.clone(),
+                decision: *self
+                    .learning_graph_decisions
+                    .get(&proposal.id)
+                    .expect("pending proposal decision"),
+            })
+            .collect();
+        self.learning_graph_decisions.clear();
+        self.run_pulsation_action(
+            PulsationAction::ReviewLearningGraph(ReviewLearningGraphRequest {
+                job_id: run.job_id,
+                expected_generation: run.generation,
+                decisions,
+            }),
+            cx,
+        );
     }
 
     pub(crate) fn cycle_brownfield_llm_budget(&mut self, cx: &mut Context<Self>) {

@@ -243,6 +243,7 @@ impl PersistenceService {
             tx.execute("UPDATE jobs SET status='failed',last_error=?2,finished_at=?3,updated_at=?3 WHERE id=?1",params![job.id,message,Self::now_iso()])?;
             tx.execute("UPDATE agent_runs SET status='failed',updated_at=?2 WHERE job_id=?1 AND status='running'",params![job.id,Self::now_iso()])?;
             Self::mark_effects_for_review(&tx, pulse, "executor_failed_with_effects")?;
+            Self::enqueue_learning(&tx, pulse)?;
         }
         tx.commit()?;
         Ok(())

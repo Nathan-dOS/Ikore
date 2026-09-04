@@ -14,6 +14,14 @@ pub struct SharedDocumentCache {
 }
 
 impl SharedDocumentCache {
+    pub(crate) fn invalidate(&self, root: &Path) {
+        let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        self.roots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&canonical);
+    }
+
     pub(crate) fn with<T>(
         &self,
         root: &Path,

@@ -9,7 +9,7 @@ impl PersistenceService {
         db: &Connection,
         pulse: &str,
     ) -> Result<Option<SpecificationQuestionSet>, PersistenceServiceError> {
-        let row=db.query_row("SELECT q.id,q.checkpoint_id,q.input_revision,q.generation,q.state_version,q.conversation_id,q.questions_json,p.project_id,c.producer_job_id FROM specification_question_sets q JOIN checkpoints c ON c.id=q.checkpoint_id JOIN pulsations p ON p.id=q.pulsation_id WHERE q.pulsation_id=?1 AND c.kind='clarification' AND c.status='waiting' AND p.status='checkpoint' AND p.input_revision=q.input_revision AND p.state_version=q.state_version AND q.answers_json IS NULL",[pulse],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u64>(2)?,r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?))).optional()?;
+        let row=db.query_row("SELECT q.id,q.checkpoint_id,q.input_revision,q.generation,q.state_version,q.conversation_id,q.questions_json,p.project_id,c.producer_job_id FROM specification_question_sets q JOIN checkpoints c ON c.id=q.checkpoint_id JOIN pulsations p ON p.id=q.pulsation_id WHERE q.pulsation_id=?1 AND c.purpose='clarification' AND c.status='waiting' AND p.status='checkpoint' AND p.input_revision=q.input_revision AND p.state_version=q.state_version AND q.answers_json IS NULL",[pulse],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u64>(2)?,r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?))).optional()?;
         row.map(
             |(id, checkpoint, revision, generation, state, conversation, json, project, job)| {
                 Ok(SpecificationQuestionSet {
@@ -48,7 +48,7 @@ impl PersistenceService {
             ),
         )?;
         Self::open_checkpoint(db, &updated.id, updated.stage)?;
-        db.execute("UPDATE checkpoints SET kind='clarification',input_revision=?2,state_version=(SELECT state_version FROM pulsations WHERE id=?1),producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting'",params![current.id,fence.input_revision,fence.job_id,fence.generation])?;
+        db.execute("UPDATE checkpoints SET kind='clarification',purpose='clarification',input_revision=?2,state_version=(SELECT state_version FROM pulsations WHERE id=?1),producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting'",params![current.id,fence.input_revision,fence.job_id,fence.generation])?;
         let (checkpoint, state): (String, u64) = db.query_row(
             "SELECT id,state_version FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
             [&current.id],

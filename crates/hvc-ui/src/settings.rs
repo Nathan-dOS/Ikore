@@ -505,6 +505,8 @@ mod tests {
                 embedding_model: None,
                 embedding_top_k: None,
                 routing_v2_mode: Some(RoutingMode::Shadow),
+                adaptive_context_mode: None,
+                dynamic_context_policy: None,
             },
         ));
 

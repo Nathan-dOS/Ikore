@@ -1,0 +1,2 @@
+{"type":"tool_use","part":{"tool":"read","state":{"input":{"filePath":"src/main.rs"}}}}
+{"type":"tool_result","part":{"tool":"read","state":{"output":"fixture file"}}}

@@ -41,6 +41,7 @@ pub(crate) enum PulsationAction {
     Answer(SubmitSpecificationAnswersRequest),
     RetryLearning(hvc_core::orchestration::LearningActionRequest),
     DismissLearning(hvc_core::orchestration::LearningActionRequest),
+    ReviewLearningGraph(hvc_core::orchestration::ReviewLearningGraphRequest),
 }
 
 pub(crate) struct CorePulsationsBackend {
@@ -69,6 +70,9 @@ impl PulsationsBackend for CorePulsationsBackend {
                     }
                     PulsationAction::DismissLearning(request) => {
                         core.persistence().dismiss_learning(request)
+                    }
+                    PulsationAction::ReviewLearningGraph(request) => {
+                        core.persistence().review_learning_graph(request)
                     }
                     PulsationAction::Revise(request) => core
                         .persistence()

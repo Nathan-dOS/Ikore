@@ -1,4 +1,5 @@
 use super::*;
+use crate::orchestration::ContractError;
 use crate::persistence_service::serial::tests::Fixture;
 use std::sync::Mutex;
 
@@ -44,15 +45,17 @@ fn release(f: &Fixture, claim: &BackgroundClaim) {
         .unwrap();
     f.service.unregister_job_cancellation(&claim.job.id);
 }
-fn report(input: &LearningInput) -> LearningReportV1 {
-    LearningReportV1 {
-        schema_version: 1,
+fn report(input: &LearningInputV2) -> LearningReportV2 {
+    LearningReportV2 {
+        schema_version: 2,
         observations: vec![LearningFinding {
             text: "Review the accepted result".into(),
             evidence_ids: vec![input.evidence[0].id.clone()],
             recurring: false,
         }],
         recommendations: vec![],
+        context_assessments: vec![],
+        graph_selections: vec![],
         limitations: vec!["Local evidence only".into()],
     }
 }
@@ -67,6 +70,316 @@ fn assert_done_unblocked(f: &Fixture) {
         )
         .unwrap();
     assert_eq!(base, ("ready".into(), 1, None));
+}
+
+#[test]
+fn learning_v2_rejects_invented_candidates_and_selection_without_operational_evidence() {
+    let input = LearningInputV2 {
+        pulsation_id: "pulse".into(),
+        integration_epoch: 1,
+        report_version: 2,
+        refinement_mode: LearningRefinementMode::Propose,
+        evidence: vec![LearningEvidence {
+            id: "evidence:1".into(),
+            pulsation_id: "pulse".into(),
+            kind: "context_retrieval_item".into(),
+            text: "delivered=true".into(),
+        }],
+        context_runs: vec![],
+        graph_candidates: vec![LearningGraphCandidate {
+            candidate_id: "candidate:1".into(),
+            source_path: "root.md".into(),
+            target_path: "test.md".into(),
+            relation: "tested-by".into(),
+            source_expected_sha256: "a".repeat(64),
+            target_expected_sha256: "b".repeat(64),
+            preview_diff: "+ tested-by".into(),
+            evidence_ids: vec!["evidence:1".into()],
+        }],
+        omitted: 0,
+    };
+    let mut output = LearningReportV2 {
+        schema_version: 2,
+        observations: vec![],
+        recommendations: vec![],
+        context_assessments: vec![],
+        graph_selections: vec![LearningGraphSelection {
+            candidate_id: "invented".into(),
+            evidence_ids: vec!["evidence:1".into()],
+            rationale: "operational".into(),
+        }],
+        limitations: vec![],
+    };
+    assert!(output.validate(&input).is_err());
+    output.graph_selections[0].candidate_id = "candidate:1".into();
+    output.graph_selections[0].evidence_ids.clear();
+    assert!(output.validate(&input).is_err());
+    output.graph_selections.clear();
+    output.validate(&input).unwrap();
+    output
+        .limitations
+        .push("Relatorio gerado em portugues".into());
+    assert!(matches!(
+        output.validate(&input),
+        Err(ContractError::Invalid("Learning report must be English"))
+    ));
+}
+
+#[test]
+fn switching_to_observe_during_learning_keeps_the_audit_but_discards_new_proposals() {
+    let (f, learning_id, _) = done();
+    let mut settings = f.service.get_preparation_settings().unwrap();
+    settings.learning_refinement_mode = LearningRefinementMode::Propose;
+    f.service
+        .update_preparation_settings(settings.clone())
+        .unwrap();
+    let claim = f
+        .service
+        .claim_background_id(&learning_id)
+        .unwrap()
+        .unwrap();
+    let mut input = f
+        .service
+        .begin_learning_attempt(&learning_id, claim.generation)
+        .unwrap();
+    let evidence_id = input.evidence[0].id.clone();
+    input.graph_candidates.push(LearningGraphCandidate {
+        candidate_id: "candidate:observe-switch".into(),
+        source_path: "knowledge/obsidian/features/root.md".into(),
+        target_path: "knowledge/obsidian/tests/root.md".into(),
+        relation: "tested-by".into(),
+        source_expected_sha256: "a".repeat(64),
+        target_expected_sha256: "b".repeat(64),
+        preview_diff: "+ tested-by".into(),
+        evidence_ids: vec![evidence_id.clone()],
+    });
+    let report = LearningReportV2 {
+        schema_version: 2,
+        observations: vec![],
+        recommendations: vec![],
+        context_assessments: vec![],
+        graph_selections: vec![LearningGraphSelection {
+            candidate_id: "candidate:observe-switch".into(),
+            evidence_ids: vec![evidence_id],
+            rationale: "Operational evidence from the fixture".into(),
+        }],
+        limitations: vec![],
+    };
+    report.validate(&input).unwrap();
+
+    settings.learning_refinement_mode = LearningRefinementMode::Observe;
+    f.service.update_preparation_settings(settings).unwrap();
+    f.service
+        .accept_learning_report(&learning_id, claim.generation, &input, &report)
+        .unwrap();
+    release(&f, &claim);
+
+    assert_eq!(f.count("learning_graph_proposals"), 0);
+    assert_eq!(f.count("learning_context_assessments"), 0);
+    assert_eq!(
+        f.service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM artifacts WHERE kind='learning_report'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "the audit report remains publishable"
+    );
+}
+
+#[test]
+fn failed_cancellation_schedules_learning_without_reopening_the_pulse() {
+    let f = Fixture::new(PulsationStage::Code);
+    f.service
+        .cancel_pulsation_jobs(CancelPulsationJobsRequest {
+            pulsation_id: f.pulse.id.clone(),
+        })
+        .unwrap();
+    assert_eq!(f.state().status, PulsationStatus::Failed);
+    assert_eq!(f.count("learning_runs"), 1);
+    let db = f.service.connection().unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT status FROM jobs WHERE kind='learning_report'",
+            [],
+            |row| { row.get::<_, String>(0) }
+        )
+        .unwrap(),
+        "pending"
+    );
+}
+
+#[test]
+fn graph_review_groups_source_patch_and_cas_preserves_external_edits() {
+    for conflict in [false, true] {
+        let (f, learning_id, _) = done();
+        let mut settings = f.service.get_preparation_settings().unwrap();
+        settings.learning_refinement_mode = LearningRefinementMode::Propose;
+        f.service.update_preparation_settings(settings).unwrap();
+        let feature_dir = f.workspace.path().join("knowledge/obsidian/features");
+        let test_dir = f.workspace.path().join("knowledge/obsidian/tests");
+        let contract_dir = f.workspace.path().join("knowledge/obsidian/contracts");
+        fs::create_dir_all(&feature_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+        fs::create_dir_all(&contract_dir).unwrap();
+        let source_path = "knowledge/obsidian/features/validated-contract.md";
+        let test_path = "knowledge/obsidian/tests/validated-contract.md";
+        let contract_path = "knowledge/obsidian/contracts/validated-contract.md";
+        let source =
+            "---\ntype: feature\nrisk: low\nstatus: active\n---\n# Implementar contrato validado\n";
+        let test = "---\ntype: test\nrisk: low\nstatus: active\n---\n# Teste\n";
+        let contract = "---\ntype: contract\nrisk: low\nstatus: active\n---\n# Contrato\n";
+        fs::write(f.workspace.path().join(source_path), source).unwrap();
+        fs::write(f.workspace.path().join(test_path), test).unwrap();
+        fs::write(f.workspace.path().join(contract_path), contract).unwrap();
+        let source_hash = ContentSha256::of(source.as_bytes());
+        let test_hash = ContentSha256::of(test.as_bytes());
+        let contract_hash = ContentSha256::of(contract.as_bytes());
+        let db = f.service.connection().unwrap();
+        db.execute(
+            "UPDATE jobs SET status='done',finished_at=?2 WHERE id=?1",
+            params![learning_id, PersistenceService::now_iso()],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE learning_runs SET state='published' WHERE job_id=?1",
+            [&learning_id],
+        )
+        .unwrap();
+        let generation: u64 = db
+            .query_row(
+                "SELECT generation FROM jobs WHERE id=?1",
+                [&learning_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut proposal_ids = Vec::new();
+        for (candidate, target, relation, target_hash) in [
+            ("candidate-test", test_path, "tested-by", test_hash.as_str()),
+            (
+                "candidate-contract",
+                contract_path,
+                "contracts",
+                contract_hash.as_str(),
+            ),
+        ] {
+            let proposal_id = Uuid::new_v4().to_string();
+            db.execute(
+                "INSERT INTO learning_graph_proposals(id,learning_job_id,project_id,pulsation_id,candidate_id,source_path,target_path,relation,source_expected_sha256,target_expected_sha256,preview_diff,rationale,evidence_json,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'preview','evidence','[\"evidence\"]',?11,?11)",
+                params![proposal_id,learning_id,f.pulse.project_id,f.pulse.id,candidate,source_path,target,relation,source_hash.as_str(),target_hash,PersistenceService::now_iso()],
+            ).unwrap();
+            proposal_ids.push(proposal_id);
+        }
+        let review = ReviewLearningGraphRequest {
+            job_id: learning_id.clone(),
+            expected_generation: generation,
+            decisions: proposal_ids
+                .iter()
+                .map(|id| ReviewLearningGraphDecision {
+                    proposal_id: id.clone(),
+                    decision: LearningGraphDecision::Approve,
+                })
+                .collect(),
+        };
+        f.service.review_learning_graph(review.clone()).unwrap();
+        assert!(
+            f.service.review_learning_graph(review).is_err(),
+            "a repeated or stale review click must not create another artifact"
+        );
+        assert_eq!(
+            fs::read_to_string(f.workspace.path().join(source_path)).unwrap(),
+            source
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM artifacts WHERE kind='knowledge_graph_patch'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1,
+            "duas alterações na mesma nota devem compor um artifact"
+        );
+        if conflict {
+            fs::write(f.workspace.path().join(source_path), "human edit").unwrap();
+        }
+        f.service.recover_interrupted_jobs().unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM artifact_publications WHERE state='pending'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1,
+            "recovery must preserve an approved graph publication"
+        );
+        if !conflict {
+            db.execute(
+                "UPDATE artifact_publications SET state='applying' WHERE state='pending'",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "UPDATE learning_graph_proposals SET publication_state='applying' WHERE publication_state='pending'",
+                [],
+            )
+            .unwrap();
+            let mut settings = f.service.get_preparation_settings().unwrap();
+            settings.learning_enabled = false;
+            settings.learning_refinement_mode = LearningRefinementMode::Observe;
+            f.service.update_preparation_settings(settings).unwrap();
+        }
+        assert!(
+            f.service
+                .reconcile_learning_publication(&CancellationToken::new())
+                .unwrap()
+        );
+        let current = fs::read_to_string(f.workspace.path().join(source_path)).unwrap();
+        if conflict {
+            assert_eq!(current, "human edit");
+            assert_eq!(
+                db.query_row(
+                    "SELECT MIN(publication_state) FROM learning_graph_proposals",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+                "conflict"
+            );
+        } else {
+            assert!(current.contains("tested-by:"));
+            assert!(current.contains("contracts:"));
+            let mut cache = crate::workspace_service::VaultIndexCache::default();
+            let candidates = crate::workspace_service::get_context_candidates(
+                f.workspace.path(),
+                &mut cache,
+                crate::workspace_service::GetContextCandidatesRequest {
+                    feature_name: "Implementar contrato validado".into(),
+                    stage_name: None,
+                    agent_scope: None,
+                    max_candidates: 8,
+                    force_rebuild: true,
+                },
+            )
+            .unwrap();
+            assert!(
+                candidates
+                    .required_context_paths
+                    .contains(&test_path.to_string())
+            );
+            assert!(
+                candidates
+                    .required_context_paths
+                    .contains(&contract_path.to_string())
+            );
+        }
+        assert_done_unblocked(&f);
+    }
 }
 
 #[test]
@@ -200,7 +513,7 @@ fn three_preemptions_defer_and_explicit_versioned_retry_preserves_total_usage() 
     let db = f.service.connection().unwrap();
     assert_eq!(
         db.query_row(
-            "SELECT budget_calls FROM learning_runs WHERE report_version=1",
+            "SELECT budget_calls FROM learning_runs WHERE report_version=2",
             [],
             |r| r.get::<_, u32>(0)
         )
@@ -249,7 +562,7 @@ fn frozen_input_is_bounded_and_recurrence_requires_two_distinct_pulses() {
         .unwrap();
     assert_eq!(
         serde_json::to_string(&input).unwrap(),
-        serde_json::to_string(&PersistenceService::learning_input(&db, &id).unwrap()).unwrap()
+        serde_json::to_string(&f.service.learning_input(&db, &id).unwrap()).unwrap()
     );
     let mut output = report(&input);
     output.observations[0].recurring = true;
@@ -306,6 +619,8 @@ fn proposed_outbox_replay_and_conflict_never_hold_next_pulse() {
             assert_eq!(state(&f).0, "conflict");
         } else {
             assert!(content.contains("status: proposed"));
+            assert!(content.contains("language: en"));
+            assert!(content.contains("# Consultative learning report"));
             assert_eq!(state(&f).0, "published");
         }
         assert_done_unblocked(&f);

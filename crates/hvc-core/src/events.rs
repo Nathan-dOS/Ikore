@@ -6,6 +6,7 @@ use tokio::sync::broadcast;
 use crate::chat_service::{ChatEventEnvelope, ChatEventSink};
 use crate::llm::{LlmEventEnvelope, LlmEventSink};
 use crate::persistence_service::PersistenceService;
+use crate::terminals::{TerminalEventEnvelope, TerminalEventSink};
 use crate::workspace_service::{WorkspaceChangedEvent, WorkspaceEventSink};
 
 pub const DEFAULT_EVENT_CAPACITY: usize = 1_024;
@@ -15,6 +16,7 @@ pub enum AppEvent {
     WorkspaceChanged(WorkspaceChangedEvent),
     Llm(LlmEventEnvelope),
     Chat(ChatEventEnvelope),
+    Terminal(Box<TerminalEventEnvelope>),
 }
 
 impl AppEvent {
@@ -23,6 +25,7 @@ impl AppEvent {
             Self::WorkspaceChanged(_) => crate::workspace_service::WORKSPACE_CHANGED_EVENT,
             Self::Llm(envelope) => envelope.event.event_name(),
             Self::Chat(envelope) => envelope.event_name(),
+            Self::Terminal(envelope) => envelope.event_name(),
         }
     }
 }
@@ -100,6 +103,12 @@ impl LlmEventSink for AppEventBus {
 impl ChatEventSink for AppEventBus {
     fn emit(&self, envelope: &ChatEventEnvelope) {
         self.publish(AppEvent::Chat(envelope.clone()));
+    }
+}
+
+impl TerminalEventSink for AppEventBus {
+    fn emit(&self, envelope: &TerminalEventEnvelope) {
+        self.publish(AppEvent::Terminal(Box::new(envelope.clone())));
     }
 }
 

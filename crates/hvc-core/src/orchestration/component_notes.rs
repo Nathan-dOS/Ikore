@@ -237,13 +237,13 @@ impl PersistenceService {
             proposal.summary.replace("[[", "〔〔").replace("]]", "〕〕")
         ));
         if !proposal.related_components.is_empty() {
-            note.push_str("\n## Componentes relacionados\n\n");
+            note.push_str("\n## Related components\n\n");
             for related in &proposal.related_components {
                 if known.contains(related) || batch.contains(related) {
                     note.push_str(&format!("- [[knowledge/obsidian/components/{related}]]\n"));
                 } else {
                     note.push_str(&format!(
-                        "- Pendente: componente `{related}` ainda não possui nota.\n"
+                        "- Pending: component `{related}` does not have a note yet.\n"
                     ));
                 }
             }
@@ -334,11 +334,11 @@ mod tests {
         fs::create_dir_all(fixture.workspace.path().join("src")).unwrap();
         fs::write(fixture.workspace.path().join("src/lib.rs"), source_content).unwrap();
         let hash = ContentSha256::of(source_content.as_bytes());
-        let mut output = fixture.output("checkpoint_ready", None, "Specification aprovada");
+        let mut output = fixture.output("checkpoint_ready", None, "The specification was approved");
         output.structured_output["componentProposals"] = json!([{
             "componentId": "core-runtime",
             "title": "Core Runtime",
-            "summary": "Coordena o fluxo observado sem aceitar [[links inventados]].",
+            "summary": "Coordinates the observed workflow without accepting [[invented links]].",
             "confidence": 84,
             "sourceFiles": [{"relativePath":"src/lib.rs","contentSha256":hash.as_str()}],
             "relatedComponents": related,
@@ -383,9 +383,9 @@ mod tests {
         assert!(note.contains("generator: \"specification\""));
         assert!(note.contains("generator-version:"));
         assert!(note.contains("confidence: 84"));
-        assert!(note.contains("Pendente: componente `missing-api`"));
+        assert!(note.contains("Pending: component `missing-api` does not have a note yet."));
         assert!(!note.contains("[[knowledge/obsidian/components/missing-api]]"));
-        assert!(!note.contains("[[links inventados]]"));
+        assert!(!note.contains("[[invented links]]"));
         let state: String = fixture
             .service
             .connection()

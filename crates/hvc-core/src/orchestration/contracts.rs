@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent_output_language::{validate_agent_artifact, validate_english_text};
 use crate::persistence_service::{HitlDecision, PulsationStage, PulsationStatus};
 
 use super::{
@@ -48,6 +49,7 @@ pub struct PreparationSettings {
     pub vagueness_threshold: VaguenessScore,
     /// The final v2 default. M0 does not register a Learning worker or persist it.
     pub learning_enabled: bool,
+    pub learning_refinement_mode: super::LearningRefinementMode,
     pub brownfield_llm_budget: u8,
     pub brownfield_expansion_radius: u8,
 }
@@ -58,6 +60,7 @@ impl Default for PreparationSettings {
             preparation_enabled: false,
             vagueness_threshold: VaguenessScore(40),
             learning_enabled: true,
+            learning_refinement_mode: super::LearningRefinementMode::Observe,
             brownfield_llm_budget: 1,
             brownfield_expansion_radius: 1,
         }
@@ -410,6 +413,9 @@ impl ComponentProposalDraft {
         {
             return Err(ContractError::Invalid("proposta de componente"));
         }
+        validate_english_text("component proposal title", &self.title)
+            .and_then(|_| validate_english_text("component proposal summary", &self.summary))
+            .map_err(|_| ContractError::Invalid("component proposal must be English"))?;
         Ok(())
     }
 }
@@ -504,6 +510,17 @@ impl StageOutcome {
                     {
                         return Err(ContractError::Invalid("artifact component_proposal"));
                     }
+                }
+                for artifact in artifacts {
+                    validate_agent_artifact(
+                        &artifact.name,
+                        artifact
+                            .relative_path
+                            .as_ref()
+                            .map(RelativeSourcePath::as_str),
+                        &artifact.content,
+                    )
+                    .map_err(|_| ContractError::Invalid("agent artifact must be English"))?;
                 }
             }
             Self::NeedsClarification { questions } => {

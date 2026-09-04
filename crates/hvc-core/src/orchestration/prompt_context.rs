@@ -89,6 +89,12 @@ impl ContextPackageV1 {
     }
 }
 
+pub(crate) fn code_context_prompt_json(
+    facts: &CodeContextFacts,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&prompt_projection(facts))
+}
+
 impl StageHandoffV1 {
     pub(crate) fn prompt_json(&self) -> Result<String, serde_json::Error> {
         let mut value = serde_json::to_value(self)?;

@@ -27,7 +27,7 @@ impl Fixture {
         let pulse = service
             .create_pulsation(CreatePulsationRequest {
                 project_id: project.id,
-                feature_name: "Implementar contrato validado".into(),
+                feature_name: "Implement a validated contract".into(),
             })
             .unwrap()
             .pulsation;
@@ -78,7 +78,7 @@ impl Fixture {
         path: Option<&str>,
         content: &str,
     ) -> StageExecutionResult {
-        let structured = json!({"summary":"Resultado rastreável","statusUpdate":status,"notes":[],"artifacts":[{"name":"draft","kind":"stage_output","relativePath":path,"content":content}]});
+        let structured = json!({"outputLanguage":"en","summary":"Traceable result","statusUpdate":status,"notes":[],"contextUsage":[],"artifacts":[{"name":"draft","kind":"stage_output","relativePath":path,"content":content}]});
         StageExecutionResult {
             provider_used: "fixture".into(),
             model_used: "fixture".into(),
@@ -94,6 +94,7 @@ impl Fixture {
             structured_output: structured,
             schema_json: json!({}),
             tool_trace: json!([]),
+            context_trace: crate::agent_runtime::ContextRetrievalTrace::default(),
             artifacts: vec![GeneratedArtifact {
                 name: "draft".into(),
                 kind: "stage_output".into(),
@@ -215,6 +216,53 @@ fn failure_inside_acceptance_rolls_back_output_and_checkpoint() {
     assert_eq!(f.count("stage_acceptances"), 1);
     assert!(f.accept(&output).is_err());
     assert_eq!(f.count("artifacts"), 1);
+}
+
+#[test]
+fn accepted_stage_persists_context_pool_delivery_and_citation_atomically() {
+    let f = Fixture::new(PulsationStage::Contract);
+    let mut output = f.output("checkpoint_ready", None, "contract");
+    output.context_trace = crate::agent_runtime::ContextRetrievalTrace {
+        requested_strategy: "yaml_graph_rag".into(),
+        strategy_used: "yaml_graph_rag".into(),
+        adaptive_mode: "on".into(),
+        expansion_depth: Some(2),
+        fallback_used: false,
+        max_similarity: Some(0.88),
+        duration_ms: 42,
+        items: vec![crate::agent_runtime::ContextRetrievalItemTrace {
+            relative_path: "knowledge/obsidian/features/root.md".into(),
+            item_kind: "note".into(),
+            content_sha256: Some("a".repeat(64)),
+            rank: 1,
+            graph_score: Some(100),
+            semantic_similarity: Some(0.88),
+            final_score: Some(194),
+            delivered: true,
+            delivered_chars: 512,
+            cited: true,
+            citation_reason: Some("Contrato normativo".into()),
+        }],
+    };
+    f.accept(&output).unwrap();
+    let db = f.service.connection().unwrap();
+    let totals: (i64, i64, i64) = db
+        .query_row(
+            "SELECT considered_total,delivered_total,cited_total FROM context_retrieval_runs WHERE agent_run_id=?1",
+            [&f.run],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(totals, (1, 1, 1));
+    assert_eq!(
+        db.query_row(
+            "SELECT citation_reason FROM context_retrieval_items",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "Contrato normativo"
+    );
 }
 
 #[test]
@@ -567,6 +615,49 @@ fn publication_bases_survive_revision_without_promoting_superseded_content() {
         "second version",
     )
     .unwrap();
+}
+
+#[test]
+fn non_english_agent_artifact_is_rejected_before_persistence() {
+    let fixture = Fixture::new(PulsationStage::Intake);
+    let error = fixture
+        .accept(&fixture.output(
+            "advance",
+            Some("reports/result.md"),
+            "Este arquivo foi gerado pelo agente",
+        ))
+        .unwrap_err();
+
+    assert!(error.to_string().contains("agent artifact must be English"));
+    assert_eq!(fixture.count("artifacts"), 0);
+    assert_eq!(fixture.count("agent_run_outputs"), 0);
+}
+
+#[test]
+fn invalid_language_metadata_or_structured_text_is_rejected_before_persistence() {
+    for mutation in ["missing_marker", "non_english_summary"] {
+        let fixture = Fixture::new(PulsationStage::Intake);
+        let mut output = fixture.output("advance", None, "English artifact content");
+        match mutation {
+            "missing_marker" => {
+                output
+                    .structured_output
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("outputLanguage");
+            }
+            "non_english_summary" => {
+                output.structured_output["summary"] = json!("Relatorio gerado pelo agente");
+            }
+            _ => unreachable!(),
+        }
+        output.raw_output = output.structured_output.to_string();
+
+        let error = fixture.accept(&output).unwrap_err();
+        assert!(error.to_string().contains("must"));
+        assert_eq!(fixture.count("artifacts"), 0);
+        assert_eq!(fixture.count("agent_run_outputs"), 0);
+    }
 }
 
 #[cfg(windows)]

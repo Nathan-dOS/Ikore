@@ -64,6 +64,8 @@ pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> An
 
     let mode = snapshot.config.routing_v2_mode.as_str();
     let strategy = snapshot.config.context_strategy.as_str();
+    let adaptive_mode = snapshot.config.adaptive_context_mode.as_str();
+    let adaptive_policy = snapshot.config.dynamic_context_policy.clone();
     let selected_profile = snapshot
         .profiles
         .iter()
@@ -189,7 +191,8 @@ pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> An
                         .child(model.context_limit_input.clone())
                         .child(action("context-budget-save","Salvar orçamento de contexto",!busy,cx,|model,cx|model.save_context_limit(cx)))
                         .child(toggle("learning-enabled", "LEARNING CONSULTIVO", if snapshot.preparation.learning_enabled {"on"}else{"off"}, !busy,cx,|model,cx|model.toggle_learning(cx)))
-                        .child(div().text_xs().text_color(theme::text_muted()).child("Sem fila: contexto sob demanda. Learning produz propostas após Done, sem aplicar regras ou reprocessar histórico. Até 3 chamadas por ciclo; demanda principal tem prioridade."))
+                        .child(toggle("learning-refinement-mode", "REFINAMENTO DO GRAFO", snapshot.preparation.learning_refinement_mode.as_str(), !busy && snapshot.preparation.learning_enabled,cx,|model,cx|model.toggle_learning_refinement_mode(cx)))
+                        .child(div().text_xs().text_color(theme::text_muted()).child("Learning roda após Done ou Failed. Observe audita sem criar propostas; Propose permite sugestões por IDs do host, mas toda escrita ainda exige aprovação humana e CAS."))
                         .child(toggle("brownfield-llm-budget", "BROWNFIELD · CHAMADAS POR PULSAÇÃO", snapshot.preparation.brownfield_llm_budget.to_string(), !busy,cx,|model,cx|model.cycle_brownfield_llm_budget(cx)))
                         .child(toggle("brownfield-expansion-radius", "BROWNFIELD · RAIO", format!("k={}", snapshot.preparation.brownfield_expansion_radius), !busy,cx,|model,cx|model.toggle_brownfield_expansion_radius(cx)))
                         .child(div().text_xs().text_color(theme::text_muted()).child("Enriquecimento é oportunista: 0 não chama LLM; k=1 usa vizinhos diretos e k=2 permite um segundo salto. Cada lote publica no máximo duas propostas.")),
@@ -205,6 +208,25 @@ pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> An
                         .child(div().flex().gap_2()
                             .child(action("settings-embedding-top-k", "Alternar top K", !busy, cx, |model, cx| model.cycle_embedding_top_k(cx)))
                             .child(action("settings-reindex", "Reindexar workspace", !busy, cx, |model, cx| model.reindex_embeddings(cx)))),
+                )
+                .child(
+                    card("Navegação adaptativa do Segundo Cérebro")
+                        .child(div().text_xs().text_color(theme::text_muted()).child(
+                            "Shadow mede a política sem alterar o prompt; On ativa expansão dinâmica e resolução exata de código.",
+                        ))
+                        .child(toggle("settings-adaptive-mode", "ATIVAÇÃO", adaptive_mode, !busy, cx, |model, cx| model.cycle_adaptive_context_mode(cx)))
+                        .child(
+                            div().grid().grid_cols(3).gap_2()
+                                .child(toggle("settings-adaptive-initial-k", "K INICIAL", adaptive_policy.initial_k.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_initial_k(cx)))
+                                .child(toggle("settings-adaptive-max-k", "K MÁXIMO", adaptive_policy.max_k.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_max_k(cx)))
+                                .child(toggle("settings-adaptive-similarity", "SIMILARIDADE", format!("{:.2}", adaptive_policy.min_similarity), !busy, cx, |model, cx| model.cycle_dynamic_min_similarity(cx)))
+                                .child(toggle("settings-adaptive-min-candidates", "MÍN. NOTAS", adaptive_policy.min_candidates_count.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_min_candidates(cx)))
+                                .child(toggle("settings-adaptive-max-notes", "MÁX. NOTAS", adaptive_policy.max_notes_budget.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_max_notes(cx)))
+                                .child(toggle("settings-adaptive-beam", "BEAM", adaptive_policy.beam_width.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_beam_width(cx)))
+                                .child(toggle("settings-adaptive-files", "ARQUIVOS", adaptive_policy.max_source_files.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_max_source_files(cx)))
+                                .child(toggle("settings-adaptive-code", "CÓDIGO", format!("{} chars", adaptive_policy.max_code_chars), !busy, cx, |model, cx| model.cycle_dynamic_max_code_chars(cx)))
+                                .child(toggle("settings-adaptive-timeout", "TIMEOUT", format!("{} ms", adaptive_policy.timeout_ms), !busy, cx, |model, cx| model.cycle_dynamic_timeout(cx))),
+                        ),
                 )
                 .child(
                     card("Conexão selecionada / nova")

@@ -1,7 +1,9 @@
 use std::fs;
 use std::time::Duration;
 
-use hvc_core::agent_runtime::{AgentRuntimeConfig, StageExecutionInput, execute_stage};
+use hvc_core::agent_runtime::{
+    AgentRuntimeConfig, AgentRuntimeError, StageExecutionInput, execute_stage,
+};
 use hvc_core::orchestration::{
     ContentSha256, ContractError, ExecutionFence, ExpectedFileContent, PublicationReplayDecision,
     RelativeSourcePath, SourceSnapshot, publication_replay_decision, validate_result_acceptance,
@@ -30,7 +32,7 @@ fn input(fixture: &PulsationFixture) -> StageExecutionInput {
 
 fn valid_output() -> String {
     json!({
-        "summary":"Specification fixture", "statusUpdate":"checkpoint_ready", "notes":[], "componentProposals":[],
+        "outputLanguage":"en", "summary":"Specification fixture", "statusUpdate":"checkpoint_ready", "contextUsage":[], "notes":[], "componentProposals":[],
         "artifacts":[{"name":"spec","kind":"specification","content":"# Specification fixture\n"}]
     })
     .to_string()
@@ -182,7 +184,7 @@ async fn production_runtime_uses_injected_gateway_and_validates_real_output() {
 async fn production_runtime_rejects_invalid_schema_from_the_provider() {
     let fixture = PulsationFixture::new(LegacyPulseLayout::TwoQueued);
     let gateway = ControlledLlmGateway::new(
-        r#"{"summary":"bad","statusUpdate":"unknown","notes":[],"artifacts":[]}"#,
+        r#"{"outputLanguage":"en","summary":"bad","statusUpdate":"unknown","contextUsage":[],"notes":[],"artifacts":[]}"#,
     );
     gateway.release_next();
     let result = execute_stage(
@@ -194,8 +196,36 @@ async fn production_runtime_rejects_invalid_schema_from_the_provider() {
         &CancellationToken::new(),
     )
     .await;
-    assert!(result.is_err());
+    let failure = result.expect_err("invalid provider output must fail");
+    assert!(matches!(failure.error, AgentRuntimeError::Schema(_)));
+    assert!(
+        failure.context_trace.is_some(),
+        "the typed trace must survive validation failures after the LLM call"
+    );
     assert_eq!(gateway.call_count(), 1);
+}
+
+#[tokio::test]
+async fn production_runtime_preserves_an_empty_trace_when_cancelled_before_the_provider() {
+    let fixture = PulsationFixture::new(LegacyPulseLayout::TwoQueued);
+    let gateway = ControlledLlmGateway::new(valid_output());
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    let failure = execute_stage(
+        &FixedEmbeddingGateway::default(),
+        &gateway,
+        &hvc_core::document_cache::SharedDocumentCache::default(),
+        &AgentRuntimeConfig::default(),
+        &input(&fixture),
+        &cancellation,
+    )
+    .await
+    .expect_err("pre-provider cancellation must fail");
+
+    assert!(matches!(failure.error, AgentRuntimeError::Cancelled));
+    assert_eq!(failure.context_trace.unwrap().considered_total(), 0);
+    assert_eq!(gateway.call_count(), 0);
 }
 
 #[tokio::test]

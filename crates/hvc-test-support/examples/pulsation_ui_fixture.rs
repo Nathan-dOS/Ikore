@@ -123,7 +123,7 @@ fn main() {
             && input["evidence"].is_array()
         {
             return response(
-                json!({"schema_version":1,"observations":[],"recommendations":[],"limitations":["Smoke local simulado; não comprova execução de código ou ganho com LLM real."]}),
+                json!({"schema_version":2,"observations":[],"recommendations":[],"context_assessments":[],"graph_selections":[],"limitations":["The simulated local smoke does not prove code execution or gains from a real LLM."]}),
             );
         }
         if user.contains("- stage: SPECIFICATION")
@@ -131,12 +131,12 @@ fn main() {
             && !user.contains("JWT assinado")
         {
             return response(
-                json!({"summary":"Formato precisa de confirmação","statusUpdate":"needs_clarification","notes":[],"artifacts":[],"componentProposals":[],"questions":[{"id":"token_format","question":"Qual formato de token usar?","rationale":"Responda JWT assinado para a fixture."}]}),
+                json!({"outputLanguage":"en","summary":"The format requires confirmation","statusUpdate":"needs_clarification","contextUsage":[],"notes":[],"artifacts":[],"componentProposals":[],"questions":[{"id":"token_format","question":"Which token format should be used?","rationale":"Use a signed JWT for the fixture."}]}),
             );
         }
         if user.contains("- stage: Code") && user.contains("M5 Conflito") {
             return response(
-                json!({"summary":"Proposta colide com edição humana","statusUpdate":"advance","notes":[],"artifacts":[{"name":"Conflito de base","kind":"stage_note","relativePath":"notes/conflict.md","content":"Proposta simulada que não deve sobrescrever edição humana."}]}),
+                json!({"outputLanguage":"en","summary":"The proposal conflicts with a human edit","statusUpdate":"advance","contextUsage":[],"notes":[],"artifacts":[{"name":"Baseline conflict","kind":"stage_note","relativePath":"notes/conflict.md","content":"This simulated proposal must not overwrite a human edit."}]}),
             );
         }
         stage_response(request)

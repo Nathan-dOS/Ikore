@@ -161,7 +161,7 @@ impl PersistenceService {
                 params![item.artifact_id, now],
             )?;
         }
-        tx.execute("UPDATE artifact_publications SET state='cancelled' WHERE project_id=?1 AND state IN ('pending','applying','conflict') AND pulsation_id IN (SELECT id FROM pulsations WHERE status='failed')",[&request.project_id])?;
+        tx.execute("UPDATE artifact_publications SET state='cancelled' WHERE project_id=?1 AND job_class='main' AND state IN ('pending','applying','conflict') AND pulsation_id IN (SELECT id FROM pulsations WHERE status='failed')",[&request.project_id])?;
         for id in &current.owner_candidates {
             tx.execute("UPDATE pulsations SET coordination_hold=CASE WHEN id=?2 THEN 0 ELSE 1 END WHERE id=?1",params![id,request.resume_pulsation_id])?;
         }

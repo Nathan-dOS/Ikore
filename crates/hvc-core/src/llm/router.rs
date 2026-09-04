@@ -273,6 +273,13 @@ impl ProviderRouter {
             self.event_sink.clone(),
             request.execution_id.0.clone(),
             request.generation_id.0.clone(),
+            crate::llm::AgentExecutionContext {
+                project_id: request.project_id.clone(),
+                pulsation_id: request.pulsation_id.clone(),
+                job_id: request.job_id.clone(),
+                agent_role: request.agent_role,
+                stage: request.stage.clone(),
+            },
         );
         emitter.emit(LlmStreamEvent::RouteStarted {
             route_id: execution_route.id.clone(),
@@ -1082,24 +1089,32 @@ struct ExecutionEmitter {
     execution_id: String,
     generation_id: String,
     sequence: Arc<AtomicU64>,
+    context: crate::llm::AgentExecutionContext,
 }
 
 impl ExecutionEmitter {
-    fn new(sink: Arc<dyn LlmEventSink>, execution_id: String, generation_id: String) -> Self {
+    fn new(
+        sink: Arc<dyn LlmEventSink>,
+        execution_id: String,
+        generation_id: String,
+        context: crate::llm::AgentExecutionContext,
+    ) -> Self {
         Self {
             sink,
             execution_id,
             generation_id,
             sequence: Arc::new(AtomicU64::new(0)),
+            context,
         }
     }
 
     fn emit(&self, event: LlmStreamEvent) {
         self.sink.emit(&LlmEventEnvelope {
-            protocol_version: 1,
+            protocol_version: 2,
             execution_id: self.execution_id.clone(),
             generation_id: self.generation_id.clone(),
             sequence: self.sequence.fetch_add(1, Ordering::SeqCst) + 1,
+            context: Some(self.context.clone()),
             event,
         });
     }

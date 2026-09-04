@@ -29,8 +29,12 @@ fn detail(f: &Fixture, pulse: &str) -> PulsationCoordinationSnapshot {
 }
 async fn waiting_successor() -> (Fixture, Pulsation) {
     let f = Fixture::new(PulsationStage::Specification);
-    f.accept(&f.output("checkpoint_ready", None, "spec aprovada apenas após HITL"))
-        .unwrap();
+    f.accept(&f.output(
+        "checkpoint_ready",
+        None,
+        "The specification is approved only after HITL review",
+    ))
+    .unwrap();
     fs::write(
         f.workspace.path().join("auth.rs"),
         "use crate::tokens;\npub fn validate_token() -> bool { false }\n",
@@ -462,7 +466,7 @@ fn clarification_checkpoint_survives_restart_and_answers_cannot_approve_artifact
     let f = Fixture::new(PulsationStage::Specification);
     let mut output = f.output("needs_clarification", None, "unused");
     output.artifacts.clear();
-    output.structured_output = json!({"summary":"preciso de decisão","statusUpdate":"needs_clarification","notes":[],"artifacts":[],"questions":[{"id":"auth","question":"Qual formato de token?","rationale":"Contrato de autenticação"}]});
+    output.structured_output = json!({"outputLanguage":"en","summary":"A human decision is required","statusUpdate":"needs_clarification","contextUsage":[],"notes":[],"artifacts":[],"questions":[{"id":"auth","question":"Which token format should be used?","rationale":"Defines the authentication contract"}]});
     f.accept(&output).unwrap();
     let pending = detail(&f, &f.pulse.id).questions.unwrap();
     assert!(

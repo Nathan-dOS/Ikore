@@ -14,7 +14,11 @@ pub mod learning_report;
 mod policy;
 mod prompt_context;
 mod tree_sitter_context;
-pub use learning_report::{LearningActionRequest, LearningRunSnapshot};
+pub use learning_report::{
+    ContextAuditStageSnapshot, LearningActionRequest, LearningGraphDecision,
+    LearningGraphProposalSnapshot, LearningRefinementMode, LearningRunSnapshot,
+    ReviewLearningGraphDecision, ReviewLearningGraphRequest,
+};
 pub(crate) mod publication;
 pub mod task_refine;
 pub(crate) mod upgrade;
@@ -26,6 +30,7 @@ pub use code_context::{LexicalCodeContextService, RoutedCodeContextService};
 pub use context::*;
 pub use contracts::*;
 pub use policy::*;
+pub(crate) use prompt_context::code_context_prompt_json;
 pub use tree_sitter_context::{
     LEXICAL_FALLBACK_VERSION, RUST_QUERY_VERSION, SourceLanguage, SourceStructuralFacts,
     StructuralParseStatus, TREE_SITTER_PARSER_VERSION, TYPESCRIPT_QUERY_VERSION,

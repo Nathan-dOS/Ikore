@@ -447,6 +447,8 @@ mod tests {
                     outgoing_paths: vec!["Architecture/Auth.md".into()],
                     backlink_paths: Vec::new(),
                     schema_warnings: Vec::new(),
+                    source_files: Vec::new(),
+                    test_files: Vec::new(),
                 },
                 VaultNoteSummary {
                     relative_path: "Architecture/Auth.md".into(),
@@ -458,6 +460,8 @@ mod tests {
                     outgoing_paths: Vec::new(),
                     backlink_paths: vec!["Features/Login.md".into()],
                     schema_warnings: Vec::new(),
+                    source_files: Vec::new(),
+                    test_files: Vec::new(),
                 },
             ],
             edges: vec![VaultEdge {
@@ -465,6 +469,7 @@ mod tests {
                 target_path: "Architecture/Auth.md".into(),
             }],
             broken_links: Vec::<VaultBrokenLink>::new(),
+            broken_file_references: Vec::new(),
         }
     }
 

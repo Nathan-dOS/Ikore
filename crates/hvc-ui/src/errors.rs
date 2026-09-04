@@ -96,6 +96,7 @@ fn persistence_code(code: PersistenceErrorCode) -> &'static str {
         PersistenceErrorCode::SchemaViolation => "schema_violation",
         PersistenceErrorCode::RouteConflict => "route_conflict",
         PersistenceErrorCode::StreamFailed => "stream_failed",
+        PersistenceErrorCode::CliExecutionFailed => "cli_execution_failed",
     }
 }
 

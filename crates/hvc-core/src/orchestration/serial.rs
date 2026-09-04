@@ -48,7 +48,7 @@ impl PersistenceService {
         if !matches!(request.decision, HitlDecision::Reject) {
             Self::check_project_admission(&tx, pulse)?;
         }
-        let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM checkpoints c JOIN pulsations p ON p.id=c.pulsation_id WHERE c.id=?1 AND p.id=?2 AND p.state_version=?3 AND c.status='waiting' AND c.kind='artifact_review' AND p.status='checkpoint' AND c.input_revision=p.input_revision AND (c.stage=p.stage OR (c.stage='Specification' AND p.stage='SPECIFICATION')))",params![request.checkpoint_id,pulse,request.expected_state_version],|r|r.get(0))?;
+        let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM checkpoints c JOIN pulsations p ON p.id=c.pulsation_id WHERE c.id=?1 AND p.id=?2 AND p.state_version=?3 AND c.status='waiting' AND c.purpose='artifact_review' AND p.status='checkpoint' AND c.input_revision=p.input_revision AND (c.stage=p.stage OR (c.stage='Specification' AND p.stage='SPECIFICATION')))",params![request.checkpoint_id,pulse,request.expected_state_version],|r|r.get(0))?;
         let waiting: i64 = tx.query_row(
             "SELECT COUNT(*) FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
             [pulse],
@@ -85,6 +85,7 @@ impl PersistenceService {
                 )?;
                 Self::mark_effects_for_review(&tx, pulse, "hitl_rejected_with_effects")?;
                 tx.execute("UPDATE artifact_publications SET state='cancelled' WHERE pulsation_id=?1 AND state IN ('pending','applying')",[pulse])?;
+                Self::enqueue_learning(&tx, pulse)?;
             }
             HitlDecision::RequestRevision => {
                 tx.execute("UPDATE pulsations SET integration_checkpoint_id=NULL,integration_state_version=NULL WHERE id=?1", [pulse])?;
@@ -305,6 +306,8 @@ impl PersistenceService {
         execution: &StageExecutionResult,
         root: &Path,
     ) -> Result<(), PersistenceServiceError> {
+        crate::agent_runtime::validate_stage_output_language(&execution.structured_output)
+            .map_err(invalid)?;
         let outcome = execution.outcome()?;
         outcome.validate_for(handoff.stage).map_err(invalid)?;
         handoff
@@ -325,6 +328,7 @@ impl PersistenceService {
         }
         Self::update_agent_run_metrics(&tx, run_id, execution)?;
         Self::persist_agent_run_output(&tx, run_id, job, execution)?;
+        Self::persist_context_retrieval_trace(&tx, run_id, job, &execution.context_trace)?;
         let now = Self::now_iso();
         tx.execute("INSERT INTO stage_acceptances(job_id,generation,agent_run_id,fence_json,outcome_json,handoff_json,accepted_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![job.id,handoff.recipient.generation,run_id,serde_json::to_string(&handoff.recipient).map_err(invalid)?,serde_json::to_string(&outcome).map_err(invalid)?,serde_json::to_string(handoff).map_err(invalid)?,now])?;
         let disposition = stage_disposition(current.stage, &outcome).map_err(invalid)?;
@@ -358,6 +362,16 @@ impl PersistenceService {
                 }
                 if let Some(path) = path {
                     publication::safe_target(root, path, false)?;
+                    crate::workspace_service::validate_generated_vault_note(
+                        root,
+                        path,
+                        &artifact.content,
+                    )
+                    .map_err(|error| {
+                        let command_error: crate::workspace_service::WorkspaceCommandError =
+                            error.into();
+                        invalid(command_error.message)
+                    })?;
                     if !paths.insert(path.to_ascii_lowercase()) {
                         return Err(invalid("Artifacts têm destinos duplicados."));
                     }
@@ -420,6 +434,7 @@ impl PersistenceService {
                     [pulse],
                 )?;
                 Self::mark_effects_for_review(&tx, pulse, "stage_failed")?;
+                Self::enqueue_learning(&tx, pulse)?;
             }
             StageDisposition::AwaitClarification => {
                 let StageOutcome::NeedsClarification { questions } = &outcome else {
@@ -528,7 +543,7 @@ impl PersistenceService {
     pub(super) fn apply_publication_unit(&self, id: &str) -> Result<(), PersistenceServiceError> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT p.workspace_path,o.relative_path,o.expected_sha256,a.content,o.pulsation_id,o.desired_sha256,a.content_sha256,o.job_class,a.kind FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN projects p ON p.id=o.project_id JOIN pulsations u ON u.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE j.generation=a.generation AND j.status='done' AND o.artifact_id=?1 AND o.state='applying' AND a.acceptance='accepted' AND a.input_revision=u.input_revision AND u.status<>'failed'",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?))).optional()?;
+        let row=tx.query_row("SELECT p.workspace_path,o.relative_path,o.expected_sha256,a.content,o.pulsation_id,o.desired_sha256,a.content_sha256,o.job_class,a.kind FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN projects p ON p.id=o.project_id JOIN pulsations u ON u.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE j.generation=a.generation AND j.status='done' AND o.artifact_id=?1 AND o.state='applying' AND a.acceptance='accepted' AND a.input_revision=u.input_revision AND (u.status<>'failed' OR (o.job_class='background' AND a.kind IN ('learning_report','knowledge_graph_patch'))) ",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?))).optional()?;
         let Some((root, path, expected, content, pulse, desired, artifact_hash, class, kind)) = row
         else {
             tx.commit()?;
@@ -537,8 +552,12 @@ impl PersistenceService {
         if class == "background" {
             let valid = match kind.as_str() {
                 "learning_report" => {
-                    let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM learning_runs l JOIN pulsations p ON p.id=l.pulsation_id WHERE l.artifact_id=?1 AND l.state='publishing' AND p.status='done')",[id],|r|r.get(0))?;
+                    let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM learning_runs l JOIN pulsations p ON p.id=l.pulsation_id WHERE l.artifact_id=?1 AND l.state='publishing' AND p.status IN ('done','failed'))",[id],|r|r.get(0))?;
                     valid && Self::preparation_settings(&tx)?.learning_enabled
+                }
+                "knowledge_graph_patch" => {
+                    let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM learning_graph_proposals proposal WHERE proposal.artifact_id=?1 AND proposal.decision='approved' AND proposal.publication_state='applying')",[id],|row|row.get(0))?;
+                    valid
                 }
                 "component" => tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM brownfield_component_notes note JOIN runtime_settings consent ON consent.key='brownfield.onboarding_consent.'||note.project_id AND consent.value='true' WHERE note.publication_artifact_id=?1 AND note.publication_state='publishing' AND note.mapping_status='proposed')",
@@ -554,7 +573,7 @@ impl PersistenceService {
         } else {
             Self::check_project_admission(&tx, &pulse)?;
         }
-        if self.user_cancellation_pending(&pulse) {
+        if class != "background" && self.user_cancellation_pending(&pulse) {
             return Ok(());
         }
         let expected = expected
@@ -589,11 +608,17 @@ impl PersistenceService {
                 if class == "background" {
                     if kind == "learning_report" {
                         tx.execute("UPDATE learning_runs SET state='published',diagnostic=NULL,updated_at=?2 WHERE artifact_id=?1",params![id,Self::now_iso()])?;
+                    } else if kind == "knowledge_graph_patch" {
+                        tx.execute("UPDATE learning_graph_proposals SET publication_state='applied',diagnostic=NULL,updated_at=?2 WHERE artifact_id=?1",params![id,Self::now_iso()])?;
+                        Self::mark_index_dirty(&tx, Path::new(&root))?;
                     } else if kind == "component" {
                         tx.execute("UPDATE brownfield_component_notes SET publication_state='published',diagnostic=NULL,updated_at=?2 WHERE publication_artifact_id=?1",params![id,Self::now_iso()])?;
                     }
                     tx.commit()?;
-                    if kind == "component" {
+                    if matches!(kind.as_str(), "component" | "knowledge_graph_patch") {
+                        if kind == "knowledge_graph_patch" {
+                            self.document_cache.invalidate(Path::new(&root));
+                        }
                         self.enqueue_embedding_path_change(Path::new(&root), &path)?;
                     }
                     return Ok(());
@@ -616,6 +641,8 @@ impl PersistenceService {
                 if class == "background" {
                     if kind == "learning_report" {
                         tx.execute("UPDATE learning_runs SET state='conflict',diagnostic=?2,updated_at=?3 WHERE artifact_id=?1",params![id,error.to_string(),Self::now_iso()])?;
+                    } else if kind == "knowledge_graph_patch" {
+                        tx.execute("UPDATE learning_graph_proposals SET publication_state='conflict',diagnostic=?2,updated_at=?3 WHERE artifact_id=?1",params![id,error.to_string(),Self::now_iso()])?;
                     } else if kind == "component" {
                         tx.execute("UPDATE brownfield_component_notes SET publication_state='conflict',diagnostic=?2,updated_at=?3 WHERE publication_artifact_id=?1",params![id,error.to_string(),Self::now_iso()])?;
                     }

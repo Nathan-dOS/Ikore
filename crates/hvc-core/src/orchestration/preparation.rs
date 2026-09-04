@@ -25,6 +25,12 @@ impl PersistenceService {
         if let Some(value) = Self::read_runtime_setting(db, "orchestration.learning_enabled")? {
             settings.learning_enabled = value == "true";
         }
+        if let Some(value) =
+            Self::read_runtime_setting(db, "orchestration.learning_refinement_mode")?
+        {
+            settings.learning_refinement_mode = LearningRefinementMode::parse(&value)
+                .ok_or_else(|| invalid("Modo de refinamento Learning inválido."))?;
+        }
         if let Some(value) = Self::read_runtime_setting(db, "orchestration.vagueness_threshold")? {
             settings.vagueness_threshold = value
                 .parse::<u8>()
@@ -80,6 +86,10 @@ impl PersistenceService {
                 settings.learning_enabled.to_string(),
             ),
             (
+                "orchestration.learning_refinement_mode",
+                settings.learning_refinement_mode.as_str().to_string(),
+            ),
+            (
                 "brownfield_llm_budget",
                 settings.brownfield_llm_budget.to_string(),
             ),
@@ -90,7 +100,11 @@ impl PersistenceService {
         ] {
             Self::upsert_runtime_setting(&tx, key, &value)?;
         }
-        let mut cancelled = Self::configure_learning(&tx, settings.learning_enabled)?;
+        let mut cancelled = Self::configure_learning(
+            &tx,
+            settings.learning_enabled,
+            settings.learning_refinement_mode,
+        )?;
         if settings.brownfield_llm_budget == 0 {
             let enrichment_jobs = tx
                 .prepare(

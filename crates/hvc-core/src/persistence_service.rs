@@ -6,12 +6,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::agent_runtime::{
-    AgentRuntimeConfig, AgentRuntimeError, ContextStrategy, EmbeddingProvider, LlmProvider,
-    ProviderKeyStatus, StageExecutionInput, StageExecutionResult, execute_stage,
+    AdaptiveContextMode, AgentRuntimeConfig, AgentRuntimeError, ContextRetrievalTrace,
+    ContextStrategy, DynamicContextPolicy, EmbeddingProvider, LlmProvider, ProviderKeyStatus,
+    StageExecutionInput, StageExecutionResult, execute_stage_with_cli,
 };
 use crate::embedding_service::{EmbeddingGateway, OllamaEmbeddingGateway};
 use crate::llm::{
-    Clock, CompressionPreview, CompressionPreviewRequest, CredentialStore,
+    AgentRole, Clock, CompressionPreview, CompressionPreviewRequest, CredentialStore,
     DeleteProviderConnectionRequest, DeleteProviderRouteRequest, JitterSource,
     KeyringCredentialStore, LlmError, LlmErrorKind, LlmEventSink, LlmExecutionSnapshot,
     LlmResilienceSnapshot, LlmRoutingMetric, NoopEventSink, ProviderConnection, ProviderProfile,
@@ -34,6 +35,7 @@ use uuid::Uuid;
 use crate::orchestration::brownfield::{
     BrownfieldConsentState, BrownfieldCoverageMetrics, BrownfieldOnboardingStatus,
 };
+use crate::terminals::TerminalService;
 
 #[path = "orchestration/anticipation.rs"]
 mod anticipation;
@@ -86,6 +88,8 @@ const SETTING_RUNTIME_EMBEDDING_ENABLED: &str = "runtime.embedding_enabled";
 const SETTING_RUNTIME_EMBEDDING_PROVIDER: &str = "runtime.embedding_provider";
 const SETTING_RUNTIME_EMBEDDING_MODEL: &str = "runtime.embedding_model";
 const SETTING_RUNTIME_EMBEDDING_TOP_K: &str = "runtime.embedding_top_k";
+const SETTING_RUNTIME_ADAPTIVE_CONTEXT_MODE: &str = "runtime.adaptive_context_mode";
+const SETTING_RUNTIME_DYNAMIC_CONTEXT_POLICY: &str = "runtime.dynamic_context_policy_v1";
 const SETTING_RUNTIME_ROUTING_V2_MODE: &str = "runtime.routing_v2_mode";
 
 #[derive(Debug, Clone, Serialize)]
@@ -104,6 +108,7 @@ pub enum PersistenceErrorCode {
     SchemaViolation,
     RouteConflict,
     StreamFailed,
+    CliExecutionFailed,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -126,6 +131,7 @@ pub enum PersistenceServiceError {
     Io(io::Error),
     Runtime(String),
     Retryable(String),
+    Cli { code: String, message: String },
     Cancelled(String),
     Llm(LlmError),
 }
@@ -138,6 +144,7 @@ impl std::fmt::Display for PersistenceServiceError {
             | Self::Runtime(message)
             | Self::Retryable(message)
             | Self::Cancelled(message) => write!(f, "{message}"),
+            Self::Cli { message, .. } => write!(f, "{message}"),
             Self::Llm(error) => write!(f, "{error}"),
             Self::Db(error) => write!(f, "Falha de banco local: {error}"),
             Self::Migration(error) => write!(f, "Falha de migração: {error}"),
@@ -188,6 +195,15 @@ impl From<PersistenceServiceError> for PersistenceCommandError {
                 message,
                 details: None,
                 remediation: None,
+            },
+            PersistenceServiceError::Cli { code, message } => Self {
+                code: PersistenceErrorCode::CliExecutionFailed,
+                message,
+                details: Some(serde_json::json!({ "cliErrorCode": code })),
+                remediation: Some(
+                    "Revise o diagnóstico e escolha entre usar a API, tentar a CLI novamente ou cancelar a pulsação."
+                        .to_string(),
+                ),
             },
             PersistenceServiceError::Llm(error) => {
                 let code = match error.kind {
@@ -250,6 +266,7 @@ impl From<AgentRuntimeError> for PersistenceServiceError {
                 Self::Runtime(format!("Falha ao processar JSON do agente: {error}"))
             }
             AgentRuntimeError::Provider(message) => Self::Runtime(message),
+            AgentRuntimeError::Cli { code, message } => Self::Cli { code, message },
             AgentRuntimeError::Schema(message) => Self::Runtime(message),
             AgentRuntimeError::Cancelled => {
                 Self::Cancelled("Execução cancelada durante chamada do agente.".to_string())
@@ -519,6 +536,24 @@ pub enum HitlDecision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum CliFallbackDecision {
+    UseApi,
+    RetryCli,
+    Cancel,
+}
+
+impl CliFallbackDecision {
+    const fn as_db_value(self) -> &'static str {
+        match self {
+            Self::UseApi => "use_api",
+            Self::RetryCli => "retry_cli",
+            Self::Cancel => "cancel",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CheckpointStatus {
     Waiting,
     Approved,
@@ -723,6 +758,36 @@ pub struct HitlCheckpoint {
     pub state_version: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliFallbackCheckpoint {
+    pub checkpoint_id: String,
+    pub pulsation_id: String,
+    pub project_id: String,
+    pub feature_name: String,
+    pub agent_role: AgentRole,
+    pub terminal_run_id: Option<String>,
+    pub error_code: String,
+    pub diagnostic: String,
+    pub state_version: u64,
+    pub stage: PulsationStage,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveCliFallbackRequest {
+    pub checkpoint_id: String,
+    pub expected_state_version: u64,
+    pub decision: CliFallbackDecision,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveCliFallbackResponse {
+    pub pulsation: Pulsation,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplyHitlDecisionResponse {
@@ -763,6 +828,8 @@ pub struct UpdateAgentRuntimeConfigRequest {
     pub embedding_provider: Option<EmbeddingProvider>,
     pub embedding_model: Option<String>,
     pub embedding_top_k: Option<usize>,
+    pub adaptive_context_mode: Option<AdaptiveContextMode>,
+    pub dynamic_context_policy: Option<DynamicContextPolicy>,
     pub routing_v2_mode: Option<RoutingMode>,
 }
 
@@ -977,6 +1044,7 @@ pub struct PersistenceService {
     llm_repository: SqliteLlmRepository,
     credentials: Arc<dyn CredentialStore>,
     llm_router: Arc<ProviderRouter>,
+    terminal_service: Arc<Mutex<Option<Arc<TerminalService>>>>,
     pub(crate) document_cache: crate::document_cache::SharedDocumentCache,
     clock: Arc<dyn Clock>,
 }
@@ -1044,6 +1112,7 @@ impl PersistenceService {
             llm_repository,
             credentials,
             llm_router,
+            terminal_service: Arc::new(Mutex::new(None)),
             document_cache: Default::default(),
             clock,
         })
@@ -1054,6 +1123,13 @@ impl PersistenceService {
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.busy_timeout(Duration::from_secs(5))?;
         Ok(connection)
+    }
+
+    pub fn attach_terminal_service(&self, service: Arc<TerminalService>) {
+        *self
+            .terminal_service
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(service);
     }
 
     fn now_iso() -> String {
@@ -1185,6 +1261,20 @@ impl PersistenceService {
         }
 
         if let Some(raw_mode) =
+            Self::read_runtime_setting(&connection, SETTING_RUNTIME_ADAPTIVE_CONTEXT_MODE)?
+            && let Some(parsed) = AdaptiveContextMode::parse(raw_mode.trim())
+        {
+            config.adaptive_context_mode = parsed;
+        }
+
+        if let Some(raw_policy) =
+            Self::read_runtime_setting(&connection, SETTING_RUNTIME_DYNAMIC_CONTEXT_POLICY)?
+            && let Ok(parsed) = serde_json::from_str::<DynamicContextPolicy>(&raw_policy)
+        {
+            config.dynamic_context_policy = parsed;
+        }
+
+        if let Some(raw_mode) =
             Self::read_runtime_setting(&connection, SETTING_RUNTIME_ROUTING_V2_MODE)?
         {
             config.routing_v2_mode = RoutingMode::parse(&raw_mode);
@@ -1264,6 +1354,17 @@ impl PersistenceService {
             &connection,
             SETTING_RUNTIME_EMBEDDING_TOP_K,
             &sanitized.embedding_top_k.to_string(),
+        )?;
+        Self::upsert_runtime_setting(
+            &connection,
+            SETTING_RUNTIME_ADAPTIVE_CONTEXT_MODE,
+            sanitized.adaptive_context_mode.as_str(),
+        )?;
+        Self::upsert_runtime_setting(
+            &connection,
+            SETTING_RUNTIME_DYNAMIC_CONTEXT_POLICY,
+            &serde_json::to_string(&sanitized.dynamic_context_policy)
+                .map_err(|error| PersistenceServiceError::Validation(error.to_string()))?,
         )?;
         Self::upsert_runtime_setting(
             &connection,
@@ -1357,10 +1458,10 @@ impl PersistenceService {
         let normalized = raw.trim();
         if !matches!(
             normalized,
-            "workspace" | "pulsations" | "vault" | "chat" | "settings" | "logs"
+            "workspace" | "pulsations" | "vault" | "chat" | "agents" | "settings" | "logs"
         ) {
             return Err(PersistenceServiceError::Validation(
-                "activeView deve ser `workspace`, `pulsations`, `vault`, `chat`, `settings` ou `logs`."
+                "activeView deve ser `workspace`, `pulsations`, `vault`, `chat`, `agents`, `settings` ou `logs`."
                     .to_string(),
             ));
         }
@@ -2291,6 +2392,255 @@ impl PersistenceService {
         Ok(ListPulsationsResponse { pulsations })
     }
 
+    pub fn list_cli_fallbacks(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<CliFallbackCheckpoint>, PersistenceServiceError> {
+        let project_id = Self::normalize_project_id(project_id)?;
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT c.id,c.pulsation_id,p.project_id,p.feature_name,f.agent_role,
+                    f.terminal_run_id,f.error_code,f.diagnostic,p.state_version,c.stage,c.created_at
+             FROM cli_fallback_requests f
+             JOIN checkpoints c ON c.id=f.checkpoint_id
+             JOIN pulsations p ON p.id=f.pulsation_id
+             WHERE p.project_id=?1 AND p.status='checkpoint' AND c.status='waiting'
+               AND c.purpose='cli_fallback' AND f.decision IS NULL
+             ORDER BY c.created_at ASC",
+        )?;
+        let rows = statement.query_map([project_id], |row| {
+            let role: String = row.get(4)?;
+            let stage: String = row.get(9)?;
+            Ok(CliFallbackCheckpoint {
+                checkpoint_id: row.get(0)?,
+                pulsation_id: row.get(1)?,
+                project_id: row.get(2)?,
+                feature_name: row.get(3)?,
+                agent_role: AgentRole::parse(&role)
+                    .ok_or_else(|| Self::invalid_enum_error("agent_role", &role))?,
+                terminal_run_id: row.get(5)?,
+                error_code: row.get(6)?,
+                diagnostic: row.get(7)?,
+                state_version: row.get(8)?,
+                stage: PulsationStage::from_db_value(&stage)
+                    .ok_or_else(|| Self::invalid_enum_error("stage", &stage))?,
+                created_at: row.get(10)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(PersistenceServiceError::from)
+    }
+
+    pub fn resolve_cli_fallback(
+        &self,
+        request: ResolveCliFallbackRequest,
+    ) -> Result<ResolveCliFallbackResponse, PersistenceServiceError> {
+        let checkpoint_id = request.checkpoint_id.trim();
+        if checkpoint_id.is_empty() {
+            return Err(PersistenceServiceError::Validation(
+                "checkpointId não pode ser vazio.".to_string(),
+            ));
+        }
+        let mut connection = self.connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let fallback = transaction
+            .query_row(
+                "SELECT c.pulsation_id,c.stage,c.producer_job_id,f.agent_role,f.terminal_run_id
+                 FROM cli_fallback_requests f
+                 JOIN checkpoints c ON c.id=f.checkpoint_id
+                 JOIN pulsations p ON p.id=f.pulsation_id
+                 WHERE c.id=?1 AND c.purpose='cli_fallback' AND c.status='waiting'
+                   AND f.decision IS NULL AND p.status='checkpoint'
+                   AND c.state_version=?2 AND p.state_version=?2
+                   AND c.input_revision=p.input_revision",
+                params![checkpoint_id, request.expected_state_version],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((pulsation_id, stage_raw, producer_job_id, role_raw, terminal_run_id)) = fallback
+        else {
+            return Err(PersistenceServiceError::Validation(
+                "Checkpoint de fallback ausente ou obsoleto. Atualize antes de decidir."
+                    .to_string(),
+            ));
+        };
+        let waiting: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
+            [&pulsation_id],
+            |row| row.get(0),
+        )?;
+        if waiting != 1 {
+            return Err(PersistenceServiceError::Validation(
+                "Checkpoint de fallback ambíguo. Atualize antes de decidir.".to_string(),
+            ));
+        }
+        let stage = PulsationStage::from_db_value(&stage_raw).ok_or_else(|| {
+            PersistenceServiceError::Runtime("Etapa inválida no checkpoint de CLI.".to_string())
+        })?;
+        let role = AgentRole::parse(&role_raw).ok_or_else(|| {
+            PersistenceServiceError::Runtime("Agente inválido no checkpoint de CLI.".to_string())
+        })?;
+        let current =
+            Self::find_pulsation_by_id(&transaction, &pulsation_id)?.ok_or_else(|| {
+                PersistenceServiceError::NotFound(
+                    "Pulsação do fallback não encontrada.".to_string(),
+                )
+            })?;
+        if current.stage != stage {
+            return Err(PersistenceServiceError::Validation(
+                "A etapa da pulsação mudou; atualize o checkpoint.".to_string(),
+            ));
+        }
+        let now = Self::now_iso();
+        let checkpoint_status = if request.decision == CliFallbackDecision::Cancel {
+            CheckpointStatus::Rejected
+        } else {
+            CheckpointStatus::Approved
+        };
+        transaction.execute(
+            "UPDATE checkpoints SET status=?2,updated_at=?3 WHERE id=?1",
+            params![checkpoint_id, checkpoint_status.as_db_value(), now],
+        )?;
+        transaction.execute(
+            "UPDATE cli_fallback_requests SET decision=?2,resolved_at=?3,updated_at=?3
+             WHERE checkpoint_id=?1",
+            params![checkpoint_id, request.decision.as_db_value(), now],
+        )?;
+
+        let mut cancellation_ids = Vec::new();
+        let result = match request.decision {
+            CliFallbackDecision::Cancel => {
+                cancellation_ids = transaction
+                    .prepare(
+                        "SELECT id FROM jobs WHERE pulsation_id=?1
+                         AND status IN ('pending','running','interrupted')",
+                    )?
+                    .query_map([&pulsation_id], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                transaction.execute(
+                    "UPDATE jobs SET status='failed',cancellation_reason='user_cancel',
+                       cancel_requested_at=?2,finished_at=?2,updated_at=?2
+                     WHERE pulsation_id=?1 AND status IN ('pending','running','interrupted')",
+                    params![pulsation_id, now],
+                )?;
+                let mut updated = Self::transition_pulsation(
+                    &transaction,
+                    &current,
+                    PulsationStatus::Failed,
+                    stage,
+                    "cli_fallback_cancelled",
+                    Some("Pulsação cancelada na decisão de fallback da CLI."),
+                )?;
+                transaction.execute(
+                    "UPDATE pulsations SET terminal_reason='user_cancel' WHERE id=?1",
+                    [&pulsation_id],
+                )?;
+                updated.terminal_reason = Some("user_cancel".to_string());
+                transaction.execute(
+                    "UPDATE agent_runs SET status='interrupted',updated_at=?2
+                     WHERE job_id IN (SELECT id FROM jobs WHERE pulsation_id=?1)
+                       AND status IN ('running','awaiting_fallback')",
+                    params![pulsation_id, now],
+                )?;
+                Self::mark_effects_for_review(
+                    &transaction,
+                    &pulsation_id,
+                    "cli_fallback_cancelled_with_effects",
+                )?;
+                transaction.execute(
+                    "UPDATE artifact_publications SET state='cancelled'
+                     WHERE pulsation_id=?1 AND state IN ('pending','applying')",
+                    [&pulsation_id],
+                )?;
+                Self::enqueue_learning(&transaction, &pulsation_id)?;
+                updated
+            }
+            CliFallbackDecision::UseApi | CliFallbackDecision::RetryCli => {
+                if request.decision == CliFallbackDecision::UseApi {
+                    transaction.execute(
+                        "INSERT INTO pulse_execution_overrides(
+                           pulsation_id,agent_role,execution_mode,source_checkpoint_id,created_at
+                         ) VALUES(?1,?2,'api_direct',?3,?4)
+                         ON CONFLICT(pulsation_id,agent_role) DO UPDATE SET
+                           execution_mode='api_direct',source_checkpoint_id=excluded.source_checkpoint_id,
+                           created_at=excluded.created_at",
+                        params![pulsation_id, role.as_str(), checkpoint_id, now],
+                    )?;
+                }
+                let updated = Self::transition_pulsation(
+                    &transaction,
+                    &current,
+                    PulsationStatus::Planning,
+                    stage,
+                    if request.decision == CliFallbackDecision::UseApi {
+                        "cli_fallback_api_authorized"
+                    } else {
+                        "cli_retry_requested"
+                    },
+                    Some(if request.decision == CliFallbackDecision::UseApi {
+                        "Uso da API autorizado para este agente nesta pulsação."
+                    } else {
+                        "Nova tentativa da CLI solicitada pelo usuário."
+                    }),
+                )?;
+                let producer_job_id = producer_job_id.as_deref().ok_or_else(|| {
+                    PersistenceServiceError::Runtime(
+                        "Checkpoint de fallback sem job produtor.".to_string(),
+                    )
+                })?;
+                let changed = transaction.execute(
+                    "UPDATE jobs SET status='pending',last_error=NULL,started_at=NULL,finished_at=NULL,
+                       cancel_requested_at=NULL,cancellation_reason=NULL,available_at=?2,updated_at=?2,
+                       state_version=(SELECT state_version FROM pulsations WHERE id=?3),
+                       generation=generation+1
+                     WHERE id=?1 AND pulsation_id=?3 AND status='interrupted'",
+                    params![producer_job_id, now, pulsation_id],
+                )?;
+                if changed != 1 {
+                    return Err(PersistenceServiceError::Validation(
+                        "O job do fallback não está mais disponível para retomada.".to_string(),
+                    ));
+                }
+                transaction.execute(
+                    "UPDATE agent_runs SET status='failed',updated_at=?2
+                     WHERE job_id=?1 AND status='awaiting_fallback'",
+                    params![producer_job_id, now],
+                )?;
+                updated
+            }
+        };
+        if let Some(run_id) = terminal_run_id.as_deref() {
+            transaction.execute(
+                "UPDATE terminal_runs SET status=?2,updated_at=?3,finished_at=COALESCE(finished_at,?3)
+                 WHERE id=?1 AND status='awaiting_fallback'",
+                params![
+                    run_id,
+                    if request.decision == CliFallbackDecision::Cancel {
+                        "cancelled"
+                    } else {
+                        "failed"
+                    },
+                    now,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        for job_id in cancellation_ids {
+            self.request_job_cancellation(&job_id);
+        }
+        self.wake_scheduler();
+        Ok(ResolveCliFallbackResponse { pulsation: result })
+    }
+
     pub fn get_pulsation_runtime_snapshot(
         &self,
         request: GetPulsationRuntimeSnapshotRequest,
@@ -2326,7 +2676,7 @@ impl PersistenceService {
                     |r| r.get(0),
                 )?,
                 hitl_checkpoints: {
-                    let mut stmt=connection.prepare("SELECT p.id,c.id,p.state_version FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.project_id=?1 AND p.status='checkpoint' AND c.status='waiting' AND c.kind='artifact_review'")?;
+                    let mut stmt=connection.prepare("SELECT p.id,c.id,p.state_version FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.project_id=?1 AND p.status='checkpoint' AND c.status='waiting' AND c.purpose='artifact_review'")?;
                     stmt.query_map([&project_id], |r| {
                         Ok(HitlCheckpoint {
                             pulsation_id: r.get(0)?,
@@ -2425,6 +2775,12 @@ impl PersistenceService {
         }
         if let Some(embedding_top_k) = request.embedding_top_k {
             config.embedding_top_k = embedding_top_k;
+        }
+        if let Some(adaptive_context_mode) = request.adaptive_context_mode {
+            config.adaptive_context_mode = adaptive_context_mode;
+        }
+        if let Some(dynamic_context_policy) = request.dynamic_context_policy {
+            config.dynamic_context_policy = dynamic_context_policy;
         }
         if let Some(routing_v2_mode) = request.routing_v2_mode {
             config.routing_v2_mode = routing_v2_mode;
@@ -2648,6 +3004,7 @@ impl PersistenceService {
         Self::mark_effects_for_review(&tx, &pulse, "user_cancel_with_effects")?;
         tx.execute("UPDATE artifact_publications SET state='cancelled' WHERE pulsation_id=?1 AND state IN ('pending','applying')",[&pulse])?;
         tx.execute("UPDATE checkpoints SET status='rejected',updated_at=?2 WHERE pulsation_id=?1 AND status='waiting'",params![pulse,now])?;
+        Self::enqueue_learning(&tx, &pulse)?;
         tx.commit()?;
         for id in &ids {
             self.request_job_cancellation(id);
@@ -2746,9 +3103,10 @@ impl PersistenceService {
                 [&id],
             )?;
             Self::mark_effects_for_review(&tx, &id, "recovered_user_cancel")?;
+            Self::enqueue_learning(&tx, &id)?;
         }
         tx.execute("UPDATE project_pipeline_state SET base_state='needs_review',blocking_reason='stale_publication_uncertain' WHERE project_id IN (SELECT o.project_id FROM artifact_publications o JOIN artifacts a ON a.id=o.artifact_id JOIN pulsations p ON p.id=o.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE o.job_class='main' AND o.state='applying' AND (a.input_revision<>p.input_revision OR a.generation<>j.generation OR a.acceptance='superseded' OR p.status='failed'))",[])?;
-        tx.execute("UPDATE artifact_publications SET state='cancelled' WHERE state IN ('pending','applying') AND artifact_id IN (SELECT a.id FROM artifacts a JOIN pulsations p ON p.id=a.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE a.input_revision<>p.input_revision OR a.generation<>j.generation OR a.acceptance='superseded' OR p.status='failed')",[])?;
+        tx.execute("UPDATE artifact_publications SET state='cancelled' WHERE job_class='main' AND state IN ('pending','applying') AND artifact_id IN (SELECT a.id FROM artifacts a JOIN pulsations p ON p.id=a.pulsation_id JOIN jobs j ON j.id=a.producer_job_id WHERE a.input_revision<>p.input_revision OR a.generation<>j.generation OR a.acceptance='superseded' OR p.status='failed')",[])?;
         tx.execute("UPDATE jobs SET status='failed',cancellation_reason=COALESCE(cancellation_reason,'superseded'),updated_at=?1 WHERE status IN ('pending','running','interrupted') AND (cancellation_reason IN ('user_cancel','superseded') OR (kind!='learning_report' AND EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND (p.status IN ('failed','done') OR p.input_revision<>jobs.input_revision))))",[&now])?;
         tx.execute("UPDATE jobs SET status='pending',state_version=(SELECT state_version FROM pulsations WHERE id=jobs.pulsation_id),generation=generation+1,started_at=NULL,cancel_requested_at=NULL,cancellation_reason=NULL,available_at=?1,updated_at=?1 WHERE status IN ('running','interrupted') AND (cancellation_reason IS NULL OR cancellation_reason IN ('shutdown','preempted')) AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.job_id=jobs.id) AND EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND p.status IN ('planning','running') AND p.input_revision=jobs.input_revision)",[&now])?;
         tx.execute("UPDATE agent_runs SET status='interrupted',updated_at=?1 WHERE status='running' AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.agent_run_id=agent_runs.id)",[&now])?;
@@ -2968,6 +3326,104 @@ impl PersistenceService {
         Ok(())
     }
 
+    fn persist_context_retrieval_trace(
+        connection: &Connection,
+        agent_run_id: &str,
+        job: &Job,
+        trace: &ContextRetrievalTrace,
+    ) -> Result<(), PersistenceServiceError> {
+        let Some(pulsation_id) = job.pulsation_id.as_deref() else {
+            return Ok(());
+        };
+        let Some((project_id, stage_name)) = connection
+            .query_row(
+                "SELECT p.project_id,r.agent_name FROM pulsations p JOIN agent_runs r ON r.id=?2 WHERE p.id=?1",
+                params![pulsation_id, agent_run_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok(());
+        };
+        let now = Self::now_iso();
+        let retrieval_id = connection
+            .query_row(
+                "SELECT id FROM context_retrieval_runs WHERE agent_run_id=?1",
+                [agent_run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        connection.execute(
+            "INSERT INTO context_retrieval_runs(
+               id,project_id,pulsation_id,job_id,agent_run_id,stage_name,
+               requested_strategy,strategy_used,adaptive_mode,expansion_depth,
+               fallback_used,max_similarity,duration_ms,considered_total,
+               delivered_total,cited_total,created_at,updated_at
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17)
+             ON CONFLICT(agent_run_id) DO UPDATE SET
+               strategy_used=excluded.strategy_used,
+               expansion_depth=excluded.expansion_depth,
+               fallback_used=excluded.fallback_used,
+               max_similarity=excluded.max_similarity,
+               duration_ms=excluded.duration_ms,
+               considered_total=excluded.considered_total,
+               delivered_total=excluded.delivered_total,
+               cited_total=excluded.cited_total,
+               updated_at=excluded.updated_at",
+            params![
+                retrieval_id,
+                project_id,
+                pulsation_id,
+                job.id,
+                agent_run_id,
+                stage_name,
+                trace.requested_strategy,
+                trace.strategy_used,
+                trace.adaptive_mode,
+                trace
+                    .expansion_depth
+                    .and_then(|value| i64::try_from(value).ok()),
+                trace.fallback_used,
+                trace.max_similarity,
+                i64::try_from(trace.duration_ms).unwrap_or(i64::MAX),
+                i64::try_from(trace.considered_total()).unwrap_or(i64::MAX),
+                i64::try_from(trace.delivered_total()).unwrap_or(i64::MAX),
+                i64::try_from(trace.cited_total()).unwrap_or(i64::MAX),
+                now,
+            ],
+        )?;
+        connection.execute(
+            "DELETE FROM context_retrieval_items WHERE retrieval_run_id=?1",
+            [&retrieval_id],
+        )?;
+        for item in &trace.items {
+            connection.execute(
+                "INSERT INTO context_retrieval_items(
+                   id,retrieval_run_id,relative_path,item_kind,considered,delivered,cited,
+                   content_sha256,rank,graph_score,semantic_similarity,final_score,
+                   delivered_chars,citation_reason
+                 ) VALUES(?1,?2,?3,?4,1,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    retrieval_id,
+                    item.relative_path,
+                    item.item_kind,
+                    item.delivered,
+                    item.cited,
+                    item.content_sha256,
+                    i64::try_from(item.rank).unwrap_or(i64::MAX),
+                    item.graph_score.and_then(|value| i64::try_from(value).ok()),
+                    item.semantic_similarity,
+                    item.final_score.and_then(|value| i64::try_from(value).ok()),
+                    i64::try_from(item.delivered_chars).unwrap_or(i64::MAX),
+                    item.citation_reason,
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
     fn transition_for_failed_job(
         &self,
         job: &Job,
@@ -3019,6 +3475,132 @@ impl PersistenceService {
             Some(message),
         )?;
         Self::mark_effects_for_review(&transaction, pulsation_id, "execution_failed_with_effects")?;
+        Self::enqueue_learning(&transaction, pulsation_id)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn open_cli_fallback(
+        &self,
+        job: &Job,
+        agent_run_id: &str,
+        error_code: &str,
+        diagnostic: &str,
+    ) -> Result<(), PersistenceServiceError> {
+        let pulsation_id = job.pulsation_id.as_deref().ok_or_else(|| {
+            PersistenceServiceError::Validation(
+                "Falha de CLI sem referência à pulsação.".to_string(),
+            )
+        })?;
+        let stage = Self::stage_from_job_kind(&job.kind).ok_or_else(|| {
+            PersistenceServiceError::Validation(
+                "Falha de CLI associada a um job que não é de etapa.".to_string(),
+            )
+        })?;
+        let role = AgentRole::for_stage(stage.as_db_value());
+        let mut connection = self.connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current = Self::find_pulsation_by_id(&transaction, pulsation_id)?.ok_or_else(|| {
+            PersistenceServiceError::NotFound("Pulsação do job não encontrada.".to_string())
+        })?;
+
+        if current.status != PulsationStatus::Running || current.stage != stage {
+            transaction.commit()?;
+            return Ok(());
+        }
+        let waiting: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
+            [pulsation_id],
+            |row| row.get(0),
+        )?;
+        if waiting != 0 {
+            return Err(PersistenceServiceError::Validation(
+                "A pulsação já possui um checkpoint aguardando decisão.".to_string(),
+            ));
+        }
+
+        let updated = Self::transition_pulsation(
+            &transaction,
+            &current,
+            PulsationStatus::Checkpoint,
+            stage,
+            "cli_fallback_requested",
+            Some("A CLI falhou e requer uma decisão explícita antes de usar a API."),
+        )?;
+        let state_version: u64 = transaction.query_row(
+            "SELECT state_version FROM pulsations WHERE id=?1",
+            [pulsation_id],
+            |row| row.get(0),
+        )?;
+        let input_revision: u64 = transaction.query_row(
+            "SELECT input_revision FROM pulsations WHERE id=?1",
+            [pulsation_id],
+            |row| row.get(0),
+        )?;
+        let generation: u64 = transaction.query_row(
+            "SELECT generation FROM jobs WHERE id=?1",
+            [&job.id],
+            |row| row.get(0),
+        )?;
+        let terminal_run_id: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM terminal_runs WHERE job_id=?1 ORDER BY created_at DESC LIMIT 1",
+                [&job.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let checkpoint_id = Uuid::new_v4().to_string();
+        let now = Self::now_iso();
+        transaction.execute(
+            "INSERT INTO checkpoints(
+               id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,
+               state_version,producer_job_id,generation,purpose
+             ) VALUES(?1,?2,?3,'waiting',?4,?4,'artifact_review',?5,?6,?7,?8,'cli_fallback')",
+            params![
+                checkpoint_id,
+                pulsation_id,
+                stage.as_db_value(),
+                now,
+                input_revision,
+                state_version,
+                job.id,
+                generation,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO cli_fallback_requests(
+               checkpoint_id,pulsation_id,agent_role,terminal_run_id,error_code,
+               diagnostic,created_at,updated_at
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?7)",
+            params![
+                checkpoint_id,
+                pulsation_id,
+                role.as_str(),
+                terminal_run_id,
+                error_code,
+                diagnostic,
+                now,
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE jobs SET status='interrupted',last_error=?2,cancellation_reason=NULL,
+               cancel_requested_at=NULL,available_at=NULL,finished_at=?3,updated_at=?3
+             WHERE id=?1 AND status='running'",
+            params![job.id, diagnostic, now],
+        )?;
+        transaction.execute(
+            "UPDATE agent_runs SET status='awaiting_fallback',updated_at=?2 WHERE id=?1",
+            params![agent_run_id, now],
+        )?;
+        if let Some(run_id) = terminal_run_id.as_deref() {
+            transaction.execute(
+                "UPDATE terminal_runs SET status='awaiting_fallback',error_code=?2,
+                   error_message=?3,updated_at=?4 WHERE id=?1",
+                params![run_id, error_code, diagnostic, now],
+            )?;
+        }
+        debug_assert_eq!(updated.status, PulsationStatus::Checkpoint);
         transaction.commit()?;
         Ok(())
     }
@@ -3167,6 +3749,9 @@ impl PersistenceService {
 
         tokio::select! {
             _ = cancellation.cancelled() => {
+                let trace = ContextRetrievalTrace::empty(runtime_config, "not_started");
+                let connection = self.connection()?;
+                Self::persist_context_retrieval_trace(&connection, agent_run_id, job, &trace)?;
                 return Err(PersistenceServiceError::Cancelled(
                     "Execução cancelada antes da chamada do agente.".to_string()
                 ));
@@ -3175,29 +3760,60 @@ impl PersistenceService {
         }
 
         // Never abandon an owned filesystem worker; the router bounds network attempts.
-        let execution = execute_stage(
+        let terminal_service = self
+            .terminal_service
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let execution = match execute_stage_with_cli(
             self.embedding_gateway.as_ref(),
             self.llm_router.as_ref(),
+            terminal_service.as_ref(),
             &self.document_cache,
             runtime_config,
             &execution_input,
             cancellation,
         )
         .await
-        .map_err(PersistenceServiceError::from)?;
+        {
+            Ok(execution) => execution,
+            Err(failure) => {
+                if let Some(trace) = failure.context_trace.as_ref() {
+                    let connection = self.connection()?;
+                    Self::persist_context_retrieval_trace(&connection, agent_run_id, job, trace)?;
+                }
+                return Err(PersistenceServiceError::from(failure.error));
+            }
+        };
 
         if cancellation.is_cancelled() {
+            let connection = self.connection()?;
+            Self::persist_context_retrieval_trace(
+                &connection,
+                agent_run_id,
+                job,
+                &execution.context_trace,
+            )?;
             return Err(PersistenceServiceError::Cancelled(
                 "Execução cancelada após resposta do agente.".into(),
             ));
         }
-        self.accept_stage_result(
+        if let Err(error) = self.accept_stage_result(
             job,
             agent_run_id,
             execution_input.handoff.as_ref().expect("worker handoff"),
             &execution,
             Path::new(&project.workspace_path),
-        )?;
+        ) {
+            let connection = self.connection()?;
+            Self::persist_context_retrieval_trace(
+                &connection,
+                agent_run_id,
+                job,
+                &execution.context_trace,
+            )?;
+            return Err(error);
+        }
         self.wake_scheduler();
         Ok(())
     }
@@ -3265,13 +3881,20 @@ impl PersistenceService {
                     return Err(error);
                 }
                 let can_retry = self.should_retry(&error, job.attempts, &runtime_config);
-                self.transition_for_failed_job(job, &error, can_retry)?;
-
                 if can_retry {
+                    self.transition_for_failed_job(job, &error, true)?;
                     self.finish_agent_run(&agent_run_id, "retrying")?;
                     self.requeue_job(&job.id, job.attempts, &error.to_string())?;
                     return Ok(());
                 }
+
+                if let PersistenceServiceError::Cli { code, message } = &error {
+                    self.open_cli_fallback(job, &agent_run_id, code, message)?;
+                    self.wake_scheduler();
+                    return Ok(());
+                }
+
+                self.transition_for_failed_job(job, &error, false)?;
 
                 let run_status = if matches!(error, PersistenceServiceError::Cancelled(_)) {
                     "interrupted"
@@ -3432,6 +4055,114 @@ mod tests {
             .expect("table query should work");
 
         assert_eq!(tables, 1);
+    }
+
+    #[test]
+    fn v18_to_v19_is_additive_preserves_v1_learning_and_does_not_backfill_telemetry() {
+        let root = tempfile::tempdir().expect("tempdir should be created");
+        let db_path = root.path().join("hard-vibe-code.db");
+        let mut connection = Connection::open(&db_path).expect("v18 db should open");
+        embedded::migrations::runner()
+            .set_target(refinery::Target::Version(18))
+            .run(&mut connection)
+            .expect("v1-v18 should apply");
+        let now = Utc::now().to_rfc3339();
+        connection
+            .execute(
+                "INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('project','Project',?1,?2,?2)",
+                params![root.path().to_string_lossy(),now],
+            )
+            .unwrap();
+        connection.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,queue_sequence,pipeline_version) VALUES('pulse','project','Feature','Integrator','done',?1,?1,1,2)",[&now]).unwrap();
+        connection.execute("INSERT INTO jobs(id,pulsation_id,kind,status,created_at,updated_at,project_id,idempotency_key) VALUES('learning-v1','pulse','learning_report','done',?1,?1,'project','learning-v1')",[&now]).unwrap();
+        let v1 = r#"{"schema_version":1,"observations":[],"recommendations":[],"limitations":[]}"#;
+        connection.execute("INSERT INTO learning_runs(job_id,pulsation_id,integration_epoch,report_version,state,report_json,created_at,updated_at) VALUES('learning-v1','pulse',1,1,'published',?1,?2,?2)",params![v1,now]).unwrap();
+        drop(connection);
+
+        let service = PersistenceService::initialize(root.path()).expect("v19 should upgrade");
+        let db = service.connection().unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT report_json FROM learning_runs WHERE job_id='learning-v1'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            v1
+        );
+        for table in [
+            "context_retrieval_runs",
+            "context_retrieval_items",
+            "learning_context_assessments",
+            "learning_graph_proposals",
+        ] {
+            let count: i64 = db
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "V19 não faz backfill de {table}");
+        }
+        assert_eq!(
+            db.query_row("SELECT value FROM runtime_settings WHERE key='orchestration.learning_refinement_mode'", [], |row| row.get::<_,String>(0)).unwrap(),
+            "observe"
+        );
+    }
+
+    #[test]
+    fn v19_to_v20_preserves_checkpoint_foreign_keys_and_extends_checkpoint_kind() {
+        let root = tempfile::tempdir().expect("tempdir should be created");
+        let db_path = root.path().join("hard-vibe-code.db");
+        let mut connection = Connection::open(&db_path).expect("v19 db should open");
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .expect("foreign keys should enable");
+        embedded::migrations::runner()
+            .set_target(refinery::Target::Version(19))
+            .run(&mut connection)
+            .expect("v1-v19 should apply");
+        let now = Utc::now().to_rfc3339();
+        connection.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('project-v19','Project V19',?1,?2,?2)",params![root.path().to_string_lossy(),now]).unwrap();
+        connection.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,queue_sequence,pipeline_version,state_version) VALUES('pulse-v19','project-v19','Feature','Integrator','checkpoint',?1,?1,1,2,7)",[&now]).unwrap();
+        connection.execute("INSERT INTO jobs(id,pulsation_id,kind,status,created_at,updated_at,project_id,input_revision,generation,state_version,idempotency_key) VALUES('job-v19','pulse-v19','run_stage::Integrator','interrupted',?1,?1,'project-v19',1,3,7,'job-v19')",[&now]).unwrap();
+        connection.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,producer_job_id,generation) VALUES('checkpoint-v19','pulse-v19','Integrator','waiting',?1,?1,'artifact_review',1,7,'job-v19',3)",[&now]).unwrap();
+        connection.execute("INSERT INTO specification_question_sets(id,checkpoint_id,pulsation_id,input_revision,generation,state_version,conversation_id,questions_json) VALUES('questions-v19','checkpoint-v19','pulse-v19',1,3,7,'conversation-v19','[]')",[]).unwrap();
+        connection.execute("UPDATE pulsations SET integration_checkpoint_id='checkpoint-v19',integration_state_version=7 WHERE id='pulse-v19'",[]).unwrap();
+        drop(connection);
+
+        let service = PersistenceService::initialize(root.path()).expect("v20 should upgrade");
+        let db = service.connection().expect("migrated db should open");
+        let foreign_key_violations: i64 = db
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .count() as i64;
+        assert_eq!(foreign_key_violations, 0);
+        assert_eq!(
+            db.query_row(
+                "SELECT integration_checkpoint_id FROM pulsations WHERE id='pulse-v19'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "checkpoint-v19"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT checkpoint_id FROM specification_question_sets WHERE id='questions-v19'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "checkpoint-v19"
+        );
+        db.execute(
+            "INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,purpose)
+             VALUES('cli-fallback-v20','pulse-v19','Integrator','waiting',?1,?1,'artifact_review',1,7,'cli_fallback')",
+            [&now],
+        )
+        .expect("V20 should accept cli_fallback checkpoint purpose");
     }
 
     #[test]
@@ -4233,6 +4964,11 @@ mod tests {
                 embedding_model: Some("nomic-embed-text".to_string()),
                 embedding_top_k: Some(7),
                 routing_v2_mode: Some(RoutingMode::Shadow),
+                adaptive_context_mode: Some(AdaptiveContextMode::On),
+                dynamic_context_policy: Some(DynamicContextPolicy {
+                    max_k: 2,
+                    ..DynamicContextPolicy::default()
+                }),
             })
             .expect("runtime config should update")
             .config;
@@ -4244,6 +4980,8 @@ mod tests {
         assert_eq!(updated.embedding_provider, EmbeddingProvider::Ollama);
         assert_eq!(updated.embedding_top_k, 7);
         assert_eq!(updated.routing_v2_mode, RoutingMode::Shadow);
+        assert_eq!(updated.adaptive_context_mode, AdaptiveContextMode::On);
+        assert_eq!(updated.dynamic_context_policy.max_k, 2);
 
         let reloaded = service
             .get_agent_runtime_config()
@@ -4301,7 +5039,7 @@ mod tests {
 
         let runs = service
             .list_agent_runs(ListAgentRunsRequest {
-                pulsation_id: created.id,
+                pulsation_id: created.id.clone(),
             })
             .expect("agent runs should load")
             .runs;
@@ -4309,6 +5047,19 @@ mod tests {
         assert!(runs.len() >= 2);
         assert!(runs.iter().any(|run| run.structured_output.is_some()));
         assert!(runs.iter().any(|run| run.raw_output.is_some()));
+        let trace_count: i64 = service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM context_retrieval_runs WHERE pulsation_id=?1",
+                [&created.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            trace_count >= 2,
+            "cada resultado de agente preserva seu trace tipado"
+        );
     }
 
     #[test]
@@ -4406,6 +5157,172 @@ mod tests {
         service.unregister_job_cancellation("job-a");
         service.unregister_job_cancellation("job-b");
         assert_eq!(service.cancel_all_active_jobs(), 0);
+    }
+
+    fn claimed_cli_job_fixture(
+        service: &PersistenceService,
+        workspace_path: &str,
+    ) -> (Project, Pulsation, Job, String) {
+        let project = service
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: workspace_path.to_string(),
+                preferred_name: Some("CLI fallback fixture".to_string()),
+            })
+            .expect("project should be created")
+            .project;
+        let pulse = service
+            .create_pulsation(CreatePulsationRequest {
+                project_id: project.id.clone(),
+                feature_name: "CLI fallback".to_string(),
+            })
+            .expect("pulse should be created")
+            .pulsation;
+        let (job, _cancellation) = service
+            .claim_next_pending_job()
+            .expect("claim should succeed")
+            .expect("stage job should be available");
+        let mut connection = service.connection().expect("database should open");
+        let tx = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("transaction should start");
+        let current = PersistenceService::find_pulsation_by_id(&tx, &pulse.id)
+            .expect("pulse should load")
+            .expect("pulse should exist");
+        PersistenceService::transition_pulsation(
+            &tx,
+            &current,
+            PulsationStatus::Running,
+            current.stage,
+            "test_cli_started",
+            None,
+        )
+        .expect("pulse should enter running");
+        tx.execute(
+            "UPDATE jobs SET state_version=(SELECT state_version FROM pulsations WHERE id=?2)
+             WHERE id=?1",
+            params![job.id, pulse.id],
+        )
+        .expect("job fence should follow pulse");
+        tx.commit().expect("transaction should commit");
+        let agent_run_id = service
+            .start_agent_run_for_job(&job, &service.load_runtime_config().unwrap())
+            .expect("agent run should start");
+        (project, pulse, job, agent_run_id)
+    }
+
+    #[test]
+    fn cli_failure_requires_explicit_api_authorization_and_requeues_same_job() {
+        let (root, service) = prepare_service();
+        let workspace = root.path().join("workspace-api-fallback");
+        fs::create_dir_all(&workspace).unwrap();
+        let (project, pulse, job, agent_run_id) =
+            claimed_cli_job_fixture(&service, workspace.to_string_lossy().as_ref());
+
+        service
+            .open_cli_fallback(
+                &job,
+                &agent_run_id,
+                "cli_process_failed",
+                "Codex encerrou com código 1.",
+            )
+            .expect("fallback checkpoint should open");
+        service
+            .release_runtime_slot(&PersistenceService::job_slot_token(&job))
+            .unwrap();
+
+        let fallbacks = service
+            .list_cli_fallbacks(&project.id)
+            .expect("fallbacks should load");
+        assert_eq!(fallbacks.len(), 1);
+        assert_eq!(fallbacks[0].pulsation_id, pulse.id);
+        assert_eq!(fallbacks[0].agent_role, AgentRole::IntakeRouter);
+        let checkpoint = fallbacks[0].clone();
+
+        let response = service
+            .resolve_cli_fallback(ResolveCliFallbackRequest {
+                checkpoint_id: checkpoint.checkpoint_id.clone(),
+                expected_state_version: checkpoint.state_version,
+                decision: CliFallbackDecision::UseApi,
+            })
+            .expect("API authorization should resolve fallback");
+        assert_eq!(response.pulsation.status, PulsationStatus::Planning);
+        let connection = service.connection().unwrap();
+        let (job_status, cancellation_reason): (String, Option<String>) = connection
+            .query_row(
+                "SELECT status,cancellation_reason FROM jobs WHERE id=?1",
+                [&job.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(job_status, "pending");
+        assert!(cancellation_reason.is_none());
+        let override_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pulse_execution_overrides
+                 WHERE pulsation_id=?1 AND agent_role='intake_router')",
+                [&pulse.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(override_exists);
+        assert!(service.list_cli_fallbacks(&project.id).unwrap().is_empty());
+        assert!(matches!(
+            service.resolve_cli_fallback(ResolveCliFallbackRequest {
+                checkpoint_id: checkpoint.checkpoint_id,
+                expected_state_version: checkpoint.state_version,
+                decision: CliFallbackDecision::RetryCli,
+            }),
+            Err(PersistenceServiceError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn cancelling_cli_fallback_terminates_the_pulse() {
+        let (root, service) = prepare_service();
+        let workspace = root.path().join("workspace-cancel-fallback");
+        fs::create_dir_all(&workspace).unwrap();
+        let (project, pulse, job, agent_run_id) =
+            claimed_cli_job_fixture(&service, workspace.to_string_lossy().as_ref());
+        service
+            .open_cli_fallback(
+                &job,
+                &agent_run_id,
+                "cli_not_found",
+                "Executável não encontrado.",
+            )
+            .unwrap();
+        service
+            .release_runtime_slot(&PersistenceService::job_slot_token(&job))
+            .unwrap();
+        let checkpoint = service.list_cli_fallbacks(&project.id).unwrap().remove(0);
+
+        let response = service
+            .resolve_cli_fallback(ResolveCliFallbackRequest {
+                checkpoint_id: checkpoint.checkpoint_id,
+                expected_state_version: checkpoint.state_version,
+                decision: CliFallbackDecision::Cancel,
+            })
+            .expect("cancel decision should resolve fallback");
+        assert_eq!(response.pulsation.status, PulsationStatus::Failed);
+        assert_eq!(
+            response.pulsation.terminal_reason.as_deref(),
+            Some("user_cancel")
+        );
+        let connection = service.connection().unwrap();
+        let terminal_reason: String = connection
+            .query_row(
+                "SELECT terminal_reason FROM pulsations WHERE id=?1",
+                [&pulse.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(terminal_reason, "user_cancel");
+        let status: String = connection
+            .query_row("SELECT status FROM jobs WHERE id=?1", [&job.id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "failed");
     }
 
     #[test]

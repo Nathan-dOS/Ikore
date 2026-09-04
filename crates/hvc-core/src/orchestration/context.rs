@@ -606,12 +606,19 @@ fn reference_resolution_is_valid(reference: &ObservedReference) -> bool {
         }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeContextDiscoveryMode {
+    RepositoryScan,
+    ExactPaths,
+}
+
 #[derive(Debug, Clone)]
 pub struct CodeContextRequest {
     pub project_id: String,
     pub workspace_root: PathBuf,
     pub query: String,
     pub hinted_paths: Vec<RelativeSourcePath>,
+    pub discovery_mode: CodeContextDiscoveryMode,
     pub budget: CollectionBudget,
 }
 

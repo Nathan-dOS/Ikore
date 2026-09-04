@@ -74,7 +74,7 @@ fn real_inflight_learning_yields_to_foreground_or_kill_switch_without_late_publi
                 blocked
                     .recv_timeout(Duration::from_secs(10))
                     .expect("release bounded provider barrier");
-                let output = json!({"schema_version":1,"observations":[],"recommendations":[],"limitations":["Late result must be ignored"]});
+                let output = json!({"schema_version":2,"observations":[],"recommendations":[],"context_assessments":[],"graph_selections":[],"limitations":["Late result must be ignored"]});
                 ScriptedResponse::json(200,json!({"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}]}).to_string())
             } else {
                 stage_response(request)
@@ -250,7 +250,7 @@ fn real_learning_request_is_bounded_and_unknown_evidence_never_publishes() {
         .unwrap();
         db.execute("INSERT INTO jobs(id,project_id,pulsation_id,kind,status,attempts,created_at,updated_at,job_class) VALUES('learning',?1,?2,'learning_report','pending',0,'now','now','background')",params![project.id,pulse.id]).unwrap();
         db.execute("INSERT INTO learning_runs(job_id,pulsation_id,integration_epoch,created_at,updated_at) VALUES('learning',?1,1,'now','now')",[&pulse.id]).unwrap();
-        let output = json!({"schema_version":1,"observations":[{"text":"Evidence-backed observation","evidence_ids":[if unknown_evidence {"invented".into()}else{format!("pulse:{}",pulse.id)}],"recurring":false}],"recommendations":[],"limitations":["Local scope"]});
+        let output = json!({"schema_version":2,"observations":[{"text":"Evidence-backed observation","evidence_ids":[if unknown_evidence {"invented".into()}else{format!("pulse:{}",pulse.id)}],"recurring":false}],"recommendations":[],"context_assessments":[],"graph_selections":[],"limitations":["Local scope"]});
         let server=ScriptedHttpServer::start([ScriptedResponse::json(200,json!({"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":21,"completion_tokens":30}}).to_string())]);
         db.execute("UPDATE provider_connections SET provider_id='ollama',endpoint_url=?1 WHERE id='legacy-openai'",[server.url("")]).unwrap();
         db.execute(

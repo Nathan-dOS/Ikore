@@ -49,10 +49,15 @@ impl LlmEventSink for StopAfterResponse {
 
 #[test]
 fn real_provider_results_are_accepted_failed_or_fenced_without_duplicate_effects() {
-    for (status, stale) in [("advance", false), ("failed", false), ("advance", true)] {
+    for (status, stale, invalid_schema) in [
+        ("advance", false, false),
+        ("failed", false, false),
+        ("advance", true, false),
+        ("unknown", false, true),
+    ] {
         let env = IsolatedTestEnvironment::new();
         let db_path = env.data_dir().join("hard-vibe-code.db");
-        let output=json!({"summary":"Evidence from fixture provider","statusUpdate":status,"notes":[],"artifacts":[{"name":"result","kind":"stage_output","relativePath":"generated.md","content":"  exact provider bytes\r\n"}]}).to_string();
+        let output=json!({"outputLanguage":"en","summary":"Evidence from fixture provider","statusUpdate":status,"contextUsage":[],"notes":[],"artifacts":[{"name":"result","kind":"stage_output","relativePath":"generated.md","content":"  exact provider bytes\r\n"}]}).to_string();
         let server=ScriptedHttpServer::start([ScriptedResponse::json(200,json!({"choices":[{"message":{"content":output},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":12}}).to_string())]);
         let stop = CancellationToken::new();
         let sink = Arc::new(StopAfterResponse {
@@ -134,7 +139,7 @@ fn real_provider_results_are_accepted_failed_or_fenced_without_duplicate_effects
             .unwrap();
         assert_eq!(
             sink.completed.load(Ordering::SeqCst),
-            1,
+            if invalid_schema { 0 } else { 1 },
             "real provider must complete: {diagnostic:?}; attempts={attempts:?}; requests={:?}",
             server.wait_for_requests(1, Duration::from_millis(1))
         );
@@ -147,6 +152,11 @@ fn real_provider_results_are_accepted_failed_or_fenced_without_duplicate_effects
             .unwrap()
         };
         assert_eq!(count("agent_runs"), 1);
+        assert_eq!(
+            count("context_retrieval_runs"),
+            1,
+            "telemetry must survive accepted, failed, stale, and schema-invalid responses"
+        );
         if stale {
             assert_eq!(count("stage_acceptances"), 0);
             assert_eq!(count("artifacts"), 0);
@@ -159,6 +169,20 @@ fn real_provider_results_are_accepted_failed_or_fenced_without_duplicate_effects
                 .unwrap(),
                 "running",
                 "late response must not fail the newer input"
+            );
+        } else if invalid_schema {
+            assert_eq!(count("stage_acceptances"), 0);
+            assert_eq!(count("artifacts"), 0);
+            let job_status: String = db
+                .query_row(
+                    "SELECT status FROM jobs WHERE pulsation_id=?1 AND kind='run_stage::Intake'",
+                    params![pulse.id],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap();
+            assert!(
+                matches!(job_status.as_str(), "pending" | "failed"),
+                "schema failure must remain retryable or terminate explicitly: {job_status}"
             );
         } else {
             assert_eq!(count("stage_acceptances"), 1);
@@ -173,7 +197,7 @@ fn real_provider_results_are_accepted_failed_or_fenced_without_duplicate_effects
                 if status == "failed" { "failed" } else { "done" }
             );
         }
-        if status == "advance" && !stale {
+        if status == "advance" && !stale && !invalid_schema {
             // Shutdown stops new publication units; startup replays the accepted outbox.
             service.recover_interrupted_jobs().unwrap();
             assert_eq!(

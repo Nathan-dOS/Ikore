@@ -107,6 +107,12 @@ pub(crate) struct InventoryFile {
     pub(crate) size_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SafeSnapshotFile {
+    pub(crate) relative_path: String,
+    pub(crate) content: String,
+}
+
 impl RepositoryContext {
     pub(crate) fn is_code_relative_path(relative: &str) -> bool {
         let path = Path::new(relative);
@@ -386,6 +392,96 @@ impl RepositoryContext {
         .map_err(|error| RepositoryError(error.to_string()))
     }
 
+    pub(crate) fn validate_code_source_path(
+        &self,
+        relative: &crate::orchestration::RelativeSourcePath,
+    ) -> Result<(), RepositoryError> {
+        let path = self.resolve_relative(relative.as_str(), false)?;
+        if !is_code_path(&path) {
+            return Err(RepositoryError(
+                "O path informado não é uma fonte de código elegível.".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn capture_exact_code_sources(
+        &self,
+        project: &str,
+        paths: &[crate::orchestration::RelativeSourcePath],
+        budget: crate::orchestration::CollectionBudget,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<
+        (
+            Vec<crate::orchestration::SourceSnapshot>,
+            crate::orchestration::ContextCoverage,
+        ),
+        crate::orchestration::ContractError,
+    > {
+        use crate::orchestration::*;
+        budget.validate()?;
+        let started = std::time::Instant::now();
+        let mut coverage = ContextCoverage {
+            state: CoverageState::Complete,
+            documentation: DocumentationAvailability::Available,
+            enumerated_files: 0,
+            read_bytes: 0,
+            truncated: false,
+            diagnostics: vec!["exact_paths: fontes resolvidas pelo índice do Vault.".into()],
+        };
+        let mut sources = Vec::new();
+        let mut seen = HashSet::new();
+        for relative in paths {
+            if cancellation.is_cancelled() {
+                return Err(ContractError::Cancelled);
+            }
+            if started.elapsed().as_millis() >= u128::from(budget.max_duration_ms)
+                || sources.len() >= budget.max_package_files as usize
+                || coverage.read_bytes >= budget.max_read_bytes
+            {
+                coverage.truncated = true;
+                break;
+            }
+            if !seen.insert(relative.clone()) {
+                continue;
+            }
+            coverage.enumerated_files = coverage.enumerated_files.saturating_add(1);
+            let path = match self.resolve_relative(relative.as_str(), false) {
+                Ok(path) if is_code_path(&path) => path,
+                _ => {
+                    coverage.state = CoverageState::Partial;
+                    coverage
+                        .diagnostics
+                        .push(format!("broken_file_reference: {}", relative.as_str()));
+                    continue;
+                }
+            };
+            let limit = budget
+                .max_file_bytes
+                .min(budget.max_read_bytes.saturating_sub(coverage.read_bytes));
+            let read = self.read_bounded_text(&path, limit);
+            coverage.read_bytes = coverage
+                .read_bytes
+                .saturating_add(read.as_ref().map_or(limit, |(_, size)| *size));
+            let Ok((content, _)) = read else {
+                coverage.state = CoverageState::Partial;
+                continue;
+            };
+            sources.push(SourceSnapshot::from_text(
+                project,
+                relative.clone(),
+                content,
+            )?);
+        }
+        if coverage.truncated {
+            coverage.state = CoverageState::Partial;
+            coverage
+                .diagnostics
+                .push("truncated: orçamento da resolução exata atingido.".into());
+        }
+        Ok((sources, coverage))
+    }
+
     pub(crate) fn document_paths(
         &self,
         markdown_only: bool,
@@ -519,6 +615,37 @@ impl RepositoryContext {
                 .push("truncated: limite de arquivos, profundidade ou duração atingido.".into());
         }
         Ok((files, coverage))
+    }
+
+    pub(crate) fn safe_snapshot_files(
+        &self,
+        max_files: usize,
+        max_total_bytes: u64,
+    ) -> Result<Vec<SafeSnapshotFile>, RepositoryError> {
+        let mut files = Vec::new();
+        let mut total_bytes = 0u64;
+        for item in self.walk(&self.root, MAX_TREE_DEPTH + 64) {
+            let entry = item.map_err(|error| RepositoryError(error.to_string()))?;
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let relative_path = self.relative_display(entry.path())?;
+            let Ok(content) = self.read_safe_text(entry.path()) else {
+                continue;
+            };
+            let bytes = content.len() as u64;
+            if files.len() >= max_files || total_bytes.saturating_add(bytes) > max_total_bytes {
+                return Err(RepositoryError(
+                    "Workspace seguro excede o limite de arquivos ou bytes.".into(),
+                ));
+            }
+            total_bytes = total_bytes.saturating_add(bytes);
+            files.push(SafeSnapshotFile {
+                relative_path,
+                content,
+            });
+        }
+        Ok(files)
     }
 
     fn read_safe_text(&self, path: &Path) -> Result<String, RepositoryError> {
@@ -705,6 +832,12 @@ fn is_code_path(path: &Path) -> bool {
 fn excluded_directories() -> HashSet<&'static str> {
     HashSet::from([
         ".git",
+        ".hard-vibe-code",
+        ".agents",
+        ".claude",
+        ".codex",
+        ".gemini",
+        ".opencode",
         ".aws",
         ".ssh",
         "node_modules",

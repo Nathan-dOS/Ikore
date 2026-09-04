@@ -448,6 +448,123 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             .when_some(run.diagnostic.clone(), |panel, diagnostic| {
                 panel.child(div().text_sm().child(diagnostic))
             });
+        for audit in &run.context_audit {
+            let citation_rate = if audit.delivered == 0 {
+                "n/d".to_string()
+            } else {
+                format!(
+                    "{:.0}%",
+                    f64::from(audit.cited) * 100.0 / f64::from(audit.delivered)
+                )
+            };
+            let determinate = audit.audited.saturating_sub(audit.indeterminate);
+            let observed_precision = if determinate == 0 {
+                "n/d".to_string()
+            } else {
+                format!(
+                    "{:.0}%",
+                    f64::from(audit.observed_use) * 100.0 / f64::from(determinate)
+                )
+            };
+            panel = panel.child(
+                div().text_xs().text_color(theme::text_muted()).child(format!(
+                    "{} · pool {} · entregues {} · citadas {} · auditadas {} · indeterminadas {} · taxa de citação {} · precisão observada heurística {}",
+                    audit.stage_name,audit.considered,audit.delivered,audit.cited,audit.audited,audit.indeterminate,citation_rate,observed_precision
+                )),
+            );
+        }
+        let mut has_pending_proposals = false;
+        for proposal in &run.graph_proposals {
+            panel = panel.child(
+                div()
+                    .mt_2()
+                    .p_3()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme::border())
+                    .child(format!(
+                        "{} · {} → {}",
+                        proposal.relation, proposal.source_path, proposal.target_path
+                    ))
+                    .child(div().text_sm().child(proposal.rationale.clone()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_muted())
+                            .child(format!("Evidências: {}", proposal.evidence_ids.join(", "))),
+                    )
+                    .child(
+                        div()
+                            .mt_1()
+                            .p_2()
+                            .bg(theme::surface_raised())
+                            .text_xs()
+                            .child(proposal.preview_diff.clone()),
+                    )
+                    .child(format!(
+                        "Decisão: {} · publicação: {}",
+                        proposal.decision, proposal.publication_state
+                    ))
+                    .when_some(proposal.diagnostic.clone(), |card, diagnostic| {
+                        card.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::warning())
+                                .child(diagnostic),
+                        )
+                    }),
+            );
+            if proposal.decision == "pending" {
+                has_pending_proposals = true;
+                let approve_id = proposal.id.clone();
+                let reject_id = proposal.id.clone();
+                let selected = model.learning_graph_decisions.get(&proposal.id).copied();
+                panel = panel.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(learning_decision_button(
+                            format!("learning-approve:{}", proposal.id),
+                            "Aprovar".into(),
+                            selected
+                                == Some(hvc_core::orchestration::LearningGraphDecision::Approve),
+                            !busy,
+                            cx,
+                            move |model, cx| {
+                                model.choose_learning_graph_decision(
+                                    approve_id.clone(),
+                                    hvc_core::orchestration::LearningGraphDecision::Approve,
+                                    cx,
+                                )
+                            },
+                        ))
+                        .child(learning_decision_button(
+                            format!("learning-reject:{}", proposal.id),
+                            "Rejeitar".into(),
+                            selected
+                                == Some(hvc_core::orchestration::LearningGraphDecision::Reject),
+                            !busy,
+                            cx,
+                            move |model, cx| {
+                                model.choose_learning_graph_decision(
+                                    reject_id.clone(),
+                                    hvc_core::orchestration::LearningGraphDecision::Reject,
+                                    cx,
+                                )
+                            },
+                        )),
+                );
+            }
+        }
+        if has_pending_proposals {
+            panel = panel.child(preparation_button(
+                "learning-graph-confirm",
+                "Confirmar decisões do grafo",
+                !busy,
+                cx,
+                |model, cx| model.submit_learning_graph_review(cx),
+            ));
+        }
         if matches!(
             detail.learning,
             LearningState::Failed | LearningState::DeferredBudget
@@ -602,6 +719,40 @@ fn preparation_button(
             button
                 .cursor_pointer()
                 .on_click(cx.listener(move |m, _, _, cx| action(m, cx)))
+        })
+        .child(label)
+}
+
+fn learning_decision_button(
+    id: String,
+    label: String,
+    selected: bool,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+    action: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(gpui::SharedString::from(id))
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .border_1()
+        .border_color(if selected {
+            theme::accent()
+        } else {
+            theme::border()
+        })
+        .bg(if selected {
+            theme::accent_soft()
+        } else {
+            theme::surface_raised()
+        })
+        .text_sm()
+        .opacity(if enabled { 1.0 } else { 0.5 })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .on_click(cx.listener(move |model, _, _, cx| action(model, cx)))
         })
         .child(label)
 }
@@ -1193,6 +1344,8 @@ mod tests {
                                 budget_grants: 1,
                                 artifact_id: None,
                                 diagnostic: None,
+                                context_audit: vec![],
+                                graph_proposals: vec![],
                             }),
                             artifact_ids: vec![],
                         }];

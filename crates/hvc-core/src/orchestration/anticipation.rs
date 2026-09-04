@@ -175,7 +175,7 @@ impl PersistenceService {
         Self::record_brownfield_usage_tx(&tx, &fence.project_id, &package.facts.sources)?;
         let content = serde_json::to_string(&package).map_err(|e| invalid(e.to_string()))?;
         let artifact = Uuid::new_v4().to_string();
-        tx.execute("INSERT INTO artifacts(id,pulsation_id,name,kind,content_sha256,created_at,updated_at,content,producer_job_id,producer_stage,generation,input_revision,producer_state_version,output_position,acceptance,publication_state) VALUES(?1,?2,'Contexto PreSpec','code_context',?3,?4,?4,?5,?6,'Intake',?7,?8,?9,0,'accepted','not_required')",params![artifact,package.pulsation_id,ContentSha256::of(content.as_bytes()).as_str(),Self::now_iso(),content,job.id,fence.generation,fence.input_revision,fence.state_version])?;
+        tx.execute("INSERT INTO artifacts(id,pulsation_id,name,kind,content_sha256,created_at,updated_at,content,producer_job_id,producer_stage,generation,input_revision,producer_state_version,output_position,acceptance,publication_state) VALUES(?1,?2,'PreSpec context','code_context',?3,?4,?4,?5,?6,'Intake',?7,?8,?9,0,'accepted','not_required')",params![artifact,package.pulsation_id,ContentSha256::of(content.as_bytes()).as_str(),Self::now_iso(),content,job.id,fence.generation,fence.input_revision,fence.state_version])?;
         tx.execute("UPDATE pulsation_preparation SET prespec_state='ready',context_artifact_id=?2,skip_reason=?3,updated_at=?4 WHERE job_id=?1",params![job.id,artifact,if package.facts.sources.is_empty(){Some("no_matches")}else{None},Self::now_iso()])?;
         tx.execute(
             "UPDATE jobs SET status='done',finished_at=?2,updated_at=?2 WHERE id=?1",
@@ -190,12 +190,82 @@ impl PersistenceService {
         fence: &ExecutionFence,
     ) -> Result<(CodeContextRequest, u64), PersistenceServiceError> {
         let (root,query,epoch):(String,String,u64)=db.query_row("SELECT project.workspace_path,p.feature_name,s.base_epoch FROM pulsations p JOIN projects project ON project.id=p.project_id JOIN project_pipeline_state s ON s.project_id=p.project_id WHERE p.id=?1",[fence.pulsation_id.as_deref().expect("pulse")],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        let adaptive_mode = db
+            .query_row(
+                "SELECT value FROM runtime_settings WHERE key='runtime.adaptive_context_mode'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|value| crate::agent_runtime::AdaptiveContextMode::parse(&value))
+            .unwrap_or_default();
+        let policy = db
+            .query_row(
+                "SELECT value FROM runtime_settings WHERE key='runtime.dynamic_context_policy_v1'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|value| {
+                serde_json::from_str::<crate::agent_runtime::DynamicContextPolicy>(&value).ok()
+            })
+            .unwrap_or_default()
+            .sanitized();
+        let mut hinted_paths = Vec::new();
+        if adaptive_mode == crate::agent_runtime::AdaptiveContextMode::On {
+            let workspace_root = PathBuf::from(&root);
+            let mut cache = crate::workspace_service::VaultIndexCache::default();
+            let candidates = crate::workspace_service::get_context_candidates_with_expansion(
+                &workspace_root,
+                &mut cache,
+                crate::workspace_service::GetContextCandidatesRequest {
+                    feature_name: query.clone(),
+                    stage_name: Some("SPECIFICATION".to_string()),
+                    agent_scope: Some("task_specifier".to_string()),
+                    max_candidates: policy.max_notes_budget,
+                    force_rebuild: false,
+                },
+                policy.max_k,
+                policy.beam_width,
+            );
+            if let Ok(candidates) = candidates {
+                let mut seen = std::collections::HashSet::new();
+                let references = candidates.physical_file_references;
+                let has_tests = references.iter().any(|reference| reference.kind == "test");
+                for kind in ["source", "test"] {
+                    let preferred_limit = if kind == "source" && has_tests {
+                        policy.max_source_files.saturating_sub(1)
+                    } else {
+                        policy.max_source_files
+                    };
+                    for reference in references.iter().filter(|reference| reference.kind == kind) {
+                        if (kind == "source" && hinted_paths.len() >= preferred_limit)
+                            || hinted_paths.len() >= policy.max_source_files
+                        {
+                            break;
+                        }
+                        if seen.insert(reference.relative_path.clone())
+                            && let Ok(path) =
+                                RelativeSourcePath::new(reference.relative_path.clone())
+                        {
+                            hinted_paths.push(path);
+                        }
+                    }
+                }
+            }
+        }
+        let discovery_mode = if hinted_paths.is_empty() {
+            CodeContextDiscoveryMode::RepositoryScan
+        } else {
+            CodeContextDiscoveryMode::ExactPaths
+        };
         Ok((
             CodeContextRequest {
                 project_id: fence.project_id.clone(),
                 workspace_root: PathBuf::from(root),
                 query,
-                hinted_paths: vec![],
+                hinted_paths,
+                discovery_mode,
                 budget: CollectionBudget::default(),
             },
             epoch,

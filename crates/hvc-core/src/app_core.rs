@@ -26,6 +26,7 @@ use crate::orchestration::brownfield::{
 use crate::persistence_service::{
     PersistenceCommandError, PersistenceService, PersistenceServiceError,
 };
+use crate::terminals::{TerminalEventSink, TerminalService};
 use crate::workspace_service::{
     self, BootstrapGreenfieldWorkspaceResponse, GetContextCandidatesRequest,
     GetContextCandidatesResponse, GetWorkspaceVaultIndexRequest, GetWorkspaceVaultIndexResponse,
@@ -93,6 +94,8 @@ pub enum AppCoreError {
     Persistence(#[from] PersistenceServiceError),
     #[error("falha ao recuperar o Chat Companion: {0}")]
     Chat(#[from] crate::chat_service::ChatCommandError),
+    #[error("falha ao inicializar o painel Agents: {0}")]
+    Terminal(#[from] crate::terminals::TerminalError),
 }
 
 #[derive(Clone)]
@@ -193,6 +196,7 @@ pub struct AppCore {
     events: Arc<AppEventBus>,
     persistence: PersistenceService,
     chat: Arc<ChatService>,
+    terminals: Arc<TerminalService>,
     workspace: Mutex<WorkspaceContext>,
     worker_cancellation: CancellationToken,
     worker_task: Mutex<Option<JoinHandle<()>>>,
@@ -231,6 +235,14 @@ impl AppCore {
             runtime.clone(),
         ));
         chat.recover_interrupted_turns()?;
+        let terminal_sink: Arc<dyn TerminalEventSink> = events.clone();
+        let terminals = Arc::new(TerminalService::new(
+            persistence.database_path(),
+            runtime.clone(),
+            terminal_sink,
+        )?);
+        chat.attach_terminal_service(Arc::clone(&terminals));
+        persistence.attach_terminal_service(Arc::clone(&terminals));
         let worker_cancellation = CancellationToken::new();
 
         let core = Arc::new(Self {
@@ -240,6 +252,7 @@ impl AppCore {
             events,
             persistence,
             chat,
+            terminals,
             workspace: Mutex::new(WorkspaceContext::default()),
             worker_cancellation,
             worker_task: Mutex::new(None),
@@ -275,6 +288,10 @@ impl AppCore {
 
     pub fn chat(&self) -> Arc<ChatService> {
         Arc::clone(&self.chat)
+    }
+
+    pub fn terminals(&self) -> Arc<TerminalService> {
+        Arc::clone(&self.terminals)
     }
 
     pub fn open_workspace(
@@ -517,6 +534,7 @@ impl AppCore {
         self.worker_cancellation.cancel();
         self.persistence.cancel_all_active_jobs();
         self.chat.cancel_all_turns();
+        self.terminals.cancel_all();
         if let Ok(mut workspace) = self.workspace.lock() {
             workspace.watcher = None;
         }
@@ -537,6 +555,10 @@ impl AppCore {
             let _ = worker.await;
         }
         let _ = self.chat.wait_for_idle(Duration::from_secs(3)).await;
+        if !self.terminals.wait_for_idle(Duration::from_secs(3)).await {
+            self.terminals.cancel_all();
+            let _ = self.terminals.wait_for_idle(Duration::from_secs(30)).await;
+        }
     }
 }
 

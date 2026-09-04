@@ -9,6 +9,233 @@ use hvc_test_support::{LegacyPulseLayout, PulsationFixture};
 use rusqlite::{Connection, params};
 use std::fs;
 
+mod cli_migrations {
+    use refinery::embed_migrations;
+    embed_migrations!("../hvc-core/migrations");
+}
+
+#[test]
+fn v23_cli_and_companion_schema_has_no_credential_columns() {
+    let root = tempfile::tempdir().unwrap();
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(root.path().join("hard-vibe-code.db")).unwrap();
+    let tables = [
+        "chat_conversations",
+        "chat_model_calls",
+        "cli_agent_configs",
+        "terminal_slots",
+        "terminal_runs",
+        "cli_model_catalog_snapshots",
+        "cli_model_catalog_entries",
+        "companion_agent_output_documents",
+    ];
+    let forbidden = [
+        "api_key",
+        "apikey",
+        "credential",
+        "password",
+        "secret",
+        "access_token",
+        "refresh_token",
+        "auth_token",
+    ];
+
+    for table in tables {
+        let mut statement = db
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .unwrap();
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(!columns.is_empty(), "expected V23 table {table}");
+        for column in columns {
+            let normalized = column.to_ascii_lowercase();
+            assert!(
+                forbidden.iter().all(|term| !normalized.contains(term)),
+                "V23 table {table} exposes forbidden credential column {column}"
+            );
+        }
+    }
+}
+
+#[test]
+fn v20_to_v23_backfills_slots_and_preserves_terminal_and_chat_history() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&db_path).unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(20))
+        .run(&mut db)
+        .unwrap();
+    db.execute(
+        "INSERT INTO projects(id,name,workspace_path,is_archived,created_at,updated_at)
+         VALUES('project-cli','CLI','C:/fixture-cli',0,'2026-01-01','2026-01-01')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO cli_agent_configs(
+           project_id,agent_role,execution_mode,backend,model,thinking_level,
+           custom_args_json,custom_risk_ack,version,created_at,updated_at
+         ) VALUES('project-cli','backend_agent','cli_process','codex','legacy-model','high',
+                  '[]',0,3,'2026-01-01','2026-01-02')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO terminal_runs(
+           id,project_id,slot_kind,agent_role,origin,execution_mode,backend,status,
+           created_at,updated_at
+         ) VALUES('run-cli','project-cli','canonical','backend_agent','manual',
+                  'cli_process','codex','completed','2026-01-03','2026-01-03')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO terminal_events(id,run_id,sequence,kind,content,created_at)
+         VALUES('event-cli','run-cli',1,'message','preserved','2026-01-03')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO provider_connections(
+           id,provider_id,display_name,credential_ref,default_model,enabled,state,
+           max_concurrency,version,created_at,updated_at
+         ) VALUES('connection-cli','openai','OpenAI fixture','fixture-ref','gpt-fixture',
+                  1,'active',1,1,'2026-01-01','2026-01-01')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO chat_conversations(
+           id,project_id,connection_id,provider_id_snapshot,model_id_snapshot,title,created_at,updated_at
+         ) VALUES('chat-cli','project-cli','connection-cli','openai','gpt-fixture','Fixture chat',
+                  '2026-01-01','2026-01-01')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(db_path).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        23
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM terminal_slots
+             WHERE project_id='project-cli' AND kind='canonical' AND agent_role='backend_agent'",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT slot_id FROM terminal_runs WHERE id='run-cli'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "canonical:project-cli:backend_agent"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT content FROM terminal_events WHERE id='event-cli'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "preserved"
+    );
+    let legacy_selection = db
+        .query_row(
+            "SELECT model,thinking_level,model_profile,model_source
+             FROM cli_agent_configs
+             WHERE project_id='project-cli' AND agent_role='backend_agent'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(legacy_selection.0.as_deref(), Some("legacy-model"));
+    assert_eq!(legacy_selection.1, "high");
+    assert_eq!(legacy_selection.2, None);
+    assert_eq!(legacy_selection.3, "manual");
+    let chat_target = db
+        .query_row(
+            "SELECT transport_kind,connection_id,model_id_snapshot,cli_backend
+             FROM chat_conversations WHERE id='chat-cli'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(chat_target.0, "api");
+    assert_eq!(chat_target.1.as_deref(), Some("connection-cli"));
+    assert_eq!(chat_target.2, "gpt-fixture");
+    assert_eq!(chat_target.3, None);
+}
+
+#[test]
+fn v1_to_v23_is_idempotent_and_creates_the_cli_and_companion_schema() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&db_path).unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(1))
+        .run(&mut db)
+        .unwrap();
+    drop(db);
+    PersistenceService::initialize(root.path()).unwrap();
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(db_path).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type='table' AND name IN (
+               'terminal_slots','terminal_runs','terminal_events',
+               'cli_model_catalog_snapshots','cli_model_catalog_entries',
+               'companion_agent_output_documents','companion_agent_output_fts'
+             )",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        7
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM refinery_schema_history WHERE version=23",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+
 #[test]
 fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
     let fixture = PulsationFixture::new(LegacyPulseLayout::OneActive);
@@ -31,7 +258,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        17
+        23
     );
     assert_eq!(
         db.query_row(

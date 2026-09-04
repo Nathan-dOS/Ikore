@@ -497,7 +497,9 @@ fn mark_graph_partial(facts: &mut CodeContextFacts, diagnostic: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestration::{CollectionBudget, RelativeSourcePath, RoutedCodeContextService};
+    use crate::orchestration::{
+        CodeContextDiscoveryMode, CollectionBudget, RelativeSourcePath, RoutedCodeContextService,
+    };
     use crate::persistence_service::CreateProjectRequest;
     use std::fs;
 
@@ -554,6 +556,7 @@ mod tests {
             workspace_root: root.into(),
             query: query.into(),
             hinted_paths: Vec::new(),
+            discovery_mode: CodeContextDiscoveryMode::RepositoryScan,
             budget: CollectionBudget::default(),
         }
     }

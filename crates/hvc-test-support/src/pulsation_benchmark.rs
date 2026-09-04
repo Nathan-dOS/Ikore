@@ -79,9 +79,9 @@ pub fn stage_response(request: &RecordedRequest) -> ScriptedResponse {
     let artifacts = if stage == "Intake" {
         json!([])
     } else {
-        json!([{"name":stage,"kind":kind,"content":format!("# {stage}\nFixture: rejeitar token expirado com 401. No-op, sem execução Git/testes.")}])
+        json!([{"name":stage,"kind":kind,"content":format!("# {stage}\nFixture: reject an expired token with status 401. No-op; do not run Git or tests.")}])
     };
-    let mut output = json!({"summary":format!("{stage} fixture"),"statusUpdate":if stage=="Intake" {"advance"}else{"checkpoint_ready"},"notes":[],"artifacts":artifacts});
+    let mut output = json!({"outputLanguage":"en","summary":format!("{stage} fixture"),"statusUpdate":if stage=="Intake" {"advance"}else{"checkpoint_ready"},"contextUsage":[],"notes":[],"artifacts":artifacts});
     if stage == "SPECIFICATION" {
         output["componentProposals"] = json!([]);
     }

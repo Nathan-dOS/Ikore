@@ -11,7 +11,7 @@ impl PersistenceService {
              JOIN checkpoints c ON c.id=p.integration_checkpoint_id
              WHERE p.stage='Integrator' AND p.status='running' AND p.coordination_hold=0
                AND s.base_state<>'needs_review' AND p.integration_state_version=p.state_version
-               AND c.status='approved' AND c.kind='artifact_review' AND c.stage='Integrator'
+               AND c.status='approved' AND c.purpose='artifact_review' AND c.stage='Integrator'
                AND c.pulsation_id=p.id AND c.input_revision=p.input_revision
                AND ((p.pipeline_version=1 AND c.producer_job_id IS NULL) OR EXISTS(
                    SELECT 1 FROM jobs j WHERE j.id=c.producer_job_id AND j.generation=c.generation AND j.status='done'))
@@ -41,6 +41,7 @@ impl PersistenceService {
                     [&id],
                 )?;
                 tx.execute("UPDATE project_pipeline_state SET base_state='needs_review',blocking_reason='integration_verification_conflict',state_version=state_version+1 WHERE active_pulsation_id=?1", [&id])?;
+                Self::enqueue_learning(&tx, &id)?;
                 continue;
             }
             Self::transition_pulsation(

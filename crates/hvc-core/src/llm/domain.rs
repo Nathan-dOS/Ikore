@@ -81,6 +81,16 @@ pub enum AgentRole {
 }
 
 impl AgentRole {
+    pub const ALL: [Self; 7] = [
+        Self::IntakeRouter,
+        Self::TaskSpecifier,
+        Self::ContractAgent,
+        Self::BackendAgent,
+        Self::TestAgent,
+        Self::Integrator,
+        Self::LearningAgent,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::IntakeRouter => "intake_router",
@@ -95,6 +105,12 @@ impl AgentRole {
 
     pub fn for_stage(stage: &str) -> Self {
         crate::orchestration::catalog::stage_role(stage).unwrap_or(Self::TaskSpecifier)
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|role| role.as_str() == value.trim())
     }
 }
 
@@ -336,11 +352,23 @@ impl LlmStreamEvent {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentExecutionContext {
+    pub project_id: String,
+    pub pulsation_id: Option<String>,
+    pub job_id: Option<String>,
+    pub agent_role: AgentRole,
+    pub stage: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LlmEventEnvelope {
     pub protocol_version: u8,
     pub execution_id: String,
     pub generation_id: String,
     pub sequence: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<AgentExecutionContext>,
     #[serde(flatten)]
     pub event: LlmStreamEvent,
 }

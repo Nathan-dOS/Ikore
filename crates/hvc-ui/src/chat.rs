@@ -7,14 +7,21 @@ use gpui::SharedString;
 use hvc_core::AppCore;
 use hvc_core::chat_service::{
     CancelChatTurnRequest, ChatCommandError, ChatConversation, ChatEventDetail, ChatEventEnvelope,
-    ChatEventKind, ChatMessage, ChatToolCall, CreateChatConversationRequest,
-    DeleteChatConversationRequest, GetChatConversationRequest, GetChatConversationResponse,
-    GetChatTurnSnapshotRequest, GetChatTurnSnapshotResponse, ListChatConversationsRequest,
-    SendChatMessageRequest, SendChatMessageResponse,
+    ChatEventKind, ChatExecutionTargetRequest, ChatMessage, ChatToolCall, ChatTransportKind,
+    CreateChatConversationRequest, DeleteChatConversationRequest, GetChatConversationRequest,
+    GetChatConversationResponse, GetChatTurnSnapshotRequest, GetChatTurnSnapshotResponse,
+    ListChatConversationsRequest, SendChatMessageRequest, SendChatMessageResponse,
 };
 use hvc_core::llm::ProviderConnection;
+use hvc_core::terminals::{
+    CliAvailability, CliAvailabilityState, CliBackend, CliModelSelectionSource,
+};
 
 use crate::errors::UiCommandError;
+
+fn terminal_error_for_chat(error: hvc_core::terminals::TerminalError) -> UiCommandError {
+    UiCommandError::from_chat_parts("chat_cli", error.to_string())
+}
 
 pub(crate) type ChatFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, UiCommandError>> + Send + 'static>>;
@@ -23,6 +30,7 @@ pub(crate) type ChatFuture<T> =
 pub(crate) struct ChatHydration {
     pub(crate) project_id: String,
     pub(crate) connections: Vec<ProviderConnection>,
+    pub(crate) cli_availability: Vec<CliAvailability>,
     pub(crate) conversations: Vec<ChatConversation>,
     pub(crate) selected: Option<GetChatConversationResponse>,
 }
@@ -38,7 +46,7 @@ pub(crate) trait ChatBackend: Send + Sync {
     fn create_conversation(
         &self,
         project_id: String,
-        connection_id: String,
+        target: ChatExecutionTargetRequest,
     ) -> ChatFuture<GetChatConversationResponse>;
     fn delete_conversation(&self, conversation_id: String) -> ChatFuture<bool>;
     fn send_message(
@@ -69,6 +77,13 @@ impl ChatBackend for CoreChatBackend {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
         Box::pin(async move {
+            let terminal_service = core.terminals();
+            let terminal_project_id = project_id.clone();
+            let cli_availability = terminal_service
+                .snapshot(&terminal_project_id)
+                .await
+                .map_err(terminal_error_for_chat)?
+                .discovery;
             runtime
                 .spawn_blocking(move || {
                     let connections = core
@@ -105,6 +120,7 @@ impl ChatBackend for CoreChatBackend {
                     Ok(ChatHydration {
                         project_id,
                         connections,
+                        cli_availability,
                         conversations,
                         selected,
                     })
@@ -141,7 +157,7 @@ impl ChatBackend for CoreChatBackend {
     fn create_conversation(
         &self,
         project_id: String,
-        connection_id: String,
+        target: ChatExecutionTargetRequest,
     ) -> ChatFuture<GetChatConversationResponse> {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
@@ -150,10 +166,7 @@ impl ChatBackend for CoreChatBackend {
                 .spawn_blocking(move || {
                     let chat = core.chat();
                     let conversation = chat
-                        .create_conversation(CreateChatConversationRequest {
-                            project_id,
-                            connection_id,
-                        })
+                        .create_conversation(CreateChatConversationRequest { project_id, target })
                         .map_err(UiCommandError::from)?
                         .conversation;
                     chat.get_conversation(GetChatConversationRequest {
@@ -284,11 +297,17 @@ pub(crate) enum ChatEventOutcome {
 pub struct ChatModel {
     pub(crate) project_id: Option<SharedString>,
     pub(crate) connections: Vec<ProviderConnection>,
+    pub(crate) cli_availability: Vec<CliAvailability>,
     pub(crate) conversations: Vec<ChatConversation>,
     pub active_conversation: Option<SharedString>,
     pub(crate) messages_by_conversation: HashMap<String, Vec<ChatMessage>>,
     pub(crate) tool_calls_by_conversation: HashMap<String, Vec<ChatToolCall>>,
     pub(crate) selected_connection_id: Option<SharedString>,
+    pub(crate) selected_transport: ChatTransportKind,
+    pub(crate) selected_cli_backend: CliBackend,
+    pub(crate) selected_cli_model: Option<String>,
+    pub(crate) selected_cli_model_profile: Option<String>,
+    pub(crate) selected_cli_model_source: CliModelSelectionSource,
     pub streaming: bool,
     pub(crate) loading: bool,
     pub(crate) busy: bool,
@@ -321,12 +340,18 @@ impl ChatModel {
         self.hydration_generation = self.hydration_generation.saturating_add(1);
         self.project_id = Some(project_id.into());
         self.connections.clear();
+        self.cli_availability.clear();
         self.conversations.clear();
         self.messages_by_conversation.clear();
         self.tool_calls_by_conversation.clear();
         self.last_sequences.clear();
         self.active_conversation = restored_conversation_id.map(Into::into);
         self.selected_connection_id = None;
+        self.selected_transport = ChatTransportKind::Api;
+        self.selected_cli_backend = CliBackend::Codex;
+        self.selected_cli_model = None;
+        self.selected_cli_model_profile = None;
+        self.selected_cli_model_source = CliModelSelectionSource::Default;
         self.pending_delete_conversation_id = None;
         self.loading = true;
         self.busy = false;
@@ -342,6 +367,7 @@ impl ChatModel {
             return false;
         }
         self.connections = hydration.connections;
+        self.cli_availability = hydration.cli_availability;
         self.conversations = hydration.conversations;
         let selected_connection_id = self
             .eligible_connections()
@@ -374,6 +400,22 @@ impl ChatModel {
         self.connections
             .iter()
             .filter(|connection| connection.chat_eligible)
+    }
+
+    pub(crate) fn selected_cli_availability(&self) -> Option<&CliAvailability> {
+        self.cli_availability
+            .iter()
+            .find(|item| item.backend == self.selected_cli_backend)
+    }
+
+    pub(crate) fn new_conversation_target_available(&self) -> bool {
+        match self.selected_transport {
+            ChatTransportKind::Api => self.selected_connection_id.is_some(),
+            ChatTransportKind::Cli => self.selected_cli_availability().is_some_and(|item| {
+                item.state == CliAvailabilityState::Available
+                    && self.selected_cli_backend != CliBackend::Custom
+            }),
+        }
     }
 
     pub(crate) fn active_conversation_record(&self) -> Option<&ChatConversation> {
@@ -686,6 +728,7 @@ mod tests {
     use super::*;
     use gpui::{AppContext as _, TestAppContext};
     use hvc_core::chat_service::{ChatEventDetail, ChatEventError};
+    use std::path::PathBuf;
     use std::sync::Mutex;
 
     use crate::AppModel;
@@ -717,6 +760,10 @@ mod tests {
             connection_id: Some("eligible".into()),
             provider_id: "openai".into(),
             model_id: "gpt-4.1-mini".into(),
+            transport: hvc_core::chat_service::ChatTransportKind::Api,
+            cli_backend: None,
+            model_profile: None,
+            model_source: hvc_core::terminals::CliModelSelectionSource::Default,
             title: id.into(),
             connection_available: true,
             created_at: "now".into(),
@@ -749,6 +796,7 @@ mod tests {
         ChatHydration {
             project_id: project_id.into(),
             connections: vec![connection("eligible", true), connection("blocked", false)],
+            cli_availability: Vec::new(),
             conversations: vec![conversation("conversation-1", project_id)],
             selected: Some(GetChatConversationResponse {
                 conversation: conversation("conversation-1", project_id),
@@ -793,6 +841,38 @@ mod tests {
         let generation = model.begin_hydration("project-1".into(), None);
         assert!(model.apply_hydration(generation, snapshot("project-1", "", 0)));
         assert!(model.composer_available());
+    }
+
+    #[test]
+    fn cli_target_requires_a_supported_available_backend() {
+        let mut model = ChatModel {
+            selected_transport: ChatTransportKind::Cli,
+            selected_cli_backend: CliBackend::Claude,
+            cli_availability: vec![CliAvailability {
+                backend: CliBackend::Claude,
+                state: CliAvailabilityState::AuthRequired,
+                executable_path: Some(PathBuf::from(r"C:\Tools\claude.exe")),
+                version: Some("2.1.81".into()),
+                diagnostic: Some("Authentication required".into()),
+                install_url: "https://example.invalid/claude",
+                install_command: "install claude",
+                capabilities: hvc_core::terminals::CliCapabilities {
+                    output_format: hvc_core::terminals::CliOutputFormat::JsonLines,
+                    structured_output: true,
+                    native_resume: true,
+                    thinking_levels: vec![],
+                    auth_probe: true,
+                    read_only: true,
+                    model_catalog: false,
+                },
+            }],
+            ..ChatModel::default()
+        };
+        assert!(!model.new_conversation_target_available());
+        model.cli_availability[0].state = CliAvailabilityState::Available;
+        assert!(model.new_conversation_target_available());
+        model.selected_cli_backend = CliBackend::Custom;
+        assert!(!model.new_conversation_target_available());
     }
 
     #[test]
@@ -917,7 +997,7 @@ mod tests {
         fn create_conversation(
             &self,
             _: String,
-            _: String,
+            _: ChatExecutionTargetRequest,
         ) -> ChatFuture<GetChatConversationResponse> {
             Self::unavailable()
         }

@@ -327,12 +327,14 @@ fn relational_stage_response(case: RelationalCase, request: &RecordedRequest) ->
         json!([{
             "name": stage,
             "kind": kind,
-            "content": format!("# {stage}\n{grounding}: {:?}. No-op, sem escrita gerada.", case)
+            "content": format!("# {stage}\n{grounding}: {:?}. No-op; no generated write.", case)
         }])
     };
     let mut output = json!({
+        "outputLanguage": "en",
         "summary": format!("{stage} RS2 fixture"),
         "statusUpdate": if stage == "Intake" { "advance" } else { "checkpoint_ready" },
+        "contextUsage": [],
         "notes": [],
         "artifacts": artifacts
     });
