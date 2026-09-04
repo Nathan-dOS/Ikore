@@ -3138,11 +3138,14 @@ impl TerminalService {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()
-                .filter(|cache| cache.discovered_at.elapsed() < CLI_DISCOVERY_CACHE_TTL)
         {
             return cache.items.clone();
         }
-        let mut items = discover_clis_with_probes().await;
+        let handle = self.runtime.clone();
+        let mut items = match handle.spawn(discover_clis_with_probes()).await {
+            Ok(items) => items,
+            Err(_) => discover_clis(),
+        };
         if cli_mode_disabled() {
             for availability in &mut items {
                 if availability.backend != CliBackend::Custom {

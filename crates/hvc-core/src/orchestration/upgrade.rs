@@ -40,6 +40,15 @@ pub(crate) fn backup_before_upgrade(db: &Connection, directory: &Path) -> Result
         .write(true)
         .open(backup)?
         .sync_all()?;
+    // Update known historical checksums if line endings / whitespace differed on Windows in earlier versions.
+    db.execute(
+        "UPDATE refinery_schema_history SET checksum='5592598264408376641' WHERE version=1 AND checksum='412891939292080453'",
+        [],
+    )?;
+    db.execute(
+        "UPDATE refinery_schema_history SET checksum='5498699229741337255' WHERE version=4 AND checksum='8540640495470587455'",
+        [],
+    )?;
     Ok(())
 }
 

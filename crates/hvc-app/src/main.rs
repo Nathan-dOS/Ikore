@@ -29,6 +29,8 @@ fn main() -> anyhow::Result<()> {
     })??;
     let ui_core = Arc::clone(&core);
 
+    let _tokio_guard = runtime.enter();
+
     application.run(move |cx: &mut App| {
         hvc_ui::open_main_window(Arc::clone(&ui_core), cx)
             .expect("falha ao abrir a janela principal GPUI");
