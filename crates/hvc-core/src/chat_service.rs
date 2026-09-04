@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use futures::{StreamExt, stream};
+use regex::Regex;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,11 @@ use crate::llm::repository::SqliteLlmRepository;
 use crate::llm::streaming::{ParsedStreamEvent, SseParser};
 use crate::repository_context::{
     ListRepositoryTreeArgs, ReadRepositoryFileArgs, RepositoryContext, SearchRepositoryArgs,
+};
+use crate::secret_redactor::redact_secrets;
+use crate::terminals::{
+    CliBackend, CliModelSelectionSource, CompanionCliRoundRequest, TerminalError, TerminalService,
+    discover_clis, validate_catalog_model_selection,
 };
 
 const MAX_MODEL_ROUNDS: usize = 8;
@@ -195,10 +201,52 @@ pub struct ChatConversation {
     pub connection_id: Option<String>,
     pub provider_id: String,
     pub model_id: String,
+    pub transport: ChatTransportKind,
+    pub cli_backend: Option<CliBackend>,
+    pub model_profile: Option<String>,
+    pub model_source: CliModelSelectionSource,
     pub title: String,
     pub connection_available: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatTransportKind {
+    #[default]
+    Api,
+    Cli,
+}
+
+impl ChatTransportKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Api => "api",
+            Self::Cli => "cli",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "api" => Some(Self::Api),
+            "cli" => Some(Self::Cli),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum ChatExecutionTargetRequest {
+    Api {
+        connection_id: String,
+    },
+    Cli {
+        backend: CliBackend,
+        model: Option<String>,
+        model_profile: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -256,7 +304,7 @@ pub struct ListChatConversationsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct CreateChatConversationRequest {
     pub project_id: String,
-    pub connection_id: String,
+    pub target: ChatExecutionTargetRequest,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -353,6 +401,7 @@ pub struct ChatService {
     event_sink: Arc<dyn ChatEventSink>,
     runtime: Arc<ChatRuntime>,
     runtime_handle: Option<Handle>,
+    terminals: Mutex<Option<Arc<TerminalService>>>,
 }
 
 impl ChatService {
@@ -370,6 +419,7 @@ impl ChatService {
             event_sink,
             runtime: Arc::new(ChatRuntime::default()),
             runtime_handle: Handle::try_current().ok(),
+            terminals: Mutex::new(None),
         }
     }
 
@@ -421,7 +471,15 @@ impl ChatService {
             event_sink,
             runtime: Arc::new(ChatRuntime::default()),
             runtime_handle: Some(runtime_handle),
+            terminals: Mutex::new(None),
         }
+    }
+
+    pub fn attach_terminal_service(&self, terminals: Arc<TerminalService>) {
+        *self
+            .terminals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(terminals);
     }
 
     fn connection(&self) -> Result<Connection, ChatCommandError> {
@@ -471,7 +529,8 @@ impl ChatService {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             "SELECT id, project_id, connection_id, provider_id_snapshot, model_id_snapshot,
-                    title, created_at, updated_at
+                    title, created_at, updated_at, transport_kind, cli_backend,
+                    model_profile, model_source
              FROM chat_conversations WHERE project_id = ?1
              ORDER BY updated_at DESC, id",
         )?;
@@ -488,7 +547,6 @@ impl ChatService {
         request: CreateChatConversationRequest,
     ) -> Result<CreateChatConversationResponse, ChatCommandError> {
         let project_id = normalize_id(&request.project_id, "projectId")?;
-        let connection_id = normalize_id(&request.connection_id, "connectionId")?;
         let database = self.connection()?;
         let project_exists: bool = database.query_row(
             "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 AND is_archived = 0)",
@@ -501,26 +559,113 @@ impl ChatService {
                 "Projeto ativo não encontrado.",
             ));
         }
-        let provider_connection = self
-            .llm_repository
-            .find_resolved_connection(&connection_id)
-            .map_err(|error| ChatCommandError::new("connection_not_found", error.message))?;
-        self.ensure_connection_eligible(&provider_connection)?;
+        let (
+            connection_id,
+            provider_id,
+            model_id,
+            transport,
+            cli_backend,
+            model_profile,
+            model_source,
+        ) = match request.target {
+            ChatExecutionTargetRequest::Api { connection_id } => {
+                let connection_id = normalize_id(&connection_id, "connectionId")?;
+                let provider_connection = self
+                    .llm_repository
+                    .find_resolved_connection(&connection_id)
+                    .map_err(|error| {
+                        ChatCommandError::new("connection_not_found", error.message)
+                    })?;
+                self.ensure_connection_eligible(&provider_connection)?;
+                (
+                    Some(connection_id),
+                    provider_connection.provider_id.as_str().to_string(),
+                    provider_connection.default_model,
+                    ChatTransportKind::Api,
+                    None,
+                    None,
+                    CliModelSelectionSource::Catalog,
+                )
+            }
+            ChatExecutionTargetRequest::Cli {
+                backend,
+                model,
+                model_profile,
+            } => {
+                if backend == CliBackend::Custom {
+                    return Err(ChatCommandError::new(
+                        "companion_cli_unsupported",
+                        "Custom CLI is not allowed for the Companion.",
+                    ));
+                }
+                let model = normalize_chat_model_id(model)?;
+                let model_profile =
+                    normalize_optional_chat_value(model_profile, 100, "modelProfile")?;
+                if matches!(backend, CliBackend::Gemini) && model_profile.is_some() {
+                    return Err(ChatCommandError::new(
+                        "model_profile_unsupported",
+                        "Gemini CLI does not expose a verified model profile contract.",
+                    ));
+                }
+                let model_source = match model.as_deref() {
+                    None => CliModelSelectionSource::Default,
+                    Some(model_id) => {
+                        let in_catalog: bool = database.query_row(
+                            "SELECT EXISTS(
+                                   SELECT 1 FROM cli_model_catalog_entries e
+                                   JOIN cli_model_catalog_snapshots s ON s.id=e.snapshot_id
+                                   WHERE s.project_id=?1 AND s.backend=?2 AND e.model_id=?3
+                                 )",
+                            params![project_id, backend.as_str(), model_id],
+                            |row| row.get(0),
+                        )?;
+                        if in_catalog {
+                            CliModelSelectionSource::Catalog
+                        } else {
+                            CliModelSelectionSource::Manual
+                        }
+                    }
+                };
+                validate_catalog_model_selection(
+                    &database,
+                    &project_id,
+                    backend,
+                    model.as_deref(),
+                    model_profile.as_deref(),
+                    model_source,
+                )
+                .map_err(|error| ChatCommandError::new(error.code(), error.to_string()))?;
+                (
+                    None,
+                    backend.as_str().to_string(),
+                    model.clone().unwrap_or_else(|| "default".into()),
+                    ChatTransportKind::Cli,
+                    Some(backend),
+                    model_profile,
+                    model_source,
+                )
+            }
+        };
 
         let id = Uuid::new_v4().to_string();
         let now = now_iso();
         database.execute(
             "INSERT INTO chat_conversations (
                id, project_id, connection_id, provider_id_snapshot, model_id_snapshot,
-               title, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, 'Nova conversa', ?6, ?6)",
+               title, created_at, updated_at, transport_kind, cli_backend, model_profile,
+               model_source
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'Nova conversa', ?6, ?6, ?7, ?8, ?9, ?10)",
             params![
                 id,
                 project_id,
                 connection_id,
-                provider_connection.provider_id.as_str(),
-                provider_connection.default_model,
-                now
+                provider_id,
+                model_id,
+                now,
+                transport.as_str(),
+                cli_backend.map(CliBackend::as_str),
+                model_profile,
+                model_source.as_str(),
             ],
         )?;
         let conversation = self.get_conversation_record(&id)?;
@@ -565,6 +710,17 @@ impl ChatService {
         }
         let database = self.connection()?;
         let transaction = database.unchecked_transaction()?;
+        let specification_linked: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM specification_conversations WHERE conversation_id=?1)",
+            [&conversation_id],
+            |r| r.get(0),
+        )?;
+        if specification_linked {
+            return Err(ChatCommandError::new(
+                "specification_history",
+                "Esta conversa preserva perguntas/respostas de Specification. Consulte e responda pela view Pulsations.",
+            ));
+        }
         transaction.execute(
             "UPDATE ui_sessions SET active_chat_conversation_id = NULL
              WHERE active_chat_conversation_id = ?1",
@@ -592,28 +748,56 @@ impl ChatService {
             ));
         }
         let conversation = self.get_conversation_record(&conversation_id)?;
-        let connection_id = conversation.connection_id.clone().ok_or_else(|| {
-            ChatCommandError::new(
-                "connection_removed",
-                "A conexão desta conversa foi removida. Crie uma nova conversa.",
-            )
-        })?;
-        let provider_connection = self
-            .llm_repository
-            .find_resolved_connection(&connection_id)
-            .map_err(|_| {
-                ChatCommandError::new(
-                    "connection_removed",
-                    "A conexão desta conversa não existe mais. Crie uma nova conversa.",
-                )
-            })?;
-        if provider_connection.provider_id.as_str() != conversation.provider_id {
-            return Err(ChatCommandError::new(
-                "connection_changed",
-                "O provider da conexão mudou. Crie uma nova conversa.",
-            ));
-        }
-        self.ensure_connection_eligible_for_model(&provider_connection, &conversation.model_id)?;
+        let provider_connection = match conversation.transport {
+            ChatTransportKind::Api => {
+                let connection_id = conversation.connection_id.clone().ok_or_else(|| {
+                    ChatCommandError::new(
+                        "connection_removed",
+                        "A conexão desta conversa foi removida. Crie uma nova conversa.",
+                    )
+                })?;
+                let provider_connection = self
+                    .llm_repository
+                    .find_resolved_connection(&connection_id)
+                    .map_err(|_| {
+                        ChatCommandError::new(
+                            "connection_removed",
+                            "A conexão desta conversa não existe mais. Crie uma nova conversa.",
+                        )
+                    })?;
+                if provider_connection.provider_id.as_str() != conversation.provider_id {
+                    return Err(ChatCommandError::new(
+                        "connection_changed",
+                        "O provider da conexão mudou. Crie uma nova conversa.",
+                    ));
+                }
+                self.ensure_connection_eligible_for_model(
+                    &provider_connection,
+                    &conversation.model_id,
+                )?;
+                Some(provider_connection)
+            }
+            ChatTransportKind::Cli => {
+                if conversation.cli_backend.is_none() {
+                    return Err(ChatCommandError::new(
+                        "companion_cli_invalid",
+                        "The conversation does not contain a valid CLI backend snapshot.",
+                    ));
+                }
+                if self
+                    .terminals
+                    .lock()
+                    .map_err(|_| runtime_lock_error())?
+                    .is_none()
+                {
+                    return Err(ChatCommandError::new(
+                        "companion_cli_unavailable",
+                        "The CLI runtime is unavailable.",
+                    ));
+                }
+                None
+            }
+        };
         self.ensure_workspace_matches(&conversation.project_id, workspace_root)?;
 
         let mut turns = self
@@ -890,7 +1074,8 @@ impl ChatService {
         self.connection()?
             .query_row(
                 "SELECT id, project_id, connection_id, provider_id_snapshot, model_id_snapshot,
-                        title, created_at, updated_at
+                        title, created_at, updated_at, transport_kind, cli_backend,
+                        model_profile, model_source
                  FROM chat_conversations WHERE id = ?1",
                 params![id],
                 map_conversation_record,
@@ -905,23 +1090,34 @@ impl ChatService {
         &self,
         record: ConversationRecord,
     ) -> Result<ChatConversation, ChatCommandError> {
-        let connection_available = record.connection_id.as_ref().is_some_and(|id| {
-            self.llm_repository
-                .find_resolved_connection(id)
-                .ok()
-                .filter(|connection| connection.provider_id.as_str() == record.provider_id)
-                .and_then(|connection| {
-                    self.ensure_connection_eligible_for_model(&connection, &record.model_id)
-                        .ok()
+        let connection_available = match record.transport {
+            ChatTransportKind::Api => record.connection_id.as_ref().is_some_and(|id| {
+                self.llm_repository
+                    .find_resolved_connection(id)
+                    .ok()
+                    .filter(|connection| connection.provider_id.as_str() == record.provider_id)
+                    .and_then(|connection| {
+                        self.ensure_connection_eligible_for_model(&connection, &record.model_id)
+                            .ok()
+                    })
+                    .is_some()
+            }),
+            ChatTransportKind::Cli => record.cli_backend.is_some_and(|backend| {
+                discover_clis().into_iter().any(|availability| {
+                    availability.backend == backend && availability.executable_path.is_some()
                 })
-                .is_some()
-        });
+            }),
+        };
         Ok(ChatConversation {
             id: record.id,
             project_id: record.project_id,
             connection_id: record.connection_id,
             provider_id: record.provider_id,
             model_id: record.model_id,
+            transport: record.transport,
+            cli_backend: record.cli_backend,
+            model_profile: record.model_profile,
+            model_source: record.model_source,
             title: record.title,
             connection_available,
             created_at: record.created_at,
@@ -987,12 +1183,19 @@ struct ConversationRecord {
     connection_id: Option<String>,
     provider_id: String,
     model_id: String,
+    transport: ChatTransportKind,
+    cli_backend: Option<CliBackend>,
+    model_profile: Option<String>,
+    model_source: CliModelSelectionSource,
     title: String,
     created_at: String,
     updated_at: String,
 }
 
 fn map_conversation_record(row: &Row<'_>) -> rusqlite::Result<ConversationRecord> {
+    let transport: String = row.get(8)?;
+    let cli_backend: Option<String> = row.get(9)?;
+    let model_source: String = row.get(11)?;
     Ok(ConversationRecord {
         id: row.get(0)?,
         project_id: row.get(1)?,
@@ -1002,6 +1205,20 @@ fn map_conversation_record(row: &Row<'_>) -> rusqlite::Result<ConversationRecord
         title: row.get(5)?,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
+        transport: ChatTransportKind::parse(&transport).ok_or_else(|| {
+            rusqlite::Error::InvalidColumnType(8, transport, rusqlite::types::Type::Text)
+        })?,
+        cli_backend: cli_backend
+            .map(|backend| {
+                CliBackend::parse(&backend).ok_or_else(|| {
+                    rusqlite::Error::InvalidColumnType(9, backend, rusqlite::types::Type::Text)
+                })
+            })
+            .transpose()?,
+        model_profile: row.get(10)?,
+        model_source: CliModelSelectionSource::parse(&model_source).ok_or_else(|| {
+            rusqlite::Error::InvalidColumnType(11, model_source, rusqlite::types::Type::Text)
+        })?,
     })
 }
 
@@ -1075,6 +1292,73 @@ fn normalize_id(raw: &str, field: &str) -> Result<String, ChatCommandError> {
     Ok(value.to_string())
 }
 
+fn normalize_optional_chat_value(
+    value: Option<String>,
+    max_chars: usize,
+    field: &str,
+) -> Result<Option<String>, ChatCommandError> {
+    let value = value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if value.as_ref().is_some_and(|value| {
+        value.chars().count() > max_chars || value.chars().any(char::is_control)
+    }) {
+        return Err(ChatCommandError::new(
+            "invalid_target",
+            format!("{field} is invalid."),
+        ));
+    }
+    Ok(value)
+}
+
+fn normalize_chat_model_id(value: Option<String>) -> Result<Option<String>, ChatCommandError> {
+    let model = normalize_optional_chat_value(value, 200, "model")?;
+    if model.as_ref().is_some_and(|value| {
+        !value.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, '-' | '_' | '.' | ':' | '/' | '@' | '+')
+        })
+    }) {
+        return Err(ChatCommandError::new(
+            "invalid_target",
+            "model contains unsupported characters.",
+        ));
+    }
+    Ok(model)
+}
+
+fn project_history(
+    messages: Vec<ProtocolMessage>,
+    character_budget: usize,
+) -> Vec<ProtocolMessage> {
+    if messages.is_empty() {
+        return messages;
+    }
+    let mut used = 0usize;
+    let mut projected = Vec::new();
+    let mut omitted = false;
+    for (reverse_index, message) in messages.into_iter().rev().enumerate() {
+        let size = message.content.chars().count();
+        if reverse_index > 0 && used.saturating_add(size) > character_budget {
+            omitted = true;
+            continue;
+        }
+        used = used.saturating_add(size);
+        projected.push(message);
+    }
+    projected.reverse();
+    if omitted {
+        projected.insert(
+            0,
+            ProtocolMessage {
+                role: "user".into(),
+                content: "[Earlier local conversation messages were omitted from this inference because of the model context budget.]".into(),
+            },
+        );
+    }
+    projected
+}
+
 fn local_title(message: &str) -> String {
     let normalized = message.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut title: String = normalized.chars().take(72).collect();
@@ -1095,7 +1379,7 @@ fn runtime_lock_error() -> ChatCommandError {
 #[derive(Clone)]
 struct TurnContext {
     conversation: ConversationRecord,
-    connection: ResolvedConnection,
+    connection: Option<ResolvedConnection>,
     execution_id: String,
     generation_id: String,
     assistant_message_id: String,
@@ -1144,6 +1428,22 @@ struct ModelFailure {
     code: String,
     message: String,
     retryable: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum CompanionControlEnvelope {
+    Final { text: String },
+    ToolCalls { calls: Vec<CompanionControlCall> },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompanionControlCall {
+    id: String,
+    name: String,
+    #[serde(default = "empty_json_object")]
+    arguments: Value,
 }
 
 impl ChatService {
@@ -1223,14 +1523,27 @@ impl ChatService {
     }
 
     async fn run_model_loop(&self, context: &TurnContext) -> Result<(), ChatCommandError> {
-        let profile = profile_by_id(context.connection.provider_id.as_str()).ok_or_else(|| {
+        match context.conversation.transport {
+            ChatTransportKind::Api => self.run_api_model_loop(context).await,
+            ChatTransportKind::Cli => self.run_cli_model_loop(context).await,
+        }
+    }
+
+    async fn run_api_model_loop(&self, context: &TurnContext) -> Result<(), ChatCommandError> {
+        let connection = context.connection.as_ref().ok_or_else(|| {
+            ChatCommandError::new(
+                "connection_removed",
+                "API connection snapshot is unavailable.",
+            )
+        })?;
+        let profile = profile_by_id(connection.provider_id.as_str()).ok_or_else(|| {
             ChatCommandError::new("provider_incompatible", "Provider sem perfil compatível.")
         })?;
         let api_key = if profile.auth_style == AuthStyle::None {
             None
         } else {
             self.credentials
-                .get(&context.connection.credential_ref)
+                .get(&connection.credential_ref)
                 .map_err(|error| ChatCommandError::new("credential_unavailable", error.message))?
         };
         let repository = RepositoryContext::new(&context.workspace_root)
@@ -1271,7 +1584,7 @@ impl ChatService {
                 let response = self
                     .call_model(
                         &profile,
-                        &context.connection,
+                        connection,
                         &context.conversation.model_id,
                         api_key.as_deref(),
                         context,
@@ -1371,6 +1684,7 @@ impl ChatService {
                     &model_call_id,
                     round_index,
                     &response.tool_calls,
+                    true,
                 )
                 .await?;
             for result in &results {
@@ -1401,6 +1715,192 @@ impl ChatService {
         ))
     }
 
+    async fn run_cli_model_loop(&self, context: &TurnContext) -> Result<(), ChatCommandError> {
+        let terminals = self
+            .terminals
+            .lock()
+            .map_err(|_| runtime_lock_error())?
+            .clone()
+            .ok_or_else(|| {
+                ChatCommandError::new(
+                    "companion_cli_unavailable",
+                    "The CLI runtime is unavailable.",
+                )
+            })?;
+        let backend = context.conversation.cli_backend.ok_or_else(|| {
+            ChatCommandError::new(
+                "companion_cli_invalid",
+                "The conversation does not contain a CLI backend snapshot.",
+            )
+        })?;
+        let repository = RepositoryContext::new(&context.workspace_root)
+            .map_err(|error| ChatCommandError::new("repository_unavailable", error.0))?;
+        let messages =
+            self.load_protocol_messages(&context.conversation.id, &context.assistant_message_id)?;
+        let mut exchanges = Vec::<ToolExchange>::new();
+        let mut total_tool_calls = 0usize;
+        let mut total_tool_bytes = 0usize;
+
+        for round_index in 0..MAX_MODEL_ROUNDS {
+            if context.cancellation.is_cancelled() {
+                return Err(ChatCommandError::new("cancelled", "Resposta cancelada."));
+            }
+            let mut repair = false;
+            let (model_call_id, envelope) = loop {
+                let model_call_id = Uuid::new_v4().to_string();
+                let started_at = now_iso();
+                self.connection()?.execute(
+                    "INSERT INTO chat_model_calls(
+                       id,assistant_message_id,round_index,provider_id,model_id,started_at,status,
+                       transport_kind,cli_backend,model_profile
+                     ) VALUES(?1,?2,?3,?4,?5,?6,'running','cli',?4,?7)",
+                    params![
+                        model_call_id,
+                        context.assistant_message_id,
+                        round_index as i64,
+                        backend.as_str(),
+                        context.conversation.model_id,
+                        started_at,
+                        context.conversation.model_profile,
+                    ],
+                )?;
+                let prompt = build_cli_companion_prompt(&messages, &exchanges, repair);
+                let started = Instant::now();
+                let outcome = terminals
+                    .execute_companion_round(
+                        CompanionCliRoundRequest {
+                            project_id: context.conversation.project_id.clone(),
+                            backend,
+                            model: (context.conversation.model_id != "default")
+                                .then(|| context.conversation.model_id.clone()),
+                            model_profile: context.conversation.model_profile.clone(),
+                            model_source: context.conversation.model_source,
+                            prompt,
+                            schema: companion_control_envelope_schema(),
+                        },
+                        &context.cancellation,
+                        Instant::now() + TURN_TIMEOUT,
+                    )
+                    .await;
+                let latency_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
+                match outcome {
+                    Ok(output) => {
+                        let parsed = parse_companion_control_envelope(&output.envelope_json);
+                        match parsed {
+                            Ok(envelope) => {
+                                self.finish_cli_model_call(
+                                    &model_call_id,
+                                    "completed",
+                                    latency_ms,
+                                    output.detected_cli_version.as_deref(),
+                                    output.exit_code,
+                                    "exited",
+                                    output.output_bytes,
+                                    output.redaction_count,
+                                    None,
+                                )?;
+                                break (model_call_id, envelope);
+                            }
+                            Err(error) => {
+                                self.finish_cli_model_call(
+                                    &model_call_id,
+                                    "failed",
+                                    latency_ms,
+                                    output.detected_cli_version.as_deref(),
+                                    output.exit_code,
+                                    "invalid_envelope",
+                                    output.output_bytes,
+                                    output.redaction_count,
+                                    Some("invalid_control_envelope"),
+                                )?;
+                                if !repair {
+                                    repair = true;
+                                    continue;
+                                }
+                                return Err(error);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let invalid_envelope = matches!(&error, TerminalError::Process(message) if message.contains("invalid control envelope"));
+                        self.finish_cli_model_call(
+                            &model_call_id,
+                            "failed",
+                            latency_ms,
+                            None,
+                            None,
+                            terminal_termination_reason(&error),
+                            0,
+                            0,
+                            Some(error.code()),
+                        )?;
+                        if invalid_envelope && !repair {
+                            repair = true;
+                            continue;
+                        }
+                        return Err(chat_cli_error(error));
+                    }
+                }
+            };
+
+            match envelope {
+                CompanionControlEnvelope::Final { text } => {
+                    self.stream_visible_content(context, &text).await?;
+                    self.update_message_usage(&context.assistant_message_id, 0, 0, None)?;
+                    return Ok(());
+                }
+                CompanionControlEnvelope::ToolCalls { calls } => {
+                    let calls = calls
+                        .into_iter()
+                        .map(|call| NormalizedToolCall {
+                            id: call.id,
+                            name: call.name,
+                            arguments: call.arguments,
+                        })
+                        .collect::<Vec<_>>();
+                    total_tool_calls = total_tool_calls.saturating_add(calls.len());
+                    if total_tool_calls > MAX_TOOL_CALLS {
+                        return Err(ChatCommandError::new(
+                            "tool_call_limit",
+                            "O turno atingiu o limite de 24 leituras. Restrinja a pergunta e tente novamente.",
+                        ));
+                    }
+                    let results = self
+                        .execute_tool_calls(
+                            context,
+                            &repository,
+                            &model_call_id,
+                            round_index,
+                            &calls,
+                            false,
+                        )
+                        .await?;
+                    total_tool_bytes = total_tool_bytes.saturating_add(
+                        results
+                            .iter()
+                            .map(|result| result.content.len())
+                            .sum::<usize>(),
+                    );
+                    if total_tool_bytes > MAX_TOOL_RESULT_BYTES {
+                        return Err(ChatCommandError::new(
+                            "tool_result_limit",
+                            "O turno atingiu 256 KiB de resultados. Restrinja a pergunta e tente novamente.",
+                        ));
+                    }
+                    exchanges.push(ToolExchange {
+                        assistant_content: String::new(),
+                        calls,
+                        results,
+                    });
+                }
+            }
+        }
+        Err(ChatCommandError::new(
+            "model_round_limit",
+            "O turno atingiu o limite de 8 rodadas. Restrinja a pergunta e tente novamente.",
+        ))
+    }
+
     async fn execute_tool_calls(
         &self,
         context: &TurnContext,
@@ -1408,6 +1908,7 @@ impl ChatService {
         model_call_id: &str,
         round_index: usize,
         calls: &[NormalizedToolCall],
+        emit_events: bool,
     ) -> Result<Vec<ToolResult>, ChatCommandError> {
         let mut persisted_ids = HashMap::new();
         for call in calls {
@@ -1430,34 +1931,40 @@ impl ChatService {
                 ],
             )?;
             persisted_ids.insert(call.id.clone(), row_id);
-            self.emit_turn_event(
-                ChatEventKind::ToolStarted,
-                context,
-                ChatEventDetail::ToolStarted {
-                    tool_call: ChatToolStarted {
-                        id: call.id.clone(),
-                        name: call.name.clone(),
-                        arguments: typed_tool_arguments(&call.arguments),
-                        round_index,
+            if emit_events {
+                self.emit_turn_event(
+                    ChatEventKind::ToolStarted,
+                    context,
+                    ChatEventDetail::ToolStarted {
+                        tool_call: ChatToolStarted {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            arguments: typed_tool_arguments(&call.arguments),
+                            round_index,
+                        },
                     },
-                },
-            )?;
+                )?;
+            }
         }
 
         let executions = stream::iter(calls.iter().cloned())
             .map(|call| {
                 let repository = repository.clone();
+                let db_path = self.db_path.clone();
+                let project_id = context.conversation.project_id.clone();
                 let fallback_call = call.clone();
                 async move {
-                    tokio::task::spawn_blocking(move || execute_repository_tool(&repository, call))
-                        .await
-                        .unwrap_or_else(|error| ToolResult {
-                            call: fallback_call,
-                            content:
-                                json!({ "error": format!("Falha interna da ferramenta: {error}") })
-                                    .to_string(),
-                            is_error: true,
-                        })
+                    tokio::task::spawn_blocking(move || {
+                        execute_companion_tool(&db_path, &project_id, &repository, call)
+                    })
+                    .await
+                    .unwrap_or_else(|error| ToolResult {
+                        call: fallback_call,
+                        content:
+                            json!({ "error": format!("Falha interna da ferramenta: {error}") })
+                                .to_string(),
+                        is_error: true,
+                    })
                 }
             })
             .buffer_unordered(4)
@@ -1488,20 +1995,22 @@ impl ChatService {
                     ],
                 )?;
             }
-            self.emit_turn_event(
-                ChatEventKind::ToolCompleted,
-                context,
-                ChatEventDetail::ToolCompleted {
-                    tool_call: ChatToolCompleted {
-                        id: result.call.id.clone(),
-                        name: result.call.name.clone(),
-                        status: status.into(),
-                        summary,
-                        result_bytes: result.content.len(),
-                        round_index,
+            if emit_events {
+                self.emit_turn_event(
+                    ChatEventKind::ToolCompleted,
+                    context,
+                    ChatEventDetail::ToolCompleted {
+                        tool_call: ChatToolCompleted {
+                            id: result.call.id.clone(),
+                            name: result.call.name.clone(),
+                            status: status.into(),
+                            summary,
+                            result_bytes: result.content.len(),
+                            round_index,
+                        },
                     },
-                },
-            )?;
+                )?;
+            }
         }
         Ok(executions)
     }
@@ -1546,8 +2055,28 @@ impl ChatService {
                 content: row.get(1)?,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(ChatCommandError::from)
+        let messages = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ChatCommandError::from)?;
+        let context_window: Option<u64> = connection
+            .query_row(
+                "SELECT e.context_window
+                 FROM chat_conversations c
+                 JOIN cli_model_catalog_snapshots s
+                   ON s.project_id=c.project_id AND s.backend=c.cli_backend
+                 JOIN cli_model_catalog_entries e
+                   ON e.snapshot_id=s.id AND e.model_id=CASE
+                     WHEN c.model_id_snapshot='default' THEN '' ELSE c.model_id_snapshot END
+                 WHERE c.id=?1",
+                [conversation_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let character_budget = context_window
+            .map(|tokens| tokens.saturating_mul(2).clamp(40_000, 800_000) as usize)
+            .unwrap_or(80_000);
+        Ok(project_history(messages, character_budget))
     }
 
     fn finish_model_call(
@@ -1574,6 +2103,41 @@ impl ChatService {
                 status,
                 error_code,
                 id
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_cli_model_call(
+        &self,
+        id: &str,
+        status: &str,
+        latency_ms: i64,
+        detected_cli_version: Option<&str>,
+        exit_code: Option<i32>,
+        termination_reason: &str,
+        output_bytes: usize,
+        redaction_count: u64,
+        error_code: Option<&str>,
+    ) -> Result<(), ChatCommandError> {
+        self.connection()?.execute(
+            "UPDATE chat_model_calls
+             SET completed_at=?1,latency_ms=?2,status=?3,error_code=?4,
+                 detected_cli_version=?5,exit_code=?6,termination_reason=?7,
+                 output_bytes=?8,redaction_count=?9
+             WHERE id=?10",
+            params![
+                now_iso(),
+                latency_ms,
+                status,
+                error_code,
+                detected_cli_version,
+                exit_code,
+                termination_reason,
+                output_bytes.min(i64::MAX as usize) as i64,
+                redaction_count.min(i64::MAX as u64) as i64,
+                id,
             ],
         )?;
         Ok(())
@@ -1701,7 +2265,7 @@ fn execute_repository_tool(repository: &RepositoryContext, call: NormalizedToolC
                     serde_json::to_string(&result).map_err(|error| error.to_string())
                 })
         }
-        _ => Err("Ferramenta não permitida. Use somente as três leituras do repositório.".into()),
+        _ => Err("Tool is not in the repository read-only allowlist.".into()),
     };
     match outcome {
         Ok(content) => ToolResult {
@@ -1715,6 +2279,646 @@ fn execute_repository_tool(repository: &RepositoryContext, call: NormalizedToolC
             is_error: true,
         },
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListAgentRunsArgs {
+    agent: Option<String>,
+    status: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchAgentOutputsArgs {
+    query: String,
+    agent: Option<String>,
+    backend: Option<String>,
+    model: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadAgentOutputArgs {
+    reference: String,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchCliModelsArgs {
+    query: Option<String>,
+    backend: Option<String>,
+    provider: Option<String>,
+    capability: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SummarizeAgentModelPerformanceArgs {
+    agent: Option<String>,
+    backend: Option<String>,
+    model: Option<String>,
+}
+
+fn execute_companion_tool(
+    db_path: &Path,
+    project_id: &str,
+    repository: &RepositoryContext,
+    call: NormalizedToolCall,
+) -> ToolResult {
+    let outcome = match call.name.as_str() {
+        "list_repository_tree" | "search_repository" | "read_repository_file" => {
+            let result = execute_repository_tool(repository, call.clone());
+            if result.is_error {
+                Err(result.content)
+            } else {
+                Ok(result.content)
+            }
+        }
+        "list_agent_runs" => serde_json::from_value::<ListAgentRunsArgs>(call.arguments.clone())
+            .map_err(|error| format!("Invalid arguments: {error}"))
+            .and_then(|args| list_agent_runs_tool(db_path, project_id, args)),
+        "search_agent_outputs" => {
+            serde_json::from_value::<SearchAgentOutputsArgs>(call.arguments.clone())
+                .map_err(|error| format!("Invalid arguments: {error}"))
+                .and_then(|args| search_agent_outputs_tool(db_path, project_id, args))
+        }
+        "read_agent_output" => {
+            serde_json::from_value::<ReadAgentOutputArgs>(call.arguments.clone())
+                .map_err(|error| format!("Invalid arguments: {error}"))
+                .and_then(|args| read_agent_output_tool(db_path, project_id, args))
+        }
+        "search_cli_models" => {
+            serde_json::from_value::<SearchCliModelsArgs>(call.arguments.clone())
+                .map_err(|error| format!("Invalid arguments: {error}"))
+                .and_then(|args| search_cli_models_tool(db_path, project_id, args))
+        }
+        "summarize_agent_model_performance" => {
+            serde_json::from_value::<SummarizeAgentModelPerformanceArgs>(call.arguments.clone())
+                .map_err(|error| format!("Invalid arguments: {error}"))
+                .and_then(|args| summarize_agent_model_performance_tool(db_path, project_id, args))
+        }
+        _ => Err("Tool is not in the Companion read-only allowlist.".into()),
+    };
+    match outcome {
+        Ok(content) => match sanitize_companion_tool_content(db_path, project_id, &content) {
+            Ok(content) => ToolResult {
+                call,
+                content,
+                is_error: false,
+            },
+            Err(message) => ToolResult {
+                call,
+                content: json!({ "error": message }).to_string(),
+                is_error: true,
+            },
+        },
+        Err(message) => ToolResult {
+            call,
+            content: json!({ "error": message }).to_string(),
+            is_error: true,
+        },
+    }
+}
+
+fn companion_database(db_path: &Path) -> Result<Connection, String> {
+    let connection = Connection::open(db_path).map_err(|error| error.to_string())?;
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(|error| error.to_string())?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
+    Ok(connection)
+}
+
+fn list_agent_runs_tool(
+    db_path: &Path,
+    project_id: &str,
+    args: ListAgentRunsArgs,
+) -> Result<String, String> {
+    let connection = companion_database(db_path)?;
+    let limit = args.limit.unwrap_or(50).clamp(1, 200) as i64;
+    let mut statement = connection
+        .prepare(
+            "SELECT run_id,agent,pulsation_id,origin,status,backend,model,observed_model,
+                    duration_ms,cost_usd,authoritative,created_at
+             FROM (
+               SELECT tr.id AS run_id,COALESCE(tr.agent_role,tr.free_form_label) AS agent,
+                      tr.pulsation_id,tr.origin,tr.status,tr.backend,tr.model,tr.observed_model,
+                      CAST(MAX(0,(julianday(COALESCE(tr.finished_at,tr.updated_at))-
+                        julianday(COALESCE(tr.started_at,tr.created_at)))*86400000) AS INTEGER) AS duration_ms,
+                      NULL AS cost_usd,CASE WHEN tr.status='completed' THEN 1 ELSE 0 END AS authoritative,
+                      tr.created_at
+               FROM terminal_runs tr WHERE tr.project_id=?1
+               UNION ALL
+               SELECT ar.id,ar.agent_name,j.pulsation_id,'pipeline_api',ar.status,ar.provider,
+                      ar.model,NULL,
+                      CAST(MAX(0,(julianday(ar.updated_at)-julianday(ar.created_at))*86400000) AS INTEGER),
+                      ar.estimated_cost_usd,CASE WHEN ar.status='completed' THEN 1 ELSE 0 END,
+                      ar.created_at
+               FROM agent_runs ar
+               JOIN jobs j ON j.id=ar.job_id
+               JOIN pulsations p ON p.id=j.pulsation_id
+               WHERE p.project_id=?1
+             )
+             WHERE (?2 IS NULL OR agent=?2) AND (?3 IS NULL OR status=?3)
+             ORDER BY created_at DESC LIMIT ?4",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![project_id, args.agent, args.status, limit], |row| {
+            Ok(json!({
+                "runId": row.get::<_, String>(0)?,
+                "agent": row.get::<_, Option<String>>(1)?,
+                "pulsationId": row.get::<_, Option<String>>(2)?,
+                "origin": row.get::<_, String>(3)?,
+                "status": row.get::<_, String>(4)?,
+                "backend": row.get::<_, Option<String>>(5)?,
+                "requestedModel": row.get::<_, Option<String>>(6)?,
+                "observedModel": row.get::<_, Option<String>>(7)?,
+                "durationMs": row.get::<_, Option<i64>>(8)?,
+                "knownCostUsd": row.get::<_, Option<f64>>(9)?,
+                "authoritative": row.get::<_, bool>(10)?,
+                "createdAt": row.get::<_, String>(11)?,
+            }))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    serde_json::to_string(&json!({ "runs": rows })).map_err(|error| error.to_string())
+}
+
+fn refresh_agent_output_index(connection: &mut Connection, project_id: &str) -> Result<(), String> {
+    #[derive(Debug)]
+    struct Document {
+        reference: String,
+        source_kind: String,
+        source_id: String,
+        agent_role: Option<String>,
+        backend: Option<String>,
+        model: Option<String>,
+        status: String,
+        authoritative: bool,
+        title: String,
+        content: String,
+        created_at: String,
+        updated_at: String,
+    }
+
+    let mut documents = Vec::<Document>::new();
+    {
+        let mut statement = connection
+            .prepare(
+                "SELECT o.id,r.agent_name,r.provider,r.model,r.status,
+                        CASE WHEN r.status='completed' THEN 1 ELSE 0 END,
+                        CASE WHEN o.structured_output IS NOT NULL AND trim(o.structured_output)<>''
+                             THEN o.structured_output ELSE o.raw_output END,
+                        o.created_at,o.updated_at
+                 FROM agent_run_outputs o
+                 JOIN agent_runs r ON r.id=o.agent_run_id
+                 JOIN jobs j ON j.id=o.job_id
+                 JOIN pulsations p ON p.id=COALESCE(o.pulsation_id,j.pulsation_id)
+                 WHERE p.project_id=?1",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([project_id], |row| {
+                let id: String = row.get(0)?;
+                let agent: String = row.get(1)?;
+                Ok(Document {
+                    reference: format!("agent-run-output:{id}"),
+                    source_kind: "agent_run_output".into(),
+                    source_id: id,
+                    agent_role: Some(agent.clone()),
+                    backend: row.get(2)?,
+                    model: row.get(3)?,
+                    status: row.get(4)?,
+                    authoritative: row.get(5)?,
+                    title: format!("{agent} agent output"),
+                    content: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        documents.extend(
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    {
+        let mut statement = connection
+            .prepare(
+                "SELECT a.id,a.name,a.producer_stage,a.acceptance,a.content,a.created_at,a.updated_at
+                 FROM artifacts a JOIN pulsations p ON p.id=a.pulsation_id
+                 WHERE p.project_id=?1 AND a.content IS NOT NULL AND trim(a.content)<>''",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([project_id], |row| {
+                let id: String = row.get(0)?;
+                let status: String = row.get(3)?;
+                Ok(Document {
+                    reference: format!("artifact:{id}"),
+                    source_kind: "artifact".into(),
+                    source_id: id,
+                    agent_role: row.get(2)?,
+                    backend: None,
+                    model: None,
+                    authoritative: status == "accepted",
+                    status,
+                    title: row.get(1)?,
+                    content: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        documents.extend(
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    {
+        let mut statement = connection
+            .prepare(
+                "SELECT e.id,e.run_id,e.sequence,COALESCE(r.agent_role,r.free_form_label),
+                        r.backend,r.model,r.status,e.content,e.created_at
+                 FROM terminal_events e JOIN terminal_runs r ON r.id=e.run_id
+                 WHERE r.project_id=?1 AND e.kind IN ('message','tool_result','stdout')",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([project_id], |row| {
+                let id: String = row.get(0)?;
+                let run_id: String = row.get(1)?;
+                let sequence: i64 = row.get(2)?;
+                let agent: Option<String> = row.get(3)?;
+                let status: String = row.get(6)?;
+                Ok(Document {
+                    reference: format!("terminal-event:{run_id}:{sequence}"),
+                    source_kind: "terminal_event".into(),
+                    source_id: id,
+                    agent_role: agent.clone(),
+                    backend: row.get(4)?,
+                    model: row.get(5)?,
+                    authoritative: status == "completed",
+                    status,
+                    title: format!(
+                        "{} terminal output",
+                        agent.unwrap_or_else(|| "FreeForm".into())
+                    ),
+                    content: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(8)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        documents.extend(
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?,
+        );
+    }
+
+    let workspace_path: String = connection
+        .query_row(
+            "SELECT workspace_path FROM projects WHERE id=?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    for document in documents {
+        let content = redact_output_projection(&document.content, &workspace_path)?;
+        let content = content.chars().take(512 * 1024).collect::<String>();
+        transaction
+            .execute(
+                "INSERT INTO companion_agent_output_documents(
+                   project_id,stable_reference,source_kind,source_id,agent_role,backend,model,
+                   status,authoritative,title,content,created_at,updated_at
+                 ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+                 ON CONFLICT(project_id,stable_reference) DO UPDATE SET
+                   agent_role=excluded.agent_role,backend=excluded.backend,model=excluded.model,
+                   status=excluded.status,authoritative=excluded.authoritative,title=excluded.title,
+                   content=excluded.content,updated_at=excluded.updated_at",
+                params![
+                    project_id,
+                    document.reference,
+                    document.source_kind,
+                    document.source_id,
+                    document.agent_role,
+                    document.backend,
+                    document.model,
+                    document.status,
+                    document.authoritative,
+                    document.title,
+                    content,
+                    document.created_at,
+                    document.updated_at,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+fn search_agent_outputs_tool(
+    db_path: &Path,
+    project_id: &str,
+    args: SearchAgentOutputsArgs,
+) -> Result<String, String> {
+    let query = args.query.trim();
+    if query.is_empty() || query.chars().count() > 256 {
+        return Err("query must contain between 1 and 256 characters".into());
+    }
+    let mut connection = companion_database(db_path)?;
+    refresh_agent_output_index(&mut connection, project_id)?;
+    let fts_query = query
+        .split_whitespace()
+        .take(16)
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let limit = args.limit.unwrap_or(20).clamp(1, 50) as i64;
+    let mut statement = connection
+        .prepare(
+            "SELECT d.stable_reference,d.source_kind,d.agent_role,d.backend,d.model,d.status,
+                    d.authoritative,d.title,
+                    snippet(companion_agent_output_fts,1,'','','…',32),d.created_at
+             FROM companion_agent_output_fts
+             JOIN companion_agent_output_documents d ON d.id=companion_agent_output_fts.rowid
+             WHERE companion_agent_output_fts MATCH ?2 AND d.project_id=?1
+               AND (?3 IS NULL OR d.agent_role=?3)
+               AND (?4 IS NULL OR d.backend=?4)
+               AND (?5 IS NULL OR d.model=?5)
+             ORDER BY rank,d.created_at DESC LIMIT ?6",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(
+            params![
+                project_id,
+                fts_query,
+                args.agent,
+                args.backend,
+                args.model,
+                limit
+            ],
+            |row| {
+                Ok(json!({
+                    "reference": row.get::<_, String>(0)?,
+                    "source": row.get::<_, String>(1)?,
+                    "agent": row.get::<_, Option<String>>(2)?,
+                    "backend": row.get::<_, Option<String>>(3)?,
+                    "model": row.get::<_, Option<String>>(4)?,
+                    "status": row.get::<_, String>(5)?,
+                    "authoritative": row.get::<_, bool>(6)?,
+                    "title": row.get::<_, String>(7)?,
+                    "snippet": row.get::<_, String>(8)?,
+                    "createdAt": row.get::<_, String>(9)?,
+                }))
+            },
+        )
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    serde_json::to_string(&json!({ "matches": rows })).map_err(|error| error.to_string())
+}
+
+fn read_agent_output_tool(
+    db_path: &Path,
+    project_id: &str,
+    args: ReadAgentOutputArgs,
+) -> Result<String, String> {
+    let reference = args.reference.trim();
+    if reference.is_empty() || reference.len() > 512 {
+        return Err("reference is invalid".into());
+    }
+    let mut connection = companion_database(db_path)?;
+    refresh_agent_output_index(&mut connection, project_id)?;
+    let row = connection
+        .query_row(
+            "SELECT source_kind,agent_role,backend,model,status,authoritative,title,content,created_at
+             FROM companion_agent_output_documents
+             WHERE project_id=?1 AND stable_reference=?2",
+            params![project_id, reference],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, bool>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "output reference was not found in this project".to_string())?;
+    let start = args.start_line.unwrap_or(1).max(1);
+    let end = args.end_line.unwrap_or(start.saturating_add(199));
+    if end < start || end.saturating_sub(start) >= 400 {
+        return Err("line range must contain at most 400 lines".into());
+    }
+    let total_lines = row.7.lines().count();
+    let selected_lines = row
+        .7
+        .lines()
+        .enumerate()
+        .filter(|(index, _)| *index + 1 >= start && *index < end)
+        .map(|(index, line)| format!("{}: {}", index + 1, line))
+        .collect::<Vec<_>>();
+    let selected_line_count = selected_lines.len();
+    let selected_unbounded = selected_lines.join("\n");
+    let selected = selected_unbounded
+        .chars()
+        .take(64 * 1024)
+        .collect::<String>();
+    let truncated = start > 1
+        || start.saturating_sub(1).saturating_add(selected_line_count) < total_lines
+        || selected.chars().count() < selected_unbounded.chars().count();
+    serde_json::to_string(&json!({
+        "reference": reference,
+        "source": row.0,
+        "agent": row.1,
+        "backend": row.2,
+        "model": row.3,
+        "status": row.4,
+        "authoritative": row.5,
+        "title": row.6,
+        "content": selected,
+        "createdAt": row.8,
+        "truncated": truncated,
+    }))
+    .map_err(|error| error.to_string())
+}
+
+fn search_cli_models_tool(
+    db_path: &Path,
+    project_id: &str,
+    args: SearchCliModelsArgs,
+) -> Result<String, String> {
+    if args.backend.as_deref() == Some("custom") {
+        return Err("Custom CLI does not expose a verified model catalog".into());
+    }
+    let connection = companion_database(db_path)?;
+    let query = args.query.unwrap_or_default();
+    let query = format!("%{}%", query.trim());
+    let capability = args
+        .capability
+        .map(|value| format!("%\"{}\"%", value.trim()));
+    let limit = args.limit.unwrap_or(100).clamp(1, 500) as i64;
+    let mut statement = connection
+        .prepare(
+            "SELECT s.backend,s.state,s.source,s.cli_version,s.refreshed_at,e.provider_id,
+                    e.model_id,e.display_name,e.context_window,e.input_cost_usd_per_million,
+                    e.output_cost_usd_per_million,e.capabilities_json,e.profiles_json
+             FROM cli_model_catalog_entries e
+             JOIN cli_model_catalog_snapshots s ON s.id=e.snapshot_id
+             WHERE s.project_id=?1
+               AND (?2 IS NULL OR s.backend=?2)
+               AND (?3 IS NULL OR e.provider_id=?3)
+               AND (e.model_id LIKE ?4 OR e.display_name LIKE ?4 OR e.capabilities_json LIKE ?4)
+               AND (?5 IS NULL OR e.capabilities_json LIKE ?5)
+             ORDER BY s.backend,e.provider_id,e.position,e.model_id LIMIT ?6",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(
+            params![project_id, args.backend, args.provider, query, capability, limit],
+            |row| {
+                let model_id: String = row.get(6)?;
+                let capabilities: String = row.get(11)?;
+                let profiles: String = row.get(12)?;
+                Ok(json!({
+                    "backend": row.get::<_, String>(0)?,
+                    "catalogState": row.get::<_, String>(1)?,
+                    "catalogSource": row.get::<_, String>(2)?,
+                    "cliVersion": row.get::<_, Option<String>>(3)?,
+                    "refreshedAt": row.get::<_, String>(4)?,
+                    "provider": row.get::<_, Option<String>>(5)?,
+                    "modelId": (!model_id.is_empty()).then_some(model_id),
+                    "name": row.get::<_, String>(7)?,
+                    "contextWindow": row.get::<_, Option<i64>>(8)?,
+                    "inputCostUsdPerMillion": row.get::<_, Option<f64>>(9)?,
+                    "outputCostUsdPerMillion": row.get::<_, Option<f64>>(10)?,
+                    "capabilities": serde_json::from_str::<Value>(&capabilities).unwrap_or_else(|_| json!([])),
+                    "profiles": serde_json::from_str::<Value>(&profiles).unwrap_or_else(|_| json!([])),
+                }))
+            },
+        )
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    serde_json::to_string(&json!({ "models": rows })).map_err(|error| error.to_string())
+}
+
+fn summarize_agent_model_performance_tool(
+    db_path: &Path,
+    project_id: &str,
+    args: SummarizeAgentModelPerformanceArgs,
+) -> Result<String, String> {
+    let connection = companion_database(db_path)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT agent,backend,COALESCE(model,'default') AS model,COUNT(*) AS runs,
+                    SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS successes,
+                    SUM(CASE WHEN status IN ('failed','interrupted') THEN 1 ELSE 0 END) AS failures,
+                    SUM(CASE WHEN termination_reason='timeout' THEN 1 ELSE 0 END) AS timeouts,
+                    CAST(AVG(duration_ms) AS INTEGER) AS average_latency_ms,
+                    SUM(cost_usd) AS known_cost_usd
+             FROM (
+               SELECT COALESCE(tr.agent_role,tr.free_form_label) AS agent,tr.backend,tr.model,tr.status,
+                      tr.termination_reason,
+                      MAX(0,(julianday(COALESCE(tr.finished_at,tr.updated_at))-
+                        julianday(COALESCE(tr.started_at,tr.created_at)))*86400000) AS duration_ms,
+                      NULL AS cost_usd
+               FROM terminal_runs tr WHERE tr.project_id=?1
+               UNION ALL
+               SELECT ar.agent_name,ar.provider,ar.model,ar.status,NULL,
+                      MAX(0,(julianday(ar.updated_at)-julianday(ar.created_at))*86400000),
+                      ar.estimated_cost_usd
+               FROM agent_runs ar JOIN jobs j ON j.id=ar.job_id
+               JOIN pulsations p ON p.id=j.pulsation_id WHERE p.project_id=?1
+             )
+             WHERE (?2 IS NULL OR agent=?2) AND (?3 IS NULL OR backend=?3)
+               AND (?4 IS NULL OR model=?4)
+             GROUP BY agent,backend,COALESCE(model,'default')
+             ORDER BY runs DESC,agent,backend,model LIMIT 200",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(
+            params![project_id, args.agent, args.backend, args.model],
+            |row| {
+                Ok(json!({
+                    "agent": row.get::<_, Option<String>>(0)?,
+                    "backend": row.get::<_, Option<String>>(1)?,
+                    "model": row.get::<_, String>(2)?,
+                    "runs": row.get::<_, i64>(3)?,
+                    "successes": row.get::<_, i64>(4)?,
+                    "failures": row.get::<_, i64>(5)?,
+                    "timeouts": row.get::<_, i64>(6)?,
+                    "averageLatencyMs": row.get::<_, Option<i64>>(7)?,
+                    "knownCostUsd": row.get::<_, Option<f64>>(8)?,
+                }))
+            },
+        )
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    serde_json::to_string(&json!({ "performance": rows })).map_err(|error| error.to_string())
+}
+
+fn sanitize_companion_tool_content(
+    db_path: &Path,
+    project_id: &str,
+    content: &str,
+) -> Result<String, String> {
+    let connection = companion_database(db_path)?;
+    let workspace_path: String = connection
+        .query_row(
+            "SELECT workspace_path FROM projects WHERE id=?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    redact_output_projection(content, &workspace_path)
+}
+
+fn redact_output_projection(content: &str, workspace_path: &str) -> Result<String, String> {
+    static WINDOWS_PATH: OnceLock<Regex> = OnceLock::new();
+    static POSIX_PATH: OnceLock<Regex> = OnceLock::new();
+    let mut content = redact_secrets(content)?.text;
+    if !workspace_path.is_empty() {
+        content = content.replace(workspace_path, "[WORKSPACE]");
+        content = content.replace(&workspace_path.replace('\\', "/"), "[WORKSPACE]");
+    }
+    let windows_path = WINDOWS_PATH.get_or_init(|| {
+        Regex::new(r#"(?i)(?:[A-Z]:\\|\\\\)[^\s\"'<>|]+"#)
+            .expect("Windows absolute path regex must compile")
+    });
+    content = windows_path
+        .replace_all(&content, "[REDACTED ABSOLUTE PATH]")
+        .into_owned();
+    let posix_path = POSIX_PATH.get_or_init(|| {
+        Regex::new(r#"(^|[\s\"'])/[^\s\"'<>|]+"#).expect("POSIX absolute path regex must compile")
+    });
+    Ok(posix_path
+        .replace_all(&content, "$1[REDACTED ABSOLUTE PATH]")
+        .into_owned())
 }
 
 fn summarize_tool_result(result: &ToolResult) -> String {
@@ -2016,7 +3220,169 @@ fn model_persistence_failure(error: ChatCommandError) -> ModelFailure {
 }
 
 fn system_prompt() -> &'static str {
-    "Você é o Chat Companion do Hard Vibe Code. Analise arquitetura, explique código e proponha decisões técnicas usando somente conhecimento geral e as ferramentas locais read-only fornecidas. O repositório aberto é a única fonte externa acessível. Nunca peça ou tente usar shell, Git, rede, web, escrita, rename ou ferramentas remotas. Nunca afirme ter aplicado mudanças. Quando propuser alterações, use unified diff copiável e diga explicitamente que é uma proposta não aplicada. Separe claramente evidência encontrada no repositório de inferências ou opiniões próprias. Consulte arquivos apenas quando necessário e restrinja as leituras."
+    "Você é o Chat Companion do Hard Vibe Code. Analise arquitetura, explique código e recomende configurações de CLI e modelo em texto usando somente conhecimento geral e as ferramentas locais read-only fornecidas. Consulte saídas de agentes apenas sob demanda por ferramenta; elas nunca são contexto automático. Nunca peça ou tente usar shell, Git, rede, web, escrita, rename, plugins, MCP externo ou ferramentas remotas. Nunca altere configurações e nunca afirme ter aplicado mudanças. Quando propuser alterações de código, use unified diff copiável e diga explicitamente que é uma proposta não aplicada. Diferencie evidência observada, dados de catálogo, incertezas e opinião. Responda no idioma do Dev."
+}
+
+fn empty_json_object() -> Value {
+    json!({})
+}
+
+fn parse_companion_control_envelope(
+    payload: &str,
+) -> Result<CompanionControlEnvelope, ChatCommandError> {
+    let envelope: CompanionControlEnvelope = serde_json::from_str(payload).map_err(|_| {
+        ChatCommandError::new(
+            "invalid_control_envelope",
+            "The Companion CLI returned an invalid control envelope.",
+        )
+    })?;
+    match &envelope {
+        CompanionControlEnvelope::Final { text } => {
+            if text.trim().is_empty() || text.chars().count() > 100_000 {
+                return Err(ChatCommandError::new(
+                    "invalid_control_envelope",
+                    "The Companion CLI returned invalid final text.",
+                ));
+            }
+        }
+        CompanionControlEnvelope::ToolCalls { calls } => {
+            if calls.is_empty() || calls.len() > MAX_TOOL_CALLS {
+                return Err(ChatCommandError::new(
+                    "invalid_control_envelope",
+                    "The Companion CLI returned an invalid tool call count.",
+                ));
+            }
+            for call in calls {
+                if call.id.trim().is_empty()
+                    || call.id.len() > 256
+                    || !is_companion_tool(&call.name)
+                    || !call.arguments.is_object()
+                {
+                    return Err(ChatCommandError::new(
+                        "invalid_control_envelope",
+                        "The Companion CLI returned an invalid read-only tool call.",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(envelope)
+}
+
+fn companion_control_envelope_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "type": { "const": "final" },
+                    "text": { "type": "string", "minLength": 1, "maxLength": 100000 }
+                },
+                "required": ["type", "text"],
+                "additionalProperties": false
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "type": { "const": "tool_calls" },
+                    "calls": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 24,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+                                "name": {
+                                    "type": "string",
+                                    "enum": companion_tool_names()
+                                },
+                                "arguments": { "type": "object" }
+                            },
+                            "required": ["id", "name", "arguments"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["type", "calls"],
+                "additionalProperties": false
+            }
+        ]
+    })
+}
+
+fn build_cli_companion_prompt(
+    messages: &[ProtocolMessage],
+    exchanges: &[ToolExchange],
+    repair: bool,
+) -> String {
+    let messages = messages
+        .iter()
+        .map(|message| json!({ "role": message.role, "content": message.content }))
+        .collect::<Vec<_>>();
+    let exchanges = exchanges
+        .iter()
+        .map(|exchange| {
+            json!({
+                "toolCalls": exchange.calls.iter().map(|call| json!({
+                    "id": call.id,
+                    "name": call.name,
+                    "arguments": call.arguments
+                })).collect::<Vec<_>>(),
+                "toolResults": exchange.results.iter().map(|result| json!({
+                    "id": result.call.id,
+                    "name": result.call.name,
+                    "content": result.content,
+                    "isError": result.is_error
+                })).collect::<Vec<_>>()
+            })
+        })
+        .collect::<Vec<_>>();
+    let repair_instruction = if repair {
+        "Your previous response did not satisfy the control envelope. Return exactly one valid JSON envelope now."
+    } else {
+        ""
+    };
+    format!(
+        "<system>\n{}\nYou have no native tools. To inspect local data, return a tool_calls envelope using only the schemas below. When enough evidence is available, return a final envelope. Never include reasoning, traces, Markdown fences, or text outside the envelope.\n{}\n</system>\n<history>\n{}\n</history>\n<tool_exchanges>\n{}\n</tool_exchanges>\n<control_envelope_schema>\n{}\n</control_envelope_schema>\n{}",
+        system_prompt(),
+        serde_json::to_string(&repository_tool_schemas()).unwrap_or_else(|_| "[]".into()),
+        serde_json::to_string(&messages).unwrap_or_else(|_| "[]".into()),
+        serde_json::to_string(&exchanges).unwrap_or_else(|_| "[]".into()),
+        serde_json::to_string(&companion_control_envelope_schema()).unwrap_or_else(|_| "{}".into()),
+        repair_instruction,
+    )
+}
+
+fn terminal_termination_reason(error: &TerminalError) -> &'static str {
+    match error {
+        TerminalError::Cancelled => "cancelled",
+        TerminalError::Timeout => "timeout",
+        TerminalError::OutputLimit => "output_limit",
+        _ => "failed",
+    }
+}
+
+fn chat_cli_error(error: TerminalError) -> ChatCommandError {
+    let code = error.code().to_string();
+    let message = match error {
+        TerminalError::AuthRequired(backend) => format!(
+            "{backend} requires authentication in its own CLI. Sign in there and try again."
+        ),
+        TerminalError::VersionUnsupported(backend) => {
+            format!("The installed {backend} version is not supported by this adapter.")
+        }
+        TerminalError::Timeout => "The Companion CLI reached the 120 second timeout.".into(),
+        TerminalError::Cancelled => "Resposta cancelada.".into(),
+        TerminalError::OutputLimit => "The Companion CLI exceeded the safe output limit.".into(),
+        TerminalError::NotFound(_) => "The selected CLI is not installed or discoverable.".into(),
+        TerminalError::Process(message) => {
+            redact_secrets(&message).map_or_else(|_| "The Companion CLI failed.".into(), |v| v.text)
+        }
+        _ => "The Companion CLI could not complete this turn.".into(),
+    };
+    ChatCommandError::new(code, message)
 }
 
 fn tool_definitions_openai_responses() -> Vec<Value> {
@@ -2062,11 +3428,28 @@ fn tool_definitions_anthropic() -> Vec<Value> {
         .collect()
 }
 
+fn companion_tool_names() -> Vec<&'static str> {
+    vec![
+        "list_repository_tree",
+        "search_repository",
+        "read_repository_file",
+        "list_agent_runs",
+        "search_agent_outputs",
+        "read_agent_output",
+        "search_cli_models",
+        "summarize_agent_model_performance",
+    ]
+}
+
+fn is_companion_tool(name: &str) -> bool {
+    companion_tool_names().contains(&name)
+}
+
 fn repository_tool_schemas() -> Vec<(&'static str, &'static str, Value)> {
     vec![
         (
             "list_repository_tree",
-            "Lista a estrutura segura do repositório com paths relativos.",
+            "List the safe repository tree using relative paths.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2079,7 +3462,7 @@ fn repository_tool_schemas() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "search_repository",
-            "Busca texto literal ou regex somente em arquivos de texto permitidos do repositório.",
+            "Search literal text or a regular expression only in allowed repository text files.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2094,7 +3477,7 @@ fn repository_tool_schemas() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "read_repository_file",
-            "Lê até 400 linhas/64 KiB de um arquivo de texto permitido, com linhas numeradas.",
+            "Read up to 400 lines or 64 KiB from an allowed text file with numbered lines.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2103,6 +3486,77 @@ fn repository_tool_schemas() -> Vec<(&'static str, &'static str, Value)> {
                     "endLine": { "type": "integer", "minimum": 1 }
                 },
                 "required": ["path"],
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "list_agent_runs",
+            "List project-scoped canonical and FreeForm agent runs with status, CLI, requested model, observed model, duration, and known cost.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "agent": { "type": "string" },
+                    "status": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "search_agent_outputs",
+            "Search the project-scoped FTS index of persisted API, CLI, manual, FreeForm, and artifact outputs. Results identify non-authoritative failed, cancelled, or partial runs.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "minLength": 1, "maxLength": 256 },
+                    "agent": { "type": "string" },
+                    "backend": { "type": "string" },
+                    "model": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "read_agent_output",
+            "Read a bounded line range from one stable output reference returned by search_agent_outputs.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "reference": { "type": "string", "minLength": 1, "maxLength": 512 },
+                    "startLine": { "type": "integer", "minimum": 1 },
+                    "endLine": { "type": "integer", "minimum": 1 }
+                },
+                "required": ["reference"],
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "search_cli_models",
+            "Search the normalized project-scoped CLI model catalog by backend, provider, ID, name, or capability.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "maxLength": 256 },
+                    "backend": { "type": "string", "enum": ["codex", "claude", "gemini", "opencode"] },
+                    "provider": { "type": "string" },
+                    "capability": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "summarize_agent_model_performance",
+            "Aggregate project-scoped run count, success, failure, timeout, average latency, and known cost by agent, backend, and model.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "agent": { "type": "string" },
+                    "backend": { "type": "string" },
+                    "model": { "type": "string" }
+                },
                 "additionalProperties": false
             }),
         ),
@@ -2491,7 +3945,9 @@ mod tests {
         let created = service
             .create_conversation(CreateChatConversationRequest {
                 project_id: "project-a".into(),
-                connection_id: "connection-a".into(),
+                target: ChatExecutionTargetRequest::Api {
+                    connection_id: "connection-a".into(),
+                },
             })
             .unwrap()
             .conversation;
@@ -2555,7 +4011,9 @@ mod tests {
         let conversation = service
             .create_conversation(CreateChatConversationRequest {
                 project_id: "project-a".into(),
-                connection_id: "connection-a".into(),
+                target: ChatExecutionTargetRequest::Api {
+                    connection_id: "connection-a".into(),
+                },
             })
             .unwrap()
             .conversation;
@@ -2595,7 +4053,9 @@ mod tests {
         let conversation = service
             .create_conversation(CreateChatConversationRequest {
                 project_id: "project-a".into(),
-                connection_id: "connection-a".into(),
+                target: ChatExecutionTargetRequest::Api {
+                    connection_id: "connection-a".into(),
+                },
             })
             .unwrap()
             .conversation;
@@ -2681,7 +4141,9 @@ mod tests {
         let conversation = service
             .create_conversation(CreateChatConversationRequest {
                 project_id: "project-a".into(),
-                connection_id: "connection-a".into(),
+                target: ChatExecutionTargetRequest::Api {
+                    connection_id: "connection-a".into(),
+                },
             })
             .unwrap()
             .conversation;
@@ -2769,7 +4231,9 @@ mod tests {
         let conversation = service
             .create_conversation(CreateChatConversationRequest {
                 project_id: "project-a".into(),
-                connection_id: "connection-a".into(),
+                target: ChatExecutionTargetRequest::Api {
+                    connection_id: "connection-a".into(),
+                },
             })
             .unwrap()
             .conversation;
@@ -2820,7 +4284,9 @@ mod tests {
         let conversation = service
             .create_conversation(CreateChatConversationRequest {
                 project_id: "project-a".into(),
-                connection_id: "connection-a".into(),
+                target: ChatExecutionTargetRequest::Api {
+                    connection_id: "connection-a".into(),
+                },
             })
             .unwrap()
             .conversation;
@@ -2880,7 +4346,176 @@ mod tests {
     }
 
     #[test]
-    fn exposes_only_three_read_only_repository_tools() {
+    fn cli_control_envelope_is_strict_and_allows_only_read_only_tools() {
+        assert!(matches!(
+            parse_companion_control_envelope(r#"{"type":"final","text":"Ready"}"#).unwrap(),
+            CompanionControlEnvelope::Final { text } if text == "Ready"
+        ));
+        assert!(matches!(
+            parse_companion_control_envelope(
+                r#"{"type":"tool_calls","calls":[{"id":"call-1","name":"search_agent_outputs","arguments":{"query":"latency"}}]}"#
+            )
+            .unwrap(),
+            CompanionControlEnvelope::ToolCalls { calls } if calls.len() == 1
+        ));
+        for invalid in [
+            r#"{"type":"final","text":""}"#,
+            r#"{"type":"final","text":"Ready","reasoning":"hidden"}"#,
+            r#"{"type":"tool_calls","calls":[]}"#,
+            r#"{"type":"tool_calls","calls":[{"id":"call-1","name":"write_file","arguments":{}}]}"#,
+            "not-json",
+        ] {
+            assert!(
+                parse_companion_control_envelope(invalid).is_err(),
+                "invalid envelope was accepted: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn history_projection_keeps_the_current_message_and_marks_omissions() {
+        let projected = project_history(
+            vec![
+                ProtocolMessage {
+                    role: "user".into(),
+                    content: "old-message-that-does-not-fit".into(),
+                },
+                ProtocolMessage {
+                    role: "assistant".into(),
+                    content: "recent".into(),
+                },
+                ProtocolMessage {
+                    role: "user".into(),
+                    content: "current-message-is-always-complete".into(),
+                },
+            ],
+            8,
+        );
+        assert_eq!(projected.len(), 2);
+        assert!(projected[0].content.contains("were omitted"));
+        assert_eq!(projected[1].content, "current-message-is-always-complete");
+    }
+
+    #[test]
+    fn cli_conversation_target_is_immutable_and_survives_restart() {
+        let (_temp, _workspace, service) = prepare_chat();
+        let created = service
+            .create_conversation(CreateChatConversationRequest {
+                project_id: "project-a".into(),
+                target: ChatExecutionTargetRequest::Cli {
+                    backend: CliBackend::Claude,
+                    model: Some("unverified-model".into()),
+                    model_profile: None,
+                },
+            })
+            .unwrap()
+            .conversation;
+        assert_eq!(created.transport, ChatTransportKind::Cli);
+        assert_eq!(created.cli_backend, Some(CliBackend::Claude));
+        assert_eq!(created.model_id, "unverified-model");
+        assert_eq!(created.model_source, CliModelSelectionSource::Manual);
+
+        let database_path = service.db_path.clone();
+        drop(service);
+        let reopened = ChatService::new(
+            database_path,
+            Arc::new(TestCredentials),
+            Arc::new(NoopChatEventSink),
+        );
+        let loaded = reopened
+            .get_conversation(GetChatConversationRequest {
+                conversation_id: created.id,
+            })
+            .unwrap()
+            .conversation;
+        assert_eq!(loaded.transport, ChatTransportKind::Cli);
+        assert_eq!(loaded.cli_backend, Some(CliBackend::Claude));
+        assert_eq!(loaded.model_id, "unverified-model");
+        assert_eq!(loaded.model_profile, None);
+        assert_eq!(loaded.model_source, CliModelSelectionSource::Manual);
+
+        let invalid_profile = reopened.create_conversation(CreateChatConversationRequest {
+            project_id: "project-a".into(),
+            target: ChatExecutionTargetRequest::Cli {
+                backend: CliBackend::Claude,
+                model: Some("unverified-model".into()),
+                model_profile: Some("high".into()),
+            },
+        });
+        assert!(invalid_profile.is_err());
+        let invalid_model = reopened.create_conversation(CreateChatConversationRequest {
+            project_id: "project-a".into(),
+            target: ChatExecutionTargetRequest::Cli {
+                backend: CliBackend::Claude,
+                model: Some("model with spaces".into()),
+                model_profile: None,
+            },
+        });
+        assert!(invalid_model.is_err());
+    }
+
+    #[test]
+    fn agent_outputs_are_project_scoped_and_only_enter_prompts_after_a_tool_call() {
+        let (_temp, _workspace, service) = prepare_chat();
+        let database = service.connection().unwrap();
+        let now = now_iso();
+        for (project, reference, content) in [
+            ("project-a", "artifact:project-a", "alpha-private-evidence"),
+            ("project-b", "artifact:project-b", "beta-private-evidence"),
+        ] {
+            database
+                .execute(
+                    "INSERT INTO companion_agent_output_documents(
+                       project_id,stable_reference,source_kind,source_id,status,authoritative,
+                       title,content,created_at,updated_at
+                     ) VALUES(?1,?2,'artifact',?2,'accepted',1,'Agent evidence',?3,?4,?4)",
+                    params![project, reference, content, now],
+                )
+                .unwrap();
+        }
+        drop(database);
+
+        let prompt = build_cli_companion_prompt(
+            &[ProtocolMessage {
+                role: "user".into(),
+                content: "Which model should I use?".into(),
+            }],
+            &[],
+            false,
+        );
+        assert!(!prompt.contains("alpha-private-evidence"));
+        assert!(!prompt.contains("beta-private-evidence"));
+
+        let matches = search_agent_outputs_tool(
+            &service.db_path,
+            "project-a",
+            SearchAgentOutputsArgs {
+                query: "private evidence".into(),
+                agent: None,
+                backend: None,
+                model: None,
+                limit: None,
+            },
+        )
+        .unwrap();
+        assert!(matches.contains("artifact:project-a"));
+        assert!(!matches.contains("artifact:project-b"));
+        assert!(
+            read_agent_output_tool(
+                &service.db_path,
+                "project-a",
+                ReadAgentOutputArgs {
+                    reference: "artifact:project-b".into(),
+                    start_line: None,
+                    end_line: None,
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn exposes_only_the_eight_read_only_companion_tools() {
         let names = repository_tool_schemas()
             .into_iter()
             .map(|(name, _, _)| name)
@@ -2890,7 +4525,12 @@ mod tests {
             vec![
                 "list_repository_tree",
                 "search_repository",
-                "read_repository_file"
+                "read_repository_file",
+                "list_agent_runs",
+                "search_agent_outputs",
+                "read_agent_output",
+                "search_cli_models",
+                "summarize_agent_model_performance"
             ]
         );
         let serialized = serde_json::to_string(&tool_definitions_openai_chat()).unwrap();

@@ -1,6 +1,8 @@
 // A UI consome temporariamente os DTOs de erro por valor do contrato compartilhado.
 #![allow(clippy::result_large_err)]
 
+mod agents;
+mod agents_view;
 mod app_model;
 mod chat;
 mod chat_view;

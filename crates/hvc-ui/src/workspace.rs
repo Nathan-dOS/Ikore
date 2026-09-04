@@ -5,6 +5,11 @@ use std::time::Duration;
 
 use gpui::{AppContext as _, Context, Entity, SharedString};
 use hvc_core::AppCore;
+use hvc_core::orchestration::brownfield::{
+    BrownfieldConsentState, BrownfieldCoverageMetrics, BrownfieldInventory,
+    BrownfieldOnboardingResult, BrownfieldOnboardingStatus, SetBrownfieldConsentRequest,
+    SetBrownfieldIgnoredRequest,
+};
 use hvc_core::workspace_service::{
     FileNode, ReadWorkspaceFileRequest, WriteWorkspaceFileAtomicRequest,
 };
@@ -41,6 +46,19 @@ pub(crate) trait WorkspaceBackend: Send + Sync {
         content: String,
         expected_revision: String,
     ) -> WorkspaceFuture<String>;
+
+    fn set_brownfield_consent(
+        &self,
+        project_id: String,
+        consent: bool,
+    ) -> WorkspaceFuture<BrownfieldOnboardingResult>;
+
+    fn set_brownfield_ignored(
+        &self,
+        project_id: String,
+        relative_path: String,
+        ignored: bool,
+    ) -> WorkspaceFuture<BrownfieldOnboardingStatus>;
 }
 
 pub(crate) struct CoreWorkspaceBackend {
@@ -102,6 +120,114 @@ impl WorkspaceBackend for CoreWorkspaceBackend {
                     ))
                 })?
         })
+    }
+
+    fn set_brownfield_consent(
+        &self,
+        project_id: String,
+        consent: bool,
+    ) -> WorkspaceFuture<BrownfieldOnboardingResult> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.set_brownfield_onboarding_consent(SetBrownfieldConsentRequest {
+                        project_id,
+                        consent,
+                    })
+                    .map_err(WorkspaceOperationError::from)
+                })
+                .await
+                .map_err(|error| {
+                    WorkspaceOperationError::worker(format!(
+                        "worker do onboarding brownfield interrompido: {error}"
+                    ))
+                })?
+        })
+    }
+
+    fn set_brownfield_ignored(
+        &self,
+        project_id: String,
+        relative_path: String,
+        ignored: bool,
+    ) -> WorkspaceFuture<BrownfieldOnboardingStatus> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.set_brownfield_path_ignored(SetBrownfieldIgnoredRequest {
+                        project_id,
+                        relative_path,
+                        ignored,
+                    })
+                    .map_err(WorkspaceOperationError::from)
+                })
+                .await
+                .map_err(|error| {
+                    WorkspaceOperationError::worker(format!(
+                        "worker de ignore brownfield interrompido: {error}"
+                    ))
+                })?
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum BrownfieldOnboardingState {
+    #[default]
+    NotApplicable,
+    Pending,
+    Disabled,
+    Enabled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct BrownfieldOnboardingModel {
+    pub(crate) state: BrownfieldOnboardingState,
+    pub(crate) busy: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) inventory: Option<BrownfieldInventory>,
+    pub(crate) ignored_paths: Vec<String>,
+    pub(crate) coverage: Option<BrownfieldCoverageMetrics>,
+}
+
+impl BrownfieldOnboardingModel {
+    pub(crate) fn from_status(status: Option<BrownfieldOnboardingStatus>) -> Self {
+        let ignored_paths = status
+            .as_ref()
+            .map(|status| status.ignored_paths.clone())
+            .unwrap_or_default();
+        let coverage = status.as_ref().and_then(|status| status.coverage.clone());
+        let state = status.map_or(
+            BrownfieldOnboardingState::NotApplicable,
+            |status| match status.consent {
+                BrownfieldConsentState::NotDecided => BrownfieldOnboardingState::Pending,
+                BrownfieldConsentState::Declined => BrownfieldOnboardingState::Disabled,
+                BrownfieldConsentState::Granted => BrownfieldOnboardingState::Enabled,
+            },
+        );
+        Self {
+            state,
+            ignored_paths,
+            coverage,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn apply_result(&mut self, result: BrownfieldOnboardingResult) {
+        self.state = match result.status.consent {
+            BrownfieldConsentState::NotDecided => BrownfieldOnboardingState::Pending,
+            BrownfieldConsentState::Declined => BrownfieldOnboardingState::Disabled,
+            BrownfieldConsentState::Granted => BrownfieldOnboardingState::Enabled,
+        };
+        self.busy = false;
+        self.error = None;
+        self.inventory = result.inventory;
+        self.ignored_paths = result.status.ignored_paths;
+        self.coverage = result.status.coverage;
     }
 }
 
@@ -207,6 +333,7 @@ pub struct WorkspaceEditorModel {
     pub view_mode: WorkspaceViewMode,
     pub context_drawer_open: bool,
     pub diff_expanded: bool,
+    pub(crate) brownfield: BrownfieldOnboardingModel,
 }
 
 impl WorkspaceEditorModel {
@@ -221,6 +348,7 @@ impl WorkspaceEditorModel {
             view_mode: WorkspaceViewMode::Editor,
             context_drawer_open: true,
             diff_expanded: false,
+            brownfield: BrownfieldOnboardingModel::default(),
         }
     }
 

@@ -1,0 +1,3 @@
+{"type":"thread.started","thread_id":"codex-min-session"}
+{"type":"item.completed","item":{"type":"agent_message","text":"ok codex minimum"}}
+{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":2}}

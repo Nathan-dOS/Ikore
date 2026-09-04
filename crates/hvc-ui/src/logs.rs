@@ -320,6 +320,7 @@ mod tests {
             execution_id: "execution-1".into(),
             generation_id: "generation-1".into(),
             sequence,
+            context: None,
             event: LlmStreamEvent::TokenDelta { text: "x".into() },
         }
     }

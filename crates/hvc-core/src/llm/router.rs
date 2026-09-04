@@ -57,6 +57,7 @@ pub struct ProviderRouter {
     clock: Arc<dyn Clock>,
     jitter: Arc<dyn JitterSource>,
     semaphores: Mutex<HashMap<String, Arc<Semaphore>>>,
+    priority: Arc<super::priority::ConnectionPriority>,
 }
 
 impl ProviderRouter {
@@ -84,6 +85,7 @@ impl ProviderRouter {
             credentials,
             adapters,
             event_sink,
+            priority: super::priority::ConnectionPriority::new(clock.clone()),
             clock,
             jitter,
             semaphores: Mutex::new(HashMap::new()),
@@ -271,6 +273,13 @@ impl ProviderRouter {
             self.event_sink.clone(),
             request.execution_id.0.clone(),
             request.generation_id.0.clone(),
+            crate::llm::AgentExecutionContext {
+                project_id: request.project_id.clone(),
+                pulsation_id: request.pulsation_id.clone(),
+                job_id: request.job_id.clone(),
+                agent_role: request.agent_role,
+                stage: request.stage.clone(),
+            },
         );
         emitter.emit(LlmStreamEvent::RouteStarted {
             route_id: execution_route.id.clone(),
@@ -328,7 +337,8 @@ impl ProviderRouter {
         let route_deadline = request
             .deadline
             .min(Instant::now() + Duration::from_millis(execution_route.route_timeout_ms));
-        let max_attempts = if mode == RoutingMode::On {
+        let is_learning = request.agent_role == super::AgentRole::LearningAgent;
+        let max_attempts = if mode == RoutingMode::On && !is_learning {
             execution_route.max_attempts.min(3) as usize
         } else {
             1
@@ -351,14 +361,6 @@ impl ProviderRouter {
                 })
                 .to_string();
             if !attempted.insert((target.connection.id.0.clone(), model.clone())) {
-                continue;
-            }
-            if !self.repository.claim_breaker_probe(
-                target.connection.provider_id.as_str(),
-                &target.connection.endpoint_url,
-                self.clock.now(),
-            )? {
-                causes.push(format!("{}: breaker indisponível", target.connection.id));
                 continue;
             }
 
@@ -387,8 +389,44 @@ impl ProviderRouter {
                 target.connection.id.as_str(),
                 target.connection.max_concurrency,
             );
+            let call_cancellation = cancellation.child_token();
+            let _priority = if is_learning {
+                let Some(guard) = self.priority.learning(
+                    target.connection.id.as_str(),
+                    request.execution_id.as_str(),
+                    call_cancellation.clone(),
+                ) else {
+                    self.repository.finish_execution(
+                        request.execution_id.as_str(),
+                        "cancelled",
+                        None,
+                        None,
+                        false,
+                    )?;
+                    emitter.emit(LlmStreamEvent::RouteFailed {
+                        error_code: "background_deferred".into(),
+                        next_eligible_at: None,
+                    });
+                    return Err(LlmError::new(
+                        LlmErrorKind::BackgroundDeferred,
+                        "Learning aguarda 5 s sem demanda principal pela conexão.",
+                    ));
+                };
+                guard
+            } else {
+                self.priority.foreground(target.connection.id.as_str())
+            };
+            if !self.repository.claim_breaker_probe(
+                target.connection.provider_id.as_str(),
+                &target.connection.endpoint_url,
+                self.clock.now(),
+            )? {
+                causes.push(format!("{}: breaker indisponível", target.connection.id));
+                continue;
+            }
+
             let permit = tokio::select! {
-                _ = cancellation.cancelled() => return self.cancel_execution(request, &emitter),
+                _ = call_cancellation.cancelled() => return self.cancel_execution(request, &emitter),
                 result = semaphore.acquire_owned() => result.map_err(|_| LlmError::new(LlmErrorKind::Persistence,"Semáforo da conexão foi fechado."))?,
             };
             let ordinal = index as u32 + 1;
@@ -423,7 +461,9 @@ impl ProviderRouter {
             let remaining = route_deadline.saturating_duration_since(Instant::now());
             let attempt_budget =
                 Duration::from_millis(execution_route.attempt_timeout_ms).min(remaining);
-            let outcome = timeout(
+            let outcome = tokio::select! {
+                _=call_cancellation.cancelled()=>Ok(Err(LlmError::new(LlmErrorKind::Cancelled,"Chamada cancelada por prioridade ou encerramento."))),
+                result=timeout(
                 attempt_budget,
                 adapter.execute(
                     AdapterCall {
@@ -433,11 +473,11 @@ impl ProviderRouter {
                         credential: credential.as_deref(),
                         request: &effective_request,
                     },
-                    cancellation,
+                    &call_cancellation,
                     &delta_sink,
                 ),
-            )
-            .await;
+            )=>result
+            };
             drop(permit);
             delta_sink.flush();
             let visible_partial = delta_sink.visible_output();
@@ -451,6 +491,12 @@ impl ProviderRouter {
                 )
                 .with_target(&profile.id, target.connection.id.as_str(), &model)),
             };
+            if call_cancellation.is_cancelled() {
+                result = Err(LlmError::new(
+                    LlmErrorKind::Cancelled,
+                    "Chamada cancelada por prioridade ou encerramento.",
+                ));
+            }
             if let Err(error) = &mut result
                 && error.kind != LlmErrorKind::Cancelled
                 && error.visible_partial.is_none()
@@ -608,6 +654,20 @@ impl ProviderRouter {
                         &mut next_eligible_at,
                         &emitter,
                     )?;
+                    if is_learning {
+                        self.repository.finish_execution(
+                            request.execution_id.as_str(),
+                            "failed",
+                            next_eligible_at.as_deref(),
+                            None,
+                            false,
+                        )?;
+                        emitter.emit(LlmStreamEvent::RouteFailed {
+                            error_code: error.kind.code().into(),
+                            next_eligible_at,
+                        });
+                        return Err(error);
+                    }
                     causes.push(error.safe_cause());
                     if visible.is_some() {
                         self.repository.finish_execution(
@@ -653,6 +713,58 @@ impl ProviderRouter {
             next_eligible_at,
         });
         Err(error)
+    }
+
+    fn priority_connections(
+        &self,
+        project: &str,
+        role: super::AgentRole,
+        stage: &str,
+        provider: &str,
+    ) -> Result<Vec<String>, LlmError> {
+        if RoutingMode::parse(&self.repository.routing_mode()?) != RoutingMode::On {
+            return Ok(vec![
+                if provider == "anthropic" {
+                    "legacy-anthropic"
+                } else {
+                    "legacy-openai"
+                }
+                .into(),
+            ]);
+        }
+        let route = self.repository.resolve_route(project, role, stage)?;
+        Ok(self
+            .repository
+            .resolved_targets(&route.id)?
+            .into_iter()
+            .map(|t| t.connection.id.0)
+            .collect())
+    }
+
+    pub(crate) fn foreground_demand(
+        &self,
+        project: &str,
+        role: super::AgentRole,
+        stage: &str,
+        provider: &str,
+    ) -> Result<Vec<super::priority::DemandGuard>, LlmError> {
+        Ok(self
+            .priority_connections(project, role, stage, provider)?
+            .iter()
+            .map(|id| self.priority.foreground(id))
+            .collect())
+    }
+
+    pub(crate) fn learning_ready(&self, project: &str, provider: &str) -> Result<bool, LlmError> {
+        Ok(self
+            .priority_connections(
+                project,
+                super::AgentRole::LearningAgent,
+                "Learning",
+                provider,
+            )?
+            .iter()
+            .all(|id| self.priority.ready(id)))
     }
 
     fn legacy_execution(
@@ -977,24 +1089,32 @@ struct ExecutionEmitter {
     execution_id: String,
     generation_id: String,
     sequence: Arc<AtomicU64>,
+    context: crate::llm::AgentExecutionContext,
 }
 
 impl ExecutionEmitter {
-    fn new(sink: Arc<dyn LlmEventSink>, execution_id: String, generation_id: String) -> Self {
+    fn new(
+        sink: Arc<dyn LlmEventSink>,
+        execution_id: String,
+        generation_id: String,
+        context: crate::llm::AgentExecutionContext,
+    ) -> Self {
         Self {
             sink,
             execution_id,
             generation_id,
             sequence: Arc::new(AtomicU64::new(0)),
+            context,
         }
     }
 
     fn emit(&self, event: LlmStreamEvent) {
         self.sink.emit(&LlmEventEnvelope {
-            protocol_version: 1,
+            protocol_version: 2,
             execution_id: self.execution_id.clone(),
             generation_id: self.generation_id.clone(),
             sequence: self.sequence.fetch_add(1, Ordering::SeqCst) + 1,
+            context: Some(self.context.clone()),
             event,
         });
     }

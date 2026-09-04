@@ -1,0 +1,2 @@
+{"type":"item.started","item":{"type":"command_execution","command":"rg --files"}}
+{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"src/main.rs","exit_code":0}}

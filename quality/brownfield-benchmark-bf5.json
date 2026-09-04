@@ -1,0 +1,1334 @@
+{
+  "activation_decision": {
+    "architectural_observation": "A coleta segura da Specification permanece on-demand e não reutiliza o cache estrutural brownfield; portanto igualdade de qualidade/tokens é esperada até uma integração explicitamente projetada e cercada.",
+    "automatic_activation": false,
+    "evidence": {
+      "clarification_max_delta": 0,
+      "material_benefit": false,
+      "quality_min_delta": 0,
+      "regression": false,
+      "simulated_input_token_p50_delta_percent": 0.0,
+      "specification_latency_p50_delta_percent": -0.7106819106657669
+    },
+    "mode": "keep_opt_in_disabled_by_default",
+    "rule": "Ativar automaticamente somente com benefício material (qualidade maior, menos perguntas, >=5% menos tokens ou >=10% menor latência) e sem regressão simétrica."
+  },
+  "arch": "x86_64",
+  "calibrated_limits": {
+    "decision": "retain_bounded_defaults",
+    "max_duration_ms": 2000,
+    "max_file_bytes": 1048576,
+    "max_files": 2000,
+    "max_total_read_bytes": 16777216,
+    "reason": "O corpus BF5 permanece abaixo do orçamento temporal e a invalidação é exata; o corpus não sustenta reduzir os limites de segurança nem ampliá-los sem evidência de repositórios maiores."
+  },
+  "code_base": "a7e09fcac820311af4bba1202ed2b7a46658cd9a",
+  "fixture_version": "bf5-multilang-v1",
+  "generated_at": "2026-08-31T11:11:33.320837500+00:00",
+  "mapping_summary": {
+    "cold_elapsed_us": {
+      "p50": 902479,
+      "p95": 1615859
+    },
+    "cold_sources": 58,
+    "eligible_source_denominator": 58,
+    "exact_invalidation_elapsed_us": {
+      "p50": 51711,
+      "p95": 63324
+    },
+    "exact_invalidation_processed_sources": 1,
+    "extracted_partial_sources": 9,
+    "extracted_valid_sources": 49,
+    "extraction_progress_basis_points": 8448,
+    "inventory_known_sources": 58,
+    "languages": [
+      {
+        "language": "rust",
+        "observations": 85,
+        "parse_elapsed_us": {
+          "p50": 2899,
+          "p95": 3397
+        }
+      },
+      {
+        "language": "tsx",
+        "observations": 80,
+        "parse_elapsed_us": {
+          "p50": 6286,
+          "p95": 7540
+        }
+      },
+      {
+        "language": "typescript",
+        "observations": 80,
+        "parse_elapsed_us": {
+          "p50": 5962,
+          "p95": 6697
+        }
+      },
+      {
+        "language": "unsupported",
+        "observations": 45,
+        "parse_elapsed_us": {
+          "p50": 2,
+          "p95": 4
+        }
+      }
+    ],
+    "resolution": {
+      "external": 0,
+      "references": 112,
+      "resolved": 0,
+      "resolved_ratio": 0.0,
+      "unresolved": 112
+    },
+    "samples": 5,
+    "warm_elapsed_us": {
+      "p50": 8440,
+      "p95": 41684
+    },
+    "warm_processed_sources": 0
+  },
+  "os": "windows",
+  "pair_order": "counterbalanced; one excluded warmup per mode",
+  "pairs": 5,
+  "percentile_method": "nearest_rank",
+  "provider": "loopback synthetic provider with fixed 10 ms delay",
+  "release": true,
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-pc-windows-msvc\nrelease: 1.98.0\nLLVM version: 22.1.8",
+  "samples": [
+    {
+      "initial_fixture_sha256": "f5dc047196d016ca681cf3110eeb82ba02de18a02b61bccd23058502c02c7289",
+      "iteration": 0,
+      "knowledge_root_exists": false,
+      "mapping": null,
+      "mode": "empty_vault",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5394,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 700.8675,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "ab80fc855b2f66d61fbdc834fd826a83bdbe0bfb9f548d5b1f73ffe0856ac5c5",
+      "warmup": true
+    },
+    {
+      "initial_fixture_sha256": "f5dc047196d016ca681cf3110eeb82ba02de18a02b61bccd23058502c02c7289",
+      "iteration": 0,
+      "knowledge_root_exists": true,
+      "mapping": {
+        "cold": {
+          "cache_hits": 0,
+          "cache_misses": 58,
+          "coverage_partial": false,
+          "elapsed_us": 778661,
+          "mapped_sources": 49,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 9
+        },
+        "eligible_source_denominator": 58,
+        "exact_invalidation": {
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "coverage_partial": false,
+          "elapsed_us": 43223,
+          "mapped_sources": 1,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "extracted_partial_sources": 9,
+        "extracted_valid_sources": 49,
+        "extraction_progress_basis_points": 8448,
+        "inventory_known_sources": 58,
+        "languages": [
+          {
+            "language": "rust",
+            "mapped": 17,
+            "parse_elapsed_us": [
+              3758,
+              2926,
+              2868,
+              2724,
+              2852,
+              3105,
+              2656,
+              2753,
+              3015,
+              3330,
+              2648,
+              2896,
+              2607,
+              3052,
+              2831,
+              2773,
+              2955
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 17,
+            "symbols": 17,
+            "unsupported": 0
+          },
+          {
+            "language": "tsx",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              6356,
+              6338,
+              5784,
+              6114,
+              6085,
+              6325,
+              5889,
+              5995,
+              5923,
+              6183,
+              5913,
+              6248,
+              5947,
+              5931,
+              5976,
+              6678
+            ],
+            "partial": 0,
+            "references": 48,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "typescript",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              6537,
+              5953,
+              6254,
+              6264,
+              6063,
+              5595,
+              5840,
+              6238,
+              6220,
+              6269,
+              6113,
+              5890,
+              5940,
+              5888,
+              6027,
+              6289
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "unsupported",
+            "mapped": 0,
+            "parse_elapsed_us": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "partial": 0,
+            "references": 0,
+            "sources": 9,
+            "symbols": 0,
+            "unsupported": 9
+          }
+        ],
+        "resolution": {
+          "external": 0,
+          "references": 112,
+          "resolved": 0,
+          "unresolved": 112
+        },
+        "warm": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "coverage_partial": false,
+          "elapsed_us": 7872,
+          "mapped_sources": 0,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        }
+      },
+      "mode": "partial_coverage",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5394,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 785.6664,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "ab80fc855b2f66d61fbdc834fd826a83bdbe0bfb9f548d5b1f73ffe0856ac5c5",
+      "warmup": true
+    },
+    {
+      "initial_fixture_sha256": "f5dc047196d016ca681cf3110eeb82ba02de18a02b61bccd23058502c02c7289",
+      "iteration": 1,
+      "knowledge_root_exists": true,
+      "mapping": {
+        "cold": {
+          "cache_hits": 0,
+          "cache_misses": 58,
+          "coverage_partial": false,
+          "elapsed_us": 902479,
+          "mapped_sources": 49,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 9
+        },
+        "eligible_source_denominator": 58,
+        "exact_invalidation": {
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "coverage_partial": false,
+          "elapsed_us": 40928,
+          "mapped_sources": 1,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "extracted_partial_sources": 9,
+        "extracted_valid_sources": 49,
+        "extraction_progress_basis_points": 8448,
+        "inventory_known_sources": 58,
+        "languages": [
+          {
+            "language": "rust",
+            "mapped": 17,
+            "parse_elapsed_us": [
+              2701,
+              2849,
+              2852,
+              3210,
+              2715,
+              2650,
+              2823,
+              3397,
+              2899,
+              3919,
+              2785,
+              2884,
+              2726,
+              3320,
+              3123,
+              2921,
+              2866
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 17,
+            "symbols": 17,
+            "unsupported": 0
+          },
+          {
+            "language": "tsx",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              6733,
+              7737,
+              8362,
+              6440,
+              7308,
+              6009,
+              6090,
+              5818,
+              6027,
+              5881,
+              6296,
+              6286,
+              6584,
+              6392,
+              5951,
+              7311
+            ],
+            "partial": 0,
+            "references": 48,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "typescript",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              5910,
+              5621,
+              5962,
+              6253,
+              5946,
+              5965,
+              5899,
+              6697,
+              6249,
+              5803,
+              6421,
+              6070,
+              5856,
+              5821,
+              5752,
+              7163
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "unsupported",
+            "mapped": 0,
+            "parse_elapsed_us": [
+              7,
+              2,
+              2,
+              3,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "partial": 0,
+            "references": 0,
+            "sources": 9,
+            "symbols": 0,
+            "unsupported": 9
+          }
+        ],
+        "resolution": {
+          "external": 0,
+          "references": 112,
+          "resolved": 0,
+          "unresolved": 112
+        },
+        "warm": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "coverage_partial": false,
+          "elapsed_us": 41684,
+          "mapped_sources": 0,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        }
+      },
+      "mode": "partial_coverage",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5394,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 757.4037,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "ab80fc855b2f66d61fbdc834fd826a83bdbe0bfb9f548d5b1f73ffe0856ac5c5",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "f5dc047196d016ca681cf3110eeb82ba02de18a02b61bccd23058502c02c7289",
+      "iteration": 1,
+      "knowledge_root_exists": false,
+      "mapping": null,
+      "mode": "empty_vault",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5394,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 733.7882,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "ab80fc855b2f66d61fbdc834fd826a83bdbe0bfb9f548d5b1f73ffe0856ac5c5",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "f5dc047196d016ca681cf3110eeb82ba02de18a02b61bccd23058502c02c7289",
+      "iteration": 2,
+      "knowledge_root_exists": false,
+      "mapping": null,
+      "mode": "empty_vault",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5394,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 735.7397,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "ab80fc855b2f66d61fbdc834fd826a83bdbe0bfb9f548d5b1f73ffe0856ac5c5",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "f5dc047196d016ca681cf3110eeb82ba02de18a02b61bccd23058502c02c7289",
+      "iteration": 2,
+      "knowledge_root_exists": true,
+      "mapping": {
+        "cold": {
+          "cache_hits": 0,
+          "cache_misses": 58,
+          "coverage_partial": false,
+          "elapsed_us": 833629,
+          "mapped_sources": 49,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 9
+        },
+        "eligible_source_denominator": 58,
+        "exact_invalidation": {
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "coverage_partial": false,
+          "elapsed_us": 51711,
+          "mapped_sources": 1,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "extracted_partial_sources": 9,
+        "extracted_valid_sources": 49,
+        "extraction_progress_basis_points": 8448,
+        "inventory_known_sources": 58,
+        "languages": [
+          {
+            "language": "rust",
+            "mapped": 17,
+            "parse_elapsed_us": [
+              2961,
+              2654,
+              2782,
+              4078,
+              2925,
+              2756,
+              2806,
+              2941,
+              3262,
+              2821,
+              2644,
+              3229,
+              3105,
+              3068,
+              2789,
+              3563,
+              3248
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 17,
+            "symbols": 17,
+            "unsupported": 0
+          },
+          {
+            "language": "tsx",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              6068,
+              6190,
+              5772,
+              5984,
+              6102,
+              5899,
+              6137,
+              5928,
+              6028,
+              6587,
+              7004,
+              6019,
+              7274,
+              6056,
+              5865,
+              6999
+            ],
+            "partial": 0,
+            "references": 48,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "typescript",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              6287,
+              6040,
+              6678,
+              7698,
+              5873,
+              6307,
+              5615,
+              5723,
+              6252,
+              5768,
+              5836,
+              5950,
+              5953,
+              5938,
+              6194,
+              5912
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "unsupported",
+            "mapped": 0,
+            "parse_elapsed_us": [
+              2,
+              2,
+              2,
+              2,
+              2,
+              3,
+              2,
+              2,
+              6
+            ],
+            "partial": 0,
+            "references": 0,
+            "sources": 9,
+            "symbols": 0,
+            "unsupported": 9
+          }
+        ],
+        "resolution": {
+          "external": 0,
+          "references": 112,
+          "resolved": 0,
+          "unresolved": 112
+        },
+        "warm": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "coverage_partial": false,
+          "elapsed_us": 8440,
+          "mapped_sources": 0,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        }
+      },
+      "mode": "partial_coverage",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5394,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 682.8340000000001,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "ab80fc855b2f66d61fbdc834fd826a83bdbe0bfb9f548d5b1f73ffe0856ac5c5",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "f5dc047196d016ca681cf3110eeb82ba02de18a02b61bccd23058502c02c7289",
+      "iteration": 3,
+      "knowledge_root_exists": true,
+      "mapping": {
+        "cold": {
+          "cache_hits": 0,
+          "cache_misses": 58,
+          "coverage_partial": false,
+          "elapsed_us": 1615859,
+          "mapped_sources": 49,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 9
+        },
+        "eligible_source_denominator": 58,
+        "exact_invalidation": {
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "coverage_partial": false,
+          "elapsed_us": 63324,
+          "mapped_sources": 1,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "extracted_partial_sources": 9,
+        "extracted_valid_sources": 49,
+        "extraction_progress_basis_points": 8448,
+        "inventory_known_sources": 58,
+        "languages": [
+          {
+            "language": "rust",
+            "mapped": 17,
+            "parse_elapsed_us": [
+              3051,
+              2898,
+              3077,
+              2636,
+              2964,
+              2633,
+              3048,
+              2750,
+              3243,
+              2807,
+              2722,
+              3183,
+              2940,
+              2708,
+              2928,
+              2621,
+              2797
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 17,
+            "symbols": 17,
+            "unsupported": 0
+          },
+          {
+            "language": "tsx",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              6007,
+              5910,
+              6063,
+              6098,
+              6395,
+              6265,
+              5932,
+              6703,
+              6033,
+              6568,
+              7215,
+              6475,
+              6692,
+              7125,
+              6564,
+              6596
+            ],
+            "partial": 0,
+            "references": 48,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "typescript",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              6293,
+              6018,
+              5678,
+              5584,
+              5808,
+              6058,
+              6249,
+              5922,
+              5751,
+              6656,
+              6377,
+              6902,
+              6584,
+              5823,
+              6271,
+              6041
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "unsupported",
+            "mapped": 0,
+            "parse_elapsed_us": [
+              3,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "partial": 0,
+            "references": 0,
+            "sources": 9,
+            "symbols": 0,
+            "unsupported": 9
+          }
+        ],
+        "resolution": {
+          "external": 0,
+          "references": 112,
+          "resolved": 0,
+          "unresolved": 112
+        },
+        "warm": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "coverage_partial": false,
+          "elapsed_us": 8282,
+          "mapped_sources": 0,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        }
+      },
+      "mode": "partial_coverage",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5394,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 712.2338,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "ab80fc855b2f66d61fbdc834fd826a83bdbe0bfb9f548d5b1f73ffe0856ac5c5",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "f5dc047196d016ca681cf3110eeb82ba02de18a02b61bccd23058502c02c7289",
+      "iteration": 3,
+      "knowledge_root_exists": false,
+      "mapping": null,
+      "mode": "empty_vault",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5394,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 727.2602,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "ab80fc855b2f66d61fbdc834fd826a83bdbe0bfb9f548d5b1f73ffe0856ac5c5",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "f5dc047196d016ca681cf3110eeb82ba02de18a02b61bccd23058502c02c7289",
+      "iteration": 4,
+      "knowledge_root_exists": false,
+      "mapping": null,
+      "mode": "empty_vault",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5394,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 730.2726,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "ab80fc855b2f66d61fbdc834fd826a83bdbe0bfb9f548d5b1f73ffe0856ac5c5",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "f5dc047196d016ca681cf3110eeb82ba02de18a02b61bccd23058502c02c7289",
+      "iteration": 4,
+      "knowledge_root_exists": true,
+      "mapping": {
+        "cold": {
+          "cache_hits": 0,
+          "cache_misses": 58,
+          "coverage_partial": false,
+          "elapsed_us": 1580638,
+          "mapped_sources": 49,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 9
+        },
+        "eligible_source_denominator": 58,
+        "exact_invalidation": {
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "coverage_partial": false,
+          "elapsed_us": 46937,
+          "mapped_sources": 1,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "extracted_partial_sources": 9,
+        "extracted_valid_sources": 49,
+        "extraction_progress_basis_points": 8448,
+        "inventory_known_sources": 58,
+        "languages": [
+          {
+            "language": "rust",
+            "mapped": 17,
+            "parse_elapsed_us": [
+              2714,
+              2622,
+              3117,
+              2603,
+              2960,
+              2923,
+              2726,
+              3040,
+              2962,
+              3235,
+              2837,
+              2959,
+              3022,
+              2643,
+              2736,
+              2830,
+              3606
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 17,
+            "symbols": 17,
+            "unsupported": 0
+          },
+          {
+            "language": "tsx",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              5568,
+              5923,
+              6352,
+              8034,
+              6285,
+              6028,
+              6200,
+              7070,
+              7097,
+              6560,
+              6306,
+              5909,
+              6991,
+              6033,
+              6208,
+              6527
+            ],
+            "partial": 0,
+            "references": 48,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "typescript",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              5715,
+              5933,
+              6507,
+              5844,
+              6002,
+              5962,
+              5737,
+              5825,
+              5972,
+              5680,
+              5924,
+              6244,
+              5813,
+              6197,
+              5797,
+              5829
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "unsupported",
+            "mapped": 0,
+            "parse_elapsed_us": [
+              4,
+              2,
+              2,
+              2,
+              3,
+              2,
+              2,
+              2,
+              2
+            ],
+            "partial": 0,
+            "references": 0,
+            "sources": 9,
+            "symbols": 0,
+            "unsupported": 9
+          }
+        ],
+        "resolution": {
+          "external": 0,
+          "references": 112,
+          "resolved": 0,
+          "unresolved": 112
+        },
+        "warm": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "coverage_partial": false,
+          "elapsed_us": 8681,
+          "mapped_sources": 0,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        }
+      },
+      "mode": "partial_coverage",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5394,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 728.5733,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "ab80fc855b2f66d61fbdc834fd826a83bdbe0bfb9f548d5b1f73ffe0856ac5c5",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "f5dc047196d016ca681cf3110eeb82ba02de18a02b61bccd23058502c02c7289",
+      "iteration": 5,
+      "knowledge_root_exists": true,
+      "mapping": {
+        "cold": {
+          "cache_hits": 0,
+          "cache_misses": 58,
+          "coverage_partial": false,
+          "elapsed_us": 802223,
+          "mapped_sources": 49,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 9
+        },
+        "eligible_source_denominator": 58,
+        "exact_invalidation": {
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "coverage_partial": false,
+          "elapsed_us": 56431,
+          "mapped_sources": 1,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        },
+        "extracted_partial_sources": 9,
+        "extracted_valid_sources": 49,
+        "extraction_progress_basis_points": 8448,
+        "inventory_known_sources": 58,
+        "languages": [
+          {
+            "language": "rust",
+            "mapped": 17,
+            "parse_elapsed_us": [
+              3012,
+              2703,
+              2845,
+              2828,
+              2947,
+              3144,
+              2674,
+              3053,
+              3229,
+              2782,
+              3193,
+              2771,
+              2936,
+              2728,
+              2710,
+              3383,
+              2957
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 17,
+            "symbols": 17,
+            "unsupported": 0
+          },
+          {
+            "language": "tsx",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              6720,
+              6074,
+              6223,
+              7768,
+              6389,
+              6289,
+              6003,
+              7540,
+              5955,
+              6911,
+              6527,
+              6256,
+              6542,
+              6344,
+              6090,
+              6507
+            ],
+            "partial": 0,
+            "references": 48,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "typescript",
+            "mapped": 16,
+            "parse_elapsed_us": [
+              7281,
+              6649,
+              5885,
+              6046,
+              6189,
+              5864,
+              5882,
+              5640,
+              5993,
+              5976,
+              6345,
+              6016,
+              5796,
+              5552,
+              6524,
+              6320
+            ],
+            "partial": 0,
+            "references": 32,
+            "sources": 16,
+            "symbols": 16,
+            "unsupported": 0
+          },
+          {
+            "language": "unsupported",
+            "mapped": 0,
+            "parse_elapsed_us": [
+              2,
+              2,
+              2,
+              2,
+              3,
+              2,
+              2,
+              2,
+              2
+            ],
+            "partial": 0,
+            "references": 0,
+            "sources": 9,
+            "symbols": 0,
+            "unsupported": 9
+          }
+        ],
+        "resolution": {
+          "external": 0,
+          "references": 112,
+          "resolved": 0,
+          "unresolved": 112
+        },
+        "warm": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "coverage_partial": false,
+          "elapsed_us": 8132,
+          "mapped_sources": 0,
+          "partial_sources": 0,
+          "removed_sources": 0,
+          "unsupported_sources": 0
+        }
+      },
+      "mode": "partial_coverage",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5394,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 786.5838000000001,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "ab80fc855b2f66d61fbdc834fd826a83bdbe0bfb9f548d5b1f73ffe0856ac5c5",
+      "warmup": false
+    },
+    {
+      "initial_fixture_sha256": "f5dc047196d016ca681cf3110eeb82ba02de18a02b61bccd23058502c02c7289",
+      "iteration": 5,
+      "knowledge_root_exists": false,
+      "mapping": null,
+      "mode": "empty_vault",
+      "task": {
+        "clarification_questions": 0,
+        "provider_calls": 2,
+        "quality_evidence": {
+          "context_has_current_revision": true,
+          "context_has_target_path": true,
+          "context_has_target_symbol": true,
+          "no_clarification_needed": true,
+          "specification_states_401": true
+        },
+        "simulated_input_tokens": 5394,
+        "simulated_output_tokens": 160,
+        "specification_checkpoint_ms": 1435.6975,
+        "specification_quality_max": 5,
+        "specification_quality_score": 5
+      },
+      "task_repository_sha256": "ab80fc855b2f66d61fbdc834fd826a83bdbe0bfb9f548d5b1f73ffe0856ac5c5",
+      "warmup": false
+    }
+  ],
+  "schema_version": 1,
+  "scope": "real AppCore worker, watcher and SQLite; isolated equivalent repositories; no external service, profile or arbitrary generated write",
+  "task_description": "Em src/auth.rs, especifique que validate_token deve retornar 401 quando o token estiver expirado.",
+  "task_summary": [
+    {
+      "clarification_questions": {
+        "max": 0,
+        "min": 0
+      },
+      "mode": "empty_vault",
+      "samples": 5,
+      "simulated_input_tokens": {
+        "p50": 5394,
+        "p95": 5394
+      },
+      "simulated_output_tokens": {
+        "p50": 160,
+        "p95": 160
+      },
+      "specification_checkpoint_ms": {
+        "p50": 733.7882,
+        "p95": 1435.6975
+      },
+      "specification_quality_score": {
+        "max": 5,
+        "min": 5,
+        "rubric_max": 5
+      }
+    },
+    {
+      "clarification_questions": {
+        "max": 0,
+        "min": 0
+      },
+      "mode": "partial_coverage",
+      "samples": 5,
+      "simulated_input_tokens": {
+        "p50": 5394,
+        "p95": 5394
+      },
+      "simulated_output_tokens": {
+        "p50": 160,
+        "p95": 160
+      },
+      "specification_checkpoint_ms": {
+        "p50": 728.5733,
+        "p95": 786.5838000000001
+      },
+      "specification_quality_score": {
+        "max": 5,
+        "min": 5,
+        "rubric_max": 5
+      }
+    }
+  ],
+  "token_measurement": "provider-reported fixture usage: prompt chars/4; not a tokenizer or cost estimate",
+  "working_diff": "Cargo.lock                                         |   1 +\n crates/hvc-core/src/orchestration/brownfield.rs    |  32 +++++++\n .../src/orchestration/brownfield_maintenance.rs    |  94 ++++++++++++++++++-\n .../src/orchestration/brownfield_mapping.rs        |  28 ++++++\n .../hvc-core/src/orchestration/component_notes.rs  |  82 ++++++++++++++++\n crates/hvc-core/src/persistence_service.rs         |  28 +++++-\n crates/hvc-core/src/workspace_service.rs           |  16 ++++\n crates/hvc-test-support/Cargo.toml                 |   1 +\n crates/hvc-test-support/src/lib.rs                 |   1 +\n crates/hvc-ui/src/app_model.rs                     |   5 +\n crates/hvc-ui/src/pulsations.rs                    |   5 +\n crates/hvc-ui/src/pulsations_view.rs               | 104 ++++++++++++++++++++-\n crates/hvc-ui/src/workspace.rs                     |   9 +-\n 13 files changed, 400 insertions(+), 6 deletions(-)"
+}

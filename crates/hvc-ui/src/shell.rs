@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context as _;
@@ -10,6 +11,7 @@ use hvc_core::persistence_service::HitlDecision;
 use hvc_core::workspace_service::{FileNode, FileNodeKind};
 use hvc_editor::{DiffMark, MarkdownBlock, build_diff_rows, parse_markdown};
 
+use crate::agents_view::agents_panel;
 use crate::app_model::{AppModel, AppView};
 use crate::chat_view::chat_panel;
 use crate::hitl::{ApproveHitl, RequestHitlRevision, register_hitl_keybindings};
@@ -21,7 +23,9 @@ use crate::settings_view::settings_panel;
 use crate::text_input::register_text_input_keybindings;
 use crate::theme;
 use crate::vault_view::vault_panel;
-use crate::workspace::{WorkspaceTabModel, WorkspaceViewMode};
+use crate::workspace::{
+    BrownfieldOnboardingModel, BrownfieldOnboardingState, WorkspaceTabModel, WorkspaceViewMode,
+};
 
 pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> {
     register_editor_keybindings(cx);
@@ -33,7 +37,8 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
         }
     })
     .detach();
-    let bounds = Bounds::centered(None, size(px(1280.0), px(820.0)), cx);
+    let (window_width, window_height) = initial_window_size();
+    let bounds = Bounds::centered(None, size(px(window_width), px(window_height)), cx);
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -50,6 +55,29 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
     .context("GPUI recusou a criação da janela principal")?;
     cx.activate(true);
     Ok(())
+}
+
+fn initial_window_size() -> (f32, f32) {
+    #[cfg(debug_assertions)]
+    if let Some(size) = std::env::var("HVC_QA_WINDOW_SIZE")
+        .ok()
+        .and_then(|value| parse_qa_window_size(&value))
+    {
+        return size;
+    }
+    (1280.0, 820.0)
+}
+
+#[cfg(any(debug_assertions, test))]
+fn parse_qa_window_size(value: &str) -> Option<(f32, f32)> {
+    let (width, height) = value.trim().split_once(['x', 'X'])?;
+    let width = width.trim().parse::<f32>().ok()?;
+    let height = height.trim().parse::<f32>().ok()?;
+    (width.is_finite()
+        && height.is_finite()
+        && (960.0..=3840.0).contains(&width)
+        && (640.0..=2160.0).contains(&height))
+    .then_some((width, height))
 }
 
 impl Render for AppModel {
@@ -267,6 +295,7 @@ fn content_panel(model: &AppModel, active: AppView, cx: &mut Context<AppModel>) 
         AppView::Pulsations => pulsations_panel(model, cx),
         AppView::Vault => vault_panel(model, cx),
         AppView::Chat => chat_panel(model, cx),
+        AppView::Agents => agents_panel(model, cx),
         AppView::Settings => settings_panel(model, cx),
         AppView::Logs => logs_panel(model, cx),
     }
@@ -288,7 +317,17 @@ struct HitlSurfaceContent {
 }
 
 fn workspace_content_panel(model: &AppModel, cx: &mut Context<AppModel>) -> impl IntoElement {
-    let (root_path, tree, tabs, active_path, editor, view_mode, context_drawer_open, diff_expanded) = {
+    let (
+        root_path,
+        tree,
+        tabs,
+        active_path,
+        editor,
+        view_mode,
+        context_drawer_open,
+        diff_expanded,
+        brownfield,
+    ) = {
         let workspace = model.workspace.read(cx);
         (
             workspace.root_path.clone(),
@@ -302,6 +341,7 @@ fn workspace_content_panel(model: &AppModel, cx: &mut Context<AppModel>) -> impl
             workspace.view_mode,
             workspace.context_drawer_open,
             workspace.diff_expanded,
+            workspace.brownfield.clone(),
         )
     };
     let active_tab = active_path
@@ -424,6 +464,16 @@ fn workspace_content_panel(model: &AppModel, cx: &mut Context<AppModel>) -> impl
                         ),
                 ),
         )
+        .when(
+            brownfield.state != BrownfieldOnboardingState::NotApplicable,
+            |panel| {
+                panel.child(brownfield_onboarding_card(
+                    brownfield,
+                    active_path.clone(),
+                    cx,
+                ))
+            },
+        )
         .when_some(
             active_tab.as_ref().and_then(|tab| tab.conflict.clone()),
             |panel, conflict| {
@@ -542,6 +592,273 @@ fn workspace_content_panel(model: &AppModel, cx: &mut Context<AppModel>) -> impl
                     layout.child(context_drawer(active_tab.as_ref(), context_documents))
                 }),
         )
+}
+
+fn brownfield_onboarding_card(
+    onboarding: BrownfieldOnboardingModel,
+    active_path: Option<String>,
+    cx: &mut Context<AppModel>,
+) -> impl IntoElement {
+    let (title, description) = match onboarding.state {
+        BrownfieldOnboardingState::NotApplicable => ("", ""),
+        BrownfieldOnboardingState::Pending => (
+            "Workspace existente detectado",
+            "O mapeamento gradual enumera apenas metadados seguros e respeita o .gitignore. Nenhum script, build ou chamada de LLM será executado.",
+        ),
+        BrownfieldOnboardingState::Disabled => (
+            "Mapeamento gradual desativado",
+            "O projeto continua disponível normalmente. Nenhuma descoberta brownfield será iniciada sem uma nova autorização.",
+        ),
+        BrownfieldOnboardingState::Enabled => (
+            "Mapeamento gradual ativo",
+            "O consentimento pode ser revogado a qualquer momento. A revogação não remove arquivos já autorizados.",
+        ),
+    };
+    let inventory_summary = onboarding.inventory.as_ref().map(|inventory| {
+        let languages = inventory
+            .languages
+            .iter()
+            .map(|item| format!("{} ({})", item.language, item.file_count))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "{} fontes · {} manifests · {} pontos de entrada · idiomas: {}{}",
+            inventory.source_files,
+            inventory.manifests.len(),
+            inventory.entry_points.len(),
+            if languages.is_empty() {
+                "não identificados"
+            } else {
+                &languages
+            },
+            if inventory.coverage.truncated {
+                " · cobertura parcial"
+            } else {
+                ""
+            }
+        )
+    });
+    let active_source = active_path.filter(|path| is_brownfield_source_path(path));
+    let active_is_ignored = active_source
+        .as_ref()
+        .is_some_and(|path| onboarding.ignored_paths.binary_search(path).is_ok());
+
+    div()
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::surface_raised())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title))
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::text_muted())
+                .child(description),
+        )
+        .when_some(inventory_summary, |card, summary| {
+            card.child(div().text_sm().child(summary))
+        })
+        .when_some(
+            (onboarding.state == BrownfieldOnboardingState::Enabled)
+                .then_some(active_source)
+                .flatten(),
+            |card, path| {
+                card.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme::text_muted())
+                                .child(format!("Fonte selecionada: {path}")),
+                        )
+                        .child(brownfield_ignore_button(
+                            active_is_ignored,
+                            onboarding.busy,
+                            cx,
+                        )),
+                )
+            },
+        )
+        .when_some(onboarding.error, |card, error| {
+            card.child(div().text_sm().text_color(theme::danger()).child(error))
+        })
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .when(
+                    onboarding.state == BrownfieldOnboardingState::Pending,
+                    |actions| {
+                        actions
+                            .child(brownfield_action_button(
+                                "brownfield-enable",
+                                if onboarding.busy {
+                                    "Mapeando…"
+                                } else {
+                                    "Iniciar mapeamento gradual"
+                                },
+                                true,
+                                onboarding.busy,
+                                cx,
+                            ))
+                            .child(brownfield_action_button(
+                                "brownfield-decline",
+                                "Usar como projeto novo (sem mapeamento)",
+                                false,
+                                onboarding.busy,
+                                cx,
+                            ))
+                    },
+                )
+                .when(
+                    onboarding.state == BrownfieldOnboardingState::Disabled,
+                    |actions| {
+                        actions.child(brownfield_action_button(
+                            "brownfield-reenable",
+                            if onboarding.busy {
+                                "Mapeando…"
+                            } else {
+                                "Ativar mapeamento gradual"
+                            },
+                            true,
+                            onboarding.busy,
+                            cx,
+                        ))
+                    },
+                )
+                .when(
+                    onboarding.state == BrownfieldOnboardingState::Enabled,
+                    |actions| {
+                        actions
+                            .child(brownfield_action_button(
+                                "brownfield-refresh",
+                                if onboarding.busy {
+                                    "Atualizando…"
+                                } else {
+                                    "Atualizar inventário"
+                                },
+                                true,
+                                onboarding.busy,
+                                cx,
+                            ))
+                            .child(brownfield_action_button(
+                                "brownfield-revoke",
+                                "Revogar consentimento",
+                                false,
+                                onboarding.busy,
+                                cx,
+                            ))
+                    },
+                ),
+        )
+}
+
+fn is_brownfield_source_path(path: &str) -> bool {
+    if path.replace('\\', "/").starts_with("knowledge/") {
+        return false;
+    }
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "rs" | "ts"
+                    | "tsx"
+                    | "js"
+                    | "jsx"
+                    | "py"
+                    | "go"
+                    | "java"
+                    | "kt"
+                    | "kts"
+                    | "cs"
+                    | "c"
+                    | "h"
+                    | "cc"
+                    | "cpp"
+                    | "hpp"
+                    | "rb"
+                    | "php"
+                    | "swift"
+                    | "sql"
+                    | "sh"
+                    | "ps1"
+            )
+        })
+}
+
+fn brownfield_ignore_button(
+    ignored: bool,
+    disabled: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    div()
+        .id("brownfield-ignore-source")
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .bg(theme::surface())
+        .text_color(theme::text())
+        .opacity(if disabled { 0.55 } else { 1.0 })
+        .when(!disabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(|style| style.opacity(0.88))
+                .on_click(cx.listener(move |model, _, _, cx| {
+                    model.set_active_brownfield_ignored(!ignored, cx);
+                }))
+        })
+        .child(if ignored {
+            "Reativar no mapa"
+        } else {
+            "Ignorar no mapa"
+        })
+        .into_any_element()
+}
+
+fn brownfield_action_button(
+    id: &'static str,
+    label: &'static str,
+    consent: bool,
+    disabled: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    div()
+        .id(id)
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .bg(if consent {
+            theme::accent()
+        } else {
+            theme::surface()
+        })
+        .text_color(if consent {
+            theme::canvas()
+        } else {
+            theme::text()
+        })
+        .opacity(if disabled { 0.55 } else { 1.0 })
+        .when(!disabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(|style| style.opacity(0.88))
+                .on_click(cx.listener(move |model, _, _, cx| {
+                    model.set_brownfield_mapping_enabled(consent, cx);
+                }))
+        })
+        .child(label)
+        .into_any_element()
 }
 
 fn mode_button(
@@ -1124,6 +1441,19 @@ mod tests {
     use gpui::TestAppContext;
 
     use super::*;
+
+    #[test]
+    fn qa_window_size_accepts_only_supported_finite_dimensions() {
+        assert_eq!(parse_qa_window_size("1024x768"), Some((1024.0, 768.0)));
+        assert_eq!(
+            parse_qa_window_size(" 2560 X 1440 "),
+            Some((2560.0, 1440.0))
+        );
+        assert_eq!(parse_qa_window_size("959x768"), None);
+        assert_eq!(parse_qa_window_size("1024x639"), None);
+        assert_eq!(parse_qa_window_size("NaNx768"), None);
+        assert_eq!(parse_qa_window_size("invalid"), None);
+    }
 
     #[gpui::test]
     fn preserves_collapsed_navigation_and_semantic_badges(cx: &mut TestAppContext) {

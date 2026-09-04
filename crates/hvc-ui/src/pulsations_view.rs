@@ -1,4 +1,6 @@
-use gpui::{AnyElement, Context, IntoElement, div, prelude::*, px};
+use gpui::{AnyElement, Context, IntoElement, div, prelude::*, px, relative};
+use hvc_core::orchestration::BaseState;
+use hvc_core::orchestration::brownfield::BrownfieldCoverageMetrics;
 use hvc_core::persistence_service::{Pulsation, PulsationStage, PulsationStatus};
 
 use crate::app_model::AppModel;
@@ -9,6 +11,13 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
     let has_project = model.workspace.read(cx).project_id.is_some();
     let feature_input = model.pulsation_feature_input.clone();
     let feature_name_empty = feature_input.read(cx).value().trim().is_empty();
+    let queue = model
+        .pulsations
+        .read(cx)
+        .coordination
+        .as_ref()
+        .map(|s| s.queue.clone())
+        .unwrap_or_default();
     let (
         pulsations,
         active_id,
@@ -20,6 +29,7 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
         running_jobs,
         notice,
         error,
+        brownfield_coverage,
     ) = {
         let state = model.pulsations.read(cx);
         (
@@ -33,6 +43,7 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
             state.running_jobs,
             state.notice.clone(),
             state.error.clone(),
+            state.brownfield_coverage.clone(),
         )
     };
 
@@ -128,11 +139,17 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                     .child("Crie a primeira pulsação deste projeto."),
                             )
                         })
-                        .children(
-                            pulsations.into_iter().map(|pulsation| {
-                                pulsation_card(pulsation, active_id.as_deref(), cx)
-                            }),
-                        ),
+                        .children(pulsations.into_iter().map(|pulsation| {
+                            let position = queue.iter().find(|p| p.pulsation_id == pulsation.id);
+                            let label = position.map(|p| {
+                                format!(
+                                    "#{} · {}",
+                                    p.sequence,
+                                    blocking_label(p.blocking_reason.as_deref())
+                                )
+                            });
+                            pulsation_card(pulsation, active_id.as_deref(), label, cx)
+                        })),
                 ),
         )
         .child(
@@ -147,10 +164,16 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                 .border_color(theme::border())
                 .bg(theme::surface())
                 .overflow_y_scroll()
+                .when_some(brownfield_coverage, |panel, coverage| {
+                    panel.child(brownfield_progress_panel(coverage))
+                })
+                .child(coordination_panel(model, cx))
                 .when_some(active, |panel, active| {
                     panel
                         .child(pulsation_detail_header(active.clone(), runtime_loading, cx))
                         .child(pipeline(active.stage))
+                        .child(preparation_panel(model, cx))
+                        .child(artifact_preview_panel(model, cx))
                         .child(
                             div()
                                 .grid()
@@ -188,7 +211,8 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                     )
                                 })
                                 .children(artifacts.into_iter().map(|artifact| {
-                                    let path = artifact.relative_path.clone();
+                                    let pulse = artifact.pulsation_id.clone();
+                                    let artifact_id = artifact.id.clone();
                                     div()
                                         .id(gpui::SharedString::from(format!(
                                             "artifact:{}",
@@ -200,15 +224,14 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                         .border_1()
                                         .border_color(theme::border())
                                         .bg(theme::surface_raised())
-                                        .when(path.is_some(), |row| {
-                                            row.cursor_pointer().on_click(cx.listener(
-                                                move |model, _, _, cx| {
-                                                    if let Some(path) = path.clone() {
-                                                        model.open_workspace_file(path, cx);
-                                                    }
-                                                },
-                                            ))
-                                        })
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |model, _, _, cx| {
+                                            model.preview_artifact(
+                                                pulse.clone(),
+                                                artifact_id.clone(),
+                                                cx,
+                                            )
+                                        }))
                                         .child(
                                             div()
                                                 .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -263,6 +286,7 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
 fn pulsation_card(
     pulsation: Pulsation,
     active_id: Option<&str>,
+    queue_label: Option<String>,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     let selected = active_id == Some(pulsation.id.as_str());
@@ -293,6 +317,9 @@ fn pulsation_card(
                 .gap_2()
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .child(pulsation.feature_name),
                 )
@@ -306,9 +333,668 @@ fn pulsation_card(
                 .child(format!(
                     "{} · {}",
                     stage_label(pulsation.stage),
-                    status_label(pulsation.status)
+                    status_label(pulsation.status, pulsation.terminal_reason.as_deref())
                 )),
         )
+        .when_some(queue_label, |card, label| {
+            card.child(
+                div()
+                    .mt_1()
+                    .text_xs()
+                    .text_color(theme::warning())
+                    .child(label),
+            )
+        })
+        .into_any_element()
+}
+
+fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    use hvc_core::orchestration::{DescriptionReviewState, PreSpecSkipReason, PreSpecState};
+    use hvc_core::persistence_service::HitlDecision;
+    let state = model.pulsations.read(cx);
+    let Some(detail) = state.detail().cloned() else {
+        return div().into_any_element();
+    };
+    let busy = state.action_busy;
+    let artifact_review = state.hitl.expected_checkpoint.is_some();
+    let review_busy = state.hitl.busy;
+    let prep = &detail.preparation;
+    let main_actionable = !matches!(
+        detail.status,
+        PulsationStatus::Done | PulsationStatus::Failed
+    );
+    let description_pending =
+        main_actionable && prep.description_review == DescriptionReviewState::Pending;
+    let label = match prep.prespec_state {
+        PreSpecState::NotScheduled => "Não agendada",
+        PreSpecState::Pending => "Aguardando slot local",
+        PreSpecState::Running => "Coletando contexto local",
+        PreSpecState::Ready => "Pacote pronto para revalidação",
+        PreSpecState::Skipped => "Preparação dispensada",
+        PreSpecState::Stale => "Pacote obsoleto; contexto atual usado",
+        PreSpecState::Failed => "Coleta falhou; contexto sob demanda",
+        PreSpecState::Cancelled => "Preparação cancelada; contexto sob demanda",
+    };
+    let reason = prep.skip_reason.map(|r| match r {
+        PreSpecSkipReason::Disabled => "Desativada nas configurações",
+        PreSpecSkipReason::SkippedNoPredecessor => "Sem antecessora",
+        PreSpecSkipReason::AmbiguousRequest => "Pedido ainda vago após dispensa humana",
+        PreSpecSkipReason::NoMatches => "Sem matches no escopo limitado",
+        PreSpecSkipReason::BaseReleased => "Base liberada; Specification não espera",
+    });
+    let mut panel = div()
+        .mt_4()
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(theme::border())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child("Preparação · fora dos seis estágios"),
+        )
+        .child(format!("Revisão {} · {}", detail.input_revision, label))
+        .when_some(reason, |p, r| {
+            p.child(div().text_sm().text_color(theme::text_muted()).child(r))
+        })
+        .when_some(detail.context_disposition.clone(), |p, d| {
+            p.child(format!("Contexto selecionado: {d}"))
+        })
+        .when_some(detail.diagnostic.clone(), |p, d| {
+            p.child(div().text_sm().child(d))
+        })
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child("Código contextual não exige vault nem AST."),
+        );
+    use hvc_core::orchestration::LearningState;
+    let learning_label = match detail.learning {
+        LearningState::NotScheduled => "Não agendado",
+        LearningState::Unavailable => "Histórico sem executor (não será reprocessado)",
+        LearningState::Pending => "Aguardando prioridade e 5 s de silêncio na conexão",
+        LearningState::Running => "Gerando proposta consultiva",
+        LearningState::Preempted => "Interrompido pela demanda principal",
+        LearningState::DeferredBudget => "Orçamento esgotado; aguarda autorização",
+        LearningState::Disabled => "Desativado; orçamento preservado",
+        LearningState::Publishing => "Publicando proposta",
+        LearningState::Published => "Proposta publicada; confira o artefato abaixo",
+        LearningState::Conflict => "Conflito de publicação; arquivos preservados",
+        LearningState::Failed => "Falha opcional; pulsação concluída preservada",
+        LearningState::Cancelled => "Relatório dispensado",
+    };
+    panel = panel
+        .child(
+            div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(format!("Learning · {learning_label}")),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child("Propostas não alteram regras nem reabrem Done."),
+        );
+    if let Some(run) = &detail.learning_run {
+        panel = panel
+            .child(format!(
+                "Chamadas: {}/3 nesta versão · {} no histórico",
+                run.budget_calls, run.total_calls
+            ))
+            .when_some(run.diagnostic.clone(), |panel, diagnostic| {
+                panel.child(div().text_sm().child(diagnostic))
+            });
+        for audit in &run.context_audit {
+            let citation_rate = if audit.delivered == 0 {
+                "n/d".to_string()
+            } else {
+                format!(
+                    "{:.0}%",
+                    f64::from(audit.cited) * 100.0 / f64::from(audit.delivered)
+                )
+            };
+            let determinate = audit.audited.saturating_sub(audit.indeterminate);
+            let observed_precision = if determinate == 0 {
+                "n/d".to_string()
+            } else {
+                format!(
+                    "{:.0}%",
+                    f64::from(audit.observed_use) * 100.0 / f64::from(determinate)
+                )
+            };
+            panel = panel.child(
+                div().text_xs().text_color(theme::text_muted()).child(format!(
+                    "{} · pool {} · entregues {} · citadas {} · auditadas {} · indeterminadas {} · taxa de citação {} · precisão observada heurística {}",
+                    audit.stage_name,audit.considered,audit.delivered,audit.cited,audit.audited,audit.indeterminate,citation_rate,observed_precision
+                )),
+            );
+        }
+        let mut has_pending_proposals = false;
+        for proposal in &run.graph_proposals {
+            panel = panel.child(
+                div()
+                    .mt_2()
+                    .p_3()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme::border())
+                    .child(format!(
+                        "{} · {} → {}",
+                        proposal.relation, proposal.source_path, proposal.target_path
+                    ))
+                    .child(div().text_sm().child(proposal.rationale.clone()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_muted())
+                            .child(format!("Evidências: {}", proposal.evidence_ids.join(", "))),
+                    )
+                    .child(
+                        div()
+                            .mt_1()
+                            .p_2()
+                            .bg(theme::surface_raised())
+                            .text_xs()
+                            .child(proposal.preview_diff.clone()),
+                    )
+                    .child(format!(
+                        "Decisão: {} · publicação: {}",
+                        proposal.decision, proposal.publication_state
+                    ))
+                    .when_some(proposal.diagnostic.clone(), |card, diagnostic| {
+                        card.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::warning())
+                                .child(diagnostic),
+                        )
+                    }),
+            );
+            if proposal.decision == "pending" {
+                has_pending_proposals = true;
+                let approve_id = proposal.id.clone();
+                let reject_id = proposal.id.clone();
+                let selected = model.learning_graph_decisions.get(&proposal.id).copied();
+                panel = panel.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(learning_decision_button(
+                            format!("learning-approve:{}", proposal.id),
+                            "Aprovar".into(),
+                            selected
+                                == Some(hvc_core::orchestration::LearningGraphDecision::Approve),
+                            !busy,
+                            cx,
+                            move |model, cx| {
+                                model.choose_learning_graph_decision(
+                                    approve_id.clone(),
+                                    hvc_core::orchestration::LearningGraphDecision::Approve,
+                                    cx,
+                                )
+                            },
+                        ))
+                        .child(learning_decision_button(
+                            format!("learning-reject:{}", proposal.id),
+                            "Rejeitar".into(),
+                            selected
+                                == Some(hvc_core::orchestration::LearningGraphDecision::Reject),
+                            !busy,
+                            cx,
+                            move |model, cx| {
+                                model.choose_learning_graph_decision(
+                                    reject_id.clone(),
+                                    hvc_core::orchestration::LearningGraphDecision::Reject,
+                                    cx,
+                                )
+                            },
+                        )),
+                );
+            }
+        }
+        if has_pending_proposals {
+            panel = panel.child(preparation_button(
+                "learning-graph-confirm",
+                "Confirmar decisões do grafo",
+                !busy,
+                cx,
+                |model, cx| model.submit_learning_graph_review(cx),
+            ));
+        }
+        if matches!(
+            detail.learning,
+            LearningState::Failed | LearningState::DeferredBudget
+        ) && run.artifact_id.is_none()
+        {
+            panel = panel.child(preparation_button(
+                "learning-retry",
+                "Autorizar até 3 novas chamadas",
+                !busy,
+                cx,
+                |m, cx| m.learning_action(true, cx),
+            ));
+        }
+        if !matches!(
+            detail.learning,
+            LearningState::Published | LearningState::Cancelled
+        ) {
+            panel = panel.child(preparation_button(
+                "learning-dismiss",
+                "Dispensar relatório",
+                !busy,
+                cx,
+                |m, cx| m.learning_action(false, cx),
+            ));
+        }
+    }
+    if let Some(assessment) = &prep.assessment {
+        panel = panel.child(format!(
+            "TaskRefine: {} / 100 · threshold {} · {}",
+            assessment.score.get(),
+            assessment.threshold.get(),
+            assessment.ruleset_version
+        ));
+        for contribution in &assessment.contributions {
+            panel = panel.child(div().text_sm().child(format!(
+                "+{} — {}",
+                contribution.weight, contribution.reason
+            )));
+        }
+    }
+    if description_pending {
+        panel=panel.child(div().text_color(theme::warning()).child("Aguardando você: revise o pedido ou confirme que deseja seguir. Isso não aprova a especificação."));
+    }
+    if main_actionable && detail.description_editable {
+        panel = panel
+            .child(model.description_review_input.clone())
+            .child(preparation_button(
+                "description-edit",
+                "Editar pedido",
+                !busy,
+                cx,
+                |m, cx| m.revise_description(cx),
+            ));
+    }
+    if description_pending {
+        panel = panel.child(preparation_button(
+            "description-confirm",
+            "Continuar para especificação",
+            !busy,
+            cx,
+            |m, cx| m.confirm_description(cx),
+        ));
+    }
+    if let Some(questions) = detail.questions.filter(|_| main_actionable) {
+        panel=panel.child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Specification aguarda suas respostas"))
+            .child(div().text_sm().child("Perguntas produzidas pela Specification e apresentadas no Companion sem outra chamada LLM. Não há especificação completa para aprovar ainda."));
+        let mut complete = true;
+        for question in questions.questions {
+            panel = panel
+                .child(format!("[{}] {}", question.id, question.question))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child(question.rationale),
+                );
+            if let Some((_, input)) = model
+                .specification_answer_inputs
+                .iter()
+                .find(|(id, _)| id == &question.id)
+            {
+                complete &= !input.read(cx).value().trim().is_empty();
+                panel = panel.child(input.clone());
+            } else {
+                complete = false;
+            }
+        }
+        panel = panel
+            .child(preparation_button(
+                "specification-answer",
+                "Enviar respostas e retomar Specification",
+                !busy && complete,
+                cx,
+                |m, cx| m.answer_specification(cx),
+            ))
+            .child(preparation_button(
+                "specification-conversation",
+                "Ver conversa no Companion",
+                true,
+                cx,
+                |m, cx| m.open_specification_conversation(cx),
+            ));
+    } else if artifact_review && main_actionable {
+        panel = panel
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("Revisão de artefatos · confira o conteúdo abaixo"),
+            )
+            .child(model.stage_feedback_input.clone())
+            .child(preparation_button(
+                "artifact-approve",
+                "Aprovar estágio",
+                !review_busy,
+                cx,
+                |m, cx| m.apply_hitl_decision(HitlDecision::Approve, cx),
+            ))
+            .child(preparation_button(
+                "artifact-revise",
+                "Solicitar revisão com feedback",
+                !review_busy,
+                cx,
+                |m, cx| m.apply_hitl_decision(HitlDecision::RequestRevision, cx),
+            ))
+            .child(preparation_button(
+                "artifact-reject",
+                "Rejeitar estágio",
+                !review_busy,
+                cx,
+                |m, cx| m.apply_hitl_decision(HitlDecision::Reject, cx),
+            ));
+    }
+    panel.into_any_element()
+}
+
+fn preparation_button(
+    id: &'static str,
+    label: &'static str,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+    action: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .debug_selector(|| id.into())
+        .p_2()
+        .rounded_md()
+        .bg(theme::surface_raised())
+        .text_sm()
+        .opacity(if enabled { 1.0 } else { 0.5 })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .on_click(cx.listener(move |m, _, _, cx| action(m, cx)))
+        })
+        .child(label)
+}
+
+fn learning_decision_button(
+    id: String,
+    label: String,
+    selected: bool,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+    action: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(gpui::SharedString::from(id))
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .border_1()
+        .border_color(if selected {
+            theme::accent()
+        } else {
+            theme::border()
+        })
+        .bg(if selected {
+            theme::accent_soft()
+        } else {
+            theme::surface_raised()
+        })
+        .text_sm()
+        .opacity(if enabled { 1.0 } else { 0.5 })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .on_click(cx.listener(move |model, _, _, cx| action(model, cx)))
+        })
+        .child(label)
+}
+
+fn artifact_preview_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    let Some((id, content)) = model.pulsations.read(cx).artifact_preview.clone() else {
+        return div().into_any_element();
+    };
+    let pages = content.chars().count().max(1).div_ceil(8000);
+    let page = model.artifact_preview_page.min(pages - 1);
+    let text: String = content.chars().skip(page * 8000).take(8000).collect();
+    div()
+        .mt_3()
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(theme::accent())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(format!(
+            "Conteúdo persistido · {id} · página {}/{}",
+            page + 1,
+            pages
+        ))
+        .child(
+            div()
+                .id("artifact-preview-scroll")
+                .max_h(px(450.0))
+                .overflow_y_scroll()
+                .text_sm()
+                .child(text),
+        )
+        .child(preparation_button(
+            "artifact-prev",
+            "Página anterior",
+            page > 0,
+            cx,
+            |m, cx| {
+                m.artifact_preview_page = m.artifact_preview_page.saturating_sub(1);
+                cx.notify();
+            },
+        ))
+        .child(preparation_button(
+            "artifact-next",
+            "Próxima página",
+            page + 1 < pages,
+            cx,
+            |m, cx| {
+                m.artifact_preview_page += 1;
+                cx.notify();
+            },
+        ))
+        .child(preparation_button(
+            "artifact-copy",
+            "Copiar conteúdo integral",
+            true,
+            cx,
+            move |_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(content.clone())),
+        ))
+        .child(preparation_button(
+            "artifact-close",
+            "Fechar conteúdo",
+            true,
+            cx,
+            |m, cx| {
+                m.pulsations.update(cx, |p, _| p.artifact_preview = None);
+                cx.notify();
+            },
+        ))
+        .into_any_element()
+}
+
+fn blocking_label(reason: Option<&str>) -> &'static str {
+    match reason {
+        Some("waiting_for_base") => "Aguardando base anterior",
+        Some("waiting_for_user") => "Aguardando você",
+        Some("needs_review" | "legacy_owner_selection") => "Reconciliação necessária",
+        Some("publishing") => "Conferindo publicações",
+        _ => "Fila persistida",
+    }
+}
+
+fn brownfield_progress_panel(coverage: BrownfieldCoverageMetrics) -> impl IntoElement {
+    let basis_points = coverage
+        .extraction_progress_basis_points
+        .min(BrownfieldCoverageMetrics::SCALE_BASIS_POINTS);
+    let progress = basis_points as f32 / BrownfieldCoverageMetrics::SCALE_BASIS_POINTS as f32;
+    let percentage = format!("{:.2}%", basis_points as f32 / 100.0);
+    let bootstrap = if coverage.frontier_initialized {
+        "Inventário estrutural inicial concluído"
+    } else {
+        "Inventário estrutural inicial pendente"
+    };
+
+    div()
+        .id("brownfield-progress")
+        .mb_3()
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::surface_raised())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child("MAPEAMENTO BROWNFIELD"),
+                )
+                .child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(percentage),
+                ),
+        )
+        .child(
+            div()
+                .mt_2()
+                .h(px(8.0))
+                .w_full()
+                .rounded_full()
+                .overflow_hidden()
+                .bg(theme::canvas())
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(progress))
+                        .rounded_full()
+                        .bg(theme::accent()),
+                ),
+        )
+        .child(div().mt_2().text_sm().child(format!(
+            "{} de {} fontes elegíveis com extração válida",
+            coverage.extracted_valid_sources, coverage.eligible_source_denominator
+        )))
+        .child(
+            div()
+                .mt_1()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child("Denominador: fontes conhecidas no inventário, menos as ignoradas."),
+        )
+        .child(
+            div()
+                .mt_1()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(bootstrap),
+        )
+        .child(
+            div()
+                .mt_2()
+                .flex()
+                .flex_wrap()
+                .gap_x_3()
+                .gap_y_1()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(format!(
+                    "Extração: {} parcial · {} obsoleta · {} falhou",
+                    coverage.extracted_partial_sources,
+                    coverage.extracted_stale_sources,
+                    coverage.extraction_failed_sources
+                ))
+                .child(format!(
+                    "Documentação: {} proposta · {} validada · {} obsoleta",
+                    coverage.documentation_proposed_sources,
+                    coverage.documentation_validated_sources,
+                    coverage.documentation_stale_sources
+                ))
+                .child(format!(
+                    "Relações: {} resolvidas · {} ambíguas · {} externas · {} pendentes{}",
+                    coverage.resolved_references,
+                    coverage.ambiguous_references,
+                    coverage.external_references,
+                    coverage.unresolved_references,
+                    coverage
+                        .resolver_version
+                        .as_deref()
+                        .map_or(String::new(), |version| format!(" · {version}"))
+                ))
+                .child(format!("Ignoradas: {}", coverage.ignored_sources)),
+        )
+}
+
+fn coordination_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    let state = model.pulsations.read(cx);
+    let Some(snapshot) = state.coordination.clone() else {
+        return div().into_any_element();
+    };
+    let active = state.active_id();
+    let blocked = snapshot.pipeline.base_state == BaseState::NeedsReview;
+    let input = model.reconciliation_input.clone();
+    let can_confirm = blocked
+        && !state.reconciliation_busy
+        && !input.read(cx).value().trim().is_empty()
+        && (snapshot.owner_candidates.is_empty()
+            || active
+                .as_ref()
+                .is_some_and(|id| snapshot.owner_candidates.contains(id)));
+    let candidates: Vec<_> = snapshot
+        .owner_candidates
+        .iter()
+        .filter_map(|id| state.pulsations.iter().find(|p| &p.id == id).cloned())
+        .collect();
+    div().mb_3().p_3().rounded_md().border_1().border_color(if blocked {theme::warning()} else {theme::border()})
+        .child(div().text_sm().child(format!("Base #{} · {} · proprietário: {}",snapshot.pipeline.base_epoch,
+            match snapshot.pipeline.base_state {BaseState::Ready=>"consistente",BaseState::Publishing=>"publicação em andamento",BaseState::NeedsReview=>"revisão necessária"},
+            snapshot.pipeline.active_pulsation_id.as_deref().unwrap_or("livre"))))
+        .when(blocked, |panel| panel
+            .child(div().mt_2().text_color(theme::warning()).child(snapshot.pipeline.blocking_reason.unwrap_or_default()))
+            .child(div().mt_2().text_sm().child("Confira os arquivos no seu editor externo; o editor do app abre .md/.txt. Adotar a base atual não desfaz alterações nem declara sucesso. Escolha qual trabalho avançado retomar; os demais continuarão preservados e bloqueados."))
+            .children(candidates.into_iter().map(|p| {
+                let id=p.id.clone();
+                div().id(gpui::SharedString::from(format!("resume:{}",p.id))).mt_2().p_2().rounded_md()
+                    .bg(if active.as_deref()==Some(p.id.as_str()) {theme::accent_soft()} else {theme::surface_raised()})
+                    .cursor_pointer().on_click(cx.listener(move |m,_,_,cx| m.select_pulsation(id.clone(),cx)))
+                    .child(format!("Retomar: {} · {}",p.feature_name,stage_label(p.stage)))
+            }))
+            .children(snapshot.publications.into_iter().map(|p| {
+                let path=p.relative_path.clone();
+                let openable=path.to_ascii_lowercase().ends_with(".md") || path.to_ascii_lowercase().ends_with(".txt");
+                div().id(gpui::SharedString::from(format!("review:{}",p.artifact_id))).mt_2().p_2().bg(theme::surface_raised())
+                    .when(openable,|row|row.cursor_pointer().on_click(cx.listener(move |m,_,_,cx| m.open_workspace_file(path.clone(),cx))))
+                    .child(div().text_sm().child(format!("{} · {}",p.relative_path,p.state)))
+                    .child(div().text_xs().child(format!("Hash proposto: {}",p.desired_sha256.unwrap_or_else(||"indisponível".into()))))
+                    .child(div().text_xs().child(format!("Hash observado: {}",p.observed_sha256.unwrap_or_else(||"ausente ou ilegível".into()))))
+                    .when_some(p.diagnostic,|row,error|row.child(div().text_xs().text_color(theme::danger()).child(error)))
+                    .when_some(p.observation_error,|row,error|row.child(div().text_xs().text_color(theme::danger()).child(error)))
+            }))
+            .child(div().mt_2().child(input))
+            .child(div().mt_2().flex().gap_2()
+                .child(div().id("refresh-base-review").p_2().cursor_pointer().bg(theme::surface_raised())
+                    .on_click(cx.listener(|m,_,_,cx|m.refresh_pulsations(cx))).child("Atualizar revisão"))
+                .child(div().id("confirm-base-review").p_2().bg(if can_confirm {theme::accent_soft()} else {theme::surface_raised()})
+                    .when(can_confirm,|b|b.cursor_pointer().on_click(cx.listener(|m,_,_,cx|m.reconcile_project_base(cx))))
+                    .child("Revisei: adotar base atual"))))
         .into_any_element()
 }
 
@@ -317,13 +1003,23 @@ fn pulsation_detail_header(
     busy: bool,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
+    let busy = busy
+        || matches!(
+            pulsation.status,
+            PulsationStatus::Done | PulsationStatus::Failed
+        );
     div()
         .flex()
+        .flex_col()
+        .w_full()
         .items_start()
-        .justify_between()
         .gap_3()
         .child(
             div()
+                .w_full()
+                .min_w_0()
+                .overflow_hidden()
+                .debug_selector(|| "pulsation-heading".into())
                 .child(
                     div()
                         .text_xs()
@@ -333,6 +1029,7 @@ fn pulsation_detail_header(
                 .child(
                     div()
                         .text_2xl()
+                        .whitespace_normal()
                         .font_weight(gpui::FontWeight::BOLD)
                         .child(pulsation.feature_name),
                 )
@@ -346,12 +1043,18 @@ fn pulsation_detail_header(
         .child(
             div()
                 .flex()
+                .flex_wrap()
+                .max_w_full()
                 .items_center()
                 .gap_2()
-                .child(status_pill(pulsation.status))
+                .child(status_pill(
+                    pulsation.status,
+                    pulsation.terminal_reason.as_deref(),
+                ))
                 .child(
                     div()
                         .id("cancel-pulsation-jobs")
+                        .debug_selector(|| "pulsation-cancel".into())
                         .px_3()
                         .py_2()
                         .rounded_md()
@@ -372,7 +1075,7 @@ fn pulsation_detail_header(
                                 }),
                             )
                         })
-                        .child("Cancelar jobs ativos"),
+                        .child("Cancelar pulsação"),
                 ),
         )
 }
@@ -442,14 +1145,14 @@ fn status_dot(status: PulsationStatus) -> impl IntoElement {
     div().size_2().rounded_full().bg(status_color(status))
 }
 
-fn status_pill(status: PulsationStatus) -> impl IntoElement {
+fn status_pill(status: PulsationStatus, terminal_reason: Option<&str>) -> impl IntoElement {
     div()
         .px_3()
         .py_1()
         .rounded_full()
         .bg(theme::surface_raised())
         .text_color(status_color(status))
-        .child(status_label(status))
+        .child(status_label(status, terminal_reason))
 }
 
 fn status_color(status: PulsationStatus) -> gpui::Rgba {
@@ -528,4 +1231,135 @@ fn empty_panel(title: &'static str, description: &'static str) -> impl IntoEleme
                 .text_sm()
                 .child(description),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Entity, Pixels, Render, TestAppContext, Window};
+
+    struct HeaderHarness {
+        model: Entity<AppModel>,
+        width: Pixels,
+    }
+
+    impl Render for HeaderHarness {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let pulse = Pulsation {
+                id: "pulse-layout".into(),
+                project_id: "project-layout".into(),
+                feature_name: "M5 Perguntas: validar token e rejeitar tokens inválidos. ".repeat(6),
+                stage: PulsationStage::Specification,
+                status: PulsationStatus::Checkpoint,
+                terminal_reason: None,
+                created_at: String::new(),
+                updated_at: String::new(),
+            };
+            div().w(self.width).child(self.model.update(cx, |_, cx| {
+                pulsation_detail_header(pulse, false, cx).into_any_element()
+            }))
+        }
+    }
+
+    #[gpui::test]
+    fn long_description_keeps_cancel_visible_inside_the_detail_width(cx: &mut TestAppContext) {
+        for width in [400.0, 680.0] {
+            let (_, visual) = cx.add_window_view(|_, cx| HeaderHarness {
+                model: cx.new(AppModel::new_for_test),
+                width: px(width),
+            });
+            let title = visual.debug_bounds("pulsation-heading").unwrap();
+            let cancel = visual.debug_bounds("pulsation-cancel").unwrap();
+            assert!(title.right() <= px(width));
+            assert!(cancel.left() >= px(0.0));
+            assert!(cancel.right() <= px(width));
+            assert!(cancel.top() >= title.bottom());
+            assert!(cancel.size.width > px(100.0));
+            assert!(cancel.size.height > px(20.0));
+        }
+    }
+
+    struct PreparationHarness(Entity<AppModel>);
+
+    impl Render for PreparationHarness {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(680.0))
+                .child(self.0.update(cx, |model, cx| preparation_panel(model, cx)))
+        }
+    }
+
+    #[gpui::test]
+    fn terminal_pulses_hide_description_actions_but_keep_optional_learning(
+        cx: &mut TestAppContext,
+    ) {
+        use hvc_core::orchestration::*;
+        for status in [
+            PulsationStatus::Planning,
+            PulsationStatus::Failed,
+            PulsationStatus::Done,
+        ] {
+            let (_, visual) = cx.add_window_view(|_, cx| {
+                let model = cx.new(AppModel::new_for_test);
+                model.update(cx, |model, cx| {
+                    model.pulsations.update(cx, |state, _| {
+                        state.pulsations = vec![Pulsation {
+                            id: "pulse-terminal".into(),
+                            project_id: "project-terminal".into(),
+                            feature_name: "melhore o sistema".into(),
+                            stage: PulsationStage::Intake,
+                            status,
+                            terminal_reason: (status == PulsationStatus::Failed)
+                                .then(|| "user_cancel".into()),
+                            created_at: String::new(),
+                            updated_at: String::new(),
+                        }];
+                        state.details = vec![PulsationCoordinationSnapshot {
+                            pulsation_id: "pulse-terminal".into(),
+                            project_id: "project-terminal".into(),
+                            queue_sequence: 1,
+                            pipeline_version: 2,
+                            input_revision: 1,
+                            state_version: 1,
+                            stage: PulsationStage::Intake,
+                            status,
+                            description_editable: true,
+                            context_disposition: None,
+                            diagnostic: None,
+                            blocking_reason: None,
+                            preparation: PreparationSnapshot {
+                                assessment: None,
+                                description_review: DescriptionReviewState::Pending,
+                                prespec_state: PreSpecState::NotScheduled,
+                                context_artifact_id: None,
+                                skip_reason: None,
+                            },
+                            questions: None,
+                            learning: LearningState::DeferredBudget,
+                            learning_run: Some(LearningRunSnapshot {
+                                job_id: "learning-test".into(),
+                                generation: 1,
+                                budget_calls: 3,
+                                total_calls: 3,
+                                budget_grants: 1,
+                                artifact_id: None,
+                                diagnostic: None,
+                                context_audit: vec![],
+                                graph_proposals: vec![],
+                            }),
+                            artifact_ids: vec![],
+                        }];
+                    });
+                });
+                PreparationHarness(model)
+            });
+            for selector in ["description-confirm", "description-edit"] {
+                assert_eq!(
+                    visual.debug_bounds(selector).is_some(),
+                    status == PulsationStatus::Planning
+                );
+            }
+            assert!(visual.debug_bounds("learning-retry").is_some());
+        }
+    }
 }

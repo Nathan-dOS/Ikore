@@ -1,11 +1,17 @@
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use ignore::{DirEntry, WalkBuilder};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
+
+use crate::orchestration::{
+    CollectionBudget, ContextCoverage, CoverageState, DocumentationAvailability,
+};
 
 const MAX_TREE_DEPTH: usize = 8;
 const MAX_TREE_ENTRIES: usize = 1_000;
@@ -95,7 +101,55 @@ pub struct RepositoryContext {
     root: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InventoryFile {
+    pub(crate) relative_path: String,
+    pub(crate) size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SafeSnapshotFile {
+    pub(crate) relative_path: String,
+    pub(crate) content: String,
+}
+
 impl RepositoryContext {
+    pub(crate) fn is_code_relative_path(relative: &str) -> bool {
+        let path = Path::new(relative);
+        !path.is_absolute()
+            && !relative.replace('\\', "/").starts_with("knowledge/")
+            && path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "rs" | "ts"
+                            | "tsx"
+                            | "js"
+                            | "jsx"
+                            | "py"
+                            | "go"
+                            | "java"
+                            | "kt"
+                            | "kts"
+                            | "cs"
+                            | "c"
+                            | "h"
+                            | "cc"
+                            | "cpp"
+                            | "hpp"
+                            | "rb"
+                            | "php"
+                            | "swift"
+                            | "sql"
+                            | "sh"
+                            | "ps1"
+                    )
+                })
+            && is_code_path(path)
+    }
+
     pub fn new(root: &Path) -> Result<Self, RepositoryError> {
         let canonical = root
             .canonicalize()
@@ -120,6 +174,11 @@ impl RepositoryContext {
 
         for item in self.walk(&scope, depth).skip(1) {
             let entry = item.map_err(|error| RepositoryError(error.to_string()))?;
+            if entry.file_type().is_some_and(|kind| kind.is_file())
+                && self.read_safe_text(entry.path()).is_err()
+            {
+                continue;
+            }
             if entries.len() == max_entries {
                 truncated = true;
                 break;
@@ -300,13 +359,157 @@ impl RepositoryContext {
         for component in relative.components() {
             current.push(component.as_os_str());
             if fs::symlink_metadata(&current)
-                .map(|metadata| metadata.file_type().is_symlink())
+                .map(|metadata| is_link(&metadata))
                 .unwrap_or(false)
             {
                 return Err(RepositoryError("Links simbólicos não são seguidos.".into()));
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn read_document(&self, relative: &str) -> Result<String, RepositoryError> {
+        let path = self.resolve_relative(relative, false)?;
+        self.read_safe_text(&path)
+    }
+
+    pub(crate) fn capture_code_source(
+        &self,
+        project_id: &str,
+        relative: &crate::orchestration::RelativeSourcePath,
+    ) -> Result<crate::orchestration::SourceSnapshot, RepositoryError> {
+        let path = self.resolve_relative(relative.as_str(), false)?;
+        if !is_code_path(&path) {
+            return Err(RepositoryError(
+                "O path informado não é uma fonte de código elegível.".into(),
+            ));
+        }
+        crate::orchestration::SourceSnapshot::from_text(
+            project_id,
+            relative.clone(),
+            self.read_safe_text(&path)?,
+        )
+        .map_err(|error| RepositoryError(error.to_string()))
+    }
+
+    pub(crate) fn validate_code_source_path(
+        &self,
+        relative: &crate::orchestration::RelativeSourcePath,
+    ) -> Result<(), RepositoryError> {
+        let path = self.resolve_relative(relative.as_str(), false)?;
+        if !is_code_path(&path) {
+            return Err(RepositoryError(
+                "O path informado não é uma fonte de código elegível.".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn capture_exact_code_sources(
+        &self,
+        project: &str,
+        paths: &[crate::orchestration::RelativeSourcePath],
+        budget: crate::orchestration::CollectionBudget,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<
+        (
+            Vec<crate::orchestration::SourceSnapshot>,
+            crate::orchestration::ContextCoverage,
+        ),
+        crate::orchestration::ContractError,
+    > {
+        use crate::orchestration::*;
+        budget.validate()?;
+        let started = std::time::Instant::now();
+        let mut coverage = ContextCoverage {
+            state: CoverageState::Complete,
+            documentation: DocumentationAvailability::Available,
+            enumerated_files: 0,
+            read_bytes: 0,
+            truncated: false,
+            diagnostics: vec!["exact_paths: fontes resolvidas pelo índice do Vault.".into()],
+        };
+        let mut sources = Vec::new();
+        let mut seen = HashSet::new();
+        for relative in paths {
+            if cancellation.is_cancelled() {
+                return Err(ContractError::Cancelled);
+            }
+            if started.elapsed().as_millis() >= u128::from(budget.max_duration_ms)
+                || sources.len() >= budget.max_package_files as usize
+                || coverage.read_bytes >= budget.max_read_bytes
+            {
+                coverage.truncated = true;
+                break;
+            }
+            if !seen.insert(relative.clone()) {
+                continue;
+            }
+            coverage.enumerated_files = coverage.enumerated_files.saturating_add(1);
+            let path = match self.resolve_relative(relative.as_str(), false) {
+                Ok(path) if is_code_path(&path) => path,
+                _ => {
+                    coverage.state = CoverageState::Partial;
+                    coverage
+                        .diagnostics
+                        .push(format!("broken_file_reference: {}", relative.as_str()));
+                    continue;
+                }
+            };
+            let limit = budget
+                .max_file_bytes
+                .min(budget.max_read_bytes.saturating_sub(coverage.read_bytes));
+            let read = self.read_bounded_text(&path, limit);
+            coverage.read_bytes = coverage
+                .read_bytes
+                .saturating_add(read.as_ref().map_or(limit, |(_, size)| *size));
+            let Ok((content, _)) = read else {
+                coverage.state = CoverageState::Partial;
+                continue;
+            };
+            sources.push(SourceSnapshot::from_text(
+                project,
+                relative.clone(),
+                content,
+            )?);
+        }
+        if coverage.truncated {
+            coverage.state = CoverageState::Partial;
+            coverage
+                .diagnostics
+                .push("truncated: orçamento da resolução exata atingido.".into());
+        }
+        Ok((sources, coverage))
+    }
+
+    pub(crate) fn document_paths(
+        &self,
+        markdown_only: bool,
+    ) -> Result<Vec<String>, RepositoryError> {
+        let mut paths = Vec::new();
+        for entry in self.walk(&self.root, 72) {
+            let entry = entry.map_err(|e| RepositoryError(e.to_string()))?;
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let extension = entry
+                .path()
+                .extension()
+                .and_then(|v| v.to_str())
+                .unwrap_or("");
+            if extension.eq_ignore_ascii_case("md")
+                || (!markdown_only && extension.eq_ignore_ascii_case("txt"))
+            {
+                if paths.len() >= 10_000 {
+                    return Err(RepositoryError(
+                        "Catálogo documental excede 10.000 arquivos; escopo incompleto.".into(),
+                    ));
+                }
+                paths.push(self.relative_display(entry.path())?);
+            }
+        }
+        paths.sort();
+        Ok(paths)
     }
 
     fn walk(&self, scope: &Path, depth: usize) -> ignore::Walk {
@@ -319,12 +522,139 @@ impl RepositoryContext {
             .git_global(false)
             .require_git(false)
             .follow_links(false)
+            .sort_by_file_name(|a, b| a.cmp(b))
             .max_depth(Some(depth));
         builder.filter_entry(allowed_entry);
         builder.build()
     }
 
+    pub(crate) fn inventory_files(
+        &self,
+        budget: CollectionBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<(Vec<InventoryFile>, ContextCoverage), RepositoryError> {
+        budget
+            .validate()
+            .map_err(|error| RepositoryError(error.to_string()))?;
+        let started = std::time::Instant::now();
+        let mut files = Vec::new();
+        let mut coverage = ContextCoverage {
+            state: CoverageState::Complete,
+            documentation: DocumentationAvailability::Absent,
+            enumerated_files: 0,
+            read_bytes: 0,
+            truncated: false,
+            diagnostics: vec![
+                "Inventário heurístico limitado; não comprova cobertura global do repositório."
+                    .into(),
+            ],
+        };
+
+        for item in self.walk(&self.root, MAX_TREE_DEPTH + 64) {
+            if cancellation.is_cancelled() {
+                return Err(RepositoryError("Coleta cancelada.".into()));
+            }
+            if started.elapsed().as_millis() >= u128::from(budget.max_duration_ms) {
+                coverage.truncated = true;
+                break;
+            }
+            let entry = match item {
+                Ok(entry) => entry,
+                Err(error) => {
+                    coverage.state = CoverageState::Partial;
+                    coverage
+                        .diagnostics
+                        .push(format!("Entrada indisponível durante enumeração: {error}"));
+                    continue;
+                }
+            };
+            if entry.depth() >= MAX_TREE_DEPTH + 64
+                && entry.file_type().is_some_and(|kind| kind.is_dir())
+            {
+                coverage.truncated = true;
+            }
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            if coverage.enumerated_files >= budget.max_files {
+                coverage.truncated = true;
+                break;
+            }
+            coverage.enumerated_files += 1;
+            let relative_path = match self.relative_display(entry.path()) {
+                Ok(path) => path,
+                Err(error) => {
+                    coverage.state = CoverageState::Partial;
+                    coverage.diagnostics.push(error.to_string());
+                    continue;
+                }
+            };
+            if is_documentation_path(&relative_path) {
+                coverage.documentation = DocumentationAvailability::Available;
+            }
+            let size_bytes = match entry.metadata() {
+                Ok(metadata) => metadata.len(),
+                Err(error) => {
+                    coverage.state = CoverageState::Partial;
+                    coverage.diagnostics.push(format!(
+                        "Metadados indisponíveis para `{relative_path}`: {error}"
+                    ));
+                    continue;
+                }
+            };
+            files.push(InventoryFile {
+                relative_path,
+                size_bytes,
+            });
+        }
+
+        if coverage.truncated {
+            coverage.state = CoverageState::Partial;
+            coverage
+                .diagnostics
+                .push("truncated: limite de arquivos, profundidade ou duração atingido.".into());
+        }
+        Ok((files, coverage))
+    }
+
+    pub(crate) fn safe_snapshot_files(
+        &self,
+        max_files: usize,
+        max_total_bytes: u64,
+    ) -> Result<Vec<SafeSnapshotFile>, RepositoryError> {
+        let mut files = Vec::new();
+        let mut total_bytes = 0u64;
+        for item in self.walk(&self.root, MAX_TREE_DEPTH + 64) {
+            let entry = item.map_err(|error| RepositoryError(error.to_string()))?;
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let relative_path = self.relative_display(entry.path())?;
+            let Ok(content) = self.read_safe_text(entry.path()) else {
+                continue;
+            };
+            let bytes = content.len() as u64;
+            if files.len() >= max_files || total_bytes.saturating_add(bytes) > max_total_bytes {
+                return Err(RepositoryError(
+                    "Workspace seguro excede o limite de arquivos ou bytes.".into(),
+                ));
+            }
+            total_bytes = total_bytes.saturating_add(bytes);
+            files.push(SafeSnapshotFile {
+                relative_path,
+                content,
+            });
+        }
+        Ok(files)
+    }
+
     fn read_safe_text(&self, path: &Path) -> Result<String, RepositoryError> {
+        self.read_bounded_text(path, MAX_FILE_BYTES)
+            .map(|(text, _)| text)
+    }
+
+    fn read_bounded_text(&self, path: &Path, limit: u64) -> Result<(String, u64), RepositoryError> {
+        self.reject_symlink_components(path)?;
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -335,17 +665,116 @@ impl RepositoryContext {
                 "Arquivo sensível, binário ou não suportado foi bloqueado.".into(),
             ));
         }
-        let metadata = fs::metadata(path)
+        let file = fs::File::open(path)
             .map_err(|error| RepositoryError(format!("Falha ao ler arquivo: {error}")))?;
-        if metadata.len() > MAX_FILE_BYTES {
+        let metadata = file
+            .metadata()
+            .map_err(|e| RepositoryError(e.to_string()))?;
+        if !metadata.is_file() || metadata.len() > limit.min(MAX_FILE_BYTES) {
             return Err(RepositoryError(
                 "Arquivos acima de 1 MiB não podem ser consultados.".into(),
             ));
         }
-        let bytes = fs::read(path)
+        let mut bytes = Vec::new();
+        file.take(limit.min(MAX_FILE_BYTES))
+            .read_to_end(&mut bytes)
             .map_err(|error| RepositoryError(format!("Falha ao ler arquivo: {error}")))?;
+        self.reject_symlink_components(path)?;
+        if bytes.contains(&0) || bytes.len() as u64 != metadata.len() {
+            return Err(RepositoryError(
+                "Arquivo binário ou alterado durante a leitura.".into(),
+            ));
+        }
+        let size = bytes.len() as u64;
         String::from_utf8(bytes)
+            .map(|text| (text, size))
             .map_err(|_| RepositoryError("Arquivo binário ou não UTF-8 foi bloqueado.".into()))
+    }
+
+    /// One bounded enumeration, no per-keyword scans and no file reads in the walker.
+    /// All evidence is derived downstream from these captured bytes.
+    pub(crate) fn capture_code_sources(
+        &self,
+        project: &str,
+        budget: crate::orchestration::CollectionBudget,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<
+        (
+            Vec<crate::orchestration::SourceSnapshot>,
+            crate::orchestration::ContextCoverage,
+        ),
+        crate::orchestration::ContractError,
+    > {
+        use crate::orchestration::*;
+        let started = std::time::Instant::now();
+        let mut coverage = ContextCoverage {
+            state: CoverageState::Complete,
+            documentation: DocumentationAvailability::Unknown,
+            enumerated_files: 0,
+            read_bytes: 0,
+            truncated: false,
+            diagnostics: vec![
+                "Coleta lexical limitada; não comprova dependências ausentes nem cobertura global."
+                    .into(),
+            ],
+        };
+        let mut sources = Vec::new();
+        for item in self.walk(&self.root, MAX_TREE_DEPTH + 64) {
+            if cancellation.is_cancelled() {
+                return Err(ContractError::Cancelled);
+            }
+            if started.elapsed().as_millis() >= u128::from(budget.max_duration_ms) {
+                coverage.truncated = true;
+                break;
+            }
+            let Ok(entry) = item else {
+                coverage.state = CoverageState::Partial;
+                continue;
+            };
+            if entry.depth() >= MAX_TREE_DEPTH + 64
+                && entry.file_type().is_some_and(|kind| kind.is_dir())
+            {
+                coverage.truncated = true;
+            }
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) || !is_code_path(entry.path())
+            {
+                continue;
+            }
+            if coverage.enumerated_files >= budget.max_files
+                || coverage.read_bytes >= budget.max_read_bytes
+            {
+                coverage.truncated = true;
+                break;
+            }
+            coverage.enumerated_files += 1;
+            let limit = budget
+                .max_file_bytes
+                .min(budget.max_read_bytes - coverage.read_bytes);
+            let read = self.read_bounded_text(entry.path(), limit);
+            // Includes failed UTF-8 reads and growth between enumeration and open.
+            coverage.read_bytes += read.as_ref().map_or(limit, |(_, size)| *size);
+            let Ok((content, _)) = read else {
+                coverage.state = CoverageState::Partial;
+                continue;
+            };
+            let Ok(path) = self.relative_display(entry.path()).and_then(|p| {
+                RelativeSourcePath::new(p).map_err(|e| RepositoryError(e.to_string()))
+            }) else {
+                coverage.state = CoverageState::Partial;
+                continue;
+            };
+            sources.push(SourceSnapshot::from_text(project, path, content)?);
+        }
+        if coverage.truncated {
+            coverage.state = CoverageState::Partial;
+            coverage
+                .diagnostics
+                .push("truncated: limite de enumeração, bytes ou tempo atingido.".into());
+        }
+        if coverage.state == CoverageState::Partial {
+            coverage.diagnostics.push("Algumas fontes não foram lidas; arquivos indisponíveis não são evidência negativa.".into());
+        }
+        Ok((sources, coverage))
     }
 
     fn relative_display(&self, path: &Path) -> Result<String, RepositoryError> {
@@ -356,6 +785,9 @@ impl RepositoryContext {
 }
 
 fn allowed_entry(entry: &DirEntry) -> bool {
+    if entry.metadata().is_ok_and(|m| is_link(&m)) {
+        return false;
+    }
     let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
     if entry.file_type().is_some_and(|kind| kind.is_dir()) {
         return !excluded_directories().contains(name.as_str())
@@ -364,13 +796,50 @@ fn allowed_entry(entry: &DirEntry) -> bool {
     !is_sensitive_name(&name)
         && allowed_text_name(&name)
         && !entry.file_type().is_some_and(|kind| kind.is_symlink())
-        && fs::metadata(entry.path()).is_ok_and(|metadata| metadata.len() <= MAX_FILE_BYTES)
-        && fs::read(entry.path()).is_ok_and(|bytes| String::from_utf8(bytes).is_ok())
+}
+
+fn is_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+fn is_code_path(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    !name.starts_with("readme")
+        && !matches!(
+            name.as_str(),
+            "license" | ".gitignore" | ".gitattributes" | ".editorconfig"
+        )
+        && ![".md", ".txt", ".csv", ".svg", ".min.js", ".min.css"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+        && !path
+            .components()
+            .any(|p| matches!(p.as_os_str().to_str(), Some("knowledge" | "docs" | "doc")))
 }
 
 fn excluded_directories() -> HashSet<&'static str> {
     HashSet::from([
         ".git",
+        ".hard-vibe-code",
+        ".agents",
+        ".claude",
+        ".codex",
+        ".gemini",
+        ".opencode",
+        ".aws",
+        ".ssh",
         "node_modules",
         "vendor",
         "target",
@@ -397,10 +866,11 @@ fn excluded_directories() -> HashSet<&'static str> {
 }
 
 fn is_sensitive_name(name: &str) -> bool {
+    if name.starts_with("credentials.") || name.starts_with("secrets.") {
+        return true;
+    }
     if name.starts_with(".env") {
-        return !["example", "template", "sample"]
-            .iter()
-            .any(|tag| name.contains(tag));
+        return true;
     }
     matches!(
         name,
@@ -434,11 +904,19 @@ fn allowed_text_name(name: &str) -> bool {
     const EXTENSIONS: &[&str] = &[
         "c", "cc", "cpp", "cs", "css", "csv", "go", "graphql", "h", "hpp", "html", "java", "js",
         "json", "jsx", "kt", "kts", "md", "php", "proto", "ps1", "py", "rb", "rs", "scss", "sh",
-        "sql", "svg", "swift", "toml", "ts", "tsx", "txt", "xml", "yaml", "yml",
+        "csproj", "gradle", "mod", "sln", "sql", "svg", "swift", "toml", "ts", "tsx", "txt", "xml",
+        "yaml", "yml",
     ];
     let special = matches!(
         name,
-        "dockerfile" | "makefile" | "license" | ".gitignore" | ".gitattributes" | ".editorconfig"
+        "dockerfile"
+            | "makefile"
+            | "license"
+            | "go.mod"
+            | "go.work"
+            | ".gitignore"
+            | ".gitattributes"
+            | ".editorconfig"
     ) || name.starts_with("readme")
         || (name.starts_with(".env") && !is_sensitive_name(name));
     special
@@ -446,6 +924,15 @@ fn allowed_text_name(name: &str) -> bool {
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| EXTENSIONS.contains(&extension))
+}
+
+fn is_documentation_path(relative_path: &str) -> bool {
+    let normalized = relative_path.to_ascii_lowercase();
+    let name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    name.starts_with("readme")
+        || name.ends_with(".md")
+        || normalized.starts_with("docs/")
+        || normalized.contains("/docs/")
 }
 
 fn truncate_chars(value: &str, max: usize) -> String {
@@ -521,7 +1008,7 @@ mod tests {
             .map(|entry| entry.path.as_str())
             .collect();
         assert!(paths.contains(&"visible.ts"));
-        assert!(paths.contains(&".env.example"));
+        assert!(!paths.contains(&".env.example"));
         assert!(!paths.contains(&"ignored.ts"));
         assert!(!paths.contains(&".env"));
         assert!(!paths.contains(&"binary.txt"));

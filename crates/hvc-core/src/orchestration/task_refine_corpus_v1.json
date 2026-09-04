@@ -1,0 +1,19 @@
+[
+  ["melhore", 65],
+  ["melhore o sistema", 65],
+  ["corrija auth token", 40],
+  ["fix the login", 65],
+  ["improve auth token whatever", 60],
+  ["qualquer coisa", 60],
+  ["corrija o erro ao executar login", 0],
+  ["fix error after running login", 0],
+  ["adicione resposta 401 quando token inválido", 0],
+  ["reject auth token when expired", 0],
+  ["otimize latência para menos de 200 ms", 0],
+  ["improve latency below 100 ms", 0],
+  ["corrija auth: esperado 401, atual 500", 0],
+  ["crie src/auth.rs com validate_token", 0],
+  ["GraphQL AST RAG", 15],
+  ["melhorias etc", 100],
+  ["improvements etc", 100]
+]

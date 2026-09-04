@@ -265,16 +265,21 @@ impl EntityInputHandler for NativeTextInput {
 }
 
 impl Render for NativeTextInput {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .key_context("NativeTextInput")
             .track_focus(&self.focus_handle(cx))
             .h(px(36.0))
             .w_full()
+            .overflow_hidden()
             .px_3()
             .rounded_md()
             .border_1()
-            .border_color(theme::border())
+            .border_color(if self.focus_handle.is_focused(window) {
+                theme::accent()
+            } else {
+                theme::border()
+            })
             .bg(theme::canvas())
             .text_color(theme::text())
             .on_action(cx.listener(Self::backspace))

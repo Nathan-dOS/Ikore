@@ -1,0 +1,2 @@
+{"type":"tool_use","tool_name":"read_file","parameters":{"path":"src/main.rs"}}
+{"type":"tool_result","tool_name":"read_file","output":"fixture file"}

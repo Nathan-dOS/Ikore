@@ -2695,6 +2695,7 @@ dependencies = [
  "chrono",
  "fs2",
  "futures",
+ "icu_normalizer",
  "ignore",
  "jsonschema",
  "keyring",
@@ -2711,8 +2712,13 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
+ "toml 0.8.23",
+ "tree-sitter",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
  "uuid",
  "walkdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2739,6 +2745,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
+ "walkdir",
 ]
 
 [[package]]
@@ -6144,6 +6152,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -6392,6 +6401,26 @@ checksum = "2efd398be546456c814598ee56c0f51769a77241511b4a58077815d120afa882"
 dependencies = [
  "cc",
  "tree-sitter",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-rust"
+version = "0.24.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439e577dbe07423ec2582ac62c7531120dbfccfa6e5f92406f93dd271a120e45"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-typescript"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c5f76ed8d947a75cc446d5fccd8b602ebf0cde64ccf2ffa434d873d7a575eff"
+dependencies = [
+ "cc",
  "tree-sitter-language",
 ]
 

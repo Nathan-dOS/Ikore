@@ -1,0 +1,1 @@
+[36mOPENAI_API_KEY=fixture-token-redacted-by-test[0m

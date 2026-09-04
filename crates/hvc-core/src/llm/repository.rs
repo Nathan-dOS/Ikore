@@ -644,8 +644,14 @@ impl SqliteLlmRepository {
             }
         }
         let id = request.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let connection = self.connection()?;
-        let transaction = connection.unchecked_transaction().map_err(db_error)?;
+        let mut connection = self.connection()?;
+        // Reserve the writer before reading the current version. A deferred
+        // transaction can otherwise lose the read-to-write upgrade race to the
+        // workspace maintenance worker and report SQLITE_BUSY immediately,
+        // bypassing the configured busy timeout.
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_error)?;
         let actual_version = transaction
             .query_row(
                 "SELECT version FROM provider_routes WHERE id=?1",
@@ -794,13 +800,17 @@ impl SqliteLlmRepository {
 
     pub fn upsert_binding(
         &self,
-        request: UpsertProviderRouteBindingRequest,
+        mut request: UpsertProviderRouteBindingRequest,
     ) -> Result<ProviderRouteBinding, LlmError> {
         non_empty(&request.project_id, "projectId")?;
         non_empty(&request.agent_role, "agentRole")?;
         non_empty(&request.stage, "stage")?;
         non_empty(&request.route_id, "routeId")?;
-        let connection = self.connection()?;
+        request.stage = crate::orchestration::catalog::canonical_stage(&request.stage).to_owned();
+        let mut db = self.connection()?;
+        let connection = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_error)?;
         let actual=connection.query_row(
             "SELECT version FROM provider_route_bindings WHERE project_id=?1 AND agent_role=?2 AND stage=?3",
             params![request.project_id,request.agent_role,request.stage],|row|row.get::<_,u64>(0)
@@ -823,6 +833,11 @@ impl SqliteLlmRepository {
                 params![request.project_id,request.agent_role,request.stage,request.route_id,request.enabled.unwrap_or(true),now]
             ).map_err(|error|foreign_key_or_db(error,"Vínculo referencia projeto ou rota inexistente."))?;
         }
+        if request.stage == "SPECIFICATION" {
+            // An explicit versioned save is the human resolution of a migrated alias collision.
+            connection.execute("DELETE FROM provider_route_bindings WHERE project_id=?1 AND agent_role=?2 AND stage='Specification'",params![request.project_id,request.agent_role]).map_err(db_error)?;
+        }
+        connection.commit().map_err(db_error)?;
         self.list_bindings()?
             .into_iter()
             .find(|item| {
@@ -1328,6 +1343,16 @@ impl LlmRepository for SqliteLlmRepository {
         stage: &str,
     ) -> Result<ProviderRoute, LlmError> {
         let connection = self.connection()?;
+        let stage = crate::orchestration::catalog::canonical_stage(stage);
+        if stage == "SPECIFICATION" {
+            let conflict: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM provider_route_bindings a JOIN provider_route_bindings c ON c.project_id=a.project_id AND c.agent_role=a.agent_role WHERE a.project_id=?1 AND a.agent_role=?2 AND a.stage='Specification' AND c.stage='SPECIFICATION' AND (a.route_id<>c.route_id OR a.enabled<>c.enabled))",params![project_id,role.as_str()],|r|r.get(0)).map_err(db_error)?;
+            if conflict {
+                return Err(LlmError::new(
+                    LlmErrorKind::RouteConflict,
+                    "Bindings Specification/SPECIFICATION conflitantes. Corrija os vínculos nas configurações.",
+                ));
+            }
+        }
         let route_id=connection.query_row(
             "SELECT route_id FROM provider_route_bindings WHERE project_id=?1 AND agent_role=?2 AND stage=?3 AND enabled=1",
             params![project_id,role.as_str(),stage],|row|row.get::<_,String>(0)

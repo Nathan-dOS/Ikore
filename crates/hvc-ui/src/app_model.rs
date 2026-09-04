@@ -1,29 +1,44 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[path = "preparation_ui.rs"]
+mod preparation_ui;
+
 use gpui::{
     AppContext as _, ClipboardItem, Context, Entity, PathPromptOptions, SharedString, Subscription,
     Task, Window,
 };
-use hvc_core::agent_runtime::ContextStrategy;
-use hvc_core::chat_service::ChatEventEnvelope;
+use hvc_core::agent_runtime::{AdaptiveContextMode, ContextStrategy, DynamicContextPolicy};
+use hvc_core::chat_service::{ChatEventEnvelope, ChatExecutionTargetRequest, ChatTransportKind};
 use hvc_core::llm::{
     DeleteProviderConnectionRequest, DeleteProviderRouteRequest, ResetLlmResilienceStateRequest,
     RouteTarget, RoutingMode, TestProviderConnectionRequest, UpsertProviderConnectionRequest,
     UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
 };
+use hvc_core::orchestration::brownfield::BrownfieldOnboardingStatus;
 use hvc_core::persistence_service::{
-    ApplyHitlDecisionRequest, EnsureProjectForWorkspaceRequest, HitlDecision, LoadUiSessionRequest,
-    PulsationRuntimeSnapshot, SaveUiSessionRequest, UiSessionState, UiTabSnapshot,
-    UpdateAgentRuntimeConfigRequest,
+    CliFallbackDecision, EnsureProjectForWorkspaceRequest, HitlDecision, LoadUiSessionRequest,
+    PulsationRuntimeSnapshot, ResolveCliFallbackRequest, SaveUiSessionRequest, UiSessionState,
+    UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
+};
+use hvc_core::terminals::{
+    AgentExecutionMode, CliAgentConfig, CliBackend, CliModelSelectionSource,
+    CreateFreeFormSlotRequest, ResumeManualRunRequest, SessionPolicy, StartFreeFormRunRequest,
+    StartManualRunRequest, TerminalRunStatus, TerminalSlot, ThinkingLevel,
+    UpdateCliAgentConfigRequest, UpdateFreeFormSlotRequest,
 };
 use hvc_core::workspace_service::{
     FileNode, OpenWorkspaceRequest, ReadWorkspaceFileRequest, SearchMode, WorkspaceChangedEvent,
+    WorkspaceKind,
 };
 use hvc_core::{AppCore, AppEvent};
 use hvc_editor::{EditorSelection, EditorSnapshot, TextPosition};
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::agents::{
+    AgentsBackend, AgentsDashboardSnapshot, AgentsModel, AgentsTab, CliModelPickerState,
+    CliModelPickerTarget, CoreAgentsBackend,
+};
 use crate::chat::{ChatBackend, ChatEventOutcome, ChatModel, CoreChatBackend};
 use crate::lifecycle::LifecycleState;
 use crate::logs::{CoreLogsBackend, LogsBackend, LogsModel, SequenceClassification};
@@ -40,8 +55,8 @@ use crate::vault::{
 };
 use crate::views::NavigationModel;
 use crate::workspace::{
-    AUTOSAVE_DEBOUNCE, CoreWorkspaceBackend, WorkspaceBackend, WorkspaceEditorModel,
-    WorkspaceTabModel, WorkspaceViewMode,
+    AUTOSAVE_DEBOUNCE, BrownfieldOnboardingState, CoreWorkspaceBackend, WorkspaceBackend,
+    WorkspaceEditorModel, WorkspaceTabModel, WorkspaceViewMode,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,16 +65,18 @@ pub enum AppView {
     Pulsations,
     Vault,
     Chat,
+    Agents,
     Settings,
     Logs,
 }
 
 impl AppView {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Workspace,
         Self::Pulsations,
         Self::Vault,
         Self::Chat,
+        Self::Agents,
         Self::Settings,
         Self::Logs,
     ];
@@ -70,6 +87,7 @@ impl AppView {
             Self::Pulsations => "pulsations",
             Self::Vault => "vault",
             Self::Chat => "chat",
+            Self::Agents => "agents",
             Self::Settings => "settings",
             Self::Logs => "logs",
         }
@@ -81,6 +99,7 @@ impl AppView {
             Self::Pulsations => "Pulsations & Pipeline",
             Self::Vault => "Vault & Graph",
             Self::Chat => "Chat / Companion",
+            Self::Agents => "Agents & Terminais",
             Self::Settings => "Settings & AI Runtime",
             Self::Logs => "Logs & Observability",
         }
@@ -92,6 +111,7 @@ impl AppView {
             Self::Pulsations => "Pulsations",
             Self::Vault => "Vault",
             Self::Chat => "Companion",
+            Self::Agents => "Agents",
             Self::Settings => "Settings",
             Self::Logs => "Logs",
         }
@@ -103,6 +123,7 @@ impl AppView {
             Self::Pulsations => "P",
             Self::Vault => "V",
             Self::Chat => "C",
+            Self::Agents => "A",
             Self::Settings => "S",
             Self::Logs => "L",
         }
@@ -114,6 +135,7 @@ impl AppView {
             Self::Pulsations => "Execuções, checkpoints e decisões humanas",
             Self::Vault => "Notas Markdown, links e contexto do workspace",
             Self::Chat => "Conversa, streaming e ferramentas read-only",
+            Self::Agents => "Execução CLI/API dos sete agentes canônicos",
             Self::Settings => "Provedores, rotas LLM e preferências locais",
             Self::Logs => "Eventos tipados e diagnósticos do runtime",
         }
@@ -147,6 +169,7 @@ struct RestoredSession {
     session: Option<UiSessionState>,
     tabs: Vec<LoadedTab>,
     notice: Option<String>,
+    brownfield_status: Option<BrownfieldOnboardingStatus>,
 }
 
 pub struct AppModel {
@@ -156,6 +179,7 @@ pub struct AppModel {
     pulsations_backend: Option<Arc<dyn PulsationsBackend>>,
     vault_backend: Option<Arc<dyn VaultBackend>>,
     settings_backend: Option<Arc<dyn SettingsBackend>>,
+    agents_backend: Option<Arc<dyn AgentsBackend>>,
     logs_backend: Option<Arc<dyn LogsBackend>>,
     chat_backend: Option<Arc<dyn ChatBackend>>,
     pub navigation: Entity<NavigationModel>,
@@ -163,6 +187,17 @@ pub struct AppModel {
     pub pulsations: Entity<PulsationsModel>,
     pub vault: Entity<VaultModel>,
     pub(crate) pulsation_feature_input: Entity<NativeTextInput>,
+    pub(crate) reconciliation_input: Entity<NativeTextInput>,
+    pub(crate) description_review_input: Entity<NativeTextInput>,
+    pub(crate) specification_answer_inputs: Vec<(String, Entity<NativeTextInput>)>,
+    pub(crate) stage_feedback_input: Entity<NativeTextInput>,
+    pub(crate) preparation_threshold_input: Entity<NativeTextInput>,
+    pub(crate) context_limit_input: Entity<NativeTextInput>,
+    preparation_scope: Option<(String, u64, Option<String>)>,
+    pub(crate) learning_graph_decisions:
+        HashMap<String, hvc_core::orchestration::LearningGraphDecision>,
+    question_subscriptions: Vec<Subscription>,
+    pub(crate) artifact_preview_page: usize,
     pub(crate) vault_search_input: Entity<NativeTextInput>,
     pub(crate) vault_rename_input: Entity<NativeTextInput>,
     pub(crate) settings_connection_name_input: Entity<NativeTextInput>,
@@ -172,7 +207,19 @@ pub struct AppModel {
     pub(crate) settings_route_name_input: Entity<NativeTextInput>,
     pub(crate) settings_embedding_model_input: Entity<NativeTextInput>,
     pub(crate) chat_draft_input: Entity<NativeTextInput>,
+    pub(crate) cli_model_search_input: Entity<NativeTextInput>,
+    pub(crate) agent_prompt_inputs: HashMap<hvc_core::llm::AgentRole, Entity<NativeTextInput>>,
+    pub(crate) agent_model_inputs: HashMap<hvc_core::llm::AgentRole, Entity<NativeTextInput>>,
+    pub(crate) agent_custom_executable_inputs:
+        HashMap<hvc_core::llm::AgentRole, Entity<NativeTextInput>>,
+    pub(crate) agent_custom_args_inputs: HashMap<hvc_core::llm::AgentRole, Entity<NativeTextInput>>,
+    pub(crate) free_form_prompt_inputs: HashMap<String, Entity<NativeTextInput>>,
+    pub(crate) free_form_label_inputs: HashMap<String, Entity<NativeTextInput>>,
+    pub(crate) free_form_model_inputs: HashMap<String, Entity<NativeTextInput>>,
+    pub(crate) free_form_custom_executable_inputs: HashMap<String, Entity<NativeTextInput>>,
+    pub(crate) free_form_custom_args_inputs: HashMap<String, Entity<NativeTextInput>>,
     pub chat: Entity<ChatModel>,
+    pub(crate) agents: Entity<AgentsModel>,
     pub(crate) settings: Entity<SettingsModel>,
     pub(crate) logs: Entity<LogsModel>,
     active_view: AppView,
@@ -189,10 +236,15 @@ pub struct AppModel {
     event_task: Option<Task<()>>,
     polling_task: Option<Task<()>>,
     workspace_task: Option<Task<()>>,
+    brownfield_task: Option<Task<()>>,
+    brownfield_generation: u64,
     file_tasks: HashMap<String, Task<()>>,
     autosave_tasks: HashMap<String, Task<()>>,
     hitl_task: Option<Task<()>>,
     pulsations_task: Option<Task<()>>,
+    reconciliation_task: Option<Task<()>>,
+    preparation_action_task: Option<Task<()>>,
+    artifact_preview_task: Option<Task<()>>,
     pulsation_artifacts_task: Option<Task<()>>,
     vault_refresh_task: Option<Task<()>>,
     vault_search_task: Option<Task<()>>,
@@ -200,6 +252,8 @@ pub struct AppModel {
     vault_context_task: Option<Task<()>>,
     vault_document_tasks: HashMap<String, Task<()>>,
     settings_task: Option<Task<()>>,
+    agents_task: Option<Task<()>>,
+    model_catalog_task: Option<Task<()>>,
     logs_task: Option<Task<()>>,
     logs_resync_tasks: HashMap<String, Task<()>>,
     chat_task: Option<Task<()>>,
@@ -221,6 +275,8 @@ impl AppModel {
             Arc::new(CoreVaultBackend::new(Arc::clone(&core)));
         let settings_backend: Arc<dyn SettingsBackend> =
             Arc::new(CoreSettingsBackend::new(Arc::clone(&core)));
+        let agents_backend: Arc<dyn AgentsBackend> =
+            Arc::new(CoreAgentsBackend::new(Arc::clone(&core)));
         let logs_backend: Arc<dyn LogsBackend> = Arc::new(CoreLogsBackend::new(Arc::clone(&core)));
         let chat_backend: Arc<dyn ChatBackend> = Arc::new(CoreChatBackend::new(Arc::clone(&core)));
         let mut model = Self::build(
@@ -232,6 +288,7 @@ impl AppModel {
         model.pulsations_backend = Some(pulsations_backend);
         model.vault_backend = Some(vault_backend);
         model.settings_backend = Some(settings_backend);
+        model.agents_backend = Some(agents_backend);
         model.logs_backend = Some(logs_backend);
         model.chat_backend = Some(chat_backend);
         model.start_lifecycle(cx);
@@ -310,6 +367,16 @@ impl AppModel {
         let editor = workspace.read(cx).editor.clone();
         let pulsation_feature_input =
             cx.new(|cx| NativeTextInput::new("Nome da funcionalidade", cx));
+        let reconciliation_input =
+            cx.new(|cx| NativeTextInput::new("O que você verificou ou corrigiu na base?", cx));
+        let description_review_input =
+            cx.new(|cx| NativeTextInput::new("Descreva a ação e o resultado esperado", cx));
+        let stage_feedback_input =
+            cx.new(|cx| NativeTextInput::new("Feedback para solicitar revisão do estágio", cx));
+        let preparation_threshold_input =
+            cx.new(|cx| NativeTextInput::new("Threshold de 0 a 100", cx));
+        let context_limit_input = cx
+            .new(|cx| NativeTextInput::new("Orçamento de contexto: 2.000 a 80.000 caracteres", cx));
         let vault_search_input = cx.new(|cx| NativeTextInput::new("Texto ou regex", cx));
         let vault_rename_input = cx.new(|cx| NativeTextInput::new("Novo nome da nota", cx));
         let settings_connection_name_input =
@@ -324,13 +391,64 @@ impl AppModel {
         let settings_embedding_model_input =
             cx.new(|cx| NativeTextInput::new("Modelo de embeddings", cx));
         let chat_draft_input = cx.new(|cx| NativeTextInput::new("Mensagem para o Companion", cx));
-        let subscriptions = vec![
+        let cli_model_search_input =
+            cx.new(|cx| NativeTextInput::new("Search model ID, name, provider or capability", cx));
+        let agent_prompt_inputs = hvc_core::llm::AgentRole::ALL
+            .into_iter()
+            .map(|role| {
+                let descriptor = hvc_core::terminals::canonical_agent(role);
+                (
+                    role,
+                    cx.new(|cx| {
+                        NativeTextInput::new(
+                            format!("Solicitação manual para {}", descriptor.name),
+                            cx,
+                        )
+                    }),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let agent_model_inputs = hvc_core::llm::AgentRole::ALL
+            .into_iter()
+            .map(|role| {
+                (
+                    role,
+                    cx.new(|cx| NativeTextInput::new("Modelo opcional da CLI", cx)),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let agent_custom_executable_inputs = hvc_core::llm::AgentRole::ALL
+            .into_iter()
+            .map(|role| {
+                (
+                    role,
+                    cx.new(|cx| NativeTextInput::new("Caminho absoluto do executável", cx)),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let agent_custom_args_inputs = hvc_core::llm::AgentRole::ALL
+            .into_iter()
+            .map(|role| {
+                (
+                    role,
+                    cx.new(|cx| {
+                        NativeTextInput::new("Argumentos JSON: [\"--flag\",\"valor\"]", cx)
+                    }),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let mut subscriptions = vec![
             cx.observe(&editor, |model, _, cx| {
                 model.handle_editor_update(cx);
                 model.schedule_vault_context_documents(cx);
                 model.schedule_session_persistence(cx);
             }),
             cx.observe(&pulsation_feature_input, |_, _, cx| cx.notify()),
+            cx.observe(&reconciliation_input, |_, _, cx| cx.notify()),
+            cx.observe(&description_review_input, |_, _, cx| cx.notify()),
+            cx.observe(&stage_feedback_input, |_, _, cx| cx.notify()),
+            cx.observe(&preparation_threshold_input, |_, _, cx| cx.notify()),
+            cx.observe(&context_limit_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_search_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_rename_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_connection_name_input, |_, _, cx| cx.notify()),
@@ -340,7 +458,20 @@ impl AppModel {
             cx.observe(&settings_route_name_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_embedding_model_input, |_, _, cx| cx.notify()),
             cx.observe(&chat_draft_input, |_, _, cx| cx.notify()),
+            cx.observe(&cli_model_search_input, |_, _, cx| cx.notify()),
         ];
+        subscriptions.extend(
+            agent_prompt_inputs
+                .values()
+                .map(|input| cx.observe(input, |_, _, cx| cx.notify())),
+        );
+        subscriptions.extend(
+            agent_model_inputs
+                .values()
+                .chain(agent_custom_executable_inputs.values())
+                .chain(agent_custom_args_inputs.values())
+                .map(|input| cx.observe(input, |_, _, cx| cx.notify())),
+        );
         Self {
             core,
             session_persistence,
@@ -348,6 +479,7 @@ impl AppModel {
             pulsations_backend: None,
             vault_backend: None,
             settings_backend: None,
+            agents_backend: None,
             logs_backend: None,
             chat_backend: None,
             navigation,
@@ -355,6 +487,16 @@ impl AppModel {
             pulsations: cx.new(|_| PulsationsModel::default()),
             vault: cx.new(|_| VaultModel::default()),
             pulsation_feature_input,
+            reconciliation_input,
+            description_review_input,
+            stage_feedback_input,
+            preparation_threshold_input,
+            context_limit_input,
+            specification_answer_inputs: Vec::new(),
+            preparation_scope: None,
+            learning_graph_decisions: HashMap::new(),
+            question_subscriptions: Vec::new(),
+            artifact_preview_page: 0,
             vault_search_input,
             vault_rename_input,
             settings_connection_name_input,
@@ -364,7 +506,18 @@ impl AppModel {
             settings_route_name_input,
             settings_embedding_model_input,
             chat_draft_input,
+            cli_model_search_input,
+            agent_prompt_inputs,
+            agent_model_inputs,
+            agent_custom_executable_inputs,
+            agent_custom_args_inputs,
+            free_form_prompt_inputs: HashMap::new(),
+            free_form_label_inputs: HashMap::new(),
+            free_form_model_inputs: HashMap::new(),
+            free_form_custom_executable_inputs: HashMap::new(),
+            free_form_custom_args_inputs: HashMap::new(),
             chat: cx.new(|_| ChatModel::default()),
+            agents: cx.new(|_| AgentsModel::default()),
             settings: cx.new(|_| SettingsModel::default()),
             logs: cx.new(|_| LogsModel::default()),
             active_view,
@@ -381,10 +534,15 @@ impl AppModel {
             event_task: None,
             polling_task: None,
             workspace_task: None,
+            brownfield_task: None,
+            brownfield_generation: 0,
             file_tasks: HashMap::new(),
             autosave_tasks: HashMap::new(),
             hitl_task: None,
             pulsations_task: None,
+            reconciliation_task: None,
+            preparation_action_task: None,
+            artifact_preview_task: None,
             pulsation_artifacts_task: None,
             vault_refresh_task: None,
             vault_search_task: None,
@@ -392,6 +550,8 @@ impl AppModel {
             vault_context_task: None,
             vault_document_tasks: HashMap::new(),
             settings_task: None,
+            agents_task: None,
+            model_catalog_task: None,
             logs_task: None,
             logs_resync_tasks: HashMap::new(),
             chat_task: None,
@@ -468,6 +628,7 @@ impl AppModel {
             }
         }
         match view {
+            AppView::Agents => self.refresh_agents(cx),
             AppView::Settings => self.refresh_settings(cx),
             AppView::Logs => self.refresh_logs(cx),
             _ => {}
@@ -553,6 +714,153 @@ impl AppModel {
                 model.finish_workspace_restore(restored.map(|result| result.map(Some)), cx);
             });
         }));
+    }
+
+    pub fn set_brownfield_mapping_enabled(&mut self, consent: bool, cx: &mut Context<Self>) {
+        let Some(backend) = self.workspace_backend.clone() else {
+            self.status = "Onboarding brownfield indisponível no ambiente de teste".into();
+            cx.notify();
+            return;
+        };
+        let (project_id, busy, state) = {
+            let workspace = self.workspace.read(cx);
+            (
+                workspace.project_id.as_ref().map(ToString::to_string),
+                workspace.brownfield.busy,
+                workspace.brownfield.state,
+            )
+        };
+        let Some(project_id) = project_id else {
+            return;
+        };
+        if busy || state == BrownfieldOnboardingState::NotApplicable {
+            return;
+        }
+
+        self.workspace.update(cx, |workspace, _| {
+            workspace.brownfield.busy = true;
+            workspace.brownfield.error = None;
+        });
+        self.brownfield_generation = self.brownfield_generation.saturating_add(1);
+        let generation = self.brownfield_generation;
+        let requested_project = project_id.clone();
+        self.status = if consent {
+            "Executando inventário brownfield limitado…".into()
+        } else {
+            "Revogando consentimento brownfield…".into()
+        };
+        cx.notify();
+
+        self.brownfield_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.set_brownfield_consent(project_id, consent).await;
+            let _ = this.update(cx, |model, cx| {
+                if generation != model.brownfield_generation
+                    || model
+                        .workspace
+                        .read(cx)
+                        .project_id
+                        .as_ref()
+                        .is_none_or(|active| active.as_ref() != requested_project)
+                {
+                    return;
+                }
+                let error_message = result.as_ref().err().map(|error| error.presentable());
+                model.workspace.update(cx, |workspace, _| match result {
+                    Ok(result) => workspace.brownfield.apply_result(result),
+                    Err(error) => {
+                        workspace.brownfield.busy = false;
+                        workspace.brownfield.error = Some(error.presentable());
+                    }
+                });
+                model.status = match error_message {
+                    Some(error) => format!("Falha no onboarding brownfield: {error}").into(),
+                    None if consent => {
+                        "Inventário concluído; mapeamento estrutural agendado".into()
+                    }
+                    None => "Mapeamento brownfield desativado".into(),
+                };
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn set_active_brownfield_ignored(&mut self, ignored: bool, cx: &mut Context<Self>) {
+        let Some(backend) = self.workspace_backend.clone() else {
+            return;
+        };
+        let (project_id, relative_path, busy, enabled) = {
+            let workspace = self.workspace.read(cx);
+            (
+                workspace.project_id.as_ref().map(ToString::to_string),
+                workspace
+                    .active_relative_path
+                    .as_ref()
+                    .map(ToString::to_string),
+                workspace.brownfield.busy,
+                workspace.brownfield.state == BrownfieldOnboardingState::Enabled,
+            )
+        };
+        let (Some(project_id), Some(relative_path)) = (project_id, relative_path) else {
+            return;
+        };
+        if busy || !enabled {
+            return;
+        }
+        self.workspace.update(cx, |workspace, _| {
+            workspace.brownfield.busy = true;
+            workspace.brownfield.error = None;
+        });
+        self.brownfield_generation = self.brownfield_generation.saturating_add(1);
+        let generation = self.brownfield_generation;
+        let requested_project = project_id.clone();
+        self.status = if ignored {
+            format!("Ignorando `{relative_path}` no mapa brownfield…").into()
+        } else {
+            format!("Reativando `{relative_path}` no mapa brownfield…").into()
+        };
+        self.brownfield_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .set_brownfield_ignored(project_id, relative_path.clone(), ignored)
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                if model.brownfield_generation != generation
+                    || model
+                        .workspace
+                        .read(cx)
+                        .project_id
+                        .as_ref()
+                        .is_none_or(|active| active.as_ref() != requested_project)
+                {
+                    return;
+                }
+                let error_message = result.as_ref().err().map(|error| error.presentable());
+                model.workspace.update(cx, |workspace, _| {
+                    workspace.brownfield.busy = false;
+                    match result {
+                        Ok(status) => {
+                            workspace.brownfield.ignored_paths = status.ignored_paths;
+                            workspace.brownfield.coverage = status.coverage;
+                            workspace.brownfield.error = None;
+                        }
+                        Err(error) => {
+                            workspace.brownfield.error = Some(error.presentable());
+                        }
+                    }
+                });
+                model.status = match error_message {
+                    Some(error) => format!("Falha ao atualizar ignore brownfield: {error}").into(),
+                    None if ignored => {
+                        format!("`{relative_path}` será ignorado por scans futuros.").into()
+                    }
+                    None => {
+                        format!("`{relative_path}` foi reativado e entrou na fila incremental.")
+                            .into()
+                    }
+                };
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 
     pub fn open_workspace_file(
@@ -864,6 +1172,7 @@ impl AppModel {
             let active_id = pulsations.apply_snapshot(project_id, snapshot, preferred_id);
             (active_id, pulsations.derived_workspace_mode())
         });
+        self.sync_preparation_inputs(cx);
         self.workspace.update(cx, |workspace, _| {
             workspace.view_mode = workspace_mode;
             if workspace_mode == WorkspaceViewMode::Editor {
@@ -905,6 +1214,7 @@ impl AppModel {
         if !selected {
             return;
         }
+        self.sync_preparation_inputs(cx);
         self.workspace.update(cx, |workspace, _| {
             workspace.view_mode = workspace_mode;
             workspace.diff_expanded = false;
@@ -916,13 +1226,8 @@ impl AppModel {
     }
 
     pub(crate) fn create_pulsation(&mut self, cx: &mut Context<Self>) {
-        let feature_name = self
-            .pulsation_feature_input
-            .read(cx)
-            .value()
-            .trim()
-            .to_owned();
-        if feature_name.is_empty() {
+        let feature_name = self.pulsation_feature_input.read(cx).value().to_owned();
+        if feature_name.trim().is_empty() {
             return;
         }
         let Some(project_id) = self
@@ -977,6 +1282,60 @@ impl AppModel {
                     model.notices.push(HeaderNoticeKind::Error, error);
                     cx.notify();
                 }
+            });
+        }));
+        cx.notify();
+    }
+
+    pub(crate) fn reconcile_project_base(&mut self, cx: &mut Context<Self>) {
+        if self.reconciliation_task.is_some() || self.lifecycle.is_disposed() {
+            return;
+        }
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let explanation = self.reconciliation_input.read(cx).value().to_owned();
+        let Some(request) = self
+            .pulsations
+            .update(cx, |p, _| p.begin_reconciliation(explanation))
+        else {
+            return;
+        };
+        let project = request.project_id.clone();
+        // Separate from polling/refresh: a refresh must not detach an in-flight confirmation.
+        self.reconciliation_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.reconcile(request).await;
+            let _ = this.update(cx, |model, cx| {
+                model.reconciliation_task = None;
+                if model.lifecycle.is_disposed() {
+                    return;
+                }
+                if model
+                    .pulsations
+                    .read(cx)
+                    .project_id
+                    .as_ref()
+                    .is_none_or(|id| id.as_ref() != project.as_str())
+                {
+                    return;
+                }
+                model.pulsations.update(cx, |p, _| {
+                    p.reconciliation_busy = false;
+                    match &result {
+                        Ok(()) => p.notice = Some(
+                            "Base atual adotada. Saídas e pulsações anteriores foram preservadas."
+                                .into(),
+                        ),
+                        Err(e) => p.error = Some(e.clone()),
+                    }
+                });
+                if result.is_ok() {
+                    model
+                        .reconciliation_input
+                        .update(cx, |input, cx| input.set_value("", cx));
+                    model.refresh_pulsations(cx);
+                }
+                cx.notify();
             });
         }));
         cx.notify();
@@ -1314,7 +1673,13 @@ impl AppModel {
         let request = self
             .pulsations
             .update(cx, |pulsations, _| pulsations.hitl.begin(decision));
-        let Some((pulsation_id, decision)) = request else {
+        let request = request.map(|mut request| {
+            if decision == HitlDecision::RequestRevision {
+                request.feedback = Some(self.stage_feedback_input.read(cx).value().to_owned());
+            }
+            request
+        });
+        let Some(request) = request else {
             return;
         };
         let Some(core) = self.core.clone() else {
@@ -1333,10 +1698,7 @@ impl AppModel {
             let result = runtime
                 .spawn_blocking(move || {
                     core.persistence()
-                        .apply_hitl_decision(ApplyHitlDecisionRequest {
-                            pulsation_id,
-                            decision,
-                        })
+                        .apply_hitl_decision(request)
                         .map(|_| ())
                         .map_err(|error| error.to_string())
                 })
@@ -1344,6 +1706,9 @@ impl AppModel {
                 .map_err(|error| format!("worker HITL interrompido: {error}"))
                 .and_then(|result| result);
             let _ = this.update(cx, |model, cx| {
+                if model.lifecycle.is_disposed() {
+                    return;
+                }
                 model.pulsations.update(cx, |pulsations, _| {
                     pulsations.hitl.finish(result.clone());
                     if result.is_ok() {
@@ -1686,27 +2051,94 @@ impl AppModel {
         cx.notify();
     }
 
+    pub(crate) fn cycle_chat_transport(&mut self, cx: &mut Context<Self>) {
+        self.chat.update(cx, |chat, _| {
+            chat.selected_transport = match chat.selected_transport {
+                ChatTransportKind::Api => ChatTransportKind::Cli,
+                ChatTransportKind::Cli => ChatTransportKind::Api,
+            };
+        });
+        self.close_cli_model_picker(cx);
+    }
+
+    pub(crate) fn cycle_chat_cli_backend(&mut self, cx: &mut Context<Self>) {
+        let backend = self.chat.update(cx, |chat, _| {
+            chat.selected_cli_backend = match chat.selected_cli_backend {
+                CliBackend::Codex => CliBackend::Claude,
+                CliBackend::Claude => CliBackend::Gemini,
+                CliBackend::Gemini => CliBackend::Opencode,
+                CliBackend::Opencode | CliBackend::Custom => CliBackend::Codex,
+            };
+            chat.selected_cli_model = None;
+            chat.selected_cli_model_profile = None;
+            chat.selected_cli_model_source = CliModelSelectionSource::Default;
+            chat.selected_cli_backend
+        });
+        self.close_cli_model_picker(cx);
+        if !self.agents.read(cx).model_catalogs.contains_key(&backend) {
+            self.load_cli_model_catalog(backend, false, cx);
+        }
+    }
+
+    pub(crate) fn open_companion_model_picker(&mut self, cx: &mut Context<Self>) {
+        let backend = self.chat.read(cx).selected_cli_backend;
+        self.open_cli_model_picker(CliModelPickerTarget::Companion, backend, cx);
+    }
+
+    pub(crate) fn cycle_chat_cli_profile(&mut self, cx: &mut Context<Self>) {
+        let (backend, model_id, current) = {
+            let chat = self.chat.read(cx);
+            (
+                chat.selected_cli_backend,
+                chat.selected_cli_model.clone(),
+                chat.selected_cli_model_profile.clone(),
+            )
+        };
+        let profiles = self.model_profiles(backend, model_id.as_deref(), cx);
+        let next = Self::next_model_profile(current.as_deref(), &profiles);
+        self.chat.update(cx, |chat, _| {
+            chat.selected_cli_model_profile = next;
+        });
+        cx.notify();
+    }
+
     pub(crate) fn create_chat_conversation(&mut self, cx: &mut Context<Self>) {
         let Some(backend) = self.chat_backend.clone() else {
             return;
         };
-        let (Some(project_id), Some(connection_id)) = ({
+        let (project_id, target) = {
             let chat = self.chat.read(cx);
-            (
-                chat.project_id.as_ref().map(ToString::to_string),
-                chat.selected_connection_id
-                    .as_ref()
-                    .map(ToString::to_string),
-            )
-        }) else {
-            return;
+            let Some(project_id) = chat.project_id.as_ref().map(ToString::to_string) else {
+                return;
+            };
+            let target = match chat.selected_transport {
+                ChatTransportKind::Api => {
+                    let Some(connection_id) = chat
+                        .selected_connection_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                    else {
+                        return;
+                    };
+                    ChatExecutionTargetRequest::Api { connection_id }
+                }
+                ChatTransportKind::Cli => ChatExecutionTargetRequest::Cli {
+                    backend: chat.selected_cli_backend,
+                    model: chat.selected_cli_model.clone(),
+                    model_profile: chat.selected_cli_model_profile.clone(),
+                },
+            };
+            (project_id, target)
         };
+        if !self.chat.read(cx).new_conversation_target_available() {
+            return;
+        }
         if !self.chat.update(cx, |chat, _| chat.begin_busy()) {
             return;
         }
         cx.notify();
         self.chat_task = Some(cx.spawn(async move |this, cx| {
-            let result = backend.create_conversation(project_id, connection_id).await;
+            let result = backend.create_conversation(project_id, target).await;
             let _ = this.update(cx, |model, cx| {
                 model.chat.update(cx, |chat, _| {
                     chat.finish_busy();
@@ -1926,7 +2358,1697 @@ impl AppModel {
         self.chat_resync_tasks.insert(task_key, task);
     }
 
+    pub(crate) fn set_agents_tab(&mut self, tab: AgentsTab, cx: &mut Context<Self>) {
+        self.agents.update(cx, |agents, _| agents.tab = tab);
+        if tab == AgentsTab::Api && self.settings.read(cx).snapshot.is_none() {
+            self.refresh_settings(cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_agents_viewer(&mut self, cx: &mut Context<Self>) {
+        self.agents.update(cx, |agents, _| {
+            agents.viewer_enabled = !agents.viewer_enabled
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn configure_agent_api(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        let descriptor = hvc_core::terminals::canonical_agent(role);
+        let (route_id, connection_id) = {
+            let agents = self.agents.read(cx);
+            let settings = self.settings.read(cx);
+            let project_id = agents
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.project_id.as_str());
+            let route = settings.snapshot.as_ref().and_then(|snapshot| {
+                let bound_route = project_id.and_then(|project_id| {
+                    snapshot.bindings.iter().find(|binding| {
+                        binding.project_id == project_id
+                            && binding.agent_role == role.as_str()
+                            && binding.stage.eq_ignore_ascii_case(descriptor.stage)
+                    })
+                });
+                bound_route
+                    .and_then(|binding| {
+                        snapshot
+                            .routes
+                            .iter()
+                            .find(|route| route.id == binding.route_id)
+                    })
+                    .or_else(|| snapshot.routes.first())
+            });
+            let connection_id = route
+                .and_then(|route| {
+                    route
+                        .targets
+                        .iter()
+                        .filter(|target| target.enabled)
+                        .min_by_key(|target| target.position)
+                })
+                .map(|target| target.connection_id.clone())
+                .or_else(|| {
+                    settings
+                        .snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.connections.first())
+                        .map(|connection| connection.id.clone())
+                });
+            (route.map(|route| route.id.clone()), connection_id)
+        };
+        self.agents.update(cx, |agents, _| {
+            agents.selected_api_role = Some(role);
+        });
+        self.settings.update(cx, |settings, _| {
+            settings.binding_agent_role = role.as_str().into();
+            settings.binding_stage = descriptor.stage.into();
+        });
+        if let Some(route_id) = route_id {
+            self.select_settings_route(route_id, cx);
+        }
+        if let Some(connection_id) = connection_id {
+            self.select_settings_connection(connection_id, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn cycle_agent_api_route(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        self.configure_agent_api(role, cx);
+        let next = {
+            let settings = self.settings.read(cx);
+            let Some(snapshot) = settings.snapshot.as_ref() else {
+                return;
+            };
+            if snapshot.routes.is_empty() {
+                return;
+            }
+            let current = settings
+                .selected_route_id
+                .as_ref()
+                .and_then(|id| {
+                    snapshot
+                        .routes
+                        .iter()
+                        .position(|route| route.id == id.as_ref())
+                })
+                .unwrap_or(0);
+            snapshot.routes[(current + 1) % snapshot.routes.len()]
+                .id
+                .clone()
+        };
+        self.select_settings_route(next, cx);
+    }
+
+    pub(crate) fn cycle_agent_api_connection(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        self.configure_agent_api(role, cx);
+        let next = {
+            let settings = self.settings.read(cx);
+            let Some(snapshot) = settings.snapshot.as_ref() else {
+                return;
+            };
+            if snapshot.connections.is_empty() {
+                return;
+            }
+            let current = settings
+                .selected_connection_id
+                .as_ref()
+                .and_then(|id| {
+                    snapshot
+                        .connections
+                        .iter()
+                        .position(|connection| connection.id == id.as_ref())
+                })
+                .unwrap_or(0);
+            snapshot.connections[(current + 1) % snapshot.connections.len()]
+                .id
+                .clone()
+        };
+        self.select_settings_connection(next, cx);
+    }
+
+    pub(crate) fn save_agent_api_binding(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        self.configure_agent_api(role, cx);
+        self.save_settings_binding(cx);
+    }
+
+    pub(crate) fn open_advanced_api_settings(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        self.configure_agent_api(role, cx);
+        self.select_view(AppView::Settings, cx);
+    }
+
+    pub(crate) fn refresh_agents(&mut self, cx: &mut Context<Self>) {
+        self.refresh_agents_inner(false, cx);
+    }
+
+    pub(crate) fn refresh_agent_diagnostics(&mut self, cx: &mut Context<Self>) {
+        self.refresh_agents_inner(true, cx);
+    }
+
+    pub(crate) fn cycle_agent_event_filter(&mut self, key: String, cx: &mut Context<Self>) {
+        self.agents.update(cx, |agents, _| {
+            let current = agents
+                .event_filters
+                .get(&key)
+                .copied()
+                .unwrap_or(crate::agents::TerminalEventFilter::All);
+            agents.event_filters.insert(key, current.next());
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_agent_follow_tail(&mut self, key: String, cx: &mut Context<Self>) {
+        self.agents.update(cx, |agents, _| {
+            let enabled = agents.follow_tail.get(&key).copied().unwrap_or(true);
+            agents.follow_tail.insert(key, !enabled);
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn copy_agent_history(&mut self, run_id: String, cx: &mut Context<Self>) {
+        let content = self
+            .agents
+            .read(cx)
+            .events_by_run
+            .get(&run_id)
+            .map(|events| {
+                events
+                    .iter()
+                    .map(|event| {
+                        format!(
+                            "{}\t{}\t{}",
+                            event.sequence,
+                            match event.kind {
+                                hvc_core::terminals::TerminalEventKind::System => "system",
+                                hvc_core::terminals::TerminalEventKind::Message => "message",
+                                hvc_core::terminals::TerminalEventKind::ToolUse => "tool_use",
+                                hvc_core::terminals::TerminalEventKind::ToolResult => "tool_result",
+                                hvc_core::terminals::TerminalEventKind::Stdout => "stdout",
+                                hvc_core::terminals::TerminalEventKind::Stderr => "stderr",
+                                hvc_core::terminals::TerminalEventKind::Warning => "warning",
+                                hvc_core::terminals::TerminalEventKind::Error => "error",
+                                hvc_core::terminals::TerminalEventKind::Completed => "completed",
+                            },
+                            event.content
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        cx.write_to_clipboard(ClipboardItem::new_string(content));
+        self.agents.update(cx, |agents, _| {
+            agents.notice = Some("Histórico redigido copiado.".into());
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn export_agent_history(&mut self, run_id: String, cx: &mut Context<Self>) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.export_history(project_id, run_id).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(path) => {
+                        model.agents.update(cx, |agents, _| {
+                            if agents.generation == generation {
+                                agents.busy = false;
+                                agents.notice =
+                                    Some(format!("Histórico redigido exportado para {path}"));
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        model.agents.update(cx, |agents, _| {
+                            agents.fail(generation, error);
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn refresh_agents_inner(&mut self, force_discovery: bool, cx: &mut Context<Self>) {
+        if self.lifecycle.is_disposed() {
+            return;
+        }
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let generation = self.agents.update(cx, |agents, _| agents.begin(true));
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = if force_discovery {
+                backend.refresh_snapshot(project_id).await
+            } else {
+                backend.snapshot(project_id).await
+            };
+            let _ = this.update(cx, |model, cx| {
+                if model.lifecycle.is_disposed() {
+                    return;
+                }
+                match result {
+                    Ok(snapshot) => {
+                        model.sync_agent_config_inputs(&snapshot, cx);
+                        model.agents.update(cx, |agents, _| {
+                            agents.apply_snapshot(generation, snapshot);
+                        });
+                    }
+                    Err(error) => {
+                        let message = error.presentable();
+                        if model
+                            .agents
+                            .update(cx, |agents, _| agents.fail(generation, error))
+                        {
+                            model.notices.push(HeaderNoticeKind::Error, message);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn current_agent_config(
+        &self,
+        role: hvc_core::llm::AgentRole,
+        cx: &gpui::App,
+    ) -> Option<CliAgentConfig> {
+        self.agents
+            .read(cx)
+            .snapshot
+            .as_ref()?
+            .agents
+            .iter()
+            .find(|agent| agent.config.agent_role == role)
+            .map(|agent| agent.config.clone())
+    }
+
+    fn sync_agent_config_inputs(
+        &mut self,
+        snapshot: &AgentsDashboardSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        for agent in &snapshot.terminals.agents {
+            let role = agent.config.agent_role;
+            if let Some(input) = self.agent_model_inputs.get(&role) {
+                input.update(cx, |input, cx| {
+                    input.set_value(agent.config.model.clone().unwrap_or_default(), cx)
+                });
+            }
+            if let Some(input) = self.agent_custom_executable_inputs.get(&role) {
+                input.update(cx, |input, cx| {
+                    input.set_value(
+                        agent.config.custom_executable.clone().unwrap_or_default(),
+                        cx,
+                    )
+                });
+            }
+            if let Some(input) = self.agent_custom_args_inputs.get(&role) {
+                let args = serde_json::to_string(&agent.config.custom_args)
+                    .unwrap_or_else(|_| "[]".to_string());
+                input.update(cx, |input, cx| input.set_value(args, cx));
+            }
+        }
+        for free_form in &snapshot.terminals.free_form_slots {
+            let slot_id = free_form.slot.id.clone();
+            if !self.free_form_prompt_inputs.contains_key(&slot_id) {
+                let prompt = cx.new(|cx| NativeTextInput::new("Solicitação manual", cx));
+                let label = cx.new(|cx| NativeTextInput::new("Nome do agente livre", cx));
+                let model = cx.new(|cx| NativeTextInput::new("Modelo opcional da CLI", cx));
+                let executable =
+                    cx.new(|cx| NativeTextInput::new("Caminho absoluto do executável", cx));
+                let args = cx
+                    .new(|cx| NativeTextInput::new("Argumentos JSON: [\"--flag\",\"valor\"]", cx));
+                for input in [&prompt, &label, &model, &executable, &args] {
+                    self._subscriptions
+                        .push(cx.observe(input, |_, _, cx| cx.notify()));
+                }
+                self.free_form_prompt_inputs.insert(slot_id.clone(), prompt);
+                self.free_form_label_inputs.insert(slot_id.clone(), label);
+                self.free_form_model_inputs.insert(slot_id.clone(), model);
+                self.free_form_custom_executable_inputs
+                    .insert(slot_id.clone(), executable);
+                self.free_form_custom_args_inputs
+                    .insert(slot_id.clone(), args);
+            }
+            if let Some(input) = self.free_form_label_inputs.get(&slot_id) {
+                input.update(cx, |input, cx| {
+                    input.set_value(free_form.slot.label.clone(), cx)
+                });
+            }
+            if let Some(input) = self.free_form_model_inputs.get(&slot_id) {
+                input.update(cx, |input, cx| {
+                    input.set_value(free_form.slot.model.clone().unwrap_or_default(), cx)
+                });
+            }
+            if let Some(input) = self.free_form_custom_executable_inputs.get(&slot_id) {
+                input.update(cx, |input, cx| {
+                    input.set_value(
+                        free_form.slot.custom_executable.clone().unwrap_or_default(),
+                        cx,
+                    )
+                });
+            }
+            if let Some(input) = self.free_form_custom_args_inputs.get(&slot_id) {
+                let args = serde_json::to_string(&free_form.slot.custom_args)
+                    .unwrap_or_else(|_| "[]".to_string());
+                input.update(cx, |input, cx| input.set_value(args, cx));
+            }
+        }
+    }
+
+    fn save_agent_config(&mut self, config: CliAgentConfig, cx: &mut Context<Self>) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let request = UpdateCliAgentConfigRequest {
+            project_id: config.project_id,
+            agent_role: config.agent_role,
+            execution_mode: config.execution_mode,
+            backend: config.backend,
+            model: config.model,
+            model_profile: config.model_profile,
+            model_source: config.model_source,
+            thinking_level: config.thinking_level,
+            custom_executable: config.custom_executable,
+            custom_args: config.custom_args,
+            custom_risk_ack: config.custom_risk_ack,
+            expected_version: config.version,
+        };
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.update_config(request).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(updated) => {
+                        model.agents.update(cx, |agents, _| {
+                            agents.apply_config(generation, updated);
+                        });
+                    }
+                    Err(error) => {
+                        let message = error.presentable();
+                        if model
+                            .agents
+                            .update(cx, |agents, _| agents.fail(generation, error))
+                        {
+                            model.notices.push(HeaderNoticeKind::Error, message);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn load_cli_model_catalog(
+        &mut self,
+        backend_kind: CliBackend,
+        refresh: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if backend_kind == CliBackend::Custom {
+            return;
+        }
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        self.agents.update(cx, |agents, _| {
+            agents.catalog_loading_backend = Some(backend_kind);
+            agents.catalog_error = None;
+        });
+        cx.notify();
+        self.model_catalog_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .model_catalog(project_id, backend_kind, refresh)
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                model.agents.update(cx, |agents, _| match result {
+                    Ok(catalog) => agents.apply_model_catalog(catalog),
+                    Err(error) => {
+                        agents.catalog_loading_backend = None;
+                        agents.catalog_error = Some(error.presentable());
+                    }
+                });
+                cx.notify();
+            });
+        }));
+    }
+
+    fn open_cli_model_picker(
+        &mut self,
+        target: CliModelPickerTarget,
+        backend: CliBackend,
+        cx: &mut Context<Self>,
+    ) {
+        if backend == CliBackend::Custom {
+            return;
+        }
+        self.cli_model_search_input
+            .update(cx, |input, cx| input.clear(cx));
+        let needs_catalog = self.agents.update(cx, |agents, _| {
+            agents.active_model_picker = Some(CliModelPickerState { target, backend });
+            agents.catalog_error = None;
+            !agents.model_catalogs.contains_key(&backend)
+        });
+        if needs_catalog {
+            self.load_cli_model_catalog(backend, false, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn open_agent_model_picker(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(config) = self.current_agent_config(role, cx) else {
+            return;
+        };
+        self.open_cli_model_picker(CliModelPickerTarget::Canonical(role), config.backend, cx);
+    }
+
+    pub(crate) fn open_free_form_model_picker(&mut self, slot_id: String, cx: &mut Context<Self>) {
+        let Some(slot) = self.current_free_form_slot(&slot_id, cx) else {
+            return;
+        };
+        self.open_cli_model_picker(CliModelPickerTarget::FreeForm(slot_id), slot.backend, cx);
+    }
+
+    pub(crate) fn close_cli_model_picker(&mut self, cx: &mut Context<Self>) {
+        self.agents.update(cx, |agents, _| {
+            agents.active_model_picker = None;
+            agents.catalog_error = None;
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn refresh_cli_model_catalog(&mut self, cx: &mut Context<Self>) {
+        let backend = self
+            .agents
+            .read(cx)
+            .active_model_picker
+            .as_ref()
+            .map(|picker| picker.backend);
+        if let Some(backend) = backend {
+            self.load_cli_model_catalog(backend, true, cx);
+        }
+    }
+
+    pub(crate) fn select_cli_model(
+        &mut self,
+        model_id: Option<String>,
+        source: CliModelSelectionSource,
+        cx: &mut Context<Self>,
+    ) {
+        let target = self.agents.read(cx).active_model_picker.clone();
+        let Some(target) = target else {
+            return;
+        };
+        match target.target {
+            CliModelPickerTarget::Canonical(role) => {
+                let Some(mut config) = self.current_agent_config(role, cx) else {
+                    return;
+                };
+                config.model = model_id;
+                config.model_profile = None;
+                config.model_source = source;
+                config.thinking_level = ThinkingLevel::Default;
+                self.save_agent_config(config, cx);
+            }
+            CliModelPickerTarget::FreeForm(slot_id) => {
+                let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
+                    return;
+                };
+                slot.model = model_id;
+                slot.model_profile = None;
+                slot.model_source = source;
+                slot.thinking_level = ThinkingLevel::Default;
+                self.save_free_form_slot(slot, cx);
+            }
+            CliModelPickerTarget::Companion => {
+                self.chat.update(cx, |chat, _| {
+                    chat.selected_cli_model = model_id;
+                    chat.selected_cli_model_profile = None;
+                    chat.selected_cli_model_source = source;
+                });
+            }
+        }
+        self.close_cli_model_picker(cx);
+    }
+
+    pub(crate) fn select_manual_cli_model(&mut self, cx: &mut Context<Self>) {
+        let model_id = self
+            .cli_model_search_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        if model_id.is_empty() {
+            return;
+        }
+        self.select_cli_model(Some(model_id), CliModelSelectionSource::Manual, cx);
+    }
+
+    fn model_profiles(
+        &self,
+        backend: CliBackend,
+        model_id: Option<&str>,
+        cx: &gpui::App,
+    ) -> Vec<String> {
+        let Some(model_id) = model_id else {
+            return Vec::new();
+        };
+        self.agents
+            .read(cx)
+            .model_catalogs
+            .get(&backend)
+            .and_then(|catalog| {
+                catalog
+                    .models
+                    .iter()
+                    .find(|entry| entry.model_id.as_deref() == Some(model_id))
+            })
+            .map(|entry| entry.profiles.clone())
+            .unwrap_or_default()
+    }
+
+    fn next_model_profile(current: Option<&str>, profiles: &[String]) -> Option<String> {
+        if profiles.is_empty() {
+            return None;
+        }
+        let next = current
+            .and_then(|current| profiles.iter().position(|profile| profile == current))
+            .map_or(0, |index| index + 1);
+        (next < profiles.len()).then(|| profiles[next].clone())
+    }
+
+    pub(crate) fn cycle_agent_mode(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut config) = self.current_agent_config(role, cx) else {
+            return;
+        };
+        config.execution_mode = match config.execution_mode {
+            AgentExecutionMode::ApiDirect => AgentExecutionMode::CliProcess,
+            AgentExecutionMode::CliProcess => AgentExecutionMode::ApiDirect,
+        };
+        self.save_agent_config(config, cx);
+    }
+
+    pub(crate) fn cycle_agent_backend(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut config) = self.current_agent_config(role, cx) else {
+            return;
+        };
+        config.backend = match config.backend {
+            CliBackend::Codex => CliBackend::Claude,
+            CliBackend::Claude => CliBackend::Gemini,
+            CliBackend::Gemini => CliBackend::Opencode,
+            CliBackend::Opencode => CliBackend::Custom,
+            CliBackend::Custom => CliBackend::Codex,
+        };
+        config.model = None;
+        config.model_profile = None;
+        config.model_source = CliModelSelectionSource::Default;
+        config.thinking_level = ThinkingLevel::Default;
+        if config.backend == CliBackend::Custom {
+            // Custom is configured while inactive; activation remains an explicit second action.
+            config.execution_mode = AgentExecutionMode::ApiDirect;
+        }
+        self.save_agent_config(config, cx);
+    }
+
+    pub(crate) fn cycle_agent_thinking(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut config) = self.current_agent_config(role, cx) else {
+            return;
+        };
+        let profiles = self.model_profiles(config.backend, config.model.as_deref(), cx);
+        config.model_profile = Self::next_model_profile(config.model_profile.as_deref(), &profiles);
+        config.thinking_level = ThinkingLevel::Default;
+        self.save_agent_config(config, cx);
+    }
+
+    pub(crate) fn toggle_agent_custom_risk_ack(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut config) = self.current_agent_config(role, cx) else {
+            return;
+        };
+        config.custom_risk_ack = !config.custom_risk_ack;
+        self.save_agent_config(config, cx);
+    }
+
+    pub(crate) fn save_agent_text_config(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut config) = self.current_agent_config(role, cx) else {
+            return;
+        };
+        config.model = self
+            .agent_model_inputs
+            .get(&role)
+            .map(|input| input.read(cx).value().trim().to_string())
+            .filter(|value| !value.is_empty());
+        config.model_source = if config.model.is_some() {
+            CliModelSelectionSource::Manual
+        } else {
+            CliModelSelectionSource::Default
+        };
+        config.model_profile = None;
+        config.thinking_level = ThinkingLevel::Default;
+        if config.backend == CliBackend::Custom {
+            config.custom_executable = self
+                .agent_custom_executable_inputs
+                .get(&role)
+                .map(|input| input.read(cx).value().trim().to_string())
+                .filter(|value| !value.is_empty());
+            let raw_args = self
+                .agent_custom_args_inputs
+                .get(&role)
+                .map(|input| input.read(cx).value().trim().to_string())
+                .unwrap_or_default();
+            config.custom_args = if raw_args.is_empty() {
+                Vec::new()
+            } else {
+                match serde_json::from_str::<Vec<String>>(&raw_args) {
+                    Ok(args) => args,
+                    Err(error) => {
+                        self.agents.update(cx, |agents, _| {
+                            agents.error = Some(crate::errors::UiCommandError::from_chat_parts(
+                                "invalid_custom_args",
+                                format!(
+                                    "Argumentos Custom devem ser um array JSON de strings: {error}"
+                                ),
+                            ));
+                        });
+                        cx.notify();
+                        return;
+                    }
+                }
+            };
+        }
+        self.save_agent_config(config, cx);
+    }
+
+    pub(crate) fn start_manual_agent(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let Some(input) = self.agent_prompt_inputs.get(&role).cloned() else {
+            return;
+        };
+        let prompt = input.read(cx).value().to_string();
+        if prompt.trim().is_empty() {
+            return;
+        }
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .start_manual(StartManualRunRequest {
+                    project_id,
+                    agent_role: role,
+                    prompt,
+                })
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(run) => {
+                        input.update(cx, |input, cx| input.set_value("", cx));
+                        model.agents.update(cx, |agents, _| {
+                            agents.apply_started_run(generation, run);
+                        });
+                    }
+                    Err(error) => {
+                        let message = error.presentable();
+                        if model
+                            .agents
+                            .update(cx, |agents, _| agents.fail(generation, error))
+                        {
+                            model.notices.push(HeaderNoticeKind::Error, message);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn current_free_form_slot(&self, slot_id: &str, cx: &gpui::App) -> Option<TerminalSlot> {
+        let snapshot = self.agents.read(cx).snapshot.as_ref()?;
+        snapshot
+            .free_form_slots
+            .iter()
+            .chain(snapshot.archived_free_form_slots.iter())
+            .find(|item| item.slot.id == slot_id)
+            .map(|item| item.slot.clone())
+    }
+
+    fn run_free_form_operation(
+        &mut self,
+        operation: crate::agents::AgentsFuture<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = operation.await;
+            let _ = this.update(cx, |model, cx| match result {
+                Ok(message) => {
+                    if model.agents.read(cx).generation == generation {
+                        model.agents.update(cx, |agents, _| {
+                            agents.busy = false;
+                            agents.notice = Some(message);
+                            agents.pending_free_form_history_clear = None;
+                            agents.pending_free_form_delete = None;
+                        });
+                        model.refresh_agents(cx);
+                    }
+                }
+                Err(error) => {
+                    let message = error.presentable();
+                    if model
+                        .agents
+                        .update(cx, |agents, _| agents.fail(generation, error))
+                    {
+                        model.notices.push(HeaderNoticeKind::Error, message);
+                    }
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    pub(crate) fn create_free_form_agent(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let ordinal = self
+            .agents
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .map_or(1, |snapshot| snapshot.free_form_slots.len() + 1);
+        self.run_free_form_operation(
+            Box::pin(async move {
+                backend
+                    .create_free_form(CreateFreeFormSlotRequest {
+                        project_id,
+                        label: format!("Agente livre {ordinal}"),
+                    })
+                    .await?;
+                Ok("Agente livre criado.".into())
+            }),
+            cx,
+        );
+    }
+
+    fn save_free_form_slot(&mut self, slot: TerminalSlot, cx: &mut Context<Self>) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        self.run_free_form_operation(
+            Box::pin(async move {
+                backend
+                    .update_free_form(UpdateFreeFormSlotRequest {
+                        id: slot.id,
+                        project_id: slot.project_id,
+                        label: slot.label,
+                        execution_mode: slot.execution_mode,
+                        backend: slot.backend,
+                        model: slot.model,
+                        model_profile: slot.model_profile,
+                        model_source: slot.model_source,
+                        thinking_level: slot.thinking_level,
+                        session_policy: slot.session_policy,
+                        custom_executable: slot.custom_executable,
+                        custom_args: slot.custom_args,
+                        custom_risk_ack: slot.custom_risk_ack,
+                        position: slot.position,
+                        archived: slot.archived,
+                        expected_version: slot.version,
+                    })
+                    .await?;
+                Ok("Configuração do agente livre atualizada.".into())
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_free_form_mode(&mut self, slot_id: String, cx: &mut Context<Self>) {
+        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
+            return;
+        };
+        slot.execution_mode = match slot.execution_mode {
+            AgentExecutionMode::ApiDirect => AgentExecutionMode::CliProcess,
+            AgentExecutionMode::CliProcess => AgentExecutionMode::ApiDirect,
+        };
+        self.save_free_form_slot(slot, cx);
+    }
+
+    pub(crate) fn cycle_free_form_backend(&mut self, slot_id: String, cx: &mut Context<Self>) {
+        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
+            return;
+        };
+        slot.backend = match slot.backend {
+            CliBackend::Codex => CliBackend::Claude,
+            CliBackend::Claude => CliBackend::Gemini,
+            CliBackend::Gemini => CliBackend::Opencode,
+            CliBackend::Opencode => CliBackend::Custom,
+            CliBackend::Custom => CliBackend::Codex,
+        };
+        slot.model = None;
+        slot.model_profile = None;
+        slot.model_source = CliModelSelectionSource::Default;
+        slot.thinking_level = ThinkingLevel::Default;
+        if slot.backend == CliBackend::Custom {
+            slot.execution_mode = AgentExecutionMode::ApiDirect;
+            slot.custom_risk_ack = false;
+        }
+        self.save_free_form_slot(slot, cx);
+    }
+
+    pub(crate) fn cycle_free_form_thinking(&mut self, slot_id: String, cx: &mut Context<Self>) {
+        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
+            return;
+        };
+        let profiles = self.model_profiles(slot.backend, slot.model.as_deref(), cx);
+        slot.model_profile = Self::next_model_profile(slot.model_profile.as_deref(), &profiles);
+        slot.thinking_level = ThinkingLevel::Default;
+        self.save_free_form_slot(slot, cx);
+    }
+
+    pub(crate) fn cycle_free_form_session_policy(
+        &mut self,
+        slot_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
+            return;
+        };
+        slot.session_policy = match slot.session_policy {
+            SessionPolicy::FreshPerRun => SessionPolicy::ResumeExplicit,
+            SessionPolicy::ResumeExplicit | SessionPolicy::ResumePerPulsation => {
+                SessionPolicy::FreshPerRun
+            }
+        };
+        self.save_free_form_slot(slot, cx);
+    }
+
+    pub(crate) fn toggle_free_form_risk(&mut self, slot_id: String, cx: &mut Context<Self>) {
+        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
+            return;
+        };
+        slot.custom_risk_ack = !slot.custom_risk_ack;
+        self.save_free_form_slot(slot, cx);
+    }
+
+    pub(crate) fn save_free_form_text_config(&mut self, slot_id: String, cx: &mut Context<Self>) {
+        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
+            return;
+        };
+        slot.label = self
+            .free_form_label_inputs
+            .get(&slot_id)
+            .map(|input| input.read(cx).value().trim().to_string())
+            .unwrap_or_default();
+        slot.model = self
+            .free_form_model_inputs
+            .get(&slot_id)
+            .map(|input| input.read(cx).value().trim().to_string())
+            .filter(|value| !value.is_empty());
+        slot.model_source = if slot.model.is_some() {
+            CliModelSelectionSource::Manual
+        } else {
+            CliModelSelectionSource::Default
+        };
+        slot.model_profile = None;
+        slot.thinking_level = ThinkingLevel::Default;
+        if slot.backend == CliBackend::Custom {
+            slot.custom_executable = self
+                .free_form_custom_executable_inputs
+                .get(&slot_id)
+                .map(|input| input.read(cx).value().trim().to_string())
+                .filter(|value| !value.is_empty());
+            let raw_args = self
+                .free_form_custom_args_inputs
+                .get(&slot_id)
+                .map(|input| input.read(cx).value().trim().to_string())
+                .unwrap_or_default();
+            slot.custom_args = if raw_args.is_empty() {
+                Vec::new()
+            } else {
+                match serde_json::from_str::<Vec<String>>(&raw_args) {
+                    Ok(args) => args,
+                    Err(error) => {
+                        self.agents.update(cx, |agents, _| {
+                            agents.error = Some(crate::errors::UiCommandError::from_chat_parts(
+                                "invalid_custom_args",
+                                format!(
+                                    "Argumentos Custom devem ser um array JSON de strings: {error}"
+                                ),
+                            ));
+                        });
+                        cx.notify();
+                        return;
+                    }
+                }
+            };
+        }
+        self.save_free_form_slot(slot, cx);
+    }
+
+    pub(crate) fn start_free_form_agent(&mut self, slot_id: String, cx: &mut Context<Self>) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let Some(input) = self.free_form_prompt_inputs.get(&slot_id).cloned() else {
+            return;
+        };
+        let prompt = input.read(cx).value().to_string();
+        if prompt.trim().is_empty() {
+            return;
+        }
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .start_free_form(StartFreeFormRunRequest {
+                    project_id,
+                    slot_id,
+                    prompt,
+                })
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(run) => {
+                        input.update(cx, |input, cx| input.set_value("", cx));
+                        model.agents.update(cx, |agents, _| {
+                            agents.apply_started_run(generation, run);
+                        });
+                    }
+                    Err(error) => {
+                        let message = error.presentable();
+                        if model
+                            .agents
+                            .update(cx, |agents, _| agents.fail(generation, error))
+                        {
+                            model.notices.push(HeaderNoticeKind::Error, message);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn resume_agent_run(
+        &mut self,
+        source_run_id: String,
+        slot_id: String,
+        role: Option<hvc_core::llm::AgentRole>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let input = role
+            .and_then(|role| self.agent_prompt_inputs.get(&role).cloned())
+            .or_else(|| self.free_form_prompt_inputs.get(&slot_id).cloned());
+        let Some(input) = input else {
+            return;
+        };
+        let prompt = input.read(cx).value().to_string();
+        if prompt.trim().is_empty() {
+            return;
+        }
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .resume_manual(ResumeManualRunRequest {
+                    project_id,
+                    source_run_id,
+                    prompt,
+                })
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(run) => {
+                        input.update(cx, |input, cx| input.set_value("", cx));
+                        model.agents.update(cx, |agents, _| {
+                            agents.apply_started_run(generation, run);
+                        });
+                    }
+                    Err(error) => {
+                        let message = error.presentable();
+                        if model
+                            .agents
+                            .update(cx, |agents, _| agents.fail(generation, error))
+                        {
+                            model.notices.push(HeaderNoticeKind::Error, message);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn request_delete_free_form_agent(
+        &mut self,
+        slot_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let confirmed = self.agents.update(cx, |agents, _| {
+            if agents.pending_free_form_delete.as_deref() == Some(slot_id.as_str()) {
+                agents.pending_free_form_delete = None;
+                true
+            } else {
+                agents.pending_free_form_delete = Some(slot_id.clone());
+                agents.notice = Some(
+                    "Confirme novamente: o histórico local deste agente livre será removido; a sessão no fornecedor não será excluída."
+                        .into(),
+                );
+                false
+            }
+        });
+        if !confirmed {
+            cx.notify();
+            return;
+        }
+        let Some(slot) = self.current_free_form_slot(&slot_id, cx) else {
+            return;
+        };
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        self.run_free_form_operation(
+            Box::pin(async move {
+                backend
+                    .delete_free_form(slot.project_id, slot.id, slot.version)
+                    .await?;
+                Ok("Agente livre e histórico local excluídos.".into())
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn archive_free_form_agent(&mut self, slot_id: String, cx: &mut Context<Self>) {
+        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
+            return;
+        };
+        slot.archived = true;
+        self.save_free_form_slot(slot, cx);
+    }
+
+    pub(crate) fn restore_free_form_agent(&mut self, slot_id: String, cx: &mut Context<Self>) {
+        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
+            return;
+        };
+        slot.archived = false;
+        self.save_free_form_slot(slot, cx);
+    }
+
+    pub(crate) fn request_clear_free_form_history(
+        &mut self,
+        slot_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let confirmed = self.agents.update(cx, |agents, _| {
+            if agents.pending_free_form_history_clear.as_deref() == Some(slot_id.as_str()) {
+                agents.pending_free_form_history_clear = None;
+                true
+            } else {
+                agents.pending_free_form_history_clear = Some(slot_id.clone());
+                agents.notice = Some(
+                    "Confirme novamente para apagar permanentemente o histórico local deste agente livre."
+                        .into(),
+                );
+                false
+            }
+        });
+        if !confirmed {
+            cx.notify();
+            return;
+        }
+        let Some(slot) = self.current_free_form_slot(&slot_id, cx) else {
+            return;
+        };
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        self.run_free_form_operation(
+            Box::pin(async move {
+                let count = backend.clear_slot_history(slot.project_id, slot.id).await?;
+                Ok(format!("Histórico removido: {count} execução(ões)."))
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn move_free_form_agent(
+        &mut self,
+        slot_id: String,
+        direction: isize,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some((project_id, mut ids)) = self.agents.read(cx).snapshot.as_ref().map(|snapshot| {
+            (
+                snapshot.project_id.clone(),
+                snapshot
+                    .free_form_slots
+                    .iter()
+                    .map(|item| item.slot.id.clone())
+                    .collect::<Vec<_>>(),
+            )
+        }) else {
+            return;
+        };
+        let Some(index) = ids.iter().position(|id| id == &slot_id) else {
+            return;
+        };
+        let target = index
+            .saturating_add_signed(direction)
+            .min(ids.len().saturating_sub(1));
+        if target == index {
+            return;
+        }
+        ids.swap(index, target);
+        self.run_free_form_operation(
+            Box::pin(async move {
+                backend.reorder_free_form(project_id, ids).await?;
+                Ok("Ordem dos agentes livres atualizada.".into())
+            }),
+            cx,
+        );
+    }
+
+    pub(crate) fn request_cancel_agent_run(
+        &mut self,
+        run_id: String,
+        pulsation_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(pulsation_id) = pulsation_id {
+            let confirmed = self.agents.update(cx, |agents, _| {
+                if agents.pending_pipeline_cancel.as_deref() == Some(pulsation_id.as_str()) {
+                    agents.pending_pipeline_cancel = None;
+                    true
+                } else {
+                    agents.pending_pipeline_cancel = Some(pulsation_id.clone());
+                    agents.notice = Some(
+                        "Stop automático cancela o pulso inteiro. Clique novamente para confirmar."
+                            .into(),
+                    );
+                    false
+                }
+            });
+            if confirmed {
+                self.cancel_agent_pipeline(pulsation_id, cx);
+            } else {
+                cx.notify();
+            }
+            return;
+        }
+
+        self.cancel_agent_run(run_id, cx);
+    }
+
+    fn cancel_agent_pipeline(&mut self, pulsation_id: String, cx: &mut Context<Self>) {
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.cancel_jobs(pulsation_id).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(cancelled) => {
+                        model.agents.update(cx, |agents, _| {
+                            if generation == agents.generation {
+                                agents.busy = false;
+                                agents.notice = Some(format!(
+                                    "Pulso cancelado; {cancelled} job(s) foram interrompidos."
+                                ));
+                            }
+                        });
+                        model.refresh_pulsations(cx);
+                        model.refresh_agents(cx);
+                    }
+                    Err(error) => {
+                        let error = crate::errors::UiCommandError::from_chat_parts(
+                            "cancel_pulsation",
+                            error,
+                        );
+                        let message = error.presentable();
+                        if model
+                            .agents
+                            .update(cx, |agents, _| agents.fail(generation, error))
+                        {
+                            model.notices.push(HeaderNoticeKind::Error, message);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn cancel_agent_run(&mut self, run_id: String, cx: &mut Context<Self>) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.cancel(run_id).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(true) => {
+                        model.agents.update(cx, |agents, _| {
+                            if generation == agents.generation {
+                                agents.busy = false;
+                                agents.notice = Some("Cancelamento solicitado.".into());
+                            }
+                        });
+                    }
+                    Ok(false) => {
+                        let error = crate::errors::UiCommandError::from_chat_parts(
+                            "not_running",
+                            "A execução já não está ativa.",
+                        );
+                        model.agents.update(cx, |agents, _| {
+                            agents.fail(generation, error);
+                        });
+                    }
+                    Err(error) => {
+                        model.agents.update(cx, |agents, _| {
+                            agents.fail(generation, error);
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn select_agent_history(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        direction: i32,
+        cx: &mut Context<Self>,
+    ) {
+        let target = {
+            let agents = self.agents.read(cx);
+            let Some(snapshot) = agents.snapshot.as_ref() else {
+                return;
+            };
+            let Some(agent) = snapshot
+                .agents
+                .iter()
+                .find(|agent| agent.config.agent_role == role)
+            else {
+                return;
+            };
+            let current = agents
+                .selected_run_by_role
+                .get(&role)
+                .and_then(|id| agent.recent_runs.iter().position(|run| &run.id == id))
+                .unwrap_or(0);
+            let target_index = if direction > 0 {
+                current.saturating_add(1)
+            } else {
+                current.saturating_sub(1)
+            };
+            agent
+                .recent_runs
+                .get(target_index)
+                .map(|run| run.id.clone())
+        };
+        let Some(run_id) = target else {
+            return;
+        };
+        if self.agents.read(cx).events_by_run.contains_key(&run_id) {
+            self.agents.update(cx, |agents, _| {
+                agents.selected_run_by_role.insert(role, run_id);
+            });
+            cx.notify();
+            return;
+        }
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.events(run_id.clone(), 0, 500).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(events) => {
+                        model.agents.update(cx, |agents, _| {
+                            agents.apply_run_events(generation, role, run_id, events);
+                        });
+                    }
+                    Err(error) => {
+                        model.agents.update(cx, |agents, _| {
+                            agents.fail(generation, error);
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn select_free_form_history(
+        &mut self,
+        slot_id: String,
+        direction: i32,
+        cx: &mut Context<Self>,
+    ) {
+        let target = {
+            let agents = self.agents.read(cx);
+            let Some(snapshot) = agents.snapshot.as_ref() else {
+                return;
+            };
+            let Some(slot) = snapshot
+                .free_form_slots
+                .iter()
+                .find(|item| item.slot.id == slot_id)
+            else {
+                return;
+            };
+            let current = agents
+                .selected_run_by_slot
+                .get(&slot_id)
+                .and_then(|id| slot.recent_runs.iter().position(|run| &run.id == id))
+                .unwrap_or(0);
+            let target_index = if direction > 0 {
+                current.saturating_add(1)
+            } else {
+                current.saturating_sub(1)
+            };
+            slot.recent_runs.get(target_index).map(|run| run.id.clone())
+        };
+        let Some(run_id) = target else {
+            return;
+        };
+        if self.agents.read(cx).events_by_run.contains_key(&run_id) {
+            self.agents.update(cx, |agents, _| {
+                agents.selected_run_by_slot.insert(slot_id, run_id);
+            });
+            cx.notify();
+            return;
+        }
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.events(run_id.clone(), 0, 500).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(events) => {
+                        model.agents.update(cx, |agents, _| {
+                            agents.apply_slot_run_events(generation, slot_id, run_id, events);
+                        });
+                    }
+                    Err(error) => {
+                        model.agents.update(cx, |agents, _| {
+                            agents.fail(generation, error);
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn request_clear_agent_history(
+        &mut self,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        let confirmed = self.agents.update(cx, |agents, _| {
+            if agents.pending_history_clear == Some(role) {
+                agents.pending_history_clear = None;
+                true
+            } else {
+                agents.pending_history_clear = Some(role);
+                agents.notice = Some(
+                    "Confirme novamente para apagar permanentemente o histórico deste agente."
+                        .to_string(),
+                );
+                false
+            }
+        });
+        if !confirmed {
+            cx.notify();
+            return;
+        }
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.clear_history(project_id, Some(role)).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(count) => {
+                        model.agents.update(cx, |agents, _| {
+                            if agents.generation == generation {
+                                agents.busy = false;
+                                agents.notice =
+                                    Some(format!("Histórico removido: {count} execução(ões)."));
+                            }
+                        });
+                        model.refresh_agents(cx);
+                    }
+                    Err(error) => {
+                        model.agents.update(cx, |agents, _| {
+                            agents.fail(generation, error);
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn resolve_agent_cli_fallback(
+        &mut self,
+        checkpoint_id: String,
+        expected_state_version: u64,
+        decision: CliFallbackDecision,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .resolve_fallback(ResolveCliFallbackRequest {
+                    checkpoint_id,
+                    expected_state_version,
+                    decision,
+                })
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(_) => {
+                        model.agents.update(cx, |agents, _| {
+                            if agents.generation == generation {
+                                agents.busy = false;
+                                agents.notice = Some(
+                                    match decision {
+                                        CliFallbackDecision::UseApi => {
+                                            "Fallback para API autorizado para esta pulsação."
+                                        }
+                                        CliFallbackDecision::RetryCli => {
+                                            "Nova tentativa da CLI agendada."
+                                        }
+                                        CliFallbackDecision::Cancel => "Pulsação cancelada.",
+                                    }
+                                    .to_string(),
+                                );
+                            }
+                        });
+                        model.refresh_agents(cx);
+                        model.refresh_pulsations(cx);
+                    }
+                    Err(error) => {
+                        let message = error.presentable();
+                        if model
+                            .agents
+                            .update(cx, |agents, _| agents.fail(generation, error))
+                        {
+                            model.notices.push(HeaderNoticeKind::Error, message);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn request_cancel_agent_cli_fallback(
+        &mut self,
+        checkpoint_id: String,
+        expected_state_version: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let confirmed = self.agents.update(cx, |agents, _| {
+            if agents.pending_fallback_cancel.as_deref() == Some(checkpoint_id.as_str()) {
+                agents.pending_fallback_cancel = None;
+                true
+            } else {
+                agents.pending_fallback_cancel = Some(checkpoint_id.clone());
+                agents.notice = Some(
+                    "Confirme novamente para cancelar toda a pulsação; a ação não desfaz arquivos já publicados."
+                        .to_string(),
+                );
+                false
+            }
+        });
+        if confirmed {
+            self.resolve_agent_cli_fallback(
+                checkpoint_id,
+                expected_state_version,
+                CliFallbackDecision::Cancel,
+                cx,
+            );
+        } else {
+            cx.notify();
+        }
+    }
+
     pub(crate) fn refresh_settings(&mut self, cx: &mut Context<Self>) {
+        if self.lifecycle.is_disposed() {
+            return;
+        }
         let Some(backend) = self.settings_backend.clone() else {
             return;
         };
@@ -1935,9 +4057,13 @@ impl AppModel {
         self.settings_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.snapshot().await;
             let _ = this.update(cx, |model, cx| {
+                if model.lifecycle.is_disposed() {
+                    return;
+                }
                 match result {
                     Ok(snapshot) => {
                         let embedding_model = snapshot.config.embedding_model.clone();
+                        model.fill_preparation_threshold(&snapshot, cx);
                         let applied = model.settings.update(cx, |settings, _| {
                             settings.apply_snapshot(generation, snapshot)
                         });
@@ -1971,31 +4097,39 @@ impl AppModel {
         operation: crate::settings::SettingsFuture<String>,
         cx: &mut Context<Self>,
     ) {
+        if self.lifecycle.is_disposed() {
+            return;
+        }
         let generation = self
             .settings
             .update(cx, |settings, _| settings.begin(false));
         cx.notify();
         self.settings_task = Some(cx.spawn(async move |this, cx| {
             let result = operation.await;
-            let _ = this.update(cx, |model, cx| match result {
-                Ok(message) => {
-                    let current = model.settings.read(cx).generation;
-                    if current == generation {
-                        model.settings.update(cx, |settings, _| {
-                            settings.notice = Some(message.into());
-                        });
-                        model.refresh_settings(cx);
-                    }
+            let _ = this.update(cx, |model, cx| {
+                if model.lifecycle.is_disposed() {
+                    return;
                 }
-                Err(error) => {
-                    let message = error.presentable();
-                    if model
-                        .settings
-                        .update(cx, |settings, _| settings.fail(generation, error))
-                    {
-                        model.notices.push(HeaderNoticeKind::Error, message);
+                match result {
+                    Ok(message) => {
+                        let current = model.settings.read(cx).generation;
+                        if current == generation {
+                            model.settings.update(cx, |settings, _| {
+                                settings.notice = Some(message.into());
+                            });
+                            model.refresh_settings(cx);
+                        }
                     }
-                    cx.notify();
+                    Err(error) => {
+                        let message = error.presentable();
+                        if model
+                            .settings
+                            .update(cx, |settings, _| settings.fail(generation, error))
+                        {
+                            model.notices.push(HeaderNoticeKind::Error, message);
+                        }
+                        cx.notify();
+                    }
                 }
             });
         }));
@@ -2106,10 +4240,7 @@ impl AppModel {
                 let response = backend
                     .reindex(workspace_path, (!model.is_empty()).then_some(model))
                     .await?;
-                Ok(format!(
-                    "Reindexação concluída: {} indexado(s), {} ignorado(s), {} falha(s).",
-                    response.indexed_count, response.skipped_count, response.failed_count
-                ))
+                Ok(format!("Reconciliação de embeddings solicitada para {}. O supervisor executará os deltas em segundo plano.", response.workspace_path))
             }),
             cx,
         );
@@ -2132,6 +4263,171 @@ impl AppModel {
         self.update_runtime_config(
             runtime_config_update().with_embedding_top_k(next),
             "Top K de embeddings atualizado.",
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_adaptive_context_mode(&mut self, cx: &mut Context<Self>) {
+        let current = self
+            .settings
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.config.adaptive_context_mode)
+            .unwrap_or(AdaptiveContextMode::Shadow);
+        let next = match current {
+            AdaptiveContextMode::Off => AdaptiveContextMode::Shadow,
+            AdaptiveContextMode::Shadow => AdaptiveContextMode::On,
+            AdaptiveContextMode::On => AdaptiveContextMode::Off,
+        };
+        self.update_runtime_config(
+            runtime_config_update().with_adaptive_context_mode(next),
+            "Modo de contexto adaptativo atualizado.",
+            cx,
+        );
+    }
+
+    fn update_dynamic_context_policy(
+        &mut self,
+        update: impl FnOnce(&mut DynamicContextPolicy),
+        cx: &mut Context<Self>,
+    ) {
+        let mut policy = self
+            .settings
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.config.dynamic_context_policy.clone())
+            .unwrap_or_default();
+        update(&mut policy);
+        self.update_runtime_config(
+            runtime_config_update().with_dynamic_context_policy(policy.sanitized()),
+            "Política adaptativa atualizada.",
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_dynamic_initial_k(&mut self, cx: &mut Context<Self>) {
+        self.update_dynamic_context_policy(
+            |policy| {
+                policy.initial_k = if policy.initial_k >= policy.max_k {
+                    1
+                } else {
+                    policy.initial_k + 1
+                };
+            },
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_dynamic_max_k(&mut self, cx: &mut Context<Self>) {
+        self.update_dynamic_context_policy(
+            |policy| {
+                policy.max_k = if policy.max_k >= 3 {
+                    1
+                } else {
+                    policy.max_k + 1
+                };
+                policy.initial_k = policy.initial_k.min(policy.max_k);
+            },
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_dynamic_min_similarity(&mut self, cx: &mut Context<Self>) {
+        self.update_dynamic_context_policy(
+            |policy| {
+                policy.min_similarity = match policy.min_similarity {
+                    value if value < 0.60 => 0.65,
+                    value if value < 0.70 => 0.75,
+                    value if value < 0.80 => 0.85,
+                    _ => 0.50,
+                };
+            },
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_dynamic_min_candidates(&mut self, cx: &mut Context<Self>) {
+        self.update_dynamic_context_policy(
+            |policy| {
+                policy.min_candidates_count =
+                    if policy.min_candidates_count >= policy.max_notes_budget {
+                        1
+                    } else {
+                        policy.min_candidates_count + 1
+                    };
+            },
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_dynamic_max_notes(&mut self, cx: &mut Context<Self>) {
+        self.update_dynamic_context_policy(
+            |policy| {
+                policy.max_notes_budget = match policy.max_notes_budget {
+                    1..=4 => 8,
+                    5..=8 => 12,
+                    9..=12 => 20,
+                    _ => 4,
+                };
+            },
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_dynamic_beam_width(&mut self, cx: &mut Context<Self>) {
+        self.update_dynamic_context_policy(
+            |policy| {
+                policy.beam_width = match policy.beam_width {
+                    1..=4 => 8,
+                    5..=8 => 12,
+                    _ => 4,
+                };
+            },
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_dynamic_max_source_files(&mut self, cx: &mut Context<Self>) {
+        self.update_dynamic_context_policy(
+            |policy| {
+                policy.max_source_files = match policy.max_source_files {
+                    1..=3 => 5,
+                    4..=5 => 8,
+                    6..=8 => 12,
+                    _ => 3,
+                };
+            },
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_dynamic_max_code_chars(&mut self, cx: &mut Context<Self>) {
+        self.update_dynamic_context_policy(
+            |policy| {
+                policy.max_code_chars = match policy.max_code_chars {
+                    0..=16_000 => 32_000,
+                    16_001..=32_000 => 48_000,
+                    32_001..=48_000 => 80_000,
+                    _ => 16_000,
+                };
+            },
+            cx,
+        );
+    }
+
+    pub(crate) fn cycle_dynamic_timeout(&mut self, cx: &mut Context<Self>) {
+        self.update_dynamic_context_policy(
+            |policy| {
+                policy.timeout_ms = match policy.timeout_ms {
+                    0..=500 => 1_000,
+                    501..=1_000 => 1_500,
+                    1_001..=1_500 => 3_000,
+                    1_501..=3_000 => 5_000,
+                    _ => 500,
+                };
+            },
             cx,
         );
     }
@@ -2531,13 +4827,14 @@ impl AppModel {
     }
 
     pub(crate) fn cycle_binding_role(&mut self, cx: &mut Context<Self>) {
-        const ROLES: [&str; 6] = [
+        const ROLES: [&str; 7] = [
             "intake_router",
             "task_specifier",
             "contract_agent",
             "backend_agent",
             "test_agent",
             "integrator",
+            "learning_agent",
         ];
         self.settings.update(cx, |settings, _| {
             let current = ROLES
@@ -2550,13 +4847,14 @@ impl AppModel {
     }
 
     pub(crate) fn cycle_binding_stage(&mut self, cx: &mut Context<Self>) {
-        const STAGES: [&str; 6] = [
+        const STAGES: [&str; 7] = [
             "Intake",
             "Specification",
             "Contract",
             "Code",
             "Test",
             "Integrator",
+            "Learning",
         ];
         self.settings.update(cx, |settings, _| {
             let current = STAGES
@@ -2746,6 +5044,9 @@ impl AppModel {
                                 model.restore_last_session(cx);
                                 model.refresh_settings(cx);
                                 model.refresh_logs(cx);
+                                if model.active_view == AppView::Agents {
+                                    model.refresh_agents(cx);
+                                }
                             })
                             .is_err()
                         {
@@ -2878,6 +5179,8 @@ impl AppModel {
     }
 
     fn apply_restored_session(&mut self, restored: RestoredSession, cx: &mut Context<Self>) {
+        self.brownfield_task.take();
+        self.brownfield_generation = self.brownfield_generation.saturating_add(1);
         self.hydrating = true;
         self.suppress_editor_sync = true;
         let session = restored.session.as_ref();
@@ -2924,6 +5227,9 @@ impl AppModel {
                 .unwrap_or(WorkspaceViewMode::Editor);
             workspace.context_drawer_open = session.is_none_or(|value| value.context_drawer_open);
             workspace.diff_expanded = false;
+            workspace.brownfield = crate::workspace::BrownfieldOnboardingModel::from_status(
+                restored.brownfield_status.clone(),
+            );
 
             if let Some(active_path) = &active_path
                 && let Some(tab) = workspace
@@ -2981,6 +5287,7 @@ impl AppModel {
         self.refresh_pulsations_with_preferred(preferred_pulsation_id, cx);
         self.refresh_vault(true, cx);
         match active_view {
+            AppView::Agents => self.refresh_agents(cx),
             AppView::Settings => self.refresh_settings(cx),
             AppView::Logs => self.refresh_logs(cx),
             _ => {}
@@ -3104,17 +5411,23 @@ impl AppModel {
         self.event_task.take();
         self.polling_task.take();
         self.workspace_task.take();
+        self.brownfield_task.take();
         self.file_tasks.clear();
         self.autosave_tasks.clear();
-        self.hitl_task.take();
+        let hitl = self.hitl_task.take();
         self.pulsations_task.take();
+        let reconciliation = self.reconciliation_task.take();
+        let preparation_action = self.preparation_action_task.take();
+        self.artifact_preview_task.take();
         self.pulsation_artifacts_task.take();
         self.vault_refresh_task.take();
         self.vault_search_task.take();
         self.vault_rename_task.take();
         self.vault_context_task.take();
         self.vault_document_tasks.clear();
-        self.settings_task.take();
+        let settings = self.settings_task.take();
+        self.agents_task.take();
+        self.model_catalog_task.take();
         self.logs_task.take();
         self.logs_resync_tasks.clear();
         self.chat_task.take();
@@ -3130,6 +5443,19 @@ impl AppModel {
             .flatten();
         let persistence = self.session_persistence.clone();
         cx.spawn(async move |this, cx| {
+            // UI-originated confirmations/publications retain ownership through close as well.
+            if let Some(task) = hitl {
+                task.await;
+            }
+            if let Some(task) = reconciliation {
+                task.await;
+            }
+            if let Some(task) = preparation_action {
+                task.await;
+            }
+            if let Some(task) = settings {
+                task.await;
+            }
             let result = match (persistence, request) {
                 (Some(persistence), Some(request)) => Some(persistence.save(request).await),
                 _ => None,
@@ -3161,11 +5487,28 @@ impl AppModel {
             }
             AppEvent::Llm(envelope) => {
                 let execution_id = envelope.execution_id.clone();
+                self.agents
+                    .update(cx, |agents, _| agents.record_llm(&envelope));
                 let classification = self.logs.update(cx, |logs, _| logs.record_llm(envelope));
                 if classification == SequenceClassification::Gap {
                     self.needs_resync = true;
                     self.status = "Lacuna LLM detectada; recarregando execução persistida".into();
                     self.resync_llm_execution(execution_id, cx);
+                }
+            }
+            AppEvent::Terminal(envelope) => {
+                let terminal = envelope.run.status.is_terminal()
+                    || envelope.run.status == TerminalRunStatus::AwaitingFallback;
+                let gap = self
+                    .agents
+                    .update(cx, |agents, _| agents.record_event(*envelope));
+                if gap {
+                    self.needs_resync = true;
+                    self.status =
+                        "Lacuna no terminal detectada; recarregando histórico persistido".into();
+                }
+                if (terminal || gap) && self.active_view == AppView::Agents {
+                    self.refresh_agents(cx);
                 }
             }
             AppEvent::Chat(envelope) => self.handle_chat_event(envelope, cx),
@@ -3221,6 +5564,8 @@ fn runtime_config_update() -> UpdateAgentRuntimeConfigRequest {
         embedding_model: None,
         embedding_top_k: None,
         routing_v2_mode: None,
+        adaptive_context_mode: None,
+        dynamic_context_policy: None,
     }
 }
 
@@ -3230,6 +5575,8 @@ trait RuntimeConfigUpdateExt {
     fn with_embedding_enabled(self, enabled: bool) -> Self;
     fn with_embedding_model(self, model: String) -> Self;
     fn with_embedding_top_k(self, top_k: usize) -> Self;
+    fn with_adaptive_context_mode(self, mode: AdaptiveContextMode) -> Self;
+    fn with_dynamic_context_policy(self, policy: DynamicContextPolicy) -> Self;
 }
 
 impl RuntimeConfigUpdateExt for UpdateAgentRuntimeConfigRequest {
@@ -3257,6 +5604,16 @@ impl RuntimeConfigUpdateExt for UpdateAgentRuntimeConfigRequest {
         self.embedding_top_k = Some(top_k);
         self
     }
+
+    fn with_adaptive_context_mode(mut self, mode: AdaptiveContextMode) -> Self {
+        self.adaptive_context_mode = Some(mode);
+        self
+    }
+
+    fn with_dynamic_context_policy(mut self, policy: DynamicContextPolicy) -> Self {
+        self.dynamic_context_policy = Some(policy);
+        self
+    }
 }
 
 fn load_workspace(core: Arc<AppCore>, path: String) -> Result<RestoredSession, String> {
@@ -3271,6 +5628,13 @@ fn load_workspace(core: Arc<AppCore>, path: String) -> Result<RestoredSession, S
         })
         .map_err(|error| error.to_string())?
         .project;
+    let brownfield_status = match opened.kind {
+        WorkspaceKind::Greenfield => None,
+        WorkspaceKind::Brownfield => Some(
+            core.get_brownfield_onboarding(&project.id)
+                .map_err(|error| error.message)?,
+        ),
+    };
     let session = core
         .persistence()
         .load_ui_session(LoadUiSessionRequest {
@@ -3290,13 +5654,20 @@ fn load_workspace(core: Arc<AppCore>, path: String) -> Result<RestoredSession, S
         })
         .unwrap_or_default();
 
+    let notice = opened.greenfield.map(|status| status.message).or_else(|| {
+        (opened.kind == WorkspaceKind::Brownfield).then(|| {
+            "Workspace existente detectado; escolha se deseja iniciar o mapeamento gradual."
+                .to_string()
+        })
+    });
     Ok(RestoredSession {
         project_id: project.id,
         root_path: opened.root_path,
         tree: opened.tree,
         session,
         tabs,
-        notice: Some(opened.greenfield.message),
+        notice,
+        brownfield_status,
     })
 }
 
@@ -3373,6 +5744,8 @@ mod tests {
     struct RecordingWorkspaceBackend {
         reads: Arc<Mutex<Vec<String>>>,
         writes: Arc<Mutex<Vec<(String, String, String)>>>,
+        consent_requests: Arc<Mutex<Vec<(String, bool)>>>,
+        ignored_requests: Arc<Mutex<Vec<(String, String, bool)>>>,
         read_snapshot: WorkspaceFileSnapshot,
         write_result: Arc<Mutex<Result<String, WorkspaceOperationError>>>,
     }
@@ -3382,6 +5755,8 @@ mod tests {
             Self {
                 reads: Arc::new(Mutex::new(Vec::new())),
                 writes: Arc::new(Mutex::new(Vec::new())),
+                consent_requests: Arc::new(Mutex::new(Vec::new())),
+                ignored_requests: Arc::new(Mutex::new(Vec::new())),
                 read_snapshot: WorkspaceFileSnapshot {
                     content: "# Disk".into(),
                     revision: "rev-1".into(),
@@ -3433,9 +5808,64 @@ mod tests {
                 .clone();
             Box::pin(async move { result })
         }
+
+        fn set_brownfield_consent(
+            &self,
+            project_id: String,
+            consent: bool,
+        ) -> WorkspaceFuture<hvc_core::orchestration::brownfield::BrownfieldOnboardingResult>
+        {
+            self.consent_requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((project_id.clone(), consent));
+            Box::pin(async move {
+                Ok(
+                    hvc_core::orchestration::brownfield::BrownfieldOnboardingResult {
+                        status: BrownfieldOnboardingStatus {
+                            project_id,
+                            consent: if consent {
+                                hvc_core::orchestration::brownfield::BrownfieldConsentState::Granted
+                            } else {
+                                hvc_core::orchestration::brownfield::BrownfieldConsentState::Declined
+                            },
+                            ignored_paths: Vec::new(),
+                            coverage: None,
+                        },
+                        created_paths: Vec::new(),
+                        inventory: None,
+                    },
+                )
+            })
+        }
+
+        fn set_brownfield_ignored(
+            &self,
+            project_id: String,
+            relative_path: String,
+            ignored: bool,
+        ) -> WorkspaceFuture<BrownfieldOnboardingStatus> {
+            self.ignored_requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((project_id.clone(), relative_path.clone(), ignored));
+            Box::pin(async move {
+                Ok(BrownfieldOnboardingStatus {
+                    project_id,
+                    consent: hvc_core::orchestration::brownfield::BrownfieldConsentState::Granted,
+                    ignored_paths: if ignored {
+                        vec![relative_path]
+                    } else {
+                        Vec::new()
+                    },
+                    coverage: None,
+                })
+            })
+        }
     }
 
     struct RecordingPulsationsBackend {
+        actions: Arc<Mutex<Vec<crate::pulsations::PulsationAction>>>,
         snapshot_calls: Arc<Mutex<usize>>,
         artifact_calls: Arc<Mutex<Vec<String>>>,
         create_calls: Arc<Mutex<Vec<(String, String)>>>,
@@ -3447,14 +5877,20 @@ mod tests {
     impl RecordingPulsationsBackend {
         fn new() -> Self {
             Self {
+                actions: Arc::new(Mutex::new(Vec::new())),
                 snapshot_calls: Arc::new(Mutex::new(0)),
                 artifact_calls: Arc::new(Mutex::new(Vec::new())),
                 create_calls: Arc::new(Mutex::new(Vec::new())),
                 cancel_calls: Arc::new(Mutex::new(Vec::new())),
                 snapshot: Arc::new(Mutex::new(PulsationRuntimeSnapshot {
+                    details: Vec::new(),
+                    coordination: None,
+                    main_agents_count: 0,
+                    hitl_checkpoints: Vec::new(),
                     pulsations: vec![test_pulsation()],
                     hitl_waiting_count: 0,
                     background_agents_count: 1,
+                    brownfield_coverage: None,
                 })),
                 artifacts: Arc::new(Mutex::new(vec![test_artifact("Plan")])),
             }
@@ -3462,6 +5898,19 @@ mod tests {
     }
 
     impl PulsationsBackend for RecordingPulsationsBackend {
+        fn action(&self, action: crate::pulsations::PulsationAction) -> PulsationsFuture<()> {
+            self.actions.lock().unwrap().push(action);
+            Box::pin(async { Ok(()) })
+        }
+        fn artifact_content(&self, _pulse: String, _artifact: String) -> PulsationsFuture<String> {
+            Box::pin(async { Ok("Conteúdo persistido da fixture".into()) })
+        }
+        fn reconcile(
+            &self,
+            _request: hvc_core::orchestration::ConfirmBaseReconciliationRequest,
+        ) -> PulsationsFuture<()> {
+            Box::pin(async { Ok(()) })
+        }
         fn runtime_snapshot(
             &self,
             _project_id: String,
@@ -3593,6 +6042,7 @@ mod tests {
 
     fn test_pulsation() -> Pulsation {
         Pulsation {
+            terminal_reason: None,
             id: "pulse-1".into(),
             project_id: "project-1".into(),
             feature_name: "Login".into(),
@@ -3637,9 +6087,12 @@ mod tests {
                 outgoing_paths: Vec::new(),
                 backlink_paths: Vec::new(),
                 schema_warnings: Vec::new(),
+                source_files: Vec::new(),
+                test_files: Vec::new(),
             }],
             edges: Vec::new(),
             broken_links: Vec::new(),
+            broken_file_references: Vec::new(),
             indexed_at: "now".into(),
         }
     }
@@ -3722,7 +6175,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn navigates_all_six_views(cx: &mut TestAppContext) {
+    fn navigates_all_seven_views(cx: &mut TestAppContext) {
         let model = cx.new(AppModel::new_for_test);
         for view in AppView::ALL {
             model.update(cx, |model, cx| model.select_view(view, cx));
@@ -3740,6 +6193,7 @@ mod tests {
             assert_eq!(model.pulsations.read(cx).running_jobs, 0);
             assert!(model.vault.read(cx).index.is_none());
             assert!(!model.chat.read(cx).streaming);
+            assert!(model.agents.read(cx).snapshot.is_none());
             assert!(model.settings.read(cx).snapshot.is_none());
             assert!(model.logs.read(cx).events.is_empty());
         });
@@ -3866,6 +6320,7 @@ mod tests {
                         load_error: None,
                     }],
                     notice: None,
+                    brownfield_status: None,
                 },
                 cx,
             );
@@ -3949,6 +6404,7 @@ mod tests {
                     }),
                     tabs: Vec::new(),
                     notice: None,
+                    brownfield_status: None,
                 },
                 cx,
             );
@@ -3960,6 +6416,87 @@ mod tests {
             assert!(model.navigation.read(cx).sidebar_collapsed);
             assert!(!model.workspace.read(cx).context_drawer_open);
             assert!(!model.workspace.read(cx).diff_expanded);
+        });
+    }
+
+    #[gpui::test]
+    fn brownfield_consent_action_is_project_scoped_and_updates_visible_state(
+        cx: &mut TestAppContext,
+    ) {
+        let backend = Arc::new(RecordingWorkspaceBackend::successful());
+        let requests = Arc::clone(&backend.consent_requests);
+        let model = cx.new(|cx| AppModel::new_for_test_with_workspace_backend(backend, cx));
+        model.update(cx, |model, cx| {
+            model.apply_restored_session(
+                RestoredSession {
+                    project_id: "project-brownfield".into(),
+                    root_path: "C:\\existing".into(),
+                    tree: Vec::new(),
+                    session: None,
+                    tabs: Vec::new(),
+                    notice: None,
+                    brownfield_status: Some(BrownfieldOnboardingStatus {
+                        project_id: "project-brownfield".into(),
+                        consent:
+                            hvc_core::orchestration::brownfield::BrownfieldConsentState::NotDecided,
+                        ignored_paths: Vec::new(),
+                        coverage: None,
+                    }),
+                },
+                cx,
+            );
+            model.set_brownfield_mapping_enabled(true, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice(),
+            &[("project-brownfield".to_string(), true)]
+        );
+        cx.read(|cx| {
+            let workspace = model.read(cx).workspace.read(cx);
+            assert_eq!(
+                workspace.brownfield.state,
+                BrownfieldOnboardingState::Enabled
+            );
+            assert!(!workspace.brownfield.busy);
+            assert!(workspace.brownfield.error.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn brownfield_ignore_action_is_scoped_to_the_selected_source(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingWorkspaceBackend::successful());
+        let requests = Arc::clone(&backend.ignored_requests);
+        let model = cx.new(|cx| AppModel::new_for_test_with_workspace_backend(backend, cx));
+        model.update(cx, |model, cx| {
+            model.workspace.update(cx, |workspace, _| {
+                workspace.project_id = Some("project-brownfield".into());
+                workspace.active_relative_path = Some("src/lib.rs".into());
+                workspace.brownfield.state = BrownfieldOnboardingState::Enabled;
+            });
+            model.set_active_brownfield_ignored(true, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice(),
+            &[(
+                "project-brownfield".to_string(),
+                "src/lib.rs".to_string(),
+                true,
+            )]
+        );
+        cx.read(|cx| {
+            let workspace = model.read(cx).workspace.read(cx);
+            assert_eq!(workspace.brownfield.ignored_paths, ["src/lib.rs"]);
+            assert!(!workspace.brownfield.busy);
         });
     }
 
@@ -4142,6 +6679,303 @@ mod tests {
         });
     }
 
+    fn preparation_detail(
+        with_questions: bool,
+    ) -> hvc_core::orchestration::PulsationCoordinationSnapshot {
+        use hvc_core::orchestration::*;
+        PulsationCoordinationSnapshot {
+            description_editable: !with_questions,
+            context_disposition: None,
+            diagnostic: None,
+            pulsation_id: "pulse-1".into(),
+            project_id: "project-1".into(),
+            queue_sequence: 1,
+            pipeline_version: 2,
+            input_revision: 3,
+            state_version: 9,
+            stage: if with_questions {
+                PulsationStage::Specification
+            } else {
+                PulsationStage::Intake
+            },
+            status: if with_questions {
+                PulsationStatus::Checkpoint
+            } else {
+                PulsationStatus::Planning
+            },
+            blocking_reason: None,
+            preparation: PreparationSnapshot {
+                assessment: None,
+                description_review: DescriptionReviewState::Pending,
+                prespec_state: PreSpecState::NotScheduled,
+                context_artifact_id: None,
+                skip_reason: None,
+            },
+            questions: with_questions.then(|| SpecificationQuestionSet {
+                id: "questions-1".into(),
+                checkpoint_id: "clarification-1".into(),
+                fence: ExecutionFence {
+                    project_id: "project-1".into(),
+                    pulsation_id: Some("pulse-1".into()),
+                    input_revision: Some(3),
+                    job_id: "job-1".into(),
+                    generation: 2,
+                    state_version: 9,
+                },
+                conversation_id: "conversation-1".into(),
+                questions: vec![SpecificationQuestion {
+                    id: "token".into(),
+                    question: "Qual token?".into(),
+                    rationale: "Definir contrato".into(),
+                }],
+            }),
+            learning: LearningState::Unavailable,
+            learning_run: None,
+            artifact_ids: vec![],
+        }
+    }
+
+    #[gpui::test]
+    fn clarification_ui_preserves_drafts_and_submits_the_displayed_fence_once(
+        cx: &mut TestAppContext,
+    ) {
+        let backend = Arc::new(RecordingPulsationsBackend::new());
+        backend.snapshot.lock().unwrap().details = vec![preparation_detail(true)];
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                backend.clone(),
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |m, cx| {
+            configure_domain_workspace(m, cx);
+            m.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        model.update(cx, |m, cx| {
+            assert!(
+                m.pulsations
+                    .update(cx, |p, _| p.hitl.begin(HitlDecision::Approve))
+                    .is_none()
+            );
+            m.specification_answer_inputs[0]
+                .1
+                .update(cx, |i, cx| i.set_value("JWT assinado", cx));
+            m.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        model.update(cx, |m, cx| {
+            assert_eq!(
+                m.specification_answer_inputs[0].1.read(cx).value(),
+                "JWT assinado"
+            );
+            m.answer_specification(cx);
+            m.answer_specification(cx);
+        });
+        cx.run_until_parked();
+        let actions = backend.actions.lock().unwrap();
+        assert_eq!(actions.len(), 1);
+        let crate::pulsations::PulsationAction::Answer(request) = &actions[0] else {
+            panic!("answer action")
+        };
+        assert_eq!(request.question_set_id, "questions-1");
+        assert_eq!(request.expected_input_revision, 3);
+        assert_eq!(request.expected_state_version, 9);
+        assert_eq!(request.answers[0].answer, "JWT assinado");
+        drop(actions);
+        backend.snapshot.lock().unwrap().details[0]
+            .questions
+            .as_mut()
+            .unwrap()
+            .id = "questions-2".into();
+        model.update(cx, AppModel::refresh_pulsations);
+        cx.run_until_parked();
+        cx.read(|cx| {
+            assert!(
+                model.read(cx).specification_answer_inputs[0]
+                    .1
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            )
+        });
+    }
+
+    #[gpui::test]
+    fn learning_ui_submits_the_displayed_generation_once(cx: &mut TestAppContext) {
+        use hvc_core::orchestration::{LearningRunSnapshot, LearningState};
+        let backend = Arc::new(RecordingPulsationsBackend::new());
+        let mut detail = preparation_detail(false);
+        detail.learning = LearningState::DeferredBudget;
+        detail.learning_run = Some(LearningRunSnapshot {
+            job_id: "learning-1".into(),
+            generation: 7,
+            budget_calls: 3,
+            total_calls: 3,
+            budget_grants: 1,
+            artifact_id: None,
+            diagnostic: Some("budget".into()),
+            context_audit: vec![],
+            graph_proposals: vec![],
+        });
+        backend.snapshot.lock().unwrap().details = vec![detail];
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                backend.clone(),
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |m, cx| {
+            configure_domain_workspace(m, cx);
+            m.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        model.update(cx, |m, cx| {
+            m.learning_action(true, cx);
+            m.learning_action(true, cx);
+        });
+        cx.run_until_parked();
+        {
+            let actions = backend.actions.lock().unwrap();
+            assert_eq!(actions.len(), 1);
+            let crate::pulsations::PulsationAction::RetryLearning(request) = &actions[0] else {
+                panic!("retry learning");
+            };
+            assert_eq!(request.job_id, "learning-1");
+            assert_eq!(request.expected_generation, 7);
+        }
+        model.update(cx, |m, cx| m.learning_action(false, cx));
+        cx.run_until_parked();
+        assert!(matches!(
+            backend.actions.lock().unwrap()[1],
+            crate::pulsations::PulsationAction::DismissLearning(_)
+        ));
+    }
+
+    #[gpui::test]
+    fn learning_graph_ui_requires_and_submits_each_individual_decision(cx: &mut TestAppContext) {
+        use hvc_core::orchestration::{
+            LearningGraphDecision, LearningGraphProposalSnapshot, LearningRunSnapshot,
+            LearningState,
+        };
+        let backend = Arc::new(RecordingPulsationsBackend::new());
+        let proposal = |id: &str| LearningGraphProposalSnapshot {
+            id: id.into(),
+            candidate_id: format!("candidate-{id}"),
+            source_path: "knowledge/obsidian/features/root.md".into(),
+            target_path: format!("knowledge/obsidian/tests/{id}.md"),
+            relation: "tested-by".into(),
+            preview_diff: format!("+ {id}"),
+            rationale: "evidência operacional".into(),
+            evidence_ids: vec![format!("evidence-{id}")],
+            decision: "pending".into(),
+            publication_state: "not_requested".into(),
+            diagnostic: None,
+        };
+        let mut detail = preparation_detail(false);
+        detail.learning = LearningState::Published;
+        detail.learning_run = Some(LearningRunSnapshot {
+            job_id: "learning-graph".into(),
+            generation: 11,
+            budget_calls: 1,
+            total_calls: 1,
+            budget_grants: 1,
+            artifact_id: Some("report".into()),
+            diagnostic: None,
+            context_audit: vec![],
+            graph_proposals: vec![proposal("one"), proposal("two")],
+        });
+        backend.snapshot.lock().unwrap().details = vec![detail];
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                backend.clone(),
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |model, cx| {
+            configure_domain_workspace(model, cx);
+            model.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+
+        model.update(cx, |model, cx| model.submit_learning_graph_review(cx));
+        assert!(backend.actions.lock().unwrap().is_empty());
+        model.update(cx, |model, cx| {
+            model.choose_learning_graph_decision("one".into(), LearningGraphDecision::Approve, cx);
+            model.choose_learning_graph_decision("two".into(), LearningGraphDecision::Reject, cx);
+            model.submit_learning_graph_review(cx);
+            model.submit_learning_graph_review(cx);
+        });
+        cx.run_until_parked();
+
+        let actions = backend.actions.lock().unwrap();
+        assert_eq!(actions.len(), 1);
+        let crate::pulsations::PulsationAction::ReviewLearningGraph(request) = &actions[0] else {
+            panic!("graph review action")
+        };
+        assert_eq!(request.job_id, "learning-graph");
+        assert_eq!(request.expected_generation, 11);
+        assert_eq!(request.decisions.len(), 2);
+        assert_eq!(
+            request.decisions[0].decision,
+            LearningGraphDecision::Approve
+        );
+        assert_eq!(request.decisions[1].decision, LearningGraphDecision::Reject);
+    }
+
+    #[gpui::test]
+    fn description_ui_uses_its_own_revision_api_and_pathless_artifact_content(
+        cx: &mut TestAppContext,
+    ) {
+        let backend = Arc::new(RecordingPulsationsBackend::new());
+        backend.snapshot.lock().unwrap().details = vec![preparation_detail(false)];
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                backend.clone(),
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |m, cx| {
+            configure_domain_workspace(m, cx);
+            m.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        model.update(cx, |m, cx| {
+            m.description_review_input
+                .update(cx, |i, cx| i.set_value("  Crie ação Unicode  ", cx));
+            m.revise_description(cx);
+        });
+        cx.run_until_parked();
+        let actions = backend.actions.lock().unwrap();
+        let crate::pulsations::PulsationAction::Revise(request) = &actions[0] else {
+            panic!("description action")
+        };
+        assert_eq!(request.expected_input_revision, 3);
+        assert_eq!(request.description, "  Crie ação Unicode  ");
+        drop(actions);
+        model.update(cx, |m, cx| {
+            m.preview_artifact("pulse-1".into(), "internal-1".into(), cx)
+        });
+        cx.run_until_parked();
+        cx.read(|cx| {
+            assert_eq!(
+                model
+                    .read(cx)
+                    .pulsations
+                    .read(cx)
+                    .artifact_preview
+                    .as_ref()
+                    .unwrap()
+                    .1,
+                "Conteúdo persistido da fixture"
+            )
+        });
+    }
+
     #[gpui::test]
     fn creates_and_cancels_pulsations_through_the_typed_backend(cx: &mut TestAppContext) {
         let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
@@ -4189,6 +7023,49 @@ mod tests {
             assert_eq!(
                 model.read(cx).pulsations.read(cx).notice.as_deref(),
                 Some("1 job(s) marcado(s) para cancelamento.")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn automatic_agent_stop_requires_confirmation_and_cancels_the_whole_pulse(
+        cx: &mut TestAppContext,
+    ) {
+        let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
+        let cancel_calls = Arc::clone(&pulsations_backend.cancel_calls);
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                pulsations_backend,
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+
+        model.update(cx, |model, cx| {
+            model.request_cancel_agent_run("run-1".into(), Some("pulse-1".into()), cx);
+        });
+        assert!(cancel_calls.lock().unwrap().is_empty());
+        cx.read(|cx| {
+            let agents = model.read(cx).agents.read(cx);
+            assert_eq!(agents.pending_pipeline_cancel.as_deref(), Some("pulse-1"));
+            assert_eq!(
+                agents.notice.as_deref(),
+                Some("Stop automático cancela o pulso inteiro. Clique novamente para confirmar.")
+            );
+        });
+
+        model.update(cx, |model, cx| {
+            model.request_cancel_agent_run("run-1".into(), Some("pulse-1".into()), cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(*cancel_calls.lock().unwrap(), vec!["pulse-1"]);
+        cx.read(|cx| {
+            let agents = model.read(cx).agents.read(cx);
+            assert_eq!(agents.pending_pipeline_cancel, None);
+            assert_eq!(
+                agents.notice.as_deref(),
+                Some("Pulso cancelado; 1 job(s) foram interrompidos.")
             );
         });
     }

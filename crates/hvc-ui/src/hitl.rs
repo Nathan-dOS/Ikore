@@ -1,5 +1,7 @@
 use gpui::{App, KeyBinding, actions};
-use hvc_core::persistence_service::{HitlDecision, Pulsation};
+use hvc_core::persistence_service::{
+    ApplyHitlDecisionRequest, HitlCheckpoint, HitlDecision, Pulsation,
+};
 
 actions!(hitl, [ApproveHitl, RequestHitlRevision]);
 
@@ -40,6 +42,7 @@ impl ReviewShortcut {
 
 #[derive(Debug, Default)]
 pub(crate) struct HitlReviewState {
+    pub(crate) expected_checkpoint: Option<HitlCheckpoint>,
     pub(crate) pulsation_id: Option<String>,
     pub(crate) title: Option<String>,
     pub(crate) input: String,
@@ -51,6 +54,7 @@ pub(crate) struct HitlReviewState {
 impl HitlReviewState {
     pub(crate) fn load_checkpoint(&mut self, pulsation: Option<&Pulsation>) {
         let Some(pulsation) = pulsation else {
+            self.expected_checkpoint = None;
             self.pulsation_id = None;
             self.title = None;
             self.input.clear();
@@ -71,20 +75,31 @@ impl HitlReviewState {
         );
     }
 
-    pub(crate) fn begin(&mut self, decision: HitlDecision) -> Option<(String, HitlDecision)> {
+    pub(crate) fn begin(&mut self, decision: HitlDecision) -> Option<ApplyHitlDecisionRequest> {
         if self.busy {
             return None;
         }
         let pulsation_id = self.pulsation_id.clone()?;
+        let checkpoint = self.expected_checkpoint.as_ref()?;
+        if checkpoint.pulsation_id != pulsation_id {
+            return None;
+        }
         self.busy = true;
         self.error = None;
-        Some((pulsation_id, decision))
+        Some(ApplyHitlDecisionRequest {
+            pulsation_id,
+            decision,
+            checkpoint_id: checkpoint.checkpoint_id.clone(),
+            expected_state_version: checkpoint.state_version,
+            feedback: None,
+        })
     }
 
     pub(crate) fn finish(&mut self, result: Result<(), String>) {
         self.busy = false;
         match result {
             Ok(()) => {
+                self.expected_checkpoint = None;
                 self.pulsation_id = None;
                 self.title = None;
                 self.input.clear();
@@ -119,6 +134,7 @@ mod tests {
     fn disables_decisions_while_request_is_pending(_: &mut gpui::TestAppContext) {
         let mut state = HitlReviewState::default();
         state.load_checkpoint(Some(&Pulsation {
+            terminal_reason: None,
             id: "pulse-1".into(),
             project_id: "project-1".into(),
             feature_name: "Editor nativo".into(),
@@ -130,6 +146,11 @@ mod tests {
         assert_eq!(state.title.as_deref(), Some("Code Review — Editor nativo"));
         assert!(state.input.contains("Source snapshot loaded"));
         assert!(state.generated.contains("Generated checkpoint draft"));
+        state.expected_checkpoint = Some(HitlCheckpoint {
+            pulsation_id: "pulse-1".into(),
+            checkpoint_id: "checkpoint-1".into(),
+            state_version: 1,
+        });
         assert!(state.begin(HitlDecision::Approve).is_some());
         assert!(state.busy);
         assert!(state.begin(HitlDecision::Reject).is_none());
