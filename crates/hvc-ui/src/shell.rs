@@ -39,7 +39,7 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
     .detach();
     let (window_width, window_height) = initial_window_size();
     let bounds = Bounds::centered(None, size(px(window_width), px(window_height)), cx);
-    cx.open_window(
+    let handle = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
@@ -53,6 +53,9 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
         move |_, cx| cx.new(|cx| AppModel::new(core, cx)),
     )
     .context("GPUI recusou a criação da janela principal")?;
+    let _ = handle.update(cx, |_model, window, _cx| {
+        window.activate_window();
+    });
     cx.activate(true);
     Ok(())
 }
