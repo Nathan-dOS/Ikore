@@ -255,6 +255,12 @@ impl PersistenceService {
     ) -> Result<(), PersistenceServiceError> {
         db.execute("UPDATE project_pipeline_state SET active_pulsation_id=NULL,state_version=state_version+1 WHERE active_pulsation_id=?1 AND base_state<>'needs_review' AND EXISTS(SELECT 1 FROM pulsations p WHERE p.id=?1 AND p.status IN ('done','failed'))",[pulse])?;
         Self::block_held_successors(db)?;
+        let project: String = db.query_row(
+            "SELECT project_id FROM pulsations WHERE id=?1",
+            [pulse],
+            |r| r.get(0),
+        )?;
+        crate::feature_forge::service::release_failed(db, &project)?;
         Ok(())
     }
 

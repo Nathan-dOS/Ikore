@@ -3,6 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+use gpui::SharedString;
 use hvc_core::AppCore;
 use hvc_core::persistence_service::SaveUiSessionRequest;
 
@@ -68,10 +69,20 @@ impl HeaderNoticeKind {
     }
 }
 
+/// A one-click action attached to a notice (currently only the "review(s) waiting" notice uses
+/// this — see the UI flow plan Part 4.1). Kept narrow and independent of `flow::FlowTarget` so
+/// `HeaderNotice` can keep deriving `PartialEq`/`Eq` for the existing dedup logic below.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HeaderNoticeAction {
+    pub(crate) label: SharedString,
+    pub(crate) pulsation_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HeaderNotice {
     pub(crate) kind: HeaderNoticeKind,
     pub(crate) message: String,
+    pub(crate) action: Option<HeaderNoticeAction>,
 }
 
 #[derive(Debug, Default)]
@@ -81,6 +92,15 @@ pub(crate) struct HeaderNoticeQueue {
 
 impl HeaderNoticeQueue {
     pub(crate) fn push(&mut self, kind: HeaderNoticeKind, message: impl Into<String>) {
+        self.push_actionable(kind, message, None);
+    }
+
+    pub(crate) fn push_actionable(
+        &mut self,
+        kind: HeaderNoticeKind,
+        message: impl Into<String>,
+        action: Option<HeaderNoticeAction>,
+    ) {
         let message = message.into();
         if message.trim().is_empty()
             || self
@@ -90,7 +110,11 @@ impl HeaderNoticeQueue {
         {
             return;
         }
-        let notice = HeaderNotice { kind, message };
+        let notice = HeaderNotice {
+            kind,
+            message,
+            action,
+        };
         let index = self
             .entries
             .iter()

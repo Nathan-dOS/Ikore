@@ -319,6 +319,7 @@ impl WindowsWindowInner {
             WindowOpenState::Windowed => unsafe {
                 SetWindowPlacement(self.hwnd, &open_status.placement)
                     .context("failed to set window placement")?;
+                let _ = ShowWindowAsync(self.hwnd, SW_SHOWNORMAL);
             },
         }
         Ok(())
@@ -461,15 +462,19 @@ impl WindowsWindow {
         register_drag_drop(&this)?;
         configure_dwm_dark_mode(hwnd, appearance);
         this.state.borrow_mut().border_offset.update(hwnd)?;
-        let placement = retrieve_window_placement(
+        let mut placement = retrieve_window_placement(
             hwnd,
             display,
             params.bounds,
             this.state.borrow().scale_factor,
             this.state.borrow().border_offset,
         )?;
+        placement.showCmd = SW_SHOWNORMAL.0 as u32;
         if params.show {
-            unsafe { SetWindowPlacement(hwnd, &placement)? };
+            unsafe {
+                SetWindowPlacement(hwnd, &placement)?;
+                let _ = ShowWindowAsync(hwnd, SW_SHOWNORMAL);
+            };
         } else {
             this.state.borrow_mut().initial_placement = Some(WindowOpenStatus {
                 placement,
@@ -699,6 +704,8 @@ impl PlatformWindow for WindowsWindow {
                     // If the window is minimized, restore it.
                     if IsIconic(hwnd).as_bool() {
                         ShowWindowAsync(hwnd, SW_RESTORE).ok().log_err();
+                    } else if !IsWindowVisible(hwnd).as_bool() {
+                        ShowWindowAsync(hwnd, SW_SHOWNORMAL).ok().log_err();
                     }
 
                     SetActiveWindow(hwnd).log_err();

@@ -1,3 +1,5 @@
+#[cfg(test)]
+use hvc_core::persistence_service::CreatePulsationRequest;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -9,13 +11,12 @@ use hvc_core::orchestration::{
     BaseState, ConfirmBaseReconciliationRequest, ProjectCoordinationSnapshot,
 };
 use hvc_core::persistence_service::{
-    Artifact, CancelPulsationJobsRequest, CreatePulsationRequest,
-    GetPulsationRuntimeSnapshotRequest, ListPulsationArtifactsRequest, Pulsation,
-    PulsationRuntimeSnapshot, PulsationStage, PulsationStatus,
+    Artifact, CancelPulsationJobsRequest, GetPulsationRuntimeSnapshotRequest,
+    ListPulsationArtifactsRequest, Pulsation, PulsationRuntimeSnapshot, PulsationStage,
+    PulsationStatus,
 };
 
 use crate::hitl::HitlReviewState;
-use crate::workspace::WorkspaceViewMode;
 use hvc_core::orchestration::{
     ConfirmDescriptionReviewRequest, PulsationCoordinationSnapshot,
     RevisePulsationDescriptionRequest, SubmitSpecificationAnswersRequest,
@@ -29,6 +30,7 @@ pub(crate) trait PulsationsBackend: Send + Sync {
     fn artifact_content(&self, pulse: String, artifact: String) -> PulsationsFuture<String>;
     fn runtime_snapshot(&self, project_id: String) -> PulsationsFuture<PulsationRuntimeSnapshot>;
     fn artifacts(&self, pulsation_id: String) -> PulsationsFuture<Vec<Artifact>>;
+    #[cfg(test)]
     fn create(&self, project_id: String, feature_name: String) -> PulsationsFuture<Pulsation>;
     fn cancel_jobs(&self, pulsation_id: String) -> PulsationsFuture<usize>;
     fn reconcile(&self, request: ConfirmBaseReconciliationRequest) -> PulsationsFuture<()>;
@@ -152,6 +154,7 @@ impl PulsationsBackend for CorePulsationsBackend {
         })
     }
 
+    #[cfg(test)]
     fn create(&self, project_id: String, feature_name: String) -> PulsationsFuture<Pulsation> {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
@@ -188,8 +191,21 @@ impl PulsationsBackend for CorePulsationsBackend {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PulsationDetailSection {
+    /// The HITL approval surface for the active pulsation's checkpoint. Selected automatically when
+    /// a checkpoint newly appears (see `apply_snapshot`/`select`); formerly a separate Workspace view
+    /// mode (see the UI flow plan Part 1.2).
+    Review,
+    #[default]
+    Overview,
+    Preparation,
+    Artifacts,
+}
+
 #[derive(Default)]
 pub struct PulsationsModel {
+    pub detail_section: PulsationDetailSection,
     pub brownfield_coverage: Option<BrownfieldCoverageMetrics>,
     pub details: Vec<PulsationCoordinationSnapshot>,
     pub action_busy: bool,
@@ -207,7 +223,9 @@ pub struct PulsationsModel {
     pub artifacts_loading: bool,
     pub error: Option<String>,
     pub notice: Option<String>,
-    pub workspace_view_override: Option<WorkspaceViewMode>,
+    /// Expands the Review section's diff surface to full width, hiding the pulsation list. Formerly
+    /// a Workspace concept (`diff_expanded`); moved here with the HITL surface.
+    pub diff_expanded: bool,
     pub(crate) hitl: HitlReviewState,
 }
 
@@ -249,6 +267,14 @@ impl PulsationsModel {
             })
             .map(str::to_owned)
             .or_else(|| snapshot.pulsations.first().map(|item| item.id.clone()));
+        let pulse_changed = current_id != next_id.as_deref()
+            || self.project_id.as_ref().map(AsRef::as_ref) != Some(project_id.as_str());
+        if pulse_changed {
+            self.detail_section = PulsationDetailSection::Overview;
+            self.artifacts.clear();
+            self.artifact_preview = None;
+        }
+        let had_checkpoint = self.hitl.pulsation_id.is_some();
         self.project_id = Some(project_id.into());
         self.pulsations = snapshot.pulsations;
         self.details = snapshot.details;
@@ -276,6 +302,13 @@ impl PulsationsModel {
             .iter()
             .find(|c| Some(c.pulsation_id.as_str()) == self.hitl.pulsation_id.as_deref())
             .cloned();
+        // Take the user to Review exactly when a checkpoint newly appears for the active
+        // pulsation, or when the active pulsation changed while a checkpoint was already waiting.
+        // An ordinary refresh that doesn't change checkpoint availability leaves the user's chosen
+        // section alone (see the UI flow plan Part 1.2).
+        if checkpoint.is_some() && (pulse_changed || !had_checkpoint) {
+            self.detail_section = PulsationDetailSection::Review;
+        }
         next_id
     }
 
@@ -286,6 +319,11 @@ impl PulsationsModel {
             .any(|pulsation| pulsation.id == pulsation_id)
         {
             return false;
+        }
+        let pulse_changed =
+            self.active_pulsation_id.as_ref().map(AsRef::as_ref) != Some(pulsation_id);
+        if pulse_changed {
+            self.detail_section = PulsationDetailSection::Overview;
         }
         self.active_pulsation_id = Some(pulsation_id.to_owned().into());
         self.artifacts.clear();
@@ -307,6 +345,11 @@ impl PulsationsModel {
             .iter()
             .find(|c| Some(c.pulsation_id.as_str()) == self.hitl.pulsation_id.as_deref())
             .cloned();
+        // Selecting a pulsation that is already at a checkpoint takes the user straight to Review
+        // (see the UI flow plan Part 1.2).
+        if pulse_changed && checkpoint.is_some() {
+            self.detail_section = PulsationDetailSection::Review;
+        }
         true
     }
 
@@ -358,30 +401,6 @@ impl PulsationsModel {
             }
             Err(error) => self.error = Some(error),
         }
-    }
-
-    pub(crate) fn derived_workspace_mode(&self) -> WorkspaceViewMode {
-        self.workspace_view_override.unwrap_or_else(|| {
-            if self.active().is_some_and(|pulsation| {
-                pulsation.status == PulsationStatus::Checkpoint
-                    && self
-                        .hitl_checkpoints
-                        .iter()
-                        .any(|c| c.pulsation_id == pulsation.id)
-            }) {
-                WorkspaceViewMode::Hitl
-            } else {
-                WorkspaceViewMode::Editor
-            }
-        })
-    }
-
-    pub(crate) fn set_workspace_override(&mut self, mode: WorkspaceViewMode) {
-        self.workspace_view_override = Some(mode);
-    }
-
-    pub(crate) fn clear_workspace_override(&mut self) {
-        self.workspace_view_override = None;
     }
 }
 
@@ -494,7 +513,7 @@ mod tests {
         assert_eq!(active.as_deref(), Some("pulse-1"));
         assert_eq!(model.awaiting_hitl, 1);
         assert_eq!(model.running_jobs, 2);
-        assert_eq!(model.derived_workspace_mode(), WorkspaceViewMode::Hitl);
+        assert_eq!(model.detail_section, PulsationDetailSection::Review);
         assert_eq!(model.artifacts[0].name, "Login plan");
         assert_eq!(model.hitl.pulsation_id.as_deref(), Some("pulse-1"));
         assert_eq!(

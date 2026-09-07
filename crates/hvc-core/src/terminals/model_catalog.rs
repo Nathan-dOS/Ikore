@@ -9,11 +9,11 @@ use uuid::Uuid;
 
 use super::{
     CliAvailability, CliAvailabilityState, CliBackend, MAX_MODEL_CATALOG_OUTPUT_BYTES,
-    TerminalError, redact_secrets, run_bounded_probe_in_with_limit, sanitize_terminal_text,
+    TerminalError, redact_secrets, run_bounded_probe_in_with_limit, sanitize_terminal_text_bounded,
     secure_probe_spec,
 };
 
-const ADAPTER_CONTRACT_VERSION: u32 = 1;
+const ADAPTER_CONTRACT_VERSION: u32 = 2;
 const MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(20);
 const CLI_DEFAULT_ID: &str = "";
 
@@ -542,9 +542,12 @@ pub(crate) fn validate_catalog_model_selection(
 }
 
 fn sanitize_redacted(bytes: &[u8]) -> Result<String, TerminalError> {
-    redact_secrets(&sanitize_terminal_text(bytes))
-        .map(|result| result.text)
-        .map_err(|error| TerminalError::Security(error.to_string()))
+    redact_secrets(&sanitize_terminal_text_bounded(
+        bytes,
+        MAX_MODEL_CATALOG_OUTPUT_BYTES,
+    ))
+    .map(|result| result.text)
+    .map_err(|error| TerminalError::Security(error.to_string()))
 }
 
 fn preset_snapshot(
@@ -577,21 +580,39 @@ fn preset_snapshot(
         CliBackend::Codex => vec![
             preset(
                 "openai",
-                "gpt-5.4",
-                "GPT-5.4",
+                "gpt-5.4-mini",
+                "GPT-5.4 Mini",
                 &["low", "medium", "high", "xhigh"],
             ),
             preset(
                 "openai",
-                "gpt-5.3-codex",
-                "GPT-5.3 Codex",
+                "gpt-5.5",
+                "GPT-5.5",
                 &["low", "medium", "high", "xhigh"],
             ),
             preset(
                 "openai",
-                "gpt-5.2-codex",
-                "GPT-5.2 Codex",
-                &["low", "medium", "high", "xhigh"],
+                "gpt-5.6-luna",
+                "GPT-5.6 Luna",
+                &["low", "medium", "high", "xhigh", "max"],
+            ),
+            preset(
+                "openai",
+                "gpt-5.6-terra",
+                "GPT-5.6 Terra",
+                &["low", "medium", "high", "xhigh", "max", "ultra"],
+            ),
+            preset(
+                "openai",
+                "gpt-5.6-sol",
+                "GPT-5.6 Sol",
+                &["low", "medium", "high", "xhigh", "max", "ultra"],
+            ),
+            preset(
+                "openai",
+                "gpt-6-astra",
+                "GPT-6 Astra",
+                &["low", "medium", "high", "xhigh", "max", "ultra"],
             ),
         ],
         CliBackend::Claude => vec![
@@ -808,12 +829,22 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_redacted_preserves_large_catalogs_beyond_terminal_event_limit() {
+        let entry = "openai/test-model\n{\"name\":\"Test Model\",\"capabilities\":[\"tools\"]}\n";
+        let repeated = entry.repeat(2000);
+        let sanitized = sanitize_redacted(repeated.as_bytes()).unwrap();
+        assert!(!sanitized.contains("[saída truncada]"));
+        let models = parse_opencode_verbose_models(&sanitized).unwrap();
+        assert_eq!(models.len(), 2000);
+    }
+
+    #[test]
     fn versioned_fixtures_cover_all_four_cli_model_contracts() {
         const FIXTURES: &str = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../hvc-test-support/fixtures/cli"
         );
-        for (backend, expected_models) in [("codex", 3), ("claude", 3), ("gemini", 3)] {
+        for (backend, expected_models) in [("codex", 6), ("claude", 3), ("gemini", 3)] {
             let path = Path::new(FIXTURES)
                 .join(backend)
                 .join("current")

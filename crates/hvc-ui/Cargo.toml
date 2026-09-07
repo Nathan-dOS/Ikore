@@ -7,6 +7,7 @@ license.workspace = true
 description = "GPUI views and native design system for Hard Vibe Code"
 
 [dependencies]
+uuid = { version = "1", features = ["v4"] }
 anyhow.workspace = true
 gpui.workspace = true
 hvc-core.workspace = true

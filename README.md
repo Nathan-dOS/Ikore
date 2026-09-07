@@ -5,7 +5,7 @@ Desktop Orchestrator nativo em GPUI/Rust para Windows x64.
 ## Estado atual
 
 - `hvc-app` é o único binário desktop e gera `hard-vibe-code.exe`.
-- As seis views — Workspace, Pulsations, Vault, Chat Companion, Settings e Logs — são nativas.
+- Nine native views are grouped under Agent (Agents, Logs), Engine (Tasks, Feature Forge, Pulsations, Vault), and Companion (Chat, Workspace). Settings opens from the header gear.
 - UI e core compartilham o mesmo processo e usam chamadas Rust tipadas, sem JSON/IPC.
 - O banco permanece em `%APPDATA%\com.hardvibecode.desktop\hard-vibe-code.db`.
 - `HVC_DATA_DIR` permite isolar dados de desenvolvimento e teste.
@@ -29,7 +29,7 @@ próprio GPUI 0.2.2, sob Apache-2.0, documentado em
 
 - `crates/hvc-app`: composition root e binário GPUI.
 - `crates/hvc-core`: domínio, persistência, workspace, LLM, Chat e barramento tipado.
-- `crates/hvc-ui`: shell, design system e as seis views GPUI.
+- `crates/hvc-ui`: native shell, three header tabs, nine views, and the GPUI design system.
 - `crates/hvc-editor`: Rope, seleção, undo/redo, diff, Markdown e Tree-sitter.
 - `crates/hvc-test-support`: ambientes isolados, doubles e fixtures de paridade.
 
@@ -72,3 +72,33 @@ relatório; não são garantias universais.
 
 A distribuição externa permanece bloqueada até a auditoria final e a
 resolução ou decisão jurídica explícita sobre o issue Zed #55470.
+
+## Tab navigation and panel layout
+
+Agents uses a list and one detail panel in CLI and API modes. Pulsations separates Overview, Preparation, and Artifacts; Settings separates Connections, Routes, and Runtime. Agents and Companion share an absolute model-picker overlay with Escape dismissal. Logs has collapsible sections and incremental event display; Vault has independent graph and document scrolling.
+
+The existing session schema persists the active view. The corresponding header tab is derived during restoration; other tab histories and internal sections are kept in memory.
+
+Implementation evidence: [Tabs UI validation](quality/tabs-ui-validation-2026-09-05.md). The accepted design is ADR-015 in the separate Cerebro documentation repository.
+
+
+## Feature Forge and task batches
+
+Global **Novo** separates multiple backlog tasks from a new feature conversation.
+FeatureAgent refines product scope with the developer; approval creates tasks without
+starting execution. Engine provides Tasks, Feature Forge, Pulsations and Vault.
+
+A pulsation selects task revisions and freezes their approved feature context. Pipeline
+version 3 keeps all six existing stages and integrates the batch atomically. Database
+V24 preserves prior pulsations and adds feature, task, conversation, dependency, wave
+and evidence history. Planning notes explicitly describe approved scope, not delivered code.
+
+Implementation: [core services](crates/hvc-core/src/feature_forge/mod.rs).
+Validation: [Feature Forge report](quality/feature-forge-validation-2026-09-06.md).
+
+Tasks and Feature Forge refresh from existing events and deliberate actions without a
+layout-changing loading row. The Pulsations adapter invalidates them only on newly
+observed terminal transitions. Capture and model-picker overlays also close on an
+outside click. Companion supports Enter to send, Shift+Enter for a newline, and a
+wrapped composer that grows to six visible rows before scrolling internally.
+See [UI interaction validation](quality/ui-interactions-validation-2026-09-07.md).

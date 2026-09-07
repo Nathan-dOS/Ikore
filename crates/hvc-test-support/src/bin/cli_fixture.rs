@@ -91,8 +91,42 @@ fn main() {
         eprintln!("stdin mismatch fixture");
         std::process::exit(12);
     }
+    if stdin.contains("feature-discovery-fixture") {
+        assert!(
+            !std::path::Path::new("src/lib.rs").exists(),
+            "Discovery must only receive host-selected context"
+        );
+        match official_backend {
+            Some("codex") => assert!(args.iter().any(|s| s == "--ignore-rules")),
+            Some("claude") => assert!(args.iter().any(|s| s == "--strict-mcp-config")),
+            Some("gemini") => assert!(env::var_os("GEMINI_CLI_SYSTEM_SETTINGS_PATH").is_some()),
+            Some("opencode") => {
+                assert_eq!(env::var("OPENCODE_PERMISSION").unwrap(), r#"{"*":"deny"}"#)
+            }
+            _ => panic!("Discovery cannot use Custom"),
+        }
+    }
     if let Some(backend) = official_backend {
         if stdin.contains("<control_envelope_schema>") {
+            if backend == "codex" {
+                let path = value_after(&args, "--output-schema").expect("Codex needs a schema");
+                let schema: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+                assert_eq!(
+                    schema["type"], "object",
+                    "Codex rejects a union at the root"
+                );
+                assert_eq!(schema["additionalProperties"], false);
+                assert!(schema["properties"]["response"]["anyOf"].is_array());
+                if stdin.contains("companion-error-fixture") {
+                    let provider = serde_json::json!({"error":{"message":"The requested model is not supported when using Codex with a ChatGPT account."}});
+                    println!(
+                        "{}",
+                        serde_json::json!({"type":"turn.failed","error":{"message":provider.to_string()}})
+                    );
+                    std::process::exit(1);
+                }
+            }
             emit_companion_success(backend);
         } else {
             emit_official_success(backend, &args);
@@ -156,7 +190,12 @@ fn emit_companion_success(backend: &str) {
     let envelope = r#"{\"type\":\"final\",\"text\":\"Companion fixture response\"}"#;
     match backend {
         "codex" => println!(
-            r#"{{"type":"item.completed","item":{{"type":"agent_message","text":"{envelope}"}}}}"#
+            "{}",
+            serde_json::json!({"type":"item.completed","item":{
+                "type":"agent_message", "text": serde_json::json!({"response":{
+                    "type":"final","text":"Companion fixture response"
+                }}).to_string()
+            }})
         ),
         "claude" => println!(r#"{{"type":"result","result":"{envelope}"}}"#),
         "gemini" => println!(r#"{{"type":"message","content":"{envelope}"}}"#),

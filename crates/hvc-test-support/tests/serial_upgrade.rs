@@ -61,7 +61,7 @@ fn v23_cli_and_companion_schema_has_no_credential_columns() {
 }
 
 #[test]
-fn v20_to_v23_backfills_slots_and_preserves_terminal_and_chat_history() {
+fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
     let root = tempfile::tempdir().unwrap();
     let db_path = root.path().join("hard-vibe-code.db");
     let mut db = Connection::open(&db_path).unwrap();
@@ -127,7 +127,7 @@ fn v20_to_v23_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        23
+        24
     );
     assert_eq!(
         db.query_row(
@@ -199,7 +199,7 @@ fn v20_to_v23_backfills_slots_and_preserves_terminal_and_chat_history() {
 }
 
 #[test]
-fn v1_to_v23_is_idempotent_and_creates_the_cli_and_companion_schema() {
+fn v1_to_v24_is_idempotent_and_creates_the_cli_and_companion_schema() {
     let root = tempfile::tempdir().unwrap();
     let db_path = root.path().join("hard-vibe-code.db");
     let mut db = Connection::open(&db_path).unwrap();
@@ -258,7 +258,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        23
+        24
     );
     assert_eq!(
         db.query_row(
@@ -330,7 +330,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
         .filter(|p| {
             p.file_name()
                 .to_string_lossy()
-                .starts_with("hard-vibe-code.pre-v13.")
+                .starts_with("hard-vibe-code.pre-v24.")
         })
         .collect::<Vec<_>>();
     assert_eq!(backups.len(), 1);
@@ -388,7 +388,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             .filter(|p| p
                 .file_name()
                 .to_string_lossy()
-                .starts_with("hard-vibe-code.pre-v13."))
+                .starts_with("hard-vibe-code.pre-v24."))
             .count(),
         1
     );
@@ -594,7 +594,7 @@ fn v12_upgrade_backs_up_and_never_replays_historical_learning_intents() {
         .filter(|p| {
             p.file_name()
                 .to_string_lossy()
-                .starts_with("hard-vibe-code.pre-v13.")
+                .starts_with("hard-vibe-code.pre-v24.")
         })
         .collect::<Vec<_>>();
     assert_eq!(backups.len(), 1);
@@ -614,5 +614,61 @@ fn v12_upgrade_backs_up_and_never_replays_historical_learning_intents() {
             .query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
             .unwrap(),
         "ok"
+    );
+}
+
+#[test]
+fn v23_upgrade_preserves_populated_agent_slots_and_legacy_pulsations() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(23))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','Upgrade fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version) VALUES('legacy','p','Legacy work','Code','failed','now','now',2)",[]).unwrap();
+    db.execute("INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,thinking_level,custom_args_json,version,created_at,updated_at) VALUES('p','backend_agent','api_direct','codex','high','[]',8,'now','now')",[]).unwrap();
+    db.execute("INSERT INTO terminal_slots(id,project_id,kind,agent_role,label,position,archived,created_at,updated_at) VALUES('slot','p','canonical','backend_agent','Code',0,0,'now','now')",[]).unwrap();
+    db.execute("INSERT INTO terminal_runs(id,project_id,slot_kind,slot_id,agent_role,origin,execution_mode,status,created_at,updated_at) VALUES('run','p','canonical','slot','backend_agent','manual','api_direct','completed','now','now')",[]).unwrap();
+    db.execute("INSERT INTO terminal_events(id,run_id,sequence,kind,content,created_at) VALUES('e','run',1,'message','Existing history','now')",[]).unwrap();
+    drop(db);
+    PersistenceService::initialize(root.path()).unwrap();
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    assert_eq!(db.query_row("SELECT version FROM cli_agent_configs WHERE project_id='p' AND agent_role='backend_agent'",[],|r|r.get::<_,u32>(0)).unwrap(),8);
+    assert_eq!(
+        db.query_row(
+            "SELECT pipeline_version FROM pulsations WHERE id='legacy'",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        2
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT content FROM terminal_events WHERE id='e'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "Existing history"
+    );
+    db.execute("INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,thinking_level,custom_args_json,version,created_at,updated_at) VALUES('p','feature_agent','api_direct','codex','default','[]',1,'now','now')",[]).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM forge_features", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        0,
+        "Legacy pulses must never become features implicitly"
     );
 }

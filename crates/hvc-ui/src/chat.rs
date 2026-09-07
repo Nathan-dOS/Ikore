@@ -295,6 +295,7 @@ pub(crate) enum ChatEventOutcome {
 
 #[derive(Debug, Default)]
 pub struct ChatModel {
+    pub(crate) tool_activity_open: bool,
     pub(crate) project_id: Option<SharedString>,
     pub(crate) connections: Vec<ProviderConnection>,
     pub(crate) cli_availability: Vec<CliAvailability>,
@@ -1089,6 +1090,55 @@ mod tests {
                 .as_slice(),
             &["execution-started"]
         );
+    }
+
+    #[gpui::test]
+    fn enter_sends_multiline_draft_once_and_keeps_draft_while_streaming(cx: &mut TestAppContext) {
+        use gpui::{Focusable, px, size};
+        cx.update(crate::text_input::register_text_input_keybindings);
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model_backend: Arc<dyn ChatBackend> = backend.clone();
+        let (model, visual) = cx.add_window_view(|window, cx| {
+            let mut model = AppModel::new_for_test_with_chat_backend(model_backend, cx);
+            model.workspace.update(cx, |workspace, _| {
+                workspace.project_id = Some("project-1".into())
+            });
+            model.select_view(crate::AppView::Chat, cx);
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                let mut hydration = snapshot("project-1", "history", 1);
+                hydration.selected.as_mut().unwrap().messages[0].status = "completed".into();
+                hydration.selected.as_mut().unwrap().messages[0].execution_id = None;
+                chat.apply_hydration(generation, hydration);
+            });
+            model
+                .chat_draft_input
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window);
+            model
+        });
+        visual.simulate_resize(size(px(960.0), px(640.0)));
+        visual.simulate_input("First line 👋");
+        visual.simulate_keystrokes("shift-enter");
+        visual.simulate_input("Second line");
+        visual.run_until_parked();
+        assert!(backend.sent.lock().unwrap().is_empty());
+        visual.simulate_keystrokes("enter enter");
+        visual.run_until_parked();
+        assert_eq!(
+            *backend.sent.lock().unwrap(),
+            vec![("conversation-1".into(), "First line 👋\nSecond line".into())]
+        );
+        visual.simulate_input("Next draft");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert_eq!(backend.sent.lock().unwrap().len(), 1);
+        model.read_with(visual, |m, cx| {
+            assert_eq!(m.chat_draft_input.read(cx).value(), "Next draft")
+        });
     }
 
     #[gpui::test]

@@ -44,6 +44,7 @@ impl PersistenceService {
                 Self::enqueue_learning(&tx, &id)?;
                 continue;
             }
+            crate::feature_forge::pipeline::complete_batch(&tx, &id)?;
             Self::transition_pulsation(
                 &tx,
                 &current,

@@ -18,8 +18,8 @@ use hvc_core::llm::{
 use hvc_core::orchestration::brownfield::BrownfieldOnboardingStatus;
 use hvc_core::persistence_service::{
     CliFallbackDecision, EnsureProjectForWorkspaceRequest, HitlDecision, LoadUiSessionRequest,
-    PulsationRuntimeSnapshot, ResolveCliFallbackRequest, SaveUiSessionRequest, UiSessionState,
-    UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
+    PulsationRuntimeSnapshot, PulsationStatus, ResolveCliFallbackRequest, SaveUiSessionRequest,
+    UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
 };
 use hvc_core::terminals::{
     AgentExecutionMode, CliAgentConfig, CliBackend, CliModelSelectionSource,
@@ -42,10 +42,12 @@ use crate::agents::{
 use crate::chat::{ChatBackend, ChatEventOutcome, ChatModel, CoreChatBackend};
 use crate::lifecycle::LifecycleState;
 use crate::logs::{CoreLogsBackend, LogsBackend, LogsModel, SequenceClassification};
-use crate::pulsations::{CorePulsationsBackend, PulsationsBackend, PulsationsModel};
+use crate::pulsations::{
+    CorePulsationsBackend, PulsationDetailSection, PulsationsBackend, PulsationsModel,
+};
 use crate::session::{
-    CoreSessionPersistence, HeaderNotice, HeaderNoticeKind, HeaderNoticeQueue, SESSION_DEBOUNCE,
-    SessionPersistence,
+    CoreSessionPersistence, HeaderNotice, HeaderNoticeAction, HeaderNoticeKind, HeaderNoticeQueue,
+    SESSION_DEBOUNCE, SessionPersistence,
 };
 use crate::settings::{CoreSettingsBackend, SettingsBackend, SettingsModel};
 use crate::text_input::NativeTextInput;
@@ -56,11 +58,12 @@ use crate::vault::{
 use crate::views::NavigationModel;
 use crate::workspace::{
     AUTOSAVE_DEBOUNCE, BrownfieldOnboardingState, CoreWorkspaceBackend, WorkspaceBackend,
-    WorkspaceEditorModel, WorkspaceTabModel, WorkspaceViewMode,
+    WorkspaceEditorModel, WorkspaceTabModel,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppView {
+    Forge,
     Workspace,
     Pulsations,
     Vault,
@@ -71,7 +74,8 @@ pub enum AppView {
 }
 
 impl AppView {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
+        Self::Forge,
         Self::Workspace,
         Self::Pulsations,
         Self::Vault,
@@ -85,6 +89,7 @@ impl AppView {
         match self {
             Self::Workspace => "workspace",
             Self::Pulsations => "pulsations",
+            Self::Forge => "forge",
             Self::Vault => "vault",
             Self::Chat => "chat",
             Self::Agents => "agents",
@@ -97,6 +102,7 @@ impl AppView {
         match self {
             Self::Workspace => "Workspace & HITL",
             Self::Pulsations => "Pulsations & Pipeline",
+            Self::Forge => "Forge — Tasks & Features",
             Self::Vault => "Vault & Graph",
             Self::Chat => "Chat / Companion",
             Self::Agents => "Agents & Terminais",
@@ -109,6 +115,7 @@ impl AppView {
         match self {
             Self::Workspace => "Workspace",
             Self::Pulsations => "Pulsations",
+            Self::Forge => "Forge",
             Self::Vault => "Vault",
             Self::Chat => "Companion",
             Self::Agents => "Agents",
@@ -121,6 +128,7 @@ impl AppView {
         match self {
             Self::Workspace => "W",
             Self::Pulsations => "P",
+            Self::Forge => "F",
             Self::Vault => "V",
             Self::Chat => "C",
             Self::Agents => "A",
@@ -133,6 +141,7 @@ impl AppView {
         match self {
             Self::Workspace => "Arquivos, abas, editor, preview e revisão HITL",
             Self::Pulsations => "Execuções, checkpoints e decisões humanas",
+            Self::Forge => "Backlog de tasks, descoberta e planejamento de features",
             Self::Vault => "Notas Markdown, links e contexto do workspace",
             Self::Chat => "Conversa, streaming e ferramentas read-only",
             Self::Agents => "Execução CLI/API dos sete agentes canônicos",
@@ -141,11 +150,68 @@ impl AppView {
         }
     }
 
+    /// `"tasks"` and `"feature-forge"` are the pre-consolidation ids (see the UI flow plan Part
+    /// 1.1); sessions persisted before the merge still restore correctly through the unified Forge
+    /// view.
     pub fn from_id(id: &str) -> Self {
-        Self::ALL
-            .into_iter()
-            .find(|view| view.id() == id)
-            .unwrap_or(Self::Workspace)
+        match id {
+            "tasks" | "feature-forge" => Self::Forge,
+            _ => Self::ALL
+                .into_iter()
+                .find(|view| view.id() == id)
+                .unwrap_or(Self::Workspace),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AppTab {
+    Agent,
+    Engine,
+    Companion,
+}
+
+impl AppTab {
+    pub const ALL: [Self; 3] = [Self::Agent, Self::Engine, Self::Companion];
+
+    pub const fn sub_views(self) -> &'static [AppView] {
+        match self {
+            Self::Agent => &[AppView::Agents, AppView::Logs],
+            Self::Engine => &[AppView::Forge, AppView::Pulsations, AppView::Vault],
+            Self::Companion => &[AppView::Chat, AppView::Workspace],
+        }
+    }
+
+    pub const fn default_view(self) -> AppView {
+        match self {
+            Self::Agent => AppView::Agents,
+            Self::Engine => AppView::Vault,
+            Self::Companion => AppView::Chat,
+        }
+    }
+
+    pub fn contains(self, view: AppView) -> bool {
+        self.sub_views().contains(&view)
+    }
+
+    pub fn from_view(view: AppView) -> Option<Self> {
+        Self::ALL.into_iter().find(|tab| tab.contains(view))
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Agent => "Agent",
+            Self::Engine => "Engine",
+            Self::Companion => "Companion",
+        }
+    }
+
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Engine => "engine",
+            Self::Companion => "companion",
+        }
     }
 }
 
@@ -172,8 +238,19 @@ struct RestoredSession {
     brownfield_status: Option<BrownfieldOnboardingStatus>,
 }
 
+/// Per-tab attention counters shown as header badges and, unfolded, in the status bar. See the UI
+/// flow plan Part 4.4.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TabBadges {
+    pub agent_failed_runs: usize,
+    pub engine_awaiting_hitl: usize,
+    pub engine_running_jobs: usize,
+    pub companion_streaming: usize,
+}
+
 pub struct AppModel {
-    core: Option<Arc<AppCore>>,
+    pub(crate) core: Option<Arc<AppCore>>,
+    pub(crate) forge: crate::forge::ForgeUi,
     session_persistence: Option<Arc<dyn SessionPersistence>>,
     workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
     pulsations_backend: Option<Arc<dyn PulsationsBackend>>,
@@ -186,6 +263,7 @@ pub struct AppModel {
     pub workspace: Entity<WorkspaceEditorModel>,
     pub pulsations: Entity<PulsationsModel>,
     pub vault: Entity<VaultModel>,
+    #[cfg(test)]
     pub(crate) pulsation_feature_input: Entity<NativeTextInput>,
     pub(crate) reconciliation_input: Entity<NativeTextInput>,
     pub(crate) description_review_input: Entity<NativeTextInput>,
@@ -223,6 +301,8 @@ pub struct AppModel {
     pub(crate) settings: Entity<SettingsModel>,
     pub(crate) logs: Entity<LogsModel>,
     active_view: AppView,
+    active_tab: AppTab,
+    last_view_per_tab: HashMap<AppTab, AppView>,
     status: SharedString,
     event_count: u64,
     needs_resync: bool,
@@ -260,6 +340,15 @@ pub struct AppModel {
     chat_resync_tasks: HashMap<String, Task<()>>,
     session_task: Option<Task<()>>,
     performance_probe: Option<crate::performance::FrameLatencyProbe>,
+    pub(crate) confirm_workspace_overwrite: Option<String>,
+    pub(crate) confirm_hitl_reject: bool,
+    pub(crate) confirm_stage_reject: bool,
+    pub(crate) confirm_brownfield_revoke: bool,
+    pub(crate) active_dropdown: Option<String>,
+    /// Opt-in (default off): jump straight to a pulsation's Review section the moment a checkpoint
+    /// appears, instead of only surfacing the "review(s) waiting" notice. See the UI flow plan
+    /// Part 4.3; toggled from Settings > Runtime.
+    pub(crate) auto_open_review: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -359,12 +448,26 @@ impl AppModel {
         cx: &mut Context<Self>,
     ) -> Self {
         let active_view = AppView::Workspace;
+        let active_tab = AppTab::from_view(active_view).unwrap_or(AppTab::Companion);
+        let last_view_per_tab = AppTab::ALL
+            .into_iter()
+            .map(|tab| {
+                let view = if tab.contains(active_view) {
+                    active_view
+                } else {
+                    tab.default_view()
+                };
+                (tab, view)
+            })
+            .collect::<HashMap<_, _>>();
         let navigation = cx.new(|_| NavigationModel {
             active: active_view,
+            active_tab,
             sidebar_collapsed: false,
         });
         let workspace = cx.new(WorkspaceEditorModel::new);
         let editor = workspace.read(cx).editor.clone();
+        #[cfg(test)]
         let pulsation_feature_input =
             cx.new(|cx| NativeTextInput::new("Nome da funcionalidade", cx));
         let reconciliation_input =
@@ -390,7 +493,8 @@ impl AppModel {
         let settings_route_name_input = cx.new(|cx| NativeTextInput::new("Nome da rota", cx));
         let settings_embedding_model_input =
             cx.new(|cx| NativeTextInput::new("Modelo de embeddings", cx));
-        let chat_draft_input = cx.new(|cx| NativeTextInput::new("Mensagem para o Companion", cx));
+        let chat_draft_input =
+            cx.new(|cx| NativeTextInput::new("Mensagem para o Companion", cx).multiline());
         let cli_model_search_input =
             cx.new(|cx| NativeTextInput::new("Search model ID, name, provider or capability", cx));
         let agent_prompt_inputs = hvc_core::llm::AgentRole::ALL
@@ -443,6 +547,7 @@ impl AppModel {
                 model.schedule_vault_context_documents(cx);
                 model.schedule_session_persistence(cx);
             }),
+            #[cfg(test)]
             cx.observe(&pulsation_feature_input, |_, _, cx| cx.notify()),
             cx.observe(&reconciliation_input, |_, _, cx| cx.notify()),
             cx.observe(&description_review_input, |_, _, cx| cx.notify()),
@@ -458,6 +563,10 @@ impl AppModel {
             cx.observe(&settings_route_name_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_embedding_model_input, |_, _, cx| cx.notify()),
             cx.observe(&chat_draft_input, |_, _, cx| cx.notify()),
+            cx.subscribe(
+                &chat_draft_input,
+                |model, _, _: &crate::text_input::Submit, cx| model.send_chat_message(cx),
+            ),
             cx.observe(&cli_model_search_input, |_, _, cx| cx.notify()),
         ];
         subscriptions.extend(
@@ -474,6 +583,7 @@ impl AppModel {
         );
         Self {
             core,
+            forge: crate::forge::ForgeUi::new(cx),
             session_persistence,
             workspace_backend,
             pulsations_backend: None,
@@ -486,6 +596,7 @@ impl AppModel {
             workspace,
             pulsations: cx.new(|_| PulsationsModel::default()),
             vault: cx.new(|_| VaultModel::default()),
+            #[cfg(test)]
             pulsation_feature_input,
             reconciliation_input,
             description_review_input,
@@ -521,6 +632,8 @@ impl AppModel {
             settings: cx.new(|_| SettingsModel::default()),
             logs: cx.new(|_| LogsModel::default()),
             active_view,
+            active_tab,
+            last_view_per_tab,
             status: "Pronto".into(),
             event_count: 0,
             needs_resync: false,
@@ -558,12 +671,91 @@ impl AppModel {
             chat_resync_tasks: HashMap::new(),
             session_task: None,
             performance_probe: None,
+            confirm_workspace_overwrite: None,
+            confirm_hitl_reject: false,
+            confirm_stage_reject: false,
+            confirm_brownfield_revoke: false,
+            active_dropdown: None,
+            auto_open_review: false,
             _subscriptions: subscriptions,
         }
     }
 
     pub fn active_view(&self) -> AppView {
         self.active_view
+    }
+
+    pub fn active_tab(&self) -> AppTab {
+        self.active_tab
+    }
+
+    pub fn select_tab(&mut self, tab: AppTab, cx: &mut Context<Self>) {
+        let view = self
+            .last_view_per_tab
+            .get(&tab)
+            .copied()
+            .unwrap_or_else(|| tab.default_view());
+        self.select_view(view, cx);
+    }
+
+    /// `alt-1`/`alt-2`/`alt-3`: jump to the Nth sub-view of the active header tab (see the UI flow
+    /// plan Part 4.5). A no-op when the active tab has fewer sub-views than `index + 1`.
+    pub(crate) fn select_nth_sub_view(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(view) = self.active_tab.sub_views().get(index).copied() {
+            self.select_view(view, cx);
+        }
+    }
+
+    /// `ctrl-shift-[` / `ctrl-shift-]`: cycles the current view's own section strip. Each view keeps
+    /// its own section enum (Pulsations/Forge/Settings), so this is a small per-view dispatch rather
+    /// than a single shared cursor — see the UI flow plan Part 4.5.
+    pub(crate) fn cycle_current_section(&mut self, direction: i32, cx: &mut Context<Self>) {
+        fn cycle<T: Copy + PartialEq>(all: &[T], current: T, direction: i32) -> T {
+            let position = all.iter().position(|item| *item == current).unwrap_or(0) as i32;
+            let len = all.len() as i32;
+            all[(position + direction).rem_euclid(len) as usize]
+        }
+
+        match self.active_view {
+            AppView::Pulsations => {
+                self.pulsations.update(cx, |pulsations, _| {
+                    pulsations.detail_section = cycle(
+                        &[
+                            PulsationDetailSection::Review,
+                            PulsationDetailSection::Overview,
+                            PulsationDetailSection::Preparation,
+                            PulsationDetailSection::Artifacts,
+                        ],
+                        pulsations.detail_section,
+                        direction,
+                    );
+                });
+                cx.notify();
+            }
+            AppView::Forge => {
+                self.forge.section = cycle(
+                    &crate::forge::ForgeSection::ALL,
+                    self.forge.section,
+                    direction,
+                );
+                cx.notify();
+            }
+            AppView::Settings => {
+                self.settings.update(cx, |settings, _| {
+                    settings.settings_section = cycle(
+                        &[
+                            crate::settings::SettingsSection::Connections,
+                            crate::settings::SettingsSection::Routes,
+                            crate::settings::SettingsSection::Runtime,
+                        ],
+                        settings.settings_section,
+                        direction,
+                    );
+                });
+                cx.notify();
+            }
+            _ => {}
+        }
     }
 
     pub fn status(&self) -> &SharedString {
@@ -596,19 +788,42 @@ impl AppModel {
         self.notices.current()
     }
 
-    pub fn sidebar_badges(&self, cx: &gpui::App) -> (usize, usize) {
+    /// Per-tab attention counters (see the UI flow plan Part 4.4). Reviews and running jobs belong
+    /// to Engine (where Pulsations lives) rather than Companion, and Agent/Companion each get their
+    /// own signal instead of always showing zero.
+    pub fn sidebar_badges(&self, cx: &gpui::App) -> TabBadges {
         let pulsations = self.pulsations.read(cx);
-        (pulsations.awaiting_hitl, pulsations.running_jobs)
+        TabBadges {
+            agent_failed_runs: self.agents.read(cx).failed_agent_count(),
+            engine_awaiting_hitl: pulsations.awaiting_hitl,
+            engine_running_jobs: pulsations.running_jobs,
+            companion_streaming: usize::from(self.chat.read(cx).streaming),
+        }
     }
 
     pub fn select_view(&mut self, view: AppView, cx: &mut Context<Self>) {
+        if self.active_view != view {
+            self.close_cli_model_picker(cx);
+        }
         self.active_view = view;
+        if let Some(tab) = AppTab::from_view(view) {
+            self.active_tab = tab;
+            self.last_view_per_tab.insert(tab, view);
+        }
         self.navigation.update(cx, |navigation, _| {
             navigation.active = view;
+            if let Some(tab) = AppTab::from_view(view) {
+                navigation.active_tab = tab;
+            }
         });
-        self.workspace.update(cx, |workspace, _| {
-            workspace.diff_expanded = false;
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.diff_expanded = false;
         });
+        self.confirm_workspace_overwrite = None;
+        self.confirm_hitl_reject = false;
+        self.confirm_stage_reject = false;
+        self.confirm_brownfield_revoke = false;
+        self.active_dropdown = None;
         self.status = format!("View {} ativa", view.short_label()).into();
         if view == AppView::Chat {
             let project_id = self
@@ -628,6 +843,7 @@ impl AppModel {
             }
         }
         match view {
+            AppView::Forge => self.refresh_forge(cx),
             AppView::Agents => self.refresh_agents(cx),
             AppView::Settings => self.refresh_settings(cx),
             AppView::Logs => self.refresh_logs(cx),
@@ -657,6 +873,14 @@ impl AppModel {
         self.workspace.update(cx, |workspace, _| {
             workspace.context_drawer_open = open;
         });
+        self.schedule_session_persistence(cx);
+        cx.notify();
+    }
+
+    /// Settings > Runtime > "Auto-open review" (default off; recommended on). See the UI flow
+    /// plan Part 4.3.
+    pub fn set_auto_open_review(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.auto_open_review = enabled;
         self.schedule_session_persistence(cx);
         cx.notify();
     }
@@ -717,6 +941,7 @@ impl AppModel {
     }
 
     pub fn set_brownfield_mapping_enabled(&mut self, consent: bool, cx: &mut Context<Self>) {
+        self.confirm_brownfield_revoke = false;
         let Some(backend) = self.workspace_backend.clone() else {
             self.status = "Onboarding brownfield indisponível no ambiente de teste".into();
             cx.notify();
@@ -974,42 +1199,12 @@ impl AppModel {
         }
     }
 
-    pub fn set_workspace_view_mode(
-        &mut self,
-        view_mode: WorkspaceViewMode,
-        cx: &mut Context<Self>,
-    ) {
+    /// Expands/collapses the Review section's diff surface in Pulsations (hides the pulsation list
+    /// for full-width reading). Formerly a Workspace concept; moved alongside the HITL surface — see
+    /// the UI flow plan Part 1.2.
+    pub fn toggle_pulsation_diff(&mut self, cx: &mut Context<Self>) {
         self.pulsations.update(cx, |pulsations, _| {
-            pulsations.set_workspace_override(view_mode);
-        });
-        self.workspace.update(cx, |workspace, _| {
-            workspace.view_mode = view_mode;
-            if view_mode == WorkspaceViewMode::Editor {
-                workspace.diff_expanded = false;
-            }
-        });
-        self.schedule_session_persistence(cx);
-        cx.notify();
-    }
-
-    pub fn clear_workspace_view_override(&mut self, cx: &mut Context<Self>) {
-        let view_mode = self.pulsations.update(cx, |pulsations, _| {
-            pulsations.clear_workspace_override();
-            pulsations.derived_workspace_mode()
-        });
-        self.workspace.update(cx, |workspace, _| {
-            workspace.view_mode = view_mode;
-            if view_mode == WorkspaceViewMode::Editor {
-                workspace.diff_expanded = false;
-            }
-        });
-        self.schedule_session_persistence(cx);
-        cx.notify();
-    }
-
-    pub fn toggle_workspace_diff(&mut self, cx: &mut Context<Self>) {
-        self.workspace.update(cx, |workspace, _| {
-            workspace.diff_expanded = !workspace.diff_expanded;
+            pulsations.diff_expanded = !pulsations.diff_expanded;
         });
         cx.notify();
     }
@@ -1105,7 +1300,52 @@ impl AppModel {
                 model.finish_workspace_save(relative_path, content, result, cx);
             });
         });
+        self.confirm_workspace_overwrite = None;
         self.file_tasks.insert(task_key, task);
+    }
+
+    pub fn set_confirm_workspace_overwrite(
+        &mut self,
+        path: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_workspace_overwrite = path;
+        cx.notify();
+    }
+
+    pub fn set_confirm_hitl_reject(&mut self, value: bool, cx: &mut Context<Self>) {
+        self.confirm_hitl_reject = value;
+        cx.notify();
+    }
+
+    pub fn set_confirm_stage_reject(&mut self, value: bool, cx: &mut Context<Self>) {
+        self.confirm_stage_reject = value;
+        cx.notify();
+    }
+
+    pub fn set_confirm_brownfield_revoke(&mut self, value: bool, cx: &mut Context<Self>) {
+        self.confirm_brownfield_revoke = value;
+        cx.notify();
+    }
+
+    pub fn is_dropdown_open(&self, id: &str) -> bool {
+        self.active_dropdown.as_deref() == Some(id)
+    }
+
+    pub fn toggle_dropdown(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.active_dropdown.as_deref() == Some(id) {
+            self.active_dropdown = None;
+        } else {
+            self.active_dropdown = Some(id.to_string());
+        }
+        cx.notify();
+    }
+
+    pub fn close_dropdown(&mut self, cx: &mut Context<Self>) {
+        if self.active_dropdown.is_some() {
+            self.active_dropdown = None;
+            cx.notify();
+        }
     }
 
     pub(crate) fn refresh_pulsations(&mut self, cx: &mut Context<Self>) {
@@ -1168,19 +1408,75 @@ impl AppModel {
         preferred_id: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Option<String> {
-        let (active_id, workspace_mode) = self.pulsations.update(cx, |pulsations, _| {
-            let active_id = pulsations.apply_snapshot(project_id, snapshot, preferred_id);
-            (active_id, pulsations.derived_workspace_mode())
+        let forge_changed = crate::forge::task_runtime_changed(
+            &self.pulsations.read(cx).pulsations,
+            &snapshot.pulsations,
+        );
+        let previously_awaiting_hitl = self.pulsations.read(cx).awaiting_hitl;
+        let active_id = self.pulsations.update(cx, |pulsations, _| {
+            pulsations.apply_snapshot(project_id, snapshot, preferred_id)
         });
         self.sync_preparation_inputs(cx);
-        self.workspace.update(cx, |workspace, _| {
-            workspace.view_mode = workspace_mode;
-            if workspace_mode == WorkspaceViewMode::Editor {
-                workspace.diff_expanded = false;
-            }
-        });
+        if forge_changed && self.active_view() == AppView::Forge {
+            self.refresh_forge(cx);
+        }
+        self.notify_review_waiting(previously_awaiting_hitl, cx);
         cx.notify();
         active_id
+    }
+
+    /// Pushes the actionable "review(s) waiting" notice the moment a checkpoint newly appears
+    /// (`awaiting_hitl` going from 0 to more than 0), and — only when the developer has opted into
+    /// `auto_open_review` and nothing suggests they're mid-composition elsewhere — jumps straight
+    /// there. See the UI flow plan Part 4.2.
+    fn notify_review_waiting(&mut self, previously_awaiting_hitl: usize, cx: &mut Context<Self>) {
+        let (awaiting_hitl, checkpoint_pulsation_id) = {
+            let pulsations = self.pulsations.read(cx);
+            let checkpoint_id = pulsations
+                .active()
+                .filter(|pulsation| {
+                    pulsation.status == PulsationStatus::Checkpoint
+                        && pulsations
+                            .hitl_checkpoints
+                            .iter()
+                            .any(|c| c.pulsation_id == pulsation.id)
+                })
+                .map(|pulsation| pulsation.id.clone());
+            (pulsations.awaiting_hitl, checkpoint_id)
+        };
+        if previously_awaiting_hitl != 0 || awaiting_hitl == 0 {
+            return;
+        }
+        let Some(pulsation_id) = checkpoint_pulsation_id else {
+            return;
+        };
+        let message = if awaiting_hitl == 1 {
+            "1 review waiting".to_string()
+        } else {
+            format!("{awaiting_hitl} reviews waiting")
+        };
+        self.notices.push_actionable(
+            HeaderNoticeKind::Warning,
+            message,
+            Some(HeaderNoticeAction {
+                label: "Review now".into(),
+                pulsation_id: pulsation_id.clone(),
+            }),
+        );
+        if self.auto_open_review && !self.auto_open_review_blocked(cx) {
+            self.open_pulsation_review(pulsation_id, cx);
+        }
+    }
+
+    /// A deliberately conservative proxy for "the developer looks mid-composition somewhere else":
+    /// an overlay is open, or the Companion composer has a draft. Checking whether an arbitrary
+    /// `NativeTextInput` currently holds keyboard focus would need a `Window` reference this
+    /// background poll callback doesn't have.
+    fn auto_open_review_blocked(&self, cx: &Context<Self>) -> bool {
+        self.forge.new_open
+            || self.agents.read(cx).active_model_picker.is_some()
+            || (self.active_view() == AppView::Chat
+                && !self.chat_draft_input.read(cx).value().trim().is_empty())
     }
 
     fn refresh_pulsation_artifacts(&mut self, pulsation_id: String, cx: &mut Context<Self>) {
@@ -1207,17 +1503,15 @@ impl AppModel {
         cx: &mut Context<Self>,
     ) {
         let pulsation_id = pulsation_id.into();
-        let (selected, workspace_mode) = self.pulsations.update(cx, |pulsations, _| {
-            let selected = pulsations.select(&pulsation_id);
-            (selected, pulsations.derived_workspace_mode())
-        });
+        let selected = self
+            .pulsations
+            .update(cx, |pulsations, _| pulsations.select(&pulsation_id));
         if !selected {
             return;
         }
         self.sync_preparation_inputs(cx);
-        self.workspace.update(cx, |workspace, _| {
-            workspace.view_mode = workspace_mode;
-            workspace.diff_expanded = false;
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.diff_expanded = false;
         });
         self.refresh_pulsation_artifacts(pulsation_id, cx);
         self.refresh_logs(cx);
@@ -1225,6 +1519,18 @@ impl AppModel {
         cx.notify();
     }
 
+    /// Jumps straight to a pulsation's Review section, from anywhere in the app. Used by the
+    /// "review(s) waiting" notice's action button and by auto-open-review (see the UI flow plan
+    /// Part 4).
+    pub(crate) fn open_pulsation_review(&mut self, pulsation_id: String, cx: &mut Context<Self>) {
+        self.select_pulsation(pulsation_id, cx);
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.detail_section = PulsationDetailSection::Review;
+        });
+        self.select_view(AppView::Pulsations, cx);
+    }
+
+    #[cfg(test)]
     pub(crate) fn create_pulsation(&mut self, cx: &mut Context<Self>) {
         let feature_name = self.pulsation_feature_input.read(cx).value().to_owned();
         if feature_name.trim().is_empty() {
@@ -1670,6 +1976,8 @@ impl AppModel {
     }
 
     pub(crate) fn apply_hitl_decision(&mut self, decision: HitlDecision, cx: &mut Context<Self>) {
+        self.confirm_hitl_reject = false;
+        self.confirm_stage_reject = false;
         let request = self
             .pulsations
             .update(cx, |pulsations, _| pulsations.hitl.begin(decision));
@@ -1713,15 +2021,11 @@ impl AppModel {
                     pulsations.hitl.finish(result.clone());
                     if result.is_ok() {
                         pulsations.awaiting_hitl = pulsations.awaiting_hitl.saturating_sub(1);
-                        pulsations.clear_workspace_override();
+                        pulsations.diff_expanded = false;
                     }
                 });
                 match result {
                     Ok(()) => {
-                        model.workspace.update(cx, |workspace, _| {
-                            workspace.diff_expanded = false;
-                            workspace.view_mode = WorkspaceViewMode::Editor;
-                        });
                         model.status = "Decisão HITL aplicada".into();
                         model.schedule_session_persistence(cx);
                         model.refresh_pulsations(cx);
@@ -2030,6 +2334,7 @@ impl AppModel {
         }));
     }
 
+    #[allow(dead_code)]
     pub(crate) fn cycle_chat_connection(&mut self, cx: &mut Context<Self>) {
         self.chat.update(cx, |chat, _| {
             let eligible = chat
@@ -2051,6 +2356,7 @@ impl AppModel {
         cx.notify();
     }
 
+    #[allow(dead_code)]
     pub(crate) fn cycle_chat_transport(&mut self, cx: &mut Context<Self>) {
         self.chat.update(cx, |chat, _| {
             chat.selected_transport = match chat.selected_transport {
@@ -2061,6 +2367,47 @@ impl AppModel {
         self.close_cli_model_picker(cx);
     }
 
+    pub(crate) fn set_chat_transport(
+        &mut self,
+        transport: ChatTransportKind,
+        cx: &mut Context<Self>,
+    ) {
+        self.chat.update(cx, |chat, _| {
+            chat.selected_transport = transport;
+        });
+        self.close_cli_model_picker(cx);
+        self.close_dropdown(cx);
+    }
+
+    pub(crate) fn set_chat_cli_backend(&mut self, backend: CliBackend, cx: &mut Context<Self>) {
+        self.chat.update(cx, |chat, _| {
+            chat.selected_cli_backend = backend;
+            chat.selected_cli_model = None;
+            chat.selected_cli_model_profile = None;
+            chat.selected_cli_model_source = CliModelSelectionSource::Default;
+        });
+        self.close_cli_model_picker(cx);
+        self.close_dropdown(cx);
+        if !self.agents.read(cx).model_catalogs.contains_key(&backend) {
+            self.load_cli_model_catalog(backend, false, cx);
+        }
+    }
+
+    pub(crate) fn set_chat_cli_profile(&mut self, profile: Option<String>, cx: &mut Context<Self>) {
+        self.chat.update(cx, |chat, _| {
+            chat.selected_cli_model_profile = profile;
+        });
+        self.close_dropdown(cx);
+    }
+
+    pub(crate) fn set_chat_connection(&mut self, connection_id: String, cx: &mut Context<Self>) {
+        self.chat.update(cx, |chat, _| {
+            chat.selected_connection_id = Some(connection_id.into());
+        });
+        self.close_dropdown(cx);
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn cycle_chat_cli_backend(&mut self, cx: &mut Context<Self>) {
         let backend = self.chat.update(cx, |chat, _| {
             chat.selected_cli_backend = match chat.selected_cli_backend {
@@ -2085,6 +2432,7 @@ impl AppModel {
         self.open_cli_model_picker(CliModelPickerTarget::Companion, backend, cx);
     }
 
+    #[allow(dead_code)]
     pub(crate) fn cycle_chat_cli_profile(&mut self, cx: &mut Context<Self>) {
         let (backend, model_id, current) = {
             let chat = self.chat.read(cx);
@@ -2359,7 +2707,24 @@ impl AppModel {
     }
 
     pub(crate) fn set_agents_tab(&mut self, tab: AgentsTab, cx: &mut Context<Self>) {
-        self.agents.update(cx, |agents, _| agents.tab = tab);
+        self.agents.update(cx, |agents, _| {
+            agents.tab = tab;
+            if tab == AgentsTab::Api
+                && !matches!(
+                    agents.selected_agent,
+                    Some(crate::agents::AgentIdentifier::Canonical(_))
+                )
+            {
+                agents.selected_agent = agents
+                    .snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.agents.first())
+                    .map(|agent| {
+                        crate::agents::AgentIdentifier::Canonical(agent.config.agent_role)
+                    });
+            }
+            agents.active_model_picker = None;
+        });
         if tab == AgentsTab::Api && self.settings.read(cx).snapshot.is_none() {
             self.refresh_settings(cx);
         }
@@ -2963,7 +3328,7 @@ impl AppModel {
         self.select_cli_model(Some(model_id), CliModelSelectionSource::Manual, cx);
     }
 
-    fn model_profiles(
+    pub(crate) fn model_profiles(
         &self,
         backend: CliBackend,
         model_id: Option<&str>,
@@ -4063,10 +4428,27 @@ impl AppModel {
                 match result {
                     Ok(snapshot) => {
                         let embedding_model = snapshot.config.embedding_model.clone();
+                        let previous_connection =
+                            model.settings.read(cx).selected_connection_id.clone();
+                        let previous_route = model.settings.read(cx).selected_route_id.clone();
                         model.fill_preparation_threshold(&snapshot, cx);
                         let applied = model.settings.update(cx, |settings, _| {
                             settings.apply_snapshot(generation, snapshot)
                         });
+                        if applied {
+                            let connection = model.settings.read(cx).selected_connection_id.clone();
+                            let route = model.settings.read(cx).selected_route_id.clone();
+                            if connection != previous_connection
+                                && let Some(id) = connection
+                            {
+                                model.select_settings_connection(id.to_string(), cx);
+                            }
+                            if route != previous_route
+                                && let Some(id) = route
+                            {
+                                model.select_settings_route(id.to_string(), cx);
+                            }
+                        }
                         if applied
                             && model
                                 .settings_embedding_model_input
@@ -4153,6 +4535,7 @@ impl AppModel {
         );
     }
 
+    #[allow(dead_code)]
     pub(crate) fn cycle_routing_mode(&mut self, cx: &mut Context<Self>) {
         let current = self
             .settings
@@ -4171,6 +4554,15 @@ impl AppModel {
             "Modo de roteamento atualizado.",
             cx,
         );
+    }
+
+    pub(crate) fn set_routing_mode(&mut self, mode: RoutingMode, cx: &mut Context<Self>) {
+        self.update_runtime_config(
+            runtime_config_update().with_routing_mode(mode),
+            "Modo de roteamento atualizado.",
+            cx,
+        );
+        self.close_dropdown(cx);
     }
 
     pub(crate) fn toggle_context_strategy(&mut self, cx: &mut Context<Self>) {
@@ -4456,6 +4848,14 @@ impl AppModel {
         cx.notify();
     }
 
+    pub(crate) fn select_settings_provider(&mut self, provider_id: String, cx: &mut Context<Self>) {
+        self.settings.update(cx, |settings, _| {
+            settings.connection_provider_id = provider_id.into();
+        });
+        self.close_dropdown(cx);
+        cx.notify();
+    }
+
     pub(crate) fn select_settings_connection(
         &mut self,
         connection_id: String,
@@ -4463,6 +4863,7 @@ impl AppModel {
     ) {
         let connection = self.settings.update(cx, |settings, _| {
             settings.selected_connection_id = Some(connection_id.into());
+            settings.creating_connection = false;
             settings.connection().cloned()
         });
         if let Some(connection) = connection {
@@ -4486,6 +4887,8 @@ impl AppModel {
     pub(crate) fn new_settings_connection(&mut self, cx: &mut Context<Self>) {
         self.settings.update(cx, |settings, _| {
             settings.selected_connection_id = None;
+            settings.creating_connection = true;
+            settings.settings_section = crate::settings::SettingsSection::Connections;
         });
         for input in [
             &self.settings_connection_name_input,
@@ -4630,6 +5033,7 @@ impl AppModel {
     pub(crate) fn select_settings_route(&mut self, route_id: String, cx: &mut Context<Self>) {
         let route = self.settings.update(cx, |settings, _| {
             settings.selected_route_id = Some(route_id.into());
+            settings.creating_route = false;
             settings.route().cloned()
         });
         if let Some(route) = route {
@@ -4649,6 +5053,8 @@ impl AppModel {
     pub(crate) fn new_settings_route(&mut self, cx: &mut Context<Self>) {
         self.settings.update(cx, |settings, _| {
             settings.selected_route_id = None;
+            settings.creating_route = true;
+            settings.settings_section = crate::settings::SettingsSection::Routes;
             settings.route_strategy = "priority".into();
             settings.route_max_attempts = 3;
             settings.route_attempt_timeout_ms = 45_000;
@@ -4660,6 +5066,7 @@ impl AppModel {
         cx.notify();
     }
 
+    #[allow(dead_code)]
     pub(crate) fn cycle_route_strategy(&mut self, cx: &mut Context<Self>) {
         self.settings.update(cx, |settings, _| {
             settings.route_strategy = match settings.route_strategy.as_ref() {
@@ -4668,6 +5075,14 @@ impl AppModel {
                 _ => "priority".into(),
             };
         });
+        cx.notify();
+    }
+
+    pub(crate) fn set_route_strategy(&mut self, strategy: String, cx: &mut Context<Self>) {
+        self.settings.update(cx, |settings, _| {
+            settings.route_strategy = strategy.into();
+        });
+        self.close_dropdown(cx);
         cx.notify();
     }
 
@@ -5044,6 +5459,7 @@ impl AppModel {
                                 model.restore_last_session(cx);
                                 model.refresh_settings(cx);
                                 model.refresh_logs(cx);
+                                model.refresh_forge(cx);
                                 if model.active_view == AppView::Agents {
                                     model.refresh_agents(cx);
                                 }
@@ -5184,6 +5600,7 @@ impl AppModel {
         self.hydrating = true;
         self.suppress_editor_sync = true;
         let session = restored.session.as_ref();
+        self.auto_open_review = session.is_some_and(|value| value.auto_open_review);
         let preferred_pulsation_id = session.and_then(|value| value.active_pulsation_id.clone());
         let restored_vault_selection = session.and_then(|value| value.selected_vault_path.clone());
         let active_view = session
@@ -5212,8 +5629,24 @@ impl AppModel {
             })
             .collect::<Vec<_>>();
 
+        // A restored project starts a new in-memory navigation history.
+        self.active_tab = AppTab::from_view(active_view).unwrap_or(AppTab::Companion);
+        self.last_view_per_tab = AppTab::ALL
+            .into_iter()
+            .map(|tab| {
+                (
+                    tab,
+                    if tab.contains(active_view) {
+                        active_view
+                    } else {
+                        tab.default_view()
+                    },
+                )
+            })
+            .collect();
         self.navigation.update(cx, |navigation, _| {
             navigation.active = active_view;
+            navigation.active_tab = self.active_tab;
             navigation.sidebar_collapsed = session.is_some_and(|value| value.sidebar_collapsed);
         });
         self.workspace.update(cx, |workspace, cx| {
@@ -5222,11 +5655,7 @@ impl AppModel {
             workspace.tree = restored.tree.clone();
             workspace.active_relative_path = active_path.clone().map(Into::into);
             workspace.tabs = tabs;
-            workspace.view_mode = session
-                .map(|value| WorkspaceViewMode::from_id(&value.workspace_view_mode))
-                .unwrap_or(WorkspaceViewMode::Editor);
             workspace.context_drawer_open = session.is_none_or(|value| value.context_drawer_open);
-            workspace.diff_expanded = false;
             workspace.brownfield = crate::workspace::BrownfieldOnboardingModel::from_status(
                 restored.brownfield_status.clone(),
             );
@@ -5277,6 +5706,10 @@ impl AppModel {
             session.and_then(|value| value.active_chat_conversation_id.clone());
         self.hydrate_chat_project(restored.project_id.clone(), restored_chat_conversation, cx);
         self.active_view = active_view;
+        if let Some(tab) = AppTab::from_view(active_view) {
+            self.active_tab = tab;
+            self.last_view_per_tab.insert(tab, active_view);
+        }
         self.needs_resync = false;
         self.session_dirty = false;
         self.status = format!("Sessão restaurada: {}", restored.root_path).into();
@@ -5391,7 +5824,10 @@ impl AppModel {
             project_id,
             workspace_root,
             active_tab_path: active_path,
-            workspace_view_mode: workspace.view_mode.id().to_string(),
+            // The Workspace view is editor-only; HITL review now lives in Pulsations' Review
+            // section (see the UI flow plan Part 1.2). The field is kept for the persisted-session
+            // contract and older rows still written with "hitl".
+            workspace_view_mode: "editor".to_string(),
             active_view: self.active_view.id().to_string(),
             sidebar_collapsed: self.navigation.read(cx).sidebar_collapsed,
             context_drawer_open: workspace.context_drawer_open,
@@ -5403,6 +5839,7 @@ impl AppModel {
             active_chat_conversation_id: chat.active_conversation.as_ref().map(ToString::to_string),
             scroll_top: Some(f64::from(editor_snapshot.scroll_top)),
             tabs,
+            auto_open_review: self.auto_open_review,
         })
     }
 
@@ -5479,6 +5916,17 @@ impl AppModel {
         self.event_count = self.event_count.saturating_add(1);
         self.status = format!("Evento recebido: {}", event.event_name()).into();
         match event {
+            AppEvent::Forge(event) => {
+                if self
+                    .workspace
+                    .read(cx)
+                    .project_id
+                    .as_ref()
+                    .is_some_and(|p| p.as_ref() == event.project_id)
+                {
+                    self.refresh_forge(cx);
+                }
+            }
             AppEvent::WorkspaceChanged(event) => {
                 self.logs.update(cx, |logs, _| {
                     logs.record_workspace(event.clone());
@@ -6136,7 +6584,6 @@ mod tests {
             workspace.project_id = Some("project-1".into());
             workspace.root_path = Some("C:\\vault".into());
             workspace.active_relative_path = Some("Features/Login.md".into());
-            workspace.view_mode = WorkspaceViewMode::Hitl;
             workspace.tabs = vec![WorkspaceTabModel {
                 relative_path: "Features/Login.md".into(),
                 content: "# Local draft".into(),
@@ -6175,12 +6622,99 @@ mod tests {
     }
 
     #[gpui::test]
-    fn navigates_all_seven_views(cx: &mut TestAppContext) {
+    fn navigates_every_view(cx: &mut TestAppContext) {
         let model = cx.new(AppModel::new_for_test);
         for view in AppView::ALL {
             model.update(cx, |model, cx| model.select_view(view, cx));
             assert_eq!(cx.read(|cx| model.read(cx).active_view()), view);
+            cx.read(|cx| {
+                let model = model.read(cx);
+                assert_eq!(model.navigation.read(cx).active, view);
+                assert_eq!(model.navigation.read(cx).active_tab, model.active_tab());
+                if let Some(tab) = AppTab::from_view(view) {
+                    assert_eq!(model.active_tab(), tab);
+                }
+            });
         }
+    }
+
+    #[gpui::test]
+    fn alt_number_jumps_to_the_nth_sub_view_of_the_active_tab(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            model.select_tab(AppTab::Engine, cx);
+            model.select_nth_sub_view(0, cx);
+            assert_eq!(model.active_view(), AppTab::Engine.sub_views()[0]);
+            model.select_nth_sub_view(1, cx);
+            assert_eq!(model.active_view(), AppTab::Engine.sub_views()[1]);
+            // Engine has three sub-views; Companion only has two, so index 2 is a no-op there.
+            model.select_nth_sub_view(2, cx);
+            assert_eq!(model.active_view(), AppTab::Engine.sub_views()[2]);
+            model.select_tab(AppTab::Companion, cx);
+            let before = model.active_view();
+            model.select_nth_sub_view(2, cx);
+            assert_eq!(model.active_view(), before);
+        });
+    }
+
+    #[gpui::test]
+    fn ctrl_shift_bracket_cycles_the_current_views_own_sections(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            model.select_view(AppView::Pulsations, cx);
+            model.pulsations.update(cx, |pulsations, _| {
+                pulsations.detail_section = PulsationDetailSection::Review;
+            });
+            model.cycle_current_section(1, cx);
+            assert_eq!(
+                model.pulsations.read(cx).detail_section,
+                PulsationDetailSection::Overview
+            );
+            model.cycle_current_section(-1, cx);
+            assert_eq!(
+                model.pulsations.read(cx).detail_section,
+                PulsationDetailSection::Review
+            );
+            // Wraps around in both directions.
+            model.cycle_current_section(-1, cx);
+            assert_eq!(
+                model.pulsations.read(cx).detail_section,
+                PulsationDetailSection::Artifacts
+            );
+
+            model.select_view(AppView::Settings, cx);
+            model.cycle_current_section(1, cx);
+            assert_eq!(
+                model.settings.read(cx).settings_section,
+                crate::settings::SettingsSection::Routes
+            );
+
+            // A view without a section strip (Vault) ignores the shortcut instead of panicking.
+            model.select_view(AppView::Vault, cx);
+            model.cycle_current_section(1, cx);
+        });
+    }
+
+    #[gpui::test]
+    fn tabs_restore_their_last_view_after_settings(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            for view in [AppView::Logs, AppView::Pulsations, AppView::Chat] {
+                model.select_view(view, cx);
+            }
+            model.select_view(AppView::Settings, cx);
+            assert_eq!(model.active_tab(), AppTab::Companion);
+            assert_eq!(AppTab::from_view(AppView::Settings), None);
+            for (tab, view) in [
+                (AppTab::Agent, AppView::Logs),
+                (AppTab::Engine, AppView::Pulsations),
+                (AppTab::Companion, AppView::Chat),
+            ] {
+                model.select_tab(tab, cx);
+                assert_eq!(model.active_view(), view);
+                assert_eq!(model.navigation.read(cx).active_tab, tab);
+            }
+        });
     }
 
     #[gpui::test]
@@ -6240,7 +6774,7 @@ mod tests {
         assert_eq!(request.active_view, "settings");
         assert!(request.sidebar_collapsed);
         assert!(!request.context_drawer_open);
-        assert_eq!(request.workspace_view_mode, "hitl");
+        assert_eq!(request.workspace_view_mode, "editor");
         assert_eq!(request.active_pulsation_id.as_deref(), Some("pulse-1"));
         assert_eq!(
             request.selected_vault_path.as_deref(),
@@ -6299,6 +6833,7 @@ mod tests {
             active_chat_conversation_id: Some("chat-1".into()),
             scroll_top: Some(44.0),
             tabs: Vec::new(),
+            auto_open_review: true,
             updated_at: "now".into(),
         };
         model.update(cx, |model, cx| {
@@ -6330,9 +6865,12 @@ mod tests {
             let model = model.read(cx);
             assert_eq!(model.active_view, AppView::Chat);
             assert!(model.navigation.read(cx).sidebar_collapsed);
+            assert!(model.auto_open_review);
             let workspace = model.workspace.read(cx);
             assert!(!workspace.context_drawer_open);
-            assert_eq!(workspace.view_mode, WorkspaceViewMode::Hitl);
+            // Legacy sessions persisted with `workspace_view_mode: "hitl"` still restore cleanly;
+            // the Workspace view is editor-only now, and the round-tripped request always reports
+            // "editor" (see the UI flow plan Part 1.2).
             assert_eq!(workspace.open_tab_count(), 1);
             assert_eq!(
                 workspace
@@ -6370,6 +6908,10 @@ mod tests {
                 Some("chat-1".into())
             );
             let round_trip = model.session_request(cx).unwrap();
+            assert_eq!(model.active_tab(), AppTab::Companion);
+            assert_eq!(model.navigation.read(cx).active_tab, AppTab::Companion);
+            assert_eq!(round_trip.workspace_view_mode, "editor");
+            assert!(round_trip.auto_open_review);
             assert_eq!(round_trip.tabs[0].cursor_line, Some(7));
             assert_eq!(round_trip.tabs[0].cursor_column, Some(3));
         });
@@ -6379,8 +6921,8 @@ mod tests {
     fn hydrates_persisted_layout_and_resets_transient_state(cx: &mut TestAppContext) {
         let model = cx.new(AppModel::new_for_test);
         model.update(cx, |model, cx| {
-            model.workspace.update(cx, |workspace, _| {
-                workspace.diff_expanded = true;
+            model.pulsations.update(cx, |pulsations, _| {
+                pulsations.diff_expanded = true;
             });
             model.apply_restored_session(
                 RestoredSession {
@@ -6400,6 +6942,7 @@ mod tests {
                         active_chat_conversation_id: None,
                         scroll_top: None,
                         tabs: Vec::new(),
+                        auto_open_review: false,
                         updated_at: "now".into(),
                     }),
                     tabs: Vec::new(),
@@ -6413,9 +6956,12 @@ mod tests {
         cx.read(|cx| {
             let model = model.read(cx);
             assert_eq!(model.active_view, AppView::Vault);
+            assert_eq!(model.active_tab(), AppTab::Engine);
+            assert_eq!(model.navigation.read(cx).active_tab, AppTab::Engine);
+            assert_eq!(model.last_view_per_tab[&AppTab::Engine], AppView::Vault);
             assert!(model.navigation.read(cx).sidebar_collapsed);
             assert!(!model.workspace.read(cx).context_drawer_open);
-            assert!(!model.workspace.read(cx).diff_expanded);
+            assert!(!model.pulsations.read(cx).diff_expanded);
         });
     }
 

@@ -20,14 +20,13 @@ fn main() -> anyhow::Result<()> {
         .spawn(move || AppCore::initialize(paths, runtime_handle).map_err(anyhow::Error::from))
         .context("falha ao iniciar a inicialização paralela do core")?;
 
-    // O backend gráfico do GPUI e o AppCore não dependem um do outro. Criá-los
-    // em paralelo retira migrations/recovery do caminho serial de abertura sem
-    // permitir que a UI acesse um core parcialmente inicializado.
     let application = Application::new();
     let core = core_initialization.join().map_err(|_| {
         anyhow::anyhow!("worker de inicialização do core encerrou inesperadamente")
     })??;
     let ui_core = Arc::clone(&core);
+
+    let _tokio_guard = runtime.enter();
 
     application.run(move |cx: &mut App| {
         hvc_ui::open_main_window(Arc::clone(&ui_core), cx)

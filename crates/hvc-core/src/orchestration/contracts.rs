@@ -595,6 +595,8 @@ pub struct ArtifactHandoff {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StageHandoffV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_manifest: Option<crate::feature_forge::BatchManifest>,
     pub schema_version: SchemaV1,
     pub recipient: ExecutionFence,
     pub stage: PulsationStage,

@@ -299,6 +299,7 @@ impl ThinkingLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionOrigin {
+    Feature,
     Pipeline,
     Learning,
     Manual,
@@ -307,6 +308,7 @@ pub enum ExecutionOrigin {
 impl ExecutionOrigin {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Feature => "feature",
             Self::Pipeline => "pipeline",
             Self::Learning => "learning",
             Self::Manual => "manual",
@@ -315,6 +317,7 @@ impl ExecutionOrigin {
 
     fn parse(value: &str) -> Option<Self> {
         match value {
+            "feature" => Some(Self::Feature),
             "pipeline" => Some(Self::Pipeline),
             "learning" => Some(Self::Learning),
             "manual" => Some(Self::Manual),
@@ -456,7 +459,14 @@ pub struct CanonicalAgentDescriptor {
     pub color_key: &'static str,
 }
 
-pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 7] = [
+pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 8] = [
+    CanonicalAgentDescriptor {
+        role: AgentRole::FeatureAgent,
+        name: "FeatureAgent",
+        glyph: "+",
+        stage: "Feature",
+        color_key: "cyan",
+    },
     CanonicalAgentDescriptor {
         role: AgentRole::IntakeRouter,
         name: "IntakeRouter",
@@ -2875,12 +2885,16 @@ pub fn build_process_spec(request: CliInvocationRequest) -> Result<CliProcessSpe
 }
 
 pub fn sanitize_terminal_text(bytes: &[u8]) -> String {
+    sanitize_terminal_text_bounded(bytes, MAX_EVENT_CHARS)
+}
+
+pub fn sanitize_terminal_text_bounded(bytes: &[u8], max_chars: usize) -> String {
     let text = String::from_utf8_lossy(bytes);
-    let mut output = String::with_capacity(text.len().min(MAX_EVENT_CHARS));
+    let mut output = String::with_capacity(text.len().min(max_chars));
     let mut chars = text.chars().peekable();
     let mut written = 0usize;
     while let Some(ch) = chars.next() {
-        if written >= MAX_EVENT_CHARS {
+        if written >= max_chars {
             output.push_str("\n[saída truncada]");
             break;
         }
@@ -3138,11 +3152,14 @@ impl TerminalService {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()
-                .filter(|cache| cache.discovered_at.elapsed() < CLI_DISCOVERY_CACHE_TTL)
         {
             return cache.items.clone();
         }
-        let mut items = discover_clis_with_probes().await;
+        let handle = self.runtime.clone();
+        let mut items = match handle.spawn(discover_clis_with_probes()).await {
+            Ok(items) => items,
+            Err(_) => discover_clis(),
+        };
         if cli_mode_disabled() {
             for availability in &mut items {
                 if availability.backend != CliBackend::Custom {
@@ -3809,6 +3826,14 @@ impl TerminalService {
         if config.execution_mode == AgentExecutionMode::ApiDirect {
             return Ok(None);
         }
+        let feature_discovery =
+            request.pulsation_id.is_none() && request.job_chain.starts_with("feature:");
+        if feature_discovery && config.backend == CliBackend::Custom {
+            return Err(TerminalError::Validation(
+                "Feature discovery requires an official read-only CLI adapter or API transport"
+                    .into(),
+            ));
+        }
         if cli_mode_disabled() {
             return Err(TerminalError::Validation(
                 "CLI Mode está desativado pelo kill switch local".into(),
@@ -3881,11 +3906,16 @@ impl TerminalService {
             CliBackend::Gemini | CliBackend::Opencode | CliBackend::Custom
         ) && let Some(schema) = schema.as_ref()
         {
-            prompt.push_str("\nReturn only valid JSON that satisfies this schema. All JSON string values and artifact content authored by the agent must be in English:\n");
+            prompt.push_str("\nReturn only valid JSON that satisfies this schema. Follow the request language contract; generated artifacts must be English:\n");
             prompt.push_str(&serde_json::to_string(schema)?);
         }
-        let workspace = self.repository.project_workspace(&request.project_id)?;
-        let spec = build_process_spec(CliInvocationRequest {
+        // Discovery receives only host-selected context, with the Companion's tool restrictions.
+        let discovery_directory = feature_discovery.then(tempfile::tempdir).transpose()?;
+        let workspace = match &discovery_directory {
+            Some(directory) => directory.path().to_path_buf(),
+            None => self.repository.project_workspace(&request.project_id)?,
+        };
+        let mut spec = build_process_spec(CliInvocationRequest {
             executable,
             backend: config.backend,
             model: config.model.clone(),
@@ -3897,7 +3927,14 @@ impl TerminalService {
             custom_args: config.custom_args.clone(),
             resume_session_id: None,
         })?;
-        let origin = if request.agent_role == AgentRole::LearningAgent {
+        let hardening_guard = if feature_discovery {
+            harden_companion_spec(config.backend, &mut spec)?
+        } else {
+            None
+        };
+        let origin = if feature_discovery {
+            ExecutionOrigin::Feature
+        } else if request.agent_role == AgentRole::LearningAgent {
             ExecutionOrigin::Learning
         } else {
             ExecutionOrigin::Pipeline
@@ -3943,6 +3980,8 @@ impl TerminalService {
             .remove(&run.id);
         self.active_changed.notify_waiters();
         drop(schema_guard);
+        drop(hardening_guard);
+        drop(discovery_directory);
         if let Err(error) = &outcome {
             self.record_process_failure(&run, error);
         }
@@ -4658,8 +4697,19 @@ async fn run_companion_process(
     let stdout = redact_secrets(&sanitized_stdout).map_err(TerminalError::Redaction)?;
     let stderr = redact_secrets(&sanitized_stderr).map_err(TerminalError::Redaction)?;
     if !status.success() {
+        // Codex reports provider failures in JSONL stdout, often with empty stderr.
+        // Decode only error events; never expose reasoning or the control stream.
+        let diagnostic = if backend == CliBackend::Codex {
+            codex_companion_error(&stdout.text).unwrap_or_else(|| stderr.text.clone())
+        } else {
+            stderr.text.clone()
+        };
+        // Decode before the final redaction, including JSON-escaped credentials.
+        let diagnostic = redact_secrets(&sanitize_terminal_text(diagnostic.as_bytes()))
+            .map_err(TerminalError::Redaction)?
+            .text;
         return Err(
-            match adapters::classify_failure(backend, status.code(), &stderr.text) {
+            match adapters::classify_failure(backend, status.code(), &diagnostic) {
                 adapters::CliFailureKind::AuthenticationRequired => {
                     TerminalError::AuthRequired(backend.label().into())
                 }
@@ -4670,14 +4720,14 @@ async fn run_companion_process(
                     TerminalError::RateLimited(backend.label().into())
                 }
                 adapters::CliFailureKind::ProcessFailed => {
-                    TerminalError::Process(if stderr.text.is_empty() {
+                    TerminalError::Process(if diagnostic.is_empty() {
                         format!(
                             "{} CLI exited with status {:?}",
                             backend.label(),
                             status.code()
                         )
                     } else {
-                        stderr.text
+                        diagnostic
                     })
                 }
             },
@@ -4692,6 +4742,38 @@ async fn run_companion_process(
         exit_code: status.code(),
         output_bytes: stdout.text.len().saturating_add(stderr.text.len()),
         redaction_count: stdout.count.saturating_add(stderr.count),
+    })
+}
+
+fn codex_companion_error(stdout: &str) -> Option<String> {
+    fn message(value: &Value, depth: usize) -> Option<String> {
+        if depth > 6 {
+            return None;
+        }
+        if let Some(text) = value.as_str() {
+            return match serde_json::from_str::<Value>(text) {
+                Ok(nested) => message(&nested, depth + 1),
+                Err(_) => (!text.trim().is_empty()).then(|| text.to_owned()),
+            };
+        }
+        value
+            .get("error")
+            .or_else(|| value.get("message"))
+            .and_then(|value| message(value, depth + 1))
+    }
+    stdout.lines().rev().find_map(|line| {
+        let value: Value = serde_json::from_str(line).ok()?;
+        let error = match value.get("type").and_then(Value::as_str)? {
+            "turn.failed" | "error" => &value,
+            "item.completed" if value["item"]["type"] == "error" => &value["item"],
+            _ => return None,
+        };
+        let mut diagnostic = message(error, 0)?;
+        let lower = diagnostic.to_ascii_lowercase();
+        if lower.contains("model") && ["not supported", "does not exist", "not found", "do not have access"].iter().any(|reason| lower.contains(reason)) {
+            diagnostic.push_str(" Select an available model (or CLI default) and create a new conversation. Existing conversations keep their original model.");
+        }
+        Some(diagnostic)
     })
 }
 
@@ -4953,6 +5035,7 @@ fn resolve_trusted_npm_shim(
             "node_modules/@google/gemini-cli/dist/index.js",
         ],
         CliBackend::Opencode => &[
+            "node_modules/opencode-ai/bin/opencode.exe",
             "node_modules/opencode-ai/bin/opencode",
             "node_modules/opencode-ai/bin/opencode.js",
         ],
@@ -4978,10 +5061,20 @@ fn resolve_trusted_npm_shim(
         return Err(TerminalError::Security("entrypoint npm inválido".into()));
     }
     let entrypoint = entrypoint.canonicalize()?;
-    let node = find_node_for_shim(shim_directory)?;
-    spec.args.insert(0, process_argument_path(&entrypoint));
-    spec.executable = node.clone();
-    let identity_sha256 = hash_launch_files(&[&node, &entrypoint, shim])?;
+    let is_native_binary = entrypoint
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"));
+    let (executable, identity_sha256) = if is_native_binary {
+        let identity = hash_launch_files(&[&entrypoint, shim])?;
+        (entrypoint, identity)
+    } else {
+        let node = find_node_for_shim(shim_directory)?;
+        spec.args.insert(0, process_argument_path(&entrypoint));
+        let identity = hash_launch_files(&[&node, &entrypoint, shim])?;
+        (node, identity)
+    };
+    spec.executable = executable;
     Ok(SecuredLaunch {
         spec,
         identity_sha256,
@@ -5147,6 +5240,42 @@ mod tests {
         assert!(!permissions.contains(r#""edit""#));
         assert!(permissions.contains(r#""*":"deny""#));
         assert!(permissions.contains(r#""read":"allow""#));
+    }
+
+    #[test]
+    fn codex_companion_reads_nested_stdout_errors_without_exposing_other_events() {
+        let error = serde_json::json!({"type":"error","status":400,"error":{
+            "type":"invalid_request_error",
+            "message":"The 'gpt-5.2-codex' model is not supported when using Codex with a ChatGPT account."
+        }});
+        let output = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({"type":"item.completed","item":{"type":"reasoning","text":"private trace"}}),
+            serde_json::json!({"type":"turn.failed","error":{"message":error.to_string()}}),
+            serde_json::json!({"type":"item.completed","item":{"type":"agent_message","text":"internal control stream"}}),
+        );
+        let diagnostic = codex_companion_error(&output).unwrap();
+        assert!(diagnostic.contains("gpt-5.2-codex"));
+        assert!(diagnostic.contains("create a new conversation"));
+        assert!(!diagnostic.contains("private trace"));
+        assert!(!diagnostic.contains("internal control stream"));
+        assert!(!diagnostic.contains("invalid_request_error"));
+        assert!(
+            codex_companion_error(
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"not an error"}}"#
+            )
+            .is_none()
+        );
+        let wrapped =
+            serde_json::json!({"type":"item.completed","item":{"type":"agent_message","text":
+                serde_json::json!({"response":{"type":"final","text":"Ready"}}).to_string()
+            }})
+            .to_string();
+        assert_eq!(
+            serde_json::from_str::<Value>(&extract_companion_envelope_json(&wrapped).unwrap())
+                .unwrap(),
+            serde_json::json!({"type":"final","text":"Ready"})
+        );
     }
 
     #[test]
@@ -5475,6 +5604,39 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn opencode_native_executable_npm_shim_resolves_directly() {
+        let installation = tempfile::tempdir().unwrap();
+        let entrypoint = installation
+            .path()
+            .join("node_modules/opencode-ai/bin/opencode.exe");
+        fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+        fs::write(&entrypoint, "binary-fixture\n").unwrap();
+        let shim = installation.path().join("opencode.cmd");
+        fs::write(
+            &shim,
+            "@ECHO off\r\n\"%~dp0\\node_modules\\opencode-ai\\bin\\opencode.exe\" %*\r\n",
+        )
+        .unwrap();
+
+        let secured = secure_launch_spec(
+            CliProcessSpec {
+                executable: shim.clone(),
+                args: vec!["--version".into()],
+                environment: Vec::new(),
+                stdin_payload: Vec::new(),
+                resume_session_id: None,
+            },
+            CliBackend::Opencode,
+        )
+        .unwrap();
+
+        assert_eq!(secured.spec.executable, entrypoint.canonicalize().unwrap());
+        assert_eq!(secured.spec.args, vec!["--version".to_string()]);
+        assert_eq!(secured.identity_sha256.len(), 64);
+    }
+
     #[test]
     fn sanitizer_removes_ansi_osc_and_control_characters() {
         let value = sanitize_terminal_text(b"ok\x1b[31m red\x1b[0m\x1b]0;title\x07\0done");
@@ -5535,7 +5697,7 @@ mod tests {
         let configs = repository
             .ensure_project_configs(&project.id, true)
             .unwrap();
-        assert_eq!(configs.len(), 7);
+        assert_eq!(configs.len(), AgentRole::ALL.len());
         assert!(configs.iter().all(|config| config.execution_mode
             == AgentExecutionMode::CliProcess
             && config.backend == CliBackend::Codex));
@@ -5751,7 +5913,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(canonical_count, 7);
+        assert_eq!(canonical_count as usize, AgentRole::ALL.len());
 
         let mut slots = Vec::new();
         for index in 0..8 {

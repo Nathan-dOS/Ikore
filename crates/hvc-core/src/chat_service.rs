@@ -1764,7 +1764,7 @@ impl ChatService {
                         context.conversation.model_profile,
                     ],
                 )?;
-                let prompt = build_cli_companion_prompt(&messages, &exchanges, repair);
+                let prompt = build_cli_companion_prompt(&messages, &exchanges, repair, backend);
                 let started = Instant::now();
                 let outcome = terminals
                     .execute_companion_round(
@@ -1776,7 +1776,7 @@ impl ChatService {
                             model_profile: context.conversation.model_profile.clone(),
                             model_source: context.conversation.model_source,
                             prompt,
-                            schema: companion_control_envelope_schema(),
+                            schema: companion_schema_for_backend(backend),
                         },
                         &context.cancellation,
                         Instant::now() + TURN_TIMEOUT,
@@ -1785,7 +1785,7 @@ impl ChatService {
                 let latency_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
                 match outcome {
                     Ok(output) => {
-                        let parsed = parse_companion_control_envelope(&output.envelope_json);
+                        let parsed = parse_cli_companion_envelope(&output.envelope_json, backend);
                         match parsed {
                             Ok(envelope) => {
                                 self.finish_cli_model_call(
@@ -3312,10 +3312,100 @@ fn companion_control_envelope_schema() -> Value {
     })
 }
 
+// Codex Structured Outputs requires a closed root object and fully required
+// properties. Keep the host envelope unchanged behind a provider-only wrapper.
+fn companion_schema_for_backend(backend: CliBackend) -> Value {
+    let schema = companion_control_envelope_schema();
+    if backend != CliBackend::Codex {
+        return schema;
+    }
+    let calls = repository_tool_schemas()
+        .into_iter()
+        .map(|(name, _, mut arguments)| {
+            let required = arguments
+                .get("required")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            let properties = arguments["properties"]
+                .as_object_mut()
+                .expect("tool properties");
+            for (name, property) in properties.iter_mut() {
+                if !required
+                    .as_array()
+                    .is_some_and(|keys| keys.contains(&json!(name)))
+                {
+                    *property = json!({"anyOf": [property.clone(), {"type": "null"}]});
+                }
+            }
+            let keys = properties.keys().cloned().collect::<Vec<_>>();
+            arguments["required"] = json!(keys);
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "name": {"type": "string", "enum": [name]},
+                    "arguments": arguments
+                },
+                "required": ["id", "name", "arguments"],
+                "additionalProperties": false
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut tools = schema["oneOf"][1].clone();
+    tools["properties"]["type"] = json!({"type": "string", "enum": ["tool_calls"]});
+    tools["properties"]["calls"]["items"] = json!({"anyOf": calls});
+    let mut final_response = schema["oneOf"][0].clone();
+    final_response["properties"]["type"] = json!({"type": "string", "enum": ["final"]});
+    json!({
+        "type": "object",
+        "properties": {"response": {"anyOf": [final_response, tools]}},
+        "required": ["response"],
+        "additionalProperties": false
+    })
+}
+
+fn parse_cli_companion_envelope(
+    payload: &str,
+    backend: CliBackend,
+) -> Result<CompanionControlEnvelope, ChatCommandError> {
+    if backend != CliBackend::Codex {
+        return parse_companion_control_envelope(payload);
+    }
+    let mut envelope: Value = serde_json::from_str(payload).map_err(|_| {
+        ChatCommandError::new(
+            "invalid_control_envelope",
+            "The Companion CLI returned an invalid control envelope.",
+        )
+    })?;
+    // The terminal adapter extracts the inner envelope. Only optional fields
+    // declared by the host may use null to represent omission on the wire.
+    if let Some(calls) = envelope.get_mut("calls").and_then(Value::as_array_mut) {
+        let schemas = repository_tool_schemas();
+        for call in calls {
+            let schema = schemas
+                .iter()
+                .find(|(name, _, _)| call.get("name").and_then(Value::as_str) == Some(name));
+            if let Some((_, _, schema)) = schema
+                && let Some(arguments) = call.get_mut("arguments").and_then(Value::as_object_mut)
+            {
+                arguments.retain(|name, value| {
+                    !value.is_null()
+                        || schema["properties"].get(name).is_none()
+                        || schema["required"]
+                            .as_array()
+                            .is_some_and(|keys| keys.contains(&json!(name)))
+                });
+            }
+        }
+    }
+    parse_companion_control_envelope(&envelope.to_string())
+}
+
 fn build_cli_companion_prompt(
     messages: &[ProtocolMessage],
     exchanges: &[ToolExchange],
     repair: bool,
+    backend: CliBackend,
 ) -> String {
     let messages = messages
         .iter()
@@ -3350,7 +3440,8 @@ fn build_cli_companion_prompt(
         serde_json::to_string(&repository_tool_schemas()).unwrap_or_else(|_| "[]".into()),
         serde_json::to_string(&messages).unwrap_or_else(|_| "[]".into()),
         serde_json::to_string(&exchanges).unwrap_or_else(|_| "[]".into()),
-        serde_json::to_string(&companion_control_envelope_schema()).unwrap_or_else(|_| "{}".into()),
+        serde_json::to_string(&companion_schema_for_backend(backend))
+            .unwrap_or_else(|_| "{}".into()),
         repair_instruction,
     )
 }
@@ -3377,6 +3468,15 @@ fn chat_cli_error(error: TerminalError) -> ChatCommandError {
         TerminalError::Cancelled => "Resposta cancelada.".into(),
         TerminalError::OutputLimit => "The Companion CLI exceeded the safe output limit.".into(),
         TerminalError::NotFound(_) => "The selected CLI is not installed or discoverable.".into(),
+        TerminalError::Validation(message) => {
+            let message = format!(
+                "{message}. Select an available model/profile (or CLI default) and create a new conversation. Existing conversations keep their original model."
+            );
+            redact_secrets(&message).map_or_else(
+                |_| "The Companion CLI configuration is invalid.".into(),
+                |v| v.text,
+            )
+        }
         TerminalError::Process(message) => {
             redact_secrets(&message).map_or_else(|_| "The Companion CLI failed.".into(), |v| v.text)
         }
@@ -4346,7 +4446,66 @@ mod tests {
     }
 
     #[test]
+    fn codex_companion_schema_accepts_final_and_typed_tools_with_strict_objects() {
+        fn assert_strict(schema: &Value) {
+            if schema["type"] == "object" {
+                assert_eq!(schema["additionalProperties"], false);
+                let properties = schema["properties"].as_object().unwrap();
+                let required = schema["required"].as_array().unwrap();
+                assert_eq!(properties.len(), required.len());
+                assert!(properties.keys().all(|key| required.contains(&json!(key))));
+                for property in properties.values() {
+                    assert_strict(property);
+                }
+            }
+            assert!(schema.get("oneOf").is_none());
+            if let Some(branches) = schema["anyOf"].as_array() {
+                for branch in branches {
+                    assert_strict(branch);
+                }
+            }
+            if let Some(items) = schema.get("items") {
+                assert_strict(items);
+            }
+        }
+        let schema = companion_schema_for_backend(CliBackend::Codex);
+        assert_eq!(schema["type"], "object");
+        assert!(schema.get("anyOf").is_none());
+        assert_strict(&schema);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        assert!(validator.is_valid(&json!({"response":{"type":"final","text":"Ready"}})));
+        let tool = json!({"type":"tool_calls","calls":[{
+            "id":"read-1", "name":"read_repository_file",
+            "arguments":{"path":"src/lib.rs","startLine":null,"endLine":null}
+        }]});
+        assert!(validator.is_valid(&json!({"response":tool})));
+        let CompanionControlEnvelope::ToolCalls { calls } =
+            parse_cli_companion_envelope(&tool.to_string(), CliBackend::Codex).unwrap()
+        else {
+            panic!("expected tool call")
+        };
+        assert_eq!(calls[0].arguments, json!({"path":"src/lib.rs"}));
+        for invalid in [
+            json!({"response":{"type":"final","text":"Ready","reasoning":"hidden"}}),
+            json!({"response":{"type":"tool_calls","calls":[{"id":"1","name":"write_file","arguments":{}}]}}),
+            json!({"response":{"type":"tool_calls","calls":[{"id":"1","name":"read_repository_file","arguments":{"path":null,"startLine":null,"endLine":null}}]}}),
+        ] {
+            assert!(!validator.is_valid(&invalid));
+        }
+        assert_eq!(
+            companion_schema_for_backend(CliBackend::Claude),
+            companion_control_envelope_schema()
+        );
+    }
+
+    #[test]
     fn cli_control_envelope_is_strict_and_allows_only_read_only_tools() {
+        let unavailable = chat_cli_error(TerminalError::Validation(
+            "model legacy-model is not present in the project-scoped Codex catalog".into(),
+        ));
+        assert_eq!(unavailable.code, "cli_configuration_invalid");
+        assert!(unavailable.message.contains("legacy-model"));
+        assert!(unavailable.message.contains("create a new conversation"));
         assert!(matches!(
             parse_companion_control_envelope(r#"{"type":"final","text":"Ready"}"#).unwrap(),
             CompanionControlEnvelope::Final { text } if text == "Ready"
@@ -4482,6 +4641,7 @@ mod tests {
             }],
             &[],
             false,
+            CliBackend::Codex,
         );
         assert!(!prompt.contains("alpha-private-evidence"));
         assert!(!prompt.contains("beta-private-evidence"));

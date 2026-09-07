@@ -126,7 +126,10 @@ pub fn validate_specification_answers(
 
 impl StageHandoffV1 {
     pub fn normative_chars(&self) -> usize {
-        self.artifacts
+        self.batch_manifest.as_ref().map_or(0, |manifest| {
+            serde_json::to_string(manifest).map_or(usize::MAX / 2, |text| text.chars().count())
+        }) + self
+            .artifacts
             .iter()
             .map(|a| a.content.chars().count())
             .sum::<usize>()
@@ -162,6 +165,9 @@ impl StageHandoffV1 {
             }
         }
         recipient.validate()?;
+        if self.normative_chars() > artifact_chars_budget {
+            return Err(ContractError::BudgetExceeded);
+        }
         if &self.recipient != recipient || recipient.pulsation_id.is_none() {
             return Err(ContractError::StaleExecution);
         }

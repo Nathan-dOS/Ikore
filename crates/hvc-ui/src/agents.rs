@@ -455,8 +455,15 @@ impl TerminalEventFilter {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentIdentifier {
+    Canonical(AgentRole),
+    FreeForm(String),
+}
+
 #[derive(Debug)]
 pub(crate) struct AgentsModel {
+    pub(crate) selected_agent: Option<AgentIdentifier>,
     pub(crate) tab: AgentsTab,
     pub(crate) snapshot: Option<TerminalsSnapshot>,
     pub(crate) fallbacks: Vec<CliFallbackCheckpoint>,
@@ -488,6 +495,7 @@ pub(crate) struct AgentsModel {
 impl Default for AgentsModel {
     fn default() -> Self {
         Self {
+            selected_agent: None,
             tab: AgentsTab::Cli,
             snapshot: None,
             fallbacks: Vec::new(),
@@ -519,6 +527,30 @@ impl Default for AgentsModel {
 }
 
 impl AgentsModel {
+    /// Number of canonical/free-form agents with at least one failed run in their recent history.
+    /// Feeds the Agent tab's attention badge (see the UI flow plan Part 4.4). Deliberately checks
+    /// the whole `recent_runs` buffer rather than assuming it's ordered newest-first, so an agent
+    /// that has since recovered may still count until its history ages out.
+    pub(crate) fn failed_agent_count(&self) -> usize {
+        let Some(snapshot) = &self.snapshot else {
+            return 0;
+        };
+        let has_failure = |runs: &[hvc_core::terminals::TerminalRun]| {
+            runs.iter()
+                .any(|run| run.status == hvc_core::terminals::TerminalRunStatus::Failed)
+        };
+        snapshot
+            .agents
+            .iter()
+            .filter(|agent| has_failure(&agent.recent_runs))
+            .count()
+            + snapshot
+                .free_form_slots
+                .iter()
+                .filter(|slot| has_failure(&slot.recent_runs))
+                .count()
+    }
+
     pub(crate) fn begin(&mut self, loading: bool) -> u64 {
         self.generation = self.generation.saturating_add(1);
         self.loading = loading;
@@ -544,6 +576,7 @@ impl AgentsModel {
         {
             self.model_catalogs.clear();
             self.active_model_picker = None;
+            self.selected_agent = None;
         }
         self.events_by_run.clear();
         for agent in &snapshot.terminals.agents {
@@ -616,8 +649,39 @@ impl AgentsModel {
         {
             self.pending_pipeline_cancel = None;
         }
+        self.reconcile_selection(&snapshot.terminals);
         self.snapshot = Some(snapshot.terminals);
         true
+    }
+
+    fn reconcile_selection(&mut self, snapshot: &TerminalsSnapshot) {
+        let valid = match self.selected_agent.as_ref() {
+            Some(AgentIdentifier::Canonical(role)) => snapshot
+                .agents
+                .iter()
+                .any(|agent| agent.config.agent_role == *role),
+            Some(AgentIdentifier::FreeForm(id)) => snapshot
+                .free_form_slots
+                .iter()
+                .chain(&snapshot.archived_free_form_slots)
+                .any(|slot| slot.slot.id == *id),
+            None => false,
+        };
+        if !valid {
+            self.active_model_picker = None;
+            self.selected_agent = snapshot
+                .agents
+                .first()
+                .map(|agent| AgentIdentifier::Canonical(agent.config.agent_role))
+                .or_else(|| {
+                    snapshot
+                        .free_form_slots
+                        .iter()
+                        .chain(&snapshot.archived_free_form_slots)
+                        .next()
+                        .map(|slot| AgentIdentifier::FreeForm(slot.slot.id.clone()))
+                });
+        }
     }
 
     pub(crate) fn apply_model_catalog(&mut self, catalog: CliModelCatalogSnapshot) {
@@ -983,6 +1047,39 @@ mod tests {
             discovery: Vec::new(),
         });
         model
+    }
+
+    #[test]
+    fn selection_survives_refresh_and_recovers_when_an_agent_disappears() {
+        let mut model = model();
+        let snapshot = model.snapshot.clone().unwrap();
+        model.reconcile_selection(&snapshot);
+        assert_eq!(
+            model.selected_agent,
+            Some(AgentIdentifier::Canonical(AgentRole::BackendAgent))
+        );
+        model.selected_agent = Some(AgentIdentifier::FreeForm("deleted-slot".into()));
+        model.reconcile_selection(&snapshot);
+        assert_eq!(
+            model.selected_agent,
+            Some(AgentIdentifier::Canonical(AgentRole::BackendAgent))
+        );
+        let generation = model.begin(true);
+        assert!(model.apply_snapshot(
+            generation,
+            AgentsDashboardSnapshot {
+                terminals: snapshot,
+                fallbacks: vec![]
+            }
+        ));
+        assert_eq!(
+            model.selected_agent,
+            Some(AgentIdentifier::Canonical(AgentRole::BackendAgent))
+        );
+        let mut empty = model.snapshot.clone().unwrap();
+        empty.agents.clear();
+        model.reconcile_selection(&empty);
+        assert_eq!(model.selected_agent, None);
     }
 
     #[test]
