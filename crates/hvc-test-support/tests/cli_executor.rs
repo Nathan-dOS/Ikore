@@ -335,6 +335,11 @@ async fn companion_cli_uses_existing_cli_auth_without_hvc_credentials_and_persis
         binaries.path().join("claude.exe"),
     )
     .unwrap();
+    std::fs::copy(
+        env!("CARGO_BIN_EXE_cli_fixture"),
+        binaries.path().join("codex.exe"),
+    )
+    .unwrap();
     let original_path = std::env::var_os("PATH");
     let _restore = PathRestore(original_path.clone());
     let mut paths = vec![binaries.path().to_path_buf()];
@@ -344,6 +349,85 @@ async fn companion_cli_uses_existing_cli_auth_without_hvc_credentials_and_persis
     // SAFETY: PATH_TEST_LOCK serializes this mutation and PathRestore restores it.
     unsafe { std::env::set_var("PATH", std::env::join_paths(paths).unwrap()) };
 
+    for backend in [CliBackend::Codex, CliBackend::Claude] {
+        let harness = harness(Vec::new());
+        let credentials = Arc::new(NoHvcCredentials::default());
+        let chat = Arc::new(ChatService::new(
+            &harness.database_path,
+            credentials.clone(),
+            Arc::new(NoopChatEventSink),
+        ));
+        chat.attach_terminal_service(harness.terminals.clone());
+        let conversation = chat
+            .create_conversation(CreateChatConversationRequest {
+                project_id: harness.project_id.clone(),
+                target: ChatExecutionTargetRequest::Cli {
+                    backend,
+                    model: None,
+                    model_profile: None,
+                },
+            })
+            .unwrap()
+            .conversation;
+        chat.start_turn(
+            SendChatMessageRequest {
+                conversation_id: conversation.id.clone(),
+                content: "Recommend a model using only local evidence.".into(),
+            },
+            harness._workspace.path(),
+        )
+        .unwrap();
+        assert!(chat.wait_for_idle(Duration::from_secs(30)).await);
+        let loaded = chat
+            .get_conversation(GetChatConversationRequest {
+                conversation_id: conversation.id.clone(),
+            })
+            .unwrap();
+        let assistant = loaded
+            .messages
+            .iter()
+            .find(|message| message.role == "assistant")
+            .unwrap();
+        assert_eq!(assistant.status, "completed");
+        assert_eq!(assistant.content, "Companion fixture response");
+        assert!(!assistant.content.contains("control_envelope"));
+        assert!(!assistant.content.contains("item.completed"));
+        assert!(loaded.tool_calls.is_empty());
+        assert_eq!(credentials.0.load(Ordering::SeqCst), 0);
+        if backend == CliBackend::Codex {
+            chat.start_turn(
+                SendChatMessageRequest {
+                    conversation_id: conversation.id.clone(),
+                    content: "companion-error-fixture".into(),
+                },
+                harness._workspace.path(),
+            )
+            .unwrap();
+            assert!(chat.wait_for_idle(Duration::from_secs(30)).await);
+            let failed = chat
+                .get_conversation(GetChatConversationRequest {
+                    conversation_id: conversation.id,
+                })
+                .unwrap();
+            let assistant = failed
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == "assistant")
+                .unwrap();
+            assert_eq!(assistant.status, "failed");
+            let error = assistant.error_message.as_deref().unwrap();
+            assert!(error.contains("not supported"));
+            assert!(error.contains("create a new conversation"));
+            assert!(!error.contains("turn.failed"));
+            assert!(!error.contains("Some(1)"));
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires local Codex authentication and network; sends only synthetic messages"]
+async fn authenticated_codex_companion_smoke() {
     let harness = harness(Vec::new());
     let credentials = Arc::new(NoHvcCredentials::default());
     let chat = Arc::new(ChatService::new(
@@ -356,37 +440,54 @@ async fn companion_cli_uses_existing_cli_auth_without_hvc_credentials_and_persis
         .create_conversation(CreateChatConversationRequest {
             project_id: harness.project_id.clone(),
             target: ChatExecutionTargetRequest::Cli {
-                backend: CliBackend::Claude,
+                backend: CliBackend::Codex,
                 model: None,
                 model_profile: None,
             },
         })
         .unwrap()
         .conversation;
-    chat.start_turn(
-        SendChatMessageRequest {
-            conversation_id: conversation.id.clone(),
-            content: "Recommend a model using only local evidence.".into(),
-        },
-        harness._workspace.path(),
-    )
-    .unwrap();
-    assert!(chat.wait_for_idle(Duration::from_secs(30)).await);
-    let loaded = chat
-        .get_conversation(GetChatConversationRequest {
-            conversation_id: conversation.id,
-        })
+    for content in [
+        "Reply with exactly Ready. Do not call any tools.",
+        "Use the HVC list_repository_tree tool to list src, then tell me which file it contains. Do not use native tools.",
+    ] {
+        chat.start_turn(
+            SendChatMessageRequest {
+                conversation_id: conversation.id.clone(),
+                content: content.into(),
+            },
+            harness._workspace.path(),
+        )
         .unwrap();
-    let assistant = loaded
-        .messages
-        .iter()
-        .find(|message| message.role == "assistant")
-        .unwrap();
-    assert_eq!(assistant.status, "completed");
-    assert_eq!(assistant.content, "Companion fixture response");
-    assert!(!assistant.content.contains("control_envelope"));
-    assert!(!assistant.content.contains("item.completed"));
-    assert!(loaded.tool_calls.is_empty());
+        assert!(chat.wait_for_idle(Duration::from_secs(150)).await);
+        let loaded = chat
+            .get_conversation(GetChatConversationRequest {
+                conversation_id: conversation.id.clone(),
+            })
+            .unwrap();
+        let assistant = loaded
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant")
+            .unwrap();
+        assert_eq!(
+            assistant.status, "completed",
+            "{:?}",
+            assistant.error_message
+        );
+        assert!(!assistant.content.is_empty());
+        assert!(!assistant.content.contains("control_envelope"));
+        if content.starts_with("Use") {
+            assert!(
+                loaded
+                    .tool_calls
+                    .iter()
+                    .any(|call| call.tool_name == "list_repository_tree")
+            );
+            assert!(assistant.content.contains("lib.rs"));
+        }
+    }
     assert_eq!(credentials.0.load(Ordering::SeqCst), 0);
 }
 
@@ -494,4 +595,80 @@ async fn deadline_kills_the_process_tree_and_stops_descendant_heartbeat() {
     assert_eq!(run.status, TerminalRunStatus::Failed);
     assert_eq!(run.error_code.as_deref(), Some("cli_timeout"));
     assert_eq!(run.termination_reason.as_deref(), Some("timeout"));
+}
+
+#[tokio::test]
+async fn feature_discovery_uses_four_official_cli_adapters_with_isolated_context_and_own_identity()
+{
+    let _lock = PATH_TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let binaries = tempfile::tempdir().unwrap();
+    for name in ["codex", "claude", "gemini", "opencode"] {
+        std::fs::copy(
+            env!("CARGO_BIN_EXE_cli_fixture"),
+            binaries.path().join(format!("{name}.exe")),
+        )
+        .unwrap();
+    }
+    let original = std::env::var_os("PATH");
+    let _restore = PathRestore(original.clone());
+    let mut paths = vec![binaries.path().to_path_buf()];
+    if let Some(original) = original {
+        paths.extend(std::env::split_paths(&original));
+    }
+    // SAFETY: the PATH test lock serializes fixture discovery and restores the original value.
+    unsafe {
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+    }
+    let h = harness(vec![]);
+    for backend in [
+        CliBackend::Codex,
+        CliBackend::Claude,
+        CliBackend::Gemini,
+        CliBackend::Opencode,
+    ] {
+        let config = h
+            .terminals
+            .repository()
+            .get_config(&h.project_id, AgentRole::FeatureAgent)
+            .unwrap();
+        h.terminals
+            .update_config(UpdateCliAgentConfigRequest {
+                project_id: h.project_id.clone(),
+                agent_role: AgentRole::FeatureAgent,
+                execution_mode: AgentExecutionMode::CliProcess,
+                backend,
+                model: None,
+                model_profile: None,
+                model_source: CliModelSelectionSource::Default,
+                thinking_level: ThinkingLevel::Default,
+                custom_executable: None,
+                custom_args: vec![],
+                custom_risk_ack: false,
+                expected_version: config.version,
+            })
+            .unwrap();
+        let mut r = request(&h.project_id, Instant::now() + Duration::from_secs(20));
+        r.agent_role = AgentRole::FeatureAgent;
+        r.stage = "Feature".into();
+        r.job_chain = "feature:fixture".into();
+        r.user_prompt = "feature-discovery-fixture".into();
+        let completion = h
+            .terminals
+            .execute_llm_request(&r, &CancellationToken::new())
+            .await
+            .unwrap()
+            .unwrap();
+        let run = h
+            .terminals
+            .repository()
+            .get_run(&completion.terminal_run_id)
+            .unwrap();
+        assert_eq!(run.origin, hvc_core::terminals::ExecutionOrigin::Feature);
+        assert_eq!(run.agent_role, Some(AgentRole::FeatureAgent));
+        assert!(run.pulsation_id.is_none());
+        assert_eq!(run.status, TerminalRunStatus::Completed);
+    }
 }

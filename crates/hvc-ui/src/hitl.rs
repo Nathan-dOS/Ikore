@@ -3,12 +3,13 @@ use hvc_core::persistence_service::{
     ApplyHitlDecisionRequest, HitlCheckpoint, HitlDecision, Pulsation,
 };
 
-actions!(hitl, [ApproveHitl, RequestHitlRevision]);
+actions!(hitl, [ApproveHitl, RequestHitlRevision, RejectHitl]);
 
 pub(crate) fn register_hitl_keybindings(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("enter", ApproveHitl, Some("HitlReview")),
         KeyBinding::new("r", RequestHitlRevision, Some("HitlReview")),
+        KeyBinding::new("d", RejectHitl, Some("HitlReview")),
     ]);
 }
 
@@ -17,6 +18,7 @@ pub(crate) fn register_hitl_keybindings(cx: &mut App) {
 enum ReviewShortcut {
     Approve,
     RequestRevision,
+    Reject,
 }
 
 #[cfg(test)]
@@ -28,6 +30,7 @@ impl ReviewShortcut {
         match key.to_ascii_lowercase().as_str() {
             "enter" => Some(Self::Approve),
             "r" => Some(Self::RequestRevision),
+            "d" => Some(Self::Reject),
             _ => None,
         }
     }
@@ -36,6 +39,7 @@ impl ReviewShortcut {
         match self {
             Self::Approve => HitlDecision::Approve,
             Self::RequestRevision => HitlDecision::RequestRevision,
+            Self::Reject => HitlDecision::Reject,
         }
     }
 }

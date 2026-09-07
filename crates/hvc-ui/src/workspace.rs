@@ -231,28 +231,6 @@ impl BrownfieldOnboardingModel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkspaceViewMode {
-    Editor,
-    Hitl,
-}
-
-impl WorkspaceViewMode {
-    pub const fn id(self) -> &'static str {
-        match self {
-            Self::Editor => "editor",
-            Self::Hitl => "hitl",
-        }
-    }
-
-    pub fn from_id(id: &str) -> Self {
-        match id {
-            "hitl" => Self::Hitl,
-            _ => Self::Editor,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceTabModel {
     pub relative_path: SharedString,
@@ -330,9 +308,7 @@ pub struct WorkspaceEditorModel {
     pub active_relative_path: Option<SharedString>,
     pub editor: Entity<NativeEditor>,
     pub tabs: Vec<WorkspaceTabModel>,
-    pub view_mode: WorkspaceViewMode,
     pub context_drawer_open: bool,
-    pub diff_expanded: bool,
     pub(crate) brownfield: BrownfieldOnboardingModel,
 }
 
@@ -345,9 +321,7 @@ impl WorkspaceEditorModel {
             active_relative_path: None,
             editor: cx.new(NativeEditor::new),
             tabs: Vec::new(),
-            view_mode: WorkspaceViewMode::Editor,
             context_drawer_open: true,
-            diff_expanded: false,
             brownfield: BrownfieldOnboardingModel::default(),
         }
     }

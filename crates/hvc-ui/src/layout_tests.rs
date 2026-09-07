@@ -1,0 +1,397 @@
+use gpui::{
+    Context, Entity, IntoElement, Modifiers, Render, TestAppContext, VisualTestContext, Window,
+    div, prelude::*, px, size,
+};
+use hvc_core::llm::{AgentRole, LlmResilienceSnapshot};
+use hvc_core::persistence_service::{Pulsation, PulsationStage, PulsationStatus};
+use hvc_core::terminals::{
+    AgentExecutionMode, AgentTerminalSnapshot, CliAgentConfig, CliBackend, CliModelSelectionSource,
+    TerminalsSnapshot, ThinkingLevel,
+};
+
+use crate::agents::{
+    AgentIdentifier, AgentsDashboardSnapshot, CliModelPickerState, CliModelPickerTarget,
+};
+use crate::pulsations::PulsationDetailSection;
+use crate::settings::{SettingsSection, SettingsSnapshot};
+use crate::{AppModel, AppTab, AppView};
+
+fn fixture(cx: &mut Context<AppModel>) -> AppModel {
+    let model = AppModel::new_for_test(cx);
+    model.workspace.update(cx, |workspace, _| {
+        workspace.project_id = Some("layout-project".into())
+    });
+    model.agents.update(cx, |agents, _| {
+        let generation = agents.begin(true);
+        agents.apply_snapshot(
+            generation,
+            AgentsDashboardSnapshot {
+                terminals: TerminalsSnapshot {
+                    project_id: "layout-project".into(),
+                    agents: [AgentRole::TaskSpecifier, AgentRole::BackendAgent]
+                        .into_iter()
+                        .map(|role| AgentTerminalSnapshot {
+                            config: CliAgentConfig {
+                                project_id: "layout-project".into(),
+                                agent_role: role,
+                                execution_mode: AgentExecutionMode::CliProcess,
+                                backend: CliBackend::Codex,
+                                model: None,
+                                model_profile: None,
+                                model_source: CliModelSelectionSource::Default,
+                                thinking_level: ThinkingLevel::Default,
+                                custom_executable: None,
+                                custom_args: vec![],
+                                custom_risk_ack: false,
+                                version: 1,
+                                created_at: "now".into(),
+                                updated_at: "now".into(),
+                            },
+                            recent_runs: vec![],
+                            recent_events: vec![],
+                        })
+                        .collect(),
+                    free_form_slots: vec![],
+                    archived_free_form_slots: vec![],
+                    discovery: vec![],
+                },
+                fallbacks: vec![],
+            },
+        );
+    });
+    model.settings.update(cx, |settings, _| {
+        settings.snapshot = Some(SettingsSnapshot {
+            preparation: Default::default(),
+            config: Default::default(),
+            profiles: vec![],
+            connections: vec![],
+            routes: vec![],
+            bindings: vec![],
+            key_statuses: vec![],
+            resilience: LlmResilienceSnapshot {
+                generated_at: "now".into(),
+                states: vec![],
+            },
+        });
+    });
+    model.pulsations.update(cx, |state, _| {
+        state.pulsations = ["pulse-a", "pulse-b"]
+            .into_iter()
+            .map(|id| Pulsation {
+                id: id.into(),
+                project_id: "layout-project".into(),
+                feature_name: "Layout regression".into(),
+                stage: PulsationStage::Specification,
+                status: PulsationStatus::Planning,
+                terminal_reason: None,
+                created_at: "now".into(),
+                updated_at: "now".into(),
+            })
+            .collect();
+        state.select("pulse-a");
+    });
+    model
+}
+
+struct ModelHarness(Entity<AppModel>);
+impl Render for ModelHarness {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(self.0.clone())
+    }
+}
+
+fn assert_absent(model: &Entity<AppModel>, visual: &mut VisualTestContext, selector: &'static str) {
+    // GPUI 0.2.2 keeps debug selectors in reused frames, so test absence in a fresh window.
+    let (_, fresh) = visual.add_window_view(|_, _| ModelHarness(model.clone()));
+    assert!(
+        fresh.debug_bounds(selector).is_none(),
+        "unexpected {selector}"
+    );
+}
+
+fn click(visual: &mut VisualTestContext, selector: &'static str) {
+    let bounds = visual
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing {selector}"));
+    assert!(
+        bounds.size.width > px(0.0) && bounds.size.height > px(0.0),
+        "empty {selector}"
+    );
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+}
+
+fn select(model: &Entity<AppModel>, visual: &mut VisualTestContext, view: AppView) {
+    model.update(visual, |model, cx| model.select_view(view, cx));
+    visual.run_until_parked();
+}
+
+#[gpui::test]
+fn header_tabs_and_settings_navigate_at_minimum_window_size(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    visual.run_until_parked();
+    click(visual, "agent");
+    assert_eq!(
+        model.read_with(visual, |model, _| model.active_view()),
+        AppView::Agents
+    );
+    click(visual, "logs");
+    click(visual, "engine");
+    click(visual, "settings");
+    assert_absent(&model, visual, "sub-tabs");
+    click(visual, "agent");
+    assert_eq!(
+        model.read_with(visual, |model, _| model.active_view()),
+        AppView::Logs
+    );
+    assert_eq!(
+        model.read_with(visual, |model, _| model.active_tab()),
+        AppTab::Agent
+    );
+    let settings = visual.debug_bounds("settings").unwrap();
+    assert!(settings.right() <= px(960.0));
+    assert!(visual.debug_bounds("toggle-sidebar").is_none());
+}
+
+#[gpui::test]
+fn agent_selection_and_modal_preserve_detail_geometry(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Agents);
+    assert!(visual.debug_bounds("agent-card:task_specifier").is_some());
+    assert!(visual.debug_bounds("agent-card:backend_agent").is_none());
+    click(visual, "agent-select:backend_agent");
+    assert_absent(&model, visual, "agent-card:task_specifier");
+    let before = visual.debug_bounds("agents-cli-scroll").unwrap();
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            agents.active_model_picker = Some(CliModelPickerState {
+                target: CliModelPickerTarget::Canonical(AgentRole::BackendAgent),
+                backend: CliBackend::Codex,
+            })
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("agents-cli-scroll").unwrap(), before);
+    let overlay = visual.debug_bounds("cli-model-picker-content").unwrap();
+    assert!(overlay.right() <= px(960.0));
+    assert!(overlay.bottom() <= px(640.0));
+    let close = visual.debug_bounds("cli-model-close").unwrap();
+    assert!(close.left() >= overlay.left() && close.right() <= overlay.right());
+    assert!(close.top() >= overlay.top() && close.bottom() <= overlay.bottom());
+    // The scrim prevents selection changes behind the modal.
+    click(visual, "agent-select:task_specifier");
+    assert_eq!(
+        model.read_with(visual, |model, cx| model
+            .agents
+            .read(cx)
+            .selected_agent
+            .clone()),
+        Some(AgentIdentifier::Canonical(AgentRole::BackendAgent))
+    );
+    assert!(!model.read_with(visual, |m, cx| {
+        m.agents.read(cx).active_model_picker.is_some()
+    }));
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert_absent(&model, visual, "cli-model-picker-overlay");
+    model.update(visual, |model, cx| {
+        model.set_agents_tab(crate::agents::AgentsTab::Api, cx)
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("api-agent:backend_agent").is_some());
+    assert_absent(&model, visual, "api-agent:task_specifier");
+}
+
+#[gpui::test]
+fn settings_creation_forms_remain_reachable_after_category_changes(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Settings);
+    assert_absent(&model, visual, "settings-save-connection");
+    click(visual, "settings-new-connection");
+    assert!(visual.debug_bounds("settings-save-connection").is_some());
+    click(visual, "settings-section-runtime");
+    assert_absent(&model, visual, "settings-save-connection");
+    assert!(visual.debug_bounds("settings-routing-mode").is_some());
+    click(visual, "settings-section-connections");
+    assert!(visual.debug_bounds("settings-save-connection").is_some());
+    click(visual, "settings-new-route");
+    assert_eq!(
+        model.read_with(visual, |model, cx| model.settings.read(cx).settings_section),
+        SettingsSection::Routes
+    );
+    assert!(visual.debug_bounds("settings-save-route").is_some());
+    assert_absent(&model, visual, "settings-save-connection");
+}
+
+#[gpui::test]
+fn pulsation_sections_keep_header_fixed_and_reset_on_selection(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Pulsations);
+    let header = visual.debug_bounds("pulsation-cancel").unwrap();
+    click(visual, "pulsation-artifacts");
+    assert_eq!(visual.debug_bounds("pulsation-cancel").unwrap(), header);
+    let section = visual.debug_bounds("pulsation-section-scroll").unwrap();
+    assert!(section.top() >= header.bottom() && section.bottom() <= px(640.0));
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |state, _| {
+            assert_eq!(state.detail_section, PulsationDetailSection::Artifacts);
+            state.select("pulse-b");
+            assert_eq!(state.detail_section, PulsationDetailSection::Overview);
+        });
+    });
+}
+
+#[gpui::test]
+fn forge_capture_separates_multiple_tasks_from_feature_discovery(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |m, cx| m.select_tab(AppTab::Engine, cx));
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        visual.run_until_parked();
+        click(visual, "new-work");
+        assert!(model.read_with(visual, |m, _| m.forge.new_open && !m.forge.capture_feature));
+        let overlay = visual.debug_bounds("forge-capture-content").unwrap();
+        assert!(
+            overlay.left() >= px(0.0) && overlay.right() <= px(width),
+            "capture width {overlay:?}"
+        );
+        assert!(
+            overlay.top() >= px(0.0) && overlay.bottom() <= px(height),
+            "capture height {overlay:?}"
+        );
+        model.update(visual, |m, cx| {
+            for _ in 0..5 {
+                m.forge_action(crate::forge::ForgeAction::AddDraft, cx);
+            }
+        });
+        visual.run_until_parked();
+        let body = visual.debug_bounds("forge-capture-body").unwrap();
+        assert!(
+            body.bottom() <= px(height),
+            "multiple tasks must scroll inside the overlay"
+        );
+        click(visual, "capture-feature-option");
+        assert!(model.read_with(visual, |m, _| m.forge.capture_feature));
+        assert!(visual.debug_bounds("create-feature").is_some());
+        click(visual, "close-capture");
+        assert!(!model.read_with(visual, |m, _| m.forge.new_open));
+        click(visual, "new-work");
+        let overlay = visual.debug_bounds("forge-capture-content").unwrap();
+        visual.simulate_click(
+            gpui::point(overlay.left() + px(3.0), overlay.top() + px(3.0)),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert!(
+            model.read_with(visual, |m, _| m.forge.new_open),
+            "inside padding must keep the modal open"
+        );
+        let scrim = visual.debug_bounds("forge-capture-overlay").unwrap();
+        visual.simulate_click(
+            scrim.origin + gpui::point(px(2.0), px(2.0)),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert!(
+            !model.read_with(visual, |m, _| m.forge.new_open),
+            "outside click must dismiss capture"
+        );
+    }
+}
+
+#[gpui::test]
+fn forge_busy_state_never_moves_the_task_controls(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Forge);
+    let status = visual.debug_bounds("forge-status").unwrap();
+    let control = visual.debug_bounds("retry-forge-publications").unwrap();
+    for busy in [true, false, true, false] {
+        model.update(visual, |m, cx| {
+            m.forge.busy = busy;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("forge-status").unwrap(), status);
+        assert_eq!(
+            visual.debug_bounds("retry-forge-publications").unwrap(),
+            control
+        );
+    }
+}
+
+#[gpui::test]
+fn forge_graph_waves_and_delivery_fit_supported_window_sizes(cx: &mut TestAppContext) {
+    use hvc_core::feature_forge::*;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |m, cx| {
+        m.forge.snapshot.current_wave_limit = 3;
+        m.forge.snapshot.features = (0..4)
+            .map(|i| Feature {
+                id: format!("feature-{i}"),
+                project_id: "layout-project".into(),
+                title: format!("Feature {i}"),
+                original_idea: "Improve export workflow".into(),
+                revision: 2,
+                approved_revision: Some(2),
+                state: FeatureState::Planned,
+                brief: FeatureBrief {
+                    objective: "Improve export workflow".into(),
+                    ..Default::default()
+                },
+                evaluation: Default::default(),
+                structural_level: i,
+                wave: Some(if i < 2 { Wave::Current } else { Wave::Next }),
+                position: 0,
+                archive_reason: None,
+            })
+            .collect();
+        m.forge.snapshot.dependencies = vec![FeatureDependency {
+            feature_id: "feature-1".into(),
+            prerequisite_id: "feature-0".into(),
+            rationale: "Foundation provides storage".into(),
+        }];
+        m.forge.selected_feature = Some("feature-1".into());
+        m.select_view(AppView::Forge, cx);
+    });
+    use crate::forge::ForgeSection;
+    let sections = [
+        ForgeSection::Incubation,
+        ForgeSection::Triage,
+        ForgeSection::Dependencies,
+        ForgeSection::Waves,
+        ForgeSection::Delivery,
+    ];
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        visual.run_until_parked();
+        for section in sections {
+            model.update(visual, |m, cx| {
+                m.forge_action(crate::forge::ForgeAction::Section(section), cx)
+            });
+            visual.run_until_parked();
+            let detail = visual.debug_bounds("forge-detail").unwrap();
+            assert!(
+                detail.right() <= px(width) && detail.bottom() <= px(height),
+                "section {section:?}: {detail:?}"
+            );
+            if section == ForgeSection::Dependencies {
+                assert!(visual.debug_bounds("feature-graph").is_some());
+            }
+            if section == ForgeSection::Waves {
+                for selector in ["wave-Current", "wave-Next", "wave-Horizon"] {
+                    let wave = visual.debug_bounds(selector).unwrap();
+                    assert!(
+                        wave.right() <= detail.right(),
+                        "{selector} overflows: {wave:?}"
+                    );
+                }
+            }
+        }
+    }
+}

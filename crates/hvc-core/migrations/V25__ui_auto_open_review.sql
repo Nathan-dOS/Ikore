@@ -1,0 +1,1 @@
+ALTER TABLE ui_sessions ADD COLUMN auto_open_review INTEGER NOT NULL DEFAULT 0;

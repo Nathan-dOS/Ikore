@@ -436,7 +436,7 @@ impl PersistenceService {
         db: &Connection,
         pulse: &str,
     ) -> Result<(), PersistenceServiceError> {
-        let eligible:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM pulsations WHERE id=?1 AND pipeline_version=2 AND status IN ('done','failed')) AND EXISTS(SELECT 1 FROM runtime_settings WHERE key='orchestration.learning_enabled' AND value='true')",[pulse],|r|r.get(0))?;
+        let eligible:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM pulsations WHERE id=?1 AND pipeline_version IN (2,3) AND status IN ('done','failed')) AND EXISTS(SELECT 1 FROM runtime_settings WHERE key='orchestration.learning_enabled' AND value='true')",[pulse],|r|r.get(0))?;
         if !eligible {
             return Ok(());
         }

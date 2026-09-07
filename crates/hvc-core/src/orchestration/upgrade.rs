@@ -18,22 +18,24 @@ pub(crate) fn backup_before_upgrade(db: &Connection, directory: &Path) -> Result
         [],
         |r| r.get(0),
     )?;
-    if version >= 13 {
+    if version >= 24 {
         return Ok(());
     }
     // VACUUM INTO captures a consistent SQLite snapshot, including WAL contents.
     // A unique destination never overwrites an earlier recovery point.
     let backup = directory.join(format!(
-        "hard-vibe-code.pre-v13.{}.db",
+        "hard-vibe-code.pre-v24.{}.db",
         uuid::Uuid::new_v4()
     ));
     db.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])?;
-    let check = Connection::open_with_flags(&backup, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let integrity: String = check.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-    if integrity != "ok" {
-        return Err(Error::Validation(
-            "Backup anterior à V13 não passou na verificação de integridade.".into(),
-        ));
+    {
+        let check = Connection::open(&backup)?;
+        let integrity: String = check.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+        if integrity != "ok" {
+            return Err(Error::Validation(format!(
+                "Backup anterior à V24 não passou na verificação de integridade: {integrity}"
+            )));
+        }
     }
     std::fs::OpenOptions::new()
         .read(true)
@@ -128,4 +130,39 @@ pub(crate) fn adapt_legacy(db: &mut Connection) -> Result<(), Error> {
     tx.execute("INSERT OR IGNORE INTO project_file_baselines(project_id,relative_path,content_sha256,updated_at) SELECT project_id,relative_path,content_sha256,updated_at FROM (SELECT p.project_id,a.relative_path,a.content_sha256,a.updated_at,ROW_NUMBER() OVER (PARTITION BY p.project_id,lower(a.relative_path) ORDER BY COALESCE(o.updated_at,a.updated_at) DESC,a.id DESC) AS position FROM artifacts a JOIN pulsations p ON p.id=a.pulsation_id LEFT JOIN artifact_publications o ON o.artifact_id=a.id WHERE a.publication_state='applied' AND a.relative_path IS NOT NULL) WHERE position=1",[])?;
     tx.commit()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_backup_before_upgrade_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("source.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "CREATE TABLE refinery_schema_history (version INTEGER PRIMARY KEY, checksum TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO refinery_schema_history (version, checksum) VALUES (23, 'test')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE VIRTUAL TABLE companion_agent_output_fts USING fts5(content)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO companion_agent_output_fts (content) VALUES ('test message')",
+            [],
+        )
+        .unwrap();
+
+        let result = backup_before_upgrade(&conn, temp.path());
+        assert!(result.is_ok(), "Backup failed: {:?}", result);
+    }
 }

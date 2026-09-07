@@ -104,13 +104,10 @@ fn seed_profile(root: &Path) {
                 execution_mode: mode,
                 backend,
                 model: Some(format!("fixture-{}", backend.as_str())),
-                model_profile: (backend != CliBackend::Gemini).then(|| "medium".into()),
+                // Manual fixture models have no verified catalog profile.
+                model_profile: None,
                 model_source: CliModelSelectionSource::Manual,
-                thinking_level: if backend == CliBackend::Gemini {
-                    ThinkingLevel::Default
-                } else {
-                    ThinkingLevel::Medium
-                },
+                thinking_level: ThinkingLevel::Default,
                 custom_executable: (backend == CliBackend::Custom).then(|| {
                     std::env::current_exe()
                         .unwrap()
@@ -149,9 +146,9 @@ fn seed_profile(root: &Path) {
             execution_mode: AgentExecutionMode::CliProcess,
             backend: CliBackend::Codex,
             model: Some("fixture-codex".into()),
-            model_profile: Some("high".into()),
+            model_profile: None,
             model_source: CliModelSelectionSource::Manual,
-            thinking_level: ThinkingLevel::High,
+            thinking_level: ThinkingLevel::Default,
             session_policy: SessionPolicy::ResumeExplicit,
             custom_executable: None,
             custom_args: Vec::new(),
@@ -222,6 +219,19 @@ fn seed_profile(root: &Path) {
         })
         .unwrap();
 
+    // A completed, pathless artifact exercises the native detail tabs without scheduling work.
+    let connection = rusqlite::Connection::open(service.database_path()).unwrap();
+    connection.execute(
+        "INSERT INTO pulsations(id, project_id, feature_name, stage, status, created_at, updated_at, queue_sequence)
+         VALUES ('tabs-layout-pulse', ?1, 'Review tab navigation and artifact layout', 'Integrator', 'done', '2026-09-05T00:00:00Z', '2026-09-05T00:00:00Z', 1)",
+        [&project.id],
+    ).unwrap();
+    connection.execute(
+        "INSERT INTO artifacts(id, pulsation_id, name, kind, content, acceptance, created_at, updated_at)
+         VALUES ('tabs-layout-artifact', 'tabs-layout-pulse', 'Layout verification', 'markdown', ?1, 'accepted', '2026-09-05T00:00:00Z', '2026-09-05T00:00:00Z')",
+        ["# Layout verification\n\nThis completed fixture exercises the Overview, Preparation, and Artifacts sections.\n\nNo runtime job or external provider request is required.\n"],
+    ).unwrap();
+
     service
         .save_ui_session(SaveUiSessionRequest {
             project_id: project.id,
@@ -236,6 +246,7 @@ fn seed_profile(root: &Path) {
             active_chat_conversation_id: None,
             scroll_top: Some(0.0),
             tabs: Vec::new(),
+            auto_open_review: false,
         })
         .unwrap();
     std::fs::write(root.join("AGENTS_UI_FIXTURE"), FIXTURE_MARKER).unwrap();
@@ -414,6 +425,32 @@ mod tests {
             .unwrap();
         assert_eq!(leaked, 0);
         assert_eq!((active, archived), (2, 1));
+        let jobs: u64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE pulsation_id='tabs-layout-pulse'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(jobs, 0);
+        let project_id: String = connection
+            .query_row(
+                "SELECT project_id FROM pulsations WHERE id='tabs-layout-pulse'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let service = PersistenceService::initialize(&root.join("data")).unwrap();
+        let snapshot = service
+            .get_pulsation_runtime_snapshot(
+                hvc_core::persistence_service::GetPulsationRuntimeSnapshotRequest { project_id },
+            )
+            .unwrap()
+            .snapshot;
+        assert_eq!(snapshot.pulsations.len(), 1);
+        assert_eq!(snapshot.details.len(), 1);
+        assert_eq!(snapshot.main_agents_count, 0);
+        assert_eq!(snapshot.background_agents_count, 0);
         assert_eq!(
             std::fs::read_to_string(root.join("AGENTS_UI_FIXTURE")).unwrap(),
             FIXTURE_MARKER

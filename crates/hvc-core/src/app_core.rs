@@ -196,6 +196,7 @@ pub struct AppCore {
     events: Arc<AppEventBus>,
     persistence: PersistenceService,
     chat: Arc<ChatService>,
+    feature_agent: Arc<crate::feature_forge::FeatureAgentRuntime>,
     terminals: Arc<TerminalService>,
     workspace: Mutex<WorkspaceContext>,
     worker_cancellation: CancellationToken,
@@ -243,6 +244,11 @@ impl AppCore {
         )?);
         chat.attach_terminal_service(Arc::clone(&terminals));
         persistence.attach_terminal_service(Arc::clone(&terminals));
+        let feature_agent = Arc::new(crate::feature_forge::FeatureAgentRuntime::new(
+            persistence.clone(),
+            events.clone(),
+            runtime.clone(),
+        )?);
         let worker_cancellation = CancellationToken::new();
 
         let core = Arc::new(Self {
@@ -252,6 +258,7 @@ impl AppCore {
             events,
             persistence,
             chat,
+            feature_agent,
             terminals,
             workspace: Mutex::new(WorkspaceContext::default()),
             worker_cancellation,
@@ -292,6 +299,9 @@ impl AppCore {
 
     pub fn terminals(&self) -> Arc<TerminalService> {
         Arc::clone(&self.terminals)
+    }
+    pub fn feature_agent(&self) -> Arc<crate::feature_forge::FeatureAgentRuntime> {
+        self.feature_agent.clone()
     }
 
     pub fn open_workspace(
@@ -534,6 +544,7 @@ impl AppCore {
         self.worker_cancellation.cancel();
         self.persistence.cancel_all_active_jobs();
         self.chat.cancel_all_turns();
+        self.feature_agent.cancel_all();
         self.terminals.cancel_all();
         if let Ok(mut workspace) = self.workspace.lock() {
             workspace.watcher = None;
@@ -555,6 +566,7 @@ impl AppCore {
             let _ = worker.await;
         }
         let _ = self.chat.wait_for_idle(Duration::from_secs(3)).await;
+        self.feature_agent.wait_for_idle().await;
         if !self.terminals.wait_for_idle(Duration::from_secs(3)).await {
             self.terminals.cancel_all();
             let _ = self.terminals.wait_for_idle(Duration::from_secs(30)).await;

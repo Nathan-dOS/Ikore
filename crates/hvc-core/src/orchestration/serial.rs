@@ -273,6 +273,7 @@ impl PersistenceService {
         let clarifications = Self::clarification_history(&db, pulse, fence.input_revision)?;
         let assessment:Option<String>=db.query_row("SELECT assessment_json FROM pulsation_preparation WHERE pulsation_id=?1 AND input_revision=?2",params![pulse,fence.input_revision],|r|r.get(0)).optional()?.flatten();
         let handoff = StageHandoffV1 {
+            batch_manifest: crate::feature_forge::pipeline::manifest(&db, pulse)?,
             schema_version: SchemaV1,
             recipient: fence.clone(),
             stage,
@@ -294,6 +295,15 @@ impl PersistenceService {
                 |r| r.get(0),
             )?,
         };
+        if stage == PulsationStage::Specification
+            && let Some(batch) = &handoff.batch_manifest
+        {
+            for feature in &batch.features {
+                for source in &feature.brief.sources {
+                    crate::feature_forge::service::check_source(&db, &feature.project_id, source)?;
+                }
+            }
+        }
         handoff.validate_for(fence, budget).map_err(invalid)?;
         Ok(handoff)
     }
@@ -326,6 +336,14 @@ impl PersistenceService {
         if current.status != PulsationStatus::Running || current.stage != handoff.stage {
             return Err(invalid(ContractError::StaleExecution));
         }
+        crate::feature_forge::pipeline::accept_evidence(
+            &tx,
+            pulse,
+            &job.id,
+            handoff.recipient.generation,
+            current.stage.as_db_value(),
+            &execution.structured_output,
+        )?;
         Self::update_agent_run_metrics(&tx, run_id, execution)?;
         Self::persist_agent_run_output(&tx, run_id, job, execution)?;
         Self::persist_context_retrieval_trace(&tx, run_id, job, &execution.context_trace)?;

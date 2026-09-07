@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, Rgba, SharedString, div, prelude::*, px, rgb,
-    uniform_list,
+    AnyElement, Context, FontWeight, IntoElement, Rgba, SharedString, deferred, div, prelude::*,
+    px, uniform_list,
 };
 use hvc_core::llm::AgentRole;
 use hvc_core::persistence_service::{CliFallbackCheckpoint, CliFallbackDecision};
@@ -12,7 +12,9 @@ use hvc_core::terminals::{
     TerminalRunStatus,
 };
 
-use crate::agents::{AgentsTab, CliModelPickerState, CliModelPickerTarget, TerminalEventFilter};
+use crate::agents::{
+    AgentIdentifier, AgentsTab, CliModelPickerState, CliModelPickerTarget, TerminalEventFilter,
+};
 use crate::app_model::AppModel;
 use crate::theme;
 
@@ -24,11 +26,11 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
     let error = agents.error.as_ref().map(|error| error.presentable());
     let notice = agents.notice.clone();
     let snapshot = agents.snapshot.clone();
-    let fallbacks = agents.fallbacks.clone();
-    let pending_fallback_cancel = agents.pending_fallback_cancel.clone();
     let active_model_picker = agents.active_model_picker.clone();
 
     div()
+        .relative()
+        .overflow_hidden()
         .flex_1()
         .min_w_0()
         .min_h_0()
@@ -90,17 +92,6 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         )
         .when_some(error, |panel, message| panel.child(banner(message, true)))
         .when_some(notice, |panel, message| panel.child(banner(message, false)))
-        .when_some(active_model_picker, |panel, picker| {
-            panel.child(cli_model_picker_panel(model, picker, cx))
-        })
-        .children(fallbacks.iter().map(|fallback| {
-            fallback_panel(
-                fallback,
-                pending_fallback_cancel.as_deref() == Some(fallback.checkpoint_id.as_str()),
-                busy,
-                cx,
-            )
-        }))
         .child(match snapshot {
             None => empty_state(if loading {
                 "Verificando CLIs e carregando os sete agentes…"
@@ -108,10 +99,28 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                 "Abra um workspace para configurar e acompanhar os agentes."
             }),
             Some(snapshot) => match tab {
-                AgentsTab::Cli => cli_grid(model, &snapshot, busy, cx),
-                AgentsTab::Api => api_table(model, &snapshot, cx),
+                AgentsTab::Cli => div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(agents_sidebar(model, &snapshot, busy, cx))
+                    .child(agent_detail_panel(model, &snapshot, busy, cx))
+                    .into_any_element(),
+                AgentsTab::Api => div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(agents_sidebar(model, &snapshot, busy, cx))
+                    .child(api_detail_panel(model, &snapshot, cx))
+                    .into_any_element(),
             },
         })
+        .when_some(
+            active_model_picker.filter(|picker| picker.target != CliModelPickerTarget::Companion),
+            |panel, picker| panel.child(cli_model_picker_panel(model, picker, cx)),
+        )
         .into_any_element()
 }
 
@@ -168,9 +177,16 @@ pub(crate) fn cli_model_picker_panel(
     let diagnostic = error.or_else(|| catalog.as_ref().and_then(|item| item.diagnostic.clone()));
     let manual_enabled = !query.is_empty() && !loading;
 
-    div()
-        .mx_4()
-        .mt_3()
+    let content = div()
+        .id("cli-model-picker-content")
+        .debug_selector(|| "cli-model-picker-content".into())
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .w(px(480.0))
+        .max_w_full()
+        .max_h_full()
+        .overflow_y_scroll()
+        .shadow_lg()
+        .occlude()
         .p_3()
         .rounded_lg()
         .border_1()
@@ -182,11 +198,14 @@ pub(crate) fn cli_model_picker_panel(
         .child(
             div()
                 .flex()
+                .flex_wrap()
+                .flex_shrink_0()
                 .items_center()
                 .gap_2()
                 .child(
                     div()
-                        .flex_1()
+                        .w_full()
+                        .min_w_0()
                         .child(div().font_weight(FontWeight::SEMIBOLD).child(format!(
                             "Choose {} model for {target_label}",
                             picker.backend.label()
@@ -336,6 +355,8 @@ pub(crate) fn cli_model_picker_panel(
         .child(
             div()
                 .flex()
+                .flex_wrap()
+                .flex_shrink_0()
                 .items_center()
                 .gap_2()
                 .child(action_button(
@@ -353,7 +374,36 @@ pub(crate) fn cli_model_picker_panel(
                         .child("Manual IDs remain available but are not adapter-verified."),
                 ),
         )
-        .into_any_element()
+        .into_any_element();
+    deferred(
+        div()
+            .id("cli-model-picker-overlay")
+            .debug_selector(|| "cli-model-picker-overlay".into())
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|model, _, _, cx| {
+                    model.close_cli_model_picker(cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .absolute()
+            .inset_0()
+            .p_2()
+            .flex()
+            .justify_end()
+            .items_start()
+            .occlude()
+            .bg(gpui::rgba(0x00000066))
+            .on_key_down(cx.listener(|model, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    model.close_cli_model_picker(cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(content),
+    )
+    .with_priority(10)
+    .into_any_element()
 }
 
 fn model_entry_matches(entry: &CliModelCatalogEntry, query: &str) -> bool {
@@ -398,6 +448,7 @@ fn fallback_panel(
         .bg(theme::warning_soft())
         .flex()
         .items_center()
+        .flex_wrap()
         .gap_3()
         .child(
             div()
@@ -471,70 +522,248 @@ fn fallback_panel(
         .into_any_element()
 }
 
-fn cli_grid(
+fn agents_sidebar(
     model: &AppModel,
     snapshot: &hvc_core::terminals::TerminalsSnapshot,
     busy: bool,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
+    let agents = model.agents.read(cx);
+    let selected = agents.selected_agent.clone();
+    let fallbacks = agents.fallbacks.clone();
+    let cli = agents.tab == AgentsTab::Cli;
+    div()
+        .id("agents-list")
+        .debug_selector(|| "agents-list".into())
+        .w(px(220.0))
+        .flex_shrink_0()
+        .min_h_0()
+        .overflow_y_scroll()
+        .p_3()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .border_r_1()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child("AGENTS"),
+        )
+        .children(snapshot.agents.iter().map(|agent| {
+            let role = agent.config.agent_role;
+            let id = AgentIdentifier::Canonical(role);
+            agent_list_item(
+                format!("agent-select:{}", role.as_str()),
+                hvc_core::terminals::canonical_agent(role).name.to_owned(),
+                agent.recent_runs.first().map(|run| run.status),
+                fallbacks
+                    .iter()
+                    .filter(|fallback| fallback.agent_role == role)
+                    .count(),
+                selected.as_ref() == Some(&id),
+                id,
+                cx,
+            )
+        }))
+        .when(cli, |list| {
+            list.child(
+                div()
+                    .mt_3()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child("AGENTES LIVRES"),
+            )
+            .child(action_button(
+                "free-form-create".into(),
+                "+ Novo agente livre".into(),
+                !busy && snapshot.free_form_slots.len() < 8,
+                false,
+                cx,
+                |model, cx| model.create_free_form_agent(cx),
+            ))
+            .children(
+                snapshot
+                    .free_form_slots
+                    .iter()
+                    .chain(&snapshot.archived_free_form_slots)
+                    .map(|slot| {
+                        let id = AgentIdentifier::FreeForm(slot.slot.id.clone());
+                        let archived = snapshot
+                            .archived_free_form_slots
+                            .iter()
+                            .any(|item| item.slot.id == slot.slot.id);
+                        agent_list_item(
+                            format!("agent-select:{}", slot.slot.id),
+                            format!(
+                                "{}{}",
+                                slot.slot.label,
+                                if archived { " · arquivado" } else { "" }
+                            ),
+                            slot.recent_runs.first().map(|run| run.status),
+                            0,
+                            selected.as_ref() == Some(&id),
+                            id,
+                            cx,
+                        )
+                    }),
+            )
+        })
+        .into_any_element()
+}
+
+fn agent_list_item(
+    element_id: String,
+    label: String,
+    status: Option<TerminalRunStatus>,
+    fallback_count: usize,
+    selected: bool,
+    agent: AgentIdentifier,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    div()
+        .id(SharedString::from(element_id.clone()))
+        .debug_selector(move || element_id.clone())
+        .p_2()
+        .rounded_md()
+        .cursor_pointer()
+        .bg(if selected {
+            theme::accent_soft()
+        } else {
+            theme::surface()
+        })
+        .hover(|style| style.bg(theme::surface_raised()))
+        .on_click(cx.listener(move |model, _, _, cx| {
+            model.agents.update(cx, |agents, _| {
+                agents.selected_agent = Some(agent.clone());
+                agents.selected_api_role = None;
+                agents.active_model_picker = None;
+            });
+            cx.notify();
+        }))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .size_2()
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(status_color(status)),
+                )
+                .child(div().min_w_0().text_sm().child(label)),
+        )
+        .when(fallback_count > 0, |item| {
+            item.child(
+                div()
+                    .mt_1()
+                    .text_xs()
+                    .text_color(theme::warning())
+                    .child(format!("{fallback_count} fallback(s) pendente(s)")),
+            )
+        })
+        .into_any_element()
+}
+
+fn agent_detail_panel(
+    model: &AppModel,
+    snapshot: &hvc_core::terminals::TerminalsSnapshot,
+    busy: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let agents = model.agents.read(cx);
+    let selected = agents.selected_agent.clone();
+    let fallbacks = agents.fallbacks.clone();
+    let pending_cancel = agents.pending_fallback_cancel.clone();
     div()
         .id("agents-cli-scroll")
+        .debug_selector(|| "agents-cli-scroll".into())
+        .min_w_0()
         .flex_1()
         .min_h_0()
         .p_4()
         .overflow_y_scroll()
+        .children(
+            fallbacks
+                .iter()
+                .filter(|fallback| {
+                    selected == Some(AgentIdentifier::Canonical(fallback.agent_role))
+                })
+                .map(|fallback| {
+                    fallback_panel(
+                        fallback,
+                        pending_cancel.as_deref() == Some(fallback.checkpoint_id.as_str()),
+                        busy,
+                        cx,
+                    )
+                }),
+        )
+        .when(selected.is_none(), |panel| {
+            panel.child(empty_state("Selecione ou crie um agente."))
+        })
         .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_3()
-                .children(snapshot.agents.iter().map(|agent| {
-                    let descriptor = hvc_core::terminals::canonical_agent(agent.config.agent_role);
-                    let availability = (agent.config.backend
-                        != hvc_core::terminals::CliBackend::Custom)
-                        .then(|| {
-                            snapshot
-                                .discovery
-                                .iter()
-                                .find(|item| item.backend == agent.config.backend)
-                        })
-                        .flatten();
-                    let input = model
-                        .agent_prompt_inputs
-                        .get(&agent.config.agent_role)
-                        .cloned();
-                    let model_input = model
-                        .agent_model_inputs
-                        .get(&agent.config.agent_role)
-                        .cloned();
-                    let custom_executable_input = model
-                        .agent_custom_executable_inputs
-                        .get(&agent.config.agent_role)
-                        .cloned();
-                    let custom_args_input = model
-                        .agent_custom_args_inputs
-                        .get(&agent.config.agent_role)
-                        .cloned();
-                    let prompt_ready = input
-                        .as_ref()
-                        .is_some_and(|input| !input.read(cx).value().trim().is_empty());
-                    let active_run = agent.recent_runs.first();
-                    let running = active_run.is_some_and(|run| {
-                        matches!(
-                            run.status,
-                            TerminalRunStatus::Queued
-                                | TerminalRunStatus::Starting
-                                | TerminalRunStatus::Running
-                        )
-                    });
-                    let agents_model = model.agents.read(cx);
-                    let selected_run = agents_model
-                        .selected_run_by_role
-                        .get(&agent.config.agent_role)
-                        .and_then(|run_id| agent.recent_runs.iter().find(|run| &run.id == run_id))
-                        .or(active_run);
-                    let executable_ready =
-                        if agent.config.backend == hvc_core::terminals::CliBackend::Custom {
+            div().flex().flex_wrap().gap_3().children(
+                snapshot
+                    .agents
+                    .iter()
+                    .filter(|agent| {
+                        selected == Some(AgentIdentifier::Canonical(agent.config.agent_role))
+                    })
+                    .map(|agent| {
+                        let descriptor =
+                            hvc_core::terminals::canonical_agent(agent.config.agent_role);
+                        let availability = (agent.config.backend
+                            != hvc_core::terminals::CliBackend::Custom)
+                            .then(|| {
+                                snapshot
+                                    .discovery
+                                    .iter()
+                                    .find(|item| item.backend == agent.config.backend)
+                            })
+                            .flatten();
+                        let input = model
+                            .agent_prompt_inputs
+                            .get(&agent.config.agent_role)
+                            .cloned();
+                        let model_input = model
+                            .agent_model_inputs
+                            .get(&agent.config.agent_role)
+                            .cloned();
+                        let custom_executable_input = model
+                            .agent_custom_executable_inputs
+                            .get(&agent.config.agent_role)
+                            .cloned();
+                        let custom_args_input = model
+                            .agent_custom_args_inputs
+                            .get(&agent.config.agent_role)
+                            .cloned();
+                        let prompt_ready = input
+                            .as_ref()
+                            .is_some_and(|input| !input.read(cx).value().trim().is_empty());
+                        let active_run = agent.recent_runs.first();
+                        let running = active_run.is_some_and(|run| {
+                            matches!(
+                                run.status,
+                                TerminalRunStatus::Queued
+                                    | TerminalRunStatus::Starting
+                                    | TerminalRunStatus::Running
+                            )
+                        });
+                        let agents_model = model.agents.read(cx);
+                        let selected_run = agents_model
+                            .selected_run_by_role
+                            .get(&agent.config.agent_role)
+                            .and_then(|run_id| {
+                                agent.recent_runs.iter().find(|run| &run.id == run_id)
+                            })
+                            .or(active_run);
+                        let executable_ready = if agent.config.backend
+                            == hvc_core::terminals::CliBackend::Custom
+                        {
                             agent
                                 .config
                                 .custom_executable
@@ -545,132 +774,102 @@ fn cli_grid(
                             availability
                                 .is_some_and(|item| item.state == CliAvailabilityState::Available)
                         };
-                    let thinking_available =
-                        agent.config.model.as_deref().is_some_and(|model_id| {
-                            agents_model
-                                .model_catalogs
-                                .get(&agent.config.backend)
-                                .and_then(|catalog| {
-                                    catalog
-                                        .models
-                                        .iter()
-                                        .find(|entry| entry.model_id.as_deref() == Some(model_id))
-                                })
-                                .is_some_and(|entry| !entry.profiles.is_empty())
-                        });
-                    let run_events = selected_run
-                        .and_then(|run| agents_model.events_by_run.get(&run.id))
-                        .cloned();
-                    let history_clear_armed =
-                        agents_model.pending_history_clear == Some(agent.config.agent_role);
-                    let pipeline_cancel_armed = active_run
-                        .and_then(|run| run.pulsation_id.as_deref())
-                        .is_some_and(|pulsation_id| {
-                            agents_model.pending_pipeline_cancel.as_deref() == Some(pulsation_id)
-                        });
-                    let event_filter = agents_model
-                        .event_filters
-                        .get(agent.config.agent_role.as_str())
-                        .copied()
-                        .unwrap_or(TerminalEventFilter::All);
-                    let follow_tail = agents_model
-                        .follow_tail
-                        .get(agent.config.agent_role.as_str())
-                        .copied()
-                        .unwrap_or(true);
-                    agent_card(
-                        descriptor,
-                        agent,
-                        availability,
-                        input,
-                        model_input,
-                        custom_executable_input,
-                        custom_args_input,
-                        selected_run,
-                        run_events,
-                        history_clear_armed,
-                        pipeline_cancel_armed,
-                        event_filter,
-                        follow_tail,
-                        thinking_available,
-                        prompt_ready,
-                        executable_ready,
-                        running,
-                        busy,
-                        cx,
-                    )
-                })),
-        )
-        .child(
-            div()
-                .mt_5()
-                .mb_3()
-                .flex()
-                .items_center()
-                .gap_3()
-                .child(
-                    div()
-                        .flex_1()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("Agentes livres"),
+                        let thinking_available =
+                            agent.config.model.as_deref().is_some_and(|model_id| {
+                                agents_model
+                                    .model_catalogs
+                                    .get(&agent.config.backend)
+                                    .and_then(|catalog| {
+                                        catalog.models.iter().find(|entry| {
+                                            entry.model_id.as_deref() == Some(model_id)
+                                        })
+                                    })
+                                    .is_some_and(|entry| !entry.profiles.is_empty())
+                            });
+                        let run_events = selected_run
+                            .and_then(|run| agents_model.events_by_run.get(&run.id))
+                            .cloned();
+                        let history_clear_armed =
+                            agents_model.pending_history_clear == Some(agent.config.agent_role);
+                        let pipeline_cancel_armed = active_run
+                            .and_then(|run| run.pulsation_id.as_deref())
+                            .is_some_and(|pulsation_id| {
+                                agents_model.pending_pipeline_cancel.as_deref()
+                                    == Some(pulsation_id)
+                            });
+                        let event_filter = agents_model
+                            .event_filters
+                            .get(agent.config.agent_role.as_str())
+                            .copied()
+                            .unwrap_or(TerminalEventFilter::All);
+                        let follow_tail = agents_model
+                            .follow_tail
+                            .get(agent.config.agent_role.as_str())
+                            .copied()
+                            .unwrap_or(true);
+                        agent_card(
+                            descriptor,
+                            agent,
+                            availability,
+                            input,
+                            model_input,
+                            custom_executable_input,
+                            custom_args_input,
+                            selected_run,
+                            run_events,
+                            history_clear_armed,
+                            pipeline_cancel_armed,
+                            event_filter,
+                            follow_tail,
+                            thinking_available,
+                            prompt_ready,
+                            executable_ready,
+                            running,
+                            busy,
+                            cx,
                         )
-                        .child(div().text_xs().text_color(theme::text_muted()).child(
-                            "Até 8 slots manuais persistentes; não participam do pipeline.",
-                        )),
-                )
-                .child(action_button(
-                    "free-form-create".into(),
-                    "+ Novo agente livre".into(),
-                    !busy && snapshot.free_form_slots.len() < 8,
-                    false,
-                    cx,
-                    |model, cx| model.create_free_form_agent(cx),
-                )),
+                    }),
+            ),
         )
         .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_3()
-                .when(snapshot.free_form_slots.is_empty(), |grid| {
-                    grid.child(
-                        div()
-                            .p_4()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(theme::border())
-                            .text_sm()
-                            .text_color(theme::text_muted())
-                            .child("Nenhum agente livre criado."),
-                    )
-                })
-                .children(
-                    snapshot
-                        .free_form_slots
-                        .iter()
-                        .map(|slot| free_form_card(model, snapshot, slot, busy, cx)),
-                ),
+            div().flex().flex_wrap().gap_3().children(
+                snapshot
+                    .free_form_slots
+                    .iter()
+                    .filter(|slot| {
+                        selected == Some(AgentIdentifier::FreeForm(slot.slot.id.clone()))
+                    })
+                    .map(|slot| free_form_card(model, snapshot, slot, busy, cx)),
+            ),
         )
-        .when(!snapshot.archived_free_form_slots.is_empty(), |panel| {
-            panel
-                .child(
-                    div()
-                        .mt_5()
-                        .mb_3()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Agentes livres arquivados"),
-                )
-                .child(
-                    div().flex().flex_wrap().gap_3().children(
-                        snapshot
-                            .archived_free_form_slots
-                            .iter()
-                            .map(|slot| archived_free_form_card(model, slot, busy, cx)),
-                    ),
-                )
-        })
+        .when(
+            snapshot
+                .archived_free_form_slots
+                .iter()
+                .any(|slot| selected == Some(AgentIdentifier::FreeForm(slot.slot.id.clone()))),
+            |panel| {
+                panel
+                    .child(
+                        div()
+                            .mt_5()
+                            .mb_3()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Agentes livres arquivados"),
+                    )
+                    .child(
+                        div().flex().flex_wrap().gap_3().children(
+                            snapshot
+                                .archived_free_form_slots
+                                .iter()
+                                .filter(|slot| {
+                                    selected
+                                        == Some(AgentIdentifier::FreeForm(slot.slot.id.clone()))
+                                })
+                                .map(|slot| archived_free_form_card(model, slot, busy, cx)),
+                        ),
+                    )
+            },
+        )
         .into_any_element()
 }
 
@@ -848,7 +1047,8 @@ fn free_form_card(
         });
     div()
         .id(SharedString::from(format!("free-form-card:{}", slot.id)))
-        .min_w(px(520.0))
+        .min_w_0()
+        .w_full()
         .flex_1()
         .p_4()
         .rounded_lg()
@@ -1264,7 +1464,7 @@ fn agent_card(
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     let role = agent.config.agent_role;
-    let color = agent_color(role);
+    let color = theme::agent_color(role);
     let mode = match agent.config.execution_mode {
         AgentExecutionMode::ApiDirect => "API",
         AgentExecutionMode::CliProcess => "CLI",
@@ -1320,7 +1520,9 @@ fn agent_card(
         .unwrap_or_else(|| "CLI default".into());
     div()
         .id(SharedString::from(format!("agent-card:{}", role.as_str())))
-        .min_w(px(520.0))
+        .debug_selector(move || format!("agent-card:{}", role.as_str()))
+        .min_w_0()
+        .w_full()
         .flex_1()
         .p_4()
         .rounded_lg()
@@ -1340,7 +1542,7 @@ fn agent_card(
                     div()
                         .size_9()
                         .rounded_md()
-                        .bg(agent_soft_color(role))
+                        .bg(theme::agent_soft_color(role))
                         .text_color(color)
                         .font_weight(FontWeight::BOLD)
                         .flex()
@@ -1749,7 +1951,7 @@ fn field(
         .child(input)
 }
 
-fn api_table(
+fn api_detail_panel(
     model: &AppModel,
     snapshot: &hvc_core::terminals::TerminalsSnapshot,
     cx: &mut Context<AppModel>,
@@ -1758,6 +1960,7 @@ fn api_table(
     let agents = model.agents.read(cx);
     let api_activity = agents.api_activity.clone();
     let viewer_enabled = agents.viewer_enabled;
+    let selected_agent = agents.selected_agent.clone();
     let selected_api_role = agents.selected_api_role;
     let settings_busy = model.settings.read(cx).busy;
     div()
@@ -1824,28 +2027,7 @@ fn api_table(
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("Roteamento por agente"),
                 )
-                .child(
-                    div()
-                        .py_2()
-                        .border_t_1()
-                        .border_color(theme::border())
-                        .flex()
-                        .flex_wrap()
-                        .gap_3()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::text_muted())
-                        .child(div().w(px(150.0)).child("AGENTE"))
-                        .child(div().w(px(64.0)).child("MODO"))
-                        .child(div().w(px(160.0)).child("ROTA"))
-                        .child(div().w(px(180.0)).child("CONEXÃO"))
-                        .child(div().w(px(100.0)).child("PROVEDOR"))
-                        .child(div().w(px(140.0)).child("MODELO"))
-                        .child(div().w(px(80.0)).child("KEY"))
-                        .child(div().w(px(90.0)).child("FALLBACKS"))
-                        .child(div().flex_1().child("STATUS / AÇÕES")),
-                )
-                .children(snapshot.agents.iter().map(|agent| {
+                .children(snapshot.agents.iter().filter(|agent| selected_agent == Some(AgentIdentifier::Canonical(agent.config.agent_role))).map(|agent| {
                     let role = agent.config.agent_role;
                     let descriptor = hvc_core::terminals::canonical_agent(agent.config.agent_role);
                     let binding = settings.as_ref().and_then(|settings| {
@@ -1879,6 +2061,7 @@ fn api_table(
                         .into();
                     div()
                         .id(SharedString::from(format!("api-agent:{}",agent.config.agent_role.as_str())))
+                        .debug_selector(move || format!("api-agent:{}", role.as_str()))
                         .py_3()
                         .border_t_1()
                         .border_color(theme::border())
@@ -1886,13 +2069,13 @@ fn api_table(
                         .flex_wrap()
                         .items_center()
                         .gap_3()
-                        .child(div().w(px(28.0)).text_color(agent_color(agent.config.agent_role)).font_weight(FontWeight::BOLD).child(descriptor.glyph))
+                        .child(div().w(px(28.0)).text_color(theme::agent_color(agent.config.agent_role)).font_weight(FontWeight::BOLD).child(descriptor.glyph))
                         .child(div().w(px(110.0)).child(descriptor.name))
-                        .child(chip(if agent.config.execution_mode==AgentExecutionMode::ApiDirect{"API"}else{"CLI"},agent_color(agent.config.agent_role)))
-                        .child(div().w(px(160.0)).text_sm().text_color(theme::text_muted()).child(route_label))
-                        .child(div().w(px(180.0)).text_sm().child(target_label))
-                        .child(div().w(px(100.0)).text_xs().text_color(theme::text_muted()).child(provider_label))
-                        .child(div().w(px(140.0)).text_xs().text_color(theme::text_muted()).child(model_label))
+                        .child(chip(if agent.config.execution_mode==AgentExecutionMode::ApiDirect{"API"}else{"CLI"},theme::agent_color(agent.config.agent_role)))
+                        .child(div().w(px(160.0)).text_sm().text_color(theme::text_muted()).child(format!("Rota: {route_label}")))
+                        .child(div().w(px(180.0)).text_sm().child(format!("Conexão: {target_label}")))
+                        .child(div().w(px(100.0)).text_xs().text_color(theme::text_muted()).child(format!("Provedor: {provider_label}")))
+                        .child(div().w(px(140.0)).text_xs().text_color(theme::text_muted()).child(format!("Modelo: {model_label}")))
                         .child(chip(if connection.is_some_and(|connection|connection.has_api_key){"Key OK"}else{"Key pendente"},if connection.is_some_and(|connection|connection.has_api_key){theme::accent()}else{theme::warning()}))
                         .child(div().w(px(80.0)).text_xs().text_color(theme::text_muted()).child(format!("+{fallback_count} fallback")))
                         .child(div().flex_1().min_w(px(180.0)).text_xs().text_color(theme::text_muted()).child(activity_label))
@@ -1940,7 +2123,7 @@ fn api_inline_editor(
         .p_4()
         .rounded_lg()
         .border_1()
-        .border_color(agent_color(role))
+        .border_color(theme::agent_color(role))
         .bg(theme::surface())
         .flex()
         .flex_col()
@@ -2129,7 +2312,7 @@ fn activity_panel_for_key(
     let visible_count = events.len().min(100);
     div()
         .id(SharedString::from(format!("agent-activity:{}", key)))
-        .h(px(150.0))
+        .h(px(250.0))
         .p_2()
         .rounded_md()
         .bg(theme::canvas())
@@ -2213,6 +2396,7 @@ fn run_metadata(run: &hvc_core::terminals::TerminalRun) -> String {
             hvc_core::terminals::ExecutionOrigin::Pipeline => "pipeline",
             hvc_core::terminals::ExecutionOrigin::Learning => "learning",
             hvc_core::terminals::ExecutionOrigin::Manual => "manual",
+            hvc_core::terminals::ExecutionOrigin::Feature => "feature",
         },
         duration,
         run.exit_code
@@ -2291,7 +2475,8 @@ fn action_button(
         theme::text_muted()
     };
     div()
-        .id(id)
+        .id(id.clone())
+        .debug_selector(move || id.to_string())
         .px_3()
         .py_2()
         .rounded_md()
@@ -2389,30 +2574,6 @@ fn status_color(status: Option<TerminalRunStatus>) -> Rgba {
         Some(TerminalRunStatus::AwaitingFallback) => theme::warning(),
         Some(TerminalRunStatus::Completed) => theme::accent(),
         _ => theme::text_muted(),
-    }
-}
-
-fn agent_color(role: AgentRole) -> Rgba {
-    match role {
-        AgentRole::IntakeRouter => rgb(0x6ea8fe),
-        AgentRole::TaskSpecifier => rgb(0xb78cff),
-        AgentRole::ContractAgent => rgb(0xf2c66d),
-        AgentRole::BackendAgent => rgb(0x54d6a2),
-        AgentRole::TestAgent => rgb(0xff7b72),
-        AgentRole::Integrator => rgb(0x67d9e8),
-        AgentRole::LearningAgent => rgb(0xf08bd5),
-    }
-}
-
-fn agent_soft_color(role: AgentRole) -> Rgba {
-    match role {
-        AgentRole::IntakeRouter => rgb(0x192d49),
-        AgentRole::TaskSpecifier => rgb(0x2d2145),
-        AgentRole::ContractAgent => rgb(0x40351f),
-        AgentRole::BackendAgent => rgb(0x183c33),
-        AgentRole::TestAgent => rgb(0x421f24),
-        AgentRole::Integrator => rgb(0x173740),
-        AgentRole::LearningAgent => rgb(0x3d2038),
     }
 }
 

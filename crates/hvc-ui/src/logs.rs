@@ -110,6 +110,10 @@ pub(crate) struct RuntimeEventRecord {
 
 #[derive(Debug, Default)]
 pub(crate) struct LogsModel {
+    pub(crate) collapsed_routing: bool,
+    pub(crate) collapsed_events: bool,
+    pub(crate) visible_event_limit: usize,
+    routing_visibility_initialized: bool,
     pub(crate) snapshot: LogsSnapshot,
     pub(crate) loading: bool,
     pub(crate) poll_in_flight: bool,
@@ -151,8 +155,23 @@ impl LogsModel {
         {
             self.selected_run_id = snapshot.runs.first().map(|run| run.id.clone().into());
         }
+        if !self.routing_visibility_initialized && !snapshot.metrics.is_empty() {
+            self.collapsed_routing = snapshot.metrics.len() > 3;
+            self.routing_visibility_initialized = true;
+        }
         self.snapshot = snapshot;
         true
+    }
+
+    pub(crate) fn visible_events(&self) -> impl Iterator<Item = &RuntimeEventRecord> {
+        self.events
+            .iter()
+            .rev()
+            .take(self.visible_event_limit.max(50))
+    }
+
+    pub(crate) fn show_more_events(&mut self) {
+        self.visible_event_limit = self.visible_event_limit.max(50).saturating_add(50);
     }
 
     pub(crate) fn fail_poll(&mut self, generation: u64, error: UiCommandError) -> bool {
@@ -345,6 +364,11 @@ mod tests {
         }
         assert_eq!(model.events.len(), 200);
         assert_eq!(model.events[0].sequence, Some(26));
+        assert_eq!(model.visible_events().count(), 50);
+        assert_eq!(model.visible_events().next().unwrap().sequence, Some(225));
+        model.show_more_events();
+        assert_eq!(model.visible_events().count(), 100);
+        assert_eq!(model.events.len(), 200);
     }
 
     #[test]

@@ -71,6 +71,7 @@ impl ProviderProtocol {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRole {
+    FeatureAgent,
     IntakeRouter,
     TaskSpecifier,
     ContractAgent,
@@ -81,7 +82,7 @@ pub enum AgentRole {
 }
 
 impl AgentRole {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::IntakeRouter,
         Self::TaskSpecifier,
         Self::ContractAgent,
@@ -89,10 +90,12 @@ impl AgentRole {
         Self::TestAgent,
         Self::Integrator,
         Self::LearningAgent,
+        Self::FeatureAgent,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::FeatureAgent => "feature_agent",
             Self::IntakeRouter => "intake_router",
             Self::TaskSpecifier => "task_specifier",
             Self::ContractAgent => "contract_agent",

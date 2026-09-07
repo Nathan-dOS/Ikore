@@ -4,13 +4,11 @@ use hvc_core::orchestration::brownfield::BrownfieldCoverageMetrics;
 use hvc_core::persistence_service::{Pulsation, PulsationStage, PulsationStatus};
 
 use crate::app_model::AppModel;
-use crate::pulsations::{PIPELINE_STAGES, stage_label, status_label};
+use crate::pulsations::{PIPELINE_STAGES, PulsationDetailSection, stage_label, status_label};
 use crate::theme;
 
 pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let has_project = model.workspace.read(cx).project_id.is_some();
-    let feature_input = model.pulsation_feature_input.clone();
-    let feature_name_empty = feature_input.read(cx).value().trim().is_empty();
     let queue = model
         .pulsations
         .read(cx)
@@ -30,6 +28,8 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
         notice,
         error,
         brownfield_coverage,
+        section,
+        diff_expanded,
     ) = {
         let state = model.pulsations.read(cx);
         (
@@ -44,8 +44,11 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
             state.notice.clone(),
             state.error.clone(),
             state.brownfield_coverage.clone(),
+            state.detail_section,
+            state.diff_expanded,
         )
     };
+    let hide_pulsation_list = section == PulsationDetailSection::Review && diff_expanded;
 
     if !has_project {
         return empty_panel(
@@ -62,96 +65,63 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
         .p_4()
         .flex()
         .gap_3()
-        .child(
-            div()
-                .w(px(292.0))
-                .min_h_0()
-                .p_3()
-                .rounded_lg()
-                .border_1()
-                .border_color(theme::border())
-                .bg(theme::surface())
-                .flex()
-                .flex_col()
-                .gap_3()
-                .child(section_heading(
-                    "PROJECT FLOW",
-                    "Pulsations",
-                    pulsations.len(),
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_muted())
-                                .child("NOVA PULSAÇÃO"),
-                        )
-                        .child(feature_input)
-                        .child(
-                            div()
-                                .id("create-pulsation")
-                                .h(px(34.0))
-                                .rounded_md()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .bg(if runtime_loading || feature_name_empty {
-                                    theme::surface_raised()
-                                } else {
-                                    theme::accent()
-                                })
-                                .text_color(if runtime_loading || feature_name_empty {
-                                    theme::text_muted()
-                                } else {
-                                    theme::canvas()
-                                })
-                                .when(!runtime_loading && !feature_name_empty, |button| {
-                                    button.cursor_pointer().on_click(
-                                        cx.listener(|model, _, _, cx| model.create_pulsation(cx)),
-                                    )
-                                })
-                                .child(if runtime_loading {
-                                    "Processando…"
-                                } else {
-                                    "Criar pulsação"
-                                }),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("pulsation-list")
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .when(pulsations.is_empty(), |list| {
-                            list.child(
-                                div()
-                                    .p_3()
-                                    .text_sm()
-                                    .text_color(theme::text_muted())
-                                    .child("Crie a primeira pulsação deste projeto."),
-                            )
-                        })
-                        .children(pulsations.into_iter().map(|pulsation| {
-                            let position = queue.iter().find(|p| p.pulsation_id == pulsation.id);
-                            let label = position.map(|p| {
-                                format!(
-                                    "#{} · {}",
-                                    p.sequence,
-                                    blocking_label(p.blocking_reason.as_deref())
+        .when(!hide_pulsation_list, |row| {
+            row.child(
+                div()
+                    .w(px(292.0))
+                    .min_h_0()
+                    .p_3()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(theme::border())
+                    .bg(theme::surface())
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(section_heading(
+                        "PROJECT FLOW",
+                        "Pulsations",
+                        pulsations.len(),
+                    ))
+                    .child(crate::forge_view::button(
+                        "compose-task-batch",
+                        "Compor pulsação com tasks",
+                        crate::forge::ForgeAction::OpenBacklog,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .id("pulsation-list")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .when(pulsations.is_empty(), |list| {
+                                list.child(
+                                    div()
+                                        .p_3()
+                                        .text_sm()
+                                        .text_color(theme::text_muted())
+                                        .child("Crie a primeira pulsação deste projeto."),
                                 )
-                            });
-                            pulsation_card(pulsation, active_id.as_deref(), label, cx)
-                        })),
-                ),
-        )
+                            })
+                            .children(pulsations.into_iter().map(|pulsation| {
+                                let position =
+                                    queue.iter().find(|p| p.pulsation_id == pulsation.id);
+                                let label = position.map(|p| {
+                                    format!(
+                                        "#{} · {}",
+                                        p.sequence,
+                                        blocking_label(p.blocking_reason.as_deref())
+                                    )
+                                });
+                                pulsation_card(pulsation, active_id.as_deref(), label, cx)
+                            })),
+                    ),
+            )
+        })
         .child(
             div()
                 .id("pulsation-detail-scroll")
@@ -163,92 +133,112 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                 .border_1()
                 .border_color(theme::border())
                 .bg(theme::surface())
-                .overflow_y_scroll()
-                .when_some(brownfield_coverage, |panel, coverage| {
-                    panel.child(brownfield_progress_panel(coverage))
-                })
-                .child(coordination_panel(model, cx))
+                .flex()
+                .flex_col()
+                .gap_3()
                 .when_some(active, |panel, active| {
+                    let section = model.pulsations.read(cx).detail_section;
+                    let review_pending =
+                        model.pulsations.read(cx).hitl.expected_checkpoint.is_some();
+                    let preparation_pending = review_pending
+                        || model.pulsations.read(cx).detail().is_some_and(|detail| {
+                            detail.questions.is_some() || detail.description_editable
+                        });
                     panel
-                        .child(pulsation_detail_header(active.clone(), runtime_loading, cx))
-                        .child(pipeline(active.stage))
-                        .child(preparation_panel(model, cx))
-                        .child(artifact_preview_panel(model, cx))
                         .child(
                             div()
-                                .grid()
-                                .grid_cols(3)
-                                .gap_2()
-                                .my_4()
-                                .child(fact("ESTÁGIO ATUAL", stage_label(active.stage)))
-                                .child(fact("AGENTES ATIVOS", running_jobs.to_string()))
-                                .child(fact("HITL PENDENTE", awaiting_hitl.to_string())),
+                                .flex_shrink_0()
+                                .child(pulsation_detail_header(active.clone(), runtime_loading, cx))
+                                .child(pipeline(active.stage)),
                         )
-                        .child(fact("CRIADA EM", active.created_at.clone()))
-                        .child(fact("ÚLTIMA TRANSIÇÃO", active.updated_at.clone()))
+                        .child(
+                            div().flex().flex_shrink_0().gap_2().children(
+                                [
+                                    (
+                                        PulsationDetailSection::Review,
+                                        "pulsation-review",
+                                        if review_pending {
+                                            "Review · pendente"
+                                        } else {
+                                            "Review"
+                                        },
+                                    ),
+                                    (
+                                        PulsationDetailSection::Overview,
+                                        "pulsation-overview",
+                                        "Visão Geral",
+                                    ),
+                                    (
+                                        PulsationDetailSection::Preparation,
+                                        "pulsation-preparation",
+                                        if preparation_pending {
+                                            "Preparação · pendente"
+                                        } else {
+                                            "Preparação"
+                                        },
+                                    ),
+                                    (
+                                        PulsationDetailSection::Artifacts,
+                                        "pulsation-artifacts",
+                                        "Artefatos",
+                                    ),
+                                ]
+                                .into_iter()
+                                .map(|(target, id, label)| {
+                                    div()
+                                        .id(id)
+                                        .debug_selector(move || id.into())
+                                        .px_3()
+                                        .py_2()
+                                        .rounded_md()
+                                        .cursor_pointer()
+                                        .text_sm()
+                                        .bg(if section == target {
+                                            theme::accent_soft()
+                                        } else {
+                                            theme::surface_raised()
+                                        })
+                                        .text_color(if section == target {
+                                            theme::accent()
+                                        } else {
+                                            theme::text_muted()
+                                        })
+                                        .on_click(cx.listener(move |model, _, _, cx| {
+                                            model.pulsations.update(cx, |state, _| {
+                                                state.detail_section = target
+                                            });
+                                            cx.notify();
+                                        }))
+                                        .child(label)
+                                }),
+                            ),
+                        )
                         .child(
                             div()
-                                .mt_5()
-                                .child(section_heading(
-                                    "GENERATED OUTPUT",
-                                    "Artefatos",
-                                    artifacts.len(),
-                                ))
-                                .when(artifacts_loading, |section| {
-                                    section.child(
-                                        div()
-                                            .py_3()
-                                            .text_color(theme::text_muted())
-                                            .child("Carregando artefatos…"),
-                                    )
-                                })
-                                .when(!artifacts_loading && artifacts.is_empty(), |section| {
-                                    section.child(
-                                        div()
-                                            .py_3()
-                                            .text_color(theme::text_muted())
-                                            .child("Nenhum artefato gerado até o momento."),
-                                    )
-                                })
-                                .children(artifacts.into_iter().map(|artifact| {
-                                    let pulse = artifact.pulsation_id.clone();
-                                    let artifact_id = artifact.id.clone();
-                                    div()
-                                        .id(gpui::SharedString::from(format!(
-                                            "artifact:{}",
-                                            artifact.id
-                                        )))
-                                        .mt_2()
-                                        .p_3()
-                                        .rounded_md()
-                                        .border_1()
-                                        .border_color(theme::border())
-                                        .bg(theme::surface_raised())
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |model, _, _, cx| {
-                                            model.preview_artifact(
-                                                pulse.clone(),
-                                                artifact_id.clone(),
-                                                cx,
-                                            )
-                                        }))
-                                        .child(
-                                            div()
-                                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                .child(artifact.name),
-                                        )
-                                        .child(
-                                            div().text_xs().text_color(theme::text_muted()).child(
-                                                format!(
-                                                    "{} · {}",
-                                                    artifact.kind,
-                                                    artifact.relative_path.unwrap_or_else(|| {
-                                                        "sem caminho no workspace".into()
-                                                    })
-                                                ),
-                                            ),
-                                        )
-                                })),
+                                .id("pulsation-section-scroll")
+                                .debug_selector(|| "pulsation-section-scroll".into())
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .child(match section {
+                                    PulsationDetailSection::Review => {
+                                        crate::review_view::review_panel(model, cx)
+                                    }
+                                    PulsationDetailSection::Overview => detail_overview(
+                                        model,
+                                        &active,
+                                        running_jobs,
+                                        awaiting_hitl,
+                                        brownfield_coverage,
+                                        cx,
+                                    ),
+                                    PulsationDetailSection::Preparation => {
+                                        preparation_panel(model, cx)
+                                    }
+                                    PulsationDetailSection::Artifacts => {
+                                        detail_artifacts(model, artifacts, artifacts_loading, cx)
+                                    }
+                                }),
                         )
                 })
                 .when(active_id.is_none(), |panel| {
@@ -279,6 +269,106 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                             .child(error),
                     )
                 }),
+        )
+        .into_any_element()
+}
+
+fn detail_overview(
+    model: &AppModel,
+    active: &Pulsation,
+    running_jobs: usize,
+    awaiting_hitl: usize,
+    coverage: Option<BrownfieldCoverageMetrics>,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    div()
+        .when_some(coverage, |panel, coverage| {
+            panel.child(brownfield_progress_panel(coverage))
+        })
+        .child(coordination_panel(model, cx))
+        .child(
+            div()
+                .grid()
+                .grid_cols(3)
+                .gap_2()
+                .my_4()
+                .child(fact("ESTÁGIO ATUAL", stage_label(active.stage)))
+                .child(fact("AGENTES ATIVOS", running_jobs.to_string()))
+                .child(fact("HITL PENDENTE", awaiting_hitl.to_string())),
+        )
+        .child(fact("CRIADA EM", active.created_at.clone()))
+        .child(fact("ÚLTIMA TRANSIÇÃO", active.updated_at.clone()))
+        .into_any_element()
+}
+
+fn detail_artifacts(
+    model: &AppModel,
+    artifacts: Vec<hvc_core::persistence_service::Artifact>,
+    artifacts_loading: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    div()
+        .child(artifact_preview_panel(model, cx))
+        .child(
+            div()
+                .mt_5()
+                .child(section_heading(
+                    "GENERATED OUTPUT",
+                    "Artefatos",
+                    artifacts.len(),
+                ))
+                .when(artifacts_loading, |section| {
+                    section.child(
+                        div()
+                            .py_3()
+                            .text_color(theme::text_muted())
+                            .child("Carregando artefatos…"),
+                    )
+                })
+                .when(!artifacts_loading && artifacts.is_empty(), |section| {
+                    section.child(
+                        div()
+                            .py_3()
+                            .text_color(theme::text_muted())
+                            .child("Nenhum artefato gerado até o momento."),
+                    )
+                })
+                .children(artifacts.into_iter().map(|artifact| {
+                    let pulse = artifact.pulsation_id.clone();
+                    let artifact_id = artifact.id.clone();
+                    div()
+                        .id(gpui::SharedString::from(format!(
+                            "artifact:{}",
+                            artifact.id
+                        )))
+                        .mt_2()
+                        .p_3()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(theme::border())
+                        .bg(theme::surface_raised())
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |model, _, _, cx| {
+                            model.preview_artifact(pulse.clone(), artifact_id.clone(), cx)
+                        }))
+                        .child(
+                            div()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(artifact.name),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_muted())
+                                .child(format!(
+                                    "{} · {}",
+                                    artifact.kind,
+                                    artifact
+                                        .relative_path
+                                        .unwrap_or_else(|| { "sem caminho no workspace".into() })
+                                )),
+                        )
+                })),
         )
         .into_any_element()
 }
@@ -382,20 +472,9 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         PreSpecSkipReason::NoMatches => "Sem matches no escopo limitado",
         PreSpecSkipReason::BaseReleased => "Base liberada; Specification não espera",
     });
-    let mut panel = div()
-        .mt_4()
-        .p_3()
-        .rounded_md()
-        .border_1()
-        .border_color(theme::border())
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(
-            div()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child("Preparação · fora dos seis estágios"),
-        )
+    let mut panel = div().mt_4().flex().flex_col().gap_3();
+
+    let mut prespec_card = prep_card("PREPARAÇÃO & CONTEXTO LOCAL")
         .child(format!("Revisão {} · {}", detail.input_revision, label))
         .when_some(reason, |p, r| {
             p.child(div().text_sm().text_color(theme::text_muted()).child(r))
@@ -412,6 +491,166 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                 .text_color(theme::text_muted())
                 .child("Código contextual não exige vault nem AST."),
         );
+
+    if let Some(assessment) = &prep.assessment {
+        prespec_card = prespec_card.child(format!(
+            "TaskRefine: {} / 100 · threshold {} · {}",
+            assessment.score.get(),
+            assessment.threshold.get(),
+            assessment.ruleset_version
+        ));
+        for contribution in &assessment.contributions {
+            prespec_card = prespec_card.child(div().text_sm().child(format!(
+                "+{} — {}",
+                contribution.weight, contribution.reason
+            )));
+        }
+    }
+    panel = panel.child(prespec_card);
+
+    if description_pending || (main_actionable && detail.description_editable) {
+        let mut desc_card = prep_card("REVISÃO DO PEDIDO");
+        if description_pending {
+            desc_card = desc_card.child(
+                div().text_sm().text_color(theme::warning()).child(
+                    "Aguardando você: revise o pedido ou confirme que deseja seguir. Isso não aprova a especificação.",
+                ),
+            );
+        }
+        if main_actionable && detail.description_editable {
+            desc_card = desc_card
+                .child(model.description_review_input.clone())
+                .child(preparation_button(
+                    "description-edit",
+                    "Editar pedido",
+                    !busy,
+                    cx,
+                    |m, cx| m.revise_description(cx),
+                ));
+        }
+        if description_pending {
+            desc_card = desc_card.child(preparation_button(
+                "description-confirm",
+                "Continuar para especificação",
+                !busy,
+                cx,
+                |m, cx| m.confirm_description(cx),
+            ));
+        }
+        panel = panel.child(desc_card);
+    }
+
+    if let Some(questions) = detail.questions.filter(|_| main_actionable) {
+        let mut questions_card = prep_card("SPECIFICATION · PERGUNTAS PENDENTES")
+            .child(div().text_sm().child(
+                "Perguntas produzidas pela Specification e apresentadas no Companion sem outra chamada LLM. Não há especificação completa para aprovar ainda.",
+            ));
+        let mut complete = true;
+        for question in questions.questions {
+            questions_card = questions_card
+                .child(format!("[{}] {}", question.id, question.question))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child(question.rationale),
+                );
+            if let Some((_, input)) = model
+                .specification_answer_inputs
+                .iter()
+                .find(|(id, _)| id == &question.id)
+            {
+                complete &= !input.read(cx).value().trim().is_empty();
+                questions_card = questions_card.child(input.clone());
+            } else {
+                complete = false;
+            }
+        }
+        questions_card = questions_card
+            .child(preparation_button(
+                "specification-answer",
+                "Enviar respostas e retomar Specification",
+                !busy && complete,
+                cx,
+                |m, cx| m.answer_specification(cx),
+            ))
+            .child(preparation_button(
+                "specification-conversation",
+                "Ver conversa no Companion",
+                true,
+                cx,
+                |m, cx| m.open_specification_conversation(cx),
+            ));
+        panel = panel.child(questions_card);
+    } else if artifact_review && main_actionable {
+        let confirm_stage_reject = model.confirm_stage_reject;
+        let artifact_card = prep_card("REVISÃO DE ARTEFATOS & HITL")
+            .child(
+                div()
+                    .text_sm()
+                    .child("Confira o conteúdo persistido abaixo antes de tomar uma decisão."),
+            )
+            .child(model.stage_feedback_input.clone())
+            .child(preparation_button(
+                "artifact-approve",
+                "Aprovar estágio",
+                !review_busy,
+                cx,
+                |m, cx| {
+                    m.set_confirm_stage_reject(false, cx);
+                    m.apply_hitl_decision(HitlDecision::Approve, cx);
+                },
+            ))
+            .child(preparation_button(
+                "artifact-revise",
+                "Solicitar revisão com feedback",
+                !review_busy,
+                cx,
+                |m, cx| {
+                    m.set_confirm_stage_reject(false, cx);
+                    m.apply_hitl_decision(HitlDecision::RequestRevision, cx);
+                },
+            ))
+            .child(
+                div()
+                    .id("artifact-reject")
+                    .debug_selector(|| "artifact-reject".into())
+                    .p_2()
+                    .rounded_md()
+                    .tab_index(0)
+                    .bg(if confirm_stage_reject {
+                        theme::danger()
+                    } else {
+                        theme::danger_soft()
+                    })
+                    .text_color(if confirm_stage_reject {
+                        theme::canvas()
+                    } else {
+                        theme::danger()
+                    })
+                    .text_sm()
+                    .opacity(if !review_busy { 1.0 } else { 0.5 })
+                    .when(!review_busy, |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(|style| style.opacity(theme::HOVER_OPACITY))
+                            .on_click(cx.listener(move |m, _, _, cx| {
+                                if confirm_stage_reject {
+                                    m.apply_hitl_decision(HitlDecision::Reject, cx);
+                                } else {
+                                    m.set_confirm_stage_reject(true, cx);
+                                }
+                            }))
+                    })
+                    .child(if confirm_stage_reject {
+                        "Confirmar rejeição do estágio"
+                    } else {
+                        "Rejeitar estágio"
+                    }),
+            );
+        panel = panel.child(artifact_card);
+    }
+
     use hvc_core::orchestration::LearningState;
     let learning_label = match detail.learning {
         LearningState::NotScheduled => "Não agendado",
@@ -427,11 +666,12 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         LearningState::Failed => "Falha opcional; pulsação concluída preservada",
         LearningState::Cancelled => "Relatório dispensado",
     };
-    panel = panel
+
+    let mut learning_card = prep_card("LEARNING CONSULTIVO")
         .child(
             div()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(format!("Learning · {learning_label}")),
+                .child(format!("Estado: {learning_label}")),
         )
         .child(
             div()
@@ -439,8 +679,9 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                 .text_color(theme::text_muted())
                 .child("Propostas não alteram regras nem reabrem Done."),
         );
+
     if let Some(run) = &detail.learning_run {
-        panel = panel
+        learning_card = learning_card
             .child(format!(
                 "Chamadas: {}/3 nesta versão · {} no histórico",
                 run.budget_calls, run.total_calls
@@ -466,7 +707,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                     f64::from(audit.observed_use) * 100.0 / f64::from(determinate)
                 )
             };
-            panel = panel.child(
+            learning_card = learning_card.child(
                 div().text_xs().text_color(theme::text_muted()).child(format!(
                     "{} · pool {} · entregues {} · citadas {} · auditadas {} · indeterminadas {} · taxa de citação {} · precisão observada heurística {}",
                     audit.stage_name,audit.considered,audit.delivered,audit.cited,audit.audited,audit.indeterminate,citation_rate,observed_precision
@@ -475,7 +716,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         }
         let mut has_pending_proposals = false;
         for proposal in &run.graph_proposals {
-            panel = panel.child(
+            learning_card = learning_card.child(
                 div()
                     .mt_2()
                     .p_3()
@@ -519,7 +760,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                 let approve_id = proposal.id.clone();
                 let reject_id = proposal.id.clone();
                 let selected = model.learning_graph_decisions.get(&proposal.id).copied();
-                panel = panel.child(
+                learning_card = learning_card.child(
                     div()
                         .flex()
                         .gap_2()
@@ -557,7 +798,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             }
         }
         if has_pending_proposals {
-            panel = panel.child(preparation_button(
+            learning_card = learning_card.child(preparation_button(
                 "learning-graph-confirm",
                 "Confirmar decisões do grafo",
                 !busy,
@@ -570,7 +811,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             LearningState::Failed | LearningState::DeferredBudget
         ) && run.artifact_id.is_none()
         {
-            panel = panel.child(preparation_button(
+            learning_card = learning_card.child(preparation_button(
                 "learning-retry",
                 "Autorizar até 3 novas chamadas",
                 !busy,
@@ -582,7 +823,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             detail.learning,
             LearningState::Published | LearningState::Cancelled
         ) {
-            panel = panel.child(preparation_button(
+            learning_card = learning_card.child(preparation_button(
                 "learning-dismiss",
                 "Dispensar relatório",
                 !busy,
@@ -591,113 +832,27 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             ));
         }
     }
-    if let Some(assessment) = &prep.assessment {
-        panel = panel.child(format!(
-            "TaskRefine: {} / 100 · threshold {} · {}",
-            assessment.score.get(),
-            assessment.threshold.get(),
-            assessment.ruleset_version
-        ));
-        for contribution in &assessment.contributions {
-            panel = panel.child(div().text_sm().child(format!(
-                "+{} — {}",
-                contribution.weight, contribution.reason
-            )));
-        }
-    }
-    if description_pending {
-        panel=panel.child(div().text_color(theme::warning()).child("Aguardando você: revise o pedido ou confirme que deseja seguir. Isso não aprova a especificação."));
-    }
-    if main_actionable && detail.description_editable {
-        panel = panel
-            .child(model.description_review_input.clone())
-            .child(preparation_button(
-                "description-edit",
-                "Editar pedido",
-                !busy,
-                cx,
-                |m, cx| m.revise_description(cx),
-            ));
-    }
-    if description_pending {
-        panel = panel.child(preparation_button(
-            "description-confirm",
-            "Continuar para especificação",
-            !busy,
-            cx,
-            |m, cx| m.confirm_description(cx),
-        ));
-    }
-    if let Some(questions) = detail.questions.filter(|_| main_actionable) {
-        panel=panel.child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Specification aguarda suas respostas"))
-            .child(div().text_sm().child("Perguntas produzidas pela Specification e apresentadas no Companion sem outra chamada LLM. Não há especificação completa para aprovar ainda."));
-        let mut complete = true;
-        for question in questions.questions {
-            panel = panel
-                .child(format!("[{}] {}", question.id, question.question))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_muted())
-                        .child(question.rationale),
-                );
-            if let Some((_, input)) = model
-                .specification_answer_inputs
-                .iter()
-                .find(|(id, _)| id == &question.id)
-            {
-                complete &= !input.read(cx).value().trim().is_empty();
-                panel = panel.child(input.clone());
-            } else {
-                complete = false;
-            }
-        }
-        panel = panel
-            .child(preparation_button(
-                "specification-answer",
-                "Enviar respostas e retomar Specification",
-                !busy && complete,
-                cx,
-                |m, cx| m.answer_specification(cx),
-            ))
-            .child(preparation_button(
-                "specification-conversation",
-                "Ver conversa no Companion",
-                true,
-                cx,
-                |m, cx| m.open_specification_conversation(cx),
-            ));
-    } else if artifact_review && main_actionable {
-        panel = panel
-            .child(
-                div()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("Revisão de artefatos · confira o conteúdo abaixo"),
-            )
-            .child(model.stage_feedback_input.clone())
-            .child(preparation_button(
-                "artifact-approve",
-                "Aprovar estágio",
-                !review_busy,
-                cx,
-                |m, cx| m.apply_hitl_decision(HitlDecision::Approve, cx),
-            ))
-            .child(preparation_button(
-                "artifact-revise",
-                "Solicitar revisão com feedback",
-                !review_busy,
-                cx,
-                |m, cx| m.apply_hitl_decision(HitlDecision::RequestRevision, cx),
-            ))
-            .child(preparation_button(
-                "artifact-reject",
-                "Rejeitar estágio",
-                !review_busy,
-                cx,
-                |m, cx| m.apply_hitl_decision(HitlDecision::Reject, cx),
-            ));
-    }
+    panel = panel.child(learning_card);
+
     panel.into_any_element()
+}
+
+fn prep_card(title: &'static str) -> gpui::Div {
+    div()
+        .p_3()
+        .rounded_lg()
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::surface_raised())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::accent())
+                .child(title),
+        )
 }
 
 fn preparation_button(
@@ -709,15 +864,17 @@ fn preparation_button(
 ) -> impl IntoElement {
     div()
         .id(id)
-        .debug_selector(|| id.into())
+        .debug_selector(move || id.into())
         .p_2()
         .rounded_md()
+        .tab_index(0)
         .bg(theme::surface_raised())
         .text_sm()
         .opacity(if enabled { 1.0 } else { 0.5 })
         .when(enabled, |button| {
             button
                 .cursor_pointer()
+                .hover(|style| style.opacity(theme::HOVER_OPACITY))
                 .on_click(cx.listener(move |m, _, _, cx| action(m, cx)))
         })
         .child(label)
@@ -778,14 +935,7 @@ fn artifact_preview_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
             page + 1,
             pages
         ))
-        .child(
-            div()
-                .id("artifact-preview-scroll")
-                .max_h(px(450.0))
-                .overflow_y_scroll()
-                .text_sm()
-                .child(text),
-        )
+        .child(div().id("artifact-preview-scroll").text_sm().child(text))
         .child(preparation_button(
             "artifact-prev",
             "Página anterior",

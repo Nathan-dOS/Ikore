@@ -28,6 +28,11 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
             logs.error.clone(),
         )
     };
+    let logs = model.logs.read(cx);
+    let collapsed_routing = logs.collapsed_routing;
+    let collapsed_events = logs.collapsed_events;
+    let visible_events = logs.visible_events().cloned().collect::<Vec<_>>();
+    let has_more_events = visible_events.len() < events.len();
     let run_count = snapshot.runs.len();
     let metric_count = snapshot.metrics.len();
 
@@ -184,39 +189,6 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         .child(metric("MÉTRICAS", metric_count.to_string()))
                         .child(metric("EVENTOS", events.len().to_string())),
                 )
-                .child(
-                    section("Routing metrics").children(snapshot.metrics.into_iter().map(
-                        |metric_item| {
-                            div()
-                                .mt_2()
-                                .p_2()
-                                .rounded_md()
-                                .bg(theme::surface())
-                                .child(format!(
-                                    "{}/{} · {} tentativa(s), {} sucesso(s)",
-                                    metric_item.provider_id,
-                                    metric_item.model_id,
-                                    metric_item.attempts,
-                                    metric_item.successes
-                                ))
-                                .child(div().text_xs().text_color(theme::text_muted()).child(
-                                    format!(
-                                            "latência média {} · tokens {}/{} · custo {}",
-                                            metric_item
-                                                .average_latency_ms
-                                                .map(|value| format!("{value:.1} ms"))
-                                                .unwrap_or_else(|| "—".into()),
-                                            metric_item.input_tokens,
-                                            metric_item.output_tokens,
-                                            metric_item
-                                                .estimated_cost_usd
-                                                .map(|value| format!("US$ {value:.6}"))
-                                                .unwrap_or_else(|| "—".into())
-                                        ),
-                                ))
-                        },
-                    )),
-                )
                 .when_some(selected_run, |panel, run| {
                     panel.child(
                         section("Run selecionado")
@@ -263,6 +235,55 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                             }),
                     )
                 })
+                .child(button(
+                    "logs-toggle-routing",
+                    if collapsed_routing {
+                        "Mostrar Routing metrics"
+                    } else {
+                        "Ocultar Routing metrics"
+                    },
+                    true,
+                    cx,
+                    |model, cx| {
+                        model.logs.update(cx, |logs, _| {
+                            logs.collapsed_routing = !logs.collapsed_routing
+                        });
+                        cx.notify();
+                    },
+                ))
+                .when(!collapsed_routing, |panel| {
+                    panel.child(section("Routing metrics").children(
+                        snapshot.metrics.into_iter().map(|metric_item| {
+                            div()
+                                .mt_2()
+                                .p_2()
+                                .rounded_md()
+                                .bg(theme::surface())
+                                .child(format!(
+                                    "{}/{} · {} tentativa(s), {} sucesso(s)",
+                                    metric_item.provider_id,
+                                    metric_item.model_id,
+                                    metric_item.attempts,
+                                    metric_item.successes
+                                ))
+                                .child(div().text_xs().text_color(theme::text_muted()).child(
+                                    format!(
+                                            "latência média {} · tokens {}/{} · custo {}",
+                                            metric_item
+                                                .average_latency_ms
+                                                .map(|value| format!("{value:.1} ms"))
+                                                .unwrap_or_else(|| "—".into()),
+                                            metric_item.input_tokens,
+                                            metric_item.output_tokens,
+                                            metric_item
+                                                .estimated_cost_usd
+                                                .map(|value| format!("US$ {value:.6}"))
+                                                .unwrap_or_else(|| "—".into())
+                                        ),
+                                ))
+                        }),
+                    ))
+                })
                 .child(
                     section("Saída LLM visível")
                         .child(
@@ -285,7 +306,7 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 .p_3()
                                 .rounded_md()
                                 .bg(theme::surface())
-                                .font_family("Cascadia Mono")
+                                .font_family(theme::FONT_MONO)
                                 .text_sm()
                                 .child(if visible_output.is_empty() {
                                     SharedString::from("Nenhuma saída visível nesta sessão.")
@@ -294,43 +315,74 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 }),
                         ),
                 )
-                .child(
-                    section("Eventos watcher / LLM").child(
-                        div()
-                            .id("logs-events-scroll")
-                            .max_h(px(300.0))
-                            .overflow_y_scroll()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .children(events.into_iter().rev().map(|event| {
-                                div()
-                                    .p_2()
-                                    .rounded_md()
-                                    .bg(theme::surface())
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .justify_between()
-                                            .child(format!("{} · {}", event.category, event.name))
-                                            .when_some(event.sequence, |row, sequence| {
-                                                row.child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(theme::text_muted())
-                                                        .child(format!("#{sequence}")),
-                                                )
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(theme::text_muted())
-                                            .child(event.summary),
-                                    )
-                            })),
-                    ),
-                ),
+                .child(button(
+                    "logs-toggle-events",
+                    if collapsed_events {
+                        "Mostrar eventos"
+                    } else {
+                        "Ocultar eventos"
+                    },
+                    true,
+                    cx,
+                    |model, cx| {
+                        model
+                            .logs
+                            .update(cx, |logs, _| logs.collapsed_events = !logs.collapsed_events);
+                        cx.notify();
+                    },
+                ))
+                .when(!collapsed_events, |panel| {
+                    panel.child(
+                        section("Eventos watcher / LLM").child(
+                            div()
+                                .id("logs-events-scroll")
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .children(visible_events.into_iter().map(|event| {
+                                    div()
+                                        .p_2()
+                                        .rounded_md()
+                                        .bg(theme::surface())
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .justify_between()
+                                                .child(format!(
+                                                    "{} · {}",
+                                                    event.category, event.name
+                                                ))
+                                                .when_some(event.sequence, |row, sequence| {
+                                                    row.child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(theme::text_muted())
+                                                            .child(format!("#{sequence}")),
+                                                    )
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(theme::text_muted())
+                                                .child(event.summary),
+                                        )
+                                })),
+                        ),
+                    )
+                })
+                .when(!collapsed_events && has_more_events, |panel| {
+                    panel.child(button(
+                        "logs-more-events",
+                        "Mostrar mais 50 eventos",
+                        true,
+                        cx,
+                        |model, cx| {
+                            model.logs.update(cx, |logs, _| logs.show_more_events());
+                            cx.notify();
+                        },
+                    ))
+                }),
         )
         .into_any_element()
 }
@@ -393,5 +445,5 @@ fn fact(label: &'static str, value: String) -> impl IntoElement {
     div()
         .mt_2()
         .child(div().text_xs().text_color(theme::text_muted()).child(label))
-        .child(div().font_family("Cascadia Mono").text_sm().child(value))
+        .child(div().font_family(theme::FONT_MONO).text_sm().child(value))
 }

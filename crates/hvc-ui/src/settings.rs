@@ -294,8 +294,19 @@ impl SettingsBackend for CoreSettingsBackend {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettingsSection {
+    #[default]
+    Connections,
+    Routes,
+    Runtime,
+}
+
 #[derive(Debug)]
 pub(crate) struct SettingsModel {
+    pub(crate) settings_section: SettingsSection,
+    pub(crate) creating_connection: bool,
+    pub(crate) creating_route: bool,
     pub(crate) snapshot: Option<SettingsSnapshot>,
     pub(crate) loading: bool,
     pub(crate) busy: bool,
@@ -317,6 +328,9 @@ pub(crate) struct SettingsModel {
 impl Default for SettingsModel {
     fn default() -> Self {
         Self {
+            settings_section: SettingsSection::Connections,
+            creating_connection: false,
+            creating_route: false,
             snapshot: None,
             loading: false,
             busy: false,
@@ -371,6 +385,8 @@ impl SettingsModel {
         }) {
             self.selected_route_id = snapshot.routes.first().map(|item| item.id.clone().into());
         }
+        self.creating_connection = false;
+        self.creating_route = false;
         self.snapshot = Some(snapshot);
         true
     }
@@ -548,6 +564,63 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[gpui::test]
+    fn automatic_selection_hydrates_forms_and_refresh_preserves_same_selection_drafts(
+        cx: &mut TestAppContext,
+    ) {
+        let harness = CoreTestHarness::new();
+        let backend = Arc::new(CoreSettingsBackend::new(harness.core()));
+        let app = cx.new(|cx| AppModel::new_for_test_with_settings_backend(backend, cx));
+        app.update(cx, |model, cx| model.refresh_settings(cx));
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if app.read_with(cx, |model, cx| !model.settings.read(cx).loading) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        app.read_with(cx, |model, cx| {
+            let settings = model.settings.read(cx);
+            let connection = settings
+                .connection()
+                .expect("automatically selected connection");
+            assert_eq!(
+                model.settings_connection_name_input.read(cx).value(),
+                connection.display_name
+            );
+            assert_eq!(
+                model.settings_connection_model_input.read(cx).value(),
+                connection.default_model
+            );
+            assert_eq!(
+                settings.connection_provider_id.as_ref(),
+                connection.provider_id
+            );
+            let route = settings.route().expect("automatically selected route");
+            assert_eq!(model.settings_route_name_input.read(cx).value(), route.name);
+            assert_eq!(settings.route_targets.len(), route.targets.len());
+        });
+        app.update(cx, |model, cx| {
+            model
+                .settings_connection_name_input
+                .update(cx, |input, cx| input.set_value("Unsaved local draft", cx));
+            model.refresh_settings(cx);
+        });
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if app.read_with(cx, |model, cx| !model.settings.read(cx).loading) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        app.read_with(cx, |model, cx| {
+            assert_eq!(
+                model.settings_connection_name_input.read(cx).value(),
+                "Unsaved local draft"
+            )
+        });
     }
 
     #[gpui::test]

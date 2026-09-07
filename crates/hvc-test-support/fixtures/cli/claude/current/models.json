@@ -1,5 +1,5 @@
 {
-  "adapterContractVersion": 1,
+  "adapterContractVersion": 2,
   "catalogSource": "preset",
   "models": [
     { "id": "opus", "name": "Claude Opus", "profiles": ["low", "medium", "high"] },

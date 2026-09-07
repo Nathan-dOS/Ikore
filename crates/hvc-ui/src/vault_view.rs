@@ -3,9 +3,9 @@ use hvc_core::workspace_service::{FileNode, FileNodeKind, SearchMatch, SearchMod
 use hvc_editor::parse_markdown;
 
 use crate::app_model::{AppModel, AppView};
-use crate::shell::render_markdown_block;
 use crate::theme;
 use crate::vault::{VaultGraphLayout, build_vault_graph_layout};
+use crate::workspace_view::render_markdown_block;
 
 #[derive(Clone)]
 struct VaultTreeRow {
@@ -235,6 +235,8 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         })
         .child(
             div()
+                .id("vault-graph-scroll")
+                .overflow_y_scroll()
                 .flex_1()
                 .min_w_0()
                 .min_h_0()
@@ -767,6 +769,9 @@ fn inspector(
         .when_some(document, |panel, document| {
             panel.child(
                 div()
+                    .id("vault-document-preview")
+                    .max_h(px(400.0))
+                    .overflow_y_scroll()
                     .mt_4()
                     .p_3()
                     .rounded_md()

@@ -103,6 +103,7 @@ fn handoff() -> StageHandoffV1 {
     producer.job_id = "job-spec".into();
     producer.state_version = 2;
     StageHandoffV1 {
+        batch_manifest: None,
         clarifications: Vec::new(),
         publication_bases: Vec::new(),
         schema_version: SchemaV1,

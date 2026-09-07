@@ -55,6 +55,8 @@ mod clarification;
 mod component_notes;
 #[path = "orchestration/coordination.rs"]
 mod coordination;
+#[path = "feature_forge/persistence.rs"]
+mod forge_batches;
 #[path = "orchestration/indexing.rs"]
 mod indexing;
 #[path = "orchestration/integration.rs"]
@@ -389,6 +391,8 @@ pub struct UiSessionState {
     pub active_chat_conversation_id: Option<String>,
     pub scroll_top: Option<f64>,
     pub tabs: Vec<UiTabSnapshot>,
+    #[serde(default)]
+    pub auto_open_review: bool,
     pub updated_at: String,
 }
 
@@ -434,6 +438,8 @@ pub struct SaveUiSessionRequest {
     pub scroll_top: Option<f64>,
     #[serde(default)]
     pub tabs: Vec<UiTabSnapshot>,
+    #[serde(default)]
+    pub auto_open_review: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1090,9 +1096,21 @@ impl PersistenceService {
         connection.busy_timeout(Duration::from_secs(5))?;
 
         crate::orchestration::upgrade::backup_before_upgrade(&connection, app_data_dir)?;
+        // V24 rebuilds CHECK-constrained tables without cascading into their history.
+        connection.pragma_update(None, "foreign_keys", "OFF")?;
         embedded::migrations::runner()
             .run(&mut connection)
             .map_err(PersistenceServiceError::Migration)?;
+        let broken_references: i64 =
+            connection.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        if broken_references != 0 {
+            return Err(PersistenceServiceError::Validation(
+                "Migration left invalid foreign keys".into(),
+            ));
+        }
         crate::orchestration::upgrade::adapt_legacy(&mut connection)?;
 
         let llm_repository = SqliteLlmRepository::new(&db_path);
@@ -1118,7 +1136,7 @@ impl PersistenceService {
         })
     }
 
-    fn connection(&self) -> Result<Connection, PersistenceServiceError> {
+    pub(crate) fn connection(&self) -> Result<Connection, PersistenceServiceError> {
         let connection = Connection::open(&self.db_path)?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.busy_timeout(Duration::from_secs(5))?;
@@ -1458,7 +1476,16 @@ impl PersistenceService {
         let normalized = raw.trim();
         if !matches!(
             normalized,
-            "workspace" | "pulsations" | "vault" | "chat" | "agents" | "settings" | "logs"
+            "workspace"
+                | "pulsations"
+                | "vault"
+                | "chat"
+                | "agents"
+                | "settings"
+                | "logs"
+                | "forge"
+                | "tasks"
+                | "feature-forge"
         ) {
             return Err(PersistenceServiceError::Validation(
                 "activeView deve ser `workspace`, `pulsations`, `vault`, `chat`, `agents`, `settings` ou `logs`."
@@ -2109,7 +2136,7 @@ impl PersistenceService {
             "SELECT project_id, workspace_root, active_tab_path, workspace_view_mode,
                     active_view, sidebar_collapsed, context_drawer_open,
                     active_pulsation_id, selected_vault_path, active_chat_conversation_id,
-                    scroll_top, updated_at
+                    scroll_top, auto_open_review, updated_at
              FROM ui_sessions
              WHERE project_id = ?1",
         )?;
@@ -2129,6 +2156,7 @@ impl PersistenceService {
                     active_chat_conversation_id: row.get("active_chat_conversation_id")?,
                     scroll_top: row.get("scroll_top")?,
                     tabs: Vec::new(),
+                    auto_open_review: row.get::<_, i64>("auto_open_review")? != 0,
                     updated_at: row.get("updated_at")?,
                 })
             })
@@ -2211,8 +2239,9 @@ impl PersistenceService {
                selected_vault_path,
                active_chat_conversation_id,
                scroll_top,
+               auto_open_review,
                updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(project_id) DO UPDATE SET
                workspace_root = excluded.workspace_root,
                active_tab_path = excluded.active_tab_path,
@@ -2224,6 +2253,7 @@ impl PersistenceService {
                selected_vault_path = excluded.selected_vault_path,
                active_chat_conversation_id = excluded.active_chat_conversation_id,
                scroll_top = excluded.scroll_top,
+               auto_open_review = excluded.auto_open_review,
                updated_at = excluded.updated_at",
             params![
                 project_id.as_str(),
@@ -2237,6 +2267,7 @@ impl PersistenceService {
                 selected_vault_path,
                 active_chat_conversation_id,
                 scroll_top,
+                i64::from(request.auto_open_review),
                 updated_at
             ],
         )?;
@@ -4386,6 +4417,7 @@ mod tests {
             .project;
 
         let invalid_mode_result = service.save_ui_session(SaveUiSessionRequest {
+            auto_open_review: false,
             project_id: project.id,
             workspace_root: "C:/workspace/view-mode".to_string(),
             active_tab_path: None,
@@ -4418,6 +4450,7 @@ mod tests {
             .project;
 
         let result = service.save_ui_session(SaveUiSessionRequest {
+            auto_open_review: false,
             project_id: project.id,
             workspace_root: "C:/workspace/active-view".to_string(),
             active_tab_path: None,
@@ -4442,6 +4475,7 @@ mod tests {
     fn save_ui_session_rejects_unknown_project() {
         let (_root, service) = prepare_service();
         let response = service.save_ui_session(SaveUiSessionRequest {
+            auto_open_review: false,
             project_id: "missing-project".to_string(),
             workspace_root: "C:/workspace/missing".to_string(),
             active_tab_path: None,
@@ -4475,6 +4509,7 @@ mod tests {
 
         service
             .save_ui_session(SaveUiSessionRequest {
+                auto_open_review: false,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("first.md".to_string()),
@@ -4509,6 +4544,7 @@ mod tests {
 
         service
             .save_ui_session(SaveUiSessionRequest {
+                auto_open_review: false,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("third.md".to_string()),
@@ -4578,6 +4614,7 @@ mod tests {
 
         service
             .save_ui_session(SaveUiSessionRequest {
+                auto_open_review: false,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("notes/todo.md".to_string()),
@@ -4653,6 +4690,7 @@ mod tests {
 
         service
             .save_ui_session(SaveUiSessionRequest {
+                auto_open_review: false,
                 project_id: project.id.clone(),
                 workspace_root: project.workspace_path.clone(),
                 active_tab_path: Some("stable.md".to_string()),
@@ -4676,6 +4714,7 @@ mod tests {
             .expect("initial session should save");
 
         let failed = service.save_ui_session(SaveUiSessionRequest {
+            auto_open_review: false,
             project_id: project.id.clone(),
             workspace_root: project.workspace_path,
             active_tab_path: Some("duplicate.md".to_string()),
@@ -4758,6 +4797,7 @@ mod tests {
         ] {
             service
                 .save_ui_session(SaveUiSessionRequest {
+                    auto_open_review: false,
                     project_id: project.id.clone(),
                     workspace_root: project.workspace_path.clone(),
                     active_tab_path: None,

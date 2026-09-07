@@ -719,11 +719,18 @@ async fn execute_stage_inner(
         )
         .await?
     };
-    let schema_json = if input.stage_name == "SPECIFICATION" {
+    let mut schema_json = if input.stage_name == "SPECIFICATION" {
         specification_output_schema()
     } else {
         stage_output_schema()
     };
+    if input
+        .handoff
+        .as_ref()
+        .is_some_and(|handoff| handoff.batch_manifest.is_some())
+    {
+        crate::feature_forge::pipeline::extend_schema(&mut schema_json);
+    }
     let prompt = build_stage_prompt(input, &context_documents, &schema_json);
     let system_prompt = build_system_prompt(input);
     let call_output = if synthetic_fallback_enabled() {
@@ -861,6 +868,13 @@ fn build_stage_prompt(
         input.pulsation_id, input.project_id, input.job_id, input.stage_name, input.feature_name
     ));
     prompt.push_str("## Objective\n");
+    if input
+        .handoff
+        .as_ref()
+        .is_some_and(|handoff| handoff.batch_manifest.is_some())
+    {
+        prompt.push_str("Execute the entire immutable task batch as one stage. Reuse approved feature decisions. Return taskEvidence for every task exactly once, referencing actual artifact positions (zero-based) and only its criterion IDs. Test and Integrator must cover every criterion. Evidence describes generated/reviewed work; never claim tests executed without execution evidence. For failed or needs_clarification return taskEvidence=[]. Include affected task IDs in clarification questions. Do not silently omit, split, add or redefine tasks.\n");
+    }
     if input.anticipatory {
         prompt.push_str("Anticipatory Intake: classify only the request. Do not assume the final baseline and do not publish files. Every artifact remains internal.\n");
     }

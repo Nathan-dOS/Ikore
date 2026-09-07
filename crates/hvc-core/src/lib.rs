@@ -10,6 +10,7 @@ pub mod chat_service;
 pub mod document_cache;
 pub mod embedding_service;
 pub mod events;
+pub mod feature_forge;
 pub mod llm;
 pub mod orchestration;
 pub mod persistence_service;
