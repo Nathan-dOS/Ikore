@@ -462,6 +462,119 @@ fn complete_six_stage_batch_requires_approved_integration() {
     );
 }
 
+/// Field incident, 2026-09-08: a free OpenCode model produced ONE artifact
+/// for a SPECIFICATION stage but referenced `artifactPositions: [0, 1]` in
+/// taskEvidence - apparently padding the position count to match its two
+/// `criterionIds`, rather than counting what it actually returned. The host
+/// correctly rejected it; this locks that rejection and its diagnostic.
+#[test]
+fn evidence_referencing_an_artifact_position_the_model_never_produced_is_rejected_with_a_diagnostic()
+ {
+    let f = Fixture::new();
+    f.approved("Lightweight local browser architecture");
+    let tasks = f.tasks().list(&f.project).unwrap();
+    let pulse = f.tasks().dispatch(f.dispatch(&tasks)).unwrap();
+    let db = f.service.connection().unwrap();
+    db.execute(
+        "UPDATE pulsation_preparation SET review_state='not_required' WHERE pulsation_id=?1",
+        [&pulse.id],
+    )
+    .unwrap();
+    let (job, _) = f
+        .service
+        .claim_next_pending_job()
+        .unwrap()
+        .expect("Intake job");
+    let tx = db.unchecked_transaction().unwrap();
+    let current = PersistenceService::find_pulsation_by_id(&tx, &pulse.id)
+        .unwrap()
+        .unwrap();
+    PersistenceService::transition_pulsation(
+        &tx,
+        &current,
+        PulsationStatus::Running,
+        PulsationStage::Intake,
+        "test_start",
+        None,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let run = f
+        .service
+        .start_agent_run_for_job(&job, &AgentRuntimeConfig::default())
+        .unwrap();
+    let fence = PersistenceService::execution_fence(&db, &job.id).unwrap();
+    let handoff = f
+        .service
+        .load_stage_handoff(&fence, PulsationStage::Intake, 80_000)
+        .unwrap();
+
+    // Two criteria, one artifact - the model padded artifactPositions to [0, 1]
+    // instead of leaving it at [0].
+    let task = &tasks[0];
+    let evidence = json!([{
+        "taskId": task.id,
+        "criterionIds": ["ac-1"],
+        "artifactPositions": [0, 1],
+        "summary": "Documented the architecture decision for this task."
+    }]);
+    let structured = json!({
+        "outputLanguage": "en",
+        "summary": "Intake result",
+        "statusUpdate": "advance",
+        "notes": [],
+        "contextUsage": [],
+        "artifacts": [{
+            "name": "decision",
+            "kind": "stage_note",
+            "relativePath": null,
+            "content": "# Decision\nOnly one artifact was actually produced."
+        }],
+        "taskEvidence": evidence
+    });
+    let result = StageExecutionResult {
+        provider_used: "fixture".into(),
+        model_used: "fixture".into(),
+        route_id: None,
+        connection_id: None,
+        llm_execution_id: None,
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost_usd: None,
+        request_payload: json!({}),
+        response_payload: json!({}),
+        raw_output: structured.to_string(),
+        structured_output: structured,
+        schema_json: json!({}),
+        tool_trace: json!([]),
+        context_trace: Default::default(),
+        artifacts: vec![crate::agent_runtime::GeneratedArtifact {
+            name: "decision".into(),
+            kind: "stage_note".into(),
+            relative_path: None,
+            content: "# Decision\nOnly one artifact was actually produced.".into(),
+        }],
+    };
+
+    let error = f
+        .service
+        .accept_stage_result(&job, &run, &handoff, &result, f.workspace.path())
+        .expect_err("an out-of-range artifactPositions must be rejected");
+    let message = error.to_string();
+    assert!(
+        message.contains(&task.id),
+        "diagnostic should name the task, got: {message}"
+    );
+    assert!(
+        message.contains('1') && message.contains("does not exist"),
+        "diagnostic should name the missing index, got: {message}"
+    );
+    assert!(
+        message.contains("independent of criterionIds"),
+        "diagnostic should warn against padding positions to match criteria, got: {message}"
+    );
+}
+
 #[test]
 fn conversion_preserves_original_request_without_duplicate_work() {
     let f = Fixture::new();

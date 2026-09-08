@@ -907,7 +907,7 @@ fn build_batch_scope(manifest: &crate::feature_forge::BatchManifest, stage: &str
          - `taskEvidence` must contain exactly {total} entr{} - one per taskId above, each exactly once. Never omit, split, merge, add or redefine a task.\n\
          - `criterionIds` for a task may only contain the IDs listed for that task above. Feature-level criteria are not valid values.\n\
          - Any other task appearing in a feature brief, a planning note, or retrieved Markdown is FUTURE BACKLOG. Do not execute it, do not produce artifacts for it, do not create taskEvidence for it.\n\
-         - `artifactPositions` are zero-based indexes into YOUR OWN `artifacts` array in this response. `artifactPositions: [0]` requires `artifacts[0]` to exist, so every task needs at least one artifact.\n\
+         - `artifactPositions` are zero-based indexes into YOUR OWN `artifacts` array in this response, and every index must be strictly less than the number of artifacts you actually return; referencing an index you did not produce fails validation. This count has nothing to do with the number of `criterionIds`: one single artifact can satisfy several criteria, so `artifactPositions: [0]` is correct even when `criterionIds` lists two or more IDs - never pad `artifactPositions` to match the criterion count. `artifactPositions: [0]` requires `artifacts[0]` to exist, so every task needs at least one artifact.\n\
          - Reuse approved feature decisions. Evidence describes generated or reviewed work; never claim tests executed without execution evidence.\n\
          - For statusUpdate \"failed\" or \"needs_clarification\", return `taskEvidence: []`, and every clarification question must quote the affected taskId literally.\n",
         if total == 1 { "y" } else { "ies" }
@@ -2970,6 +2970,18 @@ mod prompt_tests {
             "backlog draft leaked into the prompt"
         );
         assert!(!prompt.contains("BACKLOG sync navigation across devices"));
+    }
+
+    /// Field incident, 2026-09-08: a free model referenced `artifactPositions:
+    /// [0, 1]` for a task with two `criterionIds` after producing only one
+    /// artifact - padding the position count to match the criterion count
+    /// instead of what it actually returned. The prompt now says this
+    /// explicitly instead of leaving it to be inferred.
+    #[test]
+    fn batch_scope_warns_that_artifact_positions_are_independent_of_criterion_count() {
+        let prompt = prompt_for("SPECIFICATION", &[]);
+        assert!(prompt.contains("nothing to do with the number of `criterionIds`"));
+        assert!(prompt.contains("never pad `artifactPositions` to match the criterion count"));
     }
 
     #[test]

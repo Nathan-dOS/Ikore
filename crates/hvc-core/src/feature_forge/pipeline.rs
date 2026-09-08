@@ -78,15 +78,24 @@ pub fn accept_evidence(
         }
         crate::agent_output_language::validate_english_text("task evidence", &entry.summary)
             .map_err(invalid)?;
-        if entry.artifact_positions.is_empty()
-            || entry
-                .artifact_positions
-                .iter()
-                .any(|p| *p >= artifacts.len())
+        if entry.artifact_positions.is_empty() {
+            return Err(invalid(format!(
+                "Task evidence for `{}` has an empty artifactPositions; every task needs at least one artifact.",
+                entry.task_id
+            )));
+        }
+        if let Some(out_of_range) = entry
+            .artifact_positions
+            .iter()
+            .find(|position| **position >= artifacts.len())
         {
-            return Err(invalid(
-                "Task evidence must reference real output artifacts",
-            ));
+            return Err(invalid(format!(
+                "Task evidence for `{}` references artifactPositions {:?}, but this response returned only {} artifact{}; index {out_of_range} does not exist. artifactPositions count is independent of criterionIds count - do not pad it to match.",
+                entry.task_id,
+                entry.artifact_positions,
+                artifacts.len(),
+                if artifacts.len() == 1 { "" } else { "s" },
+            )));
         }
         let criteria = entry.criterion_ids.iter().collect::<HashSet<_>>();
         if criteria.len() != entry.criterion_ids.len()
