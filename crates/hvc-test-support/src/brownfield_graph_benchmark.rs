@@ -513,6 +513,9 @@ pub fn run_sample(
         .unwrap()
         .project
         .id;
+    // This benchmark drives a full AppCore, so the stage transport is resolved
+    // against whatever CLI the host happens to have installed. Pin it.
+    pulsation_benchmark::force_api_direct(core.persistence(), &project_id);
     let resolution_state = if mode == TaskContextMode::ResolvedGraph {
         core.set_brownfield_onboarding_consent(SetBrownfieldConsentRequest {
             project_id: project_id.clone(),

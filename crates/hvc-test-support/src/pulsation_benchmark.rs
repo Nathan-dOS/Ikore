@@ -10,7 +10,7 @@ use hvc_core::{
     orchestration::*,
     persistence_service::*,
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -123,6 +123,44 @@ pub fn configure_loopback(service: &PersistenceService, server: &ScriptedHttpSer
         [],
     )
     .unwrap();
+}
+
+/// Pins every agent of a project to API transport.
+///
+/// Benchmarks that drive a full `AppCore` own a `TerminalService`, so a stage
+/// resolves its transport through `ensure_project_configs`, whose default is
+/// `cli_process` whenever a Codex binary is discovered on the host. On a
+/// developer machine with Codex installed the benchmark would therefore launch
+/// the real CLI instead of the scripted loopback, fail, and open a
+/// `cli_fallback` HITL checkpoint that stalls the pulsation at Intake. Pinning
+/// the transport keeps the fixture deterministic regardless of what is
+/// installed on the machine running the suite.
+///
+/// Call after the project exists; `configure_loopback` runs before that.
+pub fn force_api_direct(service: &PersistenceService, project_id: &str) {
+    // Configuration fixture only, like `configure_loopback` above.
+    let db = Connection::open(service.database_path()).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    for role in [
+        "intake_router",
+        "task_specifier",
+        "contract_agent",
+        "backend_agent",
+        "test_agent",
+        "integrator",
+        "learning_agent",
+    ] {
+        db.execute(
+            "INSERT INTO cli_agent_configs(
+               project_id,agent_role,execution_mode,backend,thinking_level,
+               custom_args_json,custom_risk_ack,version,created_at,updated_at
+             ) VALUES(?1,?2,'api_direct','codex','default','[]',0,1,?3,?3)
+             ON CONFLICT(project_id,agent_role)
+             DO UPDATE SET execution_mode='api_direct',updated_at=?3",
+            params![project_id, role, now],
+        )
+        .unwrap();
+    }
 }
 
 fn wait_until(mut predicate: impl FnMut() -> bool) -> Instant {

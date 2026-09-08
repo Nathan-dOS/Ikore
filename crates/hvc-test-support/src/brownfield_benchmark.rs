@@ -759,6 +759,9 @@ pub fn run_sample(mode: VaultMode, iteration: usize, warmup: bool) -> Brownfield
         .unwrap()
         .project
         .id;
+    // This benchmark drives a full AppCore, so the stage transport is resolved
+    // against whatever CLI the host happens to have installed. Pin it.
+    pulsation_benchmark::force_api_direct(core.persistence(), &project_id);
 
     let mapping = match mode {
         VaultMode::EmptyVault => {
