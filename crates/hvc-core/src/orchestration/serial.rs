@@ -316,10 +316,11 @@ impl PersistenceService {
         execution: &StageExecutionResult,
         root: &Path,
     ) -> Result<(), PersistenceServiceError> {
-        crate::agent_runtime::validate_stage_output_language(&execution.structured_output)
-            .map_err(invalid)?;
+        crate::agent_runtime::validate_stage_output_language(&execution.structured_output)?;
         let outcome = execution.outcome()?;
-        outcome.validate_for(handoff.stage).map_err(invalid)?;
+        outcome
+            .validate_for(handoff.stage)
+            .map_err(|e| PersistenceServiceError::ModelOutputInvalid(e.to_string()))?;
         handoff
             .validate_for(&handoff.recipient, usize::MAX)
             .map_err(invalid)?;
@@ -345,7 +346,7 @@ impl PersistenceService {
             &execution.structured_output,
         )?;
         Self::update_agent_run_metrics(&tx, run_id, execution)?;
-        Self::persist_agent_run_output(&tx, run_id, job, execution)?;
+        Self::persist_agent_run_output(&tx, run_id, job, execution, None)?;
         Self::persist_context_retrieval_trace(&tx, run_id, job, &execution.context_trace)?;
         let now = Self::now_iso();
         tx.execute("INSERT INTO stage_acceptances(job_id,generation,agent_run_id,fence_json,outcome_json,handoff_json,accepted_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![job.id,handoff.recipient.generation,run_id,serde_json::to_string(&handoff.recipient).map_err(invalid)?,serde_json::to_string(&outcome).map_err(invalid)?,serde_json::to_string(handoff).map_err(invalid)?,now])?;

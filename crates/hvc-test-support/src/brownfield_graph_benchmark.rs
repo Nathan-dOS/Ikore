@@ -327,6 +327,7 @@ fn relational_stage_response(case: RelationalCase, request: &RecordedRequest) ->
         json!([{
             "name": stage,
             "kind": kind,
+            "relativePath": null,
             "content": format!("# {stage}\n{grounding}: {:?}. No-op; no generated write.", case)
         }])
     };

@@ -560,6 +560,13 @@ fn evidence_referencing_an_artifact_position_the_model_never_produced_is_rejecte
         .service
         .accept_stage_result(&job, &run, &handoff, &result, f.workspace.path())
         .expect_err("an out-of-range artifactPositions must be rejected");
+    // Model-output-caused, and therefore worth a corrective retry - not the
+    // generic Validation a host-side check (e.g. a missing pulsation) would
+    // return, which `should_retry` deliberately never retries.
+    assert!(
+        matches!(error, PersistenceServiceError::ModelOutputInvalid(_)),
+        "accept_evidence rejections must be ModelOutputInvalid, got: {error:?}"
+    );
     let message = error.to_string();
     assert!(
         message.contains(&task.id),

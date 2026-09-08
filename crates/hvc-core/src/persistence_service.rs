@@ -133,7 +133,15 @@ pub enum PersistenceServiceError {
     Io(io::Error),
     Runtime(String),
     Retryable(String),
-    Cli { code: String, message: String },
+    /// The model's own structured output failed validation - distinct from
+    /// `Validation`/`Runtime`, which also cover unrelated host-side checks
+    /// that a fresh model attempt could never fix. Only this variant (plus
+    /// `Llm` with `LlmErrorKind::OutputSchema`) is retried by `should_retry`.
+    ModelOutputInvalid(String),
+    Cli {
+        code: String,
+        message: String,
+    },
     Cancelled(String),
     Llm(LlmError),
 }
@@ -145,6 +153,7 @@ impl std::fmt::Display for PersistenceServiceError {
             | Self::NotFound(message)
             | Self::Runtime(message)
             | Self::Retryable(message)
+            | Self::ModelOutputInvalid(message)
             | Self::Cancelled(message) => write!(f, "{message}"),
             Self::Cli { message, .. } => write!(f, "{message}"),
             Self::Llm(error) => write!(f, "{error}"),
@@ -194,6 +203,12 @@ impl From<PersistenceServiceError> for PersistenceCommandError {
             | PersistenceServiceError::Retryable(message)
             | PersistenceServiceError::Cancelled(message) => Self {
                 code: PersistenceErrorCode::RuntimeError,
+                message,
+                details: None,
+                remediation: None,
+            },
+            PersistenceServiceError::ModelOutputInvalid(message) => Self {
+                code: PersistenceErrorCode::SchemaViolation,
                 message,
                 details: None,
                 remediation: None,
@@ -270,6 +285,7 @@ impl From<AgentRuntimeError> for PersistenceServiceError {
             AgentRuntimeError::Provider(message) => Self::Runtime(message),
             AgentRuntimeError::Cli { code, message } => Self::Cli { code, message },
             AgentRuntimeError::Schema(message) => Self::Runtime(message),
+            AgentRuntimeError::ModelOutputInvalid(message) => Self::ModelOutputInvalid(message),
             AgentRuntimeError::Cancelled => {
                 Self::Cancelled("Execução cancelada durante chamada do agente.".to_string())
             }
@@ -3314,6 +3330,7 @@ impl PersistenceService {
         agent_run_id: &str,
         job: &Job,
         execution: &StageExecutionResult,
+        validation_error: Option<&str>,
     ) -> Result<(), PersistenceServiceError> {
         let now = Self::now_iso();
         connection.execute(
@@ -3331,7 +3348,7 @@ impl PersistenceService {
                tool_trace,
                created_at,
                updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?11)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
              ON CONFLICT(agent_run_id)
              DO UPDATE SET
                request_payload = excluded.request_payload,
@@ -3352,7 +3369,58 @@ impl PersistenceService {
                 execution.raw_output.as_str(),
                 execution.structured_output.to_string(),
                 execution.schema_json.to_string(),
+                validation_error,
                 execution.tool_trace.to_string(),
+                now
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Sibling of `persist_agent_run_output` for a failed attempt: no
+    /// structured output/schema/tool trace exist yet (validation failed
+    /// before they could be produced), only the raw text and the error that
+    /// rejected it - captured so a corrective retry can show the model both.
+    fn persist_failed_llm_output(
+        connection: &Connection,
+        agent_run_id: &str,
+        job: &Job,
+        output: &crate::agent_runtime::FailedCallOutput,
+        validation_error: &str,
+    ) -> Result<(), PersistenceServiceError> {
+        let now = Self::now_iso();
+        connection.execute(
+            "INSERT INTO agent_run_outputs (
+               id,
+               agent_run_id,
+               job_id,
+               pulsation_id,
+               request_payload,
+               response_payload,
+               raw_output,
+               structured_output,
+               schema_json,
+               validation_error,
+               tool_trace,
+               created_at,
+               updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, NULL, ?9, ?9)
+             ON CONFLICT(agent_run_id)
+             DO UPDATE SET
+               request_payload = excluded.request_payload,
+               response_payload = excluded.response_payload,
+               raw_output = excluded.raw_output,
+               validation_error = excluded.validation_error,
+               updated_at = excluded.updated_at",
+            params![
+                Uuid::new_v4().to_string(),
+                agent_run_id,
+                job.id.as_str(),
+                job.pulsation_id.as_deref(),
+                output.request_payload.to_string(),
+                output.response_payload.to_string(),
+                output.raw_output.as_str(),
+                validation_error,
                 now
             ],
         )?;
@@ -3649,6 +3717,7 @@ impl PersistenceService {
         }
 
         matches!(error, PersistenceServiceError::Retryable(_))
+            || matches!(error, PersistenceServiceError::ModelOutputInvalid(_))
             || matches!(
                 error,
                 PersistenceServiceError::Llm(llm_error)
@@ -3659,6 +3728,13 @@ impl PersistenceService {
                             | LlmErrorKind::Network
                             | LlmErrorKind::ProviderUnavailable
                             | LlmErrorKind::AllTargetsExhausted
+                            // The router's own output-schema rejection is the
+                            // same category of failure as ModelOutputInvalid,
+                            // just on the API-direct path; its raw text is
+                            // not persisted anywhere today, so this retries
+                            // blind (no correction section) rather than being
+                            // silently excluded.
+                            | LlmErrorKind::OutputSchema
                     )
             )
     }
@@ -3768,6 +3844,24 @@ impl PersistenceService {
             [&job.id],
             |r| r.get(0),
         )?;
+        // Only a failed attempt for THIS job leaves a row here (see
+        // `persist_failed_llm_output`/`persist_agent_run_output`); a retry
+        // triggered by a transport failure (rate limit, timeout) where the
+        // model never produced output naturally finds none, and
+        // `previous_attempt` stays `None`.
+        let previous_attempt = connection
+            .prepare(
+                "SELECT raw_output, validation_error FROM agent_run_outputs
+                 WHERE job_id = ?1 AND validation_error IS NOT NULL
+                 ORDER BY created_at DESC LIMIT 1",
+            )?
+            .query_row(params![job.id], |row| {
+                Ok(crate::agent_runtime::PreviousAttempt {
+                    raw_output: row.get(0)?,
+                    error: row.get(1)?,
+                })
+            })
+            .optional()?;
         let execution_input = StageExecutionInput {
             anticipatory,
             handoff: Some(handoff),
@@ -3778,6 +3872,7 @@ impl PersistenceService {
             stage_name: stage.as_db_value().to_string(),
             workspace_path: project.workspace_path.clone(),
             runtime_db_path: self.db_path.to_string_lossy().to_string(),
+            previous_attempt,
         };
 
         tokio::select! {
@@ -3815,7 +3910,20 @@ impl PersistenceService {
                     let connection = self.connection()?;
                     Self::persist_context_retrieval_trace(&connection, agent_run_id, job, trace)?;
                 }
-                return Err(PersistenceServiceError::from(failure.error));
+                let error = PersistenceServiceError::from(failure.error);
+                if let (PersistenceServiceError::ModelOutputInvalid(message), Some(output)) =
+                    (&error, failure.failed_output.as_ref())
+                {
+                    let connection = self.connection()?;
+                    Self::persist_failed_llm_output(
+                        &connection,
+                        agent_run_id,
+                        job,
+                        output,
+                        message,
+                    )?;
+                }
+                return Err(error);
             }
         };
 
@@ -3845,6 +3953,15 @@ impl PersistenceService {
                 job,
                 &execution.context_trace,
             )?;
+            if let PersistenceServiceError::ModelOutputInvalid(message) = &error {
+                Self::persist_agent_run_output(
+                    &connection,
+                    agent_run_id,
+                    job,
+                    &execution,
+                    Some(message.as_str()),
+                )?;
+            }
             return Err(error);
         }
         self.wake_scheduler();
@@ -4009,6 +4126,36 @@ mod tests {
         let service = PersistenceService::initialize(root.path())
             .expect("persistence service should initialize");
         (root, service)
+    }
+
+    /// A model-output validation failure (parse/schema/evidence) is worth a
+    /// corrective retry - unlike other `Runtime`/`Validation` errors, which
+    /// cover unrelated host-side checks a fresh model attempt could never
+    /// fix. The router's own `OutputSchema` rejection on the API-direct path
+    /// is the same category of failure and rides the same budget, blind
+    /// (no raw output is persisted for that specific case).
+    #[test]
+    fn should_retry_covers_model_output_failures_within_the_retry_budget() {
+        let (_root, service) = prepare_service();
+        let config = AgentRuntimeConfig::default();
+        assert_eq!(config.max_retries, 2);
+
+        let model_output_invalid =
+            PersistenceServiceError::ModelOutputInvalid("bad json".to_string());
+        assert!(service.should_retry(&model_output_invalid, 1, &config));
+        assert!(service.should_retry(&model_output_invalid, 2, &config));
+        assert!(!service.should_retry(&model_output_invalid, 3, &config));
+
+        let output_schema = PersistenceServiceError::Llm(LlmError::new(
+            LlmErrorKind::OutputSchema,
+            "router rejected output",
+        ));
+        assert!(service.should_retry(&output_schema, 1, &config));
+        assert!(!service.should_retry(&output_schema, 3, &config));
+
+        // A host-side error must not be silently made retryable by this change.
+        let host_side = PersistenceServiceError::Validation("Sem pulsação".to_string());
+        assert!(!service.should_retry(&host_side, 1, &config));
     }
 
     fn spawn_http_response(

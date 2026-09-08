@@ -284,8 +284,17 @@ pub enum AgentRuntimeError {
     Io(io::Error),
     Json(serde_json::Error),
     Provider(String),
-    Cli { code: String, message: String },
+    Cli {
+        code: String,
+        message: String,
+    },
     Schema(String),
+    /// The model's own structured output failed validation (parse, schema,
+    /// language, citation, or batch-evidence rules) - distinct from `Schema`,
+    /// which stays reserved for host-side checks (stale handoff, mismatched
+    /// execution/generation). This distinction lets the host retry only
+    /// failures the model itself could plausibly correct on a fresh attempt.
+    ModelOutputInvalid(String),
     Cancelled,
     Llm(LlmError),
 }
@@ -299,6 +308,7 @@ impl fmt::Display for AgentRuntimeError {
             Self::Provider(message) => write!(f, "{message}"),
             Self::Cli { message, .. } => write!(f, "{message}"),
             Self::Schema(message) => write!(f, "{message}"),
+            Self::ModelOutputInvalid(message) => write!(f, "{message}"),
             Self::Cancelled => write!(f, "Execução do agente cancelada."),
             Self::Llm(error) => write!(f, "{error}"),
         }
@@ -307,10 +317,20 @@ impl fmt::Display for AgentRuntimeError {
 
 impl std::error::Error for AgentRuntimeError {}
 
+/// The exact bytes of a failed LLM call, captured so a corrective retry can
+/// show the model its own previous output alongside the specific error.
+#[derive(Debug, Clone)]
+pub struct FailedCallOutput {
+    pub request_payload: Value,
+    pub response_payload: Value,
+    pub raw_output: String,
+}
+
 #[derive(Debug)]
 pub struct StageExecutionFailure {
     pub error: AgentRuntimeError,
     pub context_trace: Option<ContextRetrievalTrace>,
+    pub failed_output: Option<FailedCallOutput>,
 }
 
 impl fmt::Display for StageExecutionFailure {
@@ -337,6 +357,15 @@ impl From<serde_json::Error> for AgentRuntimeError {
     }
 }
 
+/// A previous attempt's raw output and the specific validation error it
+/// failed with, so the prompt can ask for a targeted fix instead of a blind
+/// resample.
+#[derive(Debug, Clone)]
+pub struct PreviousAttempt {
+    pub raw_output: String,
+    pub error: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct StageExecutionInput {
     pub anticipatory: bool,
@@ -348,6 +377,7 @@ pub struct StageExecutionInput {
     pub workspace_path: String,
     pub runtime_db_path: String,
     pub handoff: Option<crate::orchestration::StageHandoffV1>,
+    pub previous_attempt: Option<PreviousAttempt>,
 }
 
 #[derive(Debug, Clone)]
@@ -387,7 +417,7 @@ impl StageExecutionResult {
         if self.structured_output["statusUpdate"] != "needs_clarification"
             && self.structured_output.get("questions").is_some()
         {
-            return Err(AgentRuntimeError::Schema(
+            return Err(AgentRuntimeError::ModelOutputInvalid(
                 "Perguntas exigem um resultado needs_clarification separado.".into(),
             ));
         }
@@ -396,7 +426,7 @@ impl StageExecutionResult {
             .iter()
             .any(|artifact| artifact.kind == "component_proposal")
         {
-            return Err(AgentRuntimeError::Schema(
+            return Err(AgentRuntimeError::ModelOutputInvalid(
                 "component_proposal é reservado ao campo estruturado de Specification.".into(),
             ));
         }
@@ -406,10 +436,10 @@ impl StageExecutionResult {
             .cloned()
             .map(serde_json::from_value::<Vec<ComponentProposalDraft>>)
             .transpose()
-            .map_err(|error| AgentRuntimeError::Schema(error.to_string()))?
+            .map_err(|error| AgentRuntimeError::ModelOutputInvalid(error.to_string()))?
             .unwrap_or_default();
         if proposals.len() > 2 {
-            return Err(AgentRuntimeError::Schema(
+            return Err(AgentRuntimeError::ModelOutputInvalid(
                 "Specification excedeu duas propostas de componente.".into(),
             ));
         }
@@ -420,18 +450,18 @@ impl StageExecutionResult {
         match self.structured_output["statusUpdate"].as_str() {
             Some("needs_clarification") => {
                 if !self.artifacts.is_empty() || !proposals.is_empty() {
-                    return Err(AgentRuntimeError::Schema(
+                    return Err(AgentRuntimeError::ModelOutputInvalid(
                         "Esclarecimento não pode conter artifacts ou propostas candidatos.".into(),
                     ));
                 }
                 Ok(StageOutcome::NeedsClarification {
                     questions: serde_json::from_value(self.structured_output["questions"].clone())
-                        .map_err(|e| AgentRuntimeError::Schema(e.to_string()))?,
+                        .map_err(|e| AgentRuntimeError::ModelOutputInvalid(e.to_string()))?,
                 })
             }
             Some("failed") => {
                 if !proposals.is_empty() {
-                    return Err(AgentRuntimeError::Schema(
+                    return Err(AgentRuntimeError::ModelOutputInvalid(
                         "Resultado failed não pode conter propostas de componente.".into(),
                     ));
                 }
@@ -454,19 +484,24 @@ impl StageExecutionResult {
                                 .as_ref()
                                 .map(RelativeSourcePath::new)
                                 .transpose()
-                                .map_err(|e| AgentRuntimeError::Schema(e.to_string()))?,
+                                .map_err(|e| {
+                                    AgentRuntimeError::ModelOutputInvalid(e.to_string())
+                                })?,
                         })
                     })
                     .collect::<Result<Vec<_>, AgentRuntimeError>>()?;
                 for proposal in proposals {
-                    let artifact = ComponentProposalArtifactV1::proposed(proposal)
-                        .map_err(|error| AgentRuntimeError::Schema(error.to_string()))?;
+                    let artifact =
+                        ComponentProposalArtifactV1::proposed(proposal).map_err(|error| {
+                            AgentRuntimeError::ModelOutputInvalid(error.to_string())
+                        })?;
                     artifacts.push(StageArtifactDraft {
                         name: format!("Component proposal · {}", artifact.proposal.title),
                         kind: "component_proposal".into(),
                         relative_path: None,
-                        content: serde_json::to_string(&artifact)
-                            .map_err(|error| AgentRuntimeError::Schema(error.to_string()))?,
+                        content: serde_json::to_string(&artifact).map_err(|error| {
+                            AgentRuntimeError::ModelOutputInvalid(error.to_string())
+                        })?,
                     });
                 }
                 Ok(StageOutcome::Completed {
@@ -481,7 +516,9 @@ impl StageExecutionResult {
                     artifacts,
                 })
             }
-            _ => Err(AgentRuntimeError::Schema("statusUpdate inválido.".into())),
+            _ => Err(AgentRuntimeError::ModelOutputInvalid(
+                "statusUpdate inválido.".into(),
+            )),
         }
     }
 }
@@ -651,6 +688,7 @@ pub async fn execute_stage_with_cli(
             "unavailable"
         },
     );
+    let mut failed_output = None;
     execute_stage_inner(
         embedding_gateway,
         gateway,
@@ -660,11 +698,13 @@ pub async fn execute_stage_with_cli(
         input,
         cancellation,
         &mut context_trace,
+        &mut failed_output,
     )
     .await
     .map_err(|error| StageExecutionFailure {
         error,
         context_trace: Some(context_trace),
+        failed_output,
     })
 }
 
@@ -677,6 +717,7 @@ async fn execute_stage_inner(
     input: &StageExecutionInput,
     cancellation: &CancellationToken,
     context_trace: &mut ContextRetrievalTrace,
+    failed_output: &mut Option<FailedCallOutput>,
 ) -> Result<StageExecutionResult, AgentRuntimeError> {
     if cancellation.is_cancelled() {
         return Err(AgentRuntimeError::Cancelled);
@@ -816,6 +857,15 @@ async fn execute_stage_inner(
         }
     };
 
+    // Captured before validation so a corrective retry can show the model its
+    // own previous output alongside the specific error, regardless of which
+    // check below rejects it.
+    *failed_output = Some(FailedCallOutput {
+        request_payload: call_output.request_payload.clone(),
+        response_payload: call_output.response_payload.clone(),
+        raw_output: call_output.raw_output.clone(),
+    });
+
     let structured_output = parse_structured_output(&call_output.raw_output)?;
     validate_structured_output(&schema_json, &structured_output)?;
     validate_stage_output_language(&structured_output)?;
@@ -919,6 +969,12 @@ fn build_batch_scope(manifest: &crate::feature_forge::BatchManifest, stage: &str
     scope
 }
 
+/// Real stage outputs seen in practice run 2-8K characters; this is a
+/// pathological-size guard only, not a normal-case truncation - the model
+/// needs its complete previous output to correctly reconstruct a corrected
+/// version.
+const PREVIOUS_ATTEMPT_MAX_CHARS: usize = 60_000;
+
 fn build_stage_prompt(
     input: &StageExecutionInput,
     context_documents: &[ContextDocument],
@@ -992,6 +1048,19 @@ fn build_stage_prompt(
     prompt.push_str("`contextUsage` is the ONLY place to declare what you used. Never add a \"Source Documents\", \"References\" or similar provenance list inside an artifact's own content unless every entry also appears in `contextUsage` (or, for a task from the batch, in the approved handoff); a plausible-looking path is still an invented citation if you were not actually shown it. If nothing was retrieved, omit any such section from the artifact text as well.\n\n");
 
     prompt.push_str("Every property listed under `required` below MUST appear as its own top-level key in your JSON, in the order shown, even when its value is an empty array - never omit a required key because it has nothing meaningful to hold. Close each array with its own `]` immediately after its last element, before writing the next key; do not defer a closing bracket to later in the document.\n\n");
+
+    if let Some(previous_attempt) = &input.previous_attempt {
+        prompt.push_str("## Previous attempt correction\n");
+        prompt.push_str("Your previous attempt for this exact stage failed with this error:\n> ");
+        prompt.push_str(&previous_attempt.error);
+        prompt.push_str("\n\nYour complete previous raw output was:\n```\n");
+        prompt.push_str(&clip_text(
+            &previous_attempt.raw_output,
+            PREVIOUS_ATTEMPT_MAX_CHARS,
+        ));
+        prompt.push_str("\n```\nFix ONLY what the error above describes. Preserve every other decision, artifact, and piece of content from the previous attempt unless the error specifically requires changing it. Return the complete corrected JSON matching the schema below in full - never a diff or partial output.\n\n");
+    }
+
     prompt.push_str("## Output schema\n");
     prompt.push_str(&schema_json.to_string());
     prompt.push('\n');
@@ -2074,7 +2143,7 @@ fn build_local_fallback(
 fn parse_structured_output(raw_output: &str) -> Result<Value, AgentRuntimeError> {
     let trimmed = raw_output.trim();
     if trimmed.is_empty() {
-        return Err(AgentRuntimeError::Schema(
+        return Err(AgentRuntimeError::ModelOutputInvalid(
             "Resposta do modelo veio vazia.".to_string(),
         ));
     }
@@ -2104,17 +2173,16 @@ fn parse_structured_output(raw_output: &str) -> Result<Value, AgentRuntimeError>
         match serde_json::from_str::<Value>(slice) {
             Ok(value) => return Ok(value),
             Err(error) => {
-                return Err(AgentRuntimeError::Schema(describe_json_parse_failure(
-                    slice, &error,
-                )));
+                return Err(AgentRuntimeError::ModelOutputInvalid(
+                    describe_json_parse_failure(slice, &error),
+                ));
             }
         }
     }
 
-    Err(AgentRuntimeError::Schema(describe_json_parse_failure(
-        trimmed,
-        &direct_error,
-    )))
+    Err(AgentRuntimeError::ModelOutputInvalid(
+        describe_json_parse_failure(trimmed, &direct_error),
+    ))
 }
 
 /// Builds an actionable diagnostic for a failed structured-output parse: the
@@ -2146,10 +2214,10 @@ fn validate_structured_output(
     structured_output: &Value,
 ) -> Result<(), AgentRuntimeError> {
     let validator = validator_for(schema_json).map_err(|error| {
-        AgentRuntimeError::Schema(format!("Schema inválido para validação: {error}"))
+        AgentRuntimeError::ModelOutputInvalid(format!("Schema inválido para validação: {error}"))
     })?;
     validator.validate(structured_output).map_err(|error| {
-        AgentRuntimeError::Schema(format!("Output fora do schema esperado: {error}"))
+        AgentRuntimeError::ModelOutputInvalid(format!("Output fora do schema esperado: {error}"))
     })
 }
 
@@ -2159,13 +2227,13 @@ pub(crate) fn validate_stage_output_language(
     if structured_output["outputLanguage"].as_str()
         != Some(crate::agent_output_language::AGENT_OUTPUT_LANGUAGE)
     {
-        return Err(AgentRuntimeError::Schema(
+        return Err(AgentRuntimeError::ModelOutputInvalid(
             "Agent output must declare `outputLanguage: \"en\"`.".into(),
         ));
     }
     let validate = |field, value: &str| {
         crate::agent_output_language::validate_english_text(field, value)
-            .map_err(|error| AgentRuntimeError::Schema(error.to_string()))
+            .map_err(|error| AgentRuntimeError::ModelOutputInvalid(error.to_string()))
     };
 
     validate(
@@ -2229,13 +2297,15 @@ fn validate_and_apply_context_usage(
         structured_output
             .get("contextUsage")
             .cloned()
-            .ok_or_else(|| AgentRuntimeError::Schema("Campo `contextUsage` ausente.".into()))?,
+            .ok_or_else(|| {
+                AgentRuntimeError::ModelOutputInvalid("Campo `contextUsage` ausente.".into())
+            })?,
     )
-    .map_err(|error| AgentRuntimeError::Schema(error.to_string()))?;
+    .map_err(|error| AgentRuntimeError::ModelOutputInvalid(error.to_string()))?;
     let mut seen = HashSet::new();
     for citation in citations {
         if !seen.insert(citation.relative_path.clone()) {
-            return Err(AgentRuntimeError::Schema(format!(
+            return Err(AgentRuntimeError::ModelOutputInvalid(format!(
                 "contextUsage contém path duplicado: {}.",
                 citation.relative_path
             )));
@@ -2243,7 +2313,7 @@ fn validate_and_apply_context_usage(
         let Some(item) = trace.items.iter_mut().find(|item| {
             item.delivered && item.relative_path.as_str() == citation.relative_path.as_str()
         }) else {
-            return Err(AgentRuntimeError::Schema(format!(
+            return Err(AgentRuntimeError::ModelOutputInvalid(format!(
                 "contextUsage cita path não entregue: {}.",
                 citation.relative_path
             )));
@@ -2259,7 +2329,9 @@ fn parse_artifacts(structured_output: &Value) -> Result<Vec<GeneratedArtifact>, 
     let entries = structured_output
         .get("artifacts")
         .and_then(Value::as_array)
-        .ok_or_else(|| AgentRuntimeError::Schema("Campo `artifacts` ausente.".to_string()))?;
+        .ok_or_else(|| {
+            AgentRuntimeError::ModelOutputInvalid("Campo `artifacts` ausente.".to_string())
+        })?;
 
     for entry in entries {
         let name = entry
@@ -2267,7 +2339,9 @@ fn parse_artifacts(structured_output: &Value) -> Result<Vec<GeneratedArtifact>, 
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| AgentRuntimeError::Schema("Artifact sem `name` válido.".to_string()))?
+            .ok_or_else(|| {
+                AgentRuntimeError::ModelOutputInvalid("Artifact sem `name` válido.".to_string())
+            })?
             .to_string();
 
         let kind = entry
@@ -2275,14 +2349,18 @@ fn parse_artifacts(structured_output: &Value) -> Result<Vec<GeneratedArtifact>, 
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| AgentRuntimeError::Schema("Artifact sem `kind` válido.".to_string()))?
+            .ok_or_else(|| {
+                AgentRuntimeError::ModelOutputInvalid("Artifact sem `kind` válido.".to_string())
+            })?
             .to_string();
 
         let content = entry
             .get("content")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| AgentRuntimeError::Schema("Artifact sem `content` válido.".to_string()))?
+            .ok_or_else(|| {
+                AgentRuntimeError::ModelOutputInvalid("Artifact sem `content` válido.".to_string())
+            })?
             .to_string();
 
         let relative_path = entry
@@ -2293,7 +2371,7 @@ fn parse_artifacts(structured_output: &Value) -> Result<Vec<GeneratedArtifact>, 
             .map(ToOwned::to_owned);
 
         validate_agent_artifact(&name, relative_path.as_deref(), &content)
-            .map_err(|error| AgentRuntimeError::Schema(error.to_string()))?;
+            .map_err(|error| AgentRuntimeError::ModelOutputInvalid(error.to_string()))?;
 
         artifacts.push(GeneratedArtifact {
             name,
@@ -2359,7 +2437,7 @@ mod tests {
         output["summary"] = json!("Contrato validado sem erros");
         assert!(matches!(
             validate_stage_output_language(&output),
-            Err(AgentRuntimeError::Schema(message)) if message.contains("must be English")
+            Err(AgentRuntimeError::ModelOutputInvalid(message)) if message.contains("must be English")
         ));
     }
 
@@ -2450,7 +2528,7 @@ mod tests {
 
         assert!(matches!(
             validate_structured_output(&stage_output_schema(), &invalid),
-            Err(AgentRuntimeError::Schema(_))
+            Err(AgentRuntimeError::ModelOutputInvalid(_))
         ));
     }
 
@@ -2544,7 +2622,7 @@ mod tests {
         );
 
         let error = parse_structured_output(raw).expect_err("malformed JSON must not parse");
-        let AgentRuntimeError::Schema(message) = error else {
+        let AgentRuntimeError::ModelOutputInvalid(message) = error else {
             panic!("expected a Schema error, got {error:?}");
         };
         assert!(
@@ -2579,7 +2657,7 @@ mod tests {
         );
 
         let error = parse_structured_output(raw).expect_err("malformed JSON must not parse");
-        let AgentRuntimeError::Schema(message) = error else {
+        let AgentRuntimeError::ModelOutputInvalid(message) = error else {
             panic!("expected a Schema error, got {error:?}");
         };
         assert!(
@@ -2625,6 +2703,7 @@ mod m4_context_tests {
             workspace_path: root.to_str().unwrap().into(),
             runtime_db_path: root.join("test.db").to_str().unwrap().into(),
             handoff: None,
+            previous_attempt: None,
         }
     }
     fn db(input: &StageExecutionInput) -> Connection {
@@ -2939,6 +3018,7 @@ mod prompt_tests {
             workspace_path: ".".into(),
             runtime_db_path: ":memory:".into(),
             handoff,
+            previous_attempt: None,
         }
     }
 
@@ -3092,6 +3172,38 @@ mod prompt_tests {
         assert!(prompt.contains("MUST appear as its own top-level key"));
         assert!(prompt.contains("even when its value is an empty array"));
         assert!(prompt.contains("do not defer a closing bracket to later in the document"));
+    }
+
+    /// A retried job carries its previous broken output and the specific
+    /// validation error forward, so the model gets a concrete target to fix
+    /// instead of a blind resample. Absent that (a first attempt, or a retry
+    /// from a transport failure where the model never produced output), the
+    /// prompt must be unchanged from today.
+    #[test]
+    fn previous_attempt_renders_a_correction_section_only_when_present() {
+        let base = input(
+            "Code",
+            Some(handoff(PulsationStage::Code, Some(manifest()))),
+        );
+
+        let with_previous_attempt = StageExecutionInput {
+            previous_attempt: Some(PreviousAttempt {
+                raw_output: "{\"broken\": true".into(),
+                error: "expected ',' or ']' at line 1 column 20".into(),
+            }),
+            ..base.clone()
+        };
+        let corrected_prompt =
+            build_stage_prompt(&with_previous_attempt, &[], &stage_output_schema())
+                .expect("prompt builds");
+        assert!(corrected_prompt.contains("## Previous attempt correction"));
+        assert!(corrected_prompt.contains("expected ',' or ']' at line 1 column 20"));
+        assert!(corrected_prompt.contains("{\"broken\": true"));
+        assert!(corrected_prompt.contains("Fix ONLY what the error above describes"));
+
+        let first_attempt_prompt =
+            build_stage_prompt(&base, &[], &stage_output_schema()).expect("prompt builds");
+        assert!(!first_attempt_prompt.contains("## Previous attempt correction"));
     }
 
     /// Closes the loop that used to fail the stage: every path the prompt shows
