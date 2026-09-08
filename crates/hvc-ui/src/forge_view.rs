@@ -498,12 +498,22 @@ fn incubation(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyE
                 ));
         }
     }
-    panel = panel.child(model.forge.message.clone()).child(button(
-        "send-feature-message",
-        "Enviar mensagem",
-        ForgeAction::Send,
-        cx,
-    ));
+    panel = panel.child(
+        div()
+            .debug_selector(|| "forge-message-composer".into())
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap_2()
+            .child(model.forge.message.clone())
+            .child(label("Enter sends · Shift+Enter inserts a newline"))
+            .child(button(
+                "send-feature-message",
+                "Send message",
+                ForgeAction::Send,
+                cx,
+            )),
+    );
     if !f.brief.objective.is_empty() {
         panel = panel.child(brief(f)).child(button(
             "approve-feature",

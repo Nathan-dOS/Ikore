@@ -152,6 +152,20 @@ fn header_tabs_and_settings_navigate_at_minimum_window_size(cx: &mut TestAppCont
     let settings = visual.debug_bounds("settings").unwrap();
     assert!(settings.right() <= px(960.0));
     assert!(visual.debug_bounds("toggle-sidebar").is_none());
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        visual.run_until_parked();
+        let agent = visual.debug_bounds("agent").unwrap();
+        assert!(
+            agent.left() < px(50.0),
+            "branding must not reserve header space"
+        );
+        for selector in ["agent", "engine", "companion", "settings"] {
+            let control = visual.debug_bounds(selector).unwrap();
+            assert!(control.left() >= px(0.0) && control.right() <= px(width));
+            assert!(control.top() >= px(0.0) && control.bottom() <= px(58.0));
+        }
+    }
 }
 
 #[gpui::test]

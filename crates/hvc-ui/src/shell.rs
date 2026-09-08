@@ -211,23 +211,6 @@ fn header(
                 .items_center()
                 .gap_4()
                 .px_5()
-                .child(
-                    div()
-                        .size_8()
-                        .rounded_md()
-                        .bg(theme::accent())
-                        .text_color(theme::canvas())
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child("HV"),
-                )
-                .child(
-                    div()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("Hard Vibe Code"),
-                )
                 .children(AppTab::ALL.into_iter().map(|tab| {
                     let selected = active != AppView::Settings && tab == active_tab;
                     // Engine can show two counters side by side (reviews waiting take priority
