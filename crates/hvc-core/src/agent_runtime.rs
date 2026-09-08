@@ -989,6 +989,7 @@ fn build_stage_prompt(
         }
         prompt.push_str("Use `contextUsage` to declare only the paths you actually used. Copy each path exactly as it appears after the `### ` marker - without the `### ` prefix and without the `score:` line. From a heading `### knowledge/obsidian/features/auth.md` the value is `knowledge/obsidian/features/auth.md`. An empty array is valid and preferable to an invented citation. Write every `reason` in English.\n\n");
     }
+    prompt.push_str("`contextUsage` is the ONLY place to declare what you used. Never add a \"Source Documents\", \"References\" or similar provenance list inside an artifact's own content unless every entry also appears in `contextUsage` (or, for a task from the batch, in the approved handoff); a plausible-looking path is still an invented citation if you were not actually shown it. If nothing was retrieved, omit any such section from the artifact text as well.\n\n");
 
     prompt.push_str("## Output schema\n");
     prompt.push_str(&schema_json.to_string());
@@ -3023,6 +3024,23 @@ mod prompt_tests {
             !prompt.contains("### vault://exact-code-context"),
             "a synthetic projection was offered as a citable heading"
         );
+    }
+
+    /// Field incident, 2026-09-08: an Intake ADR's own markdown body listed a
+    /// "Source Documents" section citing two `knowledge/obsidian/learning/*.md`
+    /// paths, while `contextUsage` was correctly left empty. The schema
+    /// cannot police prose inside `content`, so the prompt now forbids
+    /// fabricating provenance there regardless of whether context was
+    /// retrieved.
+    #[test]
+    fn artifact_content_is_told_not_to_fabricate_a_provenance_section() {
+        let with_context = prompt_for("Code", &[document("knowledge/obsidian/features/auth.md")]);
+        let without_context = prompt_for("Code", &[]);
+        for prompt in [&with_context, &without_context] {
+            assert!(prompt.contains("`contextUsage` is the ONLY place to declare what you used"));
+            assert!(prompt.contains("Source Documents"));
+            assert!(prompt.contains("invented citation if you were not actually shown it"));
+        }
     }
 
     /// Closes the loop that used to fail the stage: every path the prompt shows
