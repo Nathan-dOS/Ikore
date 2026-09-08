@@ -991,6 +991,7 @@ fn build_stage_prompt(
     }
     prompt.push_str("`contextUsage` is the ONLY place to declare what you used. Never add a \"Source Documents\", \"References\" or similar provenance list inside an artifact's own content unless every entry also appears in `contextUsage` (or, for a task from the batch, in the approved handoff); a plausible-looking path is still an invented citation if you were not actually shown it. If nothing was retrieved, omit any such section from the artifact text as well.\n\n");
 
+    prompt.push_str("Every property listed under `required` below MUST appear as its own top-level key in your JSON, in the order shown, even when its value is an empty array - never omit a required key because it has nothing meaningful to hold. Close each array with its own `]` immediately after its last element, before writing the next key; do not defer a closing bracket to later in the document.\n\n");
     prompt.push_str("## Output schema\n");
     prompt.push_str(&schema_json.to_string());
     prompt.push('\n');
@@ -2555,6 +2556,41 @@ mod tests {
             "diagnostic should carry a position, got: {message}"
         );
     }
+
+    /// Regression corpus for a second 2026-09-08 incident, distinct from the
+    /// one above: with a single artifact, the model closed that one artifact
+    /// object but never closed the `artifacts` ARRAY before starting the
+    /// sibling `taskEvidence` key - deferring the missing `]` to the very end
+    /// of the document instead. Bracket counts balance (which is why this
+    /// class of corruption is easy to miss by eye); only the nesting order is
+    /// wrong. `contextUsage` was also entirely absent from the same response,
+    /// despite already being schema-required - direct evidence that adding a
+    /// field to `required` reduces but does not eliminate this failure mode,
+    /// since these free/compact models are not doing grammar-constrained
+    /// decoding.
+    #[test]
+    fn json_parse_failure_diagnoses_an_array_closed_too_late() {
+        let raw = concat!(
+            r#"{"outputLanguage": "en", "summary": "s", "statusUpdate": "advance", "#,
+            r#""notes": [], "artifacts": [{"name": "a.md", "kind": "adr", "#,
+            r#""relativePath": null, "content": "first"}"#,
+            r#","taskEvidence": [{"taskId": "t", "criterionIds": [], "#,
+            r#""artifactPositions": [0], "summary": "s"}]]}"#,
+        );
+
+        let error = parse_structured_output(raw).expect_err("malformed JSON must not parse");
+        let AgentRuntimeError::Schema(message) = error else {
+            panic!("expected a Schema error, got {error:?}");
+        };
+        assert!(
+            message.contains("taskEvidence"),
+            "diagnostic should show the text around the break, got: {message}"
+        );
+        assert!(
+            message.to_lowercase().contains("line") || message.contains("linha"),
+            "diagnostic should carry a position, got: {message}"
+        );
+    }
 }
 #[cfg(test)]
 mod m4_context_tests {
@@ -3041,6 +3077,21 @@ mod prompt_tests {
             assert!(prompt.contains("Source Documents"));
             assert!(prompt.contains("invented citation if you were not actually shown it"));
         }
+    }
+
+    /// Field incident, 2026-09-08: a single-artifact response closed that one
+    /// artifact object but never closed the `artifacts` array before starting
+    /// the sibling `taskEvidence` key - bracket counts balanced, only the
+    /// closing order was wrong - and `contextUsage` was dropped entirely
+    /// despite already being schema-required. Belt-and-suspenders: the schema
+    /// dump alone did not stop either omission, so the prompt now says so in
+    /// prose too, right before the schema is shown.
+    #[test]
+    fn output_schema_section_warns_against_omitting_required_keys_or_deferring_brackets() {
+        let prompt = prompt_for("Code", &[]);
+        assert!(prompt.contains("MUST appear as its own top-level key"));
+        assert!(prompt.contains("even when its value is an empty array"));
+        assert!(prompt.contains("do not defer a closing bracket to later in the document"));
     }
 
     /// Closes the loop that used to fail the stage: every path the prompt shows
