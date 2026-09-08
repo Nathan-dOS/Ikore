@@ -19,7 +19,7 @@
 | Final Forge regressions after lint cleanup | 2 passed |
 | `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | Passed |
 | `cargo fmt --all -- --check` | Passed |
-| `cargo build --release -p hvc-app --locked --offline` | Pending final result |
+| `cargo build --release -p hvc-app --locked --offline` | Passed; optimized build completed in 6m 13s |
 
 The suite covers burst coalescing, command admission during reads, retained navigation,
 unchanged runtime polls, terminal invalidation, project-scoped view snapshots, stable
@@ -54,3 +54,10 @@ Existing unrelated worktree changes were retained. No commit or push was perform
 - Cerebro: ADR-015, ADR-016, UI architecture, Forge implementation, Companion
   architecture/specification, UI engineering sequence and quality map link to
   `15-UI-Refresh-Modals-and-Composer-Validation-2026-09-07`.
+
+## Release artifact
+
+- Path: `C:\Dev\Hard-Vibe-Code\target\release\hard-vibe-code.exe`
+- Size: 23975936 bytes
+- SHA-256: `43f72d02070df1c2b93885264baa3d334bd88bfffb61298ea0a6ddcdec0c7f2c`
+- The inspected running instance used `target/debug/hard-vibe-code.exe`; it was left running. Open the updated release executable after closing the current instance to use these changes.

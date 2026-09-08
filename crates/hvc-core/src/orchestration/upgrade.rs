@@ -1,7 +1,7 @@
 //! Upgrade helpers run under AppCore's existing exclusive data-directory lock.
 use super::{ContentSha256, publication};
 use crate::persistence_service::PersistenceServiceError as Error;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
 pub(crate) fn backup_before_upgrade(db: &Connection, directory: &Path) -> Result<(), Error> {
@@ -42,15 +42,65 @@ pub(crate) fn backup_before_upgrade(db: &Connection, directory: &Path) -> Result
         .write(true)
         .open(backup)?
         .sync_all()?;
-    // Update known historical checksums if line endings / whitespace differed on Windows in earlier versions.
-    db.execute(
-        "UPDATE refinery_schema_history SET checksum='5592598264408376641' WHERE version=1 AND checksum='412891939292080453'",
+    Ok(())
+}
+
+/// Reconciles historical checksum drift caused by Git EOL conversion (CRLF on Windows
+/// checkouts vs. LF elsewhere) without weakening refinery's tamper detection: a stored
+/// checksum is only ever patched when it matches the checksum of the *same* migration
+/// name/version/sql with the opposite line-ending convention. Any other mismatch
+/// (a genuinely edited or corrupted migration) is left untouched, so `runner.run()`
+/// still surfaces refinery's own mismatch error for it.
+pub(crate) fn reconcile_migration_checksums(
+    db: &Connection,
+    runner: &refinery::Runner,
+) -> Result<(), Error> {
+    let exists: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='refinery_schema_history')",
         [],
+        |r| r.get(0),
     )?;
-    db.execute(
-        "UPDATE refinery_schema_history SET checksum='5498699229741337255' WHERE version=4 AND checksum='8540640495470587455'",
-        [],
-    )?;
+    if !exists {
+        return Ok(());
+    }
+
+    for migration in runner.get_migrations() {
+        let version = migration.version() as i64;
+        let checksum = migration.checksum().to_string();
+        let stored: Option<String> = db
+            .query_row(
+                "SELECT checksum FROM refinery_schema_history WHERE version=?1",
+                params![version],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(stored) = stored else {
+            continue;
+        };
+        if stored == checksum {
+            continue;
+        }
+
+        let Some(sql) = migration.sql() else {
+            continue;
+        };
+        let alt_sql = if sql.contains("\r\n") {
+            sql.replace("\r\n", "\n")
+        } else {
+            sql.replace('\n', "\r\n")
+        };
+        let alt_checksum = refinery::Migration::unapplied(&migration.to_string(), &alt_sql)
+            .map_err(Error::Migration)?
+            .checksum()
+            .to_string();
+        if stored == alt_checksum {
+            db.execute(
+                "UPDATE refinery_schema_history SET checksum=?1 WHERE version=?2",
+                params![checksum, version],
+            )?;
+        }
+    }
+
     Ok(())
 }
 
@@ -137,7 +187,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_backup_before_upgrade_success() {
+    fn backup_before_upgrade_succeeds_on_a_valid_pre_v24_database() {
         let temp = tempfile::tempdir().unwrap();
         let db_path = temp.path().join("source.db");
         let conn = Connection::open(&db_path).unwrap();

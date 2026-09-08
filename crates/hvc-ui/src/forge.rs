@@ -43,11 +43,11 @@ impl ForgeSection {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Backlog => "Backlog",
-            Self::Incubation => "Incubadora",
-            Self::Triage => "Triagem",
-            Self::Dependencies => "Dependências",
-            Self::Waves => "Ondas",
-            Self::Delivery => "Entrega",
+            Self::Incubation => "Incubation",
+            Self::Triage => "Triage",
+            Self::Dependencies => "Dependencies",
+            Self::Waves => "Waves",
+            Self::Delivery => "Delivery",
         }
     }
 
@@ -106,10 +106,10 @@ pub(crate) struct DraftInputs {
 impl DraftInputs {
     fn new(cx: &mut Context<AppModel>) -> Self {
         Self {
-            title: cx.new(|cx| NativeTextInput::new("Título da task", cx)),
+            title: cx.new(|cx| NativeTextInput::new("Task title", cx)),
             description: cx
-                .new(|cx| NativeTextInput::new("Comportamento atual e resultado esperado", cx)),
-            criteria: cx.new(|cx| NativeTextInput::new("Critérios de aceite separados por ;", cx)),
+                .new(|cx| NativeTextInput::new("Current behavior and expected outcome", cx)),
+            criteria: cx.new(|cx| NativeTextInput::new("Acceptance criteria separated by ;", cx)),
             kind: TaskKind::Bug,
             dependencies: Vec::new(),
         }
@@ -183,21 +183,18 @@ impl ForgeUi {
             selected_tasks: HashSet::new(),
             history: Vec::new(),
             drafts: vec![DraftInputs::new(cx)],
-            feature_title: cx.new(|cx| NativeTextInput::new("Nome da feature", cx)),
-            idea: cx.new(|cx| NativeTextInput::new("Qual problema você quer resolver?", cx)),
+            feature_title: cx.new(|cx| NativeTextInput::new("Feature title", cx)),
+            idea: cx.new(|cx| NativeTextInput::new("What problem do you want to solve?", cx)),
             message,
             _message_submit: message_submit,
-            batch_title: cx.new(|cx| NativeTextInput::new("Título da pulsação", cx)),
-            rationale: cx.new(|cx| {
-                NativeTextInput::new("Justificativa da dependência ou do arquivamento", cx)
-            }),
-            wave_limit: cx
-                .new(|cx| NativeTextInput::new("Capacidade da Onda Atual (padrão: 3)", cx)),
+            batch_title: cx.new(|cx| NativeTextInput::new("Pulsation title", cx)),
+            rationale: cx.new(|cx| NativeTextInput::new("Dependency or archiving rationale", cx)),
+            wave_limit: cx.new(|cx| NativeTextInput::new("Current Wave capacity (default: 3)", cx)),
             filters: [
-                "Valor e necessidade",
-                "Alinhamento com o produto",
-                "Viabilidade e riscos",
-                "Usabilidade e adoção",
+                "Value and need",
+                "Product alignment",
+                "Feasibility and risks",
+                "Usability and adoption",
             ]
             .into_iter()
             .map(|s| cx.new(|cx| NativeTextInput::new(s, cx)))
@@ -302,7 +299,7 @@ pub(crate) enum ForgeAction {
     Refresh,
     RetryPublications,
     OpenPulsation(String),
-    /// Cross-view entry point (e.g. from Pulsations' "Compor pulsação com tasks"): jumps into the
+    /// Cross-view entry point (e.g. from Pulsations' "Compose pulsation with tasks"): jumps into the
     /// Forge view's Backlog section. In-view tab clicks use `Section` instead, which never switches
     /// `AppView` and so avoids an extra background refresh.
     OpenBacklog,
@@ -724,64 +721,221 @@ impl AppModel {
         let original_selection = selected.clone();
         let runtime = core.runtime_handle().clone();
         let current_project = project.clone();
-        cx.spawn(async move|this,cx|{
-            let result=runtime.spawn_blocking(move|| -> Result<_,String>{
-                let forge=FeatureForgeService::new(core.persistence().clone());let tasks=TaskService::new(core.persistence().clone());
-                let key=uuid::Uuid::new_v4().to_string(); let mut selected=selected;let mut notice=None;let mut navigate=None;
-                let mut clear_capture=false;let mut accepted_message=None;
-                let outcome:Result<(),hvc_core::persistence_service::PersistenceServiceError>=(||{
-                    match operation {
-                        Operation::EditTask(id,revision,draft)=>{tasks.revise(&project,&id,revision,draft)?;clear_capture=true;notice=Some("Task atualizada.".into());},
-                        Operation::ConvertTask(id,revision,title,idea)=>{let f=tasks.convert_to_feature(&project,&id,revision,&key,&title,&idea)?;selected=Some(f.id.clone());clear_capture=true;navigate=Some(AppView::Forge);core.feature_agent().start(&project,&f.id,f.revision,&format!("initial:{key}"),&f.original_idea)?;clear_capture=true;navigate=Some(AppView::Forge);},
-                        Operation::Refresh=>{},
-                        Operation::Navigate(navigation)=>forge.save_navigation(&project,&navigation)?,
-                        Operation::RetryPublications=>{forge.retry_plan_publications(&project)?;},
-                        Operation::CreateTasks(drafts)=>{tasks.create(CreateTasksRequest{project_id:project.clone(),request_id:key,tasks:drafts})?;notice=Some("Tasks adicionadas ao backlog.".into());clear_capture=true;navigate=Some(AppView::Forge);},
-                        Operation::CreateFeature(title,idea)=>{let f=forge.create(CreateFeatureRequest{project_id:project.clone(),request_id:key.clone(),title,idea:idea.clone()})?;selected=Some(f.id.clone());clear_capture=true;navigate=Some(AppView::Forge);core.feature_agent().start(&project,&f.id,f.revision,&format!("initial:{key}"),&idea)?;clear_capture=true;navigate=Some(AppView::Forge);},
-                        Operation::Dispatch(title,selection)=>{let p=tasks.dispatch(CreatePulsationFromTasksRequest{project_id:project.clone(),request_id:key,title,tasks:selection})?;notice=Some(format!("Pulsação {} enviada para a fila.",p.feature_name));navigate=Some(AppView::Pulsations);},
-                        Operation::Send(id,revision,message)=>{core.feature_agent().start(&project,&id,revision,&key,&message)?;accepted_message=Some((id,message));},
-                        Operation::Approve(id,revision)=>{forge.approve(&project,&id,revision)?;notice=Some("Escopo aprovado; tasks criadas. Planeje a onda antes do disparo.".into());},
-                        Operation::Archive(id,reason)=>forge.archive(&project,&id,&reason)?,
-                        Operation::Reopen(id)=>forge.reopen(&project,&id)?,
-                        Operation::Complete(id,revision)=>forge.complete(&project,&id,revision)?,
-                        Operation::Move(id,wave)=>{forge.move_to_wave(&project,&id,wave,0)?;},
-                        Operation::Dependency(id,pre,reason)=>forge.set_dependency(&project,&id,&pre,reason.as_deref())?,
-                        Operation::SetLimit(limit)=>forge.set_wave_limit(&project,limit)?,
-                        Operation::Evaluate(id,revision,evaluation,level)=>{forge.evaluate(&project,&id,revision,evaluation,level)?;},
-                    } Ok(())
-                })();
-                let error=outcome.err().map(|e|e.to_string());
-                forge.reconcile_plan_publications(&project).map_err(|e|e.to_string())?;
-                let issues=forge.publication_issues(&project).map_err(|e|e.to_string())?;
-                if !issues.is_empty(){notice=Some(issues.join("\n"));}
-                let ForgeViewSnapshot { snapshot, selected_feature: selected, history } = forge.view_snapshot(&project, selected.as_deref()).map_err(|e|e.to_string())?;
-                Ok((snapshot,selected,history,notice,navigate,clear_capture,accepted_message,error))
-            }).await.map_err(|e|e.to_string()).and_then(|r|r);
-            let _=this.update(cx,|model,cx|{
-                if model.forge.generation!=generation || model.workspace.read(cx).project_id.as_ref().map(ToString::to_string).as_ref()!=Some(&current_project){return;}
+        cx.spawn(async move |this, cx| {
+            let result = runtime
+                .spawn_blocking(move || -> Result<_, String> {
+                    let forge = FeatureForgeService::new(core.persistence().clone());
+                    let tasks = TaskService::new(core.persistence().clone());
+                    let key = uuid::Uuid::new_v4().to_string();
+                    let mut selected = selected;
+                    let mut notice = None;
+                    let mut navigate = None;
+                    let mut clear_capture = false;
+                    let mut accepted_message = None;
+                    let outcome: Result<
+                        (),
+                        hvc_core::persistence_service::PersistenceServiceError,
+                    > = (|| {
+                        match operation {
+                            Operation::EditTask(id, revision, draft) => {
+                                tasks.revise(&project, &id, revision, draft)?;
+                                clear_capture = true;
+                                notice = Some("Task updated.".into());
+                            }
+                            Operation::ConvertTask(id, revision, title, idea) => {
+                                let f = tasks.convert_to_feature(
+                                    &project, &id, revision, &key, &title, &idea,
+                                )?;
+                                selected = Some(f.id.clone());
+                                clear_capture = true;
+                                navigate = Some(AppView::Forge);
+                                core.feature_agent().start(
+                                    &project,
+                                    &f.id,
+                                    f.revision,
+                                    &format!("initial:{key}"),
+                                    &f.original_idea,
+                                )?;
+                                clear_capture = true;
+                                navigate = Some(AppView::Forge);
+                            }
+                            Operation::Refresh => {}
+                            Operation::Navigate(navigation) => {
+                                forge.save_navigation(&project, &navigation)?
+                            }
+                            Operation::RetryPublications => {
+                                forge.retry_plan_publications(&project)?;
+                            }
+                            Operation::CreateTasks(drafts) => {
+                                tasks.create(CreateTasksRequest {
+                                    project_id: project.clone(),
+                                    request_id: key,
+                                    tasks: drafts,
+                                })?;
+                                notice = Some("Tasks added to backlog.".into());
+                                clear_capture = true;
+                                navigate = Some(AppView::Forge);
+                            }
+                            Operation::CreateFeature(title, idea) => {
+                                let f = forge.create(CreateFeatureRequest {
+                                    project_id: project.clone(),
+                                    request_id: key.clone(),
+                                    title,
+                                    idea: idea.clone(),
+                                })?;
+                                selected = Some(f.id.clone());
+                                clear_capture = true;
+                                navigate = Some(AppView::Forge);
+                                core.feature_agent().start(
+                                    &project,
+                                    &f.id,
+                                    f.revision,
+                                    &format!("initial:{key}"),
+                                    &idea,
+                                )?;
+                                clear_capture = true;
+                                navigate = Some(AppView::Forge);
+                            }
+                            Operation::Dispatch(title, selection) => {
+                                let p = tasks.dispatch(CreatePulsationFromTasksRequest {
+                                    project_id: project.clone(),
+                                    request_id: key,
+                                    title,
+                                    tasks: selection,
+                                })?;
+                                notice = Some(format!(
+                                    "Pulsation {} dispatched to queue.",
+                                    p.feature_name
+                                ));
+                                navigate = Some(AppView::Pulsations);
+                            }
+                            Operation::Send(id, revision, message) => {
+                                core.feature_agent()
+                                    .start(&project, &id, revision, &key, &message)?;
+                                accepted_message = Some((id, message));
+                            }
+                            Operation::Approve(id, revision) => {
+                                forge.approve(&project, &id, revision)?;
+                                notice = Some(
+                                    "Scope approved; tasks created. Plan the wave before dispatch."
+                                        .into(),
+                                );
+                            }
+                            Operation::Archive(id, reason) => {
+                                forge.archive(&project, &id, &reason)?
+                            }
+                            Operation::Reopen(id) => forge.reopen(&project, &id)?,
+                            Operation::Complete(id, revision) => {
+                                forge.complete(&project, &id, revision)?
+                            }
+                            Operation::Move(id, wave) => {
+                                forge.move_to_wave(&project, &id, wave, 0)?;
+                            }
+                            Operation::Dependency(id, pre, reason) => {
+                                forge.set_dependency(&project, &id, &pre, reason.as_deref())?
+                            }
+                            Operation::SetLimit(limit) => forge.set_wave_limit(&project, limit)?,
+                            Operation::Evaluate(id, revision, evaluation, level) => {
+                                forge.evaluate(&project, &id, revision, evaluation, level)?;
+                            }
+                        }
+                        Ok(())
+                    })();
+                    let error = outcome.err().map(|e| e.to_string());
+                    forge
+                        .reconcile_plan_publications(&project)
+                        .map_err(|e| e.to_string())?;
+                    let issues = forge
+                        .publication_issues(&project)
+                        .map_err(|e| e.to_string())?;
+                    if !issues.is_empty() {
+                        notice = Some(issues.join("\n"));
+                    }
+                    let ForgeViewSnapshot {
+                        snapshot,
+                        selected_feature: selected,
+                        history,
+                    } = forge
+                        .view_snapshot(&project, selected.as_deref())
+                        .map_err(|e| e.to_string())?;
+                    Ok((
+                        snapshot,
+                        selected,
+                        history,
+                        notice,
+                        navigate,
+                        clear_capture,
+                        accepted_message,
+                        error,
+                    ))
+                })
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r);
+            let _ = this.update(cx, |model, cx| {
+                if model.forge.generation != generation
+                    || model
+                        .workspace
+                        .read(cx)
+                        .project_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .as_ref()
+                        != Some(&current_project)
+                {
+                    return;
+                }
                 match result {
-                    Ok((snapshot,selected,history,notice,navigate,clear_capture,accepted_message,error))=>{
+                    Ok((
+                        snapshot,
+                        selected,
+                        history,
+                        notice,
+                        navigate,
+                        clear_capture,
+                        accepted_message,
+                        error,
+                    )) => {
                         // Backlog is UI-only and has no core equivalent, so a background refresh
                         // must never bounce the user out of it into a persisted feature section.
-                        if model.forge.selected_feature.is_none() && model.forge.section != ForgeSection::Backlog {model.forge.section=ForgeSection::from_core_index(snapshot.navigation.section);}
-                        model.forge.snapshot=snapshot;
-                        if model.forge.selected_feature == original_selection {
-                            model.forge.selected_feature=selected;model.forge.history=history;
+                        if model.forge.selected_feature.is_none()
+                            && model.forge.section != ForgeSection::Backlog
+                        {
+                            model.forge.section =
+                                ForgeSection::from_core_index(snapshot.navigation.section);
                         }
-                        if !background || notice.is_some() { model.forge.notice=notice; }
-                        if !background || error.is_some() { model.forge.error=error; }
-                        if clear_capture{model.forge.new_open=false;model.forge.drafts=vec![DraftInputs::new(cx)];}
-                        if let Some((feature,message))=accepted_message{model.forge.clear_accepted_message(&feature,&message,cx);}
-                        if let Some(view)=navigate{model.select_view(view,cx);model.refresh_pulsations(cx);}
-                    },
-                    Err(error)=>model.forge.error=Some(error),
+                        model.forge.snapshot = snapshot;
+                        if model.forge.selected_feature == original_selection {
+                            model.forge.selected_feature = selected;
+                            model.forge.history = history;
+                        }
+                        if !background || notice.is_some() {
+                            model.forge.notice = notice;
+                        }
+                        if !background || error.is_some() {
+                            model.forge.error = error;
+                        }
+                        if clear_capture {
+                            model.forge.new_open = false;
+                            model.forge.drafts = vec![DraftInputs::new(cx)];
+                        }
+                        if let Some((feature, message)) = accepted_message {
+                            model.forge.clear_accepted_message(&feature, &message, cx);
+                        }
+                        if let Some(view) = navigate {
+                            model.select_view(view, cx);
+                            model.refresh_pulsations(cx);
+                        }
+                    }
+                    Err(error) => model.forge.error = Some(error),
                 }
                 if let Some(operation) = model.forge.finish_operation() {
                     model.run_forge(operation, cx);
                 }
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
         if !background {
             cx.notify();
         }

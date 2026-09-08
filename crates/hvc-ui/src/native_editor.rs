@@ -679,7 +679,7 @@ mod tests {
                     .restore_workspace_snapshot(
                         "notes/one.md",
                         EditorSnapshot {
-                            text: "# Título\n\nTexto".into(),
+                            text: "# Title\n\nText".into(),
                             revision: "r1".into(),
                             selection: Default::default(),
                             scroll_top: 0.0,

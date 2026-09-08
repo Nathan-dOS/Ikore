@@ -88,7 +88,7 @@ impl WorkspaceBackend for CoreWorkspaceBackend {
                 .await
                 .map_err(|error| {
                     WorkspaceOperationError::worker(format!(
-                        "worker de leitura do workspace interrompido: {error}"
+                        "workspace read worker interrupted: {error}"
                     ))
                 })?
         })
@@ -116,7 +116,7 @@ impl WorkspaceBackend for CoreWorkspaceBackend {
                 .await
                 .map_err(|error| {
                     WorkspaceOperationError::worker(format!(
-                        "worker de escrita do workspace interrompido: {error}"
+                        "workspace write worker interrupted: {error}"
                     ))
                 })?
         })
@@ -141,7 +141,7 @@ impl WorkspaceBackend for CoreWorkspaceBackend {
                 .await
                 .map_err(|error| {
                     WorkspaceOperationError::worker(format!(
-                        "worker do onboarding brownfield interrompido: {error}"
+                        "brownfield onboarding worker interrupted: {error}"
                     ))
                 })?
         })
@@ -168,7 +168,7 @@ impl WorkspaceBackend for CoreWorkspaceBackend {
                 .await
                 .map_err(|error| {
                     WorkspaceOperationError::worker(format!(
-                        "worker de ignore brownfield interrompido: {error}"
+                        "brownfield ignore worker interrupted: {error}"
                     ))
                 })?
         })
@@ -487,13 +487,13 @@ impl WorkspaceEditorModel {
             return false;
         };
         if kind == "removed" {
-            tab.save_error = Some("O arquivo foi removido externamente.".into());
+            tab.save_error = Some("The file was removed externally.".into());
             return false;
         }
         if tab.dirty || tab.saving {
             tab.saving = false;
             tab.conflict = Some(
-                "Mudanças externas foram detectadas enquanto havia edições locais. Recarregue ou sobrescreva explicitamente."
+                "External changes were detected while local edits exist. Reload or overwrite explicitly."
                     .into(),
             );
             return false;
@@ -510,12 +510,8 @@ mod tests {
     fn opens_each_tab_once_and_activates_it(cx: &mut gpui::TestAppContext) {
         let workspace = cx.new(WorkspaceEditorModel::new);
         workspace.update(cx, |workspace, _| {
-            assert!(workspace.open_tab("notes/one.md", "Inicial".into(), "rev-1".into()));
-            assert!(!workspace.open_tab(
-                "notes/one.md",
-                "Conteúdo ignorado".into(),
-                "rev-2".into(),
-            ));
+            assert!(workspace.open_tab("notes/one.md", "Initial".into(), "rev-1".into()));
+            assert!(!workspace.open_tab("notes/one.md", "Ignored content".into(), "rev-2".into(),));
         });
         cx.read(|cx| {
             let workspace = workspace.read(cx);
@@ -527,7 +523,7 @@ mod tests {
                     .map(ToString::to_string),
                 Some("notes/one.md".into())
             );
-            assert_eq!(workspace.tabs[0].content, "Inicial");
+            assert_eq!(workspace.tabs[0].content, "Initial");
         });
     }
 

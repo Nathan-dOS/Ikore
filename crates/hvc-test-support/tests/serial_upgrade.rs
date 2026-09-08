@@ -2,7 +2,7 @@ use hvc_core::{
     orchestration::ContentSha256,
     persistence_service::{
         ApplyHitlDecisionRequest, CreatePulsationRequest, HitlDecision, PersistenceService,
-        PulsationStage,
+        PersistenceServiceError, PulsationStage,
     },
 };
 use hvc_test_support::{LegacyPulseLayout, PulsationFixture};
@@ -127,7 +127,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        24
+        25
     );
     assert_eq!(
         db.query_row(
@@ -258,7 +258,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        24
+        25
     );
     assert_eq!(
         db.query_row(
@@ -671,4 +671,83 @@ fn v23_upgrade_preserves_populated_agent_slots_and_legacy_pulsations() {
         0,
         "Legacy pulses must never become features implicitly"
     );
+}
+
+#[test]
+fn line_ending_drift_in_an_applied_migration_is_reconciled() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&db_path).unwrap();
+    let runner = cli_migrations::migrations::runner();
+    runner.run(&mut db).unwrap();
+
+    // Simulate the exact Windows CRLF-checkout bug: the checksum recorded for an
+    // applied migration reflects the opposite line-ending convention of the sql
+    // currently embedded in the binary.
+    let migration = runner
+        .get_migrations()
+        .iter()
+        .find(|m| m.version() == 1)
+        .unwrap()
+        .clone();
+    let sql = migration.sql().unwrap();
+    let alt_sql = if sql.contains("\r\n") {
+        sql.replace("\r\n", "\n")
+    } else {
+        sql.replace('\n', "\r\n")
+    };
+    let alt_checksum = refinery::Migration::unapplied(&migration.to_string(), &alt_sql)
+        .unwrap()
+        .checksum()
+        .to_string();
+    db.execute(
+        "UPDATE refinery_schema_history SET checksum=?1 WHERE version=1",
+        params![alt_checksum],
+    )
+    .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+
+    let db = Connection::open(&db_path).unwrap();
+    let stored: String = db
+        .query_row(
+            "SELECT checksum FROM refinery_schema_history WHERE version=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, migration.checksum().to_string());
+}
+
+#[test]
+fn genuinely_altered_migration_checksum_is_never_silently_reconciled() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&db_path).unwrap();
+    let runner = cli_migrations::migrations::runner();
+    runner.run(&mut db).unwrap();
+
+    // A checksum that still parses (refinery requires the stored value to be a valid u64)
+    // but matches neither the real content nor either EOL variant of it: a genuine
+    // edit/corruption, not a Windows checkout artifact. Reconciliation must leave this
+    // untouched so refinery's own tamper detection still fires.
+    let real_checksum = runner
+        .get_migrations()
+        .iter()
+        .find(|m| m.version() == 1)
+        .unwrap()
+        .checksum();
+    let bogus_checksum = real_checksum.wrapping_add(1).to_string();
+    db.execute(
+        "UPDATE refinery_schema_history SET checksum=?1 WHERE version=1",
+        params![bogus_checksum],
+    )
+    .unwrap();
+    drop(db);
+
+    match PersistenceService::initialize(root.path()) {
+        Err(error) => assert!(matches!(error, PersistenceServiceError::Migration(_))),
+        Ok(_) => panic!("expected the genuinely altered checksum to fail initialization"),
+    }
 }

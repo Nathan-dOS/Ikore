@@ -1096,9 +1096,11 @@ impl PersistenceService {
         connection.busy_timeout(Duration::from_secs(5))?;
 
         crate::orchestration::upgrade::backup_before_upgrade(&connection, app_data_dir)?;
+        let runner = embedded::migrations::runner();
+        crate::orchestration::upgrade::reconcile_migration_checksums(&connection, &runner)?;
         // V24 rebuilds CHECK-constrained tables without cascading into their history.
         connection.pragma_update(None, "foreign_keys", "OFF")?;
-        embedded::migrations::runner()
+        runner
             .run(&mut connection)
             .map_err(PersistenceServiceError::Migration)?;
         let broken_references: i64 =

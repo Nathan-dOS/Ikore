@@ -83,9 +83,7 @@ impl LogsBackend for CoreLogsBackend {
                 })
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!(
-                        "worker de ressincronização interrompido: {error}"
-                    ))
+                    UiCommandError::worker(format!("resync worker interrupted: {error}"))
                 })?
                 .map(|response| response.snapshot)
                 .map_err(command_error)
@@ -299,23 +297,23 @@ impl LogsModel {
 
 fn llm_summary(event: &LlmStreamEvent) -> String {
     match event {
-        LlmStreamEvent::RouteStarted { route_id } => format!("rota {route_id} iniciada"),
+        LlmStreamEvent::RouteStarted { route_id } => format!("route {route_id} started"),
         LlmStreamEvent::AttemptStarted {
             ordinal,
             provider_id,
             model,
             ..
-        } => format!("tentativa {ordinal}: {provider_id}/{model}"),
-        LlmStreamEvent::TokenDelta { text } => format!("{} caractere(s)", text.chars().count()),
+        } => format!("attempt {ordinal}: {provider_id}/{model}"),
+        LlmStreamEvent::TokenDelta { text } => format!("{} character(s)", text.chars().count()),
         LlmStreamEvent::AttemptFailed {
             ordinal,
             error_code,
-        } => format!("tentativa {ordinal} falhou: {error_code}"),
+        } => format!("attempt {ordinal} failed: {error_code}"),
         LlmStreamEvent::RouteCompleted {
             provider_id, model, ..
-        } => format!("concluída por {provider_id}/{model}"),
+        } => format!("completed by {provider_id}/{model}"),
         LlmStreamEvent::RouteFailed { error_code, .. } => {
-            format!("rota falhou: {error_code}")
+            format!("route failed: {error_code}")
         }
         LlmStreamEvent::ResilienceChanged {
             scope_id,
@@ -385,16 +383,16 @@ mod tests {
             status: "streaming".into(),
             decision: json!({}),
             next_eligible_at: None,
-            visible_output: Some("snapshot confiável".into()),
+            visible_output: Some("reliable snapshot".into()),
             visible_output_complete: false,
             attempts: Vec::new(),
         };
 
         assert!(!model.apply_execution_snapshot(stale_request, snapshot()));
         assert!(model.apply_execution_snapshot(current_request, snapshot()));
-        assert_eq!(model.visible_output, "snapshot confiável");
+        assert_eq!(model.visible_output, "reliable snapshot");
         assert_eq!(model.record_llm(event(4)), SequenceClassification::Next);
-        assert_eq!(model.visible_output, "snapshot confiávelx");
+        assert_eq!(model.visible_output, "reliable snapshotx");
     }
 
     #[test]

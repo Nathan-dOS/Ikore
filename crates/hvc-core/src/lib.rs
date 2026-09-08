@@ -5,6 +5,7 @@
 
 pub mod agent_output_language;
 pub mod agent_runtime;
+pub mod agent_timeout;
 pub mod app_core;
 pub mod chat_service;
 pub mod document_cache;
@@ -16,8 +17,10 @@ pub mod orchestration;
 pub mod persistence_service;
 pub mod repository_context;
 pub mod secret_redactor;
+pub mod stage_briefs;
 pub mod terminals;
 pub mod workspace_service;
 
+pub use agent_timeout::{AgentTimeoutPolicy, ProgressWatchdog, TimeoutReason};
 pub use app_core::{AppCore, AppCoreDependencies, AppPaths, DataDirectoryLock};
 pub use events::{AppEvent, AppEventBus};

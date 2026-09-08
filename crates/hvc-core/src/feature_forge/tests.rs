@@ -948,3 +948,161 @@ fn feature_prerequisites_can_share_a_complete_atomic_batch() {
     assert_eq!(manifest.tasks.first().unwrap().draft.feature_id, Some(a.id));
     assert_eq!(manifest.tasks.last().unwrap().draft.feature_id, Some(b.id));
 }
+
+#[test]
+fn feature_discovery_response_schema_is_strictly_compliant_for_cli_adapters() {
+    fn assert_strict(schema: &Value) {
+        if schema["type"] == "object" {
+            assert_eq!(schema["additionalProperties"], false);
+            let properties = schema["properties"].as_object().expect("object properties");
+            let required = schema["required"].as_array().expect("object required");
+            assert_eq!(properties.len(), required.len());
+            assert!(properties.keys().all(|key| required.contains(&json!(key))));
+            for property in properties.values() {
+                assert_strict(property);
+            }
+        }
+        assert!(schema.get("oneOf").is_none());
+        if let Some(branches) = schema["anyOf"].as_array() {
+            for branch in branches {
+                assert_strict(branch);
+            }
+        }
+        if let Some(items) = schema.get("items") {
+            assert_strict(items);
+        }
+    }
+    use crate::terminals::CliBackend;
+
+    // OpenAI Codex receives the specialized strict schema
+    let codex_schema = response_schema_for_backend(Some(CliBackend::Codex));
+    assert_eq!(codex_schema["type"], "object");
+    assert_strict(&codex_schema);
+    let codex_validator =
+        jsonschema::validator_for(&codex_schema).expect("codex schema must be valid");
+
+    // All other backends retain the canonical schema with isolated branches
+    let canonical = canonical_response_schema();
+    assert_eq!(
+        response_schema_for_backend(Some(CliBackend::Claude)),
+        canonical
+    );
+    assert_eq!(
+        response_schema_for_backend(Some(CliBackend::Gemini)),
+        canonical
+    );
+    assert_eq!(
+        response_schema_for_backend(Some(CliBackend::Opencode)),
+        canonical
+    );
+    assert_eq!(
+        response_schema_for_backend(Some(CliBackend::Custom)),
+        canonical
+    );
+    assert_eq!(response_schema_for_backend(None), canonical);
+    assert_eq!(response_schema(), canonical);
+    let canonical_validator =
+        jsonschema::validator_for(&canonical).expect("canonical schema must be valid");
+
+    let sample = json!({
+        "outputLanguage": "en",
+        "message": "Hello",
+        "questions": ["Q1?"],
+        "brief": {
+            "objective": "Obj",
+            "audience": "Aud",
+            "behavior": "Beh",
+            "scope": "Scope",
+            "exclusions": "None",
+            "alternatives": [],
+            "decisions": [],
+            "pendingDecisions": [],
+            "criteria": [{"id": "c1", "description": "Crit 1"}],
+            "tasks": [{
+                "title": "Task 1",
+                "kind": "feature",
+                "description": "Desc 1",
+                "criteria": [{"id": "c1", "description": "Crit 1"}],
+                "dependencies": [],
+                "featureId": null
+            }],
+            "sources": [],
+            "coverage": "complete",
+            "foundation": false
+        },
+        "evaluation": {
+            "value": "Val",
+            "alignment": "Align",
+            "feasibility": "Feas",
+            "usability": "Usab",
+            "impact": 5,
+            "confidence": 4,
+            "effort": null
+        },
+        "suggestedDependencies": []
+    });
+    assert!(codex_validator.validate(&sample).is_ok());
+    assert!(canonical_validator.validate(&sample).is_ok());
+}
+
+#[test]
+fn active_agent_cli_backend_resolves_only_for_configured_cli_process_agents() {
+    use crate::terminals::{
+        AgentExecutionMode, CliBackend, CliModelSelectionSource, TerminalRepository, ThinkingLevel,
+        UpdateCliAgentConfigRequest,
+    };
+
+    let fixture = Fixture::new();
+    let repository = TerminalRepository::new(fixture.service.database_path());
+    let defaults = repository
+        .ensure_project_configs(&fixture.project, false)
+        .unwrap();
+    let backend_agent = defaults
+        .iter()
+        .find(|config| config.agent_role == AgentRole::BackendAgent)
+        .unwrap()
+        .clone();
+
+    // Default seeding leaves execution_mode=api_direct, so no CLI backend applies yet.
+    assert_eq!(
+        fixture
+            .service
+            .active_agent_cli_backend(&fixture.project, AgentRole::BackendAgent)
+            .unwrap(),
+        None
+    );
+
+    repository
+        .update_config(UpdateCliAgentConfigRequest {
+            project_id: fixture.project.clone(),
+            agent_role: AgentRole::BackendAgent,
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: CliBackend::Codex,
+            model: None,
+            model_profile: None,
+            model_source: CliModelSelectionSource::Default,
+            thinking_level: ThinkingLevel::Medium,
+            custom_executable: None,
+            custom_args: vec![],
+            custom_risk_ack: false,
+            expected_version: backend_agent.version,
+        })
+        .unwrap();
+
+    assert_eq!(
+        fixture
+            .service
+            .active_agent_cli_backend(&fixture.project, AgentRole::BackendAgent)
+            .unwrap(),
+        Some(CliBackend::Codex)
+    );
+
+    // A different, untouched role stays on the api_direct default.
+    assert_eq!(
+        fixture
+            .service
+            .active_agent_cli_backend(&fixture.project, AgentRole::TestAgent)
+            .unwrap(),
+        None
+    );
+}

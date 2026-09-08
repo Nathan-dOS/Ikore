@@ -52,8 +52,8 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
 
     if !has_project {
         return empty_panel(
-            "Nenhum projeto ativo",
-            "Abra um workspace antes de criar ou acompanhar pulsações.",
+            "No active project",
+            "Open a workspace before creating or tracking pulsations.",
         )
         .into_any_element();
     }
@@ -85,7 +85,7 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                     ))
                     .child(crate::forge_view::button(
                         "compose-task-batch",
-                        "Compor pulsação com tasks",
+                        "Compose pulsation with tasks",
                         crate::forge::ForgeAction::OpenBacklog,
                         cx,
                     ))
@@ -104,7 +104,7 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                         .p_3()
                                         .text_sm()
                                         .text_color(theme::text_muted())
-                                        .child("Crie a primeira pulsação deste projeto."),
+                                        .child("Create this project's first pulsation."),
                                 )
                             })
                             .children(pulsations.into_iter().map(|pulsation| {
@@ -158,7 +158,7 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                         PulsationDetailSection::Review,
                                         "pulsation-review",
                                         if review_pending {
-                                            "Review · pendente"
+                                            "Review · pending"
                                         } else {
                                             "Review"
                                         },
@@ -166,21 +166,21 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                     (
                                         PulsationDetailSection::Overview,
                                         "pulsation-overview",
-                                        "Visão Geral",
+                                        "Overview",
                                     ),
                                     (
                                         PulsationDetailSection::Preparation,
                                         "pulsation-preparation",
                                         if preparation_pending {
-                                            "Preparação · pendente"
+                                            "Preparation · pending"
                                         } else {
-                                            "Preparação"
+                                            "Preparation"
                                         },
                                     ),
                                     (
                                         PulsationDetailSection::Artifacts,
                                         "pulsation-artifacts",
-                                        "Artefatos",
+                                        "Artifacts",
                                     ),
                                 ]
                                 .into_iter()
@@ -243,8 +243,8 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                 })
                 .when(active_id.is_none(), |panel| {
                     panel.child(empty_panel(
-                        "Nenhuma pulsação",
-                        "Crie a primeira pulsação para visualizar pipeline e artefatos.",
+                        "No pulsations",
+                        "Create the first pulsation to view the pipeline and artifacts.",
                     ))
                 })
                 .when_some(notice, |panel, notice| {
@@ -292,12 +292,12 @@ fn detail_overview(
                 .grid_cols(3)
                 .gap_2()
                 .my_4()
-                .child(fact("ESTÁGIO ATUAL", stage_label(active.stage)))
-                .child(fact("AGENTES ATIVOS", running_jobs.to_string()))
-                .child(fact("HITL PENDENTE", awaiting_hitl.to_string())),
+                .child(fact("CURRENT STAGE", stage_label(active.stage)))
+                .child(fact("ACTIVE AGENTS", running_jobs.to_string()))
+                .child(fact("PENDING HITL", awaiting_hitl.to_string())),
         )
-        .child(fact("CRIADA EM", active.created_at.clone()))
-        .child(fact("ÚLTIMA TRANSIÇÃO", active.updated_at.clone()))
+        .child(fact("CREATED AT", active.created_at.clone()))
+        .child(fact("LAST TRANSITION", active.updated_at.clone()))
         .into_any_element()
 }
 
@@ -314,7 +314,7 @@ fn detail_artifacts(
                 .mt_5()
                 .child(section_heading(
                     "GENERATED OUTPUT",
-                    "Artefatos",
+                    "Artifacts",
                     artifacts.len(),
                 ))
                 .when(artifacts_loading, |section| {
@@ -322,7 +322,7 @@ fn detail_artifacts(
                         div()
                             .py_3()
                             .text_color(theme::text_muted())
-                            .child("Carregando artefatos…"),
+                            .child("Loading artifacts…"),
                     )
                 })
                 .when(!artifacts_loading && artifacts.is_empty(), |section| {
@@ -330,7 +330,7 @@ fn detail_artifacts(
                         div()
                             .py_3()
                             .text_color(theme::text_muted())
-                            .child("Nenhum artefato gerado até o momento."),
+                            .child("No artifacts generated yet."),
                     )
                 })
                 .children(artifacts.into_iter().map(|artifact| {
@@ -365,7 +365,7 @@ fn detail_artifacts(
                                     artifact.kind,
                                     artifact
                                         .relative_path
-                                        .unwrap_or_else(|| { "sem caminho no workspace".into() })
+                                        .unwrap_or_else(|| { "no workspace path".into() })
                                 )),
                         )
                 })),
@@ -456,31 +456,31 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
     let description_pending =
         main_actionable && prep.description_review == DescriptionReviewState::Pending;
     let label = match prep.prespec_state {
-        PreSpecState::NotScheduled => "Não agendada",
-        PreSpecState::Pending => "Aguardando slot local",
-        PreSpecState::Running => "Coletando contexto local",
-        PreSpecState::Ready => "Pacote pronto para revalidação",
-        PreSpecState::Skipped => "Preparação dispensada",
-        PreSpecState::Stale => "Pacote obsoleto; contexto atual usado",
-        PreSpecState::Failed => "Coleta falhou; contexto sob demanda",
-        PreSpecState::Cancelled => "Preparação cancelada; contexto sob demanda",
+        PreSpecState::NotScheduled => "Not scheduled",
+        PreSpecState::Pending => "Waiting for local slot",
+        PreSpecState::Running => "Collecting local context",
+        PreSpecState::Ready => "Bundle ready for revalidation",
+        PreSpecState::Skipped => "Preparation skipped",
+        PreSpecState::Stale => "Stale bundle; current context used",
+        PreSpecState::Failed => "Collection failed; on-demand context",
+        PreSpecState::Cancelled => "Preparation cancelled; on-demand context",
     };
     let reason = prep.skip_reason.map(|r| match r {
-        PreSpecSkipReason::Disabled => "Desativada nas configurações",
-        PreSpecSkipReason::SkippedNoPredecessor => "Sem antecessora",
-        PreSpecSkipReason::AmbiguousRequest => "Pedido ainda vago após dispensa humana",
-        PreSpecSkipReason::NoMatches => "Sem matches no escopo limitado",
-        PreSpecSkipReason::BaseReleased => "Base liberada; Specification não espera",
+        PreSpecSkipReason::Disabled => "Disabled in settings",
+        PreSpecSkipReason::SkippedNoPredecessor => "No predecessor",
+        PreSpecSkipReason::AmbiguousRequest => "Request still ambiguous after user skip",
+        PreSpecSkipReason::NoMatches => "No matches in limited scope",
+        PreSpecSkipReason::BaseReleased => "Base released; Specification does not wait",
     });
     let mut panel = div().mt_4().flex().flex_col().gap_3();
 
-    let mut prespec_card = prep_card("PREPARAÇÃO & CONTEXTO LOCAL")
-        .child(format!("Revisão {} · {}", detail.input_revision, label))
+    let mut prespec_card = prep_card("PREPARATION & LOCAL CONTEXT")
+        .child(format!("Revision {} · {}", detail.input_revision, label))
         .when_some(reason, |p, r| {
             p.child(div().text_sm().text_color(theme::text_muted()).child(r))
         })
         .when_some(detail.context_disposition.clone(), |p, d| {
-            p.child(format!("Contexto selecionado: {d}"))
+            p.child(format!("Selected context: {d}"))
         })
         .when_some(detail.diagnostic.clone(), |p, d| {
             p.child(div().text_sm().child(d))
@@ -489,7 +489,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             div()
                 .text_xs()
                 .text_color(theme::text_muted())
-                .child("Código contextual não exige vault nem AST."),
+                .child("Contextual code does not require vault or AST."),
         );
 
     if let Some(assessment) = &prep.assessment {
@@ -509,11 +509,11 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
     panel = panel.child(prespec_card);
 
     if description_pending || (main_actionable && detail.description_editable) {
-        let mut desc_card = prep_card("REVISÃO DO PEDIDO");
+        let mut desc_card = prep_card("REQUEST REVIEW");
         if description_pending {
             desc_card = desc_card.child(
                 div().text_sm().text_color(theme::warning()).child(
-                    "Aguardando você: revise o pedido ou confirme que deseja seguir. Isso não aprova a especificação.",
+                    "Awaiting your review: edit the request or confirm to proceed. This does not approve the specification.",
                 ),
             );
         }
@@ -522,7 +522,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                 .child(model.description_review_input.clone())
                 .child(preparation_button(
                     "description-edit",
-                    "Editar pedido",
+                    "Edit request",
                     !busy,
                     cx,
                     |m, cx| m.revise_description(cx),
@@ -531,7 +531,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         if description_pending {
             desc_card = desc_card.child(preparation_button(
                 "description-confirm",
-                "Continuar para especificação",
+                "Continue to specification",
                 !busy,
                 cx,
                 |m, cx| m.confirm_description(cx),
@@ -541,9 +541,9 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
     }
 
     if let Some(questions) = detail.questions.filter(|_| main_actionable) {
-        let mut questions_card = prep_card("SPECIFICATION · PERGUNTAS PENDENTES")
+        let mut questions_card = prep_card("SPECIFICATION · PENDING QUESTIONS")
             .child(div().text_sm().child(
-                "Perguntas produzidas pela Specification e apresentadas no Companion sem outra chamada LLM. Não há especificação completa para aprovar ainda.",
+                "Questions produced by Specification and presented in Companion without additional LLM calls. No complete specification to approve yet.",
             ));
         let mut complete = true;
         for question in questions.questions {
@@ -569,14 +569,14 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         questions_card = questions_card
             .child(preparation_button(
                 "specification-answer",
-                "Enviar respostas e retomar Specification",
+                "Submit answers and resume Specification",
                 !busy && complete,
                 cx,
                 |m, cx| m.answer_specification(cx),
             ))
             .child(preparation_button(
                 "specification-conversation",
-                "Ver conversa no Companion",
+                "View Companion conversation",
                 true,
                 cx,
                 |m, cx| m.open_specification_conversation(cx),
@@ -584,16 +584,16 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         panel = panel.child(questions_card);
     } else if artifact_review && main_actionable {
         let confirm_stage_reject = model.confirm_stage_reject;
-        let artifact_card = prep_card("REVISÃO DE ARTEFATOS & HITL")
+        let artifact_card = prep_card("ARTIFACT REVIEW & HITL")
             .child(
                 div()
                     .text_sm()
-                    .child("Confira o conteúdo persistido abaixo antes de tomar uma decisão."),
+                    .child("Inspect the persisted content below before making a decision."),
             )
             .child(model.stage_feedback_input.clone())
             .child(preparation_button(
                 "artifact-approve",
-                "Aprovar estágio",
+                "Approve stage",
                 !review_busy,
                 cx,
                 |m, cx| {
@@ -603,7 +603,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             ))
             .child(preparation_button(
                 "artifact-revise",
-                "Solicitar revisão com feedback",
+                "Request revision with feedback",
                 !review_busy,
                 cx,
                 |m, cx| {
@@ -643,9 +643,9 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                             }))
                     })
                     .child(if confirm_stage_reject {
-                        "Confirmar rejeição do estágio"
+                        "Confirm stage rejection"
                     } else {
-                        "Rejeitar estágio"
+                        "Reject stage"
                     }),
             );
         panel = panel.child(artifact_card);
@@ -653,37 +653,37 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
 
     use hvc_core::orchestration::LearningState;
     let learning_label = match detail.learning {
-        LearningState::NotScheduled => "Não agendado",
-        LearningState::Unavailable => "Histórico sem executor (não será reprocessado)",
-        LearningState::Pending => "Aguardando prioridade e 5 s de silêncio na conexão",
-        LearningState::Running => "Gerando proposta consultiva",
-        LearningState::Preempted => "Interrompido pela demanda principal",
-        LearningState::DeferredBudget => "Orçamento esgotado; aguarda autorização",
-        LearningState::Disabled => "Desativado; orçamento preservado",
-        LearningState::Publishing => "Publicando proposta",
-        LearningState::Published => "Proposta publicada; confira o artefato abaixo",
-        LearningState::Conflict => "Conflito de publicação; arquivos preservados",
-        LearningState::Failed => "Falha opcional; pulsação concluída preservada",
-        LearningState::Cancelled => "Relatório dispensado",
+        LearningState::NotScheduled => "Not scheduled",
+        LearningState::Unavailable => "History without runner (will not be reprocessed)",
+        LearningState::Pending => "Waiting for priority and 5s connection quiet period",
+        LearningState::Running => "Generating advisory proposal",
+        LearningState::Preempted => "Preempted by primary demand",
+        LearningState::DeferredBudget => "Budget exhausted; awaiting authorization",
+        LearningState::Disabled => "Disabled; budget preserved",
+        LearningState::Publishing => "Publishing proposal",
+        LearningState::Published => "Proposal published; see artifact below",
+        LearningState::Conflict => "Publication conflict; files preserved",
+        LearningState::Failed => "Optional failure; completed pulsation preserved",
+        LearningState::Cancelled => "Report dismissed",
     };
 
-    let mut learning_card = prep_card("LEARNING CONSULTIVO")
+    let mut learning_card = prep_card("ADVISORY LEARNING")
         .child(
             div()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(format!("Estado: {learning_label}")),
+                .child(format!("State: {learning_label}")),
         )
         .child(
             div()
                 .text_xs()
                 .text_color(theme::text_muted())
-                .child("Propostas não alteram regras nem reabrem Done."),
+                .child("Proposals do not alter rules or reopen Done."),
         );
 
     if let Some(run) = &detail.learning_run {
         learning_card = learning_card
             .child(format!(
-                "Chamadas: {}/3 nesta versão · {} no histórico",
+                "Calls: {}/3 in this version · {} total in history",
                 run.budget_calls, run.total_calls
             ))
             .when_some(run.diagnostic.clone(), |panel, diagnostic| {
@@ -691,7 +691,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             });
         for audit in &run.context_audit {
             let citation_rate = if audit.delivered == 0 {
-                "n/d".to_string()
+                "n/a".to_string()
             } else {
                 format!(
                     "{:.0}%",
@@ -700,7 +700,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             };
             let determinate = audit.audited.saturating_sub(audit.indeterminate);
             let observed_precision = if determinate == 0 {
-                "n/d".to_string()
+                "n/a".to_string()
             } else {
                 format!(
                     "{:.0}%",
@@ -709,7 +709,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             };
             learning_card = learning_card.child(
                 div().text_xs().text_color(theme::text_muted()).child(format!(
-                    "{} · pool {} · entregues {} · citadas {} · auditadas {} · indeterminadas {} · taxa de citação {} · precisão observada heurística {}",
+                    "{} · pool {} · delivered {} · cited {} · audited {} · indeterminate {} · citation rate {} · heuristic observed precision {}",
                     audit.stage_name,audit.considered,audit.delivered,audit.cited,audit.audited,audit.indeterminate,citation_rate,observed_precision
                 )),
             );
@@ -732,7 +732,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                         div()
                             .text_xs()
                             .text_color(theme::text_muted())
-                            .child(format!("Evidências: {}", proposal.evidence_ids.join(", "))),
+                            .child(format!("Evidence: {}", proposal.evidence_ids.join(", "))),
                     )
                     .child(
                         div()
@@ -743,7 +743,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                             .child(proposal.preview_diff.clone()),
                     )
                     .child(format!(
-                        "Decisão: {} · publicação: {}",
+                        "Decision: {} · publication: {}",
                         proposal.decision, proposal.publication_state
                     ))
                     .when_some(proposal.diagnostic.clone(), |card, diagnostic| {
@@ -766,7 +766,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                         .gap_2()
                         .child(learning_decision_button(
                             format!("learning-approve:{}", proposal.id),
-                            "Aprovar".into(),
+                            "Approve".into(),
                             selected
                                 == Some(hvc_core::orchestration::LearningGraphDecision::Approve),
                             !busy,
@@ -781,7 +781,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                         ))
                         .child(learning_decision_button(
                             format!("learning-reject:{}", proposal.id),
-                            "Rejeitar".into(),
+                            "Reject".into(),
                             selected
                                 == Some(hvc_core::orchestration::LearningGraphDecision::Reject),
                             !busy,
@@ -800,7 +800,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         if has_pending_proposals {
             learning_card = learning_card.child(preparation_button(
                 "learning-graph-confirm",
-                "Confirmar decisões do grafo",
+                "Confirm graph decisions",
                 !busy,
                 cx,
                 |model, cx| model.submit_learning_graph_review(cx),
@@ -813,7 +813,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         {
             learning_card = learning_card.child(preparation_button(
                 "learning-retry",
-                "Autorizar até 3 novas chamadas",
+                "Authorize up to 3 new calls",
                 !busy,
                 cx,
                 |m, cx| m.learning_action(true, cx),
@@ -825,7 +825,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         ) {
             learning_card = learning_card.child(preparation_button(
                 "learning-dismiss",
-                "Dispensar relatório",
+                "Dismiss report",
                 !busy,
                 cx,
                 |m, cx| m.learning_action(false, cx),
@@ -931,14 +931,14 @@ fn artifact_preview_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         .flex_col()
         .gap_2()
         .child(format!(
-            "Conteúdo persistido · {id} · página {}/{}",
+            "Persisted content · {id} · page {}/{}",
             page + 1,
             pages
         ))
         .child(div().id("artifact-preview-scroll").text_sm().child(text))
         .child(preparation_button(
             "artifact-prev",
-            "Página anterior",
+            "Previous page",
             page > 0,
             cx,
             |m, cx| {
@@ -948,7 +948,7 @@ fn artifact_preview_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         ))
         .child(preparation_button(
             "artifact-next",
-            "Próxima página",
+            "Next page",
             page + 1 < pages,
             cx,
             |m, cx| {
@@ -958,14 +958,14 @@ fn artifact_preview_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         ))
         .child(preparation_button(
             "artifact-copy",
-            "Copiar conteúdo integral",
+            "Copy full content",
             true,
             cx,
             move |_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(content.clone())),
         ))
         .child(preparation_button(
             "artifact-close",
-            "Fechar conteúdo",
+            "Close content",
             true,
             cx,
             |m, cx| {
@@ -978,11 +978,11 @@ fn artifact_preview_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
 
 fn blocking_label(reason: Option<&str>) -> &'static str {
     match reason {
-        Some("waiting_for_base") => "Aguardando base anterior",
-        Some("waiting_for_user") => "Aguardando você",
-        Some("needs_review" | "legacy_owner_selection") => "Reconciliação necessária",
-        Some("publishing") => "Conferindo publicações",
-        _ => "Fila persistida",
+        Some("waiting_for_base") => "Waiting for previous base",
+        Some("waiting_for_user") => "Awaiting your action",
+        Some("needs_review" | "legacy_owner_selection") => "Reconciliation required",
+        Some("publishing") => "Checking publications",
+        _ => "Persisted queue",
     }
 }
 
@@ -993,9 +993,9 @@ fn brownfield_progress_panel(coverage: BrownfieldCoverageMetrics) -> impl IntoEl
     let progress = basis_points as f32 / BrownfieldCoverageMetrics::SCALE_BASIS_POINTS as f32;
     let percentage = format!("{:.2}%", basis_points as f32 / 100.0);
     let bootstrap = if coverage.frontier_initialized {
-        "Inventário estrutural inicial concluído"
+        "Initial structural inventory completed"
     } else {
-        "Inventário estrutural inicial pendente"
+        "Initial structural inventory pending"
     };
 
     div()
@@ -1015,7 +1015,7 @@ fn brownfield_progress_panel(coverage: BrownfieldCoverageMetrics) -> impl IntoEl
                     div()
                         .text_xs()
                         .text_color(theme::text_muted())
-                        .child("MAPEAMENTO BROWNFIELD"),
+                        .child("BROWNFIELD MAPPING"),
                 )
                 .child(
                     div()
@@ -1040,7 +1040,7 @@ fn brownfield_progress_panel(coverage: BrownfieldCoverageMetrics) -> impl IntoEl
                 ),
         )
         .child(div().mt_2().text_sm().child(format!(
-            "{} de {} fontes elegíveis com extração válida",
+            "{} of {} eligible sources with valid extraction",
             coverage.extracted_valid_sources, coverage.eligible_source_denominator
         )))
         .child(
@@ -1048,7 +1048,7 @@ fn brownfield_progress_panel(coverage: BrownfieldCoverageMetrics) -> impl IntoEl
                 .mt_1()
                 .text_xs()
                 .text_color(theme::text_muted())
-                .child("Denominador: fontes conhecidas no inventário, menos as ignoradas."),
+                .child("Denominator: known sources in inventory minus ignored sources."),
         )
         .child(
             div()
@@ -1067,19 +1067,19 @@ fn brownfield_progress_panel(coverage: BrownfieldCoverageMetrics) -> impl IntoEl
                 .text_xs()
                 .text_color(theme::text_muted())
                 .child(format!(
-                    "Extração: {} parcial · {} obsoleta · {} falhou",
+                    "Extraction: {} partial · {} stale · {} failed",
                     coverage.extracted_partial_sources,
                     coverage.extracted_stale_sources,
                     coverage.extraction_failed_sources
                 ))
                 .child(format!(
-                    "Documentação: {} proposta · {} validada · {} obsoleta",
+                    "Documentation: {} proposed · {} validated · {} stale",
                     coverage.documentation_proposed_sources,
                     coverage.documentation_validated_sources,
                     coverage.documentation_stale_sources
                 ))
                 .child(format!(
-                    "Relações: {} resolvidas · {} ambíguas · {} externas · {} pendentes{}",
+                    "Relations: {} resolved · {} ambiguous · {} external · {} pending{}",
                     coverage.resolved_references,
                     coverage.ambiguous_references,
                     coverage.external_references,
@@ -1089,7 +1089,7 @@ fn brownfield_progress_panel(coverage: BrownfieldCoverageMetrics) -> impl IntoEl
                         .as_deref()
                         .map_or(String::new(), |version| format!(" · {version}"))
                 ))
-                .child(format!("Ignoradas: {}", coverage.ignored_sources)),
+                .child(format!("Ignored: {}", coverage.ignored_sources)),
         )
 }
 
@@ -1114,18 +1114,18 @@ fn coordination_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElemen
         .filter_map(|id| state.pulsations.iter().find(|p| &p.id == id).cloned())
         .collect();
     div().mb_3().p_3().rounded_md().border_1().border_color(if blocked {theme::warning()} else {theme::border()})
-        .child(div().text_sm().child(format!("Base #{} · {} · proprietário: {}",snapshot.pipeline.base_epoch,
-            match snapshot.pipeline.base_state {BaseState::Ready=>"consistente",BaseState::Publishing=>"publicação em andamento",BaseState::NeedsReview=>"revisão necessária"},
-            snapshot.pipeline.active_pulsation_id.as_deref().unwrap_or("livre"))))
+        .child(div().text_sm().child(format!("Base #{} · {} · owner: {}",snapshot.pipeline.base_epoch,
+            match snapshot.pipeline.base_state {BaseState::Ready=>"consistent",BaseState::Publishing=>"publishing in progress",BaseState::NeedsReview=>"review required"},
+            snapshot.pipeline.active_pulsation_id.as_deref().unwrap_or("idle"))))
         .when(blocked, |panel| panel
             .child(div().mt_2().text_color(theme::warning()).child(snapshot.pipeline.blocking_reason.unwrap_or_default()))
-            .child(div().mt_2().text_sm().child("Confira os arquivos no seu editor externo; o editor do app abre .md/.txt. Adotar a base atual não desfaz alterações nem declara sucesso. Escolha qual trabalho avançado retomar; os demais continuarão preservados e bloqueados."))
+            .child(div().mt_2().text_sm().child("Inspect files in your external editor; the app editor opens .md/.txt. Adopting the current base does not undo changes or declare success. Choose which work to resume; others will remain preserved and blocked."))
             .children(candidates.into_iter().map(|p| {
                 let id=p.id.clone();
                 div().id(gpui::SharedString::from(format!("resume:{}",p.id))).mt_2().p_2().rounded_md()
                     .bg(if active.as_deref()==Some(p.id.as_str()) {theme::accent_soft()} else {theme::surface_raised()})
                     .cursor_pointer().on_click(cx.listener(move |m,_,_,cx| m.select_pulsation(id.clone(),cx)))
-                    .child(format!("Retomar: {} · {}",p.feature_name,stage_label(p.stage)))
+                    .child(format!("Resume: {} · {}",p.feature_name,stage_label(p.stage)))
             }))
             .children(snapshot.publications.into_iter().map(|p| {
                 let path=p.relative_path.clone();
@@ -1133,18 +1133,18 @@ fn coordination_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElemen
                 div().id(gpui::SharedString::from(format!("review:{}",p.artifact_id))).mt_2().p_2().bg(theme::surface_raised())
                     .when(openable,|row|row.cursor_pointer().on_click(cx.listener(move |m,_,_,cx| m.open_workspace_file(path.clone(),cx))))
                     .child(div().text_sm().child(format!("{} · {}",p.relative_path,p.state)))
-                    .child(div().text_xs().child(format!("Hash proposto: {}",p.desired_sha256.unwrap_or_else(||"indisponível".into()))))
-                    .child(div().text_xs().child(format!("Hash observado: {}",p.observed_sha256.unwrap_or_else(||"ausente ou ilegível".into()))))
+                    .child(div().text_xs().child(format!("Desired hash: {}",p.desired_sha256.unwrap_or_else(||"unavailable".into()))))
+                    .child(div().text_xs().child(format!("Observed hash: {}",p.observed_sha256.unwrap_or_else(||"missing or unreadable".into()))))
                     .when_some(p.diagnostic,|row,error|row.child(div().text_xs().text_color(theme::danger()).child(error)))
                     .when_some(p.observation_error,|row,error|row.child(div().text_xs().text_color(theme::danger()).child(error)))
             }))
             .child(div().mt_2().child(input))
             .child(div().mt_2().flex().gap_2()
                 .child(div().id("refresh-base-review").p_2().cursor_pointer().bg(theme::surface_raised())
-                    .on_click(cx.listener(|m,_,_,cx|m.refresh_pulsations(cx))).child("Atualizar revisão"))
+                    .on_click(cx.listener(|m,_,_,cx|m.refresh_pulsations(cx))).child("Refresh review"))
                 .child(div().id("confirm-base-review").p_2().bg(if can_confirm {theme::accent_soft()} else {theme::surface_raised()})
                     .when(can_confirm,|b|b.cursor_pointer().on_click(cx.listener(|m,_,_,cx|m.reconcile_project_base(cx))))
-                    .child("Revisei: adotar base atual"))))
+                    .child("Reviewed: adopt current base"))))
         .into_any_element()
 }
 
@@ -1174,7 +1174,7 @@ fn pulsation_detail_header(
                     div()
                         .text_xs()
                         .text_color(theme::text_muted())
-                        .child("PULSAÇÃO SELECIONADA"),
+                        .child("SELECTED PULSATION"),
                 )
                 .child(
                     div()
@@ -1225,7 +1225,7 @@ fn pulsation_detail_header(
                                 }),
                             )
                         })
-                        .child("Cancelar pulsação"),
+                        .child("Cancel pulsation"),
                 ),
         )
 }
@@ -1398,7 +1398,7 @@ mod tests {
             let pulse = Pulsation {
                 id: "pulse-layout".into(),
                 project_id: "project-layout".into(),
-                feature_name: "M5 Perguntas: validar token e rejeitar tokens inválidos. ".repeat(6),
+                feature_name: "M5 Questions: validate token and reject invalid tokens. ".repeat(6),
                 stage: PulsationStage::Specification,
                 status: PulsationStatus::Checkpoint,
                 terminal_reason: None,
@@ -1456,7 +1456,7 @@ mod tests {
                         state.pulsations = vec![Pulsation {
                             id: "pulse-terminal".into(),
                             project_id: "project-terminal".into(),
-                            feature_name: "melhore o sistema".into(),
+                            feature_name: "improve system".into(),
                             stage: PulsationStage::Intake,
                             status,
                             terminal_reason: (status == PulsationStatus::Failed)

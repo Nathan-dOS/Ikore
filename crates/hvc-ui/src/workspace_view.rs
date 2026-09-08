@@ -136,7 +136,7 @@ pub(crate) fn workspace_content_panel(
                         .child(
                             div()
                                 .flex_1()
-                                .child(format!("Conflito de revisão: {conflict}")),
+                                .child(format!("Revision conflict: {conflict}")),
                         )
                         .child(
                             div()
@@ -155,7 +155,7 @@ pub(crate) fn workspace_content_panel(
                                         cx,
                                     );
                                 }))
-                                .child("Recarregar"),
+                                .child("Reload"),
                         )
                         .child(
                             div()
@@ -190,9 +190,9 @@ pub(crate) fn workspace_content_panel(
                                     }
                                 }))
                                 .child(if is_confirming {
-                                    "Confirmar sobrescrita"
+                                    "Confirm overwrite"
                                 } else {
-                                    "Sobrescrever"
+                                    "Overwrite"
                                 }),
                         ),
                 )
@@ -251,16 +251,16 @@ fn brownfield_onboarding_card(
     let (title, description) = match onboarding.state {
         BrownfieldOnboardingState::NotApplicable => ("", ""),
         BrownfieldOnboardingState::Pending => (
-            "Workspace existente detectado",
-            "O mapeamento gradual enumera apenas metadados seguros e respeita o .gitignore. Nenhum script, build ou chamada de LLM será executado.",
+            "Existing workspace detected",
+            "Gradual mapping enumerates only safe metadata and respects .gitignore. No scripts, builds, or LLM calls will be executed.",
         ),
         BrownfieldOnboardingState::Disabled => (
-            "Mapeamento gradual desativado",
-            "O projeto continua disponível normalmente. Nenhuma descoberta brownfield será iniciada sem uma nova autorização.",
+            "Gradual mapping disabled",
+            "The project remains normally available. No brownfield discovery will start without new authorization.",
         ),
         BrownfieldOnboardingState::Enabled => (
-            "Mapeamento gradual ativo",
-            "O consentimento pode ser revogado a qualquer momento. A revogação não remove arquivos já autorizados.",
+            "Gradual mapping active",
+            "Consent can be revoked at any time. Revocation does not remove already authorized files.",
         ),
     };
     let inventory_summary = onboarding.inventory.as_ref().map(|inventory| {
@@ -271,17 +271,17 @@ fn brownfield_onboarding_card(
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "{} fontes · {} manifests · {} pontos de entrada · idiomas: {}{}",
+            "{} sources · {} manifests · {} entry points · languages: {}{}",
             inventory.source_files,
             inventory.manifests.len(),
             inventory.entry_points.len(),
             if languages.is_empty() {
-                "não identificados"
+                "unidentified"
             } else {
                 &languages
             },
             if inventory.coverage.truncated {
-                " · cobertura parcial"
+                " · partial coverage"
             } else {
                 ""
             }
@@ -326,7 +326,7 @@ fn brownfield_onboarding_card(
                             div()
                                 .text_sm()
                                 .text_color(theme::text_muted())
-                                .child(format!("Fonte selecionada: {path}")),
+                                .child(format!("Selected source: {path}")),
                         )
                         .child(brownfield_ignore_button(
                             active_is_ignored,
@@ -351,9 +351,9 @@ fn brownfield_onboarding_card(
                             .child(brownfield_action_button(
                                 "brownfield-enable",
                                 if onboarding.busy {
-                                    "Mapeando…"
+                                    "Mapping…"
                                 } else {
-                                    "Iniciar mapeamento gradual"
+                                    "Start gradual mapping"
                                 },
                                 true,
                                 onboarding.busy,
@@ -361,7 +361,7 @@ fn brownfield_onboarding_card(
                             ))
                             .child(brownfield_action_button(
                                 "brownfield-decline",
-                                "Usar como projeto novo (sem mapeamento)",
+                                "Use as fresh project (no mapping)",
                                 false,
                                 onboarding.busy,
                                 cx,
@@ -374,9 +374,9 @@ fn brownfield_onboarding_card(
                         actions.child(brownfield_action_button(
                             "brownfield-reenable",
                             if onboarding.busy {
-                                "Mapeando…"
+                                "Mapping…"
                             } else {
-                                "Ativar mapeamento gradual"
+                                "Enable gradual mapping"
                             },
                             true,
                             onboarding.busy,
@@ -391,9 +391,9 @@ fn brownfield_onboarding_card(
                             .child(brownfield_action_button(
                                 "brownfield-refresh",
                                 if onboarding.busy {
-                                    "Atualizando…"
+                                    "Refreshing…"
                                 } else {
-                                    "Atualizar inventário"
+                                    "Refresh inventory"
                                 },
                                 true,
                                 onboarding.busy,
@@ -544,9 +544,9 @@ fn brownfield_revoke_button(
                 }))
         })
         .child(if confirming {
-            "Confirmar revogação"
+            "Confirm revocation"
         } else {
-            "Revogar consentimento"
+            "Revoke consent"
         })
         .into_any_element()
 }
@@ -710,7 +710,7 @@ fn workspace_editor_surface(
                     .items_center()
                     .justify_center()
                     .text_color(theme::text_muted())
-                    .child("Abra um arquivo Markdown ou texto na árvore para começar."),
+                    .child("Open a Markdown or text file in the tree to get started."),
             )
         })
         .when(active_tab.is_some(), |surface| {
@@ -833,17 +833,17 @@ fn context_drawer(
         .child(
             div()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child("Contexto"),
+                .child("Context"),
         )
-        .child(context_item("Arquivo", path))
-        .child(context_item("Revisão", revision))
-        .child(context_item("Estado", state))
+        .child(context_item("File", path))
+        .child(context_item("Revision", revision))
+        .child(context_item("State", state))
         .when(documents.is_empty(), |drawer| {
             drawer.child(
                 div()
                     .text_xs()
                     .text_color(theme::text_muted())
-                    .child("Contexto relacionado sendo carregado…"),
+                    .child("Related context loading…"),
             )
         })
         .children(
@@ -854,7 +854,7 @@ fn context_drawer(
                     let excerpt = content
                         .lines()
                         .find(|line| !line.trim().is_empty())
-                        .unwrap_or("Documento sem conteúdo")
+                        .unwrap_or("Document without content")
                         .chars()
                         .take(90)
                         .collect::<String>();
@@ -883,7 +883,7 @@ fn context_drawer(
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(format!("… e mais {overflow_count} doc(s)"))
+                    .child(format!("… and {overflow_count} more doc(s)"))
                     .child(
                         div()
                             .text_color(theme::accent())

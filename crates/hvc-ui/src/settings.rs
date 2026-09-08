@@ -134,7 +134,9 @@ impl SettingsBackend for CoreSettingsBackend {
                 .spawn_blocking(move || core.persistence().update_agent_runtime_config(request))
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!("worker de configuração interrompido: {error}"))
+                    UiCommandError::worker(format!(
+                        "settings configuration worker aborted: {error}"
+                    ))
                 })?
                 .map(|response| response.config)
                 .map_err(command_error)
@@ -152,7 +154,7 @@ impl SettingsBackend for CoreSettingsBackend {
                 .spawn_blocking(move || core.persistence().upsert_provider_connection(request))
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!("worker de conexão interrompido: {error}"))
+                    UiCommandError::worker(format!("connection worker aborted: {error}"))
                 })?
                 .map(|response| response.connection)
                 .map_err(command_error)
@@ -167,12 +169,12 @@ impl SettingsBackend for CoreSettingsBackend {
                 .spawn_blocking(move || core.persistence().delete_provider_connection(request))
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!("worker de exclusão interrompido: {error}"))
+                    UiCommandError::worker(format!("deletion worker aborted: {error}"))
                 })?
                 .and_then(|response| {
                     response.deleted.then_some(()).ok_or_else(|| {
                         hvc_core::persistence_service::PersistenceServiceError::NotFound(
-                            "Conexão não encontrada.".to_string(),
+                            "Connection not found.".to_string(),
                         )
                     })
                 })
@@ -191,9 +193,7 @@ impl SettingsBackend for CoreSettingsBackend {
                 .spawn(async move { core.persistence().test_provider_connection(request).await })
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!(
-                        "task de teste de conexão interrompida: {error}"
-                    ))
+                    UiCommandError::worker(format!("connection test task aborted: {error}"))
                 })?
                 .map_err(command_error)
         })
@@ -206,9 +206,7 @@ impl SettingsBackend for CoreSettingsBackend {
             runtime
                 .spawn_blocking(move || core.persistence().upsert_provider_route(request))
                 .await
-                .map_err(|error| {
-                    UiCommandError::worker(format!("worker de rota interrompido: {error}"))
-                })?
+                .map_err(|error| UiCommandError::worker(format!("route worker aborted: {error}")))?
                 .map(|response| response.route)
                 .map_err(command_error)
         })
@@ -222,12 +220,12 @@ impl SettingsBackend for CoreSettingsBackend {
                 .spawn_blocking(move || core.persistence().delete_provider_route(request))
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!("worker de exclusão interrompido: {error}"))
+                    UiCommandError::worker(format!("deletion worker aborted: {error}"))
                 })?
                 .and_then(|response| {
                     response.deleted.then_some(()).ok_or_else(|| {
                         hvc_core::persistence_service::PersistenceServiceError::NotFound(
-                            "Rota não encontrada.".to_string(),
+                            "Route not found.".to_string(),
                         )
                     })
                 })
@@ -246,7 +244,7 @@ impl SettingsBackend for CoreSettingsBackend {
                 .spawn_blocking(move || core.persistence().upsert_provider_route_binding(request))
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!("worker de binding interrompido: {error}"))
+                    UiCommandError::worker(format!("binding worker aborted: {error}"))
                 })?
                 .map(|response| response.binding)
                 .map_err(command_error)
@@ -261,7 +259,7 @@ impl SettingsBackend for CoreSettingsBackend {
                 .spawn_blocking(move || core.persistence().reset_llm_resilience_state(request))
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!("worker de resiliência interrompido: {error}"))
+                    UiCommandError::worker(format!("resilience worker aborted: {error}"))
                 })?
                 .map(|response| response.reset_count)
                 .map_err(command_error)
@@ -286,9 +284,7 @@ impl SettingsBackend for CoreSettingsBackend {
                         .await
                 })
                 .await
-                .map_err(|error| {
-                    UiCommandError::worker(format!("task de reindexação interrompida: {error}"))
-                })?
+                .map_err(|error| UiCommandError::worker(format!("reindex task aborted: {error}")))?
                 .map_err(command_error)
         })
     }
@@ -695,7 +691,7 @@ mod tests {
         let core = harness.core();
         let backend = Arc::new(CoreSettingsBackend::new(Arc::clone(&core)));
         let snapshot = core.runtime_handle().block_on(backend.snapshot()).unwrap();
-        harness.credentials().fail_with("keyring indisponível");
+        harness.credentials().fail_with("keyring unavailable");
         let app = cx.new(|cx| AppModel::new_for_test_with_settings_backend(backend.clone(), cx));
         app.update(cx, |model, cx| {
             model.settings.update(cx, |settings, _| {

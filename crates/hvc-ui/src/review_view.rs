@@ -130,9 +130,9 @@ fn hitl_diff_surface(
                             model.toggle_pulsation_diff(cx);
                         }))
                         .child(if expanded {
-                            "Sair da expansão"
+                            "Collapse diff"
                         } else {
-                            "Expandir"
+                            "Expand diff"
                         }),
                 ),
         )
@@ -208,7 +208,7 @@ fn hitl_diff_surface(
                 .border_color(theme::border())
                 .child(hitl_button(
                     "hitl-approve",
-                    "Aprovar  Enter",
+                    "Approve  Enter",
                     !busy && has_checkpoint,
                     HitlDecision::Approve,
                     false,
@@ -216,7 +216,7 @@ fn hitl_diff_surface(
                 ))
                 .child(hitl_button(
                     "hitl-revision",
-                    "Solicitar revisão  R",
+                    "Request revision  R",
                     !busy && has_checkpoint,
                     HitlDecision::RequestRevision,
                     false,
@@ -225,9 +225,9 @@ fn hitl_diff_surface(
                 .child(hitl_reject_button(
                     "hitl-reject",
                     if confirm_reject {
-                        "Confirmar rejeição"
+                        "Confirm rejection"
                     } else {
-                        "Rejeitar"
+                        "Reject"
                     },
                     !busy && has_checkpoint,
                     confirm_reject,
@@ -239,7 +239,7 @@ fn hitl_diff_surface(
                             .ml_auto()
                             .text_sm()
                             .text_color(theme::text_muted())
-                            .child("Nenhum checkpoint aguardando decisão."),
+                            .child("No checkpoint awaiting decision."),
                     )
                 })
                 .when(busy, |bar| {
@@ -248,7 +248,7 @@ fn hitl_diff_surface(
                             .ml_auto()
                             .text_sm()
                             .text_color(theme::accent())
-                            .child("Aplicando decisão…"),
+                            .child("Applying decision…"),
                     )
                 }),
         )

@@ -16,6 +16,7 @@ pub(super) struct NormalizedCliFrame {
     pub content: String,
     pub native_session_id: Option<String>,
     pub observed_model: Option<String>,
+    pub is_text: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +247,7 @@ fn normalize_json_frame(
             content: sanitized,
             native_session_id: None,
             observed_model: None,
+            is_text: false,
         };
     }
     let Ok(value) = serde_json::from_str::<Value>(&sanitized) else {
@@ -254,16 +256,19 @@ fn normalize_json_frame(
             content: sanitized,
             native_session_id: None,
             observed_model: None,
+            is_text: true,
         };
     };
     let kind = classify(&value);
-    let content =
-        extract_visible_text(&value).unwrap_or_else(|| format!("{}: {sanitized}", backend.label()));
+    let visible = extract_visible_text(&value);
+    let is_text = visible.is_some();
+    let content = visible.unwrap_or_else(|| format!("{}: {sanitized}", backend.label()));
     NormalizedCliFrame {
         kind,
         content: sanitize_terminal_text(content.as_bytes()),
         native_session_id: find_session_id(&value),
         observed_model: find_model_id(&value),
+        is_text,
     }
 }
 

@@ -56,7 +56,7 @@ impl CorePulsationsBackend {
     }
 
     fn worker_error(operation: &str, error: tokio::task::JoinError) -> String {
-        format!("worker de {operation} de pulsação interrompido: {error}")
+        format!("pulsation {operation} worker interrupted: {error}")
     }
 }
 
@@ -89,7 +89,7 @@ impl PulsationsBackend for CorePulsationsBackend {
                         .map(|_| ()),
                 })
                 .await
-                .map_err(|e| Self::worker_error("ação", e))?
+                .map_err(|e| Self::worker_error("action", e))?
                 .map_err(|e| e.to_string())
         })
     }
@@ -100,7 +100,7 @@ impl PulsationsBackend for CorePulsationsBackend {
             runtime
                 .spawn_blocking(move || core.persistence().read_artifact_content(&pulse, &artifact))
                 .await
-                .map_err(|e| Self::worker_error("conteúdo", e))?
+                .map_err(|e| Self::worker_error("content", e))?
                 .map_err(|e| e.to_string())
         })
     }
@@ -116,7 +116,7 @@ impl PulsationsBackend for CorePulsationsBackend {
                         .map_err(|e| e.to_string())
                 })
                 .await
-                .map_err(|e| Self::worker_error("reconciliação", e))?
+                .map_err(|e| Self::worker_error("reconciliation", e))?
         })
     }
 
@@ -150,7 +150,7 @@ impl PulsationsBackend for CorePulsationsBackend {
                         .map_err(|error| error.to_string())
                 })
                 .await
-                .map_err(|error| Self::worker_error("artefatos", error))?
+                .map_err(|error| Self::worker_error("artifacts", error))?
         })
     }
 
@@ -170,7 +170,7 @@ impl PulsationsBackend for CorePulsationsBackend {
                         .map_err(|error| error.to_string())
                 })
                 .await
-                .map_err(|error| Self::worker_error("criação", error))?
+                .map_err(|error| Self::worker_error("creation", error))?
         })
     }
 
@@ -427,8 +427,8 @@ pub(crate) fn stage_label(stage: PulsationStage) -> &'static str {
 pub(crate) fn status_label(status: PulsationStatus, terminal_reason: Option<&str>) -> &'static str {
     if status == PulsationStatus::Failed {
         match terminal_reason {
-            Some("user_cancel") => return "Cancelada",
-            Some("publication_conflict") => return "Conflito de publicação",
+            Some("user_cancel") => return "Cancelled",
+            Some("publication_conflict") => return "Publication conflict",
             _ => {}
         }
     }

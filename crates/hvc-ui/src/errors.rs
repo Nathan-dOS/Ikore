@@ -17,7 +17,7 @@ impl UiCommandError {
             message: message.into(),
             details: None,
             remediation: Some(
-                "Tente novamente. Se o problema persistir, reinicie o aplicativo.".to_string(),
+                "Please try again. If the problem persists, restart the application.".to_string(),
             ),
         }
     }
@@ -109,10 +109,10 @@ mod tests {
 
     #[test]
     fn maps_untyped_failures_to_safe_io_error() {
-        let error = UiCommandError::worker("worker interrompido");
+        let error = UiCommandError::worker("worker interrupted");
 
         assert_eq!(error.code, "io_error");
-        assert_eq!(error.message, "worker interrompido");
+        assert_eq!(error.message, "worker interrupted");
         assert!(error.details.is_none());
         assert!(error.remediation.is_some());
     }
@@ -121,9 +121,9 @@ mod tests {
     fn renders_workspace_command_error_without_losing_fields() {
         let error = UiCommandError::from(WorkspaceCommandError {
             code: WorkspaceErrorCode::Conflict,
-            message: "revisão divergente".to_string(),
+            message: "divergent revision".to_string(),
             details: Some(json!({"expectedRevision": "1", "actualRevision": "2"})),
-            remediation: Some("recarregue".to_string()),
+            remediation: Some("reload".to_string()),
         });
 
         assert_eq!(error.code, "conflict");
@@ -131,7 +131,7 @@ mod tests {
             error.details,
             Some(json!({"expectedRevision": "1", "actualRevision": "2"}))
         );
-        assert_eq!(error.remediation.as_deref(), Some("recarregue"));
-        assert_eq!(error.presentable(), "revisão divergente recarregue");
+        assert_eq!(error.remediation.as_deref(), Some("reload"));
+        assert_eq!(error.presentable(), "divergent revision reload");
     }
 }

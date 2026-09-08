@@ -85,7 +85,7 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
             },
             move |_, cx| cx.new(|cx| AppModel::new(core, cx)),
         )
-        .context("GPUI recusou a criação da janela principal")?;
+        .context("GPUI failed to create main window")?;
     let _ = handle.update(cx, |_model, window, _cx| {
         window.activate_window();
     });
@@ -276,7 +276,7 @@ fn header(
                 .when(active_tab == AppTab::Engine, |header| {
                     header.child(crate::forge_view::button(
                         "new-work",
-                        "Novo",
+                        "New",
                         crate::forge::ForgeAction::New(false),
                         cx,
                     ))
@@ -314,8 +314,8 @@ fn header(
         .when_some(notice, |header, notice| {
             let (background, foreground, prefix) = match notice.kind {
                 HeaderNoticeKind::Notice => (theme::accent_soft(), theme::accent(), "Info"),
-                HeaderNoticeKind::Warning => (theme::warning_soft(), theme::warning(), "Aviso"),
-                HeaderNoticeKind::Error => (theme::danger_soft(), theme::danger(), "Erro"),
+                HeaderNoticeKind::Warning => (theme::warning_soft(), theme::warning(), "Warning"),
+                HeaderNoticeKind::Error => (theme::danger_soft(), theme::danger(), "Error"),
             };
             header.child(
                 div()
@@ -391,12 +391,12 @@ fn flow_bar(
             (
                 crate::settings::SettingsSection::Connections,
                 "settings-section-connections",
-                "Conexões",
+                "Connections",
             ),
             (
                 crate::settings::SettingsSection::Routes,
                 "settings-section-routes",
-                "Rotas",
+                "Routes",
             ),
             (
                 crate::settings::SettingsSection::Runtime,
@@ -606,7 +606,7 @@ fn status_bar(
                     seg.child(status_segment(
                         "status-hitl",
                         theme::warning(),
-                        format!("⚠ {hitl_count} HITL pendente(s)"),
+                        format!("⚠ {hitl_count} pending review(s)"),
                         AppView::Pulsations,
                         cx,
                     ))
@@ -615,23 +615,19 @@ fn status_bar(
                     seg.child(status_segment(
                         "status-jobs",
                         theme::accent(),
-                        format!("● {active_jobs} job(s) em execução"),
+                        format!("● {active_jobs} job(s) running"),
                         AppView::Pulsations,
                         cx,
                     ))
                 })
                 .when(hitl_count == 0 && active_jobs == 0, |seg| {
-                    seg.child(
-                        div()
-                            .text_color(theme::text_muted())
-                            .child("Sistema pronto"),
-                    )
+                    seg.child(div().text_color(theme::text_muted()).child("System ready"))
                 }),
         )
         .child(status_segment(
             "status-events",
             theme::text_muted(),
-            format!("{event_count} evento(s)"),
+            format!("{event_count} event(s)"),
             AppView::Logs,
             cx,
         ))
@@ -682,29 +678,29 @@ mod tests {
     fn queues_header_errors_warnings_and_notices(cx: &mut TestAppContext) {
         let model = cx.new(AppModel::new_for_test);
         model.update(cx, |model, cx| {
-            model.push_header_notice(HeaderNoticeKind::Notice, "Workspace salvo", cx);
-            model.push_header_notice(HeaderNoticeKind::Warning, "Banco indisponível", cx);
-            model.push_header_notice(HeaderNoticeKind::Error, "Falha no runtime", cx);
+            model.push_header_notice(HeaderNoticeKind::Notice, "Workspace saved", cx);
+            model.push_header_notice(HeaderNoticeKind::Warning, "Database unavailable", cx);
+            model.push_header_notice(HeaderNoticeKind::Error, "Runtime failure", cx);
         });
 
         cx.read(|cx| {
             assert_eq!(
                 model.read(cx).current_notice().unwrap().message,
-                "Falha no runtime"
+                "Runtime failure"
             );
         });
         model.update(cx, |model, cx| model.dismiss_header_notice(cx));
         cx.read(|cx| {
             assert_eq!(
                 model.read(cx).current_notice().unwrap().message,
-                "Banco indisponível"
+                "Database unavailable"
             );
         });
         model.update(cx, |model, cx| model.dismiss_header_notice(cx));
         cx.read(|cx| {
             assert_eq!(
                 model.read(cx).current_notice().unwrap().message,
-                "Workspace salvo"
+                "Workspace saved"
             );
         });
     }

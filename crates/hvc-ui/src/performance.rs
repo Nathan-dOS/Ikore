@@ -76,7 +76,7 @@ impl FrameLatencyProbe {
                 "schemaVersion": 1,
                 "status": "completed",
                 "metric": "gpui_animation_frame_callback_interval_ms",
-                "scope": "Intervalo entre callbacks de render GPUI; apresentação do compositor não é observada diretamente",
+                "scope": "Interval between GPUI render callbacks; compositor presentation is not observed directly",
                 "samples": self.frame_intervals_ms.len(),
                 "warmupSamples": self.warmup_samples,
                 "p95Ms": p95_ms,

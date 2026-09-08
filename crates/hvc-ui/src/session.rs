@@ -47,7 +47,7 @@ impl SessionPersistence for CoreSessionPersistence {
                         .map_err(|error| error.to_string())
                 })
                 .await
-                .map_err(|error| format!("worker de persistência interrompido: {error}"))?
+                .map_err(|error| format!("persistence worker interrupted: {error}"))?
         })
     }
 }
@@ -139,14 +139,14 @@ mod tests {
     #[test]
     fn queues_header_errors_warnings_and_notices_by_priority() {
         let mut queue = HeaderNoticeQueue::default();
-        queue.push(HeaderNoticeKind::Notice, "Workspace salvo");
-        queue.push(HeaderNoticeKind::Warning, "Banco indisponível");
-        queue.push(HeaderNoticeKind::Error, "Falha no runtime");
+        queue.push(HeaderNoticeKind::Notice, "Workspace saved");
+        queue.push(HeaderNoticeKind::Warning, "Database unavailable");
+        queue.push(HeaderNoticeKind::Error, "Runtime failure");
 
-        assert_eq!(queue.current().unwrap().message, "Falha no runtime");
+        assert_eq!(queue.current().unwrap().message, "Runtime failure");
         queue.dismiss();
-        assert_eq!(queue.current().unwrap().message, "Banco indisponível");
+        assert_eq!(queue.current().unwrap().message, "Database unavailable");
         queue.dismiss();
-        assert_eq!(queue.current().unwrap().message, "Workspace salvo");
+        assert_eq!(queue.current().unwrap().message, "Workspace saved");
     }
 }

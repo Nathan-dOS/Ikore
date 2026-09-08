@@ -19,6 +19,7 @@ use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::agent_timeout::{AgentTimeoutPolicy, ProgressWatchdog, TimeoutReason};
 use crate::llm::{AgentRole, LlmRequest, ResponseFormat};
 use crate::repository_context::RepositoryContext;
 use crate::secret_redactor::redact_secrets;
@@ -2643,8 +2644,18 @@ async fn run_bounded_probe_in_with_limit(
         .take()
         .ok_or_else(|| std::io::Error::other("stderr do probe indisponível"))?;
     let abort = CancellationToken::new();
-    let stdout_task = tokio::spawn(read_bounded_stream(stdout, abort.clone(), max_output_bytes));
-    let stderr_task = tokio::spawn(read_bounded_stream(stderr, abort.clone(), max_output_bytes));
+    let stdout_task = tokio::spawn(read_bounded_stream(
+        stdout,
+        abort.clone(),
+        max_output_bytes,
+        None,
+    ));
+    let stderr_task = tokio::spawn(read_bounded_stream(
+        stderr,
+        abort.clone(),
+        max_output_bytes,
+        None,
+    ));
     let status = tokio::select! {
         status = child.wait() => status?,
         _ = abort.cancelled() => {
@@ -2675,13 +2686,14 @@ async fn read_bounded_probe_stream<R: AsyncRead + Unpin>(
     reader: R,
     abort: CancellationToken,
 ) -> Result<Vec<u8>, std::io::Error> {
-    read_bounded_stream(reader, abort, MAX_PROBE_OUTPUT_BYTES).await
+    read_bounded_stream(reader, abort, MAX_PROBE_OUTPUT_BYTES, None).await
 }
 
 async fn read_bounded_stream<R: AsyncRead + Unpin>(
     mut reader: R,
     abort: CancellationToken,
     max_output_bytes: usize,
+    watchdog: Option<ProgressWatchdog>,
 ) -> Result<Vec<u8>, std::io::Error> {
     let mut output = Vec::new();
     let mut buffer = [0u8; 4096];
@@ -2689,6 +2701,9 @@ async fn read_bounded_stream<R: AsyncRead + Unpin>(
         let read = reader.read(&mut buffer).await?;
         if read == 0 {
             return Ok(output);
+        }
+        if let Some(ref watchdog) = watchdog {
+            watchdog.record_progress();
         }
         if output.len().saturating_add(read) > max_output_bytes {
             abort.cancel();
@@ -3042,7 +3057,7 @@ struct CliProcessOutcome {
 enum ProcessTermination {
     Exited,
     Cancelled,
-    TimedOut,
+    TimedOut(TimeoutReason),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3287,7 +3302,7 @@ impl TerminalService {
             custom_args: Vec::new(),
             resume_session_id: None,
         })?;
-        let hardening_guard = harden_companion_spec(request.backend, &mut spec)?;
+        let hardening_guard = harden_spec(request.backend, Hardening::Companion, &mut spec)?;
         let result = run_companion_process(
             spec,
             request.backend,
@@ -3927,11 +3942,18 @@ impl TerminalService {
             custom_args: config.custom_args.clone(),
             resume_session_id: None,
         })?;
-        let hardening_guard = if feature_discovery {
-            harden_companion_spec(config.backend, &mut spec)?
-        } else {
-            None
-        };
+        // Every pulsation is hardened now, not only discovery: a stage that
+        // inherits the developer's MCP servers or rules can be handed write and
+        // shell tools back, contradicting the read-only contract in its prompt.
+        let hardening_guard = harden_spec(
+            config.backend,
+            if feature_discovery {
+                Hardening::Companion
+            } else {
+                Hardening::Pipeline
+            },
+            &mut spec,
+        )?;
         let origin = if feature_discovery {
             ExecutionOrigin::Feature
         } else if request.agent_role == AgentRole::LearningAgent {
@@ -3988,7 +4010,7 @@ impl TerminalService {
         let outcome = outcome?;
         match outcome.termination {
             ProcessTermination::Cancelled => return Err(TerminalError::Cancelled),
-            ProcessTermination::TimedOut => return Err(TerminalError::Timeout),
+            ProcessTermination::TimedOut(_) => return Err(TerminalError::Timeout),
             ProcessTermination::Exited => {}
         }
         if !outcome.success {
@@ -4156,6 +4178,40 @@ impl TerminalService {
         let (stream_sender, stream_receiver) = mpsc::channel(PROCESS_EVENT_CHANNEL_CAPACITY);
         let abort_token = CancellationToken::new();
         let abort_reason = Arc::new(Mutex::new(None));
+        let caller_remaining = deadline.saturating_duration_since(Instant::now());
+        let timeout_policy = match run.slot {
+            SessionSlot::Canonical { agent_role } if run.origin != ExecutionOrigin::Manual => {
+                let mut policy = AgentTimeoutPolicy::for_role(agent_role);
+                if caller_remaining > Duration::ZERO && caller_remaining < policy.max_timeout() {
+                    policy.max_timeout_ms = caller_remaining.as_millis() as u64;
+                    policy.base_timeout_ms = policy.base_timeout_ms.min(policy.max_timeout_ms);
+                    policy.inactivity_window_ms =
+                        policy.inactivity_window_ms.min(policy.max_timeout_ms);
+                }
+                policy
+            }
+            SessionSlot::FreeForm { .. } => {
+                let mut policy = AgentTimeoutPolicy::manual();
+                if caller_remaining > Duration::ZERO && caller_remaining < policy.max_timeout() {
+                    policy.max_timeout_ms = caller_remaining.as_millis() as u64;
+                    policy.base_timeout_ms = policy.base_timeout_ms.min(policy.max_timeout_ms);
+                    policy.inactivity_window_ms =
+                        policy.inactivity_window_ms.min(policy.max_timeout_ms);
+                }
+                policy
+            }
+            SessionSlot::Canonical { agent_role } => {
+                let mut policy = AgentTimeoutPolicy::for_role(agent_role);
+                if caller_remaining > Duration::ZERO && caller_remaining < policy.max_timeout() {
+                    policy.max_timeout_ms = caller_remaining.as_millis() as u64;
+                    policy.base_timeout_ms = policy.base_timeout_ms.min(policy.max_timeout_ms);
+                    policy.inactivity_window_ms =
+                        policy.inactivity_window_ms.min(policy.max_timeout_ms);
+                }
+                policy
+            }
+        };
+        let watchdog = ProgressWatchdog::new(timeout_policy);
         let coordinator_task = tokio::spawn(coordinate_process_events(
             self.repository.clone(),
             self.event_sink.clone(),
@@ -4164,11 +4220,20 @@ impl TerminalService {
             stream_receiver,
             abort_token.clone(),
             Arc::clone(&abort_reason),
+            watchdog.clone(),
         ));
-        let stdout_task =
-            tokio::spawn(read_process_stream("stdout", stdout, stream_sender.clone()));
-        let stderr_task =
-            tokio::spawn(read_process_stream("stderr", stderr, stream_sender.clone()));
+        let stdout_task = tokio::spawn(read_process_stream(
+            "stdout",
+            stdout,
+            stream_sender.clone(),
+            watchdog.clone(),
+        ));
+        let stderr_task = tokio::spawn(read_process_stream(
+            "stderr",
+            stderr,
+            stream_sender.clone(),
+            watchdog.clone(),
+        ));
         drop(stream_sender);
         let (status, termination) = tokio::select! {
             status=child.wait()=>(status?,ProcessTermination::Exited),
@@ -4177,10 +4242,10 @@ impl TerminalService {
                 let _=child.kill().await;
                 (child.wait().await?,ProcessTermination::Cancelled)
             }
-            _=tokio::time::sleep_until(tokio::time::Instant::from_std(deadline))=>{
+            reason=watchdog.wait_for_timeout()=>{
                 process_tree.terminate();
                 let _=child.kill().await;
-                (child.wait().await?,ProcessTermination::TimedOut)
+                (child.wait().await?,ProcessTermination::TimedOut(reason))
             }
             _=abort_token.cancelled()=>{
                 process_tree.terminate();
@@ -4227,12 +4292,15 @@ impl TerminalService {
                     TerminalEventKind::Warning,
                     "Execução cancelada.",
                 ),
-                ProcessTermination::TimedOut => (
+                ProcessTermination::TimedOut(reason) => (
                     TerminalRunStatus::Failed,
                     Some("cli_timeout"),
-                    Some("O CLI excedeu o tempo limite da operação."),
+                    Some(reason.description()),
                     TerminalEventKind::Error,
-                    "Execução encerrada por timeout.",
+                    match reason {
+                        TimeoutReason::Inactivity => "Execução encerrada por inatividade.",
+                        TimeoutReason::MaxCeiling => "Execução encerrada por timeout.",
+                    },
                 ),
                 ProcessTermination::Exited if status.success() => (
                     TerminalRunStatus::Completed,
@@ -4333,6 +4401,7 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
     stream: &'static str,
     mut reader: R,
     sender: mpsc::Sender<ProcessStreamItem>,
+    watchdog: ProgressWatchdog,
 ) {
     let mut buffer = [0u8; 8192];
     let mut pending = Vec::new();
@@ -4360,6 +4429,7 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
             }
             break;
         }
+        watchdog.record_progress();
         pending.extend_from_slice(&buffer[..read]);
         while let Some(index) = pending.iter().position(|byte| *byte == b'\n') {
             let frame = pending.drain(..=index).collect::<Vec<_>>();
@@ -4398,37 +4468,42 @@ async fn coordinate_process_events(
     mut receiver: mpsc::Receiver<ProcessStreamItem>,
     abort_token: CancellationToken,
     abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
+    watchdog: ProgressWatchdog,
 ) -> Result<ProcessEventSummary, TerminalError> {
     let mut sequence = repository.next_event_sequence(&run.id)?;
     let mut event_count = 0usize;
     let mut observed_bytes = 0usize;
     let mut summary = ProcessEventSummary::default();
     while let Some(item) = receiver.recv().await {
-        let (kind, stream, content, input_bytes, native_session_id, observed_model) = match item {
-            ProcessStreamItem::Frame { stream, bytes } => {
-                let input_bytes = bytes.len();
-                let normalized = adapters::normalize_frame(backend, stream, &bytes);
-                (
-                    normalized.kind,
-                    stream,
-                    normalized.content,
-                    input_bytes,
-                    normalized.native_session_id,
-                    normalized.observed_model,
-                )
-            }
-            ProcessStreamItem::ReadError { stream, message } => {
-                let input_bytes = message.len();
-                (
-                    TerminalEventKind::Error,
-                    stream,
-                    message,
-                    input_bytes,
-                    None,
-                    None,
-                )
-            }
-        };
+        watchdog.record_progress();
+        let (kind, stream, content, input_bytes, native_session_id, observed_model, is_text) =
+            match item {
+                ProcessStreamItem::Frame { stream, bytes } => {
+                    let input_bytes = bytes.len();
+                    let normalized = adapters::normalize_frame(backend, stream, &bytes);
+                    (
+                        normalized.kind,
+                        stream,
+                        normalized.content,
+                        input_bytes,
+                        normalized.native_session_id,
+                        normalized.observed_model,
+                        normalized.is_text,
+                    )
+                }
+                ProcessStreamItem::ReadError { stream, message } => {
+                    let input_bytes = message.len();
+                    (
+                        TerminalEventKind::Error,
+                        stream,
+                        message,
+                        input_bytes,
+                        None,
+                        None,
+                        false,
+                    )
+                }
+            };
         if let Some(session_id) = native_session_id
             && let Err(error) = repository.set_native_session_id(&run.id, &session_id)
         {
@@ -4465,10 +4540,14 @@ async fn coordinate_process_events(
                 return Err(error);
             }
         };
-        if matches!(
-            event.kind,
-            TerminalEventKind::Completed | TerminalEventKind::Message | TerminalEventKind::Stdout
-        ) {
+        if is_text
+            && matches!(
+                event.kind,
+                TerminalEventKind::Completed
+                    | TerminalEventKind::Message
+                    | TerminalEventKind::Stdout
+            )
+        {
             summary.raw_output.clone_from(&event.content);
         }
         if stream == "stderr" {
@@ -4534,8 +4613,23 @@ fn copy_safe_environment(command: &mut Command) {
     }
 }
 
-fn harden_companion_spec(
+/// How much of the host's environment a spawned CLI is allowed to see.
+///
+/// `Companion` turns every native tool off: discovery receives only
+/// host-selected context. `Pipeline` keeps the read tools, because a stage
+/// agent legitimately inspects the workspace, but still isolates the
+/// developer's own configuration, rules, MCP servers and skills - any of which
+/// could hand write or shell tools back to the model and falsify the read-only
+/// contract the stage prompt states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hardening {
+    Companion,
+    Pipeline,
+}
+
+fn harden_spec(
     backend: CliBackend,
+    mode: Hardening,
     spec: &mut CliProcessSpec,
 ) -> Result<Option<tempfile::NamedTempFile>, TerminalError> {
     let mut settings_guard = None;
@@ -4545,14 +4639,17 @@ fn harden_companion_spec(
                 spec.args
                     .insert(exec_index + 1, "--ignore-user-config".into());
                 spec.args.insert(exec_index + 2, "--ignore-rules".into());
-                spec.args.insert(exec_index + 3, "--ephemeral".into());
+                if mode == Hardening::Companion {
+                    spec.args.insert(exec_index + 3, "--ephemeral".into());
+                }
             }
         }
         CliBackend::Claude => {
-            if let Some(index) = spec
-                .args
-                .iter()
-                .position(|argument| argument == "Read,Glob,Grep")
+            if mode == Hardening::Companion
+                && let Some(index) = spec
+                    .args
+                    .iter()
+                    .position(|argument| argument == "Read,Glob,Grep")
             {
                 spec.args[index].clear();
             }
@@ -4564,11 +4661,17 @@ fn harden_companion_spec(
             spec.args.push("--disable-slash-commands".into());
         }
         CliBackend::Gemini => {
+            let tools = if mode == Hardening::Companion {
+                serde_json::json!({ "core": [], "allowed": [] })
+            } else {
+                // Stage agents keep the read tools; only user configuration goes.
+                serde_json::json!({ "allowed": [] })
+            };
             let mut settings = tempfile::NamedTempFile::new()?;
             serde_json::to_writer(
                 settings.as_file_mut(),
                 &serde_json::json!({
-                    "tools": { "core": [], "allowed": [] },
+                    "tools": tools,
                     "mcp": { "allowed": [] },
                     "context": { "fileName": [], "loadFromIncludeDirectories": false },
                     "hooksConfig": { "enabled": false },
@@ -4585,15 +4688,29 @@ fn harden_companion_spec(
             settings_guard = Some(settings);
         }
         CliBackend::Opencode => {
-            if let Some((_, permissions)) = spec
-                .environment
-                .iter_mut()
-                .find(|(name, _)| name == "OPENCODE_PERMISSION")
+            if mode == Hardening::Companion
+                && let Some((_, permissions)) = spec
+                    .environment
+                    .iter_mut()
+                    .find(|(name, _)| name == "OPENCODE_PERMISSION")
             {
                 *permissions = r#"{"*":"deny"}"#.into();
             }
+            // Pipeline keeps the adapter's read-only permission set as-is.
         }
-        CliBackend::Custom => unreachable!("Custom Companion is rejected before launch"),
+        CliBackend::Custom => {
+            if mode == Hardening::Companion {
+                return Err(TerminalError::Validation(
+                    "Custom CLI is not allowed for the Companion".into(),
+                ));
+            }
+            // An arbitrary binary exposes no config, tool or sandbox knob to turn
+            // off. What actually holds is that publication only ever happens from
+            // the JSON `artifacts` array, so files this CLI writes to disk never
+            // enter the pipeline. The marker lets a cooperating CLI opt in.
+            spec.environment
+                .push(("HVC_STAGE_READ_ONLY".into(), "1".into()));
+        }
     }
     Ok(settings_guard)
 }
@@ -4647,15 +4764,25 @@ async fn run_companion_process(
         .take()
         .ok_or_else(|| TerminalError::Process("Companion CLI stderr is unavailable".into()))?;
     let abort = CancellationToken::new();
+    let caller_remaining = deadline.saturating_duration_since(Instant::now());
+    let mut policy = AgentTimeoutPolicy::companion();
+    if caller_remaining > Duration::ZERO && caller_remaining < policy.max_timeout() {
+        policy.max_timeout_ms = caller_remaining.as_millis() as u64;
+        policy.base_timeout_ms = policy.base_timeout_ms.min(policy.max_timeout_ms);
+        policy.inactivity_window_ms = policy.inactivity_window_ms.min(policy.max_timeout_ms);
+    }
+    let watchdog = ProgressWatchdog::new(policy);
     let stdout_task = tokio::spawn(read_bounded_stream(
         stdout,
         abort.clone(),
         MAX_COMPANION_CLI_OUTPUT_BYTES,
+        Some(watchdog.clone()),
     ));
     let stderr_task = tokio::spawn(read_bounded_stream(
         stderr,
         abort.clone(),
         MAX_COMPANION_CLI_OUTPUT_BYTES,
+        Some(watchdog.clone()),
     ));
     let termination = tokio::select! {
         status = child.wait() => (ProcessTermination::Exited, Some(status?)),
@@ -4665,11 +4792,11 @@ async fn run_companion_process(
             let _ = child.wait().await;
             (ProcessTermination::Cancelled, None)
         }
-        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+        reason = watchdog.wait_for_timeout() => {
             process_tree.terminate();
             let _ = child.kill().await;
             let _ = child.wait().await;
-            (ProcessTermination::TimedOut, None)
+            (ProcessTermination::TimedOut(reason), None)
         }
         _ = abort.cancelled() => {
             process_tree.terminate();
@@ -4686,7 +4813,7 @@ async fn run_companion_process(
         .map_err(|error| TerminalError::Process(format!("stderr reader failed: {error}")))??;
     match termination.0 {
         ProcessTermination::Cancelled => return Err(TerminalError::Cancelled),
-        ProcessTermination::TimedOut => return Err(TerminalError::Timeout),
+        ProcessTermination::TimedOut(_) => return Err(TerminalError::Timeout),
         ProcessTermination::Exited => {}
     }
     let status = termination
@@ -5278,6 +5405,116 @@ mod tests {
         );
     }
 
+    fn spec_for(backend: CliBackend) -> CliProcessSpec {
+        let executable = match backend {
+            CliBackend::Codex => r"C:\Tools\codex.exe",
+            CliBackend::Claude => r"C:\Tools\claude.exe",
+            CliBackend::Gemini => r"C:\Tools\gemini.exe",
+            CliBackend::Opencode => r"C:\Tools\opencode.exe",
+            CliBackend::Custom => r"C:\Tools\custom.exe",
+        };
+        build_process_spec(CliInvocationRequest {
+            executable: PathBuf::from(executable),
+            backend,
+            model: None,
+            model_profile: None,
+            thinking_level: ThinkingLevel::Default,
+            prompt: "Return one stage output".into(),
+            schema_file: (backend == CliBackend::Codex)
+                .then(|| PathBuf::from(r"C:\Temp\schema.json")),
+            schema: (backend == CliBackend::Claude).then(|| serde_json::json!({})),
+            custom_args: vec![],
+            resume_session_id: None,
+        })
+        .unwrap()
+    }
+
+    /// A stage agent must keep its read tools - it legitimately inspects the
+    /// workspace - while the developer's own configuration is still isolated.
+    #[test]
+    fn pipeline_hardening_isolates_user_configuration_but_keeps_read_tools() {
+        let mut claude = spec_for(CliBackend::Claude);
+        harden_spec(CliBackend::Claude, Hardening::Pipeline, &mut claude).unwrap();
+        let tools = claude.args.iter().position(|arg| arg == "--tools").unwrap();
+        assert_eq!(
+            claude.args[tools + 1],
+            "Read,Glob,Grep",
+            "Pipeline must not blank the read tools the way Companion does"
+        );
+        assert!(claude.args.iter().any(|arg| arg == "--strict-mcp-config"));
+        let sources = claude
+            .args
+            .iter()
+            .position(|arg| arg == "--setting-sources")
+            .unwrap();
+        assert_eq!(claude.args[sources + 1], "");
+
+        let mut codex = spec_for(CliBackend::Codex);
+        harden_spec(CliBackend::Codex, Hardening::Pipeline, &mut codex).unwrap();
+        let exec = codex.args.iter().position(|arg| arg == "exec").unwrap();
+        assert_eq!(codex.args[exec + 1], "--ignore-user-config");
+        assert_eq!(codex.args[exec + 2], "--ignore-rules");
+        assert!(
+            codex.args.iter().any(|arg| arg == "--sandbox"),
+            "the adapter's read-only sandbox must survive hardening"
+        );
+        assert!(
+            !codex.args.iter().any(|arg| arg == "--ephemeral"),
+            "--ephemeral is a Companion-only concern"
+        );
+
+        // OpenCode keeps the adapter's read-only permission set, not the
+        // Companion's blanket deny.
+        let mut opencode = spec_for(CliBackend::Opencode);
+        harden_spec(CliBackend::Opencode, Hardening::Pipeline, &mut opencode).unwrap();
+        let (_, permissions) = opencode
+            .environment
+            .iter()
+            .find(|(name, _)| name == "OPENCODE_PERMISSION")
+            .unwrap();
+        assert!(permissions.contains(r#""read":"allow""#));
+        assert_ne!(permissions, r#"{"*":"deny"}"#);
+    }
+
+    #[test]
+    fn gemini_pipeline_keeps_core_tools_while_companion_removes_them() {
+        for (mode, expects_empty_core) in
+            [(Hardening::Companion, true), (Hardening::Pipeline, false)]
+        {
+            let mut spec = spec_for(CliBackend::Gemini);
+            let guard = harden_spec(CliBackend::Gemini, mode, &mut spec).unwrap();
+            let (_, path) = spec
+                .environment
+                .iter()
+                .find(|(name, _)| name == "GEMINI_CLI_SYSTEM_SETTINGS_PATH")
+                .unwrap();
+            let settings: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            assert_eq!(
+                settings["tools"]["core"].is_array(),
+                expects_empty_core,
+                "{mode:?} disagreed about core tools"
+            );
+            assert!(settings["mcp"]["allowed"].as_array().unwrap().is_empty());
+            assert_eq!(settings["skills"]["enabled"], false);
+            drop(guard);
+        }
+    }
+
+    #[test]
+    fn custom_is_marked_read_only_for_pipelines_and_refused_for_the_companion() {
+        let mut spec = spec_for(CliBackend::Custom);
+        harden_spec(CliBackend::Custom, Hardening::Pipeline, &mut spec).unwrap();
+        assert!(
+            spec.environment
+                .iter()
+                .any(|(name, value)| name == "HVC_STAGE_READ_ONLY" && value == "1")
+        );
+
+        let mut spec = spec_for(CliBackend::Custom);
+        assert!(harden_spec(CliBackend::Custom, Hardening::Companion, &mut spec).is_err());
+    }
+
     #[test]
     fn companion_hardening_disables_native_tools_and_user_configuration() {
         let cases = [
@@ -5303,7 +5540,7 @@ mod tests {
                 resume_session_id: None,
             })
             .unwrap();
-            let guard = harden_companion_spec(backend, &mut spec).unwrap();
+            let guard = harden_spec(backend, Hardening::Companion, &mut spec).unwrap();
             match backend {
                 CliBackend::Codex => {
                     let exec = spec.args.iter().position(|arg| arg == "exec").unwrap();
@@ -6231,6 +6468,7 @@ mod tests {
             receiver,
             CancellationToken::new(),
             Arc::new(Mutex::new(None)),
+            ProgressWatchdog::new(AgentTimeoutPolicy::default()),
         )
         .await
         .unwrap();
@@ -6263,6 +6501,82 @@ mod tests {
                 .iter()
                 .all(|envelope| envelope.protocol_version == 2
                     && envelope.run.status == TerminalRunStatus::Running)
+        );
+    }
+
+    #[tokio::test]
+    async fn coordinate_process_events_does_not_overwrite_raw_output_with_non_text_completed_frame()
+    {
+        use crate::persistence_service::{CreateProjectRequest, PersistenceService};
+
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Agents stream non-text".into()),
+            })
+            .unwrap()
+            .project;
+        let repository = TerminalRepository::new(persistence.database_path());
+        repository
+            .ensure_project_configs(&project.id, true)
+            .unwrap();
+        let run = repository
+            .create_run(CreateTerminalRunRequest {
+                project_id: project.id,
+                agent_role: AgentRole::BackendAgent,
+                origin: ExecutionOrigin::Manual,
+                execution_mode: AgentExecutionMode::CliProcess,
+                backend: Some(CliBackend::Codex),
+                model: None,
+                pulsation_id: None,
+                job_id: None,
+                agent_run_id: None,
+                llm_execution_id: None,
+            })
+            .unwrap();
+        repository
+            .set_run_status(&run.id, TerminalRunStatus::Starting, None, None, None)
+            .unwrap();
+        let run = repository
+            .set_run_status(&run.id, TerminalRunStatus::Running, None, None, None)
+            .unwrap();
+        let collected = Arc::new(CollectTerminalEvents::default());
+        let sink: Arc<dyn TerminalEventSink> = collected.clone();
+        let (sender, receiver) = mpsc::channel(PROCESS_EVENT_CHANNEL_CAPACITY);
+        sender
+            .send(ProcessStreamItem::Frame {
+                stream: "stdout",
+                bytes: br#"{"type":"item.completed","item":{"type":"message","text":"{\"outputLanguage\":\"en\",\"message\":\"ok\"}"}}"#.to_vec(),
+            })
+            .await
+            .unwrap();
+        sender
+            .send(ProcessStreamItem::Frame {
+                stream: "stdout",
+                bytes: br#"{"type":"turn.completed","usage":{"input_tokens":100}}"#.to_vec(),
+            })
+            .await
+            .unwrap();
+        drop(sender);
+
+        let output = coordinate_process_events(
+            repository.clone(),
+            sink,
+            run,
+            CliBackend::Codex,
+            receiver,
+            CancellationToken::new(),
+            Arc::new(Mutex::new(None)),
+            ProgressWatchdog::new(AgentTimeoutPolicy::default()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            output.raw_output,
+            "{\"outputLanguage\":\"en\",\"message\":\"ok\"}"
         );
     }
 }

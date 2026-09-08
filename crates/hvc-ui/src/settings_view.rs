@@ -1,4 +1,6 @@
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
+use hvc_core::AgentTimeoutPolicy;
+use hvc_core::llm::AgentRole;
 
 use crate::app_model::AppModel;
 use crate::settings::SettingsSection;
@@ -23,9 +25,9 @@ pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> An
             .justify_center()
             .text_color(theme::text_muted())
             .child(if loading {
-                "Carregando configuração LLM…"
+                "Loading LLM configuration…"
             } else {
-                "Configuração indisponível. Use Recarregar para tentar novamente."
+                "Configuration unavailable. Use Reload to try again."
             })
             .into_any_element();
     };
@@ -52,12 +54,12 @@ pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> An
                 .gap_3()
                 .child(section_header(
                     "PROVIDERS",
-                    "Conexões",
+                    "Connections",
                     snapshot.connections.len(),
                 ))
                 .child(action(
                     "settings-new-connection",
-                    "Nova conexão",
+                    "New connection",
                     !busy,
                     cx,
                     |model, cx| model.new_settings_connection(cx),
@@ -72,7 +74,7 @@ pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> An
                         .flex_col()
                         .gap_2()
                         .when(snapshot.connections.is_empty(), |list| {
-                            list.child(empty("Nenhuma conexão configurada."))
+                            list.child(empty("No connections configured."))
                         })
                         .children(snapshot.connections.into_iter().map(|connection| {
                             let id = connection.id.clone();
@@ -242,7 +244,7 @@ fn settings_connections(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElem
     let settings = model.settings.read(cx);
     let selected_connection = settings.selected_connection_id.clone();
     if selected_connection.is_none() && !settings.creating_connection {
-        return empty("Selecione ou crie uma conexão.").into_any_element();
+        return empty("Select or create a connection.").into_any_element();
     }
     let snapshot = settings.snapshot.clone().expect("settings snapshot");
     let busy = settings.busy;
@@ -285,7 +287,7 @@ fn settings_connections(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElem
 
     div()
         .child(
-            card("Conexão selecionada / nova")
+            card("Selected / new connection")
                 .child(
                     div()
                         .flex()
@@ -302,7 +304,7 @@ fn settings_connections(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElem
                         div()
                             .text_xs()
                             .text_color(theme::text_muted())
-                            .child("Endpoint fixo pelo perfil selecionado."),
+                            .child("Fixed endpoint for selected profile."),
                     )
                 })
                 .child(connection_secret)
@@ -312,21 +314,21 @@ fn settings_connections(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElem
                         .gap_2()
                         .child(action(
                             "settings-save-connection",
-                            "Salvar conexão",
+                            "Save connection",
                             !busy,
                             cx,
                             |model, cx| model.save_settings_connection(cx),
                         ))
                         .child(action(
                             "settings-test-connection",
-                            "Testar",
+                            "Test",
                             !busy && selected_connection.is_some(),
                             cx,
                             |model, cx| model.test_settings_connection(cx),
                         ))
                         .child(action(
                             "settings-delete-connection",
-                            "Excluir",
+                            "Delete",
                             !busy && selected_connection.is_some(),
                             cx,
                             |model, cx| model.delete_settings_connection(cx),
@@ -357,7 +359,7 @@ fn settings_routes(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let strategies = ["priority", "lkgp", "score"];
     let mut strategy_div = div().child(dropdown_select(
         "settings-route-strategy",
-        "ESTRATÉGIA",
+        "STRATEGY",
         route_strategy.clone(),
         strategy_open,
         !busy,
@@ -371,9 +373,9 @@ fn settings_routes(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             let s = strat.to_string();
             let s_capture = strat.to_string();
             let label = match strat {
-                "priority" => "Priority (ordem fixa)",
-                "lkgp" => "LKGP (menor latência)",
-                "score" => "Score (ponderação)",
+                "priority" => "Priority (fixed order)",
+                "lkgp" => "LKGP (lowest latency)",
+                "score" => "Score (weighted)",
                 other => other,
             };
             items.push(dropdown_item(
@@ -389,41 +391,41 @@ fn settings_routes(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     }
 
     div().flex().flex_col().gap_4()
-        .when(!show_form, |panel| panel.child(empty("Selecione ou crie uma rota.")))
+        .when(!show_form, |panel| panel.child(empty("Select or create a route.")))
         .when(show_form, |panel| panel
                 .child(
-                    card("Rota selecionada / nova")
+                    card("Selected / new route")
                         .child(route_name)
                         .child(strategy_div)
                         .child(div().text_sm().text_color(theme::text_muted()).child(format!(
-                            "Limites: {} tentativa(s) · {} ms/tentativa · {} ms/rota · {} alvo(s)",
+                            "Limits: {} attempt(s) · {} ms/attempt · {} ms/route · {} target(s)",
                             route_limits.0, route_limits.1, route_limits.2, route_target_count
                         )))
                         .child(div().flex().gap_2()
-                            .child(action("settings-route-limits", "Alternar limites", !busy, cx, |model, cx| model.cycle_route_limits(cx)))
-                            .child(action("settings-target-up", "Alvo ↑", !busy && selected_connection.is_some(), cx, |model, cx| model.move_selected_route_target(-1, cx)))
-                            .child(action("settings-target-down", "Alvo ↓", !busy && selected_connection.is_some(), cx, |model, cx| model.move_selected_route_target(1, cx))))
+                            .child(action("settings-route-limits", "Cycle limits", !busy, cx, |model, cx| model.cycle_route_limits(cx)))
+                            .child(action("settings-target-up", "Target ↑", !busy && selected_connection.is_some(), cx, |model, cx| model.move_selected_route_target(-1, cx)))
+                            .child(action("settings-target-down", "Target ↓", !busy && selected_connection.is_some(), cx, |model, cx| model.move_selected_route_target(1, cx))))
                         .child(div().flex().gap_2()
-                            .child(action("settings-save-route", "Salvar rota", !busy && selected_connection.is_some(), cx, |model, cx| model.save_settings_route(cx)))
-                            .child(action("settings-delete-route", "Excluir", !busy && selected_route.is_some(), cx, |model, cx| model.delete_settings_route(cx)))),
+                            .child(action("settings-save-route", "Save route", !busy && selected_connection.is_some(), cx, |model, cx| model.save_settings_route(cx)))
+                            .child(action("settings-delete-route", "Delete", !busy && selected_route.is_some(), cx, |model, cx| model.delete_settings_route(cx)))),
                 )
         )
                 .child(
-                    card("Binding exato")
-                        .child(div().text_sm().child(format!("Agente: {binding_role} · estágio: {binding_stage}")))
-                        .child(div().text_xs().text_color(theme::text_muted()).child(format!("{} binding(s) persistido(s)", snapshot.bindings.len())))
+                    card("Exact binding")
+                        .child(div().text_sm().child(format!("Agent: {binding_role} · stage: {binding_stage}")))
+                        .child(div().text_xs().text_color(theme::text_muted()).child(format!("{} persisted binding(s)", snapshot.bindings.len())))
                         .child(div().flex().gap_2()
-                            .child(action("settings-binding-role", "Alternar agente", !busy, cx, |model, cx| model.cycle_binding_role(cx)))
-                            .child(action("settings-binding-stage", "Alternar estágio", !busy, cx, |model, cx| model.cycle_binding_stage(cx)))
-                            .child(action("settings-save-binding", "Vincular rota", !busy && selected_route.is_some(), cx, |model, cx| model.save_settings_binding(cx)))),
+                            .child(action("settings-binding-role", "Cycle agent", !busy, cx, |model, cx| model.cycle_binding_role(cx)))
+                            .child(action("settings-binding-stage", "Cycle stage", !busy, cx, |model, cx| model.cycle_binding_stage(cx)))
+                            .child(action("settings-save-binding", "Bind route", !busy && selected_route.is_some(), cx, |model, cx| model.save_settings_binding(cx)))),
                 )
                 .child(
-                    card("Resiliência")
+                    card("Resilience")
                         .child(div().text_sm().text_color(theme::text_muted()).child(format!(
-                            "{} estado(s) · snapshot {}",
+                            "{} state(s) · snapshot {}",
                             snapshot.resilience.states.len(), snapshot.resilience.generated_at
                         )))
-                        .child(action("settings-reset-resilience", "Limpar cooldowns", !busy, cx, |model, cx| model.reset_settings_resilience(cx))),
+                        .child(action("settings-reset-resilience", "Clear cooldowns", !busy, cx, |model, cx| model.reset_settings_resilience(cx))),
                 )
         .into_any_element()
 }
@@ -439,11 +441,11 @@ fn settings_runtime(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement 
     let embedding_model = model.settings_embedding_model_input.clone();
     let routing_mode_open = model.is_dropdown_open("settings-routing-mode");
     let modes = [
-        (hvc_core::llm::RoutingMode::Off, "off", "Off (desativado)"),
+        (hvc_core::llm::RoutingMode::Off, "off", "Off (disabled)"),
         (
             hvc_core::llm::RoutingMode::Shadow,
             "shadow",
-            "Shadow (auditoria)",
+            "Shadow (audit)",
         ),
         (hvc_core::llm::RoutingMode::On, "on", "On (enforcing)"),
     ];
@@ -478,63 +480,266 @@ fn settings_runtime(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement 
                 .child(
                     div().grid().grid_cols(3).gap_2()
                         .child(routing_mode_div)
-                        .child(toggle("settings-context-strategy", "CONTEXTO", strategy, !busy, cx, |model, cx| model.toggle_context_strategy(cx)))
+                        .child(toggle("settings-context-strategy", "CONTEXT", strategy, !busy, cx, |model, cx| model.toggle_context_strategy(cx)))
                         .child(toggle("settings-embeddings", "EMBEDDINGS", if snapshot.config.embedding_enabled { "on" } else { "off" }, !busy, cx, |model, cx| model.toggle_embeddings(cx))),
                 )
                 .child(
-                    card("Revisão de checkpoints")
+                    card("Checkpoint review")
                         .child(toggle("settings-auto-open-review", "AUTO-OPEN REVIEW (Recommended)", if auto_open_review { "on" } else { "off" }, true, cx, |model, cx| model.set_auto_open_review(!model.auto_open_review, cx)))
-                        .child(div().text_xs().text_color(theme::text_muted()).child("Off: a barra de fluxo mostra \"Review now\" quando um checkpoint aparece. On: a aplicação abre a revisão automaticamente, a menos que você esteja compondo uma mensagem no Companion ou com um overlay aberto.")),
+                        .child(div().text_xs().text_color(theme::text_muted()).child("Off: the flow bar shows \"Review now\" when a checkpoint appears. On: the application opens the review automatically, unless you are composing a Companion message or have an overlay open.")),
                 )
                 .child(
-                    card("Preparação de pulsações · local e opcional")
+                    card("Pulsation preparation · local and optional")
                         .child(toggle("preparation-enabled", "TASKREFINE / PRESPEC", if snapshot.preparation.preparation_enabled {"on"}else{"off"}, !busy,cx,|model,cx|model.save_preparation_settings(true,cx)))
-                        .child(div().text_sm().child(format!("Threshold atual: {}. Alterações valem para a próxima avaliação. Desligar não confirma uma revisão pendente.",snapshot.preparation.vagueness_threshold.get())))
+                        .child(div().text_sm().child(format!("Current threshold: {}. Changes apply to the next evaluation. Disabling does not confirm a pending review.",snapshot.preparation.vagueness_threshold.get())))
                         .child(model.preparation_threshold_input.clone())
-                        .child(action("preparation-save", "Salvar threshold (0–100)",!busy,cx,|model,cx|model.save_preparation_settings(false,cx)))
-                        .child(div().text_sm().child(format!("Orçamento atual do handoff: {} caracteres. Aumente aqui se artefatos/respostas obrigatórios não couberem.",snapshot.config.context_chars_limit)))
+                        .child(action("preparation-save", "Save threshold (0–100)",!busy,cx,|model,cx|model.save_preparation_settings(false,cx)))
+                        .child(div().text_sm().child(format!("Current handoff budget: {} characters. Increase here if mandatory artifacts/responses do not fit.",snapshot.config.context_chars_limit)))
                         .child(model.context_limit_input.clone())
-                        .child(action("context-budget-save","Salvar orçamento de contexto",!busy,cx,|model,cx|model.save_context_limit(cx)))
-                        .child(toggle("learning-enabled", "LEARNING CONSULTIVO", if snapshot.preparation.learning_enabled {"on"}else{"off"}, !busy,cx,|model,cx|model.toggle_learning(cx)))
-                        .child(toggle("learning-refinement-mode", "REFINAMENTO DO GRAFO", snapshot.preparation.learning_refinement_mode.as_str(), !busy && snapshot.preparation.learning_enabled,cx,|model,cx|model.toggle_learning_refinement_mode(cx)))
-                        .child(div().text_xs().text_color(theme::text_muted()).child("Learning roda após Done ou Failed. Observe audita sem criar propostas; Propose permite sugestões por IDs do host, mas toda escrita ainda exige aprovação humana e CAS."))
-                        .child(toggle("brownfield-llm-budget", "BROWNFIELD · CHAMADAS POR PULSAÇÃO", snapshot.preparation.brownfield_llm_budget.to_string(), !busy,cx,|model,cx|model.cycle_brownfield_llm_budget(cx)))
-                        .child(toggle("brownfield-expansion-radius", "BROWNFIELD · RAIO", format!("k={}", snapshot.preparation.brownfield_expansion_radius), !busy,cx,|model,cx|model.toggle_brownfield_expansion_radius(cx)))
-                        .child(div().text_xs().text_color(theme::text_muted()).child("Enriquecimento é oportunista: 0 não chama LLM; k=1 usa vizinhos diretos e k=2 permite um segundo salto. Cada lote publica no máximo duas propostas.")),
+                        .child(action("context-budget-save","Save context budget",!busy,cx,|model,cx|model.save_context_limit(cx)))
+                        .child(toggle("learning-enabled", "ADVISORY LEARNING", if snapshot.preparation.learning_enabled {"on"}else{"off"}, !busy,cx,|model,cx|model.toggle_learning(cx)))
+                        .child(toggle("learning-refinement-mode", "GRAPH REFINEMENT", snapshot.preparation.learning_refinement_mode.as_str(), !busy && snapshot.preparation.learning_enabled,cx,|model,cx|model.toggle_learning_refinement_mode(cx)))
+                        .child(div().text_xs().text_color(theme::text_muted()).child("Learning runs after Done or Failed. Observe audits without creating proposals; Propose allows suggestions by host IDs, but all writes still require human approval and CAS."))
+                        .child(toggle("brownfield-llm-budget", "BROWNFIELD · CALLS PER PULSATION", snapshot.preparation.brownfield_llm_budget.to_string(), !busy,cx,|model,cx|model.cycle_brownfield_llm_budget(cx)))
+                        .child(toggle("brownfield-expansion-radius", "BROWNFIELD · RADIUS", format!("k={}", snapshot.preparation.brownfield_expansion_radius), !busy,cx,|model,cx|model.toggle_brownfield_expansion_radius(cx)))
+                        .child(div().text_xs().text_color(theme::text_muted()).child("Enrichment is opportunistic: 0 makes no LLM calls; k=1 uses direct neighbors and k=2 allows a second hop. Each batch publishes at most two proposals.")),
                 )
                 .child(
                     card("RAG / YAML Graph")
                         .child(div().text_sm().text_color(theme::text_muted()).child(format!(
-                            "Provider: {} · top K: {} · {} key(s) no keyring",
+                            "Provider: {} · top K: {} · {} key(s) in keyring",
                             snapshot.config.embedding_provider.as_str(), snapshot.config.embedding_top_k,
                             snapshot.key_statuses.iter().filter(|status| status.has_api_key).count()
                         )))
                         .child(embedding_model)
                         .child(div().flex().gap_2()
-                            .child(action("settings-embedding-top-k", "Alternar top K", !busy, cx, |model, cx| model.cycle_embedding_top_k(cx)))
-                            .child(action("settings-reindex", "Reindexar workspace", !busy, cx, |model, cx| model.reindex_embeddings(cx)))),
+                            .child(action("settings-embedding-top-k", "Cycle top K", !busy, cx, |model, cx| model.cycle_embedding_top_k(cx)))
+                            .child(action("settings-reindex", "Reindex workspace", !busy, cx, |model, cx| model.reindex_embeddings(cx)))),
                 )
                 .child(
-                    card("Navegação adaptativa do Segundo Cérebro")
+                    card("Second Brain adaptive navigation")
                         .child(div().text_xs().text_color(theme::text_muted()).child(
-                            "Shadow mede a política sem alterar o prompt; On ativa expansão dinâmica e resolução exata de código.",
+                            "Shadow evaluates policy without altering prompt; On enables dynamic expansion and exact code resolution.",
                         ))
-                        .child(toggle("settings-adaptive-mode", "ATIVAÇÃO", adaptive_mode, !busy, cx, |model, cx| model.cycle_adaptive_context_mode(cx)))
+                        .child(toggle("settings-adaptive-mode", "ACTIVATION", adaptive_mode, !busy, cx, |model, cx| model.cycle_adaptive_context_mode(cx)))
                         .child(
                             div().grid().grid_cols(3).gap_2()
-                                .child(toggle("settings-adaptive-initial-k", "K INICIAL", adaptive_policy.initial_k.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_initial_k(cx)))
-                                .child(toggle("settings-adaptive-max-k", "K MÁXIMO", adaptive_policy.max_k.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_max_k(cx)))
-                                .child(toggle("settings-adaptive-similarity", "SIMILARIDADE", format!("{:.2}", adaptive_policy.min_similarity), !busy, cx, |model, cx| model.cycle_dynamic_min_similarity(cx)))
-                                .child(toggle("settings-adaptive-min-candidates", "MÍN. NOTAS", adaptive_policy.min_candidates_count.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_min_candidates(cx)))
-                                .child(toggle("settings-adaptive-max-notes", "MÁX. NOTAS", adaptive_policy.max_notes_budget.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_max_notes(cx)))
+                                .child(toggle("settings-adaptive-initial-k", "INITIAL K", adaptive_policy.initial_k.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_initial_k(cx)))
+                                .child(toggle("settings-adaptive-max-k", "MAX K", adaptive_policy.max_k.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_max_k(cx)))
+                                .child(toggle("settings-adaptive-similarity", "SIMILARITY", format!("{:.2}", adaptive_policy.min_similarity), !busy, cx, |model, cx| model.cycle_dynamic_min_similarity(cx)))
+                                .child(toggle("settings-adaptive-min-candidates", "MIN NOTES", adaptive_policy.min_candidates_count.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_min_candidates(cx)))
+                                .child(toggle("settings-adaptive-max-notes", "MAX NOTES", adaptive_policy.max_notes_budget.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_max_notes(cx)))
                                 .child(toggle("settings-adaptive-beam", "BEAM", adaptive_policy.beam_width.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_beam_width(cx)))
-                                .child(toggle("settings-adaptive-files", "ARQUIVOS", adaptive_policy.max_source_files.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_max_source_files(cx)))
-                                .child(toggle("settings-adaptive-code", "CÓDIGO", format!("{} chars", adaptive_policy.max_code_chars), !busy, cx, |model, cx| model.cycle_dynamic_max_code_chars(cx)))
+                                .child(toggle("settings-adaptive-files", "FILES", adaptive_policy.max_source_files.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_max_source_files(cx)))
+                                .child(toggle("settings-adaptive-code", "CODE", format!("{} chars", adaptive_policy.max_code_chars), !busy, cx, |model, cx| model.cycle_dynamic_max_code_chars(cx)))
                                 .child(toggle("settings-adaptive-timeout", "TIMEOUT", format!("{} ms", adaptive_policy.timeout_ms), !busy, cx, |model, cx| model.cycle_dynamic_timeout(cx))),
                         ),
                 )
-
+                .child(settings_agent_timeouts())
         .into_any_element()
+}
+
+fn settings_agent_timeouts() -> gpui::Div {
+    let roles = [
+        (AgentRole::FeatureAgent, "FeatureAgent (Feature Forge)"),
+        (
+            AgentRole::BackendAgent,
+            "BackendAgent (Code Implementation)",
+        ),
+        (AgentRole::TestAgent, "TestAgent (Suite & Verification)"),
+        (
+            AgentRole::TaskSpecifier,
+            "TaskSpecifier (Batch Specification)",
+        ),
+        (
+            AgentRole::ContractAgent,
+            "ContractAgent (Interfaces & Schemas)",
+        ),
+        (AgentRole::Integrator, "Integrator (Merge & Reconciliation)"),
+        (
+            AgentRole::LearningAgent,
+            "LearningAgent (Knowledge Synthesis)",
+        ),
+        (
+            AgentRole::IntakeRouter,
+            "IntakeRouter (Triage & Validation)",
+        ),
+    ];
+
+    let mut rows = div().flex().flex_col().gap_1();
+
+    // Table Header
+    rows = rows.child(
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(theme::surface())
+            .text_xs()
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(theme::text_muted())
+            .child(div().w(px(260.0)).child("AGENT ROLE"))
+            .child(div().w(px(100.0)).child("BASE TIMEOUT"))
+            .child(div().w(px(120.0)).child("INACTIVITY LIMIT"))
+            .child(div().w(px(110.0)).child("MAX CEILING"))
+            .child(div().w(px(120.0)).child("STREAM EXTENSION")),
+    );
+
+    for (role, label) in roles {
+        let policy = AgentTimeoutPolicy::for_role(role);
+        let color = theme::agent_color(role);
+        let soft = theme::agent_soft_color(role);
+
+        rows = rows.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::surface_raised())
+                .text_xs()
+                .child(
+                    div()
+                        .w(px(260.0))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .px_1()
+                                .py_0p5()
+                                .rounded_sm()
+                                .bg(soft)
+                                .text_color(color)
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .child(role.as_str()),
+                        )
+                        .child(div().text_color(theme::text()).child(label)),
+                )
+                .child(
+                    div()
+                        .w(px(100.0))
+                        .text_color(theme::text())
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .child(format_ms_minutes(policy.base_timeout_ms)),
+                )
+                .child(
+                    div()
+                        .w(px(120.0))
+                        .text_color(theme::warning())
+                        .child(format!("{}s silence", policy.inactivity_window_ms / 1000)),
+                )
+                .child(
+                    div()
+                        .w(px(110.0))
+                        .text_color(theme::accent())
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .child(format_ms_minutes(policy.max_timeout_ms)),
+                )
+                .child(
+                    div()
+                        .w(px(120.0))
+                        .text_color(theme::success())
+                        .child(format!(
+                            "+{}s / frame",
+                            policy.extension_increment_ms / 1000
+                        )),
+                ),
+        );
+    }
+
+    let companion_policy = AgentTimeoutPolicy::companion();
+    rows = rows.child(
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::surface_raised())
+            .text_xs()
+            .child(
+                div()
+                    .w(px(260.0))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .px_1()
+                            .py_0p5()
+                            .rounded_sm()
+                            .bg(theme::accent_soft())
+                            .text_color(theme::accent())
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child("companion"),
+                    )
+                    .child(
+                        div()
+                            .text_color(theme::text())
+                            .child("Companion (Interactive Chat)"),
+                    ),
+            )
+            .child(
+                div()
+                    .w(px(100.0))
+                    .text_color(theme::text())
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(format_ms_minutes(companion_policy.base_timeout_ms)),
+            )
+            .child(
+                div()
+                    .w(px(120.0))
+                    .text_color(theme::warning())
+                    .child(format!(
+                        "{}s silence",
+                        companion_policy.inactivity_window_ms / 1000
+                    )),
+            )
+            .child(
+                div()
+                    .w(px(110.0))
+                    .text_color(theme::accent())
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(format_ms_minutes(companion_policy.max_timeout_ms)),
+            )
+            .child(
+                div()
+                    .w(px(120.0))
+                    .text_color(theme::success())
+                    .child(format!(
+                        "+{}s / frame",
+                        companion_policy.extension_increment_ms / 1000
+                    )),
+            ),
+    );
+
+    card("Agent execution timeouts & Progressive streaming")
+        .child(div().text_xs().text_color(theme::text_muted()).child(
+            "Active execution deadlines dynamically extend as the CLI delivers output frames (thinking tokens, schema deltas, tool events). An inactivity window aborts hung processes; an absolute ceiling prevents runaway execution.",
+        ))
+        .child(rows)
+}
+
+fn format_ms_minutes(ms: u64) -> String {
+    let secs = ms / 1000;
+    if secs >= 60 && secs.is_multiple_of(60) {
+        format!("{} min", secs / 60)
+    } else if secs >= 60 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
 }
 
 fn section_header(kicker: &'static str, title: &'static str, count: usize) -> impl IntoElement {

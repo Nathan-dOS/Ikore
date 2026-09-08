@@ -409,3 +409,45 @@ fn forge_graph_waves_and_delivery_fit_supported_window_sizes(cx: &mut TestAppCon
         }
     }
 }
+
+#[test]
+fn ui_source_contains_no_unapproved_portuguese_literals() {
+    const PT_CHARS: &[char] = &[
+        '\u{00E1}', '\u{00E0}', '\u{00E2}', '\u{00E3}', '\u{00E9}', '\u{00EA}', '\u{00ED}',
+        '\u{00F3}', '\u{00F4}', '\u{00F5}', '\u{00FA}', '\u{00E7}', '\u{00C1}', '\u{00C0}',
+        '\u{00C2}', '\u{00C3}', '\u{00C9}', '\u{00CA}', '\u{00CD}', '\u{00D3}', '\u{00D4}',
+        '\u{00D5}', '\u{00DA}', '\u{00C7}',
+    ];
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src_dir = manifest_dir.join("src");
+    let allowed_files = ["text_input.rs", "native_editor.rs"];
+
+    let mut violations = Vec::new();
+    let entries = std::fs::read_dir(&src_dir).expect("src directory must exist");
+    for entry in entries {
+        let entry = entry.expect("valid dir entry");
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if allowed_files.contains(&file_name) {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path).expect("failed to read source file");
+        for (line_idx, line) in content.lines().enumerate() {
+            if line.chars().any(|c| PT_CHARS.contains(&c)) {
+                violations.push(format!("{file_name}:{}: {}", line_idx + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "Found unapproved Portuguese characters in UI source files:\n{}",
+        violations.join("\n")
+    );
+}

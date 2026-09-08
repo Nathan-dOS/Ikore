@@ -184,7 +184,7 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             .as_ref()
             .and_then(|id| model.forge.snapshot.features.iter().find(|f| &f.id == id))
             .map(|f| f.title.clone())
-            .unwrap_or_else(|| "Task avulsa".into());
+            .unwrap_or_else(|| "Standalone task".into());
         let mut row = card()
             .child(heading(task.draft.title.clone()))
             .child(label(format!(
@@ -197,7 +197,7 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         }
         if !task.draft.dependencies.is_empty() {
             row = row.child(label(format!(
-                "Pré-requisitos: {}",
+                "Prerequisites: {}",
                 task.draft
                     .dependencies
                     .iter()
@@ -220,7 +220,7 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         {
             row = row.child(button(
                 format!("task-pulsation-{}", task.id),
-                "Ver pulsação e evidências",
+                "View pulsation and evidence",
                 ForgeAction::OpenPulsation(pulse.clone()),
                 cx,
             ));
@@ -231,7 +231,7 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             40.try_into().expect("bounded threshold"),
         );
         if assessment.score.get() >= assessment.threshold.get() {
-            row = row.child(label("A descrição pode precisar de mais detalhes:"));
+            row = row.child(label("Description may need more detail:"));
             for contribution in assessment.contributions {
                 row = row.child(label(contribution.reason));
             }
@@ -244,9 +244,9 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             .find(|e| e.task_id == task.id)
         {
             row = row
-                .child(label(format!("Evidência integrada: {}", evidence.summary)))
+                .child(label(format!("Integrated evidence: {}", evidence.summary)))
                 .child(label(format!(
-                    "Critérios: {}",
+                    "Criteria: {}",
                     evidence.criterion_ids.join(", ")
                 )));
         }
@@ -262,9 +262,9 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             row = row.child(button(
                 format!("select-task-{}", task.id),
                 if selected {
-                    "✓ Selecionada"
+                    "✓ Selected"
                 } else {
-                    "Selecionar para pulsação"
+                    "Select for pulsation"
                 },
                 ForgeAction::ToggleTask(task.id.clone()),
                 cx,
@@ -273,7 +273,7 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         if task.draft.feature_id.is_none() && task.state == "ready" {
             row = row.child(button(
                 format!("edit-task-{}", task.id),
-                "Editar task",
+                "Edit task",
                 ForgeAction::EditTask(task.id.clone()),
                 cx,
             ));
@@ -284,11 +284,11 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         {
             row = row
                 .child(label(
-                    "Este pedido pode se beneficiar de uma conversa de feature.",
+                    "This request may benefit from a feature conversation.",
                 ))
                 .child(button(
                     format!("convert-task-{}", task.id),
-                    "Levar ideia à Feature Forge",
+                    "Convert to Feature in Forge",
                     ForgeAction::SuggestFeature(task.id.clone()),
                     cx,
                 ));
@@ -297,13 +297,13 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     }
     if model.forge.snapshot.tasks.is_empty() {
         list = list.child(label(
-            "Adicione bugs e pequenos ajustes ou aprove uma feature para criar suas tasks.",
+            "Add bugs and small tweaks or approve a feature to create tasks.",
         ));
     }
     let mut selected = card()
-        .child(heading("Compor pulsação"))
+        .child(heading("Compose pulsation"))
         .child(label(
-            "Selecione tasks para executar e integrar como um único lote.",
+            "Select tasks to execute and integrate as a single batch.",
         ))
         .child(model.forge.batch_title.clone());
     for task in model
@@ -317,12 +317,12 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     }
     selected = selected
         .child(label(format!(
-            "{} tasks selecionadas",
+            "{} task(s) selected",
             model.forge.selected_tasks.len()
         )))
         .child(button(
             "dispatch-batch",
-            "Enviar lote para execução",
+            "Dispatch batch for execution",
             ForgeAction::Dispatch,
             cx,
         ));
@@ -342,7 +342,7 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                 .gap_3()
                 .child(button(
                     "retry-forge-publications",
-                    "Reconciliar notas de planejamento",
+                    "Reconcile planning notes",
                     ForgeAction::RetryPublications,
                     cx,
                 ))
@@ -430,7 +430,7 @@ fn feature_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             _ => delivery(model, f, cx),
         }
     } else {
-        card().child(heading("Transforme uma ideia em um plano executável")).child(label("Capture a ideia para conversar com o Feature Agent, avaliar alternativas e preparar suas tasks.")).child(button("forge-first-feature","Nova feature",ForgeAction::New(true),cx)).into_any_element()
+        card().child(heading("Turn an idea into an executable plan")).child(label("Capture the idea to discuss with the Feature Agent, evaluate alternatives, and prepare tasks.")).child(button("forge-first-feature","New feature",ForgeAction::New(true),cx)).into_any_element()
     };
     let detail = div()
         .id("forge-detail")
@@ -459,28 +459,28 @@ fn feature_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
 }
 fn state(s: FeatureState) -> &'static str {
     match s {
-        FeatureState::Incubating => "Incubação",
-        FeatureState::InTriage => "Triagem",
-        FeatureState::Approved => "Aprovada",
-        FeatureState::Planned => "Planejada",
-        FeatureState::Executing => "Em execução",
-        FeatureState::ReadyForReview => "Revisar entrega",
-        FeatureState::Done => "Concluída",
-        FeatureState::Archived => "Arquivada",
+        FeatureState::Incubating => "Incubation",
+        FeatureState::InTriage => "Triage",
+        FeatureState::Approved => "Approved",
+        FeatureState::Planned => "Planned",
+        FeatureState::Executing => "Executing",
+        FeatureState::ReadyForReview => "Review delivery",
+        FeatureState::Done => "Done",
+        FeatureState::Archived => "Archived",
     }
 }
 fn incubation(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
     let mut panel = card()
         .child(heading(f.title.clone()))
         .child(label(format!(
-            "{} · revisão {} · contexto {}",
+            "{} · revision {} · context {}",
             state(f.state),
             f.revision,
             f.brief.coverage
         )))
         .child(label(f.original_idea.clone()));
     for turn in &model.forge.history {
-        panel = panel.child(card().child(label("Você")).child(turn.user_message.clone()));
+        panel = panel.child(card().child(label("You")).child(turn.user_message.clone()));
         if let Some(reply) = &turn.assistant_message {
             panel = panel.child(card().child(label("Feature Agent")).child(reply.clone()));
         }
@@ -489,10 +489,10 @@ fn incubation(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyE
         }
         if turn.status == "running" {
             panel = panel
-                .child(label("O Feature Agent está analisando o contexto…"))
+                .child(label("Feature Agent is analyzing context…"))
                 .child(button(
                     format!("cancel-feature-turn-{}", turn.id),
-                    "Cancelar resposta",
+                    "Cancel response",
                     ForgeAction::CancelTurn(turn.id.clone()),
                     cx,
                 ));
@@ -517,7 +517,7 @@ fn incubation(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyE
     if !f.brief.objective.is_empty() {
         panel = panel.child(brief(f)).child(button(
             "approve-feature",
-            "Aprovar escopo e criar tasks",
+            "Approve scope and create tasks",
             ForgeAction::Approve,
             cx,
         ));
@@ -525,55 +525,55 @@ fn incubation(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyE
     panel.into_any_element()
 }
 fn brief(f: &Feature) -> Div {
-    let mut d = card().child(heading("Especificação proposta"));
+    let mut d = card().child(heading("Proposed specification"));
     for (title, value) in [
-        ("Objetivo", &f.brief.objective),
-        ("Público", &f.brief.audience),
-        ("Comportamento", &f.brief.behavior),
-        ("Escopo", &f.brief.scope),
-        ("Fora do escopo", &f.brief.exclusions),
+        ("Objective", &f.brief.objective),
+        ("Audience", &f.brief.audience),
+        ("Behavior", &f.brief.behavior),
+        ("Scope", &f.brief.scope),
+        ("Out of scope", &f.brief.exclusions),
     ] {
         d = d.child(label(title)).child(value.clone());
     }
     for decision in &f.brief.decisions {
-        d = d.child(label(format!("Decisão: {decision}")));
+        d = d.child(label(format!("Decision: {decision}")));
     }
     for pending in &f.brief.pending_decisions {
         d = d.child(
             div()
                 .text_color(theme::warning())
-                .child(format!("Pendente: {pending}")),
+                .child(format!("Pending: {pending}")),
         );
     }
     for alternative in &f.brief.alternatives {
-        d = d.child(label(format!("Alternativa: {alternative}")));
+        d = d.child(label(format!("Alternative: {alternative}")));
     }
     for c in &f.brief.criteria {
-        d = d.child(label(format!("Aceite: {}", c.description)));
+        d = d.child(label(format!("Acceptance: {}", c.description)));
     }
     for t in &f.brief.tasks {
         d = d.child(label(format!(
-            "Task proposta: {} — {}",
+            "Proposed task: {} — {}",
             t.title, t.description
         )));
     }
     for s in &f.brief.sources {
         d = d.child(label(format!(
-            "Fonte consultada: {}",
+            "Consulted source: {}",
             s.relative_path.as_str()
         )));
     }
     d
 }
 fn triage(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
-    let mut p = card().child(heading("Triagem e decisão")).child(label(
-        "A avaliação orienta a prioridade. Você decide se a feature deve avançar.",
+    let mut p = card().child(heading("Triage and decision")).child(label(
+        "Evaluation guides priority. You decide whether the feature moves forward.",
     ));
     for (i, name) in [
-        "Valor e necessidade",
-        "Alinhamento com o produto",
-        "Viabilidade e engenharia",
-        "Usabilidade e adoção",
+        "Value and need",
+        "Product alignment",
+        "Feasibility and engineering",
+        "Usability and adoption",
     ]
     .into_iter()
     .enumerate()
@@ -588,38 +588,38 @@ fn triage(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyEleme
                 .gap_2()
                 .child(button(
                     "rating-impact",
-                    format!("Impacto: {}", model.forge.impact),
+                    format!("Impact: {}", model.forge.impact),
                     ForgeAction::Rating(0),
                     cx,
                 ))
                 .child(button(
                     "rating-confidence",
-                    format!("Confiança: {}", model.forge.confidence),
+                    format!("Confidence: {}", model.forge.confidence),
                     ForgeAction::Rating(1),
                     cx,
                 ))
                 .child(button(
                     "rating-effort",
-                    format!("Esforço: {}", model.forge.effort),
+                    format!("Effort: {}", model.forge.effort),
                     ForgeAction::Rating(2),
                     cx,
                 )),
         )
         .child(label(
-            "Clique em uma nota para alternar de 1 a 5. Score = impacto × confiança ÷ esforço.",
+            "Click a rating to cycle 1 to 5. Score = impact × confidence ÷ effort.",
         ))
         .child(button(
             "structural-level",
             format!(
-                "Nível: {}",
-                ["Fundação", "Domínio", "Interface", "Otimização"][model.forge.level as usize]
+                "Level: {}",
+                ["Foundation", "Domain", "Interface", "Optimization"][model.forge.level as usize]
             ),
             ForgeAction::Level,
             cx,
         ))
         .child(button(
             "save-evaluation",
-            "Salvar avaliação",
+            "Save evaluation",
             ForgeAction::Evaluate,
             cx,
         ))
@@ -627,7 +627,7 @@ fn triage(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyEleme
     if f.state == FeatureState::Archived {
         p = p.child(button(
             "reopen-feature",
-            "Reabrir feature",
+            "Reopen feature",
             ForgeAction::Reopen,
             cx,
         ));
@@ -635,13 +635,13 @@ fn triage(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyEleme
         p = p
             .child(button(
                 "archive-feature",
-                "Arquivar com justificativa",
+                "Archive with rationale",
                 ForgeAction::Archive,
                 cx,
             ))
             .child(button(
                 "triage-approve",
-                "Aprovar escopo e tasks",
+                "Approve scope and tasks",
                 ForgeAction::Approve,
                 cx,
             ));
@@ -649,7 +649,7 @@ fn triage(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyEleme
     p.into_any_element()
 }
 fn dependencies(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
-    let mut p=card().child(heading("Dependências confirmadas")).child(label("As setas apontam da feature para seus pré-requisitos. Adicionar uma relação exige sua confirmação e justificativa.")).child(model.forge.rationale.clone());
+    let mut p=card().child(heading("Confirmed dependencies")).child(label("Arrows point from the feature to its prerequisites. Adding a relation requires confirmation and rationale.")).child(model.forge.rationale.clone());
     for edge in model
         .forge
         .snapshot
@@ -669,18 +669,18 @@ fn dependencies(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> An
                     "{} → {}",
                     f.title,
                     pre.map(|x| x.title.as_str())
-                        .unwrap_or("Feature indisponível")
+                        .unwrap_or("Feature unavailable")
                 ))
                 .child(label(edge.rationale.clone()))
                 .child(button(
                     format!("remove-edge-{}", edge.prerequisite_id),
-                    "Remover relação",
+                    "Remove relation",
                     ForgeAction::Dependency(edge.prerequisite_id.clone(), false),
                     cx,
                 )),
         );
     }
-    p = p.child(heading("Confirmar um pré-requisito"));
+    p = p.child(heading("Confirm a prerequisite"));
     for other in model.forge.snapshot.features.iter().filter(|x| {
         x.id != f.id
             && !model
@@ -692,7 +692,7 @@ fn dependencies(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> An
     }) {
         p = p.child(button(
             format!("add-edge-{}", other.id),
-            format!("Depende de {} ({})", other.title, state(other.state)),
+            format!("Depends on {} ({})", other.title, state(other.state)),
             ForgeAction::Dependency(other.id.clone(), true),
             cx,
         ));
@@ -724,13 +724,13 @@ fn dependencies(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> An
                 p = p.child(
                     card()
                         .child(label(format!(
-                            "Sugestão pendente: {} → {}",
+                            "Pending suggestion: {} → {}",
                             f.title, pre.title
                         )))
                         .child(label(edge.rationale.clone()))
                         .child(button(
                             format!("accept-suggestion-{}", pre.id),
-                            "Confirmar dependência sugerida",
+                            "Confirm suggested dependency",
                             ForgeAction::ConfirmSuggestion(
                                 edge.prerequisite_id.clone(),
                                 edge.rationale.clone(),
@@ -818,7 +818,7 @@ fn feature_graph(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         .absolute()
         .size_full(),
     );
-    for (i, title) in ["Fundação / Onda 0", "Domínio", "Interface", "Otimização"]
+    for (i, title) in ["Foundation / Wave 0", "Domain", "Interface", "Optimization"]
         .iter()
         .enumerate()
     {
@@ -856,9 +856,9 @@ fn feature_graph(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
 fn waves(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let mut columns = div().flex().gap_2().min_w_0();
     for (wave, title) in [
-        (Wave::Current, "Onda Atual"),
-        (Wave::Next, "Próxima Onda"),
-        (Wave::Horizon, "Horizonte"),
+        (Wave::Current, "Current Wave"),
+        (Wave::Next, "Next Wave"),
+        (Wave::Horizon, "Horizon"),
     ] {
         let mut column = card().flex_1().child(heading(title));
         for f in model
@@ -884,9 +884,9 @@ fn waves(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                             .child(label(state(f.state)))
                             .children(
                                 [
-                                    (Wave::Current, "Atual"),
-                                    (Wave::Next, "Próxima"),
-                                    (Wave::Horizon, "Horizonte"),
+                                    (Wave::Current, "Current"),
+                                    (Wave::Next, "Next"),
+                                    (Wave::Horizon, "Horizon"),
                                 ]
                                 .into_iter()
                                 .filter(|(w, _)| *w != wave)
@@ -912,7 +912,20 @@ fn waves(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                 })),
         );
     }
-    let mut p=card().child(heading("Planejamento em ondas")).child(label(format!("Capacidade da Onda Atual: {} features. Arraste uma feature para uma onda ou use os botões.",model.forge.snapshot.current_wave_limit))).child(model.forge.wave_limit.clone()).child(button("set-wave-limit","Atualizar capacidade",ForgeAction::SetLimit,cx)).child(columns);
+    let mut p = card()
+        .child(heading("Wave planning"))
+        .child(label(format!(
+            "Current Wave capacity: {} features. Drag a feature to a wave or use the buttons.",
+            model.forge.snapshot.current_wave_limit
+        )))
+        .child(model.forge.wave_limit.clone())
+        .child(button(
+            "set-wave-limit",
+            "Update capacity",
+            ForgeAction::SetLimit,
+            cx,
+        ))
+        .child(columns);
     for f in model.forge.snapshot.features.iter().filter(|f| {
         f.wave.is_none()
             && f.approved_revision == Some(f.revision)
@@ -924,16 +937,16 @@ fn waves(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                 .child(button(
                     format!("plan-current-{}", f.id),
                     if f.brief.foundation {
-                        "Planejar fundação / Onda 0"
+                        "Plan foundation / Wave 0"
                     } else {
-                        "Planejar na Onda Atual"
+                        "Plan in Current Wave"
                     },
                     ForgeAction::Move(f.id.clone(), Wave::Current),
                     cx,
                 ))
                 .child(button(
                     format!("plan-next-{}", f.id),
-                    "Planejar na Próxima Onda",
+                    "Plan in Next Wave",
                     ForgeAction::Move(f.id.clone(), Wave::Next),
                     cx,
                 )),
@@ -953,11 +966,11 @@ fn delivery(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyEle
         .collect::<Vec<_>>();
     let done = tasks.iter().filter(|t| t.state == "done").count();
     let mut p = card()
-        .child(heading("Entrega da feature"))
-        .child(label(format!("{done}/{} tasks integradas", tasks.len())))
+        .child(heading("Feature delivery"))
+        .child(label(format!("{done}/{} tasks integrated", tasks.len())))
         .child(button(
             "compose-feature-tasks",
-            "Selecionar tasks desta feature",
+            "Select tasks from this feature",
             ForgeAction::SelectFeatureTasks(f.id.clone()),
             cx,
         ));
@@ -982,10 +995,10 @@ fn delivery(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyEle
         }) {
             p = p.child(
                 card()
-                    .child(heading(format!("Revisão integrada: {}", task.draft.title)))
+                    .child(heading(format!("Integrated review: {}", task.draft.title)))
                     .child(label(evidence.summary.clone()))
                     .child(label(format!(
-                        "Critérios cobertos: {}",
+                        "Covered criteria: {}",
                         evidence.criterion_ids.join(", ")
                     ))),
             );
@@ -1000,14 +1013,14 @@ fn delivery(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyEle
         {
             p = p.child(button(
                 format!("delivery-evidence-{}", t.id),
-                format!("Evidências: {}", t.draft.title),
+                format!("Evidence: {}", t.draft.title),
                 ForgeAction::OpenPulsation(pulse.clone()),
                 cx,
             ));
         }
     }
     p = p
-        .child(heading("Revisão final dos critérios da feature"))
+        .child(heading("Final review of feature criteria"))
         .children(
             f.brief
                 .criteria
@@ -1015,11 +1028,11 @@ fn delivery(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyEle
                 .map(|c| label(format!("□ {}", c.description))),
         )
         .child(label(
-            "Confirme a entrega após revisar as evidências e publicações das pulsações vinculadas.",
+            "Confirm delivery after reviewing evidence and publications from linked pulsations.",
         ))
         .child(button(
             "complete-feature",
-            "Confirmar critérios e concluir feature",
+            "Confirm criteria and complete feature",
             ForgeAction::Complete,
             cx,
         ));
@@ -1032,24 +1045,24 @@ pub(crate) fn capture_overlay(model: &AppModel, cx: &mut Context<AppModel>) -> A
         .w(px(720.0))
         .max_w(relative(0.9))
         .max_h(relative(0.9))
-        .child(heading("Novo trabalho"))
+        .child(heading("New work"))
         .child(
             div()
                 .flex()
                 .gap_2()
                 .child(button(
                     "capture-tasks-option",
-                    "Adicionar tasks",
+                    "Add tasks",
                     ForgeAction::New(false),
                     cx,
                 ))
                 .child(button(
                     "capture-feature-option",
-                    "Nova feature",
+                    "New feature",
                     ForgeAction::New(true),
                     cx,
                 ))
-                .child(button("close-capture", "Fechar", ForgeAction::Close, cx)),
+                .child(button("close-capture", "Close", ForgeAction::Close, cx)),
         )
         .child(status(model));
     let mut body = div()
@@ -1062,14 +1075,12 @@ pub(crate) fn capture_overlay(model: &AppModel, cx: &mut Context<AppModel>) -> A
         .gap_3();
     if model.forge.capture_feature {
         body = body
-            .child(label(
-                "Converse sobre a funcionalidade antes de definir sua execução.",
-            ))
+            .child(label("Discuss the feature before defining its execution."))
             .child(model.forge.feature_title.clone())
             .child(model.forge.idea.clone())
             .child(button(
                 "create-feature",
-                "Criar feature e iniciar conversa",
+                "Create feature and start conversation",
                 ForgeAction::CreateFeature,
                 cx,
             ));
@@ -1087,13 +1098,13 @@ pub(crate) fn capture_overlay(model: &AppModel, cx: &mut Context<AppModel>) -> A
                             .gap_2()
                             .child(button(
                                 format!("draft-kind-{i}"),
-                                format!("Tipo: {:?}", draft.kind),
+                                format!("Kind: {:?}", draft.kind),
                                 ForgeAction::Kind(i),
                                 cx,
                             ))
                             .child(button(
                                 format!("remove-draft-{i}"),
-                                "Remover",
+                                "Remove",
                                 ForgeAction::RemoveDraft(i),
                                 cx,
                             )),
@@ -1101,7 +1112,7 @@ pub(crate) fn capture_overlay(model: &AppModel, cx: &mut Context<AppModel>) -> A
             );
         }
         for (i, draft) in model.forge.drafts.iter().enumerate() {
-            body = body.child(label(format!("Pré-requisitos da task {}", i + 1)));
+            body = body.child(label(format!("Task {} prerequisites", i + 1)));
             for t in model.forge.snapshot.tasks.iter().filter(|t| {
                 t.state != "superseded"
                     && model
@@ -1129,14 +1140,14 @@ pub(crate) fn capture_overlay(model: &AppModel, cx: &mut Context<AppModel>) -> A
         if model.forge.editing_task.is_none() {
             body = body.child(button(
                 "add-task-draft",
-                "+ Outra task",
+                "+ Another task",
                 ForgeAction::AddDraft,
                 cx,
             ));
         }
         body = body.child(button(
             "save-task-drafts",
-            "Salvar tasks no backlog",
+            "Save tasks to backlog",
             ForgeAction::SaveTasks,
             cx,
         ));

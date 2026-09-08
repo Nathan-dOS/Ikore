@@ -12,7 +12,37 @@ pub(crate) fn json(value: &impl Serialize) -> Result<String, Error> {
     serde_json::to_string(value).map_err(invalid)
 }
 pub(crate) fn decode<T: DeserializeOwned>(value: &str) -> Result<T, Error> {
-    serde_json::from_str(value).map_err(invalid)
+    let trimmed = value.trim();
+    if let Ok(result) = serde_json::from_str(trimmed) {
+        return Ok(result);
+    }
+    if trimmed.starts_with("```") {
+        let without_fences = trimmed
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim();
+        if let Ok(result) = serde_json::from_str(without_fences) {
+            return Ok(result);
+        }
+    }
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}'))
+        && end > start
+    {
+        let slice = &trimmed[start..=end];
+        if let Ok(result) = serde_json::from_str(slice) {
+            return Ok(result);
+        }
+    }
+    if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']'))
+        && end > start
+    {
+        let slice = &trimmed[start..=end];
+        if let Ok(result) = serde_json::from_str(slice) {
+            return Ok(result);
+        }
+    }
+    serde_json::from_str(trimmed).map_err(invalid)
 }
 pub(crate) fn now() -> String {
     chrono::Utc::now().to_rfc3339()
