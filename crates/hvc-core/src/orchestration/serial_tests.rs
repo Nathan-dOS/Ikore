@@ -103,6 +103,31 @@ impl Fixture {
             }],
         }
     }
+    pub(crate) fn output_artifacts(
+        &self,
+        status: &str,
+        artifacts: Vec<GeneratedArtifact>,
+    ) -> StageExecutionResult {
+        let structured = json!({"outputLanguage":"en","summary":"Traceable result","statusUpdate":status,"notes":[],"contextUsage":[],"artifacts":[]});
+        StageExecutionResult {
+            provider_used: "fixture".into(),
+            model_used: "fixture".into(),
+            route_id: None,
+            connection_id: None,
+            llm_execution_id: None,
+            input_tokens: None,
+            output_tokens: None,
+            estimated_cost_usd: None,
+            request_payload: json!({}),
+            response_payload: json!({}),
+            raw_output: structured.to_string(),
+            structured_output: structured,
+            schema_json: json!({}),
+            tool_trace: json!([]),
+            context_trace: crate::agent_runtime::ContextRetrievalTrace::default(),
+            artifacts,
+        }
+    }
     pub(crate) fn accept(
         &self,
         output: &StageExecutionResult,
@@ -690,4 +715,95 @@ fn windows_junction_cannot_escape_publication_root() {
     );
     assert!(!outside.path().join("escape.md").exists());
     fs::remove_dir(link).unwrap();
+}
+
+/// Field incident, 2026-09-09 (pulsation `250892e3-...`): the Test stage's
+/// second attempt passed all 5 model-output validations but was then rejected
+/// by `validate_generated_vault_note` for a missing `source-files` frontmatter
+/// key - and, because that check used `invalid()` (host-side, never
+/// retryable), the job died there with no third attempt and no raw output
+/// persisted anywhere. All 4 publication checks in this loop only inspect the
+/// artifacts of the response being accepted right now, never other stored
+/// artifacts, so they belong in the same `ModelOutputInvalid` retry gate as
+/// the 5 validations that precede them.
+#[test]
+fn oversized_artifact_content_is_a_retryable_model_output_error() {
+    let f = Fixture::new(PulsationStage::Code);
+    let output = f.output_artifacts(
+        "advance",
+        vec![GeneratedArtifact {
+            name: "draft".into(),
+            kind: "stage_output".into(),
+            relative_path: Some("src/big.rs".into()),
+            content: "a".repeat(1024 * 1024 + 1),
+        }],
+    );
+    assert!(matches!(
+        f.accept(&output),
+        Err(PersistenceServiceError::ModelOutputInvalid(_))
+    ));
+}
+
+#[test]
+fn a_reserved_artifact_kind_is_a_retryable_model_output_error() {
+    let f = Fixture::new(PulsationStage::Code);
+    let output = f.output_artifacts(
+        "advance",
+        vec![GeneratedArtifact {
+            name: "draft".into(),
+            kind: "code_context".into(),
+            relative_path: Some("src/generated.rs".into()),
+            content: "fn generated() {}\n".into(),
+        }],
+    );
+    assert!(matches!(
+        f.accept(&output),
+        Err(PersistenceServiceError::ModelOutputInvalid(_))
+    ));
+}
+
+#[test]
+fn a_vault_note_missing_source_files_is_a_retryable_model_output_error() {
+    let f = Fixture::new(PulsationStage::Test);
+    let output = f.output_artifacts(
+        "advance",
+        vec![GeneratedArtifact {
+            name: "T1_1".into(),
+            kind: "test".into(),
+            relative_path: Some("knowledge/obsidian/tests/T1_1-architecture.md".into()),
+            content: "# Architecture decisions documented\n".into(),
+        }],
+    );
+    let error = f
+        .accept(&output)
+        .expect_err("missing source-files must fail");
+    assert!(
+        matches!(error, PersistenceServiceError::ModelOutputInvalid(ref message) if message.contains("source-files"))
+    );
+}
+
+#[test]
+fn duplicate_artifact_destinations_are_a_retryable_model_output_error() {
+    let f = Fixture::new(PulsationStage::Code);
+    let output = f.output_artifacts(
+        "advance",
+        vec![
+            GeneratedArtifact {
+                name: "draft-a".into(),
+                kind: "stage_output".into(),
+                relative_path: Some("src/dup.rs".into()),
+                content: "fn a() {}\n".into(),
+            },
+            GeneratedArtifact {
+                name: "draft-b".into(),
+                kind: "stage_output".into(),
+                relative_path: Some("SRC/DUP.rs".into()),
+                content: "fn b() {}\n".into(),
+            },
+        ],
+    );
+    assert!(matches!(
+        f.accept(&output),
+        Err(PersistenceServiceError::ModelOutputInvalid(_))
+    ));
 }

@@ -361,7 +361,9 @@ impl PersistenceService {
             for (position, artifact) in artifacts.iter().enumerate() {
                 if artifact.content.len() > 1024 * 1024 || artifact.content.as_bytes().contains(&0)
                 {
-                    return Err(invalid("Artifact acima de 1 MiB ou binário."));
+                    return Err(PersistenceServiceError::ModelOutputInvalid(
+                        "Artifact acima de 1 MiB ou binário.".to_string(),
+                    ));
                 }
                 let path = artifact
                     .relative_path
@@ -377,7 +379,9 @@ impl PersistenceService {
                     artifact.kind.as_str(),
                     "code_context" | "learning_report" | "component"
                 ) {
-                    return Err(invalid("Tipo de artifact reservado ao coletor do host."));
+                    return Err(PersistenceServiceError::ModelOutputInvalid(
+                        "Tipo de artifact reservado ao coletor do host.".to_string(),
+                    ));
                 }
                 if let Some(path) = path {
                     publication::safe_target(root, path, false)?;
@@ -389,10 +393,12 @@ impl PersistenceService {
                     .map_err(|error| {
                         let command_error: crate::workspace_service::WorkspaceCommandError =
                             error.into();
-                        invalid(command_error.message)
+                        PersistenceServiceError::ModelOutputInvalid(command_error.message)
                     })?;
                     if !paths.insert(path.to_ascii_lowercase()) {
-                        return Err(invalid("Artifacts têm destinos duplicados."));
+                        return Err(PersistenceServiceError::ModelOutputInvalid(
+                            "Artifacts têm destinos duplicados.".to_string(),
+                        ));
                     }
                 }
                 let id = Uuid::new_v4().to_string();

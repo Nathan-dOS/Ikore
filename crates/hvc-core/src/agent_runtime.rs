@@ -1006,7 +1006,7 @@ fn build_stage_prompt(
         prompt.push_str("`componentProposals` grounds a proposal in code that ALREADY EXISTS - each sourceFile must be a real, already-existing file from the retrieved context or the approved handoff, never a file the task will create. It is not a place to describe your own design recommendations for code that has not been written yet; those belong in the specification artifact's own content, which you already produce. If no already-existing file backs a proposal - for example, a greenfield feature with nothing implemented so far - use componentProposals=[]. Do not submit a proposal with an empty or invented sourceFiles just because the specification implies a component; an empty componentProposals is the correct, complete answer in that case.\n");
     }
     if matches!(stage, "SPECIFICATION" | "Test") {
-        prompt.push_str("When creating or updating Markdown notes under knowledge/obsidian/features/ or knowledge/obsidian/tests/, include YAML frontmatter with non-empty `source-files` and `test-files` lists using real workspace-relative paths present in the context.\n");
+        prompt.push_str("When creating or updating Markdown notes under knowledge/obsidian/features/ or knowledge/obsidian/tests/, start the file with YAML frontmatter containing `source-files` and `test-files`, each a list with at least one real workspace-relative path from the context - the whole note is rejected if either list is missing, empty, or omitted. Example:\n```\n---\nsource-files:\n  - src/auth.rs\ntest-files:\n  - tests/auth_test.rs\n---\n```\n");
     }
     prompt.push_str("Produce a structured stage update with traceable artifacts. Translate source prose into English; preserve only opaque identifiers, hashes, API names, and existing source paths verbatim.\n");
     prompt.push_str("Every artifact object needs all four fields - name, kind, relativePath, content - in that order, inside the same object. Set relativePath to null when the artifact has no fixed destination path yet; never omit the key and never place it after the artifact\'s closing brace.\n\n");
@@ -3280,6 +3280,24 @@ mod prompt_tests {
         assert!(prompt.contains("grounds a proposal in code that ALREADY EXISTS"));
         assert!(prompt.contains("greenfield feature with nothing implemented so far"));
         assert!(prompt.contains("an empty componentProposals is the correct, complete answer"));
+    }
+
+    /// Field incident, 2026-09-09 (pulsation `250892e3-...`): a Test-stage note
+    /// under `knowledge/obsidian/tests/` was rejected by
+    /// `workspace_service::validate_generated_vault_note` for missing
+    /// `source-files` in its frontmatter, after the single-sentence instruction
+    /// went unfollowed. The prompt now shows a literal frontmatter example and
+    /// states the rejection consequence explicitly.
+    #[test]
+    fn vault_notes_are_shown_a_frontmatter_example_with_source_and_test_files() {
+        for stage in ["SPECIFICATION", "Test"] {
+            let prompt = prompt_for(stage, &[]);
+            assert!(prompt.contains("source-files:\n  - src/auth.rs"));
+            assert!(prompt.contains("test-files:\n  - tests/auth_test.rs"));
+            assert!(prompt.contains(
+                "the whole note is rejected if either list is missing, empty, or omitted"
+            ));
+        }
     }
 
     #[test]
