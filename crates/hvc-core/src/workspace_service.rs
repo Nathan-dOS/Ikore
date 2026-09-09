@@ -627,12 +627,16 @@ pub fn bootstrap_greenfield_workspace(
         ));
     }
 
+    // Runs on every open: corrected scope-file defaults would otherwise never
+    // reach a workspace that was already bootstrapped.
+    let repaired = repair_stage_scope_files(root)?;
+
     if is_greenfield_bootstrapped(root) {
         return Ok(GreenfieldBootstrapStatus {
             mode: "greenfield".to_string(),
             initialized: false,
             message: "Workspace greenfield já inicializado.".to_string(),
-            created_paths: Vec::new(),
+            created_paths: repaired,
         });
     }
 
@@ -644,7 +648,7 @@ pub fn bootstrap_greenfield_workspace(
         )));
     }
 
-    let mut created_paths = Vec::new();
+    let mut created_paths = repaired;
     for relative in REQUIRED_BOOTSTRAP_DIRECTORIES {
         let absolute = root.join(relative);
         if !absolute.exists() {
@@ -789,6 +793,142 @@ fn detect_disallowed_entries(root: &Path) -> Result<Vec<String>, WorkspaceServic
     Ok(disallowed)
 }
 
+/// Scope views for the six pipeline stages, keyed on the `type` vocabulary the
+/// core actually writes: `feature`, `feature_plan`, `contract`, `test`,
+/// `component`, `decision`, `learning_report`.
+///
+/// The previous defaults were written against the `_templates` vocabulary
+/// (`type: feature`), but the forge publishes plan notes as `type: feature_plan`
+/// ([`crate::feature_forge`]), so they either matched nothing - degrading to the
+/// fail-open branch in `get_context_candidates`, i.e. no scoping at all - or,
+/// for `status != deprecated`, matched everything, because an absent property
+/// makes `not-equals` true. Either way the agent scope never bit, and compact
+/// models received the entire vault.
+///
+/// A filter that matches nothing still degrades to fail-open, and the current
+/// feature note always passes via the scope bypass, so narrowing here can never
+/// starve a stage of context.
+const INTAKE_ROUTER_BASE: &str = r#"{
+  "filters": {
+    "and": [
+      { "property": "type", "operator": "in", "value": ["feature_plan", "decision", "component"] }
+    ]
+  }
+}
+"#;
+
+const TASK_SPECIFIER_BASE: &str = r#"{
+  "filters": {
+    "and": [
+      { "property": "type", "operator": "in", "value": ["feature_plan", "feature", "component", "contract", "decision"] }
+    ]
+  }
+}
+"#;
+
+const CONTRACT_AGENT_BASE: &str = r#"{
+  "filters": {
+    "and": [
+      { "property": "type", "operator": "in", "value": ["contract", "feature_plan", "component"] }
+    ]
+  }
+}
+"#;
+
+const BACKEND_AGENT_BASE: &str = r#"{
+  "filters": {
+    "and": [
+      { "property": "type", "operator": "in", "value": ["feature_plan", "contract", "component", "feature"] }
+    ]
+  }
+}
+"#;
+
+const TEST_AGENT_BASE: &str = r#"{
+  "filters": {
+    "and": [
+      { "property": "type", "operator": "in", "value": ["test", "feature_plan", "contract", "feature"] }
+    ]
+  }
+}
+"#;
+
+const INTEGRATOR_BASE: &str = r#"{
+  "filters": {
+    "and": [
+      { "property": "type", "operator": "in", "value": ["feature_plan", "contract", "test", "component", "decision"] }
+    ]
+  }
+}
+"#;
+
+/// The six stage scope files, in the order [`resolve_scope_file_name`] names them.
+const STAGE_SCOPE_FILES: [(&str, &str); 6] = [
+    (
+        "knowledge/obsidian/bases/intake_router.base",
+        INTAKE_ROUTER_BASE,
+    ),
+    (
+        "knowledge/obsidian/bases/task_specifier.base",
+        TASK_SPECIFIER_BASE,
+    ),
+    (
+        "knowledge/obsidian/bases/contract_agent.base",
+        CONTRACT_AGENT_BASE,
+    ),
+    (
+        "knowledge/obsidian/bases/backend_agent.base",
+        BACKEND_AGENT_BASE,
+    ),
+    ("knowledge/obsidian/bases/test_agent.base", TEST_AGENT_BASE),
+    ("knowledge/obsidian/bases/integrator.base", INTEGRATOR_BASE),
+];
+
+/// Stage scope files exactly as previously shipped. A file still byte-identical
+/// to one of these was never touched by the developer, so it is safe to realign.
+const STALE_STAGE_BASE_DEFAULTS: [&str; 5] = [
+    "{\n  \"filters\": {\n    \"and\": [\n      { \"property\": \"status\", \"operator\": \"not-equals\", \"value\": \"deprecated\" }\n    ]\n  }\n}\n",
+    "{\n  \"filters\": {\n    \"and\": [\n      { \"property\": \"type\", \"operator\": \"equals\", \"value\": \"contract\" }\n    ]\n  }\n}\n",
+    "{\n  \"filters\": {\n    \"and\": [\n      { \"property\": \"type\", \"operator\": \"equals\", \"value\": \"feature\" },\n      { \"property\": \"domain\", \"operator\": \"equals\", \"value\": \"backend\" }\n    ]\n  }\n}\n",
+    "{\n  \"filters\": {\n    \"or\": [\n      { \"property\": \"type\", \"operator\": \"equals\", \"value\": \"test\" },\n      { \"property\": \"type\", \"operator\": \"equals\", \"value\": \"feature\" }\n    ]\n  }\n}\n",
+    "{\n  \"filters\": {\n    \"or\": [\n      { \"property\": \"type\", \"operator\": \"equals\", \"value\": \"incident\" },\n      { \"property\": \"type\", \"operator\": \"equals\", \"value\": \"decision\" }\n    ]\n  }\n}\n",
+];
+
+/// Realigns stage scope files that a project bootstrapped before this change.
+///
+/// `greenfield_file_specs` skips files that already exist and the bootstrap
+/// itself returns early once a workspace is initialized, so corrected defaults
+/// would otherwise never reach an existing project. Only files missing or still
+/// byte-identical to a shipped default are rewritten; anything the developer
+/// edited is preserved. Idempotent: a second run rewrites nothing.
+pub fn repair_stage_scope_files(root: &Path) -> Result<Vec<String>, WorkspaceServiceError> {
+    // Repair only, never create: an unbootstrapped root has no bases directory
+    // and is served by `greenfield_file_specs`, which must not be pre-empted
+    // before `detect_disallowed_entries` has had its say.
+    if !root.join("knowledge/obsidian/bases").is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut repaired = Vec::new();
+    for (relative, desired) in STAGE_SCOPE_FILES {
+        let absolute = root.join(relative);
+        match fs::read_to_string(&absolute) {
+            Ok(current) => {
+                if current == desired || !STALE_STAGE_BASE_DEFAULTS.contains(&current.as_str()) {
+                    continue;
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(WorkspaceServiceError::Io(error)),
+        }
+        if let Some(parent) = absolute.parent() {
+            fs::create_dir_all(parent).map_err(WorkspaceServiceError::Io)?;
+        }
+        fs::write(&absolute, desired).map_err(WorkspaceServiceError::Io)?;
+        repaired.push(relative.to_string());
+    }
+    Ok(repaired)
+}
+
 fn greenfield_file_specs() -> Vec<(&'static str, &'static str)> {
     vec![
         (
@@ -838,28 +978,22 @@ fn greenfield_file_specs() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "knowledge/obsidian/bases/intake_router.base",
-            "{\n  \"filters\": {\n    \"and\": [\n      { \"property\": \"status\", \"operator\": \"not-equals\", \"value\": \"deprecated\" }\n    ]\n  }\n}\n",
+            INTAKE_ROUTER_BASE,
         ),
         (
             "knowledge/obsidian/bases/task_specifier.base",
-            "{\n  \"filters\": {\n    \"and\": [\n      { \"property\": \"status\", \"operator\": \"not-equals\", \"value\": \"deprecated\" }\n    ]\n  }\n}\n",
+            TASK_SPECIFIER_BASE,
         ),
         (
             "knowledge/obsidian/bases/contract_agent.base",
-            "{\n  \"filters\": {\n    \"and\": [\n      { \"property\": \"type\", \"operator\": \"equals\", \"value\": \"contract\" }\n    ]\n  }\n}\n",
+            CONTRACT_AGENT_BASE,
         ),
         (
             "knowledge/obsidian/bases/backend_agent.base",
-            "{\n  \"filters\": {\n    \"and\": [\n      { \"property\": \"type\", \"operator\": \"equals\", \"value\": \"feature\" },\n      { \"property\": \"domain\", \"operator\": \"equals\", \"value\": \"backend\" }\n    ]\n  }\n}\n",
+            BACKEND_AGENT_BASE,
         ),
-        (
-            "knowledge/obsidian/bases/test_agent.base",
-            "{\n  \"filters\": {\n    \"or\": [\n      { \"property\": \"type\", \"operator\": \"equals\", \"value\": \"test\" },\n      { \"property\": \"type\", \"operator\": \"equals\", \"value\": \"feature\" }\n    ]\n  }\n}\n",
-        ),
-        (
-            "knowledge/obsidian/bases/integrator.base",
-            "{\n  \"filters\": {\n    \"or\": [\n      { \"property\": \"type\", \"operator\": \"equals\", \"value\": \"incident\" },\n      { \"property\": \"type\", \"operator\": \"equals\", \"value\": \"decision\" }\n    ]\n  }\n}\n",
-        ),
+        ("knowledge/obsidian/bases/test_agent.base", TEST_AGENT_BASE),
+        ("knowledge/obsidian/bases/integrator.base", INTEGRATOR_BASE),
     ]
 }
 
@@ -3709,5 +3843,123 @@ mod document_cache_tests {
         )));
         assert!(!is_watched_path(Path::new(".env")));
         assert!(!is_allowed_extension(Path::new("src/lib.rs")));
+    }
+}
+
+#[cfg(test)]
+mod stage_scope_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn matches(base_content: &str, frontmatter: serde_json::Value) -> bool {
+        let filters = serde_json::from_str::<Value>(base_content).unwrap()["filters"].clone();
+        evaluate_scope_expression(Some(&frontmatter), &filters)
+    }
+
+    fn base_for(stage: &str) -> &'static str {
+        let name = resolve_scope_file_name(None, Some(stage));
+        STAGE_SCOPE_FILES
+            .iter()
+            .find(|(path, _)| path.ends_with(&name))
+            .unwrap_or_else(|| panic!("{stage} resolves to {name}, which has no seeded spec"))
+            .1
+    }
+
+    /// The name the retrieval path asks for and the file the bootstrap writes
+    /// have to agree; today they only do by coincidence.
+    #[test]
+    fn every_stage_resolves_to_a_seeded_scope_file() {
+        let specs = greenfield_file_specs();
+        for (_, stage, _) in crate::orchestration::catalog::STAGES {
+            let name = resolve_scope_file_name(None, Some(stage));
+            let relative = format!("knowledge/obsidian/bases/{name}");
+            let (_, content) = specs
+                .iter()
+                .find(|(path, _)| *path == relative)
+                .unwrap_or_else(|| panic!("{stage} wants {relative}, which is never written"));
+            let parsed = serde_json::from_str::<Value>(content)
+                .unwrap_or_else(|error| panic!("{relative} is not valid JSON: {error}"));
+            assert!(
+                parsed.get("filters").is_some(),
+                "{relative} has no `filters` key"
+            );
+        }
+    }
+
+    /// The frontmatter the forge actually publishes, not the `_templates` one.
+    #[test]
+    fn the_published_plan_note_reaches_intake_and_the_integrator() {
+        let plan = json!({ "type": "feature_plan", "status": "approved_plan" });
+        assert!(matches(base_for("Intake"), plan.clone()));
+        assert!(
+            matches(base_for("Integrator"), plan.clone()),
+            "the Integrator reconciles plans; it used to filter for incidents only"
+        );
+        assert!(matches(base_for("SPECIFICATION"), plan.clone()));
+        assert!(matches(base_for("Code"), plan));
+    }
+
+    #[test]
+    fn triage_does_not_receive_test_notes_but_the_test_stage_does() {
+        let test_note = json!({ "type": "test", "status": "red" });
+        assert!(!matches(base_for("Intake"), test_note.clone()));
+        assert!(matches(base_for("Test"), test_note));
+    }
+
+    #[test]
+    fn a_filter_that_matches_nothing_still_degrades_to_no_scoping() {
+        let cache = VaultIndexCache::default();
+        let filter = serde_json::from_str::<Value>(base_for("Intake")).unwrap()["filters"].clone();
+        assert!(
+            build_scoped_paths(&cache, Some(&filter)).is_empty(),
+            "an empty scope set is what the retrieval fail-open branch keys on"
+        );
+    }
+
+    #[test]
+    fn repair_realigns_stale_defaults_and_preserves_developer_edits() {
+        let root = tempfile::tempdir().unwrap();
+        let bases = root.path().join("knowledge/obsidian/bases");
+        fs::create_dir_all(&bases).unwrap();
+
+        // A stale shipped default, a developer-authored file, and a gap.
+        fs::write(
+            bases.join("intake_router.base"),
+            STALE_STAGE_BASE_DEFAULTS[0],
+        )
+        .unwrap();
+        let authored = "{\n  \"filters\": { \"and\": [] }\n}\n";
+        fs::write(bases.join("integrator.base"), authored).unwrap();
+
+        let repaired = repair_stage_scope_files(root.path()).unwrap();
+        assert!(repaired.contains(&"knowledge/obsidian/bases/intake_router.base".to_string()));
+        assert!(!repaired.contains(&"knowledge/obsidian/bases/integrator.base".to_string()));
+
+        assert_eq!(
+            fs::read_to_string(bases.join("intake_router.base")).unwrap(),
+            INTAKE_ROUTER_BASE
+        );
+        assert_eq!(
+            fs::read_to_string(bases.join("integrator.base")).unwrap(),
+            authored,
+            "a customized scope file must survive byte for byte"
+        );
+        assert_eq!(
+            fs::read_to_string(bases.join("test_agent.base")).unwrap(),
+            TEST_AGENT_BASE,
+            "a missing stage file is filled in"
+        );
+
+        assert!(
+            repair_stage_scope_files(root.path()).unwrap().is_empty(),
+            "repair must be idempotent"
+        );
+    }
+
+    #[test]
+    fn repair_never_creates_files_in_an_unbootstrapped_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(repair_stage_scope_files(root.path()).unwrap().is_empty());
+        assert!(!root.path().join("knowledge").exists());
     }
 }

@@ -10,6 +10,7 @@ pub mod catalog;
 mod code_context;
 mod context;
 mod contracts;
+pub mod failure;
 pub mod learning_report;
 mod policy;
 mod prompt_context;
@@ -29,6 +30,7 @@ mod tests;
 pub use code_context::{LexicalCodeContextService, RoutedCodeContextService};
 pub use context::*;
 pub use contracts::*;
+pub use failure::*;
 pub use policy::*;
 pub(crate) use prompt_context::code_context_prompt_json;
 pub use tree_sitter_context::{

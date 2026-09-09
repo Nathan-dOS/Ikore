@@ -735,3 +735,107 @@ fn component_proposal_contract_is_specification_only_pathless_and_bounded() {
     invalid_id.component_id = "auth--runtime".into();
     assert!(invalid_id.validate().is_err());
 }
+
+#[test]
+fn prompt_handoff_drops_backlog_drafts_but_keeps_the_dispatched_tasks() {
+    use crate::feature_forge::{
+        AcceptanceCriterion, BatchManifest, Feature, FeatureBrief, FeatureEvaluation, FeatureState,
+        TaskDraft, TaskKind, WorkTask,
+    };
+
+    let draft = |title: &str, criterion: &str| TaskDraft {
+        title: title.into(),
+        kind: TaskKind::Feature,
+        description: format!("description of {title}"),
+        criteria: vec![AcceptanceCriterion {
+            id: criterion.into(),
+            description: "criterion".into(),
+        }],
+        dependencies: Vec::new(),
+        feature_id: Some("feature-1".into()),
+    };
+    let selected = draft("Dispatched task", "c-dispatched");
+
+    let mut value = handoff();
+    value.batch_manifest = Some(BatchManifest {
+        schema_version: 1,
+        title: "Batch".into(),
+        tasks: vec![WorkTask {
+            id: "task-0001".into(),
+            project_id: "project-a".into(),
+            revision: 1,
+            draft: selected.clone(),
+            feature_revision: Some(6),
+            state: "executing".into(),
+            active_pulsation_id: Some("pulse-a".into()),
+            completed_pulsation_id: None,
+        }],
+        features: vec![Feature {
+            id: "feature-1".into(),
+            project_id: "project-a".into(),
+            title: "Feature".into(),
+            original_idea: "idea".into(),
+            revision: 6,
+            approved_revision: Some(6),
+            state: FeatureState::Executing,
+            brief: FeatureBrief {
+                objective: "Keep the objective".into(),
+                tasks: vec![selected, draft("Backlog only draft", "c-backlog")],
+                ..FeatureBrief::default()
+            },
+            evaluation: FeatureEvaluation::default(),
+            structural_level: 1,
+            wave: None,
+            position: 0,
+            archive_reason: None,
+        }],
+        feature_dependencies: Vec::new(),
+    });
+
+    let persisted = serde_json::to_value(&value).unwrap();
+    let prompt_json = value.prompt_json().unwrap();
+    let prompt: serde_json::Value = serde_json::from_str(&prompt_json).unwrap();
+
+    // The executable list survives intact, with its ids and criteria.
+    assert_eq!(
+        prompt["batchManifest"]["tasks"],
+        persisted["batchManifest"]["tasks"]
+    );
+    assert_eq!(prompt["batchManifest"]["tasks"][0]["id"], "task-0001");
+    assert_eq!(
+        prompt["batchManifest"]["tasks"][0]["draft"]["criteria"][0]["id"],
+        "c-dispatched"
+    );
+
+    // The ambiguous duplicate does not.
+    assert_eq!(
+        prompt["batchManifest"]["features"][0]["brief"]["tasks"],
+        json!([])
+    );
+    assert!(!prompt_json.contains("Backlog only draft"));
+    assert_eq!(
+        persisted["batchManifest"]["features"][0]["brief"]["tasks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "persistence must keep every planned draft"
+    );
+
+    // The rest of the brief is legitimate context and stays.
+    assert_eq!(
+        prompt["batchManifest"]["features"][0]["brief"]["objective"],
+        "Keep the objective"
+    );
+}
+
+#[test]
+fn prompt_handoff_without_a_manifest_does_not_invent_a_batch_field() {
+    let value = handoff();
+    assert!(value.batch_manifest.is_none());
+    let prompt_json = value.prompt_json().unwrap();
+    assert!(
+        !prompt_json.contains("batchManifest"),
+        "compacting the manifest must not resurrect a field that `skip_serializing_if` omits"
+    );
+}

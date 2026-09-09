@@ -29,7 +29,7 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         indexing,
         renaming,
         graph_expanded,
-        notice,
+        _notice,
         error,
     ) = {
         let vault = model.vault.read(cx);
@@ -58,8 +58,8 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
     };
     let Some(root) = root else {
         return empty_panel(
-            "Nenhum Vault aberto",
-            "Abra um workspace para explorar arquivos, frontmatter e wikilinks.",
+            "No Vault Open",
+            "Open a workspace to explore files, frontmatter, and wikilinks.",
         )
         .into_any_element();
     };
@@ -109,8 +109,8 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                     .flex_col()
                     .gap_3()
                     .child(section_heading(
-                        if indexing { "INDEXANDO" } else { "WORKSPACE" },
-                        "Arquivos",
+                        if indexing { "INDEXING" } else { "WORKSPACE" },
+                        "Files",
                         note_count,
                     ))
                     .child(
@@ -161,9 +161,9 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                                 model.toggle_vault_search_case(cx);
                             }))
                             .child(if case_sensitive {
-                                "✓ Diferenciar maiúsculas"
+                                "✓ Match case"
                             } else {
-                                "Diferenciar maiúsculas"
+                                "Match case"
                             }),
                     )
                     .child(
@@ -194,7 +194,7 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                                             cx.listener(|model, _, _, cx| model.search_vault(cx)),
                                         )
                                     })
-                                    .child(if searching { "Buscando…" } else { "Buscar" }),
+                                    .child(if searching { "Searching…" } else { "Search" }),
                             )
                             .when(search_results.is_some(), |row| {
                                 row.child(
@@ -210,7 +210,7 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                                         .on_click(cx.listener(|model, _, _, cx| {
                                             model.clear_vault_search(cx);
                                         }))
-                                        .child("Limpar"),
+                                        .child("Clear"),
                                 )
                             }),
                     )
@@ -255,7 +255,7 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                         .justify_between()
                         .child(section_heading(
                             "KNOWLEDGE TOPOLOGY",
-                            "Grafo de wikilinks",
+                            "Wikilink graph",
                             edge_count,
                         ))
                         .child(
@@ -269,11 +269,7 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                                 .on_click(cx.listener(|model, _, _, cx| {
                                     model.toggle_vault_graph(cx);
                                 }))
-                                .child(if graph_expanded {
-                                    "Sair da expansão"
-                                } else {
-                                    "Expandir"
-                                }),
+                                .child(if graph_expanded { "Collapse" } else { "Expand" }),
                         ),
                 )
                 .child(vault_graph(graph, selected_path.as_deref(), cx))
@@ -284,7 +280,7 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                             .rounded_md()
                             .bg(theme::accent_soft())
                             .text_color(theme::accent())
-                            .child("Nenhum wikilink quebrado detectado."),
+                            .child("No broken wikilinks detected."),
                     )
                 })
                 .when(!broken_links.is_empty(), |panel| {
@@ -297,7 +293,7 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                                 div()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(theme::warning())
-                                    .child(format!("{} link(s) quebrado(s)", broken_links.len())),
+                                    .child(format!("{} broken link(s)", broken_links.len())),
                             )
                             .children(broken_links.into_iter().map(|link| {
                                 let source = link.source_path.clone();
@@ -330,7 +326,7 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(theme::warning())
                                     .child(format!(
-                                        "{} referência(s) física(s) quebrada(s)",
+                                        "{} broken physical reference(s)",
                                         broken_file_references.len()
                                     )),
                             )
@@ -362,7 +358,7 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                 selected_document,
                 rename_input,
                 renaming,
-                notice,
+                _notice,
                 error,
                 cx,
             ))
@@ -429,10 +425,10 @@ fn search_results_panel(
                 .text_xs()
                 .text_color(theme::text_muted())
                 .child(format!(
-                    "{} resultado(s) em {} arquivo(s){}",
+                    "{} result(s) in {} file(s){}",
                     matches.len(),
                     scanned_files,
-                    if truncated { " · truncado" } else { "" }
+                    if truncated { " · truncated" } else { "" }
                 )),
         )
         .children(matches.into_iter().enumerate().map(|(position, matched)| {
@@ -462,7 +458,7 @@ fn search_results_panel(
                     div()
                         .text_xs()
                         .text_color(theme::text_muted())
-                        .child(format!("Linha {}, coluna {}", matched.line, matched.column)),
+                        .child(format!("Line {}, column {}", matched.line, matched.column)),
                 )
                 .child(div().mt_1().text_sm().child(matched.line_text))
         }))
@@ -511,7 +507,7 @@ fn vault_graph(
             .items_center()
             .justify_center()
             .text_color(theme::text_muted())
-            .child("Abra um Vault Markdown para renderizar o grafo.")
+            .child("Open a Markdown Vault to render the graph.")
             .into_any_element();
     }
     let edges = graph.edges.clone();
@@ -608,8 +604,8 @@ fn inspector(
     document: Option<String>,
     rename_input: gpui::Entity<crate::text_input::NativeTextInput>,
     renaming: bool,
-    notice: Option<String>,
-    error: Option<String>,
+    _notice: Option<String>,
+    _error: Option<String>,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
     let title = selected_path
@@ -641,7 +637,7 @@ fn inspector(
                             div()
                                 .text_xs()
                                 .text_color(theme::text_muted())
-                                .child("NOTA SELECIONADA"),
+                                .child("SELECTED NOTE"),
                         )
                         .child(
                             div()
@@ -663,7 +659,7 @@ fn inspector(
                                 model.open_workspace_file(path.clone(), cx);
                                 model.select_view(AppView::Workspace, cx);
                             }))
-                            .child("Abrir"),
+                            .child("Open"),
                     )
                 }),
         )
@@ -672,7 +668,7 @@ fn inspector(
                 div()
                     .mt_4()
                     .text_color(theme::text_muted())
-                    .child("Selecione um nó ou arquivo para inspecioná-lo."),
+                    .child("Select a node or file to inspect it."),
             )
         })
         .when(
@@ -690,7 +686,7 @@ fn inspector(
                             div()
                                 .text_xs()
                                 .text_color(theme::text_muted())
-                                .child("RENOMEAR NOTA"),
+                                .child("RENAME NOTE"),
                         )
                         .child(rename_input)
                         .child(
@@ -716,11 +712,7 @@ fn inspector(
                                         |model, _, _, cx| model.rename_selected_vault_note(cx),
                                     ))
                                 })
-                                .child(if renaming {
-                                    "Renomeando…"
-                                } else {
-                                    "Renomear"
-                                }),
+                                .child(if renaming { "Renaming…" } else { "Rename" }),
                         ),
                 )
             },
@@ -730,7 +722,7 @@ fn inspector(
                 .frontmatter
                 .as_ref()
                 .map(ToString::to_string)
-                .unwrap_or_else(|| "Sem propriedades de frontmatter.".into());
+                .unwrap_or_else(|| "No frontmatter properties.".into());
             panel
                 .child(
                     div()
@@ -738,7 +730,7 @@ fn inspector(
                         .grid()
                         .grid_cols(2)
                         .gap_2()
-                        .child(stat("Saídas", note.links.len()))
+                        .child(stat("Outgoing", note.links.len()))
                         .child(stat("Backlinks", note.backlink_paths.len())),
                 )
                 .child(
@@ -788,29 +780,7 @@ fn inspector(
                 div()
                     .mt_4()
                     .text_color(theme::text_muted())
-                    .child("Carregando preview…"),
-            )
-        })
-        .when_some(notice, |panel, notice| {
-            panel.child(
-                div()
-                    .mt_3()
-                    .p_2()
-                    .rounded_md()
-                    .bg(theme::accent_soft())
-                    .text_color(theme::accent())
-                    .child(notice),
-            )
-        })
-        .when_some(error, |panel, error| {
-            panel.child(
-                div()
-                    .mt_3()
-                    .p_2()
-                    .rounded_md()
-                    .bg(theme::danger_soft())
-                    .text_color(theme::danger())
-                    .child(error),
+                    .child("Loading preview…"),
             )
         })
 }

@@ -26,6 +26,7 @@ pub fn btn(
     handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
 ) -> AnyElement {
     let id = id.into();
+    let debug_id = id.clone();
     let label = label.into();
     let handler = Arc::new(handler);
     let key_handler = Arc::clone(&handler);
@@ -40,6 +41,7 @@ pub fn btn(
 
     div()
         .id(id)
+        .debug_selector(move || debug_id.to_string())
         .px_3()
         .py_2()
         .rounded_md()
@@ -118,31 +120,37 @@ pub enum BannerKind {
 
 #[allow(dead_code)]
 pub fn inline_banner(message: impl Into<SharedString>, kind: BannerKind) -> AnyElement {
+    let message = message.into();
+    let debug_key = message.clone();
     let (bg, fg) = match kind {
         BannerKind::Info => (theme::accent_soft(), theme::accent()),
         BannerKind::Warning => (theme::warning_soft(), theme::warning()),
         BannerKind::Error => (theme::danger_soft(), theme::danger()),
     };
     div()
+        .debug_selector(move || debug_key.to_string())
         .p_3()
         .rounded_md()
         .bg(bg)
         .text_color(fg)
         .text_sm()
-        .child(message.into())
+        .child(message)
         .into_any_element()
 }
 
 #[allow(dead_code)]
 pub fn loading_pill(label: impl Into<SharedString>) -> AnyElement {
+    let label = label.into();
+    let debug_key = label.clone();
     div()
+        .debug_selector(move || debug_key.to_string())
         .px_3()
         .py_1()
         .rounded_full()
         .bg(theme::accent_soft())
         .text_color(theme::accent())
         .text_xs()
-        .child(label.into())
+        .child(label)
         .into_any_element()
 }
 
@@ -226,201 +234,93 @@ pub fn fact(label: impl Into<SharedString>, value: impl Into<SharedString>) -> A
         .into_any_element()
 }
 
-// Labels, selection state and interaction are supplied independently by native views.
-#[allow(clippy::too_many_arguments)]
-pub fn dropdown_select(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
-    current_value: impl Into<SharedString>,
-    is_open: bool,
-    enabled: bool,
-    options_count: usize,
-    cx: &mut Context<AppModel>,
-    on_toggle: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
-) -> AnyElement {
-    let id = id.into();
-    let debug_id = id.clone();
-    let label = label.into();
-    let current_value = current_value.into();
-
-    div()
-        .id(id)
-        .debug_selector(move || debug_id.to_string())
-        .p_2()
-        .rounded_md()
-        .border_1()
-        .border_color(if is_open {
-            theme::accent()
-        } else {
-            theme::border()
-        })
-        .bg(theme::surface_raised())
-        .opacity(if enabled { 1.0 } else { 0.45 })
-        .tab_index(0)
-        .when(enabled, |item| {
-            item.cursor_pointer()
-                .hover(|s| s.opacity(theme::HOVER_OPACITY))
-                .on_click(cx.listener(move |model, _, _, cx| on_toggle(model, cx)))
-        })
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(div().text_xs().text_color(theme::text_muted()).child(label))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child(format!("{options_count} opções")),
-                ),
-        )
-        .child(
-            div()
-                .mt_1()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(current_value),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(if is_open {
-                            theme::accent()
-                        } else {
-                            theme::text_muted()
-                        })
-                        .child(if is_open { "▴" } else { "▾" }),
-                ),
-        )
-        .into_any_element()
-}
-
-pub fn dropdown_menu(
-    id: impl Into<SharedString>,
-    children: impl IntoIterator<Item = AnyElement>,
-) -> AnyElement {
-    let id = id.into();
-    let debug_id = id.clone();
-    div()
-        .id(id)
-        .debug_selector(move || debug_id.to_string())
-        .mt_1()
-        .p_1()
-        .rounded_md()
-        .border_1()
-        .border_color(theme::accent())
-        .bg(theme::surface_raised())
-        .flex()
-        .flex_col()
-        .gap_1()
-        .children(children)
-        .into_any_element()
-}
-
-pub fn dropdown_item(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
-    sublabel: Option<impl Into<SharedString>>,
-    selected: bool,
-    cx: &mut Context<AppModel>,
-    on_select: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
-) -> AnyElement {
-    let id = id.into();
-    let debug_id = id.clone();
-    let label = label.into();
-    let sublabel = sublabel.map(|s| s.into());
-    div()
-        .id(id)
-        .debug_selector(move || debug_id.to_string())
-        .px_2()
-        .py_1()
-        .rounded_sm()
-        .tab_index(0)
-        .cursor_pointer()
-        .bg(if selected {
-            theme::accent_soft()
-        } else {
-            theme::surface()
-        })
-        .text_color(if selected {
-            theme::accent()
-        } else {
-            theme::text()
-        })
-        .hover(|s| s.bg(theme::hover_bg()))
-        .flex()
-        .items_center()
-        .justify_between()
-        .on_click(cx.listener(move |m, _, _, cx| {
-            on_select(m, cx);
-        }))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(if selected {
-                            gpui::FontWeight::SEMIBOLD
-                        } else {
-                            gpui::FontWeight::NORMAL
-                        })
-                        .child(label),
-                )
-                .when_some(sublabel, |item, sub| {
-                    item.child(div().text_xs().text_color(theme::text_muted()).child(sub))
-                }),
-        )
-        .when(selected, |item| {
-            item.child(div().text_sm().text_color(theme::accent()).child("✓"))
-        })
-        .into_any_element()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{Entity, Render, TestAppContext, Window};
+
+    struct WidgetsHarness(Entity<AppModel>);
+
+    impl Render for WidgetsHarness {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.0.update(cx, |_, cx| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .child(btn(
+                        "widgets-test-enabled",
+                        "Clique",
+                        ButtonVariant::Primary,
+                        true,
+                        cx,
+                        |_, _| {},
+                    ))
+                    .child(btn(
+                        "widgets-test-disabled",
+                        "Clique",
+                        ButtonVariant::Primary,
+                        false,
+                        cx,
+                        |_, _| {},
+                    ))
+                    .child(btn_confirm(
+                        "widgets-test-confirm-idle",
+                        "Delete",
+                        "Confirm deletion",
+                        false,
+                        true,
+                        ButtonVariant::Danger,
+                        cx,
+                        |_, _| {},
+                        |_, _| {},
+                    ))
+                    .child(btn_confirm(
+                        "widgets-test-confirm-active",
+                        "Delete",
+                        "Confirm deletion",
+                        true,
+                        true,
+                        ButtonVariant::Danger,
+                        cx,
+                        |_, _| {},
+                        |_, _| {},
+                    ))
+                    .child(inline_banner("Informational message", BannerKind::Info))
+                    .child(loading_pill("Loading…"))
+            })
+        }
+    }
 
     #[gpui::test]
-    fn widgets_render_buttons_and_confirmations(cx: &mut TestAppContext) {
-        let app = cx.new(AppModel::new_for_test);
-        app.update(cx, |_model, cx| {
-            let button_element = btn(
-                "test-btn",
-                "Clique",
-                ButtonVariant::Primary,
-                true,
-                cx,
-                |_, _| {},
-            );
-            let _ = button_element;
+    fn widgets_render_with_real_geometry_across_enabled_and_confirming_states(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, visual) =
+            cx.add_window_view(|_, cx| WidgetsHarness(cx.new(AppModel::new_for_test)));
 
-            let confirm_element = btn_confirm(
-                "test-confirm",
-                "Deletar",
-                "Confirmar deleção",
-                false,
-                true,
-                ButtonVariant::Danger,
-                cx,
-                |_, _| {},
-                |_, _| {},
-            );
-            let _ = confirm_element;
+        let enabled = visual.debug_bounds("widgets-test-enabled").unwrap();
+        let disabled = visual.debug_bounds("widgets-test-disabled").unwrap();
+        let confirm_idle = visual.debug_bounds("widgets-test-confirm-idle").unwrap();
+        let confirm_active = visual.debug_bounds("widgets-test-confirm-active").unwrap();
+        let banner = visual.debug_bounds("Informational message").unwrap();
+        let pill = visual.debug_bounds("Loading…").unwrap();
 
-            let banner = inline_banner("Mensagem informativa", BannerKind::Info);
-            let _ = banner;
+        // Every widget must actually mount with real layout, not an empty/zero-size element.
+        for bounds in [
+            enabled,
+            disabled,
+            confirm_idle,
+            confirm_active,
+            banner,
+            pill,
+        ] {
+            assert!(bounds.size.width > px(0.0));
+            assert!(bounds.size.height > px(0.0));
+        }
 
-            let pill = loading_pill("Carregando…");
-            let _ = pill;
-        });
+        // "Confirm deletion" is longer than "Delete": the confirming state must actually
+        // swap the rendered label, not silently keep showing the idle one.
+        assert!(confirm_active.size.width > confirm_idle.size.width);
     }
 }

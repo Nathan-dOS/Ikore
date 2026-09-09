@@ -17,7 +17,7 @@ impl PersistenceService {
         pulse: &str,
     ) -> Result<HitlCheckpoint, PersistenceServiceError> {
         let db = self.connection()?;
-        let entries=db.prepare("SELECT p.id,c.id,p.state_version FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.id=?1 AND p.status='checkpoint' AND c.status='waiting'")?.query_map([pulse],|r|Ok(HitlCheckpoint{pulsation_id:r.get(0)?,checkpoint_id:r.get(1)?,state_version:r.get(2)?}))?.collect::<Result<Vec<_>,_>>()?;
+        let entries=db.prepare("SELECT p.id,c.id,p.state_version FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.id=?1 AND p.status='checkpoint' AND c.status='waiting' AND c.purpose='artifact_review'")?.query_map([pulse],|r|Ok(HitlCheckpoint{pulsation_id:r.get(0)?,checkpoint_id:r.get(1)?,state_version:r.get(2)?}))?.collect::<Result<Vec<_>,_>>()?;
         if entries.len() != 1 {
             return Err(invalid("Checkpoint ausente ou ambíguo."));
         }
@@ -217,6 +217,69 @@ impl PersistenceService {
             })
     }
 
+    /// Read the exact candidate output behind a still-current HITL checkpoint in one snapshot.
+    pub fn read_hitl_review(
+        &self,
+        checkpoint: &HitlCheckpoint,
+    ) -> Result<Vec<HitlReviewDocument>, PersistenceServiceError> {
+        let mut db = self.connection()?;
+        let tx = db.transaction()?;
+        let valid: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM checkpoints c JOIN pulsations p ON p.id=c.pulsation_id
+             WHERE c.id=?1 AND p.id=?2 AND p.state_version=?3
+             AND c.status='waiting' AND c.purpose='artifact_review' AND p.status='checkpoint'
+             AND c.input_revision=p.input_revision
+             AND (c.stage=p.stage OR (c.stage='Specification' AND p.stage='SPECIFICATION'))
+             AND (SELECT COUNT(*) FROM checkpoints w WHERE w.pulsation_id=p.id AND w.status='waiting')=1)",
+            params![checkpoint.checkpoint_id, checkpoint.pulsation_id, checkpoint.state_version],
+            |row| row.get(0),
+        )?;
+        if !valid {
+            return Err(invalid(
+                "Checkpoint/versão obsoleto ou ambíguo. Atualize antes de revisar.",
+            ));
+        }
+        let documents = tx
+            .prepare(
+                "SELECT a.id,a.name,a.kind,a.relative_path,a.content FROM artifacts a
+             JOIN checkpoints c ON c.pulsation_id=a.pulsation_id
+               AND c.producer_job_id=a.producer_job_id AND c.generation=a.generation
+               AND c.input_revision=a.input_revision AND c.stage=a.producer_stage
+             WHERE c.id=?1 AND a.pulsation_id=?2 AND a.acceptance='candidate'
+             ORDER BY a.output_position,a.id",
+            )?
+            .query_map(
+                params![checkpoint.checkpoint_id, checkpoint.pulsation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        if documents.is_empty() || documents.iter().any(|document| document.4.is_none()) {
+            return Err(invalid(
+                "Conteúdo do checkpoint indisponível/ambíguo; nenhuma reconstrução foi inventada.",
+            ));
+        }
+        Ok(documents
+            .into_iter()
+            .map(
+                |(artifact_id, name, kind, relative_path, content)| HitlReviewDocument {
+                    artifact_id,
+                    name,
+                    kind,
+                    relative_path,
+                    content: content.expect("content checked"),
+                },
+            )
+            .collect())
+    }
+
     pub(super) fn load_stage_handoff(
         &self,
         fence: &ExecutionFence,
@@ -316,10 +379,11 @@ impl PersistenceService {
         execution: &StageExecutionResult,
         root: &Path,
     ) -> Result<(), PersistenceServiceError> {
-        crate::agent_runtime::validate_stage_output_language(&execution.structured_output)
-            .map_err(invalid)?;
+        crate::agent_runtime::validate_stage_output_language(&execution.structured_output)?;
         let outcome = execution.outcome()?;
-        outcome.validate_for(handoff.stage).map_err(invalid)?;
+        outcome
+            .validate_for(handoff.stage)
+            .map_err(|e| PersistenceServiceError::ModelOutputInvalid(e.to_string()))?;
         handoff
             .validate_for(&handoff.recipient, usize::MAX)
             .map_err(invalid)?;
@@ -345,7 +409,7 @@ impl PersistenceService {
             &execution.structured_output,
         )?;
         Self::update_agent_run_metrics(&tx, run_id, execution)?;
-        Self::persist_agent_run_output(&tx, run_id, job, execution)?;
+        Self::persist_agent_run_output(&tx, run_id, job, execution, None)?;
         Self::persist_context_retrieval_trace(&tx, run_id, job, &execution.context_trace)?;
         let now = Self::now_iso();
         tx.execute("INSERT INTO stage_acceptances(job_id,generation,agent_run_id,fence_json,outcome_json,handoff_json,accepted_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![job.id,handoff.recipient.generation,run_id,serde_json::to_string(&handoff.recipient).map_err(invalid)?,serde_json::to_string(&outcome).map_err(invalid)?,serde_json::to_string(handoff).map_err(invalid)?,now])?;
@@ -360,7 +424,9 @@ impl PersistenceService {
             for (position, artifact) in artifacts.iter().enumerate() {
                 if artifact.content.len() > 1024 * 1024 || artifact.content.as_bytes().contains(&0)
                 {
-                    return Err(invalid("Artifact acima de 1 MiB ou binário."));
+                    return Err(PersistenceServiceError::ModelOutputInvalid(
+                        "Artifact acima de 1 MiB ou binário.".to_string(),
+                    ));
                 }
                 let path = artifact
                     .relative_path
@@ -376,7 +442,9 @@ impl PersistenceService {
                     artifact.kind.as_str(),
                     "code_context" | "learning_report" | "component"
                 ) {
-                    return Err(invalid("Tipo de artifact reservado ao coletor do host."));
+                    return Err(PersistenceServiceError::ModelOutputInvalid(
+                        "Tipo de artifact reservado ao coletor do host.".to_string(),
+                    ));
                 }
                 if let Some(path) = path {
                     publication::safe_target(root, path, false)?;
@@ -388,10 +456,12 @@ impl PersistenceService {
                     .map_err(|error| {
                         let command_error: crate::workspace_service::WorkspaceCommandError =
                             error.into();
-                        invalid(command_error.message)
+                        PersistenceServiceError::ModelOutputInvalid(command_error.message)
                     })?;
                     if !paths.insert(path.to_ascii_lowercase()) {
-                        return Err(invalid("Artifacts têm destinos duplicados."));
+                        return Err(PersistenceServiceError::ModelOutputInvalid(
+                            "Artifacts têm destinos duplicados.".to_string(),
+                        ));
                     }
                 }
                 let id = Uuid::new_v4().to_string();
@@ -439,20 +509,39 @@ impl PersistenceService {
                 Self::enqueue_stage_job(&tx, &updated.id, updated.stage)?;
             }
             StageDisposition::Fail => {
-                Self::transition_pulsation(
+                let (code, message) = match &outcome {
+                    StageOutcome::Failed { code, message } => (code.as_str(), message.as_str()),
+                    _ => ("model_reported_failure", "O agente reportou falha."),
+                };
+                // The acceptance row is durable, so this failure is never retryable;
+                // it opens a checkpoint only where a revision target exists (i.e. not
+                // at Intake), and otherwise stays terminal exactly as before.
+                let parked = Self::record_stage_failure_checkpoint(
                     &tx,
                     &current,
-                    PulsationStatus::Failed,
                     current.stage,
-                    "stage_failed",
-                    Some("O agente reportou falha; nenhum artifact foi publicado."),
+                    &job.id,
+                    Some(run_id),
+                    crate::orchestration::FailureClass::ModelReportedFailure,
+                    code,
+                    message,
                 )?;
-                tx.execute(
-                    "UPDATE pulsations SET terminal_reason='model_reported_failure' WHERE id=?1",
-                    [pulse],
-                )?;
-                Self::mark_effects_for_review(&tx, pulse, "stage_failed")?;
-                Self::enqueue_learning(&tx, pulse)?;
+                if !parked {
+                    Self::transition_pulsation(
+                        &tx,
+                        &current,
+                        PulsationStatus::Failed,
+                        current.stage,
+                        "stage_failed",
+                        Some("O agente reportou falha; nenhum artifact foi publicado."),
+                    )?;
+                    tx.execute(
+                        "UPDATE pulsations SET terminal_reason='model_reported_failure' WHERE id=?1",
+                        [pulse],
+                    )?;
+                    Self::mark_effects_for_review(&tx, pulse, "stage_failed")?;
+                    Self::enqueue_learning(&tx, pulse)?;
+                }
             }
             StageDisposition::AwaitClarification => {
                 let StageOutcome::NeedsClarification { questions } = &outcome else {

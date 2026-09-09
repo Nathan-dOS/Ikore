@@ -103,6 +103,31 @@ impl Fixture {
             }],
         }
     }
+    pub(crate) fn output_artifacts(
+        &self,
+        status: &str,
+        artifacts: Vec<GeneratedArtifact>,
+    ) -> StageExecutionResult {
+        let structured = json!({"outputLanguage":"en","summary":"Traceable result","statusUpdate":status,"notes":[],"contextUsage":[],"artifacts":[]});
+        StageExecutionResult {
+            provider_used: "fixture".into(),
+            model_used: "fixture".into(),
+            route_id: None,
+            connection_id: None,
+            llm_execution_id: None,
+            input_tokens: None,
+            output_tokens: None,
+            estimated_cost_usd: None,
+            request_payload: json!({}),
+            response_payload: json!({}),
+            raw_output: structured.to_string(),
+            structured_output: structured,
+            schema_json: json!({}),
+            tool_trace: json!([]),
+            context_trace: crate::agent_runtime::ContextRetrievalTrace::default(),
+            artifacts,
+        }
+    }
     pub(crate) fn accept(
         &self,
         output: &StageExecutionResult,
@@ -149,16 +174,162 @@ impl Fixture {
 }
 
 #[test]
-fn failed_outcome_never_publishes_or_advances() {
+fn failed_outcome_never_publishes_and_parks_on_a_decision() {
     let f = Fixture::new(PulsationStage::Code);
     f.accept(&f.output("failed", Some("src/result.rs"), "danger"))
         .unwrap();
-    assert_eq!(f.state().status, PulsationStatus::Failed);
+    // The agent gave up, but Code has a revision target, so the pulsation waits on a
+    // human decision instead of dying and forcing the whole pipeline to be re-run.
+    assert_eq!(f.state().status, PulsationStatus::Checkpoint);
+    assert_eq!(f.count("stage_failure_requests"), 1);
+    let (class, retry, revision, target): (String, i64, i64, Option<String>) = f
+        .service
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT failure_class,allow_retry,allow_revision,revision_stage
+             FROM stage_failure_requests",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(class, "model_reported_failure");
+    // A durable stage_acceptances row means the old job can never be resumed.
+    assert_eq!(retry, 0);
+    assert_eq!(revision, 1);
+    assert_eq!(target.as_deref(), Some("Code"));
+
     assert_eq!(f.count("artifacts"), 0);
     assert_eq!(f.count("artifact_publications"), 0);
     assert_eq!(f.count("stage_acceptances"), 1);
+    // The base is untouched: deferring mark_effects_for_review is what keeps the
+    // pulsation resumable while it waits.
+    let blocking: Option<String> = f
+        .service
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT blocking_reason FROM project_pipeline_state WHERE project_id=?1",
+            [&f.pulse.project_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(blocking, None);
     f.service.recover_interrupted_jobs().unwrap();
     assert!(f.service.claim_next_pending_job().unwrap().is_none());
+}
+
+#[test]
+fn hitl_review_reads_complete_exact_producer_documents_independent_of_workspace() {
+    let fixture = Fixture::new(PulsationStage::Contract);
+    let content = format!(
+        "# Complete contract\n\n{}\nLast review paragraph.\n",
+        "Detailed requirement.\n".repeat(700)
+    );
+    fixture
+        .accept(&fixture.output_artifacts(
+            "checkpoint_ready",
+            vec![
+                GeneratedArtifact {
+                    name: "Contract".into(),
+                    kind: "stage_output".into(),
+                    relative_path: Some("review.md".into()),
+                    content: content.clone(),
+                },
+                GeneratedArtifact {
+                    name: "Internal notes".into(),
+                    kind: "stage_output".into(),
+                    relative_path: None,
+                    content: "# Internal notes\n\nPathless artifact content.".into(),
+                },
+            ],
+        ))
+        .unwrap();
+    std::fs::write(
+        fixture.workspace.path().join("review.md"),
+        "Unrelated human edits",
+    )
+    .unwrap();
+    let db = fixture.service.connection().unwrap();
+    db.execute(
+        "INSERT INTO artifacts(id,pulsation_id,name,kind,content,created_at,updated_at,producer_job_id,producer_stage,generation,input_revision,producer_state_version,output_position,acceptance)
+         SELECT 'unrelated-generation',pulsation_id,'Wrong generation',kind,'Never show this',created_at,updated_at,producer_job_id,producer_stage,generation+1,input_revision,producer_state_version,output_position,'candidate'
+         FROM artifacts WHERE name='Contract'", [],
+    ).unwrap();
+    let checkpoint = fixture
+        .service
+        .get_hitl_checkpoint(&fixture.pulse.id)
+        .unwrap();
+    let documents = fixture.service.read_hitl_review(&checkpoint).unwrap();
+    assert_eq!(documents.len(), 2);
+    assert_eq!(documents[0].name, "Contract");
+    assert_eq!(documents[0].content, content);
+    assert_eq!(documents[1].name, "Internal notes");
+    assert_eq!(documents[1].relative_path, None);
+    assert!(documents[1].content.contains("Pathless artifact content."));
+}
+
+#[test]
+fn hitl_review_rejects_stale_cross_pulsation_and_resolved_checkpoints() {
+    let fixture = Fixture::new(PulsationStage::Specification);
+    fixture
+        .accept(&fixture.output(
+            "checkpoint_ready",
+            None,
+            "# Specification\n\nComplete proposal.",
+        ))
+        .unwrap();
+    let checkpoint = fixture
+        .service
+        .get_hitl_checkpoint(&fixture.pulse.id)
+        .unwrap();
+    assert_eq!(
+        fixture.service.read_hitl_review(&checkpoint).unwrap().len(),
+        1
+    );
+    for altered in [
+        HitlCheckpoint {
+            pulsation_id: "different-pulse".into(),
+            ..checkpoint.clone()
+        },
+        HitlCheckpoint {
+            checkpoint_id: "different-checkpoint".into(),
+            ..checkpoint.clone()
+        },
+        HitlCheckpoint {
+            state_version: checkpoint.state_version + 1,
+            ..checkpoint.clone()
+        },
+    ] {
+        assert!(fixture.service.read_hitl_review(&altered).is_err());
+    }
+    fixture
+        .service
+        .apply_hitl_decision(fixture.decision(HitlDecision::RequestRevision))
+        .unwrap();
+    assert!(fixture.service.read_hitl_review(&checkpoint).is_err());
+}
+
+#[test]
+fn hitl_review_never_reconstructs_missing_legacy_content() {
+    let fixture = Fixture::new(PulsationStage::Contract);
+    fixture
+        .accept(&fixture.output("checkpoint_ready", None, "# Contract\n\nComplete proposal."))
+        .unwrap();
+    let checkpoint = fixture
+        .service
+        .get_hitl_checkpoint(&fixture.pulse.id)
+        .unwrap();
+    fixture
+        .service
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE artifacts SET content=NULL WHERE pulsation_id=?1",
+            [&fixture.pulse.id],
+        )
+        .unwrap();
+    assert!(fixture.service.read_hitl_review(&checkpoint).is_err());
 }
 
 #[test]
@@ -690,4 +861,95 @@ fn windows_junction_cannot_escape_publication_root() {
     );
     assert!(!outside.path().join("escape.md").exists());
     fs::remove_dir(link).unwrap();
+}
+
+/// Field incident, 2026-09-09 (pulsation `250892e3-...`): the Test stage's
+/// second attempt passed all 5 model-output validations but was then rejected
+/// by `validate_generated_vault_note` for a missing `source-files` frontmatter
+/// key - and, because that check used `invalid()` (host-side, never
+/// retryable), the job died there with no third attempt and no raw output
+/// persisted anywhere. All 4 publication checks in this loop only inspect the
+/// artifacts of the response being accepted right now, never other stored
+/// artifacts, so they belong in the same `ModelOutputInvalid` retry gate as
+/// the 5 validations that precede them.
+#[test]
+fn oversized_artifact_content_is_a_retryable_model_output_error() {
+    let f = Fixture::new(PulsationStage::Code);
+    let output = f.output_artifacts(
+        "advance",
+        vec![GeneratedArtifact {
+            name: "draft".into(),
+            kind: "stage_output".into(),
+            relative_path: Some("src/big.rs".into()),
+            content: "a".repeat(1024 * 1024 + 1),
+        }],
+    );
+    assert!(matches!(
+        f.accept(&output),
+        Err(PersistenceServiceError::ModelOutputInvalid(_))
+    ));
+}
+
+#[test]
+fn a_reserved_artifact_kind_is_a_retryable_model_output_error() {
+    let f = Fixture::new(PulsationStage::Code);
+    let output = f.output_artifacts(
+        "advance",
+        vec![GeneratedArtifact {
+            name: "draft".into(),
+            kind: "code_context".into(),
+            relative_path: Some("src/generated.rs".into()),
+            content: "fn generated() {}\n".into(),
+        }],
+    );
+    assert!(matches!(
+        f.accept(&output),
+        Err(PersistenceServiceError::ModelOutputInvalid(_))
+    ));
+}
+
+#[test]
+fn a_vault_note_missing_source_files_is_a_retryable_model_output_error() {
+    let f = Fixture::new(PulsationStage::Test);
+    let output = f.output_artifacts(
+        "advance",
+        vec![GeneratedArtifact {
+            name: "T1_1".into(),
+            kind: "test".into(),
+            relative_path: Some("knowledge/obsidian/tests/T1_1-architecture.md".into()),
+            content: "# Architecture decisions documented\n".into(),
+        }],
+    );
+    let error = f
+        .accept(&output)
+        .expect_err("missing source-files must fail");
+    assert!(
+        matches!(error, PersistenceServiceError::ModelOutputInvalid(ref message) if message.contains("source-files"))
+    );
+}
+
+#[test]
+fn duplicate_artifact_destinations_are_a_retryable_model_output_error() {
+    let f = Fixture::new(PulsationStage::Code);
+    let output = f.output_artifacts(
+        "advance",
+        vec![
+            GeneratedArtifact {
+                name: "draft-a".into(),
+                kind: "stage_output".into(),
+                relative_path: Some("src/dup.rs".into()),
+                content: "fn a() {}\n".into(),
+            },
+            GeneratedArtifact {
+                name: "draft-b".into(),
+                kind: "stage_output".into(),
+                relative_path: Some("SRC/DUP.rs".into()),
+                content: "fn b() {}\n".into(),
+            },
+        ],
+    );
+    assert!(matches!(
+        f.accept(&output),
+        Err(PersistenceServiceError::ModelOutputInvalid(_))
+    ));
 }

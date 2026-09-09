@@ -7,7 +7,7 @@ use crate::agents::CliModelPickerTarget;
 use crate::agents_view::cli_model_picker_panel;
 use crate::app_model::AppModel;
 use crate::theme;
-use crate::widgets::{dropdown_item, dropdown_menu, dropdown_select};
+
 use crate::workspace_view::render_markdown_block;
 
 pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
@@ -30,7 +30,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         streaming,
         loading,
         busy,
-        error,
+        _error,
         disclosure_required,
         disclosure_accepted,
         pending_delete,
@@ -88,7 +88,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         div()
                             .text_xl()
                             .font_weight(gpui::FontWeight::BOLD)
-                            .child("Abra um projeto para conversar"),
+                            .child("Open a project to chat"),
                     )
                     .child(
                         div()
@@ -96,7 +96,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                             .text_sm()
                             .text_color(theme::text_muted())
                             .child(
-                                "O Companion pertence ao workspace ativo e nunca acessa outro repositório.",
+                                "The Companion belongs to the active workspace and never accesses another repository.",
                             ),
                     ),
             )
@@ -147,47 +147,16 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .flex()
                 .flex_col()
                 .gap_3()
-                .child(section_header("PROJETO ATIVO", "Conversas", conversations.len()))
+                .child(section_header("ACTIVE PROJECT", "Conversations", conversations.len()))
                 .child({
-                    let is_open = model.is_dropdown_open("chat-transport");
+
                     let transport_label = match selected_transport {
                         ChatTransportKind::Api => "API",
                         ChatTransportKind::Cli => "CLI",
                     };
                     div()
-                        .child(dropdown_select(
-                            "chat-transport",
-                            "TRANSPORT",
-                            transport_label,
-                            is_open,
-                            !busy && !streaming,
-                            2,
-                            cx,
-                            |m, cx| m.toggle_dropdown("chat-transport", cx),
-                        ))
-                        .when(is_open, |p| {
-                            p.child(dropdown_menu(
-                                "chat-transport-menu",
-                                [
-                                    dropdown_item(
-                                        "chat-transport:api",
-                                        "API",
-                                        Some("Conexão direta HTTP"),
-                                        selected_transport == ChatTransportKind::Api,
-                                        cx,
-                                        |m, cx| m.set_chat_transport(ChatTransportKind::Api, cx),
-                                    ),
-                                    dropdown_item(
-                                        "chat-transport:cli",
-                                        "CLI",
-                                        Some("Processo de terminal local"),
-                                        selected_transport == ChatTransportKind::Cli,
-                                        cx,
-                                        |m, cx| m.set_chat_transport(ChatTransportKind::Cli, cx),
-                                    ),
-                                ],
-                            ))
-                        })
+                        .child(crate::select_menu::control("chat-transport","TRANSPORT",transport_label,!busy && !streaming,cx))
+
                 })
                 .child({
                     let mut auth_card = div()
@@ -218,7 +187,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                                     connection.default_model
                                                 )
                                             })
-                                            .unwrap_or_else(|| "Nenhuma disponível".into())
+                                            .unwrap_or_else(|| "None available".into())
                                     } else {
                                         selected_cli_availability
                                             .as_ref()
@@ -244,104 +213,28 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         );
 
                     if selected_transport == ChatTransportKind::Api && connections.len() > 1 {
-                        let is_open = model.is_dropdown_open("chat-connections");
-                        let mut menu_items = Vec::new();
-                        for conn in &connections {
-                            let conn_id = conn.id.clone();
-                            let is_selected = selected_connection_id.as_ref().is_some_and(|id| id.as_ref() == conn.id.as_str());
-                            menu_items.push(dropdown_item(
-                                format!("chat-conn:{}", conn.id),
-                                conn.display_name.clone(),
-                                Some(conn.default_model.clone()),
-                                is_selected,
-                                cx,
-                                move |m, cx| m.set_chat_connection(conn_id.clone(), cx),
-                            ));
-                        }
-                        let mut conn_wrapper = div().mt_2().child(action(
-                            "chat-cycle-connection",
-                            if is_open { "Fechar conexões" } else { "Alternar conexão ▾" },
-                            !busy,
-                            cx,
-                            |model, cx| model.toggle_dropdown("chat-connections", cx),
+
+                        let conn_wrapper = div().mt_2().child(crate::select_menu::control(
+                            "chat-cycle-connection", "Connection", selected_connection.map(|c| c.display_name.clone()).unwrap_or_default(), !busy && !streaming, cx,
                         ));
-                        if is_open {
-                            conn_wrapper = conn_wrapper.child(dropdown_menu("chat-connections-menu", menu_items));
-                        }
+
                         auth_card = auth_card.child(conn_wrapper);
                     } else if selected_transport == ChatTransportKind::Cli {
-                        let backend_open = model.is_dropdown_open("chat-cli-backend");
-                        let all_backends = [
-                            hvc_core::terminals::CliBackend::Codex,
-                            hvc_core::terminals::CliBackend::Claude,
-                            hvc_core::terminals::CliBackend::Gemini,
-                            hvc_core::terminals::CliBackend::Opencode,
-                        ];
-                        let profile_open = model.is_dropdown_open("chat-cli-profile");
+
+
+
                         let profiles = model.model_profiles(
                             selected_cli_backend,
                             selected_cli_model.as_deref(),
                             cx,
                         );
-                        let sel_prof = selected_cli_model_profile.clone();
 
-                        let mut backend_div = div().child(dropdown_select(
-                            "chat-cli-backend",
-                            "CLI BACKEND",
-                            selected_cli_backend.label(),
-                            backend_open,
-                            !busy && !streaming,
-                            all_backends.len(),
-                            cx,
-                            |m, cx| m.toggle_dropdown("chat-cli-backend", cx),
-                        ));
-                        if backend_open {
-                            let mut b_items = Vec::new();
-                            for backend in all_backends {
-                                b_items.push(dropdown_item(
-                                    format!("chat-cli-backend:{}", backend.label()),
-                                    backend.label(),
-                                    None::<&str>,
-                                    selected_cli_backend == backend,
-                                    cx,
-                                    move |m, cx| m.set_chat_cli_backend(backend, cx),
-                                ));
-                            }
-                            backend_div = backend_div.child(dropdown_menu("chat-cli-backend-menu", b_items));
-                        }
 
-                        let mut profile_div = div().child(dropdown_select(
-                            "chat-cli-profile",
-                            "PROFILE",
-                            cli_profile_label,
-                            profile_open,
-                            !busy && !streaming && selected_cli_model.is_some() && !profiles.is_empty(),
-                            profiles.len() + 1,
-                            cx,
-                            |m, cx| m.toggle_dropdown("chat-cli-profile", cx),
-                        ));
-                        if profile_open {
-                            let mut items = vec![dropdown_item(
-                                "chat-cli-profile:default",
-                                "Padrão",
-                                None::<&str>,
-                                sel_prof.is_none(),
-                                cx,
-                                |m, cx| m.set_chat_cli_profile(None, cx),
-                            )];
-                            for prof in profiles {
-                                let prof_clone = prof.clone();
-                                items.push(dropdown_item(
-                                    format!("chat-cli-profile:{prof}"),
-                                    prof.clone(),
-                                    None::<&str>,
-                                    sel_prof.as_deref() == Some(&prof),
-                                    cx,
-                                    move |m, cx| m.set_chat_cli_profile(Some(prof_clone.clone()), cx),
-                                ));
-                            }
-                            profile_div = profile_div.child(dropdown_menu("chat-cli-profile-menu", items));
-                        }
+                        let backend_div = div().child(crate::select_menu::control("chat-cli-backend","CLI BACKEND",selected_cli_backend.label(),!busy && !streaming,cx));
+
+
+                        let profile_div = div().child(crate::select_menu::control("chat-cli-profile","PROFILE",cli_profile_label,!busy && !streaming && selected_cli_model.is_some() && !profiles.is_empty(),cx));
+
 
                         auth_card = auth_card
                             .child(
@@ -373,14 +266,14 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 })
                 .child(action(
                     "chat-new-conversation",
-                    if busy { "Aguarde…" } else { "Nova conversa" },
+                    if busy { "Please wait…" } else { "New conversation" },
                     new_target_available && !busy && !streaming,
                     cx,
                     |model, cx| model.create_chat_conversation(cx),
                 ))
                 .when(selected_transport == ChatTransportKind::Api && connections.is_empty(), |panel| {
                     panel.child(warning(
-                        "Configure em Settings uma conexão habilitada, credenciada e com tool calling.",
+                        "Configure in Settings an enabled, credentialed connection with tool calling support.",
                     ))
                 })
                 .when(
@@ -401,7 +294,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         .flex_col()
                         .gap_2()
                         .when(conversations.is_empty() && !loading, |list| {
-                            list.child(empty("Nenhuma conversa neste projeto."))
+                            list.child(empty("No conversations in this project."))
                         })
                         .children(conversations.into_iter().map(|conversation| {
                             let id = conversation.id.clone();
@@ -435,7 +328,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                             model.select_chat_conversation(id.clone(), cx)
                                         }))
                                         .child(
-                                            div()
+                                             div()
                                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                                 .child(conversation.title),
                                         )
@@ -457,9 +350,9 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 .child(action(
                                     SharedString::from(format!("chat-delete:{delete_id}")),
                                     if awaiting_confirmation {
-                                        "Confirmar exclusão"
+                                        "Confirm deletion"
                                     } else {
-                                        "Excluir"
+                                        "Delete"
                                     },
                                     !busy && !streaming,
                                     cx,
@@ -484,19 +377,10 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .flex_col()
                 .gap_3()
                 .when(show_tool_activity, |panel| panel.child(action(
-                    "chat-toggle-activity", if tool_activity_open { "Ocultar atividade" } else { "Mostrar atividade" }, true, cx,
+                    "chat-toggle-activity", if tool_activity_open { "Hide activity" } else { "Show activity" }, true, cx,
                     |model, cx| { model.chat.update(cx, |chat, _| chat.tool_activity_open = !chat.tool_activity_open); cx.notify(); }
                 )))
-                .when_some(error, |panel, error| {
-                    panel.child(
-                        div()
-                            .p_3()
-                            .rounded_md()
-                            .bg(theme::danger_soft())
-                            .text_color(theme::danger())
-                            .child(error.presentable()),
-                    )
-                })
+
                 .when(active_conversation.is_none(), |panel| {
                     panel.child(
                         div()
@@ -505,9 +389,9 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                             .items_center()
                             .justify_center()
                             .child(if loading {
-                                "Carregando conversas…"
+                                "Loading conversations…"
                             } else {
-                                "Escolha uma conexão compatível e inicie uma conversa."
+                                "Choose a compatible connection and start a conversation."
                             }),
                     )
                 })
@@ -555,7 +439,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         )
                         .when(!conversation.connection_available, |panel| {
                             panel.child(warning(
-                                if conversation.provider_id=="specification" {"Perguntas apresentadas pela Specification, sem LLM extra. Responda na view Pulsations; esta conversa preserva o histórico."}else{"A conexão fixada foi removida ou bloqueada. O histórico permanece legível."},
+                                if conversation.provider_id=="specification" {"Questions presented by Specification, without extra LLM. Answer in the Pulsations view; this conversation preserves history."}else{"The pinned connection was removed or blocked. History remains readable."},
                             ))
                         })
                         .child(
@@ -576,14 +460,14 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                             .child(
                                                 div()
                                                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                    .child("Converse sobre a arquitetura real deste repositório."),
+                                                    .child("Chat about the real architecture of this repository."),
                                             )
                                             .child(
                                                 div()
                                                     .mt_2()
                                                     .text_sm()
                                                     .text_color(theme::text_muted())
-                                                    .child("O Companion pode listar, buscar e ler trechos seguros. Não pode aplicar diffs nem alterar arquivos."),
+                                                    .child("The Companion can list, search, and read safe snippets. It cannot apply diffs or modify files."),
                                             ),
                                     )
                                 })
@@ -602,11 +486,11 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                     .child(if conversation.transport == ChatTransportKind::Cli {
                                         "Content requested by the Companion may be transmitted to the provider configured in this CLI. HVC does not manage that credential."
                                     } else {
-                                        "Trechos consultados do repositório serão enviados à API desta conexão."
+                                        "Consulted snippets from the repository will be sent to this connection's API."
                                     })
                                     .child(action(
                                         "chat-acknowledge-disclosure",
-                                        "Entendi e autorizo este chat",
+                                        "I understand and authorize this chat",
                                         !busy,
                                         cx,
                                         |model, cx| model.acknowledge_chat_disclosure(cx),
@@ -633,12 +517,12 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                             div()
                                                 .text_xs()
                                                 .text_color(theme::text_muted())
-                                                .child("Enter envia · Shift+Enter quebra a linha"),
+                                                .child("Enter sends · Shift+Enter adds a new line"),
                                         )
                                         .child(if streaming {
                                             action(
                                                 "chat-cancel-turn",
-                                                "Cancelar resposta",
+                                                "Cancel response",
                                                 true,
                                                 cx,
                                                 |model, cx| model.cancel_chat_turn(cx),
@@ -647,7 +531,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                         } else {
                                             action(
                                                 "chat-send-message",
-                                                if busy { "Enviando…" } else { "Enviar" },
+                                                if busy { "Sending…" } else { "Send" },
                                                 !draft_empty
                                                     && disclosure_accepted
                                                     && !busy
@@ -673,10 +557,10 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .flex()
                 .flex_col()
                 .gap_3()
-                .child(section_header("READ-ONLY", "Atividade", tool_calls.len()))
+                .child(section_header("READ-ONLY", "Activity", tool_calls.len()))
                 .when(tool_calls.is_empty(), |panel| {
                     panel.child(empty(
-                        "As buscas e leituras aparecerão aqui durante a resposta.",
+                        "Searches and file reads will appear here during generation.",
                     ))
                 })
                 .child(
@@ -725,12 +609,16 @@ fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -> AnyElemen
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(if assistant { "Companion" } else { "Você" })
+                .child(if assistant { "Companion" } else { "You" })
                 .child(
                     div()
                         .text_xs()
                         .text_color(theme::text_muted())
-                        .child(format!("{} · {}", message.status, message.created_at)),
+                        .child(format!(
+                            "{} · {}",
+                            message.status,
+                            crate::time::format_timestamp(&message.created_at)
+                        )),
                 ),
         )
         .when(message.content.is_empty(), |card| {
@@ -741,9 +629,9 @@ fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -> AnyElemen
                     .text_color(theme::text_muted())
                     .child(
                         if matches!(message.status.as_str(), "pending" | "streaming") {
-                            "Pensando…"
+                            "Thinking…"
                         } else {
-                            "Sem conteúdo."
+                            "No content."
                         },
                     ),
             )
@@ -800,7 +688,7 @@ fn render_chat_content(content: &str, cx: &mut Context<AppModel>) -> Vec<AnyElem
                                         "chat-copy-diff:{}",
                                         stable_text_id(&copy)
                                     )),
-                                    "Copiar diff",
+                                    "Copy diff",
                                     true,
                                     cx,
                                     move |model, cx| model.copy_chat_diff(copy.clone(), cx),
@@ -818,7 +706,7 @@ fn render_chat_content(content: &str, cx: &mut Context<AppModel>) -> Vec<AnyElem
                                 .mt_2()
                                 .text_xs()
                                 .text_color(theme::warning())
-                                .child("Proposta não aplicada · não existe ação de aplicar"),
+                                .child("Proposed diff not applied · apply action does not exist"),
                         )
                         .into_any_element(),
                 ]
@@ -879,7 +767,7 @@ fn render_tool_call(tool: ChatToolCall) -> impl IntoElement {
                 .text_xs()
                 .text_color(theme::text_muted())
                 .child(format!(
-                    "{} bytes · rodada {}",
+                    "{} bytes · round {}",
                     tool.result_bytes,
                     tool.round_index + 1
                 )),
@@ -901,9 +789,9 @@ fn summarize_arguments(tool: &ChatToolCall) -> String {
 
 fn tool_label(name: &str) -> String {
     match name {
-        "list_repository_tree" => "Listando árvore".into(),
-        "search_repository" => "Buscando no repositório".into(),
-        "read_repository_file" => "Lendo arquivo".into(),
+        "list_repository_tree" => "Listing tree".into(),
+        "search_repository" => "Searching repository".into(),
+        "read_repository_file" => "Reading file".into(),
         _ => name.to_string(),
     }
 }
@@ -940,7 +828,7 @@ fn action(
     enabled: bool,
     cx: &mut Context<AppModel>,
     handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
-) -> impl IntoElement {
+) -> AnyElement {
     div()
         .id(id)
         .mt_2()
@@ -966,6 +854,7 @@ fn action(
                 .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
         })
         .child(label)
+        .into_any_element()
 }
 
 fn selection(
@@ -1024,7 +913,7 @@ mod tests {
 
     #[test]
     fn renders_safe_markdown_with_copy_only_diff() {
-        let content = "Seguro<script>alert(1)</script>\n\n```diff\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-a\n+b\n```";
+        let content = "Safe<script>alert(1)</script>\n\n```diff\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-a\n+b\n```";
         let parts = parse_chat_content(content);
         let rendered = format!("{parts:?}");
         assert!(!format!("{:?}", parse_markdown(content)).contains("alert"));

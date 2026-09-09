@@ -58,9 +58,49 @@ pub(crate) fn workspace_content_panel(
             .collect::<Vec<_>>()
     };
 
+    let editor_panel = div()
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .rounded_lg()
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .overflow_hidden()
+        .child(workspace_editor_surface(
+            tabs.clone(),
+            active_path.clone(),
+            active_tab.clone(),
+            editor,
+            &model.workspace_preview_split,
+            cx,
+        ))
+        .into_any_element();
+    let tree_panel = workspace_tree_panel(tree_rows, active_path.as_deref(), cx).into_any_element();
+    let columns = crate::split_pane::split_pane(
+        "workspace-columns",
+        &model.workspace_tree_split,
+        tree_panel,
+        editor_panel,
+        cx,
+    );
+    let columns = if context_drawer_open {
+        crate::split_pane::split_pane(
+            "workspace-context-columns",
+            &model.workspace_context_split,
+            columns,
+            context_drawer(active_tab.as_ref(), context_documents).into_any_element(),
+            cx,
+        )
+    } else {
+        columns
+    };
+
     div()
         .flex_1()
         .min_w_0()
+        .min_h_0()
+        .overflow_hidden()
         .p_4()
         .flex()
         .flex_col()
@@ -136,7 +176,7 @@ pub(crate) fn workspace_content_panel(
                         .child(
                             div()
                                 .flex_1()
-                                .child(format!("Conflito de revisão: {conflict}")),
+                                .child(format!("Revision conflict: {conflict}")),
                         )
                         .child(
                             div()
@@ -155,7 +195,7 @@ pub(crate) fn workspace_content_panel(
                                         cx,
                                     );
                                 }))
-                                .child("Recarregar"),
+                                .child("Reload"),
                         )
                         .child(
                             div()
@@ -190,55 +230,37 @@ pub(crate) fn workspace_content_panel(
                                     }
                                 }))
                                 .child(if is_confirming {
-                                    "Confirmar sobrescrita"
+                                    "Confirm overwrite"
                                 } else {
-                                    "Sobrescrever"
+                                    "Overwrite"
                                 }),
                         ),
                 )
             },
         )
-        .when_some(
-            active_tab.as_ref().and_then(|tab| tab.save_error.clone()),
-            |panel, error| {
-                panel.child(
-                    div()
-                        .p_2()
-                        .rounded_sm()
-                        .bg(theme::danger_soft())
-                        .text_color(theme::danger())
-                        .child(error),
-                )
-            },
+        .child(
+            div()
+                .id("workspace-save-feedback")
+                .h(px(40.0))
+                .flex_shrink_0()
+                .overflow_y_scroll()
+                .px_2()
+                .text_sm()
+                .text_color(theme::danger())
+                .child(
+                    active_tab
+                        .as_ref()
+                        .and_then(|tab| tab.save_error.clone())
+                        .unwrap_or_default(),
+                ),
         )
         .child(
             div()
                 .flex_1()
                 .min_h_0()
-                .flex()
-                .gap_3()
-                .child(workspace_tree_panel(tree_rows, active_path.as_deref(), cx))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .min_h_0()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(theme::border())
-                        .bg(theme::surface())
-                        .overflow_hidden()
-                        .child(workspace_editor_surface(
-                            tabs.clone(),
-                            active_path.clone(),
-                            active_tab.clone(),
-                            editor,
-                            cx,
-                        )),
-                )
-                .when(context_drawer_open, |layout| {
-                    layout.child(context_drawer(active_tab.as_ref(), context_documents))
-                }),
+                .min_w_0()
+                .overflow_hidden()
+                .child(columns),
         )
 }
 
@@ -251,16 +273,16 @@ fn brownfield_onboarding_card(
     let (title, description) = match onboarding.state {
         BrownfieldOnboardingState::NotApplicable => ("", ""),
         BrownfieldOnboardingState::Pending => (
-            "Workspace existente detectado",
-            "O mapeamento gradual enumera apenas metadados seguros e respeita o .gitignore. Nenhum script, build ou chamada de LLM será executado.",
+            "Existing workspace detected",
+            "Gradual mapping enumerates only safe metadata and respects .gitignore. No scripts, builds, or LLM calls will be executed.",
         ),
         BrownfieldOnboardingState::Disabled => (
-            "Mapeamento gradual desativado",
-            "O projeto continua disponível normalmente. Nenhuma descoberta brownfield será iniciada sem uma nova autorização.",
+            "Gradual mapping disabled",
+            "The project remains normally available. No brownfield discovery will start without new authorization.",
         ),
         BrownfieldOnboardingState::Enabled => (
-            "Mapeamento gradual ativo",
-            "O consentimento pode ser revogado a qualquer momento. A revogação não remove arquivos já autorizados.",
+            "Gradual mapping active",
+            "Consent can be revoked at any time. Revocation does not remove already authorized files.",
         ),
     };
     let inventory_summary = onboarding.inventory.as_ref().map(|inventory| {
@@ -271,17 +293,17 @@ fn brownfield_onboarding_card(
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "{} fontes · {} manifests · {} pontos de entrada · idiomas: {}{}",
+            "{} sources · {} manifests · {} entry points · languages: {}{}",
             inventory.source_files,
             inventory.manifests.len(),
             inventory.entry_points.len(),
             if languages.is_empty() {
-                "não identificados"
+                "unidentified"
             } else {
                 &languages
             },
             if inventory.coverage.truncated {
-                " · cobertura parcial"
+                " · partial coverage"
             } else {
                 ""
             }
@@ -326,7 +348,7 @@ fn brownfield_onboarding_card(
                             div()
                                 .text_sm()
                                 .text_color(theme::text_muted())
-                                .child(format!("Fonte selecionada: {path}")),
+                                .child(format!("Selected source: {path}")),
                         )
                         .child(brownfield_ignore_button(
                             active_is_ignored,
@@ -336,9 +358,16 @@ fn brownfield_onboarding_card(
                 )
             },
         )
-        .when_some(onboarding.error, |card, error| {
-            card.child(div().text_sm().text_color(theme::danger()).child(error))
-        })
+        .child(
+            div()
+                .id("onboarding-feedback")
+                .h(px(40.0))
+                .flex_shrink_0()
+                .overflow_y_scroll()
+                .text_sm()
+                .text_color(theme::danger())
+                .child(onboarding.error.unwrap_or_default()),
+        )
         .child(
             div()
                 .flex()
@@ -351,9 +380,9 @@ fn brownfield_onboarding_card(
                             .child(brownfield_action_button(
                                 "brownfield-enable",
                                 if onboarding.busy {
-                                    "Mapeando…"
+                                    "Mapping…"
                                 } else {
-                                    "Iniciar mapeamento gradual"
+                                    "Start gradual mapping"
                                 },
                                 true,
                                 onboarding.busy,
@@ -361,7 +390,7 @@ fn brownfield_onboarding_card(
                             ))
                             .child(brownfield_action_button(
                                 "brownfield-decline",
-                                "Usar como projeto novo (sem mapeamento)",
+                                "Use as fresh project (no mapping)",
                                 false,
                                 onboarding.busy,
                                 cx,
@@ -374,9 +403,9 @@ fn brownfield_onboarding_card(
                         actions.child(brownfield_action_button(
                             "brownfield-reenable",
                             if onboarding.busy {
-                                "Mapeando…"
+                                "Mapping…"
                             } else {
-                                "Ativar mapeamento gradual"
+                                "Enable gradual mapping"
                             },
                             true,
                             onboarding.busy,
@@ -391,9 +420,9 @@ fn brownfield_onboarding_card(
                             .child(brownfield_action_button(
                                 "brownfield-refresh",
                                 if onboarding.busy {
-                                    "Atualizando…"
+                                    "Refreshing…"
                                 } else {
-                                    "Atualizar inventário"
+                                    "Refresh inventory"
                                 },
                                 true,
                                 onboarding.busy,
@@ -544,9 +573,9 @@ fn brownfield_revoke_button(
                 }))
         })
         .child(if confirming {
-            "Confirmar revogação"
+            "Confirm revocation"
         } else {
-            "Revogar consentimento"
+            "Revoke consent"
         })
         .into_any_element()
 }
@@ -568,7 +597,8 @@ fn workspace_tree_panel(
 ) -> impl IntoElement {
     div()
         .id("workspace-tree-scroll")
-        .w(px(220.0))
+        .size_full()
+        .min_w_0()
         .min_h_0()
         .p_2()
         .rounded_lg()
@@ -634,6 +664,7 @@ fn workspace_editor_surface(
     active_path: Option<String>,
     active_tab: Option<WorkspaceTabModel>,
     editor: gpui::Entity<crate::NativeEditor>,
+    split: &gpui::Entity<crate::split_pane::SplitPaneState>,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
     let preview = active_tab
@@ -642,11 +673,17 @@ fn workspace_editor_surface(
         .unwrap_or_default();
     div()
         .size_full()
+        .min_h_0()
+        .min_w_0()
+        .overflow_hidden()
         .flex()
         .flex_col()
         .child(
             div()
-                .min_h(px(38.0))
+                .id("workspace-file-tabs")
+                .h(px(38.0))
+                .flex_shrink_0()
+                .overflow_x_scroll()
                 .flex()
                 .items_end()
                 .gap_1()
@@ -710,31 +747,33 @@ fn workspace_editor_surface(
                     .items_center()
                     .justify_center()
                     .text_color(theme::text_muted())
-                    .child("Abra um arquivo Markdown ou texto na árvore para começar."),
+                    .child("Open a Markdown or text file in the tree to get started."),
             )
         })
         .when(active_tab.is_some(), |surface| {
             surface.child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .child(
+                div().flex_1().min_h_0().min_w_0().overflow_hidden().child(
+                    crate::split_pane::split_pane(
+                        "workspace-editor-columns",
+                        split,
                         div()
-                            .flex_1()
+                            .id("workspace-editor-viewport")
+                            .debug_selector(|| "workspace-editor-viewport".into())
+                            .size_full()
                             .min_w_0()
+                            .min_h_0()
+                            .overflow_hidden()
                             .p_3()
-                            .border_r_1()
-                            .border_color(theme::border())
-                            .child(editor),
-                    )
-                    .child(
+                            .child(editor)
+                            .into_any_element(),
                         div()
                             .id("workspace-markdown-preview")
-                            .w(px(360.0))
+                            .debug_selector(|| "workspace-markdown-preview".into())
+                            .size_full()
+                            .min_w_0()
                             .min_h_0()
                             .p_4()
-                            .overflow_y_scroll()
+                            .overflow_scroll()
                             .child(
                                 div()
                                     .pb_3()
@@ -742,14 +781,47 @@ fn workspace_editor_surface(
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .child("Markdown Preview"),
                             )
-                            .children(preview.into_iter().map(render_markdown_block)),
+                            .children(preview.into_iter().map(render_markdown_block))
+                            .into_any_element(),
+                        cx,
                     ),
+                ),
             )
         })
 }
 
 pub(crate) fn render_markdown_block(block: MarkdownBlock) -> AnyElement {
     match block {
+        MarkdownBlock::Table { headers, rows } => div()
+            .mb_3()
+            .min_w_0()
+            .border_1()
+            .border_color(theme::border())
+            .children(
+                std::iter::once((true, headers))
+                    .chain(rows.into_iter().map(|row| (false, row)))
+                    .map(|(header, row)| {
+                        div()
+                            .flex()
+                            .min_w_0()
+                            .when(header, |row| {
+                                row.bg(theme::surface_raised())
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                            })
+                            .children(row.into_iter().map(|text| {
+                                div()
+                                    .flex_1()
+                                    .min_w(px(100.0))
+                                    .p_2()
+                                    .text_sm()
+                                    .border_b_1()
+                                    .border_r_1()
+                                    .border_color(theme::border())
+                                    .child(text)
+                            }))
+                    }),
+            )
+            .into_any_element(),
         MarkdownBlock::Heading { level, text } => div()
             .mt_2()
             .mb_2()
@@ -821,7 +893,11 @@ fn context_drawer(
     let overflow_count = total_documents.saturating_sub(display_limit);
 
     div()
-        .w(px(210.0))
+        .id("workspace-context-scroll")
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .overflow_y_scroll()
         .p_3()
         .rounded_lg()
         .border_1()
@@ -833,17 +909,17 @@ fn context_drawer(
         .child(
             div()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child("Contexto"),
+                .child("Context"),
         )
-        .child(context_item("Arquivo", path))
-        .child(context_item("Revisão", revision))
-        .child(context_item("Estado", state))
+        .child(context_item("File", path))
+        .child(context_item("Revision", revision))
+        .child(context_item("State", state))
         .when(documents.is_empty(), |drawer| {
             drawer.child(
                 div()
                     .text_xs()
                     .text_color(theme::text_muted())
-                    .child("Contexto relacionado sendo carregado…"),
+                    .child("Related context loading…"),
             )
         })
         .children(
@@ -854,7 +930,7 @@ fn context_drawer(
                     let excerpt = content
                         .lines()
                         .find(|line| !line.trim().is_empty())
-                        .unwrap_or("Documento sem conteúdo")
+                        .unwrap_or("Document without content")
                         .chars()
                         .take(90)
                         .collect::<String>();
@@ -883,7 +959,7 @@ fn context_drawer(
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(format!("… e mais {overflow_count} doc(s)"))
+                    .child(format!("… and {overflow_count} more doc(s)"))
                     .child(
                         div()
                             .text_color(theme::accent())

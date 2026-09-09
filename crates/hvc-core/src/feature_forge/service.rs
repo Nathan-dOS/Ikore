@@ -12,7 +12,37 @@ pub(crate) fn json(value: &impl Serialize) -> Result<String, Error> {
     serde_json::to_string(value).map_err(invalid)
 }
 pub(crate) fn decode<T: DeserializeOwned>(value: &str) -> Result<T, Error> {
-    serde_json::from_str(value).map_err(invalid)
+    let trimmed = value.trim();
+    if let Ok(result) = serde_json::from_str(trimmed) {
+        return Ok(result);
+    }
+    if trimmed.starts_with("```") {
+        let without_fences = trimmed
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim();
+        if let Ok(result) = serde_json::from_str(without_fences) {
+            return Ok(result);
+        }
+    }
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}'))
+        && end > start
+    {
+        let slice = &trimmed[start..=end];
+        if let Ok(result) = serde_json::from_str(slice) {
+            return Ok(result);
+        }
+    }
+    if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']'))
+        && end > start
+    {
+        let slice = &trimmed[start..=end];
+        if let Ok(result) = serde_json::from_str(slice) {
+            return Ok(result);
+        }
+    }
+    serde_json::from_str(trimmed).map_err(invalid)
 }
 pub(crate) fn now() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -348,7 +378,7 @@ impl FeatureForgeService {
                 }
             })
         });
-        let dependencies=db.prepare("SELECT d.feature_id,d.prerequisite_id,d.rationale FROM forge_feature_dependencies d JOIN forge_features f ON f.id=d.feature_id WHERE f.project_id=?1 ORDER BY d.feature_id,d.prerequisite_id")?.query_map([project],|r|Ok(FeatureDependency{feature_id:r.get(0)?,prerequisite_id:r.get(1)?,rationale:r.get(2)?}))?.collect::<Result<Vec<_>,_>>()?;
+        let dependencies=db.prepare("SELECT d.feature_id,d.prerequisite_id,d.rationale,d.origin FROM forge_feature_dependencies d JOIN forge_features f ON f.id=d.feature_id WHERE f.project_id=?1 ORDER BY d.feature_id,d.prerequisite_id")?.query_map([project],|r|Ok(FeatureDependency{feature_id:r.get(0)?,prerequisite_id:r.get(1)?,rationale:r.get(2)?,origin:DependencyOrigin::from_db(&r.get::<_,String>(3)?)}))?.collect::<Result<Vec<_>,_>>()?;
         let current_wave_limit = db
             .query_row(
                 "SELECT current_wave_limit FROM forge_project_settings WHERE project_id=?1",
@@ -413,58 +443,7 @@ impl FeatureForgeService {
             return Ok(f);
         }
         editable_feature(&tx, &f, expected)?;
-        validate_ready_brief(&f.brief)?;
-        for source in &f.brief.sources {
-            check_source(&tx, project, source)?;
-        }
-        tx.execute("UPDATE work_tasks SET state='superseded',updated_at=?2 WHERE feature_id=?1 AND state='ready'",params![feature_id,now()])?;
-        // Allocate every identity first so proposals can depend on later proposals.
-        let mut proposed = Vec::new();
-        for draft in &f.brief.tasks {
-            let mut draft = draft.clone();
-            draft.feature_id = Some(feature_id.into());
-            draft.dependencies.clear();
-            proposed.push(insert_task(&tx, project, &draft, Some(expected))?);
-        }
-        for (index, draft) in f.brief.tasks.iter().enumerate() {
-            let dependencies = draft
-                .dependencies
-                .iter()
-                .map(|dependency| {
-                    if let Some(position) = dependency.strip_prefix("proposal:") {
-                        let position = position
-                            .parse::<usize>()
-                            .ok()
-                            .and_then(|i| i.checked_sub(1));
-                        position
-                            .and_then(|i| proposed.get(i))
-                            .map(|t| t.id.clone())
-                            .ok_or_else(|| invalid("Unknown proposed task dependency"))
-                    } else {
-                        Ok(dependency.clone())
-                    }
-                })
-                .collect::<Result<Vec<_>, Error>>()?;
-            let mut persisted = proposed[index].draft.clone();
-            persisted.dependencies = dependencies;
-            validate_dependencies(&tx, project, &proposed[index].id, &persisted.dependencies)?;
-            replace_task_dependencies(&tx, &proposed[index].id, &persisted.dependencies)?;
-            tx.execute(
-                "UPDATE work_tasks SET draft_json=?2 WHERE id=?1",
-                params![proposed[index].id, json(&persisted)?],
-            )?;
-            tx.execute(
-                "UPDATE work_task_revisions SET draft_json=?2 WHERE task_id=?1 AND revision=1",
-                params![proposed[index].id, json(&persisted)?],
-            )?;
-        }
-        tx.execute("UPDATE forge_features SET approved_revision=revision,state='approved',updated_at=?2 WHERE id=?1",params![feature_id,now()])?;
-        tx.execute(
-            "UPDATE forge_feature_revisions SET approved_at=?3 WHERE feature_id=?1 AND revision=?2",
-            params![feature_id, expected, now()],
-        )?;
-        let result = feature(&tx, project, feature_id)?;
-        super::publication::queue_plan(&tx, &result)?;
+        let result = apply_approval(&tx, project, &f, expected)?;
         tx.commit()?;
         self.reconcile_plan_publications(project)?;
         Ok(result)
@@ -477,19 +456,12 @@ impl FeatureForgeService {
         evaluation: FeatureEvaluation,
         structural_level: u8,
     ) -> Result<Feature, Error> {
-        if structural_level > 3
-            || [evaluation.impact, evaluation.confidence, evaluation.effort]
-                .into_iter()
-                .flatten()
-                .any(|v| !(1..=5).contains(&v))
-        {
-            return Err(invalid("Ratings must be 1-5 and structural level 0-3"));
-        }
+        validate_evaluation(&evaluation, structural_level)?;
         let mut db = self.persistence.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let f = feature(&tx, project, feature_id)?;
         editable_feature(&tx, &f, expected)?;
-        tx.execute("UPDATE forge_features SET evaluation_json=?2,structural_level=?3,state=CASE WHEN state='incubating' THEN 'in_triage' ELSE state END,updated_at=?4 WHERE id=?1",params![feature_id,json(&evaluation)?,structural_level,now()])?;
+        apply_evaluation(&tx, feature_id, &evaluation, structural_level)?;
         let result = feature(&tx, project, feature_id)?;
         tx.commit()?;
         Ok(result)
@@ -513,11 +485,16 @@ impl FeatureForgeService {
         }
         if let Some(rationale) = rationale {
             text(rationale, 4000)?;
-            let cycle=feature_id==prerequisite || tx.query_row("WITH RECURSIVE deps(id) AS (SELECT prerequisite_id FROM forge_feature_dependencies WHERE feature_id=?1 UNION SELECT d.prerequisite_id FROM forge_feature_dependencies d JOIN deps ON d.feature_id=deps.id) SELECT EXISTS(SELECT 1 FROM deps WHERE id=?2)",params![prerequisite,feature_id],|r|r.get::<_,bool>(0))?;
-            if cycle {
+            if dependency_cycle(&tx, feature_id, prerequisite)? {
                 return Err(invalid("Feature dependency would create a cycle"));
             }
-            tx.execute("INSERT INTO forge_feature_dependencies(feature_id,prerequisite_id,rationale) VALUES(?1,?2,?3) ON CONFLICT(feature_id,prerequisite_id) DO UPDATE SET rationale=excluded.rationale",params![feature_id,prerequisite,rationale])?;
+            upsert_dependency(
+                &tx,
+                feature_id,
+                prerequisite,
+                rationale,
+                DependencyOrigin::Human,
+            )?;
         } else {
             tx.execute(
                 "DELETE FROM forge_feature_dependencies WHERE feature_id=?1 AND prerequisite_id=?2",
@@ -759,9 +736,167 @@ pub(crate) fn insert_task(
     replace_task_dependencies(db, &task_id, &draft.dependencies)?;
     task(db, project, &task_id)
 }
+/// Everything approval does inside the transaction, up to and including
+/// queueing the plan note.
+///
+/// Split out so the agent triage analysis can approve from inside its own turn
+/// commit. Reconciling publications is deliberately *not* part of this: it
+/// opens its own connection and writes to disk, so it has to run after the
+/// caller commits.
+pub(crate) fn apply_approval(
+    db: &Connection,
+    project: &str,
+    f: &Feature,
+    expected: u64,
+) -> Result<Feature, Error> {
+    let feature_id = f.id.as_str();
+    validate_ready_brief(&f.brief)?;
+    for source in &f.brief.sources {
+        check_source(db, project, source)?;
+    }
+    db.execute("UPDATE work_tasks SET state='superseded',updated_at=?2 WHERE feature_id=?1 AND state='ready'",params![feature_id,now()])?;
+    // Allocate every identity first so proposals can depend on later proposals.
+    let mut proposed = Vec::new();
+    for draft in &f.brief.tasks {
+        let mut draft = draft.clone();
+        draft.feature_id = Some(feature_id.into());
+        draft.dependencies.clear();
+        proposed.push(insert_task(db, project, &draft, Some(expected))?);
+    }
+    for (index, draft) in f.brief.tasks.iter().enumerate() {
+        let dependencies = draft
+            .dependencies
+            .iter()
+            .map(|dependency| {
+                if let Some(position) = dependency.strip_prefix("proposal:") {
+                    let position = position
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|i| i.checked_sub(1));
+                    position
+                        .and_then(|i| proposed.get(i))
+                        .map(|t| t.id.clone())
+                        .ok_or_else(|| invalid("Unknown proposed task dependency"))
+                } else {
+                    Ok(dependency.clone())
+                }
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let mut persisted = proposed[index].draft.clone();
+        persisted.dependencies = dependencies;
+        validate_dependencies(db, project, &proposed[index].id, &persisted.dependencies)?;
+        replace_task_dependencies(db, &proposed[index].id, &persisted.dependencies)?;
+        db.execute(
+            "UPDATE work_tasks SET draft_json=?2 WHERE id=?1",
+            params![proposed[index].id, json(&persisted)?],
+        )?;
+        db.execute(
+            "UPDATE work_task_revisions SET draft_json=?2 WHERE task_id=?1 AND revision=1",
+            params![proposed[index].id, json(&persisted)?],
+        )?;
+    }
+    db.execute("UPDATE forge_features SET approved_revision=revision,state='approved',updated_at=?2 WHERE id=?1",params![feature_id,now()])?;
+    db.execute(
+        "UPDATE forge_feature_revisions SET approved_at=?3 WHERE feature_id=?1 AND revision=?2",
+        params![feature_id, expected, now()],
+    )?;
+    let result = feature(db, project, feature_id)?;
+    super::publication::queue_plan(db, &result)?;
+    Ok(result)
+}
+
+pub(crate) fn validate_evaluation(
+    evaluation: &FeatureEvaluation,
+    structural_level: u8,
+) -> Result<(), Error> {
+    if structural_level > 3
+        || [evaluation.impact, evaluation.confidence, evaluation.effort]
+            .into_iter()
+            .flatten()
+            .any(|v| !(1..=5).contains(&v))
+    {
+        return Err(invalid("Ratings must be 1-5 and structural level 0-3"));
+    }
+    Ok(())
+}
+
+/// Writes the triage verdict. Deliberately does not touch `revision`: the agent
+/// analysis commits this while holding a turn admitted at a specific
+/// `feature_revision`, and that revision has to still match at commit time.
+pub(crate) fn apply_evaluation(
+    db: &Connection,
+    feature_id: &str,
+    evaluation: &FeatureEvaluation,
+    structural_level: u8,
+) -> Result<(), Error> {
+    db.execute("UPDATE forge_features SET evaluation_json=?2,structural_level=?3,state=CASE WHEN state='incubating' THEN 'in_triage' ELSE state END,updated_at=?4 WHERE id=?1",params![feature_id,json(evaluation)?,structural_level,now()])?;
+    Ok(())
+}
+
+/// Whether adding `feature_id -> prerequisite` would close a cycle.
+///
+/// Run this immediately before each individual insert rather than batching the
+/// checks up front: the walk runs on the same connection as the pending
+/// transaction, so it sees edges inserted earlier in that same transaction and
+/// each edge is therefore checked against the graph the previous ones built.
+/// `UNION` (not `UNION ALL`) is what terminates the recursion if the stored
+/// graph somehow already contains a cycle.
+pub(crate) fn dependency_cycle(
+    db: &Connection,
+    feature_id: &str,
+    prerequisite: &str,
+) -> Result<bool, Error> {
+    if feature_id == prerequisite {
+        return Ok(true);
+    }
+    Ok(db.query_row("WITH RECURSIVE deps(id) AS (SELECT prerequisite_id FROM forge_feature_dependencies WHERE feature_id=?1 UNION SELECT d.prerequisite_id FROM forge_feature_dependencies d JOIN deps ON d.feature_id=deps.id) SELECT EXISTS(SELECT 1 FROM deps WHERE id=?2)",params![prerequisite,feature_id],|r|r.get::<_,bool>(0))?)
+}
+
+/// Stores an edge, stamping who authored it.
+///
+/// An agent pass must never clobber a relation a developer confirmed by hand,
+/// so its upsert only updates rows that are already agent-authored -- on a
+/// human edge it is a clean no-op. A human write is unconditional and adopts
+/// the edge, because a developer editing an agent suggestion is taking
+/// ownership of it.
+pub(crate) fn upsert_dependency(
+    db: &Connection,
+    feature_id: &str,
+    prerequisite: &str,
+    rationale: &str,
+    origin: DependencyOrigin,
+) -> Result<(), Error> {
+    let sql = match origin {
+        DependencyOrigin::Human => {
+            "INSERT INTO forge_feature_dependencies(feature_id,prerequisite_id,rationale,origin) VALUES(?1,?2,?3,'human') ON CONFLICT(feature_id,prerequisite_id) DO UPDATE SET rationale=excluded.rationale,origin='human'"
+        }
+        DependencyOrigin::Agent => {
+            "INSERT INTO forge_feature_dependencies(feature_id,prerequisite_id,rationale,origin) VALUES(?1,?2,?3,'agent') ON CONFLICT(feature_id,prerequisite_id) DO UPDATE SET rationale=excluded.rationale WHERE forge_feature_dependencies.origin='agent'"
+        }
+    };
+    db.execute(sql, params![feature_id, prerequisite, rationale])?;
+    Ok(())
+}
+
 pub(crate) fn editable_feature(db: &Connection, f: &Feature, expected: u64) -> Result<(), Error> {
+    editable_feature_excluding_turn(db, f, expected, "")
+}
+
+/// The same admission check, but ignoring one turn.
+///
+/// An agent analysis commits its own writes while its `forge_turns` row is
+/// still `running`, so the plain check would reject the analysis on account of
+/// itself. Passing the analysis' own turn id excludes exactly that row and
+/// keeps every other guarantee -- a concurrent chat turn, an active pulsation,
+/// an archived feature and a stale revision all still reject.
+pub(crate) fn editable_feature_excluding_turn(
+    db: &Connection,
+    f: &Feature,
+    expected: u64,
+    turn: &str,
+) -> Result<(), Error> {
     release_failed(db, &f.project_id)?;
-    let active:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM work_tasks WHERE feature_id=?1 AND active_pulsation_id IS NOT NULL) OR EXISTS(SELECT 1 FROM forge_turns WHERE feature_id=?1 AND status='running')",[&f.id],|r|r.get(0))?;
+    let active:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM work_tasks WHERE feature_id=?1 AND active_pulsation_id IS NOT NULL) OR EXISTS(SELECT 1 FROM forge_turns WHERE feature_id=?1 AND status='running' AND id<>?2)",params![f.id,turn],|r|r.get(0))?;
     if f.revision != expected || active || f.state == FeatureState::Archived {
         return Err(invalid("Feature changed, is archived, or has active work"));
     }

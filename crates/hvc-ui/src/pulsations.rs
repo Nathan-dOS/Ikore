@@ -26,6 +26,10 @@ pub(crate) type PulsationsFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'static>>;
 
 pub(crate) trait PulsationsBackend: Send + Sync {
+    fn review_documents(
+        &self,
+        checkpoint: hvc_core::persistence_service::HitlCheckpoint,
+    ) -> PulsationsFuture<Vec<hvc_core::persistence_service::HitlReviewDocument>>;
     fn action(&self, action: PulsationAction) -> PulsationsFuture<()>;
     fn artifact_content(&self, pulse: String, artifact: String) -> PulsationsFuture<String>;
     fn runtime_snapshot(&self, project_id: String) -> PulsationsFuture<PulsationRuntimeSnapshot>;
@@ -56,11 +60,25 @@ impl CorePulsationsBackend {
     }
 
     fn worker_error(operation: &str, error: tokio::task::JoinError) -> String {
-        format!("worker de {operation} de pulsação interrompido: {error}")
+        format!("pulsation {operation} worker interrupted: {error}")
     }
 }
 
 impl PulsationsBackend for CorePulsationsBackend {
+    fn review_documents(
+        &self,
+        checkpoint: hvc_core::persistence_service::HitlCheckpoint,
+    ) -> PulsationsFuture<Vec<hvc_core::persistence_service::HitlReviewDocument>> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || core.persistence().read_hitl_review(&checkpoint))
+                .await
+                .map_err(|e| Self::worker_error("review", e))?
+                .map_err(|e| e.to_string())
+        })
+    }
     fn action(&self, action: PulsationAction) -> PulsationsFuture<()> {
         let core = self.core.clone();
         let runtime = core.runtime_handle().clone();
@@ -89,7 +107,7 @@ impl PulsationsBackend for CorePulsationsBackend {
                         .map(|_| ()),
                 })
                 .await
-                .map_err(|e| Self::worker_error("ação", e))?
+                .map_err(|e| Self::worker_error("action", e))?
                 .map_err(|e| e.to_string())
         })
     }
@@ -100,7 +118,7 @@ impl PulsationsBackend for CorePulsationsBackend {
             runtime
                 .spawn_blocking(move || core.persistence().read_artifact_content(&pulse, &artifact))
                 .await
-                .map_err(|e| Self::worker_error("conteúdo", e))?
+                .map_err(|e| Self::worker_error("content", e))?
                 .map_err(|e| e.to_string())
         })
     }
@@ -116,7 +134,7 @@ impl PulsationsBackend for CorePulsationsBackend {
                         .map_err(|e| e.to_string())
                 })
                 .await
-                .map_err(|e| Self::worker_error("reconciliação", e))?
+                .map_err(|e| Self::worker_error("reconciliation", e))?
         })
     }
 
@@ -150,7 +168,7 @@ impl PulsationsBackend for CorePulsationsBackend {
                         .map_err(|error| error.to_string())
                 })
                 .await
-                .map_err(|error| Self::worker_error("artefatos", error))?
+                .map_err(|error| Self::worker_error("artifacts", error))?
         })
     }
 
@@ -170,7 +188,7 @@ impl PulsationsBackend for CorePulsationsBackend {
                         .map_err(|error| error.to_string())
                 })
                 .await
-                .map_err(|error| Self::worker_error("criação", error))?
+                .map_err(|error| Self::worker_error("creation", error))?
         })
     }
 
@@ -205,6 +223,8 @@ pub enum PulsationDetailSection {
 
 #[derive(Default)]
 pub struct PulsationsModel {
+    /// User choices survive view navigation and runtime polling for this project.
+    pub(crate) group_expansion: std::collections::HashMap<&'static str, bool>,
     pub detail_section: PulsationDetailSection,
     pub brownfield_coverage: Option<BrownfieldCoverageMetrics>,
     pub details: Vec<PulsationCoordinationSnapshot>,
@@ -222,6 +242,7 @@ pub struct PulsationsModel {
     pub runtime_loading: bool,
     pub artifacts_loading: bool,
     pub error: Option<String>,
+    pub(crate) validation_error: Option<(&'static str, String)>,
     pub notice: Option<String>,
     /// Expands the Review section's diff surface to full width, hiding the pulsation list. Formerly
     /// a Workspace concept (`diff_expanded`); moved here with the HITL surface.
@@ -230,6 +251,18 @@ pub struct PulsationsModel {
 }
 
 impl PulsationsModel {
+    pub(crate) fn group_expanded(&self, status: PulsationStatus) -> bool {
+        self.group_expansion
+            .get(status_group_id(status))
+            .copied()
+            .unwrap_or(status == PulsationStatus::Running)
+    }
+
+    pub(crate) fn toggle_group(&mut self, status: PulsationStatus) {
+        self.group_expansion
+            .insert(status_group_id(status), !self.group_expanded(status));
+    }
+
     pub(crate) fn detail(&self) -> Option<&PulsationCoordinationSnapshot> {
         let active = self.active()?;
         self.details.iter().find(|d| d.pulsation_id == active.id)
@@ -256,9 +289,16 @@ impl PulsationsModel {
     pub(crate) fn apply_snapshot(
         &mut self,
         project_id: String,
-        snapshot: PulsationRuntimeSnapshot,
+        mut snapshot: PulsationRuntimeSnapshot,
         preferred_id: Option<&str>,
     ) -> Option<String> {
+        // Presentation order only: persisted queue sequence and execution admission stay intact.
+        snapshot.pulsations.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.id.cmp(&left.id))
+        });
         let current_id = self.active_pulsation_id.as_ref().map(AsRef::as_ref);
         let next_id = preferred_id
             .filter(|id| snapshot.pulsations.iter().any(|item| item.id == *id))
@@ -270,6 +310,7 @@ impl PulsationsModel {
         let pulse_changed = current_id != next_id.as_deref()
             || self.project_id.as_ref().map(AsRef::as_ref) != Some(project_id.as_str());
         if pulse_changed {
+            self.validation_error = None;
             self.detail_section = PulsationDetailSection::Overview;
             self.artifacts.clear();
             self.artifact_preview = None;
@@ -296,12 +337,13 @@ impl PulsationsModel {
                         .any(|c| c.pulsation_id == pulsation.id)
             })
             .cloned();
-        self.hitl.load_checkpoint(checkpoint.as_ref());
-        self.hitl.expected_checkpoint = self
+        let expected_checkpoint = self
             .hitl_checkpoints
             .iter()
-            .find(|c| Some(c.pulsation_id.as_str()) == self.hitl.pulsation_id.as_deref())
+            .find(|c| Some(c.pulsation_id.as_str()) == checkpoint.as_ref().map(|p| p.id.as_str()))
             .cloned();
+        self.hitl
+            .load_checkpoint(checkpoint.as_ref(), expected_checkpoint);
         // Take the user to Review exactly when a checkpoint newly appears for the active
         // pulsation, or when the active pulsation changed while a checkpoint was already waiting.
         // An ordinary refresh that doesn't change checkpoint availability leaves the user's chosen
@@ -323,6 +365,7 @@ impl PulsationsModel {
         let pulse_changed =
             self.active_pulsation_id.as_ref().map(AsRef::as_ref) != Some(pulsation_id);
         if pulse_changed {
+            self.validation_error = None;
             self.detail_section = PulsationDetailSection::Overview;
         }
         self.active_pulsation_id = Some(pulsation_id.to_owned().into());
@@ -339,12 +382,13 @@ impl PulsationsModel {
                         .any(|c| c.pulsation_id == pulsation.id)
             })
             .cloned();
-        self.hitl.load_checkpoint(checkpoint.as_ref());
-        self.hitl.expected_checkpoint = self
+        let expected_checkpoint = self
             .hitl_checkpoints
             .iter()
-            .find(|c| Some(c.pulsation_id.as_str()) == self.hitl.pulsation_id.as_deref())
+            .find(|c| Some(c.pulsation_id.as_str()) == checkpoint.as_ref().map(|p| p.id.as_str()))
             .cloned();
+        self.hitl
+            .load_checkpoint(checkpoint.as_ref(), expected_checkpoint);
         // Selecting a pulsation that is already at a checkpoint takes the user straight to Review
         // (see the UI flow plan Part 1.2).
         if pulse_changed && checkpoint.is_some() {
@@ -404,6 +448,26 @@ impl PulsationsModel {
     }
 }
 
+pub(crate) const STATUS_GROUPS: [PulsationStatus; 6] = [
+    PulsationStatus::Running,
+    PulsationStatus::Checkpoint,
+    PulsationStatus::Planning,
+    PulsationStatus::Idle,
+    PulsationStatus::Failed,
+    PulsationStatus::Done,
+];
+
+pub(crate) fn status_group_id(status: PulsationStatus) -> &'static str {
+    match status {
+        PulsationStatus::Running => "running",
+        PulsationStatus::Checkpoint => "checkpoint",
+        PulsationStatus::Planning => "planning",
+        PulsationStatus::Idle => "idle",
+        PulsationStatus::Failed => "failed",
+        PulsationStatus::Done => "done",
+    }
+}
+
 pub(crate) const PIPELINE_STAGES: [PulsationStage; 6] = [
     PulsationStage::Intake,
     PulsationStage::Specification,
@@ -427,8 +491,8 @@ pub(crate) fn stage_label(stage: PulsationStage) -> &'static str {
 pub(crate) fn status_label(status: PulsationStatus, terminal_reason: Option<&str>) -> &'static str {
     if status == PulsationStatus::Failed {
         match terminal_reason {
-            Some("user_cancel") => return "Cancelada",
-            Some("publication_conflict") => return "Conflito de publicação",
+            Some("user_cancel") => return "Cancelled",
+            Some("publication_conflict") => return "Publication conflict",
             _ => {}
         }
     }
@@ -445,6 +509,51 @@ pub(crate) fn status_label(status: PulsationStatus, terminal_reason: Option<&str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newest_first_preserves_selection_and_group_choices_across_transitions() {
+        let mut model = PulsationsModel::default();
+        assert!(model.group_expanded(PulsationStatus::Running));
+        for status in STATUS_GROUPS.into_iter().skip(1) {
+            assert!(!model.group_expanded(status));
+        }
+        model.toggle_group(PulsationStatus::Running);
+        model.toggle_group(PulsationStatus::Failed);
+        let mut old = pulsation("old", PulsationStatus::Done);
+        old.created_at = "2026-09-01T00:00:00Z".into();
+        let mut newest = pulsation("new", PulsationStatus::Running);
+        newest.created_at = "2026-09-09T00:00:00Z".into();
+        let snapshot = PulsationRuntimeSnapshot {
+            pulsations: vec![old, newest],
+            hitl_checkpoints: vec![],
+            details: vec![],
+            coordination: None,
+            main_agents_count: 1,
+            background_agents_count: 0,
+            hitl_waiting_count: 0,
+            failure_checkpoints: Vec::new(),
+            failure_waiting_count: 0,
+            brownfield_coverage: None,
+        };
+        model.apply_snapshot("project-1".into(), snapshot.clone(), None);
+        assert_eq!(
+            model
+                .pulsations
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["new", "old"]
+        );
+        assert_eq!(model.active_id().as_deref(), Some("new"));
+        model.select("old");
+        let mut changed = snapshot;
+        changed.pulsations[1].status = PulsationStatus::Failed;
+        model.apply_snapshot("project-1".into(), changed, None);
+        assert_eq!(model.active_id().as_deref(), Some("old"));
+        assert!(!model.group_expanded(PulsationStatus::Running));
+        assert!(model.group_expanded(PulsationStatus::Failed));
+        assert_eq!(model.pulsations[0].status, PulsationStatus::Failed);
+    }
 
     fn pulsation(id: &str, status: PulsationStatus) -> Pulsation {
         Pulsation {
@@ -503,6 +612,8 @@ mod tests {
                 }],
                 pulsations: vec![pulsation("pulse-1", PulsationStatus::Checkpoint)],
                 hitl_waiting_count: 1,
+                failure_checkpoints: Vec::new(),
+                failure_waiting_count: 0,
                 background_agents_count: 2,
             },
             Some("pulse-1"),
@@ -539,6 +650,8 @@ mod tests {
                 hitl_checkpoints: Vec::new(),
                 pulsations: vec![pulsation("pulse-1", PulsationStatus::Running)],
                 hitl_waiting_count: 0,
+                failure_checkpoints: Vec::new(),
+                failure_waiting_count: 0,
                 background_agents_count: 1,
             },
             None,

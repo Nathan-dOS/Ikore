@@ -27,13 +27,14 @@ fn input(fixture: &PulsationFixture) -> StageExecutionInput {
         stage_name: "SPECIFICATION".into(),
         workspace_path: fixture.project_a_root().to_string_lossy().into_owned(),
         runtime_db_path: fixture.database_path().to_string_lossy().into_owned(),
+        previous_attempt: None,
     }
 }
 
 fn valid_output() -> String {
     json!({
         "outputLanguage":"en", "summary":"Specification fixture", "statusUpdate":"checkpoint_ready", "contextUsage":[], "notes":[], "componentProposals":[],
-        "artifacts":[{"name":"spec","kind":"specification","content":"# Specification fixture\n"}]
+        "artifacts":[{"name":"spec","kind":"specification","relativePath":null,"content":"# Specification fixture\n"}]
     })
     .to_string()
 }
@@ -197,7 +198,10 @@ async fn production_runtime_rejects_invalid_schema_from_the_provider() {
     )
     .await;
     let failure = result.expect_err("invalid provider output must fail");
-    assert!(matches!(failure.error, AgentRuntimeError::Schema(_)));
+    assert!(matches!(
+        failure.error,
+        AgentRuntimeError::ModelOutputInvalid(_)
+    ));
     assert!(
         failure.context_trace.is_some(),
         "the typed trace must survive validation failures after the LLM call"

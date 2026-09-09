@@ -283,7 +283,7 @@ impl AgentsBackend for CoreAgentsBackend {
                 })
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!("worker de ordenação interrompido: {error}"))
+                    UiCommandError::worker(format!("ordering worker aborted: {error}"))
                 })?
                 .map_err(terminal_error)
         })
@@ -307,7 +307,7 @@ impl AgentsBackend for CoreAgentsBackend {
                 .spawn_blocking(move || terminals.load_events(&run_id, after_sequence, limit))
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!("worker de histórico interrompido: {error}"))
+                    UiCommandError::worker(format!("history worker aborted: {error}"))
                 })?
                 .map_err(terminal_error)
         })
@@ -320,9 +320,7 @@ impl AgentsBackend for CoreAgentsBackend {
             runtime
                 .spawn_blocking(move || terminals.clear_history(&project_id, role))
                 .await
-                .map_err(|error| {
-                    UiCommandError::worker(format!("worker de limpeza interrompido: {error}"))
-                })?
+                .map_err(|error| UiCommandError::worker(format!("clear worker aborted: {error}")))?
                 .map_err(terminal_error)
         })
     }
@@ -334,9 +332,7 @@ impl AgentsBackend for CoreAgentsBackend {
             runtime
                 .spawn_blocking(move || terminals.clear_slot_history(&project_id, &slot_id))
                 .await
-                .map_err(|error| {
-                    UiCommandError::worker(format!("worker de limpeza interrompido: {error}"))
-                })?
+                .map_err(|error| UiCommandError::worker(format!("clear worker aborted: {error}")))?
                 .map_err(terminal_error)
         })
     }
@@ -352,9 +348,7 @@ impl AgentsBackend for CoreAgentsBackend {
                         .export_run_history(&project_id, &run_id)
                 })
                 .await
-                .map_err(|error| {
-                    UiCommandError::worker(format!("worker de exportação interrompido: {error}"))
-                })?
+                .map_err(|error| UiCommandError::worker(format!("export worker aborted: {error}")))?
                 .map(|path| path.to_string_lossy().into_owned())
                 .map_err(terminal_error)
         })
@@ -411,25 +405,13 @@ pub(crate) enum TerminalEventFilter {
 impl TerminalEventFilter {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::All => "todos",
+            Self::All => "all",
             Self::Activity => "activity",
             Self::Tool => "tool",
             Self::Stdout => "stdout",
             Self::Stderr => "stderr",
             Self::Warning => "warning",
             Self::Error => "error",
-        }
-    }
-
-    pub(crate) fn next(self) -> Self {
-        match self {
-            Self::All => Self::Activity,
-            Self::Activity => Self::Tool,
-            Self::Tool => Self::Stdout,
-            Self::Stdout => Self::Stderr,
-            Self::Stderr => Self::Warning,
-            Self::Warning => Self::Error,
-            Self::Error => Self::All,
         }
     }
 
@@ -556,6 +538,7 @@ impl AgentsModel {
         self.loading = loading;
         self.busy = !loading;
         self.error = None;
+        self.notice = None;
         self.generation
     }
 
@@ -808,7 +791,7 @@ impl AgentsModel {
         *last = envelope.sequence;
         let line = match &envelope.event {
             LlmStreamEvent::RouteStarted { route_id } => format!(
-                "rota · {route_id} · execução {} · pulsação {} · job {}",
+                "route · {route_id} · execution {} · pulsation {} · job {}",
                 envelope.execution_id.chars().take(8).collect::<String>(),
                 context.pulsation_id.as_deref().unwrap_or("—"),
                 context.job_id.as_deref().unwrap_or("—")
@@ -818,32 +801,32 @@ impl AgentsModel {
                 model,
                 ordinal,
                 ..
-            } => format!("tentativa {ordinal} · {provider_id} · {model}"),
+            } => format!("attempt {ordinal} · {provider_id} · {model}"),
             LlmStreamEvent::TokenDelta { text } => text.clone(),
             LlmStreamEvent::AttemptFailed { error_code, .. } => {
-                format!("tentativa falhou · {error_code}")
+                format!("attempt failed · {error_code}")
             }
             LlmStreamEvent::RouteCompleted {
                 provider_id, model, ..
-            } => format!("concluído · {provider_id} · {model}"),
+            } => format!("completed · {provider_id} · {model}"),
             LlmStreamEvent::RouteFailed { error_code, .. } => {
-                format!("rota falhou · {error_code}")
+                format!("route failed · {error_code}")
             }
             LlmStreamEvent::ResilienceChanged {
                 scope, to_state, ..
-            } => format!("resiliência {scope} · {to_state}"),
+            } => format!("resilience {scope} · {to_state}"),
         };
         let line = hvc_core::secret_redactor::redact_secrets(&line)
             .map(|result| result.text)
-            .unwrap_or_else(|_| "[conteúdo indisponível após redaction]".into());
+            .unwrap_or_else(|_| "[content unavailable after redaction]".into());
         let activity = self.api_activity.entry(context.agent_role).or_default();
         if matches!(&envelope.event, LlmStreamEvent::TokenDelta { .. })
             && activity.last_mut().is_some_and(|previous| {
-                if previous.starts_with("saída · ") {
+                if previous.starts_with("output · ") {
                     previous.push_str(&line);
                     if previous.chars().count() > 64 * 1024 {
                         *previous = previous.chars().take(64 * 1024).collect();
-                        previous.push_str("\n[saída visível truncada]");
+                        previous.push_str("\n[visible output truncated]");
                     }
                     if let Ok(redacted) = hvc_core::secret_redactor::redact_secrets(previous) {
                         *previous = redacted.text;
@@ -858,7 +841,7 @@ impl AgentsModel {
         }
         activity.push(
             if matches!(&envelope.event, LlmStreamEvent::TokenDelta { .. }) {
-                format!("saída · {line}")
+                format!("output · {line}")
             } else {
                 line
             },
@@ -894,7 +877,7 @@ impl AgentsModel {
             return false;
         };
         agent.config = updated;
-        self.notice = Some("Configuração do agente atualizada.".into());
+        self.notice = Some("Agent configuration updated.".into());
         true
     }
 
@@ -929,7 +912,7 @@ impl AgentsModel {
                 .insert(run.slot_id.clone(), run.id.clone());
         }
         self.events_by_run.insert(run.id, Vec::new());
-        self.notice = Some("Execução manual iniciada.".into());
+        self.notice = Some("Manual execution started.".into());
         true
     }
 }
@@ -1010,7 +993,7 @@ mod tests {
                 sequence,
                 kind: TerminalEventKind::System,
                 stream: None,
-                content: "estado".into(),
+                content: "status".into(),
                 redaction_count: 0,
                 redaction_categories: Vec::new(),
                 created_at: "2026-01-01T00:00:00Z".into(),

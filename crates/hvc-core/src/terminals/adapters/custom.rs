@@ -63,6 +63,7 @@ impl CliAdapter for CustomAdapter {
             content: sanitize_terminal_text(bytes),
             native_session_id: None,
             observed_model: None,
+            is_text: stream != "stderr",
         }
     }
 

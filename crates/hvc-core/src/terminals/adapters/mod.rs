@@ -16,6 +16,7 @@ pub(super) struct NormalizedCliFrame {
     pub content: String,
     pub native_session_id: Option<String>,
     pub observed_model: Option<String>,
+    pub is_text: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,7 +184,7 @@ fn compatibility_rule(backend: CliBackend) -> CliCompatibilityRule {
         },
         CliBackend::Gemini => CliCompatibilityRule {
             minimum: (0, 55, 0),
-            maximum_exclusive: (0, 56, 0),
+            maximum_exclusive: (0, 60, 0),
         },
         CliBackend::Opencode => CliCompatibilityRule {
             minimum: (1, 18, 0),
@@ -246,6 +247,7 @@ fn normalize_json_frame(
             content: sanitized,
             native_session_id: None,
             observed_model: None,
+            is_text: false,
         };
     }
     let Ok(value) = serde_json::from_str::<Value>(&sanitized) else {
@@ -254,16 +256,19 @@ fn normalize_json_frame(
             content: sanitized,
             native_session_id: None,
             observed_model: None,
+            is_text: true,
         };
     };
     let kind = classify(&value);
-    let content =
-        extract_visible_text(&value).unwrap_or_else(|| format!("{}: {sanitized}", backend.label()));
+    let visible = extract_visible_text(&value);
+    let is_text = visible.is_some();
+    let content = visible.unwrap_or_else(|| format!("{}: {sanitized}", backend.label()));
     NormalizedCliFrame {
         kind,
         content: sanitize_terminal_text(content.as_bytes()),
         native_session_id: find_session_id(&value),
         observed_model: find_model_id(&value),
+        is_text,
     }
 }
 
@@ -421,6 +426,7 @@ mod tests {
             (CliBackend::Codex, "codex-cli 0.153.0-alpha.5"),
             (CliBackend::Claude, "2.1.81 (Claude Code)"),
             (CliBackend::Gemini, "v0.55.1"),
+            (CliBackend::Gemini, "0.59.5"),
             (CliBackend::Opencode, "opencode 1.18.17"),
         ] {
             assert_eq!(
@@ -436,6 +442,10 @@ mod tests {
         assert_eq!(
             version_compatibility(CliBackend::Gemini, Some("0.54.9")),
             CliVersionCompatibility::Unsupported
+        );
+        assert_eq!(
+            version_compatibility(CliBackend::Gemini, Some("0.60.0")),
+            CliVersionCompatibility::UnknownNewer
         );
         assert_eq!(
             version_compatibility(CliBackend::Opencode, Some("1.19.0")),

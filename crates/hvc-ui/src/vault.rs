@@ -42,7 +42,7 @@ impl CoreVaultBackend {
     }
 
     fn worker_error(operation: &str, error: tokio::task::JoinError) -> String {
-        format!("worker de {operation} do Vault interrompido: {error}")
+        format!("Vault {operation} worker interrupted: {error}")
     }
 }
 
@@ -58,7 +58,7 @@ impl VaultBackend for CoreVaultBackend {
                         .map_err(|error| error.message)
                 })
                 .await
-                .map_err(|error| Self::worker_error("árvore", error))?
+                .map_err(|error| Self::worker_error("tree", error))?
         })
     }
 
@@ -72,7 +72,7 @@ impl VaultBackend for CoreVaultBackend {
                         .map_err(|error| error.message)
                 })
                 .await
-                .map_err(|error| Self::worker_error("índice", error))?
+                .map_err(|error| Self::worker_error("index", error))?
         })
     }
 
@@ -121,7 +121,7 @@ impl VaultBackend for CoreVaultBackend {
                         .map_err(|error| error.message)
                 })
                 .await
-                .map_err(|error| Self::worker_error("renomeação", error))?
+                .map_err(|error| Self::worker_error("rename", error))?
         })
     }
 }
@@ -303,7 +303,7 @@ impl VaultModel {
             self.selected_path = Some(response.renamed_to.clone().into());
         }
         self.notice = Some(format!(
-            "Renomeado para {} · {} referência(s) atualizada(s)",
+            "Renamed to {} · {} reference(s) updated",
             response.renamed_to, response.updated_references
         ));
         self.renaming = false;
@@ -332,7 +332,7 @@ pub(crate) fn normalize_rename_target(
         || requested_name.contains('\\')
         || requested_name.contains("..")
     {
-        return Err("Informe um nome de arquivo sem diretórios ou segmentos de travessia.".into());
+        return Err("Enter a file name without directories or path traversal segments.".into());
     }
     let file_name = if requested_name.to_ascii_lowercase().ends_with(".md") {
         requested_name.to_owned()

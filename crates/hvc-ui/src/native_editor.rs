@@ -1,11 +1,11 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, Element, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, InspectorElementId, KeyBinding,
-    LayoutId, MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine,
-    Style, TextRun, UTF16Selection, Window, actions, div, fill, point, prelude::*, px, relative,
-    rgba, size,
+    App, Bounds, ClipboardItem, ContentMask, Context, Element, ElementId, ElementInputHandler,
+    Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, InspectorElementId,
+    KeyBinding, LayoutId, MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, ScrollWheelEvent,
+    ShapedLine, Style, TextRun, UTF16Selection, Window, actions, div, fill, point, prelude::*, px,
+    relative, rgba, size,
 };
 use hvc_editor::EditorBuffer;
 use hvc_editor::{EditorError, EditorSnapshot, MarkdownSyntax, MarkdownSyntaxSnapshot};
@@ -68,6 +68,12 @@ pub struct NativeEditor {
     focus_handle: FocusHandle,
     marked_range: Option<Range<usize>>,
     last_bounds: Option<Bounds<Pixels>>,
+    last_lines: Vec<(ShapedLine, Pixels)>,
+    last_visible_start: usize,
+    last_line_height: Pixels,
+    scroll_x: Pixels,
+    max_scroll_x: Pixels,
+    reveal_cursor: bool,
     autosave_generation: u64,
     syntax: Option<MarkdownSyntax>,
 }
@@ -79,6 +85,12 @@ impl NativeEditor {
             focus_handle: cx.focus_handle(),
             marked_range: None,
             last_bounds: None,
+            last_lines: Vec::new(),
+            last_visible_start: 0,
+            last_line_height: px(24.0),
+            scroll_x: px(0.0),
+            max_scroll_x: px(0.0),
+            reveal_cursor: true,
             autosave_generation: 0,
             syntax: None,
         }
@@ -90,6 +102,10 @@ impl NativeEditor {
     ) -> Result<(), EditorError> {
         self.buffer.restore_snapshot(snapshot)?;
         self.marked_range = None;
+        self.last_lines.clear();
+        self.scroll_x = px(0.0);
+        self.max_scroll_x = px(0.0);
+        self.reveal_cursor = false;
         self.autosave_generation = 0;
         Ok(())
     }
@@ -144,9 +160,9 @@ impl NativeEditor {
         }
     }
 
-    fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+    fn select_all(&mut self, _: &SelectAll, window: &mut Window, cx: &mut Context<Self>) {
         let _ = self.buffer.set_selection_utf16(0, self.buffer.utf16_len());
-        cx.notify();
+        self.after_cursor_move(window, cx);
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -238,65 +254,66 @@ impl NativeEditor {
         self.after_cursor_move(window, cx);
     }
 
-    fn after_cursor_move(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let line_height = f32::from(window.line_height()).max(1.0);
-        let viewport_height = self
-            .last_bounds
-            .map(|bounds| f32::from(bounds.size.height))
-            .unwrap_or(line_height);
-        let cursor_top = self.buffer.selection().head.line as f32 * line_height;
-        let scroll_top = self.buffer.scroll_top();
-        if cursor_top < scroll_top {
-            self.buffer.set_scroll_top(cursor_top);
-        } else if cursor_top + line_height > scroll_top + viewport_height {
-            self.buffer
-                .set_scroll_top(cursor_top + line_height - viewport_height);
-        }
+    fn after_cursor_move(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.reveal_cursor = true;
         cx.notify();
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window);
-        if let Some(bounds) = self.last_bounds {
-            let line_height = f32::from(window.line_height()).max(1.0);
-            let snapshot = self.buffer.snapshot();
-            let line = ((snapshot.scroll_top + f32::from(event.position.y - bounds.top()))
-                / line_height)
-                .floor()
-                .max(0.0) as usize;
-            let line = line.min(snapshot.text.lines().count().saturating_sub(1));
-            let text = snapshot.text.lines().nth(line).unwrap_or_default();
-            let approximate_character_width = f32::from(window.rem_size()) * 0.52;
-            let column = (f32::from(event.position.x - bounds.left())
-                / approximate_character_width.max(1.0))
-            .round()
-            .max(0.0) as usize;
-            let column = column.min(text.chars().count());
-            let _ = self
-                .buffer
-                .set_selection(hvc_editor::EditorSelection::caret(
-                    hvc_editor::TextPosition { line, column },
-                ));
+        if let Some(index) = self.index_for_point(event.position) {
+            let anchor = if event.modifiers.shift {
+                self.buffer
+                    .utf16_offset(self.buffer.selection().anchor)
+                    .unwrap_or(index)
+            } else {
+                index
+            };
+            let _ = self.buffer.set_selection_utf16(anchor, index);
         }
+        self.reveal_cursor = true;
         cx.notify();
     }
 
-    fn scroll_wheel(
-        &mut self,
-        event: &ScrollWheelEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let delta = event.delta.pixel_delta(window.line_height());
+    fn index_for_point(&self, position: Point<Pixels>) -> Option<usize> {
+        let bounds = self.last_bounds?;
+        let line_number = ((self.buffer.scroll_top()
+            + f32::from(position.y - bounds.top()).max(0.0))
+            / f32::from(self.last_line_height).max(1.0))
+        .floor() as usize;
+        let line_number = line_number.min(self.buffer.line_count().saturating_sub(1));
+        let (line, _) = self
+            .last_lines
+            .get(line_number.checked_sub(self.last_visible_start)?)?;
+        let byte = line.closest_index_for_x(position.x - bounds.left() + self.scroll_x);
+        self.buffer
+            .utf16_offset(hvc_editor::TextPosition {
+                line: line_number,
+                column: line.text[..byte].chars().count(),
+            })
+            .ok()
+    }
+
+    fn scroll_wheel(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let delta = event.delta.pixel_delta(self.last_line_height);
         let viewport_height = self
             .last_bounds
             .map(|bounds| f32::from(bounds.size.height))
             .unwrap_or_default();
-        let document_height = self.buffer.line_count() as f32 * f32::from(window.line_height());
+        let document_height = self.buffer.line_count() as f32 * f32::from(self.last_line_height);
         let maximum = (document_height - viewport_height).max(0.0);
-        let next = (self.buffer.scroll_top() - f32::from(delta.y)).clamp(0.0, maximum);
-        if (next - self.buffer.scroll_top()).abs() > f32::EPSILON {
+        let (horizontal, vertical) = if event.modifiers.shift && delta.x == px(0.0) {
+            (delta.y, px(0.0))
+        } else {
+            (delta.x, delta.y)
+        };
+        let next = (self.buffer.scroll_top() - f32::from(vertical)).clamp(0.0, maximum);
+        let next_x = (self.scroll_x - horizontal).clamp(px(0.0), self.max_scroll_x);
+        if (next - self.buffer.scroll_top()).abs() > f32::EPSILON || next_x != self.scroll_x {
             self.buffer.set_scroll_top(next);
+            self.scroll_x = next_x;
+            self.reveal_cursor = false;
+            cx.stop_propagation();
             cx.notify();
         }
     }
@@ -317,6 +334,7 @@ impl NativeEditor {
 
     fn after_edit(&mut self, cx: &mut Context<Self>) {
         self.marked_range = None;
+        self.reveal_cursor = true;
         self.autosave_generation = self.autosave_generation.saturating_add(1);
         if let Some(syntax) = self.syntax.as_mut() {
             syntax.update(self.buffer.text());
@@ -406,21 +424,48 @@ impl EntityInputHandler for NativeEditor {
 
     fn bounds_for_range(
         &mut self,
-        _: Range<usize>,
+        range: Range<usize>,
         bounds: Bounds<Pixels>,
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        Some(self.last_bounds.unwrap_or(bounds))
+        let bounds = self.last_bounds.unwrap_or(bounds);
+        let start = self.buffer.position_from_utf16(range.start);
+        let end = self.buffer.position_from_utf16(range.end);
+        let (line, y) = self
+            .last_lines
+            .get(start.line.checked_sub(self.last_visible_start)?)?;
+        let left = (bounds.left()
+            + line.x_for_index(byte_offset_for_column(&line.text, start.column))
+            - self.scroll_x)
+            .clamp(bounds.left(), bounds.right());
+        let end_x = if end.line == start.line {
+            line.x_for_index(byte_offset_for_column(&line.text, end.column))
+        } else {
+            line.width
+        };
+        let right = (bounds.left() + end_x - self.scroll_x)
+            .max(left + px(2.0))
+            .clamp(bounds.left(), bounds.right());
+        Some(Bounds::from_corners(
+            point(
+                left,
+                (bounds.top() + *y).clamp(bounds.top(), bounds.bottom()),
+            ),
+            point(
+                right,
+                (bounds.top() + *y + self.last_line_height).clamp(bounds.top(), bounds.bottom()),
+            ),
+        ))
     }
 
     fn character_index_for_point(
         &mut self,
-        _: Point<Pixels>,
+        position: Point<Pixels>,
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<usize> {
-        Some(self.selection_utf16().end)
+        self.index_for_point(position)
     }
 }
 
@@ -430,6 +475,9 @@ impl Render for NativeEditor {
             .key_context("NativeEditor")
             .track_focus(&self.focus_handle(cx))
             .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
             .bg(theme::canvas())
             .text_color(theme::text())
             .on_action(cx.listener(Self::backspace))
@@ -466,6 +514,9 @@ struct EditorElement {
 
 struct EditorPaintState {
     lines: Vec<(ShapedLine, Pixels)>,
+    visible_start: usize,
+    scroll_x: Pixels,
+    line_height: Pixels,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
 }
@@ -514,8 +565,26 @@ impl Element for EditorElement {
     ) -> Self::PrepaintState {
         let editor = self.editor.read(cx);
         let snapshot = editor.buffer.snapshot();
-        let line_height = window.line_height();
-        let visible_start = (snapshot.scroll_top / f32::from(line_height)).floor() as usize;
+        let line_height = window.line_height().max(px(1.0));
+        let reveal_cursor = editor.reveal_cursor
+            || editor
+                .last_bounds
+                .is_some_and(|previous| previous.size != bounds.size);
+        let mut scroll_top = snapshot.scroll_top;
+        let caret = snapshot.selection.head;
+        if reveal_cursor {
+            let caret_top = caret.line as f32 * f32::from(line_height);
+            let viewport_height = f32::from(bounds.size.height);
+            scroll_top = scroll_top
+                .min(caret_top)
+                .max(caret_top + f32::from(line_height) - viewport_height);
+        }
+        let max_scroll_top = (editor.buffer.line_count() as f32 * f32::from(line_height)
+            - f32::from(bounds.size.height))
+        .max(0.0);
+        scroll_top = scroll_top.clamp(0.0, max_scroll_top);
+        let visible_start = (scroll_top / f32::from(line_height)).floor() as usize;
+        let first_line_y = px(visible_start as f32 * f32::from(line_height) - scroll_top);
         let visible_count =
             (f32::from(bounds.size.height) / f32::from(line_height)).ceil() as usize + 1;
         let style = window.text_style();
@@ -524,12 +593,12 @@ impl Element for EditorElement {
 
         for (visible_index, text) in snapshot
             .text
-            .lines()
+            .split('\n')
             .skip(visible_start)
             .take(visible_count)
             .enumerate()
         {
-            let display = if text.is_empty() { " " } else { text };
+            let display = text.strip_suffix('\r').unwrap_or(text);
             let run = TextRun {
                 len: display.len(),
                 font: style.font(),
@@ -545,11 +614,30 @@ impl Element for EditorElement {
                     &[run],
                     None,
                 ),
-                px(visible_index as f32 * f32::from(line_height)),
+                first_line_y + line_height * visible_index,
             ));
         }
 
-        let caret = snapshot.selection.head;
+        let visible_width = (bounds.size.width - px(2.0)).max(px(0.0));
+        let max_scroll_x = (lines
+            .iter()
+            .map(|(line, _)| line.width)
+            .max()
+            .unwrap_or(px(0.0))
+            - visible_width)
+            .max(px(0.0));
+        let mut scroll_x = editor.scroll_x;
+        if reveal_cursor
+            && let Some((line, _)) = caret
+                .line
+                .checked_sub(visible_start)
+                .and_then(|index| lines.get(index))
+        {
+            let caret_x = line.x_for_index(byte_offset_for_column(&line.text, caret.column));
+            scroll_x = scroll_x.min(caret_x).max(caret_x - visible_width);
+        }
+        scroll_x = scroll_x.clamp(px(0.0), max_scroll_x);
+
         let cursor = if caret.line >= visible_start && caret.line < visible_start + visible_count {
             let line_index = caret.line - visible_start;
             let x = lines
@@ -558,7 +646,10 @@ impl Element for EditorElement {
                 .unwrap_or(px(0.0));
             Some(fill(
                 Bounds::new(
-                    point(bounds.left() + x, bounds.top() + line_height * line_index),
+                    point(
+                        bounds.left() + x - scroll_x,
+                        bounds.top() + first_line_y + line_height * line_index,
+                    ),
                     size(px(2.0), line_height),
                 ),
                 theme::accent(),
@@ -593,8 +684,8 @@ impl Element for EditorElement {
                 selections.push(fill(
                     Bounds::new(
                         point(
-                            bounds.left() + left,
-                            bounds.top() + line_height * line_index,
+                            bounds.left() + left - scroll_x,
+                            bounds.top() + first_line_y + line_height * line_index,
                         ),
                         size((right - left).max(px(2.0)), line_height),
                     ),
@@ -603,8 +694,18 @@ impl Element for EditorElement {
             }
         }
 
+        self.editor.update(cx, |editor, _| {
+            editor.buffer.set_scroll_top(scroll_top);
+            editor.scroll_x = scroll_x;
+            editor.max_scroll_x = max_scroll_x;
+            editor.reveal_cursor = false;
+        });
+
         EditorPaintState {
             lines,
+            visible_start,
+            scroll_x,
+            line_height,
             cursor,
             selections,
         }
@@ -626,24 +727,31 @@ impl Element for EditorElement {
             ElementInputHandler::new(bounds, self.editor.clone()),
             cx,
         );
-        for selection in state.selections.drain(..) {
-            window.paint_quad(selection);
-        }
-        for (line, y) in state.lines.drain(..) {
-            let _ = line.paint(
-                point(bounds.left(), bounds.top() + y),
-                window.line_height(),
-                window,
-                cx,
-            );
-        }
-        if focus_handle.is_focused(window)
-            && let Some(cursor) = state.cursor.take()
-        {
-            window.paint_quad(cursor);
-        }
+        // Native paint primitives need the same viewport as their containing panel.
+        // Clip text, selection and caret together so long lines cannot cover the preview.
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            for selection in state.selections.drain(..) {
+                window.paint_quad(selection);
+            }
+            for (line, y) in &state.lines {
+                let _ = line.paint(
+                    point(bounds.left() - state.scroll_x, bounds.top() + *y),
+                    state.line_height,
+                    window,
+                    cx,
+                );
+            }
+            if focus_handle.is_focused(window)
+                && let Some(cursor) = state.cursor.take()
+            {
+                window.paint_quad(cursor);
+            }
+        });
         self.editor.update(cx, |editor, _| {
             editor.last_bounds = Some(bounds);
+            editor.last_lines = std::mem::take(&mut state.lines);
+            editor.last_visible_start = state.visible_start;
+            editor.last_line_height = state.line_height;
         });
     }
 }
@@ -660,6 +768,135 @@ mod tests {
     use gpui::TestAppContext;
 
     use super::*;
+
+    struct EditorHarness(Entity<NativeEditor>);
+
+    impl Render for EditorHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .child(div().w(relative(0.5)).h_full().child(self.0.clone()))
+                .child(div().flex_1().h_full().child("Markdown Preview"))
+        }
+    }
+
+    #[gpui::test]
+    fn long_unicode_lines_remain_accessible_in_a_bounded_editor(cx: &mut TestAppContext) {
+        cx.update(register_editor_keybindings);
+        let (harness, visual) = cx.add_window_view(|window, cx| {
+            let editor = cx.new(NativeEditor::new);
+            editor.read(cx).focus_handle.focus(window);
+            EditorHarness(editor)
+        });
+        visual.simulate_resize(size(px(600.0), px(160.0)));
+        let editor = harness.read_with(visual, |harness, _| harness.0.clone());
+        let text = "A long café 👋 Markdown paragraph. ".repeat(30);
+        visual.simulate_input(&text);
+        visual.run_until_parked();
+        editor.read_with(visual, |editor, _| {
+            let bounds = editor.last_bounds.unwrap();
+            assert_eq!(editor.buffer.text(), text);
+            assert!(editor.scroll_x > px(0.0));
+            let (line, _) = &editor.last_lines[0];
+            let x = line.x_for_index(line.text.len()) - editor.scroll_x;
+            assert!(x >= px(0.0) && x + px(2.0) <= bounds.size.width);
+            assert_eq!(
+                editor.index_for_point(point(bounds.left() + x, bounds.top() + px(10.0))),
+                Some(text.encode_utf16().count())
+            );
+        });
+
+        visual.simulate_resize(size(px(360.0), px(160.0)));
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                let bounds = editor.last_bounds.unwrap();
+                let end = editor.buffer.utf16_len();
+                let caret = editor
+                    .bounds_for_range(end..end, bounds, window, cx)
+                    .unwrap();
+                assert!(caret.left() >= bounds.left() && caret.right() <= bounds.right());
+                assert!(caret.top() >= bounds.top() && caret.bottom() <= bounds.bottom());
+                assert_eq!(caret.size.width, px(2.0));
+            });
+        });
+
+        visual.simulate_keystrokes("home");
+        visual.run_until_parked();
+        let bounds = editor.read_with(visual, |editor, _| {
+            assert_eq!(editor.scroll_x, px(0.0));
+            editor.last_bounds.unwrap()
+        });
+        visual.simulate_event(ScrollWheelEvent {
+            position: bounds.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-80.0))),
+            modifiers: gpui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        editor.read_with(visual, |editor, _| {
+            assert_eq!(editor.scroll_x, px(80.0));
+            assert_eq!(editor.buffer.scroll_top(), 0.0);
+        });
+        visual.simulate_keystrokes("end");
+        visual.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "日本語👋", Some(5..5), window, cx);
+            });
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                let bounds = editor.last_bounds.unwrap();
+                let range = editor.marked_text_range(window, cx).unwrap();
+                let composition = editor.bounds_for_range(range, bounds, window, cx).unwrap();
+                assert!(composition.left() >= bounds.left());
+                assert!(composition.right() <= bounds.right());
+                assert!(composition.size.width > px(0.0));
+                assert!(editor.buffer.text().ends_with("日本語👋"));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn fractional_vertical_scroll_keeps_paint_and_unicode_hit_testing_aligned(
+        cx: &mut TestAppContext,
+    ) {
+        let (harness, visual) = cx.add_window_view(|_, cx| {
+            let editor = cx.new(NativeEditor::new);
+            editor.update(cx, |editor, _| {
+                editor.buffer = EditorBuffer::new("first\né👋\nthird\nfourth\nfifth\n", "r1");
+            });
+            EditorHarness(editor)
+        });
+        visual.simulate_resize(size(px(400.0), px(60.0)));
+        visual.run_until_parked();
+        let editor = harness.read_with(visual, |harness, _| harness.0.clone());
+        let (bounds, line_height) = editor.read_with(visual, |editor, _| {
+            (editor.last_bounds.unwrap(), editor.last_line_height)
+        });
+        visual.simulate_event(ScrollWheelEvent {
+            position: bounds.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), -line_height / 2.0)),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        editor.read_with(visual, |editor, _| {
+            assert_eq!(editor.last_lines[0].1, -line_height / 2.0);
+            let (line, y) = &editor.last_lines[1];
+            assert_eq!(
+                editor.index_for_point(point(
+                    bounds.left() + line.x_for_index(line.text.len()),
+                    bounds.top() + *y + line_height / 2.0,
+                )),
+                Some("first\né👋".encode_utf16().count())
+            );
+        });
+    }
 
     #[gpui::test]
     fn native_editor_owns_a_rope_buffer_and_edit_generation(cx: &mut TestAppContext) {
@@ -679,7 +916,7 @@ mod tests {
                     .restore_workspace_snapshot(
                         "notes/one.md",
                         EditorSnapshot {
-                            text: "# Título\n\nTexto".into(),
+                            text: "# Title\n\nText".into(),
                             revision: "r1".into(),
                             selection: Default::default(),
                             scroll_top: 0.0,

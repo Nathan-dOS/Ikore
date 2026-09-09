@@ -1,5 +1,6 @@
 use super::*;
 use crate::orchestration::{BaseState, ConfirmBaseReconciliationRequest};
+use crate::persistence_service::{ResolveStageFailureRequest, StageFailureDecision};
 use crate::persistence_service::serial::tests::Fixture;
 
 fn queue(f: &Fixture, project: &str, stage: PulsationStage) -> Pulsation {
@@ -586,8 +587,27 @@ fn supervisor_shutdown_joins_started_publication_and_recovers_remaining_unit() {
     assert_eq!(f.count("agent_runs"), 1);
 }
 
+fn version_of(f: &Fixture, pulsation: &str) -> u64 {
+    f.service
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT state_version FROM pulsations WHERE id=?1",
+            [pulsation],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+fn status_of(f: &Fixture, pulsation: &str) -> PulsationStatus {
+    PersistenceService::find_pulsation_by_id(&f.service.connection().unwrap(), pulsation)
+        .unwrap()
+        .unwrap()
+        .status
+}
+
 #[test]
-fn setup_failure_releases_slot_and_safe_owner_without_leaving_running_job() {
+fn setup_failure_parks_on_a_decision_without_leaving_a_running_job() {
     let f = Fixture::new(PulsationStage::Specification);
     f.service
         .cancel_pulsation_jobs(CancelPulsationJobsRequest {
@@ -609,15 +629,55 @@ fn setup_failure_releases_slot_and_safe_owner_without_leaving_running_job() {
             .is_err()
     );
     assert_eq!(f.count("runtime_slots"), 0);
-    assert!(state(&f).pipeline.active_pulsation_id.is_none());
+    // A setup failure is retryable, so the pulsation parks on a decision. The job is
+    // `interrupted` (collected, resumable), never left `running`, and the project owner
+    // stays held precisely because the work can still resume.
+    assert_eq!(status_of(&f, &b.id), PulsationStatus::Checkpoint);
+    assert!(state(&f).pipeline.active_pulsation_id.is_some());
     let db = f.service.connection().unwrap();
     assert_eq!(
         db.query_row(
             "SELECT status FROM jobs WHERE pulsation_id=?1",
-            [b.id],
+            [&b.id],
             |r| r.get::<_, String>(0)
         )
         .unwrap(),
+        "interrupted"
+    );
+    let (checkpoint_id, allow_retry, allow_revision): (String, i64, i64) = db
+        .query_row(
+            "SELECT checkpoint_id,allow_retry,allow_revision FROM stage_failure_requests",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    // Nothing to revise: the model never produced output.
+    assert_eq!((allow_retry, allow_revision), (1, 0));
+    drop(db);
+
+    // Aborting is what finally releases the owner and flags the base.
+    f.service
+        .resolve_stage_failure(ResolveStageFailureRequest {
+            checkpoint_id,
+            expected_state_version: version_of(&f, &b.id),
+            decision: StageFailureDecision::Abort,
+            feedback: None,
+        })
+        .unwrap();
+    let aborted =
+        PersistenceService::find_pulsation_by_id(&f.service.connection().unwrap(), &b.id)
+            .unwrap()
+            .unwrap();
+    assert_eq!(aborted.status, PulsationStatus::Failed);
+    assert_eq!(aborted.terminal_reason.as_deref(), Some("executor_setup"));
+    assert!(state(&f).pipeline.active_pulsation_id.is_none());
+    assert_eq!(
+        f.service
+            .connection()
+            .unwrap()
+            .query_row("SELECT status FROM jobs WHERE pulsation_id=?1", [&b.id], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
         "failed"
     );
 }

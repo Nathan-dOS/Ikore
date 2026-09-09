@@ -47,7 +47,7 @@ impl SessionPersistence for CoreSessionPersistence {
                         .map_err(|error| error.to_string())
                 })
                 .await
-                .map_err(|error| format!("worker de persistência interrompido: {error}"))?
+                .map_err(|error| format!("persistence worker interrupted: {error}"))?
         })
     }
 }
@@ -60,18 +60,15 @@ pub(crate) enum HeaderNoticeKind {
 }
 
 impl HeaderNoticeKind {
-    fn priority(self) -> u8 {
+    pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::Notice => 0,
-            Self::Warning => 1,
-            Self::Error => 2,
+            Self::Notice => "Info",
+            Self::Warning => "Warning",
+            Self::Error => "Error",
         }
     }
 }
 
-/// A one-click action attached to a notice (currently only the "review(s) waiting" notice uses
-/// this — see the UI flow plan Part 4.1). Kept narrow and independent of `flow::FlowTarget` so
-/// `HeaderNotice` can keep deriving `PartialEq`/`Eq` for the existing dedup logic below.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HeaderNoticeAction {
     pub(crate) label: SharedString,
@@ -80,73 +77,236 @@ pub(crate) struct HeaderNoticeAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HeaderNotice {
+    pub(crate) id: u64,
     pub(crate) kind: HeaderNoticeKind,
     pub(crate) message: String,
     pub(crate) action: Option<HeaderNoticeAction>,
+    pub(crate) project: Option<String>,
+    pub(crate) source: String,
+    pub(crate) created: std::time::SystemTime,
+    pub(crate) repeats: usize,
+    pub(crate) read: bool,
+    pending: bool,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct HeaderNoticeQueue {
     entries: VecDeque<HeaderNotice>,
+    project: Option<String>,
+    next_id: u64,
+    pub(crate) pinned: Option<u64>,
 }
 
 impl HeaderNoticeQueue {
+    pub(crate) fn set_project(&mut self, project: Option<String>) {
+        if self.project != project {
+            self.pinned = None;
+        }
+        self.project = project;
+    }
+
+    #[cfg(test)]
+    #[track_caller]
     pub(crate) fn push(&mut self, kind: HeaderNoticeKind, message: impl Into<String>) {
         self.push_actionable(kind, message, None);
     }
 
+    #[track_caller]
     pub(crate) fn push_actionable(
         &mut self,
         kind: HeaderNoticeKind,
         message: impl Into<String>,
         action: Option<HeaderNoticeAction>,
     ) {
-        let message = message.into();
-        if message.trim().is_empty()
-            || self
-                .entries
-                .iter()
-                .any(|entry| entry.kind == kind && entry.message == message)
-        {
+        let caller = std::panic::Location::caller();
+        self.push_from(
+            format!("{}:{}", caller.file(), caller.line()),
+            kind,
+            message.into(),
+            action,
+        );
+    }
+
+    pub(crate) fn push_from(
+        &mut self,
+        source: String,
+        kind: HeaderNoticeKind,
+        message: String,
+        action: Option<HeaderNoticeAction>,
+    ) {
+        if message.trim().is_empty() {
             return;
         }
-        let notice = HeaderNotice {
+        if let Some(index) = self.entries.iter().rposition(|n| {
+            n.project == self.project
+                && n.source == source
+                && n.kind == kind
+                && n.message == message
+                && n.action == action
+        }) {
+            let existing = &mut self.entries[index];
+            existing.repeats += 1;
+            existing.read = false;
+            existing.created = std::time::SystemTime::now();
+            if !existing.pending {
+                let mut repeated = self.entries.remove(index).unwrap();
+                repeated.pending = true;
+                self.entries.push_back(repeated);
+            }
+            return;
+        }
+        self.next_id += 1;
+        self.entries.push_back(HeaderNotice {
+            id: self.next_id,
             kind,
             message,
             action,
-        };
-        let index = self
-            .entries
-            .iter()
-            .position(|entry| entry.kind.priority() < kind.priority())
-            .unwrap_or(self.entries.len());
-        self.entries.insert(index, notice);
+            project: self.project.clone(),
+            source,
+            created: std::time::SystemTime::now(),
+            repeats: 1,
+            read: false,
+            pending: true,
+        });
+        if self.entries.len() > 100
+            && let Some(index) = self.entries.iter().position(|n| Some(n.id) != self.pinned)
+        {
+            self.entries.remove(index);
+        }
     }
 
     pub(crate) fn current(&self) -> Option<&HeaderNotice> {
-        self.entries.front()
+        self.entries
+            .iter()
+            .find(|n| n.project == self.project && n.pending)
     }
 
     pub(crate) fn dismiss(&mut self) -> Option<HeaderNotice> {
-        self.entries.pop_front()
+        let n = self
+            .entries
+            .iter_mut()
+            .find(|n| n.project == self.project && n.pending)?;
+        n.pending = false;
+        self.pinned = None;
+        Some(n.clone())
+    }
+
+    pub(crate) fn history(&self) -> Vec<HeaderNotice> {
+        self.entries
+            .iter()
+            .rev()
+            .filter(|n| n.project == self.project)
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn unread(&self) -> usize {
+        self.history().iter().filter(|n| !n.read).count()
+    }
+    pub(crate) fn mark_read(&mut self) {
+        self.pinned = None;
+        for n in &mut self.entries {
+            if n.project == self.project {
+                n.read = true;
+                n.pending = false;
+            }
+        }
+    }
+
+    pub(crate) fn has_pending_global_error(&self, message: &str) -> bool {
+        self.entries.iter().any(|n| {
+            n.project == self.project
+                && n.pending
+                && n.kind == HeaderNoticeKind::Error
+                && n.message == message
+                && n.source.contains(".rs:")
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn queues_header_errors_warnings_and_notices_by_priority() {
-        let mut queue = HeaderNoticeQueue::default();
-        queue.push(HeaderNoticeKind::Notice, "Workspace salvo");
-        queue.push(HeaderNoticeKind::Warning, "Banco indisponível");
-        queue.push(HeaderNoticeKind::Error, "Falha no runtime");
-
-        assert_eq!(queue.current().unwrap().message, "Falha no runtime");
-        queue.dismiss();
-        assert_eq!(queue.current().unwrap().message, "Banco indisponível");
-        queue.dismiss();
-        assert_eq!(queue.current().unwrap().message, "Workspace salvo");
+    fn repeated_dismissed_events_rejoin_the_queue_without_replacing_the_current_card() {
+        let mut q = HeaderNoticeQueue::default();
+        q.push_from(
+            "save".into(),
+            HeaderNoticeKind::Error,
+            "Failed".into(),
+            None,
+        );
+        q.dismiss();
+        q.push_from(
+            "load".into(),
+            HeaderNoticeKind::Notice,
+            "Loaded".into(),
+            None,
+        );
+        q.push_from(
+            "save".into(),
+            HeaderNoticeKind::Error,
+            "Failed".into(),
+            None,
+        );
+        assert_eq!(q.current().unwrap().message, "Loaded");
+        q.dismiss();
+        assert_eq!(q.current().unwrap().repeats, 2);
+        assert_eq!(q.history().len(), 2);
+        q.pinned = q.current().map(|n| n.id);
+        for i in 0..110 {
+            q.push(HeaderNoticeKind::Notice, format!("Event {i}"));
+        }
+        assert_eq!(q.current().unwrap().message, "Failed");
+        assert_eq!(q.history().len(), 100);
+    }
+    #[test]
+    fn notifications_are_fifo_and_dismissal_preserves_history() {
+        let mut q = HeaderNoticeQueue::default();
+        q.push(HeaderNoticeKind::Notice, "Saved");
+        q.push(HeaderNoticeKind::Error, "Failed");
+        assert_eq!(q.current().unwrap().message, "Saved");
+        q.dismiss();
+        assert_eq!(q.current().unwrap().message, "Failed");
+        assert_eq!(q.history().len(), 2);
+        assert_eq!(q.unread(), 2);
+        q.mark_read();
+        assert_eq!(q.unread(), 0);
+        assert!(q.current().is_none());
+    }
+    #[test]
+    fn history_is_bounded_and_isolated_and_deduplicates_by_destination() {
+        let mut q = HeaderNoticeQueue::default();
+        q.set_project(Some("a".into()));
+        for _ in 0..3 {
+            q.push_from(
+                "save".into(),
+                HeaderNoticeKind::Notice,
+                "Saved".into(),
+                None,
+            );
+        }
+        assert_eq!(q.history()[0].repeats, 3);
+        for id in ["one", "two"] {
+            q.push_from(
+                "review".into(),
+                HeaderNoticeKind::Warning,
+                "Review".into(),
+                Some(HeaderNoticeAction {
+                    label: "Review now".into(),
+                    pulsation_id: id.into(),
+                }),
+            );
+        }
+        assert_eq!(q.history().len(), 3);
+        q.set_project(Some("b".into()));
+        assert!(q.current().is_none());
+        for i in 0..110 {
+            q.push(HeaderNoticeKind::Notice, format!("Event {i}"));
+        }
+        assert_eq!(q.history().len(), 100);
+        assert_eq!(q.history().last().unwrap().message, "Event 10");
+        q.set_project(Some("a".into()));
+        assert!(q.history().is_empty());
     }
 }

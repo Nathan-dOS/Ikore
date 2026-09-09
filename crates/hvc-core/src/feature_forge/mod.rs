@@ -130,12 +130,47 @@ pub struct Feature {
     pub archive_reason: Option<String>,
 }
 
+/// Who authored a dependency edge. Agent-authored edges can be reviewed or
+/// removed in bulk without disturbing relations a developer confirmed by hand.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyOrigin {
+    #[default]
+    Human,
+    Agent,
+}
+
+impl DependencyOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::Agent => "agent",
+        }
+    }
+
+    /// Reads the stored column. Infallible on purpose: the table's CHECK
+    /// constraint admits only these two values, and a row that somehow held
+    /// anything else is safer treated as human-authored -- that is the value
+    /// the agent pass refuses to overwrite.
+    pub(crate) fn from_db(value: &str) -> Self {
+        match value {
+            "agent" => Self::Agent,
+            _ => Self::Human,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeatureDependency {
     pub feature_id: String,
     pub prerequisite_id: String,
     pub rationale: String,
+    /// Host-owned. The FeatureAgent schema for `suggestedDependencies` does not
+    /// carry this field, so `default` is what keeps a model response
+    /// deserializable; the host stamps the real origin when it stores the edge.
+    #[serde(default)]
+    pub origin: DependencyOrigin,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

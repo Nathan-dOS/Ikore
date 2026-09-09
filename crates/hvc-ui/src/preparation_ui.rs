@@ -17,6 +17,7 @@ impl AppModel {
             return;
         }
         self.preparation_scope = key;
+        self.pulsations.update(cx, |p, _| p.validation_error = None);
         self.learning_graph_decisions.clear();
         self.question_subscriptions.clear();
         self.specification_answer_inputs.clear();
@@ -33,7 +34,7 @@ impl AppModel {
         if let Some(questions) = detail.and_then(|d| d.questions) {
             for question in questions.questions {
                 let input =
-                    cx.new(|cx| NativeTextInput::new("Sua resposta (até 16.000 caracteres)", cx));
+                    cx.new(|cx| NativeTextInput::new("Your answer (up to 16,000 characters)", cx));
                 self.question_subscriptions
                     .push(cx.observe(&input, |_, _, cx| cx.notify()));
                 self.specification_answer_inputs.push((question.id, input));
@@ -51,11 +52,13 @@ impl AppModel {
             description: self.description_review_input.read(cx).value().to_owned(),
         };
         if let Err(error) = request.validate() {
-            self.pulsations
-                .update(cx, |p, _| p.error = Some(error.to_string()));
+            self.pulsations.update(cx, |p, _| {
+                p.validation_error = Some(("description", error.to_string()))
+            });
             cx.notify();
             return;
         }
+        self.pulsations.update(cx, |p, _| p.validation_error = None);
         self.run_pulsation_action(PulsationAction::Revise(request), cx);
     }
 
@@ -97,11 +100,13 @@ impl AppModel {
                 .collect(),
         };
         if let Err(error) = validate_specification_answers(&request, &pending) {
-            self.pulsations
-                .update(cx, |p, _| p.error = Some(error.to_string()));
+            self.pulsations.update(cx, |p, _| {
+                p.validation_error = Some(("answers", error.to_string()))
+            });
             cx.notify();
             return;
         }
+        self.pulsations.update(cx, |p, _| p.validation_error = None);
         self.run_pulsation_action(PulsationAction::Answer(request), cx);
     }
 
@@ -147,7 +152,7 @@ impl AppModel {
         settings.learning_enabled = !settings.learning_enabled;
         self.run_settings_operation(Box::pin(async move {
             backend.update_preparation(settings).await?;
-            Ok("Learning atualizado; nenhum histórico será reprocessado e os limites de chamadas são preservados.".into())
+            Ok("Learning settings updated; no history will be reprocessed and call limits are preserved.".into())
         }), cx);
     }
 
@@ -174,7 +179,7 @@ impl AppModel {
         self.run_settings_operation(
             Box::pin(async move {
                 backend.update_preparation(settings).await?;
-                Ok("Modo de refinamento Learning atualizado; publicações não iniciadas respeitam o kill switch.".into())
+                Ok("Learning refinement mode updated; pending publications respect the kill switch.".into())
             }),
             cx,
         );
@@ -211,7 +216,7 @@ impl AppModel {
         {
             self.pulsations.update(cx, |pulsations, _| {
                 pulsations.error =
-                    Some("Aprove ou rejeite individualmente todas as propostas pendentes.".into());
+                    Some("Approve or reject each pending proposal individually.".into());
             });
             cx.notify();
             return;
@@ -237,7 +242,7 @@ impl AppModel {
         );
     }
 
-    pub(crate) fn cycle_brownfield_llm_budget(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn set_brownfield_budget(&mut self, budget: u8, cx: &mut Context<Self>) {
         if self.settings.read(cx).busy {
             return;
         }
@@ -253,20 +258,12 @@ impl AppModel {
         else {
             return;
         };
-        settings.brownfield_llm_budget = match settings.brownfield_llm_budget {
-            0 => 1,
-            1 => 2,
-            2 => 4,
-            4 => 8,
-            _ => 0,
-        };
+        settings.brownfield_llm_budget = budget;
+
         self.run_settings_operation(
             Box::pin(async move {
                 backend.update_preparation(settings).await?;
-                Ok(
-                    "Orçamento LLM brownfield atualizado; zero desativa chamadas oportunistas."
-                        .into(),
-                )
+                Ok("Brownfield LLM budget updated; zero disables opportunistic calls.".into())
             }),
             cx,
         );
@@ -296,7 +293,7 @@ impl AppModel {
         self.run_settings_operation(
             Box::pin(async move {
                 backend.update_preparation(settings).await?;
-                Ok("Raio de expansão brownfield atualizado para os próximos lotes.".into())
+                Ok("Brownfield expansion radius updated for subsequent batches.".into())
             }),
             cx,
         );
@@ -328,10 +325,8 @@ impl AppModel {
                     p.action_busy = false;
                     match result {
                         Ok(()) => {
-                            p.notice = Some(
-                                "Ação registrada; a aprovação de artefatos continua separada."
-                                    .into(),
-                            )
+                            p.notice =
+                                Some("Action recorded; artifact approval remains separate.".into())
                         }
                         Err(error) => p.error = Some(error),
                     }
@@ -357,7 +352,7 @@ impl AppModel {
         let project = self.pulsations.read(cx).project_id.clone();
         self.artifact_preview_page = 0;
         self.pulsations.update(cx, |p, _| {
-            p.artifact_preview = Some((artifact.clone(), "Carregando conteúdo persistido…".into()))
+            p.artifact_preview = Some((artifact.clone(), "Loading persisted content…".into()))
         });
         self.artifact_preview_task = Some(cx.spawn(async move |this, cx| {
             let result = backend
@@ -450,16 +445,17 @@ impl AppModel {
                 .ok()
                 .and_then(|n| VaguenessScore::try_from(n).ok());
             let Some(threshold) = threshold else {
-                self.notices.push(
+                self.push_header_notice(
                     HeaderNoticeKind::Warning,
-                    "Use um threshold inteiro de 0 a 100.",
+                    "Use an integer threshold from 0 to 100.",
+                    cx,
                 );
                 cx.notify();
                 return;
             };
             settings.vagueness_threshold = threshold;
         }
-        self.run_settings_operation(Box::pin(async move{backend.update_preparation(settings).await?;Ok("Preparação salva; o threshold vale para a próxima avaliação. Revisões pendentes continuam exigindo ação humana.".into())}),cx);
+        self.run_settings_operation(Box::pin(async move{backend.update_preparation(settings).await?;Ok("Preparation saved; the threshold applies to the next evaluation. Pending reviews still require human action.".into())}),cx);
     }
 
     pub(crate) fn save_context_limit(&mut self, cx: &mut Context<Self>) {
@@ -475,9 +471,10 @@ impl AppModel {
             .ok()
             .filter(|n| (2000..=80000).contains(n));
         let Some(limit) = limit else {
-            self.notices.push(
+            self.push_header_notice(
                 HeaderNoticeKind::Warning,
-                "Use de 2.000 a 80.000 caracteres de contexto.",
+                "Use between 2,000 and 80,000 context characters.",
+                cx,
             );
             cx.notify();
             return;
@@ -486,7 +483,7 @@ impl AppModel {
         request.context_chars_limit = Some(limit);
         self.update_runtime_config(
             request,
-            "Orçamento de contexto salvo; artefatos aprovados não são truncados.",
+            "Context budget saved; approved artifacts are not truncated.",
             cx,
         );
     }

@@ -22,10 +22,9 @@ use hvc_core::persistence_service::{
     UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
 };
 use hvc_core::terminals::{
-    AgentExecutionMode, CliAgentConfig, CliBackend, CliModelSelectionSource,
-    CreateFreeFormSlotRequest, ResumeManualRunRequest, SessionPolicy, StartFreeFormRunRequest,
-    StartManualRunRequest, TerminalRunStatus, TerminalSlot, ThinkingLevel,
-    UpdateCliAgentConfigRequest, UpdateFreeFormSlotRequest,
+    CliAgentConfig, CliBackend, CliModelSelectionSource, CreateFreeFormSlotRequest,
+    ResumeManualRunRequest, StartFreeFormRunRequest, StartManualRunRequest, TerminalRunStatus,
+    TerminalSlot, ThinkingLevel, UpdateCliAgentConfigRequest, UpdateFreeFormSlotRequest,
 };
 use hvc_core::workspace_service::{
     FileNode, OpenWorkspaceRequest, ReadWorkspaceFileRequest, SearchMode, WorkspaceChangedEvent,
@@ -46,8 +45,8 @@ use crate::pulsations::{
     CorePulsationsBackend, PulsationDetailSection, PulsationsBackend, PulsationsModel,
 };
 use crate::session::{
-    CoreSessionPersistence, HeaderNotice, HeaderNoticeAction, HeaderNoticeKind, HeaderNoticeQueue,
-    SESSION_DEBOUNCE, SessionPersistence,
+    CoreSessionPersistence, HeaderNoticeAction, HeaderNoticeKind, SESSION_DEBOUNCE,
+    SessionPersistence,
 };
 use crate::settings::{CoreSettingsBackend, SettingsBackend, SettingsModel};
 use crate::text_input::NativeTextInput;
@@ -139,14 +138,14 @@ impl AppView {
 
     pub const fn description(self) -> &'static str {
         match self {
-            Self::Workspace => "Arquivos, abas, editor, preview e revisão HITL",
-            Self::Pulsations => "Execuções, checkpoints e decisões humanas",
-            Self::Forge => "Backlog de tasks, descoberta e planejamento de features",
-            Self::Vault => "Notas Markdown, links e contexto do workspace",
-            Self::Chat => "Conversa, streaming e ferramentas read-only",
-            Self::Agents => "Execução CLI/API dos sete agentes canônicos",
-            Self::Settings => "Provedores, rotas LLM e preferências locais",
-            Self::Logs => "Eventos tipados e diagnósticos do runtime",
+            Self::Workspace => "Files, tabs, editor, preview, and HITL review",
+            Self::Pulsations => "Executions, checkpoints, and human decisions",
+            Self::Forge => "Task backlog, discovery, and feature planning",
+            Self::Vault => "Markdown notes, links, and workspace context",
+            Self::Chat => "Conversation, streaming, and read-only tools",
+            Self::Agents => "CLI/API execution of the seven canonical agents",
+            Self::Settings => "Providers, LLM routing, and local preferences",
+            Self::Logs => "Typed events and runtime diagnostics",
         }
     }
 
@@ -255,13 +254,17 @@ pub struct AppModel {
     workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
     pulsations_backend: Option<Arc<dyn PulsationsBackend>>,
     vault_backend: Option<Arc<dyn VaultBackend>>,
-    settings_backend: Option<Arc<dyn SettingsBackend>>,
-    agents_backend: Option<Arc<dyn AgentsBackend>>,
+    pub(crate) settings_backend: Option<Arc<dyn SettingsBackend>>,
+    pub(crate) agents_backend: Option<Arc<dyn AgentsBackend>>,
     logs_backend: Option<Arc<dyn LogsBackend>>,
     chat_backend: Option<Arc<dyn ChatBackend>>,
     pub navigation: Entity<NavigationModel>,
     pub workspace: Entity<WorkspaceEditorModel>,
     pub pulsations: Entity<PulsationsModel>,
+    pub(crate) pulsations_split: Entity<crate::split_pane::SplitPaneState>,
+    pub(crate) workspace_tree_split: Entity<crate::split_pane::SplitPaneState>,
+    pub(crate) workspace_preview_split: Entity<crate::split_pane::SplitPaneState>,
+    pub(crate) workspace_context_split: Entity<crate::split_pane::SplitPaneState>,
     pub vault: Entity<VaultModel>,
     #[cfg(test)]
     pub(crate) pulsation_feature_input: Entity<NativeTextInput>,
@@ -306,7 +309,7 @@ pub struct AppModel {
     status: SharedString,
     event_count: u64,
     needs_resync: bool,
-    notices: HeaderNoticeQueue,
+    pub(crate) notifications: crate::notifications::Notifications,
     lifecycle: LifecycleState,
     hydrating: bool,
     session_generation: u64,
@@ -326,6 +329,7 @@ pub struct AppModel {
     preparation_action_task: Option<Task<()>>,
     artifact_preview_task: Option<Task<()>>,
     pulsation_artifacts_task: Option<Task<()>>,
+    hitl_documents_task: Option<Task<()>>,
     vault_refresh_task: Option<Task<()>>,
     vault_search_task: Option<Task<()>>,
     vault_rename_task: Option<Task<()>>,
@@ -333,6 +337,7 @@ pub struct AppModel {
     vault_document_tasks: HashMap<String, Task<()>>,
     settings_task: Option<Task<()>>,
     agents_task: Option<Task<()>>,
+    agents_notice_timer: Option<Task<()>>,
     model_catalog_task: Option<Task<()>>,
     logs_task: Option<Task<()>>,
     logs_resync_tasks: HashMap<String, Task<()>>,
@@ -345,6 +350,7 @@ pub struct AppModel {
     pub(crate) confirm_stage_reject: bool,
     pub(crate) confirm_brownfield_revoke: bool,
     pub(crate) active_dropdown: Option<String>,
+    pub(crate) choice_menu: Option<gpui::Entity<crate::select_menu::SelectMenu>>,
     /// Opt-in (default off): jump straight to a pulsation's Review section the moment a checkpoint
     /// appears, instead of only surfacing the "review(s) waiting" notice. See the UI flow plan
     /// Part 4.3; toggled from Settings > Runtime.
@@ -468,33 +474,32 @@ impl AppModel {
         let workspace = cx.new(WorkspaceEditorModel::new);
         let editor = workspace.read(cx).editor.clone();
         #[cfg(test)]
-        let pulsation_feature_input =
-            cx.new(|cx| NativeTextInput::new("Nome da funcionalidade", cx));
+        let pulsation_feature_input = cx.new(|cx| NativeTextInput::new("Feature name", cx));
         let reconciliation_input =
-            cx.new(|cx| NativeTextInput::new("O que você verificou ou corrigiu na base?", cx));
+            cx.new(|cx| NativeTextInput::new("What did you verify or fix in the base?", cx));
         let description_review_input =
-            cx.new(|cx| NativeTextInput::new("Descreva a ação e o resultado esperado", cx));
+            cx.new(|cx| NativeTextInput::new("Describe the action and expected result", cx));
         let stage_feedback_input =
-            cx.new(|cx| NativeTextInput::new("Feedback para solicitar revisão do estágio", cx));
+            cx.new(|cx| NativeTextInput::new("Feedback to request stage review", cx));
         let preparation_threshold_input =
-            cx.new(|cx| NativeTextInput::new("Threshold de 0 a 100", cx));
-        let context_limit_input = cx
-            .new(|cx| NativeTextInput::new("Orçamento de contexto: 2.000 a 80.000 caracteres", cx));
-        let vault_search_input = cx.new(|cx| NativeTextInput::new("Texto ou regex", cx));
-        let vault_rename_input = cx.new(|cx| NativeTextInput::new("Novo nome da nota", cx));
+            cx.new(|cx| NativeTextInput::new("Threshold from 0 to 100", cx));
+        let context_limit_input =
+            cx.new(|cx| NativeTextInput::new("Context budget: 2,000 to 80,000 characters", cx));
+        let vault_search_input = cx.new(|cx| NativeTextInput::new("Text or regex", cx));
+        let vault_rename_input = cx.new(|cx| NativeTextInput::new("New note name", cx));
         let settings_connection_name_input =
-            cx.new(|cx| NativeTextInput::new("Nome da conexão", cx));
+            cx.new(|cx| NativeTextInput::new("Connection name", cx));
         let settings_connection_model_input =
-            cx.new(|cx| NativeTextInput::new("Modelo padrão", cx));
+            cx.new(|cx| NativeTextInput::new("Default model", cx));
         let settings_connection_endpoint_input =
-            cx.new(|cx| NativeTextInput::new("Endpoint customizado", cx));
+            cx.new(|cx| NativeTextInput::new("Custom endpoint", cx));
         let settings_connection_secret_input = cx
-            .new(|cx| NativeTextInput::new("API key (não será exibida novamente)", cx).obscured());
-        let settings_route_name_input = cx.new(|cx| NativeTextInput::new("Nome da rota", cx));
+            .new(|cx| NativeTextInput::new("API key (will not be displayed again)", cx).obscured());
+        let settings_route_name_input = cx.new(|cx| NativeTextInput::new("Route name", cx));
         let settings_embedding_model_input =
-            cx.new(|cx| NativeTextInput::new("Modelo de embeddings", cx));
+            cx.new(|cx| NativeTextInput::new("Embedding model", cx));
         let chat_draft_input =
-            cx.new(|cx| NativeTextInput::new("Mensagem para o Companion", cx).multiline());
+            cx.new(|cx| NativeTextInput::new("Message to Companion", cx).multiline());
         let cli_model_search_input =
             cx.new(|cx| NativeTextInput::new("Search model ID, name, provider or capability", cx));
         let agent_prompt_inputs = hvc_core::llm::AgentRole::ALL
@@ -504,10 +509,7 @@ impl AppModel {
                 (
                     role,
                     cx.new(|cx| {
-                        NativeTextInput::new(
-                            format!("Solicitação manual para {}", descriptor.name),
-                            cx,
-                        )
+                        NativeTextInput::new(format!("Manual prompt for {}", descriptor.name), cx)
                     }),
                 )
             })
@@ -517,7 +519,7 @@ impl AppModel {
             .map(|role| {
                 (
                     role,
-                    cx.new(|cx| NativeTextInput::new("Modelo opcional da CLI", cx)),
+                    cx.new(|cx| NativeTextInput::new("Optional CLI model", cx)),
                 )
             })
             .collect::<HashMap<_, _>>();
@@ -526,7 +528,7 @@ impl AppModel {
             .map(|role| {
                 (
                     role,
-                    cx.new(|cx| NativeTextInput::new("Caminho absoluto do executável", cx)),
+                    cx.new(|cx| NativeTextInput::new("Absolute executable path", cx)),
                 )
             })
             .collect::<HashMap<_, _>>();
@@ -535,13 +537,23 @@ impl AppModel {
             .map(|role| {
                 (
                     role,
-                    cx.new(|cx| {
-                        NativeTextInput::new("Argumentos JSON: [\"--flag\",\"valor\"]", cx)
-                    }),
+                    cx.new(|cx| NativeTextInput::new("JSON arguments: [\"--flag\",\"value\"]", cx)),
                 )
             })
             .collect::<HashMap<_, _>>();
+        let pulsations_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::new(292.0, 220.0, 480.0, 420.0));
+        let workspace_tree_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::new(220.0, 160.0, 400.0, 480.0));
+        let workspace_preview_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.6, 240.0, 220.0));
+        let workspace_context_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.78, 480.0, 180.0));
         let mut subscriptions = vec![
+            cx.observe(&pulsations_split, |_, _, cx| cx.notify()),
+            cx.observe(&workspace_tree_split, |_, _, cx| cx.notify()),
+            cx.observe(&workspace_preview_split, |_, _, cx| cx.notify()),
+            cx.observe(&workspace_context_split, |_, _, cx| cx.notify()),
             cx.observe(&editor, |model, _, cx| {
                 model.handle_editor_update(cx);
                 model.schedule_vault_context_documents(cx);
@@ -595,6 +607,10 @@ impl AppModel {
             navigation,
             workspace,
             pulsations: cx.new(|_| PulsationsModel::default()),
+            pulsations_split,
+            workspace_tree_split,
+            workspace_preview_split,
+            workspace_context_split,
             vault: cx.new(|_| VaultModel::default()),
             #[cfg(test)]
             pulsation_feature_input,
@@ -634,10 +650,10 @@ impl AppModel {
             active_view,
             active_tab,
             last_view_per_tab,
-            status: "Pronto".into(),
+            status: "Ready".into(),
             event_count: 0,
             needs_resync: false,
-            notices: HeaderNoticeQueue::default(),
+            notifications: crate::notifications::Notifications::default(),
             lifecycle: LifecycleState::default(),
             hydrating: false,
             session_generation: 0,
@@ -657,6 +673,7 @@ impl AppModel {
             preparation_action_task: None,
             artifact_preview_task: None,
             pulsation_artifacts_task: None,
+            hitl_documents_task: None,
             vault_refresh_task: None,
             vault_search_task: None,
             vault_rename_task: None,
@@ -664,6 +681,7 @@ impl AppModel {
             vault_document_tasks: HashMap::new(),
             settings_task: None,
             agents_task: None,
+            agents_notice_timer: None,
             model_catalog_task: None,
             logs_task: None,
             logs_resync_tasks: HashMap::new(),
@@ -676,6 +694,7 @@ impl AppModel {
             confirm_stage_reject: false,
             confirm_brownfield_revoke: false,
             active_dropdown: None,
+            choice_menu: None,
             auto_open_review: false,
             _subscriptions: subscriptions,
         }
@@ -747,11 +766,17 @@ impl AppModel {
                             crate::settings::SettingsSection::Connections,
                             crate::settings::SettingsSection::Routes,
                             crate::settings::SettingsSection::Runtime,
+                            crate::settings::SettingsSection::Usage,
                         ],
                         settings.settings_section,
                         direction,
                     );
                 });
+                if self.settings.read(cx).settings_section
+                    == crate::settings::SettingsSection::Usage
+                {
+                    self.refresh_usage(cx);
+                }
                 cx.notify();
             }
             _ => {}
@@ -764,6 +789,10 @@ impl AppModel {
 
     pub fn event_count(&self) -> u64 {
         self.event_count
+    }
+
+    pub(crate) fn is_disposed(&self) -> bool {
+        self.lifecycle.is_disposed()
     }
 
     pub fn needs_resync(&self) -> bool {
@@ -784,8 +813,9 @@ impl AppModel {
         self.navigation.read(cx).sidebar_collapsed
     }
 
-    pub(crate) fn current_notice(&self) -> Option<&HeaderNotice> {
-        self.notices.current()
+    #[cfg(test)]
+    pub(crate) fn current_notice(&self) -> Option<&crate::session::HeaderNotice> {
+        self.notifications.queue.current()
     }
 
     /// Per-tab attention counters (see the UI flow plan Part 4.4). Reviews and running jobs belong
@@ -824,7 +854,8 @@ impl AppModel {
         self.confirm_stage_reject = false;
         self.confirm_brownfield_revoke = false;
         self.active_dropdown = None;
-        self.status = format!("View {} ativa", view.short_label()).into();
+        self.choice_menu = None;
+        self.status = format!("{} view active", view.short_label()).into();
         if view == AppView::Chat {
             let project_id = self
                 .workspace
@@ -886,24 +917,44 @@ impl AppModel {
     }
 
     pub fn dismiss_header_notice(&mut self, cx: &mut Context<Self>) {
-        self.notices.dismiss();
+        self.notifications.queue.dismiss();
         cx.notify();
     }
 
-    #[cfg(test)]
+    #[track_caller]
     pub(crate) fn push_header_notice(
         &mut self,
         kind: HeaderNoticeKind,
         message: impl Into<String>,
         cx: &mut Context<Self>,
     ) {
-        self.notices.push(kind, message);
+        self.push_actionable_notice(kind, message, None, cx);
+    }
+
+    #[track_caller]
+    pub(crate) fn push_actionable_notice(
+        &mut self,
+        kind: HeaderNoticeKind,
+        message: impl Into<String>,
+        action: Option<HeaderNoticeAction>,
+        cx: &mut Context<Self>,
+    ) {
+        let project = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string);
+        self.notifications.queue.set_project(project);
+        self.notifications
+            .queue
+            .push_actionable(kind, message, action);
         cx.notify();
     }
 
     pub fn choose_workspace(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(core) = self.core.clone() else {
-            self.status = "Seletor indisponível no ambiente de teste".into();
+            self.status = "Picker unavailable in test environment".into();
             cx.notify();
             return;
         };
@@ -912,9 +963,9 @@ impl AppModel {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Selecionar workspace".into()),
+            prompt: Some("Select workspace".into()),
         });
-        self.status = "Aguardando seleção do workspace…".into();
+        self.status = "Waiting for workspace selection…".into();
         cx.notify();
 
         self.workspace_task = Some(cx.spawn(async move |this, cx| {
@@ -924,7 +975,7 @@ impl AppModel {
             };
             let Some(path) = path else {
                 let _ = this.update(cx, |model, cx| {
-                    model.status = "Seleção de workspace cancelada".into();
+                    model.status = "Workspace selection canceled".into();
                     cx.notify();
                 });
                 return;
@@ -943,7 +994,7 @@ impl AppModel {
     pub fn set_brownfield_mapping_enabled(&mut self, consent: bool, cx: &mut Context<Self>) {
         self.confirm_brownfield_revoke = false;
         let Some(backend) = self.workspace_backend.clone() else {
-            self.status = "Onboarding brownfield indisponível no ambiente de teste".into();
+            self.status = "Brownfield onboarding unavailable in test environment".into();
             cx.notify();
             return;
         };
@@ -970,9 +1021,9 @@ impl AppModel {
         let generation = self.brownfield_generation;
         let requested_project = project_id.clone();
         self.status = if consent {
-            "Executando inventário brownfield limitado…".into()
+            "Running limited brownfield inventory…".into()
         } else {
-            "Revogando consentimento brownfield…".into()
+            "Revoking brownfield consent…".into()
         };
         cx.notify();
 
@@ -998,11 +1049,9 @@ impl AppModel {
                     }
                 });
                 model.status = match error_message {
-                    Some(error) => format!("Falha no onboarding brownfield: {error}").into(),
-                    None if consent => {
-                        "Inventário concluído; mapeamento estrutural agendado".into()
-                    }
-                    None => "Mapeamento brownfield desativado".into(),
+                    Some(error) => format!("Brownfield onboarding failed: {error}").into(),
+                    None if consent => "Inventory completed; structural mapping scheduled".into(),
+                    None => "Brownfield mapping disabled".into(),
                 };
                 cx.notify();
             });
@@ -1039,9 +1088,9 @@ impl AppModel {
         let generation = self.brownfield_generation;
         let requested_project = project_id.clone();
         self.status = if ignored {
-            format!("Ignorando `{relative_path}` no mapa brownfield…").into()
+            format!("Ignoring `{relative_path}` in brownfield map…").into()
         } else {
-            format!("Reativando `{relative_path}` no mapa brownfield…").into()
+            format!("Re-enabling `{relative_path}` in brownfield map…").into()
         };
         self.brownfield_task = Some(cx.spawn(async move |this, cx| {
             let result = backend
@@ -1073,12 +1122,12 @@ impl AppModel {
                     }
                 });
                 model.status = match error_message {
-                    Some(error) => format!("Falha ao atualizar ignore brownfield: {error}").into(),
+                    Some(error) => format!("Failed to update brownfield ignore: {error}").into(),
                     None if ignored => {
-                        format!("`{relative_path}` será ignorado por scans futuros.").into()
+                        format!("`{relative_path}` will be ignored in future scans.").into()
                     }
                     None => {
-                        format!("`{relative_path}` foi reativado e entrou na fila incremental.")
+                        format!("`{relative_path}` was re-enabled and queued for incremental scan.")
                             .into()
                     }
                 };
@@ -1112,11 +1161,11 @@ impl AppModel {
             return;
         }
         let Some(backend) = self.workspace_backend.clone() else {
-            self.status = "Leitura de arquivo indisponível no ambiente de teste".into();
+            self.status = "File reading unavailable in test environment".into();
             cx.notify();
             return;
         };
-        self.status = format!("Abrindo {relative_path}…").into();
+        self.status = format!("Opening {relative_path}…").into();
         cx.notify();
         let requested_path = relative_path.clone();
         let task_key = format!("open:{relative_path}");
@@ -1137,13 +1186,13 @@ impl AppModel {
                         model.apply_workspace_cursor(cursor, cx);
                     }
                     model.select_view(AppView::Workspace, cx);
-                    model.status = format!("Arquivo aberto: {requested_path}").into();
+                    model.status = format!("File opened: {requested_path}").into();
                     model.schedule_session_persistence(cx);
                     cx.notify();
                 }
                 Err(error) => {
-                    model.status = format!("Falha ao abrir {requested_path}").into();
-                    model.notices.push(HeaderNoticeKind::Error, error.message);
+                    model.status = format!("Failed to open {requested_path}").into();
+                    model.push_header_notice(HeaderNoticeKind::Error, error.message, cx);
                     cx.notify();
                 }
             });
@@ -1178,7 +1227,7 @@ impl AppModel {
             .update(cx, |workspace, _| workspace.select_tab(relative_path));
         if selected {
             self.restore_editor_for_active(cx);
-            self.status = format!("Aba ativa: {relative_path}").into();
+            self.status = format!("Active tab: {relative_path}").into();
             self.schedule_session_persistence(cx);
             cx.notify();
         }
@@ -1328,22 +1377,10 @@ impl AppModel {
         cx.notify();
     }
 
-    pub fn is_dropdown_open(&self, id: &str) -> bool {
-        self.active_dropdown.as_deref() == Some(id)
-    }
-
-    pub fn toggle_dropdown(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.active_dropdown.as_deref() == Some(id) {
-            self.active_dropdown = None;
-        } else {
-            self.active_dropdown = Some(id.to_string());
-        }
-        cx.notify();
-    }
-
     pub fn close_dropdown(&mut self, cx: &mut Context<Self>) {
         if self.active_dropdown.is_some() {
             self.active_dropdown = None;
+            self.choice_menu = None;
             cx.notify();
         }
     }
@@ -1393,7 +1430,7 @@ impl AppModel {
                         pulsations.runtime_loading = false;
                         pulsations.error = Some(error.clone());
                     });
-                    model.notices.push(HeaderNoticeKind::Warning, error);
+                    model.push_header_notice(HeaderNoticeKind::Warning, error, cx);
                     cx.notify();
                 }
             });
@@ -1408,6 +1445,16 @@ impl AppModel {
         preferred_id: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Option<String> {
+        if self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(AsRef::as_ref)
+            != Some(project_id.as_str())
+        {
+            return None;
+        }
         let forge_changed = crate::forge::task_runtime_changed(
             &self.pulsations.read(cx).pulsations,
             &snapshot.pulsations,
@@ -1416,6 +1463,7 @@ impl AppModel {
         let active_id = self.pulsations.update(cx, |pulsations, _| {
             pulsations.apply_snapshot(project_id, snapshot, preferred_id)
         });
+        self.refresh_hitl_documents(cx);
         self.sync_preparation_inputs(cx);
         if forge_changed && self.active_view() == AppView::Forge {
             self.refresh_forge(cx);
@@ -1455,13 +1503,14 @@ impl AppModel {
         } else {
             format!("{awaiting_hitl} reviews waiting")
         };
-        self.notices.push_actionable(
+        self.push_actionable_notice(
             HeaderNoticeKind::Warning,
             message,
             Some(HeaderNoticeAction {
                 label: "Review now".into(),
                 pulsation_id: pulsation_id.clone(),
             }),
+            cx,
         );
         if self.auto_open_review && !self.auto_open_review_blocked(cx) {
             self.open_pulsation_review(pulsation_id, cx);
@@ -1474,6 +1523,8 @@ impl AppModel {
     /// background poll callback doesn't have.
     fn auto_open_review_blocked(&self, cx: &Context<Self>) -> bool {
         self.forge.new_open
+            || self.active_dropdown.is_some()
+            || self.notifications.history_open
             || self.agents.read(cx).active_model_picker.is_some()
             || (self.active_view() == AppView::Chat
                 && !self.chat_draft_input.read(cx).value().trim().is_empty())
@@ -1497,6 +1548,31 @@ impl AppModel {
         }));
     }
 
+    pub(crate) fn refresh_hitl_documents(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let Some((generation, checkpoint)) = self
+            .pulsations
+            .update(cx, |state, _| state.hitl.begin_documents())
+        else {
+            return;
+        };
+        let project_id = self.workspace.read(cx).project_id.clone();
+        self.hitl_documents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.review_documents(checkpoint.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                if model.workspace.read(cx).project_id != project_id {
+                    return;
+                }
+                model.pulsations.update(cx, |state, _| {
+                    state.hitl.finish_documents(generation, &checkpoint, result);
+                });
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn select_pulsation(
         &mut self,
         pulsation_id: impl Into<String>,
@@ -1509,6 +1585,7 @@ impl AppModel {
         if !selected {
             return;
         }
+        self.refresh_hitl_documents(cx);
         self.sync_preparation_inputs(cx);
         self.pulsations.update(cx, |pulsations, _| {
             pulsations.diff_expanded = false;
@@ -1570,7 +1647,7 @@ impl AppModel {
                         model.apply_pulsation_snapshot(project_id, snapshot, Some(&created.id), cx);
                     model.pulsations.update(cx, |pulsations, _| {
                         pulsations.notice =
-                            Some(format!("Pulsação “{}” iniciada.", created.feature_name));
+                            Some(format!("Pulsation “{}” started.", created.feature_name));
                     });
                     model
                         .pulsation_feature_input
@@ -1585,7 +1662,7 @@ impl AppModel {
                         pulsations.runtime_loading = false;
                         pulsations.error = Some(error.clone());
                     });
-                    model.notices.push(HeaderNoticeKind::Error, error);
+                    model.push_header_notice(HeaderNoticeKind::Error, error, cx);
                     cx.notify();
                 }
             });
@@ -1611,38 +1688,39 @@ impl AppModel {
         // Separate from polling/refresh: a refresh must not detach an in-flight confirmation.
         self.reconciliation_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.reconcile(request).await;
-            let _ = this.update(cx, |model, cx| {
-                model.reconciliation_task = None;
-                if model.lifecycle.is_disposed() {
-                    return;
-                }
-                if model
-                    .pulsations
-                    .read(cx)
-                    .project_id
-                    .as_ref()
-                    .is_none_or(|id| id.as_ref() != project.as_str())
-                {
-                    return;
-                }
-                model.pulsations.update(cx, |p, _| {
-                    p.reconciliation_busy = false;
-                    match &result {
-                        Ok(()) => p.notice = Some(
-                            "Base atual adotada. Saídas e pulsações anteriores foram preservadas."
-                                .into(),
-                        ),
-                        Err(e) => p.error = Some(e.clone()),
+            let _ =
+                this.update(cx, |model, cx| {
+                    model.reconciliation_task = None;
+                    if model.lifecycle.is_disposed() {
+                        return;
                     }
+                    if model
+                        .pulsations
+                        .read(cx)
+                        .project_id
+                        .as_ref()
+                        .is_none_or(|id| id.as_ref() != project.as_str())
+                    {
+                        return;
+                    }
+                    model.pulsations.update(cx, |p, _| {
+                        p.reconciliation_busy = false;
+                        match &result {
+                            Ok(()) => p.notice = Some(
+                                "Current base adopted. Previous outputs and pulsations preserved."
+                                    .into(),
+                            ),
+                            Err(e) => p.error = Some(e.clone()),
+                        }
+                    });
+                    if result.is_ok() {
+                        model
+                            .reconciliation_input
+                            .update(cx, |input, cx| input.set_value("", cx));
+                        model.refresh_pulsations(cx);
+                    }
+                    cx.notify();
                 });
-                if result.is_ok() {
-                    model
-                        .reconciliation_input
-                        .update(cx, |input, cx| input.set_value("", cx));
-                    model.refresh_pulsations(cx);
-                }
-                cx.notify();
-            });
         }));
         cx.notify();
     }
@@ -1685,7 +1763,7 @@ impl AppModel {
                     );
                     model.pulsations.update(cx, |pulsations, _| {
                         pulsations.notice =
-                            Some(format!("{cancelled} job(s) marcado(s) para cancelamento."));
+                            Some(format!("{cancelled} job(s) marked for cancellation."));
                     });
                     if let Some(active_id) = active_id {
                         model.refresh_pulsation_artifacts(active_id, cx);
@@ -1696,7 +1774,7 @@ impl AppModel {
                         pulsations.runtime_loading = false;
                         pulsations.error = Some(error.clone());
                     });
-                    model.notices.push(HeaderNoticeKind::Error, error);
+                    model.push_header_notice(HeaderNoticeKind::Error, error, cx);
                     cx.notify();
                 }
             });
@@ -1902,10 +1980,8 @@ impl AppModel {
             .is_some_and(|tab| tab.dirty || tab.saving)
         {
             self.vault.update(cx, |vault, _| {
-                vault.error = Some(
-                    "Salve a nota aberta antes de renomeá-la para evitar perda de alterações."
-                        .into(),
-                );
+                vault.error =
+                    Some("Save the open note before renaming it to avoid losing changes.".into());
             });
             cx.notify();
             return;
@@ -1960,7 +2036,7 @@ impl AppModel {
                         vault.renaming = false;
                         vault.error = Some(error.clone());
                     });
-                    model.notices.push(HeaderNoticeKind::Error, error);
+                    model.push_header_notice(HeaderNoticeKind::Error, error, cx);
                     cx.notify();
                 }
             });
@@ -1994,14 +2070,19 @@ impl AppModel {
             self.pulsations.update(cx, |pulsations, _| {
                 pulsations
                     .hitl
-                    .finish(Err("Decisão HITL indisponível no ambiente de teste".into()));
+                    .finish(Err("HITL decision unavailable in test environment".into()));
             });
             cx.notify();
             return;
         };
-        self.status = "Aplicando decisão HITL…".into();
+        self.status = "Applying HITL decision…".into();
         cx.notify();
         let runtime = core.runtime_handle().clone();
+        let decision_scope = (
+            request.pulsation_id.clone(),
+            request.checkpoint_id.clone(),
+            request.expected_state_version,
+        );
         self.hitl_task = Some(cx.spawn(async move |this, cx| {
             let result = runtime
                 .spawn_blocking(move || {
@@ -2011,32 +2092,43 @@ impl AppModel {
                         .map_err(|error| error.to_string())
                 })
                 .await
-                .map_err(|error| format!("worker HITL interrompido: {error}"))
+                .map_err(|error| format!("HITL worker interrupted: {error}"))
                 .and_then(|result| result);
-            let _ = this.update(cx, |model, cx| {
-                if model.lifecycle.is_disposed() {
-                    return;
-                }
-                model.pulsations.update(cx, |pulsations, _| {
-                    pulsations.hitl.finish(result.clone());
-                    if result.is_ok() {
-                        pulsations.awaiting_hitl = pulsations.awaiting_hitl.saturating_sub(1);
-                        pulsations.diff_expanded = false;
+            let _ =
+                this.update(cx, |model, cx| {
+                    if model.lifecycle.is_disposed() {
+                        return;
                     }
+                    model.pulsations.update(cx, |pulsations, _| {
+                        let same_review = pulsations.hitl.expected_checkpoint.as_ref().is_some_and(
+                            |checkpoint| {
+                                checkpoint.pulsation_id == decision_scope.0
+                                    && checkpoint.checkpoint_id == decision_scope.1
+                                    && checkpoint.state_version == decision_scope.2
+                            },
+                        );
+                        if same_review {
+                            pulsations.hitl.finish(result.clone());
+                            if result.is_ok() {
+                                pulsations.awaiting_hitl =
+                                    pulsations.awaiting_hitl.saturating_sub(1);
+                                pulsations.diff_expanded = false;
+                            }
+                        }
+                    });
+                    match result {
+                        Ok(()) => {
+                            model.status = "HITL decision applied".into();
+                            model.schedule_session_persistence(cx);
+                            model.refresh_pulsations(cx);
+                        }
+                        Err(error) => {
+                            model.status = "Failed to apply HITL decision".into();
+                            model.push_header_notice(HeaderNoticeKind::Error, error, cx);
+                        }
+                    }
+                    cx.notify();
                 });
-                match result {
-                    Ok(()) => {
-                        model.status = "Decisão HITL aplicada".into();
-                        model.schedule_session_persistence(cx);
-                        model.refresh_pulsations(cx);
-                    }
-                    Err(error) => {
-                        model.status = "Falha ao aplicar decisão HITL".into();
-                        model.notices.push(HeaderNoticeKind::Error, error);
-                    }
-                }
-                cx.notify();
-            });
         }));
     }
 
@@ -2110,7 +2202,7 @@ impl AppModel {
                 snapshot.selection = EditorSelection::default();
                 editor
                     .restore_workspace_snapshot(&relative_path, snapshot)
-                    .expect("a seleção padrão deve ser válida");
+                    .expect("default selection must be valid");
             }
             cx.notify();
         });
@@ -2225,7 +2317,7 @@ impl AppModel {
                         editor.buffer.acknowledge_save(revision, editor_still_dirty);
                     });
                 }
-                self.status = format!("Arquivo salvo: {relative_path}").into();
+                self.status = format!("File saved: {relative_path}").into();
                 self.schedule_session_persistence(cx);
                 if still_dirty {
                     self.schedule_workspace_autosave_for_path(relative_path, cx);
@@ -2238,18 +2330,19 @@ impl AppModel {
                     workspace.mark_save_failed(&relative_path, error);
                 });
                 self.status = if conflict {
-                    format!("Conflito de revisão: {relative_path}")
+                    format!("Revision conflict: {relative_path}")
                 } else {
-                    format!("Falha ao salvar: {relative_path}")
+                    format!("Save failed: {relative_path}")
                 }
                 .into();
-                self.notices.push(
+                self.push_header_notice(
                     if conflict {
                         HeaderNoticeKind::Warning
                     } else {
                         HeaderNoticeKind::Error
                     },
                     message,
+                    cx,
                 );
             }
         }
@@ -2334,39 +2427,6 @@ impl AppModel {
         }));
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn cycle_chat_connection(&mut self, cx: &mut Context<Self>) {
-        self.chat.update(cx, |chat, _| {
-            let eligible = chat
-                .eligible_connections()
-                .map(|connection| connection.id.clone())
-                .collect::<Vec<_>>();
-            if eligible.is_empty() {
-                chat.selected_connection_id = None;
-                return;
-            }
-            let current = chat
-                .selected_connection_id
-                .as_ref()
-                .and_then(|selected| eligible.iter().position(|id| id == selected.as_ref()))
-                .unwrap_or(eligible.len().saturating_sub(1));
-            chat.selected_connection_id =
-                Some(eligible[(current + 1) % eligible.len()].clone().into());
-        });
-        cx.notify();
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn cycle_chat_transport(&mut self, cx: &mut Context<Self>) {
-        self.chat.update(cx, |chat, _| {
-            chat.selected_transport = match chat.selected_transport {
-                ChatTransportKind::Api => ChatTransportKind::Cli,
-                ChatTransportKind::Cli => ChatTransportKind::Api,
-            };
-        });
-        self.close_cli_model_picker(cx);
-    }
-
     pub(crate) fn set_chat_transport(
         &mut self,
         transport: ChatTransportKind,
@@ -2380,6 +2440,10 @@ impl AppModel {
     }
 
     pub(crate) fn set_chat_cli_backend(&mut self, backend: CliBackend, cx: &mut Context<Self>) {
+        if self.chat.read(cx).selected_cli_backend == backend {
+            self.close_dropdown(cx);
+            return;
+        }
         self.chat.update(cx, |chat, _| {
             chat.selected_cli_backend = backend;
             chat.selected_cli_model = None;
@@ -2407,47 +2471,9 @@ impl AppModel {
         self.close_dropdown(cx);
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn cycle_chat_cli_backend(&mut self, cx: &mut Context<Self>) {
-        let backend = self.chat.update(cx, |chat, _| {
-            chat.selected_cli_backend = match chat.selected_cli_backend {
-                CliBackend::Codex => CliBackend::Claude,
-                CliBackend::Claude => CliBackend::Gemini,
-                CliBackend::Gemini => CliBackend::Opencode,
-                CliBackend::Opencode | CliBackend::Custom => CliBackend::Codex,
-            };
-            chat.selected_cli_model = None;
-            chat.selected_cli_model_profile = None;
-            chat.selected_cli_model_source = CliModelSelectionSource::Default;
-            chat.selected_cli_backend
-        });
-        self.close_cli_model_picker(cx);
-        if !self.agents.read(cx).model_catalogs.contains_key(&backend) {
-            self.load_cli_model_catalog(backend, false, cx);
-        }
-    }
-
     pub(crate) fn open_companion_model_picker(&mut self, cx: &mut Context<Self>) {
         let backend = self.chat.read(cx).selected_cli_backend;
         self.open_cli_model_picker(CliModelPickerTarget::Companion, backend, cx);
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn cycle_chat_cli_profile(&mut self, cx: &mut Context<Self>) {
-        let (backend, model_id, current) = {
-            let chat = self.chat.read(cx);
-            (
-                chat.selected_cli_backend,
-                chat.selected_cli_model.clone(),
-                chat.selected_cli_model_profile.clone(),
-            )
-        };
-        let profiles = self.model_profiles(backend, model_id.as_deref(), cx);
-        let next = Self::next_model_profile(current.as_deref(), &profiles);
-        self.chat.update(cx, |chat, _| {
-            chat.selected_cli_model_profile = next;
-        });
-        cx.notify();
     }
 
     pub(crate) fn create_chat_conversation(&mut self, cx: &mut Context<Self>) {
@@ -2539,7 +2565,7 @@ impl AppModel {
                         Ok(false) => {
                             chat.set_error(crate::errors::UiCommandError::from_chat_parts(
                                 "conversation_not_found",
-                                "Conversa não encontrada.",
+                                "Conversation not found.",
                             ));
                             None
                         }
@@ -2643,7 +2669,7 @@ impl AppModel {
 
     pub(crate) fn copy_chat_diff(&mut self, diff: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(diff));
-        self.status = "Diff copiado; nenhuma alteração foi aplicada".into();
+        self.status = "Diff copied; no changes were applied".into();
         cx.notify();
     }
 
@@ -2802,68 +2828,6 @@ impl AppModel {
         cx.notify();
     }
 
-    pub(crate) fn cycle_agent_api_route(
-        &mut self,
-        role: hvc_core::llm::AgentRole,
-        cx: &mut Context<Self>,
-    ) {
-        self.configure_agent_api(role, cx);
-        let next = {
-            let settings = self.settings.read(cx);
-            let Some(snapshot) = settings.snapshot.as_ref() else {
-                return;
-            };
-            if snapshot.routes.is_empty() {
-                return;
-            }
-            let current = settings
-                .selected_route_id
-                .as_ref()
-                .and_then(|id| {
-                    snapshot
-                        .routes
-                        .iter()
-                        .position(|route| route.id == id.as_ref())
-                })
-                .unwrap_or(0);
-            snapshot.routes[(current + 1) % snapshot.routes.len()]
-                .id
-                .clone()
-        };
-        self.select_settings_route(next, cx);
-    }
-
-    pub(crate) fn cycle_agent_api_connection(
-        &mut self,
-        role: hvc_core::llm::AgentRole,
-        cx: &mut Context<Self>,
-    ) {
-        self.configure_agent_api(role, cx);
-        let next = {
-            let settings = self.settings.read(cx);
-            let Some(snapshot) = settings.snapshot.as_ref() else {
-                return;
-            };
-            if snapshot.connections.is_empty() {
-                return;
-            }
-            let current = settings
-                .selected_connection_id
-                .as_ref()
-                .and_then(|id| {
-                    snapshot
-                        .connections
-                        .iter()
-                        .position(|connection| connection.id == id.as_ref())
-                })
-                .unwrap_or(0);
-            snapshot.connections[(current + 1) % snapshot.connections.len()]
-                .id
-                .clone()
-        };
-        self.select_settings_connection(next, cx);
-    }
-
     pub(crate) fn save_agent_api_binding(
         &mut self,
         role: hvc_core::llm::AgentRole,
@@ -2888,18 +2852,6 @@ impl AppModel {
 
     pub(crate) fn refresh_agent_diagnostics(&mut self, cx: &mut Context<Self>) {
         self.refresh_agents_inner(true, cx);
-    }
-
-    pub(crate) fn cycle_agent_event_filter(&mut self, key: String, cx: &mut Context<Self>) {
-        self.agents.update(cx, |agents, _| {
-            let current = agents
-                .event_filters
-                .get(&key)
-                .copied()
-                .unwrap_or(crate::agents::TerminalEventFilter::All);
-            agents.event_filters.insert(key, current.next());
-        });
-        cx.notify();
     }
 
     pub(crate) fn toggle_agent_follow_tail(&mut self, key: String, cx: &mut Context<Self>) {
@@ -2942,9 +2894,9 @@ impl AppModel {
             })
             .unwrap_or_default();
         cx.write_to_clipboard(ClipboardItem::new_string(content));
-        self.agents.update(cx, |agents, _| {
-            agents.notice = Some("Histórico redigido copiado.".into());
-        });
+        self.notifications
+            .copied
+            .insert(run_id, std::time::Instant::now());
         cx.notify();
     }
 
@@ -2972,9 +2924,10 @@ impl AppModel {
                             if agents.generation == generation {
                                 agents.busy = false;
                                 agents.notice =
-                                    Some(format!("Histórico redigido exportado para {path}"));
+                                    Some(format!("Redacted history exported to {path}"));
                             }
                         });
+                        model.schedule_agents_notice_dismiss(cx);
                     }
                     Err(error) => {
                         model.agents.update(cx, |agents, _| {
@@ -3028,7 +2981,7 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
@@ -3037,7 +2990,7 @@ impl AppModel {
         }));
     }
 
-    fn current_agent_config(
+    pub(crate) fn current_agent_config(
         &self,
         role: hvc_core::llm::AgentRole,
         cx: &gpui::App,
@@ -3081,13 +3034,12 @@ impl AppModel {
         for free_form in &snapshot.terminals.free_form_slots {
             let slot_id = free_form.slot.id.clone();
             if !self.free_form_prompt_inputs.contains_key(&slot_id) {
-                let prompt = cx.new(|cx| NativeTextInput::new("Solicitação manual", cx));
-                let label = cx.new(|cx| NativeTextInput::new("Nome do agente livre", cx));
-                let model = cx.new(|cx| NativeTextInput::new("Modelo opcional da CLI", cx));
-                let executable =
-                    cx.new(|cx| NativeTextInput::new("Caminho absoluto do executável", cx));
-                let args = cx
-                    .new(|cx| NativeTextInput::new("Argumentos JSON: [\"--flag\",\"valor\"]", cx));
+                let prompt = cx.new(|cx| NativeTextInput::new("Manual prompt", cx));
+                let label = cx.new(|cx| NativeTextInput::new("Free-form agent name", cx));
+                let model = cx.new(|cx| NativeTextInput::new("Optional CLI model", cx));
+                let executable = cx.new(|cx| NativeTextInput::new("Absolute executable path", cx));
+                let args =
+                    cx.new(|cx| NativeTextInput::new("JSON arguments: [\"--flag\",\"value\"]", cx));
                 for input in [&prompt, &label, &model, &executable, &args] {
                     self._subscriptions
                         .push(cx.observe(input, |_, _, cx| cx.notify()));
@@ -3126,7 +3078,7 @@ impl AppModel {
         }
     }
 
-    fn save_agent_config(&mut self, config: CliAgentConfig, cx: &mut Context<Self>) {
+    pub(crate) fn save_agent_config(&mut self, config: CliAgentConfig, cx: &mut Context<Self>) {
         let Some(backend) = self.agents_backend.clone() else {
             return;
         };
@@ -3154,6 +3106,7 @@ impl AppModel {
                         model.agents.update(cx, |agents, _| {
                             agents.apply_config(generation, updated);
                         });
+                        model.schedule_agents_notice_dismiss(cx);
                     }
                     Err(error) => {
                         let message = error.presentable();
@@ -3161,10 +3114,23 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn schedule_agents_notice_dismiss(&mut self, cx: &mut Context<Self>) {
+        let timer = cx.background_executor().clone();
+        self.agents_notice_timer = Some(cx.spawn(async move |this, cx| {
+            timer.timer(std::time::Duration::from_secs(4)).await;
+            let _ = this.update(cx, |model, cx| {
+                model.agents.update(cx, |agents, _| {
+                    agents.notice = None;
+                });
                 cx.notify();
             });
         }));
@@ -3288,20 +3254,30 @@ impl AppModel {
                 let Some(mut config) = self.current_agent_config(role, cx) else {
                     return;
                 };
-                config.model = model_id;
+                config.model = model_id.clone();
                 config.model_profile = None;
                 config.model_source = source;
                 config.thinking_level = ThinkingLevel::Default;
+                if let Some(input) = self.agent_model_inputs.get(&role) {
+                    input.update(cx, |input, cx| {
+                        input.set_value(model_id.unwrap_or_default(), cx);
+                    });
+                }
                 self.save_agent_config(config, cx);
             }
             CliModelPickerTarget::FreeForm(slot_id) => {
                 let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
                     return;
                 };
-                slot.model = model_id;
+                slot.model = model_id.clone();
                 slot.model_profile = None;
                 slot.model_source = source;
                 slot.thinking_level = ThinkingLevel::Default;
+                if let Some(input) = self.free_form_model_inputs.get(&slot_id) {
+                    input.update(cx, |input, cx| {
+                        input.set_value(model_id.unwrap_or_default(), cx);
+                    });
+                }
                 self.save_free_form_slot(slot, cx);
             }
             CliModelPickerTarget::Companion => {
@@ -3351,71 +3327,6 @@ impl AppModel {
             .unwrap_or_default()
     }
 
-    fn next_model_profile(current: Option<&str>, profiles: &[String]) -> Option<String> {
-        if profiles.is_empty() {
-            return None;
-        }
-        let next = current
-            .and_then(|current| profiles.iter().position(|profile| profile == current))
-            .map_or(0, |index| index + 1);
-        (next < profiles.len()).then(|| profiles[next].clone())
-    }
-
-    pub(crate) fn cycle_agent_mode(
-        &mut self,
-        role: hvc_core::llm::AgentRole,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(mut config) = self.current_agent_config(role, cx) else {
-            return;
-        };
-        config.execution_mode = match config.execution_mode {
-            AgentExecutionMode::ApiDirect => AgentExecutionMode::CliProcess,
-            AgentExecutionMode::CliProcess => AgentExecutionMode::ApiDirect,
-        };
-        self.save_agent_config(config, cx);
-    }
-
-    pub(crate) fn cycle_agent_backend(
-        &mut self,
-        role: hvc_core::llm::AgentRole,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(mut config) = self.current_agent_config(role, cx) else {
-            return;
-        };
-        config.backend = match config.backend {
-            CliBackend::Codex => CliBackend::Claude,
-            CliBackend::Claude => CliBackend::Gemini,
-            CliBackend::Gemini => CliBackend::Opencode,
-            CliBackend::Opencode => CliBackend::Custom,
-            CliBackend::Custom => CliBackend::Codex,
-        };
-        config.model = None;
-        config.model_profile = None;
-        config.model_source = CliModelSelectionSource::Default;
-        config.thinking_level = ThinkingLevel::Default;
-        if config.backend == CliBackend::Custom {
-            // Custom is configured while inactive; activation remains an explicit second action.
-            config.execution_mode = AgentExecutionMode::ApiDirect;
-        }
-        self.save_agent_config(config, cx);
-    }
-
-    pub(crate) fn cycle_agent_thinking(
-        &mut self,
-        role: hvc_core::llm::AgentRole,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(mut config) = self.current_agent_config(role, cx) else {
-            return;
-        };
-        let profiles = self.model_profiles(config.backend, config.model.as_deref(), cx);
-        config.model_profile = Self::next_model_profile(config.model_profile.as_deref(), &profiles);
-        config.thinking_level = ThinkingLevel::Default;
-        self.save_agent_config(config, cx);
-    }
-
     pub(crate) fn toggle_agent_custom_risk_ack(
         &mut self,
         role: hvc_core::llm::AgentRole,
@@ -3436,6 +3347,9 @@ impl AppModel {
         let Some(mut config) = self.current_agent_config(role, cx) else {
             return;
         };
+        if config.backend != CliBackend::Custom {
+            return;
+        }
         config.model = self
             .agent_model_inputs
             .get(&role)
@@ -3448,37 +3362,35 @@ impl AppModel {
         };
         config.model_profile = None;
         config.thinking_level = ThinkingLevel::Default;
-        if config.backend == CliBackend::Custom {
-            config.custom_executable = self
-                .agent_custom_executable_inputs
-                .get(&role)
-                .map(|input| input.read(cx).value().trim().to_string())
-                .filter(|value| !value.is_empty());
-            let raw_args = self
-                .agent_custom_args_inputs
-                .get(&role)
-                .map(|input| input.read(cx).value().trim().to_string())
-                .unwrap_or_default();
-            config.custom_args = if raw_args.is_empty() {
-                Vec::new()
-            } else {
-                match serde_json::from_str::<Vec<String>>(&raw_args) {
-                    Ok(args) => args,
-                    Err(error) => {
-                        self.agents.update(cx, |agents, _| {
-                            agents.error = Some(crate::errors::UiCommandError::from_chat_parts(
-                                "invalid_custom_args",
-                                format!(
-                                    "Argumentos Custom devem ser um array JSON de strings: {error}"
-                                ),
-                            ));
-                        });
-                        cx.notify();
-                        return;
-                    }
+        config.custom_executable = self
+            .agent_custom_executable_inputs
+            .get(&role)
+            .map(|input| input.read(cx).value().trim().to_string())
+            .filter(|value| !value.is_empty());
+        let raw_args = self
+            .agent_custom_args_inputs
+            .get(&role)
+            .map(|input| input.read(cx).value().trim().to_string())
+            .unwrap_or_default();
+        config.custom_args = if raw_args.is_empty() {
+            Vec::new()
+        } else {
+            match serde_json::from_str::<Vec<String>>(&raw_args) {
+                Ok(args) => args,
+                Err(error) => {
+                    self.agents.update(cx, |agents, _| {
+                        agents.error = Some(crate::errors::UiCommandError::from_chat_parts(
+                            "invalid_custom_args",
+                            format!(
+                                "Argumentos Custom devem ser um array JSON de strings: {error}"
+                            ),
+                        ));
+                    });
+                    cx.notify();
+                    return;
                 }
-            };
-        }
+            }
+        };
         self.save_agent_config(config, cx);
     }
 
@@ -3523,6 +3435,7 @@ impl AppModel {
                         model.agents.update(cx, |agents, _| {
                             agents.apply_started_run(generation, run);
                         });
+                        model.schedule_agents_notice_dismiss(cx);
                     }
                     Err(error) => {
                         let message = error.presentable();
@@ -3530,7 +3443,7 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
@@ -3539,7 +3452,11 @@ impl AppModel {
         }));
     }
 
-    fn current_free_form_slot(&self, slot_id: &str, cx: &gpui::App) -> Option<TerminalSlot> {
+    pub(crate) fn current_free_form_slot(
+        &self,
+        slot_id: &str,
+        cx: &gpui::App,
+    ) -> Option<TerminalSlot> {
         let snapshot = self.agents.read(cx).snapshot.as_ref()?;
         snapshot
             .free_form_slots
@@ -3568,6 +3485,7 @@ impl AppModel {
                             agents.pending_free_form_delete = None;
                         });
                         model.refresh_agents(cx);
+                        model.schedule_agents_notice_dismiss(cx);
                     }
                 }
                 Err(error) => {
@@ -3576,7 +3494,7 @@ impl AppModel {
                         .agents
                         .update(cx, |agents, _| agents.fail(generation, error))
                     {
-                        model.notices.push(HeaderNoticeKind::Error, message);
+                        model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                     }
                     cx.notify();
                 }
@@ -3617,7 +3535,7 @@ impl AppModel {
         );
     }
 
-    fn save_free_form_slot(&mut self, slot: TerminalSlot, cx: &mut Context<Self>) {
+    pub(crate) fn save_free_form_slot(&mut self, slot: TerminalSlot, cx: &mut Context<Self>) {
         let Some(backend) = self.agents_backend.clone() else {
             return;
         };
@@ -3643,70 +3561,10 @@ impl AppModel {
                         expected_version: slot.version,
                     })
                     .await?;
-                Ok("Configuração do agente livre atualizada.".into())
+                Ok("Free-form agent configuration updated.".into())
             }),
             cx,
         );
-    }
-
-    pub(crate) fn cycle_free_form_mode(&mut self, slot_id: String, cx: &mut Context<Self>) {
-        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
-            return;
-        };
-        slot.execution_mode = match slot.execution_mode {
-            AgentExecutionMode::ApiDirect => AgentExecutionMode::CliProcess,
-            AgentExecutionMode::CliProcess => AgentExecutionMode::ApiDirect,
-        };
-        self.save_free_form_slot(slot, cx);
-    }
-
-    pub(crate) fn cycle_free_form_backend(&mut self, slot_id: String, cx: &mut Context<Self>) {
-        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
-            return;
-        };
-        slot.backend = match slot.backend {
-            CliBackend::Codex => CliBackend::Claude,
-            CliBackend::Claude => CliBackend::Gemini,
-            CliBackend::Gemini => CliBackend::Opencode,
-            CliBackend::Opencode => CliBackend::Custom,
-            CliBackend::Custom => CliBackend::Codex,
-        };
-        slot.model = None;
-        slot.model_profile = None;
-        slot.model_source = CliModelSelectionSource::Default;
-        slot.thinking_level = ThinkingLevel::Default;
-        if slot.backend == CliBackend::Custom {
-            slot.execution_mode = AgentExecutionMode::ApiDirect;
-            slot.custom_risk_ack = false;
-        }
-        self.save_free_form_slot(slot, cx);
-    }
-
-    pub(crate) fn cycle_free_form_thinking(&mut self, slot_id: String, cx: &mut Context<Self>) {
-        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
-            return;
-        };
-        let profiles = self.model_profiles(slot.backend, slot.model.as_deref(), cx);
-        slot.model_profile = Self::next_model_profile(slot.model_profile.as_deref(), &profiles);
-        slot.thinking_level = ThinkingLevel::Default;
-        self.save_free_form_slot(slot, cx);
-    }
-
-    pub(crate) fn cycle_free_form_session_policy(
-        &mut self,
-        slot_id: String,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
-            return;
-        };
-        slot.session_policy = match slot.session_policy {
-            SessionPolicy::FreshPerRun => SessionPolicy::ResumeExplicit,
-            SessionPolicy::ResumeExplicit | SessionPolicy::ResumePerPulsation => {
-                SessionPolicy::FreshPerRun
-            }
-        };
-        self.save_free_form_slot(slot, cx);
     }
 
     pub(crate) fn toggle_free_form_risk(&mut self, slot_id: String, cx: &mut Context<Self>) {
@@ -3726,19 +3584,19 @@ impl AppModel {
             .get(&slot_id)
             .map(|input| input.read(cx).value().trim().to_string())
             .unwrap_or_default();
-        slot.model = self
-            .free_form_model_inputs
-            .get(&slot_id)
-            .map(|input| input.read(cx).value().trim().to_string())
-            .filter(|value| !value.is_empty());
-        slot.model_source = if slot.model.is_some() {
-            CliModelSelectionSource::Manual
-        } else {
-            CliModelSelectionSource::Default
-        };
-        slot.model_profile = None;
-        slot.thinking_level = ThinkingLevel::Default;
         if slot.backend == CliBackend::Custom {
+            slot.model = self
+                .free_form_model_inputs
+                .get(&slot_id)
+                .map(|input| input.read(cx).value().trim().to_string())
+                .filter(|value| !value.is_empty());
+            slot.model_source = if slot.model.is_some() {
+                CliModelSelectionSource::Manual
+            } else {
+                CliModelSelectionSource::Default
+            };
+            slot.model_profile = None;
+            slot.thinking_level = ThinkingLevel::Default;
             slot.custom_executable = self
                 .free_form_custom_executable_inputs
                 .get(&slot_id)
@@ -3816,7 +3674,7 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
@@ -3871,6 +3729,7 @@ impl AppModel {
                         model.agents.update(cx, |agents, _| {
                             agents.apply_started_run(generation, run);
                         });
+                        model.schedule_agents_notice_dismiss(cx);
                     }
                     Err(error) => {
                         let message = error.presentable();
@@ -3878,7 +3737,7 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
@@ -3899,7 +3758,7 @@ impl AppModel {
             } else {
                 agents.pending_free_form_delete = Some(slot_id.clone());
                 agents.notice = Some(
-                    "Confirme novamente: o histórico local deste agente livre será removido; a sessão no fornecedor não será excluída."
+                    "Confirm again: the local history of this free-form agent will be removed; the provider session will not be deleted."
                         .into(),
                 );
                 false
@@ -3920,7 +3779,7 @@ impl AppModel {
                 backend
                     .delete_free_form(slot.project_id, slot.id, slot.version)
                     .await?;
-                Ok("Agente livre e histórico local excluídos.".into())
+                Ok("Free-form agent and local history deleted.".into())
             }),
             cx,
         );
@@ -3954,7 +3813,7 @@ impl AppModel {
             } else {
                 agents.pending_free_form_history_clear = Some(slot_id.clone());
                 agents.notice = Some(
-                    "Confirme novamente para apagar permanentemente o histórico local deste agente livre."
+                    "Confirm again to permanently erase local history of this free-form agent."
                         .into(),
                 );
                 false
@@ -3973,7 +3832,7 @@ impl AppModel {
         self.run_free_form_operation(
             Box::pin(async move {
                 let count = backend.clear_slot_history(slot.project_id, slot.id).await?;
-                Ok(format!("Histórico removido: {count} execução(ões)."))
+                Ok(format!("History removed: {count} execution(s)."))
             }),
             cx,
         );
@@ -4013,7 +3872,7 @@ impl AppModel {
         self.run_free_form_operation(
             Box::pin(async move {
                 backend.reorder_free_form(project_id, ids).await?;
-                Ok("Ordem dos agentes livres atualizada.".into())
+                Ok("Free-form agent order updated.".into())
             }),
             cx,
         );
@@ -4033,8 +3892,7 @@ impl AppModel {
                 } else {
                     agents.pending_pipeline_cancel = Some(pulsation_id.clone());
                     agents.notice = Some(
-                        "Stop automático cancela o pulso inteiro. Clique novamente para confirmar."
-                            .into(),
+                        "Automatic stop cancels the entire pulse. Click again to confirm.".into(),
                     );
                     false
                 }
@@ -4064,12 +3922,13 @@ impl AppModel {
                             if generation == agents.generation {
                                 agents.busy = false;
                                 agents.notice = Some(format!(
-                                    "Pulso cancelado; {cancelled} job(s) foram interrompidos."
+                                    "Pulse canceled; {cancelled} job(s) were interrupted."
                                 ));
                             }
                         });
                         model.refresh_pulsations(cx);
                         model.refresh_agents(cx);
+                        model.schedule_agents_notice_dismiss(cx);
                     }
                     Err(error) => {
                         let error = crate::errors::UiCommandError::from_chat_parts(
@@ -4081,7 +3940,7 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
@@ -4103,14 +3962,15 @@ impl AppModel {
                         model.agents.update(cx, |agents, _| {
                             if generation == agents.generation {
                                 agents.busy = false;
-                                agents.notice = Some("Cancelamento solicitado.".into());
+                                agents.notice = Some("Cancellation requested.".into());
                             }
                         });
+                        model.schedule_agents_notice_dismiss(cx);
                     }
                     Ok(false) => {
                         let error = crate::errors::UiCommandError::from_chat_parts(
                             "not_running",
-                            "A execução já não está ativa.",
+                            "The run is no longer active.",
                         );
                         model.agents.update(cx, |agents, _| {
                             agents.fail(generation, error);
@@ -4271,10 +4131,8 @@ impl AppModel {
                 true
             } else {
                 agents.pending_history_clear = Some(role);
-                agents.notice = Some(
-                    "Confirme novamente para apagar permanentemente o histórico deste agente."
-                        .to_string(),
-                );
+                agents.notice =
+                    Some("Confirm again to permanently erase this agent's history.".to_string());
                 false
             }
         });
@@ -4305,10 +4163,11 @@ impl AppModel {
                             if agents.generation == generation {
                                 agents.busy = false;
                                 agents.notice =
-                                    Some(format!("Histórico removido: {count} execução(ões)."));
+                                    Some(format!("History removed: {count} execution(s)."));
                             }
                         });
                         model.refresh_agents(cx);
+                        model.schedule_agents_notice_dismiss(cx);
                     }
                     Err(error) => {
                         model.agents.update(cx, |agents, _| {
@@ -4350,12 +4209,10 @@ impl AppModel {
                                 agents.notice = Some(
                                     match decision {
                                         CliFallbackDecision::UseApi => {
-                                            "Fallback para API autorizado para esta pulsação."
+                                            "API fallback authorized for this pulsation."
                                         }
-                                        CliFallbackDecision::RetryCli => {
-                                            "Nova tentativa da CLI agendada."
-                                        }
-                                        CliFallbackDecision::Cancel => "Pulsação cancelada.",
+                                        CliFallbackDecision::RetryCli => "CLI retry scheduled.",
+                                        CliFallbackDecision::Cancel => "Pulsation canceled.",
                                     }
                                     .to_string(),
                                 );
@@ -4363,6 +4220,7 @@ impl AppModel {
                         });
                         model.refresh_agents(cx);
                         model.refresh_pulsations(cx);
+                        model.schedule_agents_notice_dismiss(cx);
                     }
                     Err(error) => {
                         let message = error.presentable();
@@ -4370,7 +4228,7 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
@@ -4392,7 +4250,7 @@ impl AppModel {
             } else {
                 agents.pending_fallback_cancel = Some(checkpoint_id.clone());
                 agents.notice = Some(
-                    "Confirme novamente para cancelar toda a pulsação; a ação não desfaz arquivos já publicados."
+                    "Confirm again to cancel the entire pulsation; this will not revert already published files."
                         .to_string(),
                 );
                 false
@@ -4411,6 +4269,9 @@ impl AppModel {
     }
 
     pub(crate) fn refresh_settings(&mut self, cx: &mut Context<Self>) {
+        if self.settings.read(cx).settings_section == crate::settings::SettingsSection::Usage {
+            self.refresh_usage(cx);
+        }
         if self.lifecycle.is_disposed() {
             return;
         }
@@ -4474,7 +4335,7 @@ impl AppModel {
         }));
     }
 
-    fn run_settings_operation(
+    pub(crate) fn run_settings_operation(
         &mut self,
         operation: crate::settings::SettingsFuture<String>,
         cx: &mut Context<Self>,
@@ -4508,7 +4369,7 @@ impl AppModel {
                             .settings
                             .update(cx, |settings, _| settings.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                         cx.notify();
                     }
@@ -4517,7 +4378,7 @@ impl AppModel {
         }));
     }
 
-    fn update_runtime_config(
+    pub(crate) fn update_runtime_config(
         &mut self,
         request: UpdateAgentRuntimeConfigRequest,
         success: &'static str,
@@ -4531,27 +4392,6 @@ impl AppModel {
                 backend.update_config(request).await?;
                 Ok(success.to_string())
             }),
-            cx,
-        );
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn cycle_routing_mode(&mut self, cx: &mut Context<Self>) {
-        let current = self
-            .settings
-            .read(cx)
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.config.routing_v2_mode)
-            .unwrap_or(RoutingMode::Off);
-        let next = match current {
-            RoutingMode::Off => RoutingMode::Shadow,
-            RoutingMode::Shadow => RoutingMode::On,
-            RoutingMode::On => RoutingMode::Off,
-        };
-        self.update_runtime_config(
-            runtime_config_update().with_routing_mode(next),
-            "Modo de roteamento atualizado.",
             cx,
         );
     }
@@ -4579,7 +4419,7 @@ impl AppModel {
         };
         self.update_runtime_config(
             runtime_config_update().with_context_strategy(next),
-            "Estratégia de contexto atualizada.",
+            "Context strategy updated.",
             cx,
         );
     }
@@ -4593,7 +4433,7 @@ impl AppModel {
             .is_some_and(|snapshot| snapshot.config.embedding_enabled);
         self.update_runtime_config(
             runtime_config_update().with_embedding_enabled(!enabled),
-            "Configuração de embeddings atualizada.",
+            "Embeddings configuration updated.",
             cx,
         );
     }
@@ -4609,9 +4449,10 @@ impl AppModel {
             .as_ref()
             .map(ToString::to_string)
         else {
-            self.notices.push(
+            self.push_header_notice(
                 HeaderNoticeKind::Warning,
-                "Abra um workspace antes de reindexar embeddings.",
+                "Open a workspace before reindexing embeddings.",
+                cx,
             );
             cx.notify();
             return;
@@ -4632,54 +4473,13 @@ impl AppModel {
                 let response = backend
                     .reindex(workspace_path, (!model.is_empty()).then_some(model))
                     .await?;
-                Ok(format!("Reconciliação de embeddings solicitada para {}. O supervisor executará os deltas em segundo plano.", response.workspace_path))
+                Ok(format!("Embedding reconciliation requested for {}. Supervisor will run deltas in the background.", response.workspace_path))
             }),
             cx,
         );
     }
 
-    pub(crate) fn cycle_embedding_top_k(&mut self, cx: &mut Context<Self>) {
-        let current = self
-            .settings
-            .read(cx)
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.config.embedding_top_k)
-            .unwrap_or(5);
-        let next = match current {
-            1..=4 => 5,
-            5..=9 => 10,
-            10..=19 => 20,
-            _ => 3,
-        };
-        self.update_runtime_config(
-            runtime_config_update().with_embedding_top_k(next),
-            "Top K de embeddings atualizado.",
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_adaptive_context_mode(&mut self, cx: &mut Context<Self>) {
-        let current = self
-            .settings
-            .read(cx)
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.config.adaptive_context_mode)
-            .unwrap_or(AdaptiveContextMode::Shadow);
-        let next = match current {
-            AdaptiveContextMode::Off => AdaptiveContextMode::Shadow,
-            AdaptiveContextMode::Shadow => AdaptiveContextMode::On,
-            AdaptiveContextMode::On => AdaptiveContextMode::Off,
-        };
-        self.update_runtime_config(
-            runtime_config_update().with_adaptive_context_mode(next),
-            "Modo de contexto adaptativo atualizado.",
-            cx,
-        );
-    }
-
-    fn update_dynamic_context_policy(
+    pub(crate) fn update_dynamic_context_policy(
         &mut self,
         update: impl FnOnce(&mut DynamicContextPolicy),
         cx: &mut Context<Self>,
@@ -4694,158 +4494,9 @@ impl AppModel {
         update(&mut policy);
         self.update_runtime_config(
             runtime_config_update().with_dynamic_context_policy(policy.sanitized()),
-            "Política adaptativa atualizada.",
+            "Adaptive policy updated.",
             cx,
         );
-    }
-
-    pub(crate) fn cycle_dynamic_initial_k(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.initial_k = if policy.initial_k >= policy.max_k {
-                    1
-                } else {
-                    policy.initial_k + 1
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_max_k(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.max_k = if policy.max_k >= 3 {
-                    1
-                } else {
-                    policy.max_k + 1
-                };
-                policy.initial_k = policy.initial_k.min(policy.max_k);
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_min_similarity(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.min_similarity = match policy.min_similarity {
-                    value if value < 0.60 => 0.65,
-                    value if value < 0.70 => 0.75,
-                    value if value < 0.80 => 0.85,
-                    _ => 0.50,
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_min_candidates(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.min_candidates_count =
-                    if policy.min_candidates_count >= policy.max_notes_budget {
-                        1
-                    } else {
-                        policy.min_candidates_count + 1
-                    };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_max_notes(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.max_notes_budget = match policy.max_notes_budget {
-                    1..=4 => 8,
-                    5..=8 => 12,
-                    9..=12 => 20,
-                    _ => 4,
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_beam_width(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.beam_width = match policy.beam_width {
-                    1..=4 => 8,
-                    5..=8 => 12,
-                    _ => 4,
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_max_source_files(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.max_source_files = match policy.max_source_files {
-                    1..=3 => 5,
-                    4..=5 => 8,
-                    6..=8 => 12,
-                    _ => 3,
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_max_code_chars(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.max_code_chars = match policy.max_code_chars {
-                    0..=16_000 => 32_000,
-                    16_001..=32_000 => 48_000,
-                    32_001..=48_000 => 80_000,
-                    _ => 16_000,
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_timeout(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.timeout_ms = match policy.timeout_ms {
-                    0..=500 => 1_000,
-                    501..=1_000 => 1_500,
-                    1_001..=1_500 => 3_000,
-                    1_501..=3_000 => 5_000,
-                    _ => 500,
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_settings_provider(&mut self, cx: &mut Context<Self>) {
-        self.settings.update(cx, |settings, _| {
-            let ids = settings
-                .snapshot
-                .as_ref()
-                .map(|snapshot| {
-                    snapshot
-                        .profiles
-                        .iter()
-                        .map(|profile| profile.id.clone())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            if let Some(index) = ids
-                .iter()
-                .position(|id| id == settings.connection_provider_id.as_ref())
-                && let Some(next) = ids.get((index + 1) % ids.len().max(1))
-            {
-                settings.connection_provider_id = next.clone().into();
-            }
-        });
-        cx.notify();
     }
 
     pub(crate) fn select_settings_provider(&mut self, provider_id: String, cx: &mut Context<Self>) {
@@ -4950,7 +4601,7 @@ impl AppModel {
             id: existing.as_ref().map(|item| item.id.clone()),
             provider_id,
             display_name: if display_name.is_empty() {
-                "Conexão LLM".to_string()
+                "LLM Connection".to_string()
             } else {
                 display_name
             },
@@ -4970,7 +4621,7 @@ impl AppModel {
         self.run_settings_operation(
             Box::pin(async move {
                 backend.upsert_connection(request).await?;
-                Ok("Conexão e credencial salvas com segurança.".to_string())
+                Ok("Connection and credential securely saved.".to_string())
             }),
             cx,
         );
@@ -4995,11 +4646,11 @@ impl AppModel {
                     .test_connection(TestProviderConnectionRequest { connection_id })
                     .await?;
                 Ok(format!(
-                    "Conexão {} em {} ms: {}",
+                    "Connection {} in {} ms: {}",
                     if response.reachable {
-                        "alcançável"
+                        "reachable"
                     } else {
-                        "indisponível"
+                        "unavailable"
                     },
                     response.latency_ms,
                     response.message
@@ -5024,7 +4675,7 @@ impl AppModel {
                         version: connection.version,
                     })
                     .await?;
-                Ok("Conexão excluída.".to_string())
+                Ok("Connection deleted.".to_string())
             }),
             cx,
         );
@@ -5066,37 +4717,11 @@ impl AppModel {
         cx.notify();
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn cycle_route_strategy(&mut self, cx: &mut Context<Self>) {
-        self.settings.update(cx, |settings, _| {
-            settings.route_strategy = match settings.route_strategy.as_ref() {
-                "priority" => "lkgp".into(),
-                "lkgp" => "score".into(),
-                _ => "priority".into(),
-            };
-        });
-        cx.notify();
-    }
-
     pub(crate) fn set_route_strategy(&mut self, strategy: String, cx: &mut Context<Self>) {
         self.settings.update(cx, |settings, _| {
             settings.route_strategy = strategy.into();
         });
         self.close_dropdown(cx);
-        cx.notify();
-    }
-
-    pub(crate) fn cycle_route_limits(&mut self, cx: &mut Context<Self>) {
-        self.settings.update(cx, |settings, _| {
-            let (attempts, attempt_timeout, route_timeout) = match settings.route_max_attempts {
-                1 => (2, 30_000, 60_000),
-                2 => (3, 45_000, 120_000),
-                _ => (1, 15_000, 30_000),
-            };
-            settings.route_max_attempts = attempts;
-            settings.route_attempt_timeout_ms = attempt_timeout;
-            settings.route_timeout_ms = route_timeout;
-        });
         cx.notify();
     }
 
@@ -5199,7 +4824,7 @@ impl AppModel {
         let request = UpsertProviderRouteRequest {
             id: existing.as_ref().map(|route| route.id.clone()),
             name: if name.is_empty() {
-                "Rota LLM".into()
+                "LLM Route".into()
             } else {
                 name
             },
@@ -5214,7 +4839,7 @@ impl AppModel {
         self.run_settings_operation(
             Box::pin(async move {
                 backend.upsert_route(request).await?;
-                Ok("Rota salva com a ordem de alvos atual.".to_string())
+                Ok("Route saved with current target order.".to_string())
             }),
             cx,
         );
@@ -5235,50 +4860,10 @@ impl AppModel {
                         version: route.version,
                     })
                     .await?;
-                Ok("Rota excluída.".to_string())
+                Ok("Route deleted.".to_string())
             }),
             cx,
         );
-    }
-
-    pub(crate) fn cycle_binding_role(&mut self, cx: &mut Context<Self>) {
-        const ROLES: [&str; 7] = [
-            "intake_router",
-            "task_specifier",
-            "contract_agent",
-            "backend_agent",
-            "test_agent",
-            "integrator",
-            "learning_agent",
-        ];
-        self.settings.update(cx, |settings, _| {
-            let current = ROLES
-                .iter()
-                .position(|role| *role == settings.binding_agent_role.as_ref())
-                .unwrap_or(0);
-            settings.binding_agent_role = ROLES[(current + 1) % ROLES.len()].into();
-        });
-        cx.notify();
-    }
-
-    pub(crate) fn cycle_binding_stage(&mut self, cx: &mut Context<Self>) {
-        const STAGES: [&str; 7] = [
-            "Intake",
-            "Specification",
-            "Contract",
-            "Code",
-            "Test",
-            "Integrator",
-            "Learning",
-        ];
-        self.settings.update(cx, |settings, _| {
-            let current = STAGES
-                .iter()
-                .position(|stage| *stage == settings.binding_stage.as_ref())
-                .unwrap_or(0);
-            settings.binding_stage = STAGES[(current + 1) % STAGES.len()].into();
-        });
-        cx.notify();
     }
 
     pub(crate) fn save_settings_binding(&mut self, cx: &mut Context<Self>) {
@@ -5292,9 +4877,10 @@ impl AppModel {
             .as_ref()
             .map(ToString::to_string)
         else {
-            self.notices.push(
+            self.push_header_notice(
                 HeaderNoticeKind::Warning,
-                "Abra um projeto antes de criar o binding.",
+                "Open a project before creating the binding.",
+                cx,
             );
             cx.notify();
             return;
@@ -5332,7 +4918,7 @@ impl AppModel {
                         version,
                     })
                     .await?;
-                Ok("Binding exato salvo.".to_string())
+                Ok("Exact binding saved.".to_string())
             }),
             cx,
         );
@@ -5356,7 +4942,7 @@ impl AppModel {
                         provider_id: None,
                     })
                     .await?;
-                Ok(format!("{count} estado(s) de resiliência removido(s)."))
+                Ok(format!("{count} resilience state(s) removed."))
             }),
             cx,
         );
@@ -5419,7 +5005,7 @@ impl AppModel {
                         });
                         if applied {
                             model.needs_resync = false;
-                            model.status = "Execução LLM ressincronizada".into();
+                            model.status = "LLM execution resynchronized".into();
                         }
                     }
                     Err(error) => {
@@ -5521,9 +5107,10 @@ impl AppModel {
                                 }
                                 model.refresh_logs(cx);
                             }
-                            Err(error) => model.notices.push(
+                            Err(error) => model.push_header_notice(
                                 HeaderNoticeKind::Warning,
-                                format!("Falha ao atualizar runtime: {error}"),
+                                format!("Failed to update runtime: {error}"),
+                                cx,
                             ),
                         }
                         cx.notify();
@@ -5541,7 +5128,7 @@ impl AppModel {
             return;
         };
         self.hydrating = true;
-        self.status = "Restaurando sessão persistida…".into();
+        self.status = "Restoring persisted session…".into();
         cx.notify();
 
         let runtime = core.runtime_handle().clone();
@@ -5575,19 +5162,20 @@ impl AppModel {
             Ok(Ok(None)) => {
                 self.hydrating = false;
                 self.needs_resync = false;
-                self.status = "Pronto — selecione um workspace".into();
+                self.status = "Ready — select a workspace".into();
             }
             Ok(Err(error)) => {
                 self.hydrating = false;
-                self.status = format!("Falha ao restaurar sessão: {error}").into();
-                self.notices.push(HeaderNoticeKind::Error, error);
+                self.status = format!("Failed to restore session: {error}").into();
+                self.push_header_notice(HeaderNoticeKind::Error, error, cx);
             }
             Err(error) => {
                 self.hydrating = false;
-                self.status = format!("Falha no worker de restauração: {error}").into();
-                self.notices.push(
+                self.status = format!("Restore worker failed: {error}").into();
+                self.push_header_notice(
                     HeaderNoticeKind::Error,
-                    format!("Worker de restauração interrompido: {error}"),
+                    format!("Restore worker interrupted: {error}"),
+                    cx,
                 );
             }
         }
@@ -5685,7 +5273,7 @@ impl AppModel {
                         snapshot.selection = EditorSelection::default();
                         editor
                             .restore_workspace_snapshot(active_path, snapshot)
-                            .expect("a seleção padrão deve ser válida");
+                            .expect("default selection must be valid");
                     }
                     cx.notify();
                 });
@@ -5712,9 +5300,9 @@ impl AppModel {
         }
         self.needs_resync = false;
         self.session_dirty = false;
-        self.status = format!("Sessão restaurada: {}", restored.root_path).into();
+        self.status = format!("Session restored: {}", restored.root_path).into();
         if let Some(notice) = restored.notice {
-            self.notices.push(HeaderNoticeKind::Notice, notice);
+            self.push_header_notice(HeaderNoticeKind::Notice, notice, cx);
         }
         self.hydrating = false;
         self.refresh_pulsations_with_preferred(preferred_pulsation_id, cx);
@@ -5764,12 +5352,15 @@ impl AppModel {
         match result {
             Ok(_) => {
                 self.session_dirty = false;
-                self.status = "Sessão salva".into();
+                self.status = "Session saved".into();
             }
             Err(error) => {
                 self.session_dirty = true;
-                self.notices
-                    .push(HeaderNoticeKind::Warning, format!("Persistência: {error}"));
+                self.push_header_notice(
+                    HeaderNoticeKind::Warning,
+                    format!("Persistence: {error}"),
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -5857,6 +5448,7 @@ impl AppModel {
         let preparation_action = self.preparation_action_task.take();
         self.artifact_preview_task.take();
         self.pulsation_artifacts_task.take();
+        self.hitl_documents_task.take();
         self.vault_refresh_task.take();
         self.vault_search_task.take();
         self.vault_rename_task.take();
@@ -5864,6 +5456,7 @@ impl AppModel {
         self.vault_document_tasks.clear();
         let settings = self.settings_task.take();
         self.agents_task.take();
+        self.agents_notice_timer.take();
         self.model_catalog_task.take();
         self.logs_task.take();
         self.logs_resync_tasks.clear();
@@ -5871,6 +5464,7 @@ impl AppModel {
         self.chat_resync_tasks.clear();
         self.session_task.take();
         self.performance_probe.take();
+        self.notifications.wake.take();
         self.session_generation = self.session_generation.saturating_add(1);
         self.workspace_save_generations.clear();
 
@@ -5901,9 +5495,10 @@ impl AppModel {
                 let _ = this.update(cx, |model, cx| {
                     match result {
                         Ok(_) => model.session_dirty = false,
-                        Err(error) => model.notices.push(
+                        Err(error) => model.push_header_notice(
                             HeaderNoticeKind::Warning,
-                            format!("Persistência no encerramento: {error}"),
+                            format!("Persistence on shutdown: {error}"),
+                            cx,
                         ),
                     }
                     cx.notify();
@@ -5913,8 +5508,27 @@ impl AppModel {
     }
 
     fn handle_event(&mut self, event: AppEvent, cx: &mut Context<Self>) {
+        let usage_changed = match &event {
+            AppEvent::Llm(envelope) => matches!(
+                envelope.event,
+                hvc_core::llm::LlmStreamEvent::RouteCompleted { .. }
+                    | hvc_core::llm::LlmStreamEvent::RouteFailed { .. }
+                    | hvc_core::llm::LlmStreamEvent::AttemptFailed { .. }
+            ),
+            AppEvent::Chat(envelope) => matches!(
+                envelope.kind,
+                hvc_core::chat_service::ChatEventKind::TurnCompleted
+                    | hvc_core::chat_service::ChatEventKind::TurnFailed
+                    | hvc_core::chat_service::ChatEventKind::TurnCancelled
+            ),
+            AppEvent::Terminal(envelope) => envelope.run.status.is_terminal(),
+            _ => false,
+        };
+        if usage_changed {
+            self.schedule_usage_refresh(cx);
+        }
         self.event_count = self.event_count.saturating_add(1);
-        self.status = format!("Evento recebido: {}", event.event_name()).into();
+        self.status = format!("Event received: {}", event.event_name()).into();
         match event {
             AppEvent::Forge(event) => {
                 if self
@@ -5940,7 +5554,7 @@ impl AppModel {
                 let classification = self.logs.update(cx, |logs, _| logs.record_llm(envelope));
                 if classification == SequenceClassification::Gap {
                     self.needs_resync = true;
-                    self.status = "Lacuna LLM detectada; recarregando execução persistida".into();
+                    self.status = "LLM gap detected; reloading persisted execution".into();
                     self.resync_llm_execution(execution_id, cx);
                 }
             }
@@ -5952,8 +5566,7 @@ impl AppModel {
                     .update(cx, |agents, _| agents.record_event(*envelope));
                 if gap {
                     self.needs_resync = true;
-                    self.status =
-                        "Lacuna no terminal detectada; recarregando histórico persistido".into();
+                    self.status = "Terminal gap detected; reloading persisted history".into();
                 }
                 if (terminal || gap) && self.active_view == AppView::Agents {
                     self.refresh_agents(cx);
@@ -5996,7 +5609,7 @@ impl AppModel {
     }
 }
 
-fn runtime_config_update() -> UpdateAgentRuntimeConfigRequest {
+pub(crate) fn runtime_config_update() -> UpdateAgentRuntimeConfigRequest {
     UpdateAgentRuntimeConfigRequest {
         provider: None,
         model: None,
@@ -6017,7 +5630,7 @@ fn runtime_config_update() -> UpdateAgentRuntimeConfigRequest {
     }
 }
 
-trait RuntimeConfigUpdateExt {
+pub(crate) trait RuntimeConfigUpdateExt {
     fn with_routing_mode(self, mode: RoutingMode) -> Self;
     fn with_context_strategy(self, strategy: ContextStrategy) -> Self;
     fn with_embedding_enabled(self, enabled: bool) -> Self;
@@ -6104,8 +5717,7 @@ fn load_workspace(core: Arc<AppCore>, path: String) -> Result<RestoredSession, S
 
     let notice = opened.greenfield.map(|status| status.message).or_else(|| {
         (opened.kind == WorkspaceKind::Brownfield).then(|| {
-            "Workspace existente detectado; escolha se deseja iniciar o mapeamento gradual."
-                .to_string()
+            "Existing workspace detected; choose whether to start gradual mapping.".to_string()
         })
     });
     Ok(RestoredSession {
@@ -6129,7 +5741,7 @@ fn load_tab(core: &AppCore, snapshot: UiTabSnapshot) -> LoadedTab {
             String::new(),
             snapshot.base_revision.clone().unwrap_or_default(),
             Some(format!(
-                "Não foi possível carregar {}: {}",
+                "Could not load {}: {}",
                 snapshot.relative_path, error.message
             )),
         ),
@@ -6221,9 +5833,9 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                 Err(WorkspaceOperationError {
                     code: "conflict".into(),
-                    message: "A revisão do arquivo mudou no disco.".into(),
+                    message: "The file revision has changed on disk.".into(),
                     details: None,
-                    remediation: Some("Recarregue o arquivo.".into()),
+                    remediation: Some("Reload the file.".into()),
                 });
             backend
         }
@@ -6337,6 +5949,8 @@ mod tests {
                     hitl_checkpoints: Vec::new(),
                     pulsations: vec![test_pulsation()],
                     hitl_waiting_count: 0,
+                    failure_checkpoints: Vec::new(),
+                    failure_waiting_count: 0,
                     background_agents_count: 1,
                     brownfield_coverage: None,
                 })),
@@ -6346,12 +5960,18 @@ mod tests {
     }
 
     impl PulsationsBackend for RecordingPulsationsBackend {
+        fn review_documents(
+            &self,
+            _checkpoint: hvc_core::persistence_service::HitlCheckpoint,
+        ) -> PulsationsFuture<Vec<hvc_core::persistence_service::HitlReviewDocument>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
         fn action(&self, action: crate::pulsations::PulsationAction) -> PulsationsFuture<()> {
             self.actions.lock().unwrap().push(action);
             Box::pin(async { Ok(()) })
         }
         fn artifact_content(&self, _pulse: String, _artifact: String) -> PulsationsFuture<String> {
-            Box::pin(async { Ok("Conteúdo persistido da fixture".into()) })
+            Box::pin(async { Ok("Persisted fixture content".into()) })
         }
         fn reconcile(
             &self,
@@ -7108,7 +6728,7 @@ mod tests {
             assert!(!tab.saving);
             assert_eq!(
                 tab.conflict.as_deref(),
-                Some("A revisão do arquivo mudou no disco.")
+                Some("The file revision has changed on disk.")
             );
             assert_eq!(tab.base_content, "Inicial");
         });
@@ -7414,7 +7034,7 @@ mod tests {
             target_path: format!("knowledge/obsidian/tests/{id}.md"),
             relation: "tested-by".into(),
             preview_diff: format!("+ {id}"),
-            rationale: "evidência operacional".into(),
+            rationale: "operational evidence".into(),
             evidence_ids: vec![format!("evidence-{id}")],
             decision: "pending".into(),
             publication_state: "not_requested".into(),
@@ -7492,7 +7112,7 @@ mod tests {
         cx.run_until_parked();
         model.update(cx, |m, cx| {
             m.description_review_input
-                .update(cx, |i, cx| i.set_value("  Crie ação Unicode  ", cx));
+                .update(cx, |i, cx| i.set_value("  Create action test  ", cx));
             m.revise_description(cx);
         });
         cx.run_until_parked();
@@ -7501,7 +7121,7 @@ mod tests {
             panic!("description action")
         };
         assert_eq!(request.expected_input_revision, 3);
-        assert_eq!(request.description, "  Crie ação Unicode  ");
+        assert_eq!(request.description, "  Create action test  ");
         drop(actions);
         model.update(cx, |m, cx| {
             m.preview_artifact("pulse-1".into(), "internal-1".into(), cx)
@@ -7517,7 +7137,7 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .1,
-                "Conteúdo persistido da fixture"
+                "Persisted fixture content"
             )
         });
     }
@@ -7552,7 +7172,7 @@ mod tests {
             assert!(model.pulsation_feature_input.read(cx).value().is_empty());
             assert_eq!(
                 model.pulsations.read(cx).notice.as_deref(),
-                Some("Pulsação “Login” iniciada.")
+                Some("Pulsation “Login” started.")
             );
         });
 
@@ -7568,7 +7188,7 @@ mod tests {
         cx.read(|cx| {
             assert_eq!(
                 model.read(cx).pulsations.read(cx).notice.as_deref(),
-                Some("1 job(s) marcado(s) para cancelamento.")
+                Some("1 job(s) marked for cancellation.")
             );
         });
     }
@@ -7596,7 +7216,7 @@ mod tests {
             assert_eq!(agents.pending_pipeline_cancel.as_deref(), Some("pulse-1"));
             assert_eq!(
                 agents.notice.as_deref(),
-                Some("Stop automático cancela o pulso inteiro. Clique novamente para confirmar.")
+                Some("Automatic stop cancels the entire pulse. Click again to confirm.")
             );
         });
 
@@ -7611,7 +7231,7 @@ mod tests {
             assert_eq!(agents.pending_pipeline_cancel, None);
             assert_eq!(
                 agents.notice.as_deref(),
-                Some("Pulso cancelado; 1 job(s) foram interrompidos.")
+                Some("Pulse canceled; 1 job(s) were interrupted.")
             );
         });
     }

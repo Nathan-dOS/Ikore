@@ -127,9 +127,7 @@ impl ChatBackend for CoreChatBackend {
                 })
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!(
-                        "worker de hidratação do Chat interrompido: {error}"
-                    ))
+                    UiCommandError::worker(format!("Chat hydration worker interrupted: {error}"))
                 })?
         })
     }
@@ -176,9 +174,7 @@ impl ChatBackend for CoreChatBackend {
                 })
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!(
-                        "worker de criação do Chat interrompido: {error}"
-                    ))
+                    UiCommandError::worker(format!("Chat creation worker interrupted: {error}"))
                 })?
         })
     }
@@ -196,9 +192,7 @@ impl ChatBackend for CoreChatBackend {
                 })
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!(
-                        "worker de exclusão do Chat interrompido: {error}"
-                    ))
+                    UiCommandError::worker(format!("Chat deletion worker interrupted: {error}"))
                 })?
         })
     }
@@ -268,9 +262,7 @@ impl ChatBackend for CoreChatBackend {
                 })
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!(
-                        "worker de ressincronização do Chat interrompido: {error}"
-                    ))
+                    UiCommandError::worker(format!("Chat resync worker interrupted: {error}"))
                 })?
         })
     }
@@ -902,16 +894,16 @@ mod tests {
         let generation = model.begin_hydration("project-1".into(), None);
         model.apply_hydration(generation, snapshot("project-1", "", 0));
         assert_eq!(
-            model.consume_event(delta(1, "olá")),
+            model.consume_event(delta(1, "hello")),
             ChatEventOutcome::Applied
         );
         assert_eq!(
-            model.consume_event(delta(1, " duplicado")),
+            model.consume_event(delta(1, " duplicate")),
             ChatEventOutcome::Ignored
         );
-        assert_eq!(model.active_messages()[0].content, "olá");
+        assert_eq!(model.active_messages()[0].content, "hello");
         assert!(matches!(
-            model.consume_event(delta(3, " perdido")),
+            model.consume_event(delta(3, " lost")),
             ChatEventOutcome::Reconcile { .. }
         ));
         assert!(model.apply_turn_snapshot(
@@ -919,11 +911,11 @@ mod tests {
             "generation-1",
             "conversation-1",
             GetChatTurnSnapshotResponse {
-                message: message("olá mundo", 3),
+                message: message("hello world", 3),
                 tool_calls: Vec::new(),
             }
         ));
-        assert_eq!(model.active_messages()[0].content, "olá mundo");
+        assert_eq!(model.active_messages()[0].content, "hello world");
     }
 
     #[test]
@@ -982,7 +974,7 @@ mod tests {
 
     impl RecordingChatBackend {
         fn unavailable<T: Send + 'static>() -> ChatFuture<T> {
-            Box::pin(async { Err(UiCommandError::worker("operação não configurada")) })
+            Box::pin(async { Err(UiCommandError::worker("operation not configured")) })
         }
     }
 
@@ -1060,13 +1052,13 @@ mod tests {
                 .chat
                 .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
             model.chat.update(cx, |chat, _| {
-                let mut hydration = snapshot("project-1", "histórico", 1);
+                let mut hydration = snapshot("project-1", "history", 1);
                 hydration.selected.as_mut().unwrap().messages[0].status = "completed".into();
                 hydration.selected.as_mut().unwrap().messages[0].execution_id = None;
                 chat.apply_hydration(generation, hydration);
             });
             model.chat_draft_input.update(cx, |input, cx| {
-                input.set_value("Explique a arquitetura", cx)
+                input.set_value("Explain the architecture", cx)
             });
             model.send_chat_message(cx);
         });
@@ -1077,7 +1069,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_slice(),
-            &[("conversation-1".into(), "Explique a arquitetura".into())]
+            &[("conversation-1".into(), "Explain the architecture".into())]
         );
 
         model.update(cx, |model, cx| model.cancel_chat_turn(cx));

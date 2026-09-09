@@ -23,8 +23,6 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
     let tab = agents.tab;
     let loading = agents.loading;
     let busy = agents.busy;
-    let error = agents.error.as_ref().map(|error| error.presentable());
-    let notice = agents.notice.clone();
     let snapshot = agents.snapshot.clone();
     let active_model_picker = agents.active_model_picker.clone();
 
@@ -73,16 +71,11 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                             div()
                                 .text_xs()
                                 .text_color(theme::text_muted())
-                                .child("Configuração isolada por projeto"),
+                                .child("Project-isolated configuration"),
                         )
                         .child(action_button(
                             "agents-refresh".into(),
-                            if loading {
-                                "Verificando…"
-                            } else {
-                                "Atualizar"
-                            }
-                            .into(),
+                            if loading { "Checking…" } else { "Refresh" }.into(),
                             !loading && !busy,
                             false,
                             cx,
@@ -90,13 +83,11 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                         )),
                 ),
         )
-        .when_some(error, |panel, message| panel.child(banner(message, true)))
-        .when_some(notice, |panel, message| panel.child(banner(message, false)))
         .child(match snapshot {
             None => empty_state(if loading {
-                "Verificando CLIs e carregando os sete agentes…"
+                "Checking CLIs and loading the seven agents…"
             } else {
-                "Abra um workspace para configurar e acompanhar os agentes."
+                "Open a workspace to configure and monitor agents."
             }),
             Some(snapshot) => match tab {
                 AgentsTab::Cli => div()
@@ -458,7 +449,7 @@ fn fallback_panel(
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::warning())
                         .child(format!(
-                            "Fallback aguardando decisão · {} · {}",
+                            "Fallback awaiting decision · {} · {}",
                             descriptor.name, fallback.feature_name
                         )),
                 )
@@ -472,7 +463,7 @@ fn fallback_panel(
         )
         .child(action_button(
             SharedString::from(format!("fallback-api:{checkpoint_id}")),
-            "Usar API".into(),
+            "Use API".into(),
             !busy,
             false,
             cx,
@@ -487,7 +478,7 @@ fn fallback_panel(
         ))
         .child(action_button(
             SharedString::from(format!("fallback-retry:{checkpoint_for_retry}")),
-            "Tentar CLI".into(),
+            "Retry CLI".into(),
             !busy,
             false,
             cx,
@@ -503,9 +494,9 @@ fn fallback_panel(
         .child(action_button(
             SharedString::from(format!("fallback-cancel:{checkpoint_for_cancel}")),
             if cancel_armed {
-                "Confirmar cancelamento"
+                "Confirm cancellation"
             } else {
-                "Cancelar pulso"
+                "Cancel pulse"
             }
             .into(),
             !busy,
@@ -826,6 +817,8 @@ fn agent_detail_panel(
                             executable_ready,
                             running,
                             busy,
+                            selected_run
+                                .is_some_and(|r| model.notifications.copied.contains_key(&r.id)),
                             cx,
                         )
                     }),
@@ -911,7 +904,7 @@ fn archived_free_form_card(
                         .text_xs()
                         .text_color(theme::text_muted())
                         .child(format!(
-                            "{} · {} execução(ões) locais",
+                            "{} · {} local run(s)",
                             slot.backend.label(),
                             free_form.recent_runs.len()
                         )),
@@ -919,7 +912,7 @@ fn archived_free_form_card(
         )
         .child(action_button(
             SharedString::from(format!("free-form-restore:{}", slot.id)),
-            "Restaurar".into(),
+            "Restore".into(),
             !busy,
             false,
             cx,
@@ -931,9 +924,9 @@ fn archived_free_form_card(
         .child(action_button(
             SharedString::from(format!("free-form-archived-delete:{}", slot.id)),
             if delete_armed {
-                "Confirmar exclusão"
+                "Confirm deletion"
             } else {
-                "Excluir"
+                "Delete"
             }
             .into(),
             !busy,
@@ -1128,9 +1121,9 @@ fn free_form_card(
                 .child(action_button(
                     SharedString::from(format!("free-form-delete:{}", slot.id)),
                     if delete_armed {
-                        "Confirmar exclusão"
+                        "Confirm deletion"
                     } else {
-                        "Excluir"
+                        "Delete"
                     }
                     .into(),
                     !busy && !running,
@@ -1147,60 +1140,48 @@ fn free_form_card(
                 .flex()
                 .flex_wrap()
                 .gap_2()
-                .child(config_button(
-                    format!("free-form-mode:{}", slot.id),
-                    "MODO",
+                .child(crate::select_menu::mode_control(
+                    (format!("free-form-mode:{}", slot.id)).to_string(),
                     if slot.execution_mode == AgentExecutionMode::CliProcess {
                         "CLI"
                     } else {
                         "API"
                     },
                     !busy && !running,
+                    crate::choices::custom_mode_reason(
+                        slot.backend,
+                        slot.custom_executable.as_deref(),
+                        slot.custom_risk_ack,
+                    ),
                     cx,
-                    {
-                        let slot_id = slot_id.clone();
-                        move |model, cx| model.cycle_free_form_mode(slot_id.clone(), cx)
-                    },
                 ))
-                .child(config_button(
-                    format!("free-form-backend:{}", slot.id),
+                .child(crate::select_menu::control(
+                    (format!("free-form-backend:{}", slot.id)).to_string(),
                     "BACKEND",
                     slot.backend.label(),
                     !busy && !running,
                     cx,
-                    {
-                        let slot_id = slot_id.clone();
-                        move |model, cx| model.cycle_free_form_backend(slot_id.clone(), cx)
-                    },
                 ))
-                .child(config_button(
-                    format!("free-form-thinking:{}", slot.id),
+                .child(crate::select_menu::control(
+                    (format!("free-form-thinking:{}", slot.id)).to_string(),
                     "PROFILE",
                     profile_value,
                     !busy && !running && thinking_available,
                     cx,
-                    {
-                        let slot_id = slot_id.clone();
-                        move |model, cx| model.cycle_free_form_thinking(slot_id.clone(), cx)
-                    },
                 ))
-                .child(config_button(
-                    format!("free-form-session:{}", slot.id),
-                    "SESSÃO",
+                .child(crate::select_menu::control(
+                    (format!("free-form-session:{}", slot.id)).to_string(),
+                    "SESSION",
                     match slot.session_policy {
-                        hvc_core::terminals::SessionPolicy::FreshPerRun => "nova por execução",
-                        hvc_core::terminals::SessionPolicy::ResumePerPulsation => "por pulsação",
-                        hvc_core::terminals::SessionPolicy::ResumeExplicit => "retomada explícita",
+                        hvc_core::terminals::SessionPolicy::FreshPerRun => "new per run",
+                        hvc_core::terminals::SessionPolicy::ResumePerPulsation => "per pulsation",
+                        hvc_core::terminals::SessionPolicy::ResumeExplicit => "explicit resume",
                     },
                     !busy && !running,
                     cx,
-                    {
-                        let slot_id = slot_id.clone();
-                        move |model, cx| model.cycle_free_form_session_policy(slot_id.clone(), cx)
-                    },
                 )),
         )
-        .when_some(label_input, |card, input| card.child(field("NOME", input)))
+        .when_some(label_input, |card, input| card.child(field("NAME", input)))
         .when(slot.backend != CliBackend::Custom, |card| {
             let model_value = match slot.model_source {
                 CliModelSelectionSource::Manual => format!(
@@ -1230,18 +1211,18 @@ fn free_form_card(
             slot.backend == hvc_core::terminals::CliBackend::Custom,
             |card| {
                 card.when_some(custom_executable_input, |card, input| {
-                    card.child(field("EXECUTÁVEL CUSTOM", input))
+                    card.child(field("CUSTOM EXECUTABLE", input))
                 })
                 .when_some(custom_args_input, |card, input| {
-                    card.child(field("ARGUMENTOS EXATOS (JSON)", input))
+                    card.child(field("EXACT ARGUMENTS (JSON)", input))
                 })
                 .child(config_button(
                     format!("free-form-risk:{}", slot.id),
-                    "RISCO DO EXECUTÁVEL",
+                    "EXECUTABLE RISK",
                     if slot.custom_risk_ack {
-                        "confirmado"
+                        "confirmed"
                     } else {
-                        "pendente"
+                        "pending"
                     },
                     !busy && !running,
                     cx,
@@ -1254,7 +1235,7 @@ fn free_form_card(
         )
         .child(action_button(
             SharedString::from(format!("free-form-save:{}", slot.id)),
-            "Salvar configuração".into(),
+            "Save configuration".into(),
             !busy && !running,
             false,
             cx,
@@ -1320,20 +1301,21 @@ fn free_form_card(
                             move |model, cx| model.select_free_form_history(slot_id.clone(), 1, cx)
                         },
                     ))
-                    .child(action_button(
-                        SharedString::from(format!("free-form-filter:{}", slot.id)),
-                        format!("Filtro: {}", event_filter.label()).into(),
+                    .child(crate::select_menu::control(
+                        (SharedString::from(format!("free-form-filter:{}", slot.id))).to_string(),
+                        "Filter",
+                        event_filter.label(),
                         true,
-                        false,
                         cx,
-                        {
-                            let key = format!("free-form:{}", slot.id);
-                            move |model, cx| model.cycle_agent_event_filter(key.clone(), cx)
-                        },
                     ))
                     .child(action_button(
                         SharedString::from(format!("free-form-copy:{}", slot.id)),
-                        "Copiar".into(),
+                        if model.notifications.copied.contains_key(&run.id) {
+                            "Copied"
+                        } else {
+                            "Copy"
+                        }
+                        .into(),
                         !busy,
                         false,
                         cx,
@@ -1356,9 +1338,9 @@ fn free_form_card(
                     .child(action_button(
                         SharedString::from(format!("free-form-clear:{}", slot.id)),
                         if history_clear_armed {
-                            "Confirmar limpeza"
+                            "Confirm clear"
                         } else {
-                            "Limpar histórico"
+                            "Clear history"
                         }
                         .into(),
                         !busy && !running,
@@ -1403,7 +1385,7 @@ fn free_form_card(
                     .when(!running, |row| {
                         row.child(action_button(
                             SharedString::from(format!("free-form-start:{}", slot.id)),
-                            "Nova sessão".into(),
+                            "New session".into(),
                             !busy
                                 && prompt_ready
                                 && executable_ready
@@ -1419,7 +1401,7 @@ fn free_form_card(
                     .when_some(selected_run_id, |row, source_run_id| {
                         row.child(action_button(
                             SharedString::from(format!("free-form-resume:{}", slot.id)),
-                            "Retomar sessão".into(),
+                            "Resume session".into(),
                             !busy && !running && prompt_ready && can_resume,
                             false,
                             cx,
@@ -1461,6 +1443,7 @@ fn agent_card(
     executable_ready: bool,
     running: bool,
     busy: bool,
+    history_copied: bool,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     let role = agent.config.agent_role;
@@ -1497,12 +1480,12 @@ fn agent_card(
     });
     let cli_identity = availability.map(|item| {
         format!(
-            "Versão {} · {}",
-            item.version.as_deref().unwrap_or("não confirmada"),
+            "Version {} · {}",
+            item.version.as_deref().unwrap_or("unconfirmed"),
             item.executable_path
                 .as_ref()
                 .map(|path| path.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "executável não localizado".into())
+                .unwrap_or_else(|| "executable not found".into())
         )
     });
     let install_guidance = availability
@@ -1577,29 +1560,30 @@ fn agent_card(
             div()
                 .flex()
                 .gap_2()
-                .child(config_button(
-                    format!("agent-mode:{}", role.as_str()),
-                    "MODO",
+                .child(crate::select_menu::mode_control(
+                    (format!("agent-mode:{}", role.as_str())).to_string(),
                     mode,
                     !busy && !running,
+                    crate::choices::custom_mode_reason(
+                        agent.config.backend,
+                        agent.config.custom_executable.as_deref(),
+                        agent.config.custom_risk_ack,
+                    ),
                     cx,
-                    move |model, cx| model.cycle_agent_mode(role, cx),
                 ))
-                .child(config_button(
-                    format!("agent-backend:{}", role.as_str()),
+                .child(crate::select_menu::control(
+                    (format!("agent-backend:{}", role.as_str())).to_string(),
                     "BACKEND",
                     agent.config.backend.label(),
                     !busy && !running,
                     cx,
-                    move |model, cx| model.cycle_agent_backend(role, cx),
                 ))
-                .child(config_button(
-                    format!("agent-thinking:{}", role.as_str()),
+                .child(crate::select_menu::control(
+                    (format!("agent-thinking:{}", role.as_str())).to_string(),
                     "PROFILE",
                     profile_value,
                     !busy && !running && thinking_available,
                     cx,
-                    move |model, cx| model.cycle_agent_thinking(role, cx),
                 )),
         )
         .when(!thinking_available, |card| {
@@ -1607,7 +1591,7 @@ fn agent_card(
                 div()
                     .text_xs()
                     .text_color(theme::text_muted())
-                    .child("Este adapter não declara um controle estável de thinking."),
+                    .child("This adapter does not declare stable thinking control."),
             )
         })
         .when(agent.config.backend != CliBackend::Custom, |card| {
@@ -1641,39 +1625,39 @@ fn agent_card(
             agent.config.backend == hvc_core::terminals::CliBackend::Custom,
             |card| {
                 card.when_some(custom_executable_input, |card, input| {
-                    card.child(field("EXECUTÁVEL CUSTOM", input))
+                    card.child(field("CUSTOM EXECUTABLE", input))
                 })
                 .when_some(custom_args_input, |card, input| {
-                    card.child(field("ARGUMENTOS EXATOS (JSON)", input))
+                    card.child(field("EXACT ARGUMENTS (JSON)", input))
                 })
                 .child(config_button(
                     format!("agent-custom-risk:{}", role.as_str()),
-                    "RISCO DO EXECUTÁVEL",
+                    "EXECUTABLE RISK",
                     if agent.config.custom_risk_ack {
-                        "confirmado"
+                        "confirmed"
                     } else {
-                        "pendente"
+                        "pending"
                     },
                     !busy && !running,
                     cx,
                     move |model, cx| model.toggle_agent_custom_risk_ack(role, cx),
                 ))
+                .child(action_button(
+                    SharedString::from(format!("agent-save-fields:{}", role.as_str())),
+                    "Save model/configuration".into(),
+                    !busy && !running,
+                    false,
+                    cx,
+                    move |model, cx| model.save_agent_text_config(role, cx),
+                ))
             },
         )
-        .child(action_button(
-            SharedString::from(format!("agent-save-fields:{}", role.as_str())),
-            "Salvar modelo/configuração".into(),
-            !busy && !running,
-            false,
-            cx,
-            move |model, cx| model.save_agent_text_config(role, cx),
-        ))
         .when_some(
             availability.and_then(|availability| {
                 (availability.state != CliAvailabilityState::Available).then(|| {
                     availability.diagnostic.clone().unwrap_or_else(|| {
                         format!(
-                            "{} não encontrado. {}",
+                            "{} not found. {}",
                             availability.backend.label(),
                             availability.install_command
                         )
@@ -1710,7 +1694,7 @@ fn agent_card(
                     .gap_2()
                     .child(action_button(
                         SharedString::from(format!("agent-install-copy:{}", role.as_str())),
-                        "Copiar comando de instalação".into(),
+                        "Copy install command".into(),
                         true,
                         false,
                         cx,
@@ -1722,7 +1706,7 @@ fn agent_card(
                     ))
                     .child(action_button(
                         SharedString::from(format!("agent-install-link:{}", role.as_str())),
-                        "Copiar link oficial".into(),
+                        "Copy official link".into(),
                         !url.is_empty(),
                         false,
                         cx,
@@ -1739,7 +1723,7 @@ fn agent_card(
                 .text_xs()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme::text_muted())
-                .child("ATIVIDADE E SAÍDA"),
+                .child("ACTIVITY AND OUTPUT"),
         )
         .when_some(selected_run, |card, selected_run| {
             let index = agent
@@ -1759,7 +1743,7 @@ fn agent_card(
                             .text_xs()
                             .text_color(theme::text_muted())
                             .child(format!(
-                                "Execução {}/{} · {}",
+                                "Run {}/{} · {}",
                                 index + 1,
                                 agent.recent_runs.len(),
                                 run_metadata(selected_run)
@@ -1767,7 +1751,7 @@ fn agent_card(
                     )
                     .child(action_button(
                         SharedString::from(format!("agent-history-newer:{}", role.as_str())),
-                        "Mais nova".into(),
+                        "Newer".into(),
                         !busy && index > 0,
                         false,
                         cx,
@@ -1775,7 +1759,7 @@ fn agent_card(
                     ))
                     .child(action_button(
                         SharedString::from(format!("agent-history-older:{}", role.as_str())),
-                        "Mais antiga".into(),
+                        "Older".into(),
                         !busy && index + 1 < agent.recent_runs.len(),
                         false,
                         cx,
@@ -1784,9 +1768,9 @@ fn agent_card(
                     .child(action_button(
                         SharedString::from(format!("agent-history-clear:{}", role.as_str())),
                         if history_clear_armed {
-                            "Confirmar exclusão"
+                            "Confirm clear"
                         } else {
-                            "Limpar histórico"
+                            "Clear history"
                         }
                         .into(),
                         !busy && !running,
@@ -1794,15 +1778,12 @@ fn agent_card(
                         cx,
                         move |model, cx| model.request_clear_agent_history(role, cx),
                     ))
-                    .child(action_button(
-                        SharedString::from(format!("agent-filter:{}", role.as_str())),
-                        format!("Filtro: {}", event_filter.label()).into(),
+                    .child(crate::select_menu::control(
+                        (SharedString::from(format!("agent-filter:{}", role.as_str()))).to_string(),
+                        "Filter",
+                        event_filter.label(),
                         true,
-                        false,
                         cx,
-                        move |model, cx| {
-                            model.cycle_agent_event_filter(role.as_str().to_string(), cx)
-                        },
                     ))
                     .child(action_button(
                         SharedString::from(format!("agent-follow:{}", role.as_str())),
@@ -1821,7 +1802,7 @@ fn agent_card(
                     ))
                     .child(action_button(
                         SharedString::from(format!("agent-copy:{}", role.as_str())),
-                        "Copiar".into(),
+                        if history_copied { "Copied" } else { "Copy" }.into(),
                         !busy,
                         false,
                         cx,
@@ -1899,7 +1880,7 @@ fn agent_card(
                     .when_some(resume_run_id, |row, source_run_id| {
                         row.child(action_button(
                             SharedString::from(format!("agent-resume:{}", role.as_str())),
-                            "Retomar sessão".into(),
+                            "Resume session".into(),
                             !busy && !running && prompt_ready && can_resume,
                             false,
                             cx,
@@ -1920,11 +1901,11 @@ fn agent_card(
                             .text_color(theme::text_muted())
                             .child(
                                 if agent.config.execution_mode == AgentExecutionMode::ApiDirect {
-                                    "Execução manual bloqueada enquanto o agente usa API."
+                                    "Manual execution blocked while agent uses API."
                                 } else if running {
-                                    "Entrada bloqueada durante a execução."
+                                    "Input blocked during execution."
                                 } else {
-                                    "A solicitação será enviada por stdin; não é um terminal PTY."
+                                    "Prompt will be sent via stdin; this is not a PTY terminal."
                                 },
                             ),
                     ),
@@ -1984,20 +1965,20 @@ fn api_detail_panel(
                 .child(
                     div()
                         .flex_1()
-                        .child("Viewer de atividade e saída em tempo real")
+                        .child("Real-time activity and output viewer")
                         .child(
                             div()
                                 .text_xs()
                                 .text_color(theme::text_muted())
-                                .child("Exibe somente eventos e saída visível; raciocínio interno não é coletado."),
+                                .child("Displays visible events and output only; internal reasoning is not captured."),
                         ),
                 )
                 .child(action_button(
                     "agents-api-viewer".into(),
                     if viewer_enabled {
-                        "Viewer ativo"
+                        "Viewer enabled"
                     } else {
-                        "Viewer inativo"
+                        "Viewer disabled"
                     }
                     .into(),
                     true,
@@ -2007,7 +1988,7 @@ fn api_detail_panel(
                 ))
                 .child(action_button(
                     "agents-api-logs".into(),
-                    "Abrir histórico em Logs".into(),
+                    "Open history in Logs".into(),
                     true,
                     false,
                     cx,
@@ -2025,7 +2006,7 @@ fn api_detail_panel(
                     div()
                         .mb_3()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("Roteamento por agente"),
+                        .child("Per-agent routing"),
                 )
                 .children(snapshot.agents.iter().filter(|agent| selected_agent == Some(AgentIdentifier::Canonical(agent.config.agent_role))).map(|agent| {
                     let role = agent.config.agent_role;
@@ -2045,8 +2026,8 @@ fn api_detail_panel(
                         settings.as_ref()?.connections.iter().find(|connection| connection.id == target.connection_id)
                     });
                     let fallback_count = route.map(|route| route.targets.iter().filter(|target| target.enabled).count().saturating_sub(1)).unwrap_or(0);
-                    let route_label: SharedString = route.map(|route|route.name.clone()).unwrap_or_else(||"Sem rota específica".into()).into();
-                    let target_label: SharedString = connection.map(|connection|format!("{} · {}",connection.display_name,primary.map(|target|target.model_id.as_str()).unwrap_or(&connection.default_model))).unwrap_or_else(||"Fallback para runtime legado".into()).into();
+                    let route_label: SharedString = route.map(|route|route.name.clone()).unwrap_or_else(||"No specific route".into()).into();
+                    let target_label: SharedString = connection.map(|connection|format!("{} · {}",connection.display_name,primary.map(|target|target.model_id.as_str()).unwrap_or(&connection.default_model))).unwrap_or_else(||"Fallback to legacy runtime".into()).into();
                     let provider_label: SharedString = connection.map(|connection|connection.provider_id.clone()).unwrap_or_else(||"—".into()).into();
                     let model_label: SharedString = primary.map(|target|target.model_id.clone()).or_else(||connection.map(|connection|connection.default_model.clone())).unwrap_or_else(||"—".into()).into();
                     let activity_label: SharedString = api_activity
@@ -2057,7 +2038,7 @@ fn api_detail_panel(
                             if line.chars().count()>80{value.push('…');}
                             value
                         })
-                        .unwrap_or_else(||"Sem atividade API nesta sessão".into())
+                        .unwrap_or_else(||"No API activity in this session".into())
                         .into();
                     div()
                         .id(SharedString::from(format!("api-agent:{}",agent.config.agent_role.as_str())))
@@ -2072,16 +2053,16 @@ fn api_detail_panel(
                         .child(div().w(px(28.0)).text_color(theme::agent_color(agent.config.agent_role)).font_weight(FontWeight::BOLD).child(descriptor.glyph))
                         .child(div().w(px(110.0)).child(descriptor.name))
                         .child(chip(if agent.config.execution_mode==AgentExecutionMode::ApiDirect{"API"}else{"CLI"},theme::agent_color(agent.config.agent_role)))
-                        .child(div().w(px(160.0)).text_sm().text_color(theme::text_muted()).child(format!("Rota: {route_label}")))
-                        .child(div().w(px(180.0)).text_sm().child(format!("Conexão: {target_label}")))
-                        .child(div().w(px(100.0)).text_xs().text_color(theme::text_muted()).child(format!("Provedor: {provider_label}")))
-                        .child(div().w(px(140.0)).text_xs().text_color(theme::text_muted()).child(format!("Modelo: {model_label}")))
-                        .child(chip(if connection.is_some_and(|connection|connection.has_api_key){"Key OK"}else{"Key pendente"},if connection.is_some_and(|connection|connection.has_api_key){theme::accent()}else{theme::warning()}))
+                        .child(div().w(px(160.0)).text_sm().text_color(theme::text_muted()).child(format!("Route: {route_label}")))
+                        .child(div().w(px(180.0)).text_sm().child(format!("Connection: {target_label}")))
+                        .child(div().w(px(100.0)).text_xs().text_color(theme::text_muted()).child(format!("Provider: {provider_label}")))
+                        .child(div().w(px(140.0)).text_xs().text_color(theme::text_muted()).child(format!("Model: {model_label}")))
+                        .child(chip(if connection.is_some_and(|connection|connection.has_api_key){"Key OK"}else{"Key pending"},if connection.is_some_and(|connection|connection.has_api_key){theme::accent()}else{theme::warning()}))
                         .child(div().w(px(80.0)).text_xs().text_color(theme::text_muted()).child(format!("+{fallback_count} fallback")))
                         .child(div().flex_1().min_w(px(180.0)).text_xs().text_color(theme::text_muted()).child(activity_label))
                         .child(action_button(
                             SharedString::from(format!("api-configure:{}",role.as_str())),
-                            "Configurar".into(),
+                            "Configure".into(),
                             !settings_busy,
                             false,
                             cx,
@@ -2138,41 +2119,38 @@ fn api_inline_editor(
                     div()
                         .flex_1()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(format!("Configuração API · {}", descriptor.name)),
+                        .child(format!("API Configuration · {}", descriptor.name)),
                 )
-                .child(action_button(
-                    SharedString::from(format!("api-cycle-route:{}", role.as_str())),
+                .child(crate::select_menu::control(
+                    (SharedString::from(format!("api-cycle-route:{}", role.as_str()))).to_string(),
+                    "Route",
                     format!(
-                        "Rota: {}",
+                        "Route: {}",
                         selected_route
                             .as_ref()
                             .map(|route| route.name.as_str())
-                            .unwrap_or("nenhuma")
-                    )
-                    .into(),
+                            .unwrap_or("none")
+                    ),
                     !busy,
-                    false,
                     cx,
-                    move |model, cx| model.cycle_agent_api_route(role, cx),
                 ))
-                .child(action_button(
-                    SharedString::from(format!("api-cycle-connection:{}", role.as_str())),
+                .child(crate::select_menu::control(
+                    (SharedString::from(format!("api-cycle-connection:{}", role.as_str())))
+                        .to_string(),
+                    "Connection",
                     format!(
-                        "Conexão: {}",
+                        "Connection: {}",
                         selected_connection
                             .as_ref()
                             .map(|connection| connection.display_name.as_str())
-                            .unwrap_or("nenhuma")
-                    )
-                    .into(),
+                            .unwrap_or("none")
+                    ),
                     !busy,
-                    false,
                     cx,
-                    move |model, cx| model.cycle_agent_api_connection(role, cx),
                 ))
                 .child(action_button(
                     SharedString::from(format!("api-advanced:{}", role.as_str())),
-                    "Configuração avançada".into(),
+                    "Advanced configuration".into(),
                     !busy,
                     false,
                     cx,
@@ -2184,19 +2162,18 @@ fn api_inline_editor(
                 .grid()
                 .grid_cols(2)
                 .gap_2()
-                .child(field("NOME DA CONEXÃO", connection_name))
-                .child(config_button(
-                    format!("api-provider:{}", role.as_str()),
-                    "PROVEDOR",
+                .child(field("CONNECTION NAME", connection_name))
+                .child(crate::select_menu::control(
+                    (format!("api-provider:{}", role.as_str())).to_string(),
+                    "PROVIDER",
                     provider_id,
                     !busy,
                     cx,
-                    |model, cx| model.cycle_settings_provider(cx),
                 ))
-                .child(field("MODELO", connection_model))
-                .child(field("ENDPOINT (QUANDO PERMITIDO)", connection_endpoint))
+                .child(field("MODEL", connection_model))
+                .child(field("ENDPOINT (WHEN ALLOWED)", connection_endpoint))
                 .child(field("API KEY · KEYRING", connection_secret))
-                .child(field("NOME DA ROTA", route_name)),
+                .child(field("ROUTE NAME", route_name)),
         )
         .child(
             div()
@@ -2205,7 +2182,7 @@ fn api_inline_editor(
                 .gap_2()
                 .child(action_button(
                     SharedString::from(format!("api-new-connection:{}", role.as_str())),
-                    "Nova conexão".into(),
+                    "New connection".into(),
                     !busy,
                     false,
                     cx,
@@ -2213,7 +2190,7 @@ fn api_inline_editor(
                 ))
                 .child(action_button(
                     SharedString::from(format!("api-save-connection:{}", role.as_str())),
-                    "Salvar conexão/key".into(),
+                    "Save connection/key".into(),
                     !busy,
                     false,
                     cx,
@@ -2221,7 +2198,7 @@ fn api_inline_editor(
                 ))
                 .child(action_button(
                     SharedString::from(format!("api-test-connection:{}", role.as_str())),
-                    "Testar conexão".into(),
+                    "Test connection".into(),
                     !busy && selected_connection.is_some(),
                     false,
                     cx,
@@ -2229,7 +2206,7 @@ fn api_inline_editor(
                 ))
                 .child(action_button(
                     SharedString::from(format!("api-new-route:{}", role.as_str())),
-                    "Nova rota".into(),
+                    "New route".into(),
                     !busy,
                     false,
                     cx,
@@ -2237,7 +2214,7 @@ fn api_inline_editor(
                 ))
                 .child(action_button(
                     SharedString::from(format!("api-save-route:{}", role.as_str())),
-                    "Salvar rota/alvo".into(),
+                    "Save route/target".into(),
                     !busy && selected_connection.is_some(),
                     false,
                     cx,
@@ -2245,7 +2222,7 @@ fn api_inline_editor(
                 ))
                 .child(action_button(
                     SharedString::from(format!("api-save-binding:{}", role.as_str())),
-                    "Vincular ao agente".into(),
+                    "Bind to agent".into(),
                     !busy && selected_route.is_some(),
                     false,
                     cx,
@@ -2254,7 +2231,7 @@ fn api_inline_editor(
         )
         .child(
             div().text_xs().text_color(theme::text_muted()).child(
-                "Exibe somente atividade e saída visível; raciocínio interno não é coletado.",
+                "Displays visible events and output only; internal reasoning is not captured.",
             ),
         )
         .child(
@@ -2270,7 +2247,7 @@ fn api_inline_editor(
                 .bg(theme::canvas())
                 .when(activity.is_empty(), |viewer| {
                     viewer.child(div().text_xs().text_color(theme::text_muted()).child(
-                        "Sem atividade API nesta sessão. O histórico persistido permanece em Logs.",
+                        "No API activity in this session. Persisted history remains in Logs.",
                     ))
                 })
                 .children(activity.into_iter().map(|line| {
@@ -2325,12 +2302,12 @@ fn activity_panel_for_key(
                 .text_xs()
                 .text_color(theme::text_muted())
                 .child(format!(
-                    "{} · {visible_count} evento(s) visíveis{}",
+                    "{} · {visible_count} visible event(s){}",
                     filter.label(),
                     if follow_tail {
-                        " · novos eventos no topo"
+                        " · new events on top"
                     } else {
-                        " · posição preservada"
+                        " · position preserved"
                     }
                 )),
         )
@@ -2339,7 +2316,7 @@ fn activity_panel_for_key(
                 div()
                     .text_xs()
                     .text_color(theme::text_muted())
-                    .child("Nenhuma atividade registrada para a execução selecionada."),
+                    .child("No activity recorded for the selected run."),
             )
         })
         .children(events.into_iter().take(100).map(|event| {
@@ -2356,6 +2333,12 @@ fn activity_panel_for_key(
             };
             let content = event.content.clone();
             let event_id = event.id.clone();
+            let time_label = crate::time::format_timestamp_time_only(&event.created_at);
+            let display_text = if time_label.is_empty() {
+                format!("{prefix} · {}", event.content)
+            } else {
+                format!("{time_label} · {prefix} · {}", event.content)
+            };
             div()
                 .id(SharedString::from(format!("terminal-event:{event_id}")))
                 .py_1()
@@ -2374,23 +2357,23 @@ fn activity_panel_for_key(
                         theme::text_muted()
                     },
                 )
-                .child(format!("{prefix} · {}", event.content))
+                .child(display_text)
         }))
 }
 
 fn run_metadata(run: &hvc_core::terminals::TerminalRun) -> String {
-    let duration = match (&run.started_at, &run.finished_at) {
-        (Some(started), Some(finished)) => format!("{started} → {finished}"),
-        (Some(started), None) => format!("desde {started}"),
-        _ => run.created_at.clone(),
-    };
+    let duration = crate::time::format_time_range(
+        run.started_at.as_deref().or(Some(&run.created_at)),
+        run.finished_at.as_deref(),
+        &crate::time::format_timestamp(&run.created_at),
+    );
     let session = run
         .native_session_id
         .as_deref()
         .map(|id| id.chars().take(8).collect::<String>())
-        .unwrap_or_else(|| "sem sessão".into());
+        .unwrap_or_else(|| "no session".into());
     format!(
-        "{} · {} · {} · exit {} · versão {} · modelo {} · sessão {}",
+        "{} · {} · {} · exit {} · version {} · model {} · session {}",
         run_status(run.status),
         match run.origin {
             hvc_core::terminals::ExecutionOrigin::Pipeline => "pipeline",
@@ -2474,8 +2457,10 @@ fn action_button(
     } else {
         theme::text_muted()
     };
+    let is_copy = id.starts_with("agent-copy:") || id.starts_with("free-form-copy:");
     div()
         .id(id.clone())
+        .when(is_copy, |d| d.w(px(84.0)).flex_shrink_0())
         .debug_selector(move || id.to_string())
         .px_3()
         .py_2()
@@ -2508,25 +2493,6 @@ fn chip(label: &'static str, color: Rgba) -> gpui::Div {
         .text_xs()
         .text_color(color)
         .child(label)
-}
-
-fn banner(message: String, error: bool) -> gpui::Div {
-    div()
-        .mx_4()
-        .mt_3()
-        .p_3()
-        .rounded_md()
-        .bg(if error {
-            theme::danger_soft()
-        } else {
-            theme::accent_soft()
-        })
-        .text_color(if error {
-            theme::danger()
-        } else {
-            theme::accent()
-        })
-        .child(message)
 }
 
 fn empty_state(message: &'static str) -> AnyElement {

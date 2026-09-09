@@ -44,7 +44,7 @@ fn main() {
                 match official_backend.expect("backend fixture must be known") {
                     "codex" => "codex-cli 0.153.0-fixture",
                     "claude" => "2.1.81 (Claude Code)",
-                    "gemini" => "0.55.1",
+                    "gemini" => "0.59.0",
                     "opencode" => "1.18.17",
                     _ => unreachable!(),
                 }
@@ -197,10 +197,17 @@ fn emit_companion_success(backend: &str) {
                 }}).to_string()
             }})
         ),
-        "claude" => println!(r#"{{"type":"result","result":"{envelope}"}}"#),
+        "claude" => println!(
+            r#"{{"type":"result","result":"{envelope}","modelUsage":{{"claude-fixture":{{"inputTokens":8,"outputTokens":5,"cacheReadInputTokens":12}}}}}}"#
+        ),
         "gemini" => println!(r#"{{"type":"message","content":"{envelope}"}}"#),
         "opencode" => println!(r#"{{"type":"text","part":{{"text":"{envelope}"}}}}"#),
         _ => unreachable!(),
+    }
+    if backend == "codex" {
+        println!(
+            r#"{{"type":"turn.completed","usage":{{"input_tokens":20,"output_tokens":5,"cached_input_tokens":12}}}}"#
+        );
     }
 }
 
@@ -216,21 +223,26 @@ fn emit_official_success(backend: &str, args: &[String]) {
                 r#"{{"type":"item.completed","item":{{"type":"agent_message","text":"ok codex fixture"}}}}"#
             );
             println!(
-                r#"{{"type":"turn.completed","usage":{{"input_tokens":4,"output_tokens":3}}}}"#
+                r#"{{"type":"turn.completed","usage":{{"input_tokens":20,"output_tokens":5,"cached_input_tokens":12}}}}"#
             );
         }
         "claude" => {
             println!(r#"{{"type":"system","subtype":"init","session_id":"{session}"}}"#);
             println!(
-                r#"{{"type":"result","result":"ok claude fixture","session_id":"{session}"}}"#
+                r#"{{"type":"result","result":"ok claude fixture","session_id":"{session}","modelUsage":{{"claude-fixture":{{"inputTokens":8,"outputTokens":5,"cacheReadInputTokens":12}}}}}}"#
             );
         }
         "gemini" => {
             println!(r#"{{"type":"init","session_id":"{session}"}}"#);
-            println!(r#"{{"type":"stats","result":"ok gemini fixture"}}"#);
+            println!(
+                r#"{{"type":"result","result":"ok gemini fixture","stats":{{"models":{{"gemini-fixture":{{"input_tokens":20,"output_tokens":5,"total_tokens":25,"cached":12}}}}}}}}"#
+            );
         }
         "opencode" => {
             println!(r#"{{"type":"session.created","sessionID":"{session}"}}"#);
+            println!(
+                r#"{{"type":"step_finish","part":{{"id":"fixture-step","tokens":{{"input":8,"output":3,"reasoning":2,"cache":{{"read":12,"write":0}}}}}}}}"#
+            );
             println!(
                 r#"{{"type":"session.idle","sessionID":"{session}","result":"ok opencode fixture"}}"#
             );

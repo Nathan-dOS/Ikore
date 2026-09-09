@@ -1,5 +1,8 @@
-use crate::{AppModel, AppView, text_input::NativeTextInput};
-use gpui::{AppContext, Context, Entity};
+use crate::{
+    AppModel, AppView,
+    text_input::{NativeTextInput, Submit},
+};
+use gpui::{AppContext, Context, Entity, Subscription};
 use hvc_core::feature_forge::*;
 use std::collections::HashSet;
 
@@ -40,11 +43,11 @@ impl ForgeSection {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Backlog => "Backlog",
-            Self::Incubation => "Incubadora",
-            Self::Triage => "Triagem",
-            Self::Dependencies => "Dependências",
-            Self::Waves => "Ondas",
-            Self::Delivery => "Entrega",
+            Self::Incubation => "Incubation",
+            Self::Triage => "Triage",
+            Self::Dependencies => "Dependencies",
+            Self::Waves => "Waves",
+            Self::Delivery => "Delivery",
         }
     }
 
@@ -103,10 +106,10 @@ pub(crate) struct DraftInputs {
 impl DraftInputs {
     fn new(cx: &mut Context<AppModel>) -> Self {
         Self {
-            title: cx.new(|cx| NativeTextInput::new("Título da task", cx)),
+            title: cx.new(|cx| NativeTextInput::new("Task title", cx)),
             description: cx
-                .new(|cx| NativeTextInput::new("Comportamento atual e resultado esperado", cx)),
-            criteria: cx.new(|cx| NativeTextInput::new("Critérios de aceite separados por ;", cx)),
+                .new(|cx| NativeTextInput::new("Current behavior and expected outcome", cx)),
+            criteria: cx.new(|cx| NativeTextInput::new("Acceptance criteria separated by ;", cx)),
             kind: TaskKind::Bug,
             dependencies: Vec::new(),
         }
@@ -142,6 +145,7 @@ pub(crate) struct ForgeUi {
     pub feature_title: Entity<NativeTextInput>,
     pub idea: Entity<NativeTextInput>,
     pub message: Entity<NativeTextInput>,
+    _message_submit: Subscription,
     pub batch_title: Entity<NativeTextInput>,
     pub rationale: Entity<NativeTextInput>,
     pub wave_limit: Entity<NativeTextInput>,
@@ -163,30 +167,42 @@ pub(crate) struct ForgeUi {
     pub project_id: Option<String>,
     pub editing_task: Option<(String, u64)>,
     pub source_task: Option<(String, u64)>,
+    /// Set when analysis was requested but the on-screen triage answers differ
+    /// from what is stored, so the developer gets to confirm before the agent
+    /// replaces their edits.
+    pub pending_triage_overwrite: bool,
+    /// A triage analysis was dispatched and its result has not been pulled in
+    /// yet. Starting an analysis only queues the turn, so the verdict lands on
+    /// a later refresh -- this is what tells that refresh to reload the form.
+    pub awaiting_triage_analysis: bool,
 }
 impl ForgeUi {
     pub fn new(cx: &mut Context<AppModel>) -> Self {
+        let message = cx
+            .new(|cx| NativeTextInput::new("Answer questions or refine your idea", cx).multiline());
+        let message_submit = cx.subscribe(&message, |model, input, _: &Submit, cx| {
+            if input == model.forge.message {
+                model.forge_action(ForgeAction::Send, cx);
+            }
+        });
         Self {
             snapshot: ForgeSnapshot::default(),
             selected_feature: None,
             selected_tasks: HashSet::new(),
             history: Vec::new(),
             drafts: vec![DraftInputs::new(cx)],
-            feature_title: cx.new(|cx| NativeTextInput::new("Nome da feature", cx)),
-            idea: cx.new(|cx| NativeTextInput::new("Qual problema você quer resolver?", cx)),
-            message: cx
-                .new(|cx| NativeTextInput::new("Responda às perguntas ou refine sua ideia", cx)),
-            batch_title: cx.new(|cx| NativeTextInput::new("Título da pulsação", cx)),
-            rationale: cx.new(|cx| {
-                NativeTextInput::new("Justificativa da dependência ou do arquivamento", cx)
-            }),
-            wave_limit: cx
-                .new(|cx| NativeTextInput::new("Capacidade da Onda Atual (padrão: 3)", cx)),
+            feature_title: cx.new(|cx| NativeTextInput::new("Feature title", cx)),
+            idea: cx.new(|cx| NativeTextInput::new("What problem do you want to solve?", cx)),
+            message,
+            _message_submit: message_submit,
+            batch_title: cx.new(|cx| NativeTextInput::new("Pulsation title", cx)),
+            rationale: cx.new(|cx| NativeTextInput::new("Dependency or archiving rationale", cx)),
+            wave_limit: cx.new(|cx| NativeTextInput::new("Current Wave capacity (default: 3)", cx)),
             filters: [
-                "Valor e necessidade",
-                "Alinhamento com o produto",
-                "Viabilidade e riscos",
-                "Usabilidade e adoção",
+                "Value and need",
+                "Product alignment",
+                "Feasibility and risks",
+                "Usability and adoption",
             ]
             .into_iter()
             .map(|s| cx.new(|cx| NativeTextInput::new(s, cx)))
@@ -208,12 +224,48 @@ impl ForgeUi {
             project_id: None,
             editing_task: None,
             source_task: None,
+            pending_triage_overwrite: false,
+            awaiting_triage_analysis: false,
         }
     }
     pub fn feature(&self) -> Option<&Feature> {
         self.selected_feature
             .as_ref()
             .and_then(|id| self.snapshot.features.iter().find(|f| &f.id == id))
+    }
+
+    fn message_operation(
+        &self,
+        project: Option<&str>,
+        cx: &Context<AppModel>,
+    ) -> Option<Operation> {
+        let feature = self.feature()?;
+        let message = self.message.read(cx).value();
+        if self.busy
+            || project != self.project_id.as_deref()
+            || project != Some(feature.project_id.as_str())
+            || message.trim().is_empty()
+            || feature.state == FeatureState::Archived
+            || self
+                .history
+                .iter()
+                .any(|turn| turn.feature_id == feature.id && turn.status == "running")
+        {
+            return None;
+        }
+        Some(Operation::Send(
+            feature.id.clone(),
+            feature.revision,
+            message.into(),
+        ))
+    }
+
+    fn clear_accepted_message(&self, feature: &str, message: &str, cx: &mut Context<AppModel>) {
+        if self.selected_feature.as_deref() == Some(feature)
+            && self.message.read(cx).value() == message
+        {
+            self.message.update(cx, |input, cx| input.clear(cx));
+        }
     }
 
     fn begin_operation(&mut self, operation: &Operation) -> bool {
@@ -252,12 +304,48 @@ impl ForgeUi {
     }
 }
 
+impl ForgeUi {
+    /// Why an agent analysis cannot start right now, or `None` when it can.
+    ///
+    /// Both tabs go through this so their gates cannot drift apart, and the
+    /// reason is a sentence rather than a bool so the disabled button can say
+    /// what is missing -- a greyed-out control with no explanation is worse
+    /// than no control.
+    pub fn analysis_blocked(&self, f: &Feature) -> Option<&'static str> {
+        if self.busy {
+            return Some("Another Forge operation is still running.");
+        }
+        if self.history.iter().any(|turn| turn.status == "running") {
+            return Some("The Feature Agent is still working on this feature.");
+        }
+        if !f.brief.pending_decisions.is_empty() {
+            return Some("Answer the open incubation questions first.");
+        }
+        None
+    }
+
+    /// Dependencies additionally wait for triage, because the structural level
+    /// it assigns is what the agent reasons about when ordering the graph.
+    pub fn dependency_analysis_blocked(&self, f: &Feature) -> Option<&'static str> {
+        if let Some(reason) = self.analysis_blocked(f) {
+            return Some(reason);
+        }
+        if f.state == FeatureState::Incubating || f.evaluation.score().is_none() {
+            return Some("Run the triage analysis first.");
+        }
+        if matches!(f.state, FeatureState::Executing | FeatureState::Done) {
+            return Some("Dependencies are frozen during and after execution.");
+        }
+        None
+    }
+}
+
 #[derive(Clone)]
 pub(crate) enum ForgeAction {
     Refresh,
     RetryPublications,
     OpenPulsation(String),
-    /// Cross-view entry point (e.g. from Pulsations' "Compor pulsação com tasks"): jumps into the
+    /// Cross-view entry point (e.g. from Pulsations' "Compose pulsation with tasks"): jumps into the
     /// Forge view's Backlog section. In-view tab clicks use `Section` instead, which never switches
     /// `AppView` and so avoids an extra background refresh.
     OpenBacklog,
@@ -289,6 +377,14 @@ pub(crate) enum ForgeAction {
     Evaluate,
     SelectFeatureTasks(String),
     SuggestFeature(String),
+    /// Ask the Feature Agent for the triage judgement. Prompts first if the
+    /// on-screen answers would be overwritten; `ConfirmAnalyzeTriage` is the
+    /// same request past that prompt.
+    AnalyzeTriage,
+    ConfirmAnalyzeTriage,
+    CancelAnalyzeTriage,
+    AnalyzeDependencies,
+    ClearAgentDependencies,
 }
 enum Operation {
     EditTask(String, u64, TaskDraft),
@@ -308,11 +404,60 @@ enum Operation {
     Dependency(String, String, Option<String>),
     SetLimit(u32),
     Evaluate(String, u64, FeatureEvaluation, u8),
+    AnalyzeTriage(String, u64),
+    AnalyzeDependencies(String, u64),
+    /// Feature id plus the prerequisite ids to drop. The list is resolved from
+    /// the snapshot on the UI side so this reuses `set_dependency` rather than
+    /// needing a bulk-delete of its own.
+    ClearAgentDependencies(String, Vec<String>),
 }
 impl AppModel {
     pub(crate) fn refresh_forge(&mut self, cx: &mut Context<Self>) {
         self.run_forge(Operation::Refresh, cx);
     }
+    /// Loads the stored triage verdict into the on-screen controls.
+    ///
+    /// Called when a feature is selected and again once an agent analysis lands
+    /// -- and deliberately nowhere else. A background refresh must not call
+    /// this, or it would wipe answers the developer is in the middle of typing.
+    pub(crate) fn hydrate_triage_inputs(&mut self, cx: &mut Context<Self>) {
+        let Some(f) = self.forge.feature().cloned() else {
+            return;
+        };
+        for (input, value) in self.forge.filters.iter().zip([
+            f.evaluation.value,
+            f.evaluation.alignment,
+            f.evaluation.feasibility,
+            f.evaluation.usability,
+        ]) {
+            input.update(cx, |input, cx| input.set_value(value, cx));
+        }
+        self.forge.impact = f.evaluation.impact.unwrap_or(3);
+        self.forge.confidence = f.evaluation.confidence.unwrap_or(3);
+        self.forge.effort = f.evaluation.effort.unwrap_or(3);
+        self.forge.level = f.structural_level;
+    }
+
+    /// Whether the on-screen triage answers would lose content if the agent
+    /// overwrote them. Only non-empty divergent text counts: an untouched form
+    /// or one that merely matches what is stored is not worth a prompt.
+    fn triage_inputs_diverge(&self, f: &Feature, cx: &Context<Self>) -> bool {
+        let stored = [
+            &f.evaluation.value,
+            &f.evaluation.alignment,
+            &f.evaluation.feasibility,
+            &f.evaluation.usability,
+        ];
+        self.forge
+            .filters
+            .iter()
+            .zip(stored)
+            .any(|(input, stored)| {
+                let current = input.read(cx).value();
+                !current.trim().is_empty() && current.trim() != stored.trim()
+            })
+    }
+
     pub(crate) fn forge_action(&mut self, action: ForgeAction, cx: &mut Context<Self>) {
         match action {
             ForgeAction::EditTask(id) => {
@@ -426,20 +571,8 @@ impl AppModel {
             ForgeAction::SelectFeature(id) => {
                 self.forge.selected_feature = Some(id);
                 self.forge.history.clear();
-                if let Some(f) = self.forge.feature().cloned() {
-                    for (input, value) in self.forge.filters.iter().zip([
-                        f.evaluation.value,
-                        f.evaluation.alignment,
-                        f.evaluation.feasibility,
-                        f.evaluation.usability,
-                    ]) {
-                        input.update(cx, |input, cx| input.set_value(value, cx));
-                    }
-                    self.forge.impact = f.evaluation.impact.unwrap_or(3);
-                    self.forge.confidence = f.evaluation.confidence.unwrap_or(3);
-                    self.forge.effort = f.evaluation.effort.unwrap_or(3);
-                    self.forge.level = f.structural_level;
-                }
+                self.forge.pending_triage_overwrite = false;
+                self.hydrate_triage_inputs(cx);
                 // Selecting a feature from the Backlog section has no core equivalent to land on;
                 // Incubation is the natural first stop in a feature's lifecycle.
                 if self.forge.section == ForgeSection::Backlog {
@@ -525,6 +658,60 @@ impl AppModel {
                 cx.notify();
                 return;
             }
+            ForgeAction::AnalyzeTriage => {
+                if self.forge.busy {
+                    return;
+                }
+                let Some(f) = self.forge.feature().cloned() else {
+                    return;
+                };
+                if self.triage_inputs_diverge(&f, cx) {
+                    self.forge.pending_triage_overwrite = true;
+                    cx.notify();
+                    return;
+                }
+                self.forge.awaiting_triage_analysis = true;
+                self.run_forge(Operation::AnalyzeTriage(f.id, f.revision), cx);
+                return;
+            }
+            ForgeAction::ConfirmAnalyzeTriage => {
+                self.forge.pending_triage_overwrite = false;
+                if let Some(f) = self.forge.feature().cloned() {
+                    self.forge.awaiting_triage_analysis = true;
+                    self.run_forge(Operation::AnalyzeTriage(f.id, f.revision), cx);
+                }
+                return;
+            }
+            ForgeAction::CancelAnalyzeTriage => {
+                self.forge.pending_triage_overwrite = false;
+                cx.notify();
+                return;
+            }
+            ForgeAction::AnalyzeDependencies => {
+                if let Some(f) = self.forge.feature().cloned() {
+                    self.run_forge(Operation::AnalyzeDependencies(f.id, f.revision), cx);
+                }
+                return;
+            }
+            ForgeAction::ClearAgentDependencies => {
+                let Some(f) = self.forge.feature().cloned() else {
+                    return;
+                };
+                let prerequisites = self
+                    .forge
+                    .snapshot
+                    .dependencies
+                    .iter()
+                    .filter(|edge| {
+                        edge.feature_id == f.id && edge.origin == DependencyOrigin::Agent
+                    })
+                    .map(|edge| edge.prerequisite_id.clone())
+                    .collect::<Vec<_>>();
+                if !prerequisites.is_empty() {
+                    self.run_forge(Operation::ClearAgentDependencies(f.id, prerequisites), cx);
+                }
+                return;
+            }
             _ => {}
         }
         if self.forge.busy {
@@ -571,10 +758,16 @@ impl AppModel {
                     .collect(),
             ),
             ForgeAction::Send => {
-                let Some(f) = f else {
+                let project = self
+                    .workspace
+                    .read(cx)
+                    .project_id
+                    .as_ref()
+                    .map(ToString::to_string);
+                let Some(operation) = self.forge.message_operation(project.as_deref(), cx) else {
                     return;
                 };
-                Operation::Send(f.id, f.revision, self.forge.message.read(cx).value().into())
+                operation
             }
             ForgeAction::Approve => {
                 let Some(f) = f else {
@@ -673,64 +866,251 @@ impl AppModel {
         let original_selection = selected.clone();
         let runtime = core.runtime_handle().clone();
         let current_project = project.clone();
-        cx.spawn(async move|this,cx|{
-            let result=runtime.spawn_blocking(move|| -> Result<_,String>{
-                let forge=FeatureForgeService::new(core.persistence().clone());let tasks=TaskService::new(core.persistence().clone());
-                let key=uuid::Uuid::new_v4().to_string(); let mut selected=selected;let mut notice=None;let mut navigate=None;
-                let mut clear_capture=false;let mut clear_message=false;
-                let outcome:Result<(),hvc_core::persistence_service::PersistenceServiceError>=(||{
-                    match operation {
-                        Operation::EditTask(id,revision,draft)=>{tasks.revise(&project,&id,revision,draft)?;clear_capture=true;notice=Some("Task atualizada.".into());},
-                        Operation::ConvertTask(id,revision,title,idea)=>{let f=tasks.convert_to_feature(&project,&id,revision,&key,&title,&idea)?;selected=Some(f.id.clone());clear_capture=true;navigate=Some(AppView::Forge);core.feature_agent().start(&project,&f.id,f.revision,&format!("initial:{key}"),&f.original_idea)?;clear_capture=true;navigate=Some(AppView::Forge);},
-                        Operation::Refresh=>{},
-                        Operation::Navigate(navigation)=>forge.save_navigation(&project,&navigation)?,
-                        Operation::RetryPublications=>{forge.retry_plan_publications(&project)?;},
-                        Operation::CreateTasks(drafts)=>{tasks.create(CreateTasksRequest{project_id:project.clone(),request_id:key,tasks:drafts})?;notice=Some("Tasks adicionadas ao backlog.".into());clear_capture=true;navigate=Some(AppView::Forge);},
-                        Operation::CreateFeature(title,idea)=>{let f=forge.create(CreateFeatureRequest{project_id:project.clone(),request_id:key.clone(),title,idea:idea.clone()})?;selected=Some(f.id.clone());clear_capture=true;navigate=Some(AppView::Forge);core.feature_agent().start(&project,&f.id,f.revision,&format!("initial:{key}"),&idea)?;clear_capture=true;navigate=Some(AppView::Forge);},
-                        Operation::Dispatch(title,selection)=>{let p=tasks.dispatch(CreatePulsationFromTasksRequest{project_id:project.clone(),request_id:key,title,tasks:selection})?;notice=Some(format!("Pulsação {} enviada para a fila.",p.feature_name));navigate=Some(AppView::Pulsations);},
-                        Operation::Send(id,revision,message)=>{core.feature_agent().start(&project,&id,revision,&key,&message)?;clear_message=true;},
-                        Operation::Approve(id,revision)=>{forge.approve(&project,&id,revision)?;notice=Some("Escopo aprovado; tasks criadas. Planeje a onda antes do disparo.".into());},
-                        Operation::Archive(id,reason)=>forge.archive(&project,&id,&reason)?,
-                        Operation::Reopen(id)=>forge.reopen(&project,&id)?,
-                        Operation::Complete(id,revision)=>forge.complete(&project,&id,revision)?,
-                        Operation::Move(id,wave)=>{forge.move_to_wave(&project,&id,wave,0)?;},
-                        Operation::Dependency(id,pre,reason)=>forge.set_dependency(&project,&id,&pre,reason.as_deref())?,
-                        Operation::SetLimit(limit)=>forge.set_wave_limit(&project,limit)?,
-                        Operation::Evaluate(id,revision,evaluation,level)=>{forge.evaluate(&project,&id,revision,evaluation,level)?;},
-                    } Ok(())
-                })();
-                let error=outcome.err().map(|e|e.to_string());
-                forge.reconcile_plan_publications(&project).map_err(|e|e.to_string())?;
-                let issues=forge.publication_issues(&project).map_err(|e|e.to_string())?;
-                if !issues.is_empty(){notice=Some(issues.join("\n"));}
-                let ForgeViewSnapshot { snapshot, selected_feature: selected, history } = forge.view_snapshot(&project, selected.as_deref()).map_err(|e|e.to_string())?;
-                Ok((snapshot,selected,history,notice,navigate,clear_capture,clear_message,error))
-            }).await.map_err(|e|e.to_string()).and_then(|r|r);
-            let _=this.update(cx,|model,cx|{
-                if model.forge.generation!=generation || model.workspace.read(cx).project_id.as_ref().map(ToString::to_string).as_ref()!=Some(&current_project){return;}
+        cx.spawn(async move |this, cx| {
+            let result = runtime
+                .spawn_blocking(move || -> Result<_, String> {
+                    let forge = FeatureForgeService::new(core.persistence().clone());
+                    let tasks = TaskService::new(core.persistence().clone());
+                    let key = uuid::Uuid::new_v4().to_string();
+                    let mut selected = selected;
+                    let mut notice = None;
+                    let mut navigate = None;
+                    let mut clear_capture = false;
+                    let mut accepted_message = None;
+                    let outcome: Result<
+                        (),
+                        hvc_core::persistence_service::PersistenceServiceError,
+                    > = (|| {
+                        match operation {
+                            Operation::EditTask(id, revision, draft) => {
+                                tasks.revise(&project, &id, revision, draft)?;
+                                clear_capture = true;
+                                notice = Some("Task updated.".into());
+                            }
+                            Operation::ConvertTask(id, revision, title, idea) => {
+                                let f = tasks.convert_to_feature(
+                                    &project, &id, revision, &key, &title, &idea,
+                                )?;
+                                selected = Some(f.id.clone());
+                                clear_capture = true;
+                                navigate = Some(AppView::Forge);
+                                core.feature_agent().start(
+                                    &project,
+                                    &f.id,
+                                    f.revision,
+                                    &format!("initial:{key}"),
+                                    &f.original_idea,
+                                )?;
+                                clear_capture = true;
+                                navigate = Some(AppView::Forge);
+                            }
+                            Operation::Refresh => {}
+                            Operation::Navigate(navigation) => {
+                                forge.save_navigation(&project, &navigation)?
+                            }
+                            Operation::RetryPublications => {
+                                forge.retry_plan_publications(&project)?;
+                            }
+                            Operation::CreateTasks(drafts) => {
+                                tasks.create(CreateTasksRequest {
+                                    project_id: project.clone(),
+                                    request_id: key,
+                                    tasks: drafts,
+                                })?;
+                                notice = Some("Tasks added to backlog.".into());
+                                clear_capture = true;
+                                navigate = Some(AppView::Forge);
+                            }
+                            Operation::CreateFeature(title, idea) => {
+                                let f = forge.create(CreateFeatureRequest {
+                                    project_id: project.clone(),
+                                    request_id: key.clone(),
+                                    title,
+                                    idea: idea.clone(),
+                                })?;
+                                selected = Some(f.id.clone());
+                                clear_capture = true;
+                                navigate = Some(AppView::Forge);
+                                core.feature_agent().start(
+                                    &project,
+                                    &f.id,
+                                    f.revision,
+                                    &format!("initial:{key}"),
+                                    &idea,
+                                )?;
+                                clear_capture = true;
+                                navigate = Some(AppView::Forge);
+                            }
+                            Operation::Dispatch(title, selection) => {
+                                let p = tasks.dispatch(CreatePulsationFromTasksRequest {
+                                    project_id: project.clone(),
+                                    request_id: key,
+                                    title,
+                                    tasks: selection,
+                                })?;
+                                notice = Some(format!(
+                                    "Pulsation {} dispatched to queue.",
+                                    p.feature_name
+                                ));
+                                navigate = Some(AppView::Pulsations);
+                            }
+                            Operation::Send(id, revision, message) => {
+                                core.feature_agent()
+                                    .start(&project, &id, revision, &key, &message)?;
+                                accepted_message = Some((id, message));
+                            }
+                            Operation::Approve(id, revision) => {
+                                forge.approve(&project, &id, revision)?;
+                                notice = Some(
+                                    "Scope approved; tasks created. Plan the wave before dispatch."
+                                        .into(),
+                                );
+                            }
+                            Operation::Archive(id, reason) => {
+                                forge.archive(&project, &id, &reason)?
+                            }
+                            Operation::Reopen(id) => forge.reopen(&project, &id)?,
+                            Operation::Complete(id, revision) => {
+                                forge.complete(&project, &id, revision)?
+                            }
+                            Operation::Move(id, wave) => {
+                                forge.move_to_wave(&project, &id, wave, 0)?;
+                            }
+                            Operation::Dependency(id, pre, reason) => {
+                                forge.set_dependency(&project, &id, &pre, reason.as_deref())?
+                            }
+                            Operation::SetLimit(limit) => forge.set_wave_limit(&project, limit)?,
+                            Operation::Evaluate(id, revision, evaluation, level) => {
+                                forge.evaluate(&project, &id, revision, evaluation, level)?;
+                            }
+                            Operation::AnalyzeTriage(id, revision) => {
+                                core.feature_agent()
+                                    .start_triage_analysis(&project, &id, revision, &key)?;
+                                notice = Some("Feature Agent is evaluating this feature…".into());
+                            }
+                            Operation::AnalyzeDependencies(id, revision) => {
+                                core.feature_agent()
+                                    .start_dependency_analysis(&project, &id, revision, &key)?;
+                                notice = Some("Feature Agent is mapping prerequisites…".into());
+                            }
+                            Operation::ClearAgentDependencies(id, prerequisites) => {
+                                let removed = prerequisites.len();
+                                for prerequisite in prerequisites {
+                                    forge.set_dependency(&project, &id, &prerequisite, None)?;
+                                }
+                                notice =
+                                    Some(format!("Removed {removed} agent-proposed relation(s)."));
+                            }
+                        }
+                        Ok(())
+                    })();
+                    let error = outcome.err().map(|e| e.to_string());
+                    forge
+                        .reconcile_plan_publications(&project)
+                        .map_err(|e| e.to_string())?;
+                    let issues = forge
+                        .publication_issues(&project)
+                        .map_err(|e| e.to_string())?;
+                    if !issues.is_empty() {
+                        notice = Some(issues.join("\n"));
+                    }
+                    let ForgeViewSnapshot {
+                        snapshot,
+                        selected_feature: selected,
+                        history,
+                    } = forge
+                        .view_snapshot(&project, selected.as_deref())
+                        .map_err(|e| e.to_string())?;
+                    Ok((
+                        snapshot,
+                        selected,
+                        history,
+                        notice,
+                        navigate,
+                        clear_capture,
+                        accepted_message,
+                        error,
+                    ))
+                })
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r);
+            let _ = this.update(cx, |model, cx| {
+                if model.forge.generation != generation
+                    || model
+                        .workspace
+                        .read(cx)
+                        .project_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .as_ref()
+                        != Some(&current_project)
+                {
+                    return;
+                }
                 match result {
-                    Ok((snapshot,selected,history,notice,navigate,clear_capture,clear_message,error))=>{
+                    Ok((
+                        snapshot,
+                        selected,
+                        history,
+                        notice,
+                        navigate,
+                        clear_capture,
+                        accepted_message,
+                        error,
+                    )) => {
                         // Backlog is UI-only and has no core equivalent, so a background refresh
                         // must never bounce the user out of it into a persisted feature section.
-                        if model.forge.selected_feature.is_none() && model.forge.section != ForgeSection::Backlog {model.forge.section=ForgeSection::from_core_index(snapshot.navigation.section);}
-                        model.forge.snapshot=snapshot;
-                        if model.forge.selected_feature == original_selection {
-                            model.forge.selected_feature=selected;model.forge.history=history;
+                        if model.forge.selected_feature.is_none()
+                            && model.forge.section != ForgeSection::Backlog
+                        {
+                            model.forge.section =
+                                ForgeSection::from_core_index(snapshot.navigation.section);
                         }
-                        if !background || notice.is_some() { model.forge.notice=notice; }
-                        if !background || error.is_some() { model.forge.error=error; }
-                        if clear_capture{model.forge.new_open=false;model.forge.drafts=vec![DraftInputs::new(cx)];}
-                        if clear_message{model.forge.message.update(cx,|i,cx|i.clear(cx));}
-                        if let Some(view)=navigate{model.select_view(view,cx);model.refresh_pulsations(cx);}
-                    },
-                    Err(error)=>model.forge.error=Some(error),
+                        model.forge.snapshot = snapshot;
+                        if model.forge.selected_feature == original_selection {
+                            model.forge.selected_feature = selected;
+                            model.forge.history = history;
+                        }
+                        // Starting an analysis only queues the turn, so the verdict
+                        // lands on a later refresh. Reload the form the moment that
+                        // turn stops running -- and only then, so an unrelated
+                        // refresh never overwrites answers being typed.
+                        if model.forge.awaiting_triage_analysis
+                            && !model.forge.history.iter().any(|turn| {
+                                turn.kind == TurnKind::Triage && turn.status == "running"
+                            })
+                        {
+                            model.forge.awaiting_triage_analysis = false;
+                            model.hydrate_triage_inputs(cx);
+                        }
+                        if !background || notice.is_some() {
+                            model.forge.notice = notice;
+                        }
+                        if !background || error.is_some() {
+                            model.forge.error = error;
+                        }
+                        if clear_capture {
+                            model.forge.new_open = false;
+                            model.forge.drafts = vec![DraftInputs::new(cx)];
+                        }
+                        if let Some((feature, message)) = accepted_message {
+                            model.forge.clear_accepted_message(&feature, &message, cx);
+                        }
+                        if let Some(view) = navigate {
+                            model.select_view(view, cx);
+                            model.refresh_pulsations(cx);
+                        }
+                    }
+                    Err(error) => model.forge.error = Some(error),
                 }
                 if let Some(operation) = model.forge.finish_operation() {
                     model.run_forge(operation, cx);
                 }
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
         if !background {
             cx.notify();
         }
@@ -740,8 +1120,172 @@ impl AppModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{Focusable, Modifiers, TestAppContext, VisualTestContext, px, size};
     use hvc_core::persistence_service::{Pulsation, PulsationStage, PulsationStatus};
+
+    fn feature() -> Feature {
+        Feature {
+            id: "feature".into(),
+            project_id: "project".into(),
+            title: "Export".into(),
+            original_idea: "Export documents".into(),
+            revision: 1,
+            approved_revision: None,
+            state: FeatureState::Incubating,
+            brief: Default::default(),
+            evaluation: Default::default(),
+            structural_level: 0,
+            wave: None,
+            position: 0,
+            archive_reason: None,
+        }
+    }
+
+    #[gpui::test]
+    fn message_admission_and_acknowledgement_preserve_newer_drafts(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            let forge = &mut model.forge;
+            forge.project_id = Some("project".into());
+            forge.snapshot.features = vec![feature()];
+            forge.selected_feature = Some("feature".into());
+            for draft in ["", " \n\t"] {
+                forge.message.update(cx, |i, cx| i.set_value(draft, cx));
+                assert!(forge.message_operation(Some("project"), cx).is_none());
+            }
+            let draft = "cafe 👋\nDetails";
+            forge.message.update(cx, |i, cx| i.set_value(draft, cx));
+            assert!(matches!(forge.message_operation(Some("project"), cx), Some(Operation::Send(id, 1, text)) if id == "feature" && text == draft));
+            assert!(forge.message_operation(Some("other-project"), cx).is_none());
+            forge.busy = true;
+            assert!(forge.message_operation(Some("project"), cx).is_none());
+            forge.busy = false;
+            forge.history.push(FeatureTurn { id: "turn".into(), feature_id: "feature".into(), feature_revision: 1, status: "running".into(), user_message: "Previous message".into(), assistant_message: None, error: None, suggested_dependencies: vec![], kind: TurnKind::Discovery });
+            assert!(forge.message_operation(Some("project"), cx).is_none());
+            forge.history[0].status = "failed".into();
+            assert!(forge.message_operation(Some("project"), cx).is_some());
+            forge.snapshot.features[0].state = FeatureState::Archived;
+            assert!(forge.message_operation(Some("project"), cx).is_none());
+            forge.clear_accepted_message("other-feature", draft, cx);
+            assert_eq!(forge.message.read(cx).value(), draft);
+            forge.clear_accepted_message("feature", "older draft", cx);
+            assert_eq!(forge.message.read(cx).value(), draft);
+            forge.clear_accepted_message("feature", draft, cx);
+            assert_eq!(forge.message.read(cx).value(), "");
+        });
+    }
+
+    fn finish_request(model: &Entity<AppModel>, visual: &mut VisualTestContext) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            visual.run_until_parked();
+            if !model.read_with(visual, |m, _| m.forge.busy) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Forge request timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[gpui::test]
+    fn forge_enter_and_button_share_admission_and_recreated_subscriptions(cx: &mut TestAppContext) {
+        use hvc_core::persistence_service::EnsureProjectForWorkspaceRequest;
+        let harness = hvc_test_support::CoreTestHarness::new();
+        let core = harness.core();
+        let project = core
+            .persistence()
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: harness.workspace_dir().to_string_lossy().into(),
+                preferred_name: None,
+            })
+            .unwrap()
+            .project
+            .id;
+        let feature = FeatureForgeService::new(core.persistence().clone())
+            .create(CreateFeatureRequest {
+                project_id: project.clone(),
+                request_id: "composer-test".into(),
+                title: "Export".into(),
+                idea: "Export documents".into(),
+            })
+            .unwrap();
+        cx.update(crate::text_input::register_text_input_keybindings);
+        let (model, visual) = cx.add_window_view(|_, cx| AppModel::new_for_test(cx));
+        visual.simulate_resize(size(px(1440.0), px(900.0)));
+        model.update(visual, |m, cx| {
+            m.workspace
+                .update(cx, |w, _| w.project_id = Some(project.clone().into()));
+            m.select_view(AppView::Forge, cx);
+            m.core = Some(core.clone());
+            m.chat_draft_input
+                .update(cx, |i, cx| i.set_value("Companion draft", cx));
+        });
+        let mut old_input = None;
+        for _ in 0..3 {
+            let input = model.update(visual, |m, cx| {
+                m.forge = ForgeUi::new(cx);
+                m.forge.project_id = Some(project.clone());
+                m.forge.selected_feature = Some(feature.id.clone());
+                m.forge.snapshot.features = vec![feature.clone()];
+                // Force local admission failure before any provider can run.
+                m.forge.snapshot.features[0].revision += 100;
+                m.forge.section = ForgeSection::Incubation;
+                m.forge
+                    .message
+                    .update(cx, |i, cx| i.set_value("cafe 👋", cx));
+                cx.notify();
+                m.forge.message.clone()
+            });
+            visual.run_until_parked();
+            if let Some(old) = old_input.take() {
+                let old: Entity<NativeTextInput> = old;
+                old.update(visual, |_, cx| cx.emit(Submit));
+                visual.run_until_parked();
+                assert_eq!(model.read_with(visual, |m, _| m.forge.generation), 0);
+            }
+            visual.update(|window, cx| input.read(cx).focus_handle(cx).focus(window));
+            visual.simulate_keystrokes("shift-enter");
+            assert_eq!(model.read_with(visual, |m, _| m.forge.generation), 0);
+            assert_eq!(
+                input.read_with(visual, |i, _| i.value().to_owned()),
+                "cafe 👋\n"
+            );
+            visual.simulate_keystrokes("enter enter enter");
+            finish_request(&model, visual);
+            model.read_with(visual, |m, cx| {
+                assert_eq!(
+                    m.forge.generation, 1,
+                    "repeated Enter must have one admission"
+                );
+                assert!(m.forge.error.is_some());
+                assert_eq!(m.forge.message.read(cx).value(), "cafe 👋\n");
+                assert_eq!(m.chat_draft_input.read(cx).value(), "Companion draft");
+            });
+            model.update(visual, |m, cx| {
+                m.forge.snapshot.features[0].revision += 100;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let button = visual.debug_bounds("send-feature-message").unwrap();
+            visual.simulate_click(button.center(), Modifiers::default());
+            finish_request(&model, visual);
+            model.read_with(visual, |m, cx| {
+                assert_eq!(m.forge.generation, 2);
+                assert!(m.forge.error.is_some());
+                assert_eq!(m.forge.message.read(cx).value(), "cafe 👋\n");
+            });
+            assert!(
+                core.feature_agent()
+                    .history(&project, &feature.id)
+                    .unwrap()
+                    .is_empty()
+            );
+            old_input = Some(input);
+        }
+    }
 
     #[gpui::test]
     fn refresh_bursts_coalesce_without_blocking_commands_or_losing_navigation(

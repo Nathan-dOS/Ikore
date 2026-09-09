@@ -462,6 +462,126 @@ fn complete_six_stage_batch_requires_approved_integration() {
     );
 }
 
+/// Field incident, 2026-09-08: a free OpenCode model produced ONE artifact
+/// for a SPECIFICATION stage but referenced `artifactPositions: [0, 1]` in
+/// taskEvidence - apparently padding the position count to match its two
+/// `criterionIds`, rather than counting what it actually returned. The host
+/// correctly rejected it; this locks that rejection and its diagnostic.
+#[test]
+fn evidence_referencing_an_artifact_position_the_model_never_produced_is_rejected_with_a_diagnostic()
+ {
+    let f = Fixture::new();
+    f.approved("Lightweight local browser architecture");
+    let tasks = f.tasks().list(&f.project).unwrap();
+    let pulse = f.tasks().dispatch(f.dispatch(&tasks)).unwrap();
+    let db = f.service.connection().unwrap();
+    db.execute(
+        "UPDATE pulsation_preparation SET review_state='not_required' WHERE pulsation_id=?1",
+        [&pulse.id],
+    )
+    .unwrap();
+    let (job, _) = f
+        .service
+        .claim_next_pending_job()
+        .unwrap()
+        .expect("Intake job");
+    let tx = db.unchecked_transaction().unwrap();
+    let current = PersistenceService::find_pulsation_by_id(&tx, &pulse.id)
+        .unwrap()
+        .unwrap();
+    PersistenceService::transition_pulsation(
+        &tx,
+        &current,
+        PulsationStatus::Running,
+        PulsationStage::Intake,
+        "test_start",
+        None,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let run = f
+        .service
+        .start_agent_run_for_job(&job, &AgentRuntimeConfig::default())
+        .unwrap();
+    let fence = PersistenceService::execution_fence(&db, &job.id).unwrap();
+    let handoff = f
+        .service
+        .load_stage_handoff(&fence, PulsationStage::Intake, 80_000)
+        .unwrap();
+
+    // Two criteria, one artifact - the model padded artifactPositions to [0, 1]
+    // instead of leaving it at [0].
+    let task = &tasks[0];
+    let evidence = json!([{
+        "taskId": task.id,
+        "criterionIds": ["ac-1"],
+        "artifactPositions": [0, 1],
+        "summary": "Documented the architecture decision for this task."
+    }]);
+    let structured = json!({
+        "outputLanguage": "en",
+        "summary": "Intake result",
+        "statusUpdate": "advance",
+        "notes": [],
+        "contextUsage": [],
+        "artifacts": [{
+            "name": "decision",
+            "kind": "stage_note",
+            "relativePath": null,
+            "content": "# Decision\nOnly one artifact was actually produced."
+        }],
+        "taskEvidence": evidence
+    });
+    let result = StageExecutionResult {
+        provider_used: "fixture".into(),
+        model_used: "fixture".into(),
+        route_id: None,
+        connection_id: None,
+        llm_execution_id: None,
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost_usd: None,
+        request_payload: json!({}),
+        response_payload: json!({}),
+        raw_output: structured.to_string(),
+        structured_output: structured,
+        schema_json: json!({}),
+        tool_trace: json!([]),
+        context_trace: Default::default(),
+        artifacts: vec![crate::agent_runtime::GeneratedArtifact {
+            name: "decision".into(),
+            kind: "stage_note".into(),
+            relative_path: None,
+            content: "# Decision\nOnly one artifact was actually produced.".into(),
+        }],
+    };
+
+    let error = f
+        .service
+        .accept_stage_result(&job, &run, &handoff, &result, f.workspace.path())
+        .expect_err("an out-of-range artifactPositions must be rejected");
+    // Model-output-caused, and therefore worth a corrective retry - not the
+    // generic Validation a host-side check (e.g. a missing pulsation) would
+    // return, which `should_retry` deliberately never retries.
+    assert!(
+        matches!(error, PersistenceServiceError::ModelOutputInvalid(_)),
+        "accept_evidence rejections must be ModelOutputInvalid, got: {error:?}"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains(&task.id),
+        "diagnostic should name the task, got: {message}"
+    );
+    assert!(
+        message.contains('1') && message.contains("does not exist"),
+        "diagnostic should name the missing index, got: {message}"
+    );
+    assert!(
+        message.contains("independent of criterionIds"),
+        "diagnostic should warn against padding positions to match criteria, got: {message}"
+    );
+}
+
 #[test]
 fn conversion_preserves_original_request_without_duplicate_work() {
     let f = Fixture::new();
@@ -947,4 +1067,498 @@ fn feature_prerequisites_can_share_a_complete_atomic_batch() {
     assert_eq!(manifest.feature_dependencies.len(), 1);
     assert_eq!(manifest.tasks.first().unwrap().draft.feature_id, Some(a.id));
     assert_eq!(manifest.tasks.last().unwrap().draft.feature_id, Some(b.id));
+}
+
+#[test]
+fn feature_discovery_response_schema_is_strictly_compliant_for_cli_adapters() {
+    fn assert_strict(schema: &Value) {
+        if schema["type"] == "object" {
+            assert_eq!(schema["additionalProperties"], false);
+            let properties = schema["properties"].as_object().expect("object properties");
+            let required = schema["required"].as_array().expect("object required");
+            assert_eq!(properties.len(), required.len());
+            assert!(properties.keys().all(|key| required.contains(&json!(key))));
+            for property in properties.values() {
+                assert_strict(property);
+            }
+        }
+        assert!(schema.get("oneOf").is_none());
+        if let Some(branches) = schema["anyOf"].as_array() {
+            for branch in branches {
+                assert_strict(branch);
+            }
+        }
+        if let Some(items) = schema.get("items") {
+            assert_strict(items);
+        }
+    }
+    use crate::terminals::CliBackend;
+
+    // OpenAI Codex receives the specialized strict schema
+    let codex_schema = response_schema_for_backend(Some(CliBackend::Codex));
+    assert_eq!(codex_schema["type"], "object");
+    assert_strict(&codex_schema);
+    let codex_validator =
+        jsonschema::validator_for(&codex_schema).expect("codex schema must be valid");
+
+    // All other backends retain the canonical schema with isolated branches
+    let canonical = canonical_response_schema();
+    assert_eq!(
+        response_schema_for_backend(Some(CliBackend::Claude)),
+        canonical
+    );
+    assert_eq!(
+        response_schema_for_backend(Some(CliBackend::Gemini)),
+        canonical
+    );
+    assert_eq!(
+        response_schema_for_backend(Some(CliBackend::Opencode)),
+        canonical
+    );
+    assert_eq!(
+        response_schema_for_backend(Some(CliBackend::Custom)),
+        canonical
+    );
+    assert_eq!(response_schema_for_backend(None), canonical);
+    assert_eq!(response_schema(), canonical);
+    let canonical_validator =
+        jsonschema::validator_for(&canonical).expect("canonical schema must be valid");
+
+    // The analysis schemas are backend-agnostic: mandatory non-nullable ratings
+    // and an `enum` output language remove the two things that force a Codex
+    // variant, so one shape has to satisfy the strict rules on its own.
+    for schema in [triage_analysis_schema(), dependency_analysis_schema()] {
+        assert_eq!(schema["type"], "object");
+        assert_strict(&schema);
+        assert!(jsonschema::validator_for(&schema).is_ok());
+    }
+
+    let sample = json!({
+        "outputLanguage": "en",
+        "message": "Hello",
+        "questions": ["Q1?"],
+        "brief": {
+            "objective": "Obj",
+            "audience": "Aud",
+            "behavior": "Beh",
+            "scope": "Scope",
+            "exclusions": "None",
+            "alternatives": [],
+            "decisions": [],
+            "pendingDecisions": [],
+            "criteria": [{"id": "c1", "description": "Crit 1"}],
+            "tasks": [{
+                "title": "Task 1",
+                "kind": "feature",
+                "description": "Desc 1",
+                "criteria": [{"id": "c1", "description": "Crit 1"}],
+                "dependencies": [],
+                "featureId": null
+            }],
+            "sources": [],
+            "coverage": "complete",
+            "foundation": false
+        },
+        "evaluation": {
+            "value": "Val",
+            "alignment": "Align",
+            "feasibility": "Feas",
+            "usability": "Usab",
+            "impact": 5,
+            "confidence": 4,
+            "effort": null
+        },
+        "suggestedDependencies": []
+    });
+    assert!(codex_validator.validate(&sample).is_ok());
+    assert!(canonical_validator.validate(&sample).is_ok());
+}
+
+#[test]
+fn active_agent_cli_backend_resolves_only_for_configured_cli_process_agents() {
+    use crate::terminals::{
+        AgentExecutionMode, CliBackend, CliModelSelectionSource, TerminalRepository, ThinkingLevel,
+        UpdateCliAgentConfigRequest,
+    };
+
+    let fixture = Fixture::new();
+    let repository = TerminalRepository::new(fixture.service.database_path());
+    let defaults = repository
+        .ensure_project_configs(&fixture.project, false)
+        .unwrap();
+    let backend_agent = defaults
+        .iter()
+        .find(|config| config.agent_role == AgentRole::BackendAgent)
+        .unwrap()
+        .clone();
+
+    // Default seeding leaves execution_mode=api_direct, so no CLI backend applies yet.
+    assert_eq!(
+        fixture
+            .service
+            .active_agent_cli_backend(&fixture.project, AgentRole::BackendAgent)
+            .unwrap(),
+        None
+    );
+
+    repository
+        .update_config(UpdateCliAgentConfigRequest {
+            project_id: fixture.project.clone(),
+            agent_role: AgentRole::BackendAgent,
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: CliBackend::Codex,
+            model: None,
+            model_profile: None,
+            model_source: CliModelSelectionSource::Default,
+            thinking_level: ThinkingLevel::Medium,
+            custom_executable: None,
+            custom_args: vec![],
+            custom_risk_ack: false,
+            expected_version: backend_agent.version,
+        })
+        .unwrap();
+
+    assert_eq!(
+        fixture
+            .service
+            .active_agent_cli_backend(&fixture.project, AgentRole::BackendAgent)
+            .unwrap(),
+        Some(CliBackend::Codex)
+    );
+
+    // A different, untouched role stays on the api_direct default.
+    assert_eq!(
+        fixture
+            .service
+            .active_agent_cli_backend(&fixture.project, AgentRole::TestAgent)
+            .unwrap(),
+        None
+    );
+}
+
+/// Returns one canned payload for every FeatureAgent call, without the
+/// handshake semaphores `PlanningGateway` uses for its concurrency assertions.
+struct AnalysisGateway {
+    response: String,
+}
+impl crate::llm::LlmGateway for AnalysisGateway {
+    fn execute<'a>(
+        &'a self,
+        request: &'a crate::llm::LlmRequest,
+        _cancellation: &'a CancellationToken,
+    ) -> crate::llm::GatewayFuture<'a> {
+        Box::pin(async move {
+            use crate::llm::*;
+            Ok(LlmResponse {
+                execution_id: request.execution_id.clone(),
+                generation_id: request.generation_id.clone(),
+                route_id: RouteId::new("fixture"),
+                connection_id: ConnectionId::new("fixture"),
+                provider_id: ProviderId::new("fixture"),
+                model: "fixture".into(),
+                request_payload: json!({}),
+                response_payload: json!({}),
+                content: self.response.clone(),
+                usage: LlmUsage::default(),
+                finish_reason: None,
+                estimated_cost_usd: None,
+            })
+        })
+    }
+}
+
+fn analysis_runtime(f: &Fixture, response: Value) -> Arc<FeatureAgentRuntime> {
+    let mut runtime = FeatureAgentRuntime::new(
+        f.service.clone(),
+        Arc::new(crate::AppEventBus::default()),
+        tokio::runtime::Handle::current(),
+    )
+    .unwrap();
+    runtime.gateway_override = Some(Arc::new(AnalysisGateway {
+        response: json(&response).unwrap(),
+    }));
+    Arc::new(runtime)
+}
+
+fn triage_payload(recommendation: &str) -> Value {
+    json!({
+        "outputLanguage": "en",
+        "message": "The scope is well bounded and the risk is contained.",
+        "evaluation": {
+            "value": "Developers currently repeat this by hand every week.",
+            "alignment": "Supports the stated planning direction.",
+            "feasibility": "The storage layer already exposes what is needed.",
+            "usability": "Reachable from the existing screen without new concepts.",
+            "impact": 4, "confidence": 4, "effort": 2
+        },
+        "structuralLevel": 1,
+        "recommendation": recommendation,
+        "rationale": "The measured benefit clearly exceeds the implementation cost."
+    })
+}
+
+#[tokio::test]
+async fn triage_analysis_waits_for_the_open_incubation_questions() {
+    let f = Fixture::new();
+    let feature = f.feature("Export workflow");
+    let mut brief = feature.brief.clone();
+    brief.pending_decisions = vec!["Choose the export format".into()];
+    let feature = f
+        .forge()
+        .revise(&f.project, &feature.id, feature.revision, brief)
+        .unwrap();
+    let runtime = analysis_runtime(&f, triage_payload("approve"));
+
+    assert!(
+        runtime
+            .start_triage_analysis(&f.project, &feature.id, feature.revision, &id())
+            .is_err(),
+        "an open question must gate the analysis"
+    );
+
+    // Answering the question is what unblocks it.
+    let mut brief = feature.brief.clone();
+    brief.pending_decisions.clear();
+    let feature = f
+        .forge()
+        .revise(&f.project, &feature.id, feature.revision, brief)
+        .unwrap();
+    runtime
+        .start_triage_analysis(&f.project, &feature.id, feature.revision, &id())
+        .expect("analysis runs once nothing is pending");
+    runtime.wait_for_idle().await;
+}
+
+#[tokio::test]
+async fn triage_analysis_records_the_verdict_without_reopening_the_feature() {
+    let f = Fixture::new();
+    let feature = f.feature("Export workflow");
+    let runtime = analysis_runtime(&f, triage_payload("archive"));
+    runtime
+        .start_triage_analysis(&f.project, &feature.id, feature.revision, &id())
+        .unwrap();
+    runtime.wait_for_idle().await;
+
+    let stored = f.forge().get(&f.project, &feature.id).unwrap();
+    // The whole point of not routing this through `save_brief`: a discovery turn
+    // would have bumped the revision and pushed the feature back to incubating.
+    assert_eq!(stored.revision, feature.revision);
+    assert_eq!(stored.state, FeatureState::InTriage);
+    assert_eq!(stored.structural_level, 1);
+    assert_eq!(stored.evaluation.impact, Some(4));
+    assert_eq!(stored.evaluation.effort, Some(2));
+    assert!(stored.evaluation.value.contains("every week"));
+    // Archive is only ever a recommendation; the feature is still live.
+    assert!(stored.archive_reason.is_none());
+
+    let turn = runtime
+        .history(&f.project, &feature.id)
+        .unwrap()
+        .into_iter()
+        .find(|turn| turn.kind == TurnKind::Triage)
+        .expect("the analysis is recorded as its own turn");
+    assert_eq!(turn.status, "completed");
+    assert!(turn.assistant_message.unwrap().contains("archive"));
+}
+
+#[tokio::test]
+async fn triage_analysis_recommending_approval_advances_a_ready_feature() {
+    let f = Fixture::new();
+    let feature = f.feature("Export workflow");
+    let runtime = analysis_runtime(&f, triage_payload("approve"));
+    runtime
+        .start_triage_analysis(&f.project, &feature.id, feature.revision, &id())
+        .unwrap();
+    runtime.wait_for_idle().await;
+
+    let stored = f.forge().get(&f.project, &feature.id).unwrap();
+    assert_eq!(stored.state, FeatureState::Approved);
+    assert_eq!(stored.approved_revision, Some(feature.revision));
+    assert_eq!(stored.evaluation.confidence, Some(4));
+}
+
+#[tokio::test]
+async fn triage_analysis_keeps_its_verdict_when_approval_is_not_yet_possible() {
+    let f = Fixture::new();
+    let feature = f.feature("Export workflow");
+    // A brief with no tasks cannot be approved, but it can still be triaged.
+    let mut brief = feature.brief.clone();
+    brief.tasks.clear();
+    let feature = f
+        .forge()
+        .revise(&f.project, &feature.id, feature.revision, brief)
+        .unwrap();
+    let runtime = analysis_runtime(&f, triage_payload("approve"));
+    runtime
+        .start_triage_analysis(&f.project, &feature.id, feature.revision, &id())
+        .unwrap();
+    runtime.wait_for_idle().await;
+
+    let stored = f.forge().get(&f.project, &feature.id).unwrap();
+    // The evaluation survives even though the approval it recommended could not
+    // be applied -- a turn has no retry, so failing here would lose both.
+    assert_eq!(stored.state, FeatureState::InTriage);
+    assert_eq!(stored.approved_revision, None);
+    assert_eq!(stored.evaluation.impact, Some(4));
+    assert_eq!(
+        f.forge()
+            .snapshot(&f.project)
+            .unwrap()
+            .tasks
+            .iter()
+            .filter(|t| t.draft.feature_id.as_deref() == Some(feature.id.as_str()))
+            .count(),
+        0,
+        "a rolled back approval must not leave half-inserted tasks behind"
+    );
+    let turn = runtime
+        .history(&f.project, &feature.id)
+        .unwrap()
+        .into_iter()
+        .find(|turn| turn.kind == TurnKind::Triage)
+        .unwrap();
+    assert_eq!(turn.status, "completed");
+    assert!(turn.assistant_message.unwrap().contains("not applied"));
+}
+
+#[tokio::test]
+async fn dependency_analysis_applies_edges_without_touching_confirmed_ones() {
+    let f = Fixture::new();
+    let storage = f.feature("Storage layer");
+    let export = f.feature("Export workflow");
+    let reports = f.feature("Reporting");
+    // Triage is the gate for the dependency pass.
+    let runtime = analysis_runtime(&f, triage_payload("archive"));
+    runtime
+        .start_triage_analysis(&f.project, &export.id, export.revision, &id())
+        .unwrap();
+    runtime.wait_for_idle().await;
+
+    // A relation the developer already confirmed, with their own wording.
+    f.forge()
+        .set_dependency(
+            &f.project,
+            &export.id,
+            &storage.id,
+            Some("Confirmed by hand after reviewing the schema"),
+        )
+        .unwrap();
+    // ...and one that makes the proposed reverse edge a cycle.
+    f.forge()
+        .set_dependency(
+            &f.project,
+            &reports.id,
+            &export.id,
+            Some("Reporting reads the exported records"),
+        )
+        .unwrap();
+
+    let export = f.forge().get(&f.project, &export.id).unwrap();
+    let runtime = analysis_runtime(
+        &f,
+        json!({
+            "outputLanguage": "en",
+            "message": "Export builds on storage and cannot precede reporting.",
+            "dependencies": [
+                {"prerequisiteId": storage.id, "rationale": "Rewritten by the agent"},
+                {"prerequisiteId": reports.id, "rationale": "Would invert the reporting order"}
+            ]
+        }),
+    );
+    runtime
+        .start_dependency_analysis(&f.project, &export.id, export.revision, &id())
+        .unwrap();
+    runtime.wait_for_idle().await;
+
+    let edges = f
+        .forge()
+        .snapshot(&f.project)
+        .unwrap()
+        .dependencies
+        .into_iter()
+        .filter(|edge| edge.feature_id == export.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        edges.len(),
+        1,
+        "the cyclic proposal is skipped, not applied"
+    );
+    let kept = &edges[0];
+    assert_eq!(kept.prerequisite_id, storage.id);
+    assert_eq!(kept.origin, DependencyOrigin::Human);
+    assert_eq!(
+        kept.rationale, "Confirmed by hand after reviewing the schema",
+        "an agent pass must never rewrite a human rationale"
+    );
+    let turn = runtime
+        .history(&f.project, &export.id)
+        .unwrap()
+        .into_iter()
+        .find(|turn| turn.kind == TurnKind::Dependencies)
+        .unwrap();
+    assert_eq!(turn.status, "completed");
+    assert!(turn.assistant_message.unwrap().contains("Skipped"));
+}
+
+#[tokio::test]
+async fn dependency_analysis_waits_for_triage() {
+    let f = Fixture::new();
+    let storage = f.feature("Storage layer");
+    let export = f.feature("Export workflow");
+    let runtime = analysis_runtime(
+        &f,
+        json!({"outputLanguage":"en","message":"n/a","dependencies":[{"prerequisiteId":storage.id,"rationale":"Needed first"}]}),
+    );
+    assert!(
+        runtime
+            .start_dependency_analysis(&f.project, &export.id, export.revision, &id())
+            .is_err(),
+        "an untriaged feature has no structural level to reason about"
+    );
+}
+
+#[tokio::test]
+async fn an_analysis_and_a_chat_turn_cannot_run_at_the_same_time() {
+    let f = Fixture::new();
+    let feature = f.feature("Export workflow");
+    let (runtime, gateway) = planning_runtime(&f, &feature);
+    let turn = runtime
+        .start(&f.project, &feature.id, feature.revision, &id(), "Refine")
+        .unwrap();
+    gateway.entered.acquire().await.unwrap().forget();
+
+    // The chat turn holds the feature, so the analysis is refused rather than
+    // racing it -- both write the same evaluation column.
+    assert!(
+        runtime
+            .start_triage_analysis(&f.project, &feature.id, feature.revision, &id())
+            .is_err()
+    );
+    assert!(runtime.cancel(&turn));
+    gateway.release.add_permits(1);
+    runtime.wait_for_idle().await;
+}
+
+#[tokio::test]
+async fn analysis_turns_stay_out_of_the_discovery_transcript() {
+    let f = Fixture::new();
+    let feature = f.feature("Export workflow");
+    let runtime = analysis_runtime(&f, triage_payload("archive"));
+    runtime
+        .start_triage_analysis(&f.project, &feature.id, feature.revision, &id())
+        .unwrap();
+    runtime.wait_for_idle().await;
+
+    let history = runtime.history(&f.project, &feature.id).unwrap();
+    // Stored alongside the chat, but tagged so the transcript and, more
+    // importantly, the six-turn conversation window can exclude it.
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].kind, TurnKind::Triage);
+    assert_eq!(
+        history
+            .iter()
+            .filter(|turn| turn.kind == TurnKind::Discovery)
+            .count(),
+        0
+    );
 }

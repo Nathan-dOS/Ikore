@@ -13,7 +13,6 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         output_complete,
         loading,
         poll_in_flight,
-        error,
     ) = {
         let logs = model.logs.read(cx);
         (
@@ -25,7 +24,6 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
             logs.visible_output_complete,
             logs.loading,
             logs.poll_in_flight,
-            logs.error.clone(),
         )
     };
     let logs = model.logs.read(cx);
@@ -72,12 +70,12 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                     div()
                                         .text_lg()
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .child("Execuções"),
+                                        .child("Runs"),
                                 ),
                         )
                         .child(button(
                             "logs-refresh",
-                            if poll_in_flight { "…" } else { "Atualizar" },
+                            if poll_in_flight { "…" } else { "Refresh" },
                             !poll_in_flight,
                             cx,
                             |model, cx| model.refresh_logs(cx),
@@ -88,7 +86,7 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         div()
                             .text_sm()
                             .text_color(theme::text_muted())
-                            .child("Carregando observabilidade…"),
+                            .child("Loading observability…"),
                     )
                 })
                 .when(!loading && snapshot.runs.is_empty(), |panel| {
@@ -97,7 +95,7 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                             .p_3()
                             .text_sm()
                             .text_color(theme::text_muted())
-                            .child("Selecione uma pulsation; os agent_runs aparecerão aqui."),
+                            .child("Select a pulsation; agent runs will appear here."),
                     )
                 })
                 .child(
@@ -114,8 +112,8 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                             let selected = selected_run_id
                                 .as_ref()
                                 .is_some_and(|selected| selected.as_ref() == id);
-                            let provider = run.provider.as_deref().unwrap_or("provider pendente");
-                            let model_name = run.model.as_deref().unwrap_or("modelo pendente");
+                            let provider = run.provider.as_deref().unwrap_or("pending provider");
+                            let model_name = run.model.as_deref().unwrap_or("pending model");
                             div()
                                 .id(SharedString::from(format!("log-run:{id}")))
                                 .p_3()
@@ -170,28 +168,18 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         .font_weight(gpui::FontWeight::BOLD)
                         .child("Logs & Observability"),
                 )
-                .when_some(error, |panel, error| {
-                    panel.child(
-                        div()
-                            .p_3()
-                            .rounded_md()
-                            .bg(theme::danger_soft())
-                            .text_color(theme::danger())
-                            .child(error.presentable()),
-                    )
-                })
                 .child(
                     div()
                         .grid()
                         .grid_cols(3)
                         .gap_2()
                         .child(metric("RUNS", run_count.to_string()))
-                        .child(metric("MÉTRICAS", metric_count.to_string()))
-                        .child(metric("EVENTOS", events.len().to_string())),
+                        .child(metric("METRICS", metric_count.to_string()))
+                        .child(metric("EVENTS", events.len().to_string())),
                 )
                 .when_some(selected_run, |panel, run| {
                     panel.child(
-                        section("Run selecionado")
+                        section("Selected run")
                             .child(fact("STATUS", run.status))
                             .child(fact(
                                 "PROVIDER / MODEL",
@@ -212,20 +200,20 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 ),
                             ))
                             .child(fact(
-                                "CUSTO",
+                                "COST",
                                 run.estimated_cost_usd
                                     .map_or_else(|| "—".into(), |value| format!("US$ {value:.6}")),
                             ))
                             .child(fact(
-                                "TEMPO",
-                                format!(
-                                    "{} → {}",
-                                    run.started_at.unwrap_or_else(|| run.created_at.clone()),
-                                    run.finished_at.unwrap_or_else(|| "em andamento".into())
+                                "TIME",
+                                crate::time::format_time_range(
+                                    run.started_at.as_deref().or(Some(&run.created_at)),
+                                    run.finished_at.as_deref(),
+                                    "—",
                                 ),
                             ))
                             .when_some(run.last_error, |section, value| {
-                                section.child(fact("ERRO", value))
+                                section.child(fact("ERROR", value))
                             })
                             .when_some(run.raw_output, |section, value| {
                                 section.child(fact("RAW OUTPUT", value))
@@ -238,9 +226,9 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .child(button(
                     "logs-toggle-routing",
                     if collapsed_routing {
-                        "Mostrar Routing metrics"
+                        "Show routing metrics"
                     } else {
-                        "Ocultar Routing metrics"
+                        "Hide routing metrics"
                     },
                     true,
                     cx,
@@ -260,7 +248,7 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 .rounded_md()
                                 .bg(theme::surface())
                                 .child(format!(
-                                    "{}/{} · {} tentativa(s), {} sucesso(s)",
+                                    "{}/{} · {} attempt(s), {} success(es)",
                                     metric_item.provider_id,
                                     metric_item.model_id,
                                     metric_item.attempts,
@@ -268,24 +256,24 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 ))
                                 .child(div().text_xs().text_color(theme::text_muted()).child(
                                     format!(
-                                            "latência média {} · tokens {}/{} · custo {}",
-                                            metric_item
-                                                .average_latency_ms
-                                                .map(|value| format!("{value:.1} ms"))
-                                                .unwrap_or_else(|| "—".into()),
-                                            metric_item.input_tokens,
-                                            metric_item.output_tokens,
-                                            metric_item
-                                                .estimated_cost_usd
-                                                .map(|value| format!("US$ {value:.6}"))
-                                                .unwrap_or_else(|| "—".into())
-                                        ),
+                                        "average latency {} · tokens {}/{} · cost {}",
+                                        metric_item
+                                            .average_latency_ms
+                                            .map(|value| format!("{value:.1} ms"))
+                                            .unwrap_or_else(|| "—".into()),
+                                        metric_item.input_tokens,
+                                        metric_item.output_tokens,
+                                        metric_item
+                                            .estimated_cost_usd
+                                            .map(|value| format!("US$ {value:.6}"))
+                                            .unwrap_or_else(|| "—".into())
+                                    ),
                                 ))
                         }),
                     ))
                 })
                 .child(
-                    section("Saída LLM visível")
+                    section("Visible LLM output")
                         .child(
                             div()
                                 .text_xs()
@@ -295,9 +283,9 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                     theme::warning()
                                 })
                                 .child(if output_complete {
-                                    "completa"
+                                    "complete"
                                 } else {
-                                    "incompleta / streaming"
+                                    "incomplete / streaming"
                                 }),
                         )
                         .child(
@@ -309,7 +297,7 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 .font_family(theme::FONT_MONO)
                                 .text_sm()
                                 .child(if visible_output.is_empty() {
-                                    SharedString::from("Nenhuma saída visível nesta sessão.")
+                                    SharedString::from("No visible output in this session.")
                                 } else {
                                     visible_output
                                 }),
@@ -318,9 +306,9 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .child(button(
                     "logs-toggle-events",
                     if collapsed_events {
-                        "Mostrar eventos"
+                        "Show events"
                     } else {
-                        "Ocultar eventos"
+                        "Hide events"
                     },
                     true,
                     cx,
@@ -333,7 +321,7 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 ))
                 .when(!collapsed_events, |panel| {
                     panel.child(
-                        section("Eventos watcher / LLM").child(
+                        section("Watcher / LLM events").child(
                             div()
                                 .id("logs-events-scroll")
                                 .flex()
@@ -352,14 +340,35 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                                     "{} · {}",
                                                     event.category, event.name
                                                 ))
-                                                .when_some(event.sequence, |row, sequence| {
-                                                    row.child(
-                                                        div()
-                                                            .text_xs()
-                                                            .text_color(theme::text_muted())
-                                                            .child(format!("#{sequence}")),
-                                                    )
-                                                }),
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap_2()
+                                                        .when(!event.timestamp.is_empty(), |row| {
+                                                            row.child(
+                                                                div()
+                                                                    .text_xs()
+                                                                    .text_color(theme::text_muted())
+                                                                    .child(event.timestamp.clone()),
+                                                            )
+                                                        })
+                                                        .when_some(
+                                                            event.sequence,
+                                                            |row, sequence| {
+                                                                row.child(
+                                                                    div()
+                                                                        .text_xs()
+                                                                        .text_color(
+                                                                            theme::text_muted(),
+                                                                        )
+                                                                        .child(format!(
+                                                                            "#{sequence}"
+                                                                        )),
+                                                                )
+                                                            },
+                                                        ),
+                                                ),
                                         )
                                         .child(
                                             div()
@@ -374,7 +383,7 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .when(!collapsed_events && has_more_events, |panel| {
                     panel.child(button(
                         "logs-more-events",
-                        "Mostrar mais 50 eventos",
+                        "Show 50 more events",
                         true,
                         cx,
                         |model, cx| {

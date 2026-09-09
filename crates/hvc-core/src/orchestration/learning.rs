@@ -1027,7 +1027,10 @@ impl PersistenceService {
             },
             max_output_tokens: config.max_output_tokens.min(1600),
             temperature: config.temperature,
-            deadline: std::time::Instant::now() + Duration::from_millis(config.timeout_ms),
+            deadline: std::time::Instant::now()
+                + crate::agent_timeout::AgentTimeoutPolicy::for_role(AgentRole::LearningAgent)
+                    .base_timeout()
+                    .max(Duration::from_millis(config.timeout_ms)),
             stream: true,
             legacy_provider: config.provider.as_str().into(),
             legacy_model: config.model.clone(),
