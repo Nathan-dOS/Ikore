@@ -17,6 +17,7 @@ impl AppModel {
             return;
         }
         self.preparation_scope = key;
+        self.pulsations.update(cx, |p, _| p.validation_error = None);
         self.learning_graph_decisions.clear();
         self.question_subscriptions.clear();
         self.specification_answer_inputs.clear();
@@ -51,11 +52,13 @@ impl AppModel {
             description: self.description_review_input.read(cx).value().to_owned(),
         };
         if let Err(error) = request.validate() {
-            self.pulsations
-                .update(cx, |p, _| p.error = Some(error.to_string()));
+            self.pulsations.update(cx, |p, _| {
+                p.validation_error = Some(("description", error.to_string()))
+            });
             cx.notify();
             return;
         }
+        self.pulsations.update(cx, |p, _| p.validation_error = None);
         self.run_pulsation_action(PulsationAction::Revise(request), cx);
     }
 
@@ -97,11 +100,13 @@ impl AppModel {
                 .collect(),
         };
         if let Err(error) = validate_specification_answers(&request, &pending) {
-            self.pulsations
-                .update(cx, |p, _| p.error = Some(error.to_string()));
+            self.pulsations.update(cx, |p, _| {
+                p.validation_error = Some(("answers", error.to_string()))
+            });
             cx.notify();
             return;
         }
+        self.pulsations.update(cx, |p, _| p.validation_error = None);
         self.run_pulsation_action(PulsationAction::Answer(request), cx);
     }
 
@@ -237,7 +242,7 @@ impl AppModel {
         );
     }
 
-    pub(crate) fn cycle_brownfield_llm_budget(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn set_brownfield_budget(&mut self, budget: u8, cx: &mut Context<Self>) {
         if self.settings.read(cx).busy {
             return;
         }
@@ -253,13 +258,8 @@ impl AppModel {
         else {
             return;
         };
-        settings.brownfield_llm_budget = match settings.brownfield_llm_budget {
-            0 => 1,
-            1 => 2,
-            2 => 4,
-            4 => 8,
-            _ => 0,
-        };
+        settings.brownfield_llm_budget = budget;
+
         self.run_settings_operation(
             Box::pin(async move {
                 backend.update_preparation(settings).await?;
@@ -445,9 +445,10 @@ impl AppModel {
                 .ok()
                 .and_then(|n| VaguenessScore::try_from(n).ok());
             let Some(threshold) = threshold else {
-                self.notices.push(
+                self.push_header_notice(
                     HeaderNoticeKind::Warning,
                     "Use an integer threshold from 0 to 100.",
+                    cx,
                 );
                 cx.notify();
                 return;
@@ -470,9 +471,10 @@ impl AppModel {
             .ok()
             .filter(|n| (2000..=80000).contains(n));
         let Some(limit) = limit else {
-            self.notices.push(
+            self.push_header_notice(
                 HeaderNoticeKind::Warning,
                 "Use between 2,000 and 80,000 context characters.",
+                cx,
             );
             cx.notify();
             return;

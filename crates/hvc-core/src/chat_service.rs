@@ -30,6 +30,7 @@ use crate::terminals::{
     CliBackend, CliModelSelectionSource, CompanionCliRoundRequest, TerminalError, TerminalService,
     discover_clis, validate_catalog_model_selection,
 };
+use crate::usage::{UsageContext, UsageTransport, api::UsageRecorder};
 
 const MAX_MODEL_ROUNDS: usize = 8;
 const MAX_TOOL_CALLS: usize = 24;
@@ -1581,6 +1582,18 @@ impl ChatService {
                     ],
                 )?;
                 let started = Instant::now();
+                let usage = UsageRecorder::new(
+                    &self.db_path,
+                    UsageContext {
+                        source_kind: "chat_model_call".into(),
+                        source_id: model_call_id.clone(),
+                        project_id: Some(context.conversation.project_id.clone()),
+                        transport: UsageTransport::Api,
+                        provider_id: context.conversation.provider_id.clone(),
+                        requested_model: Some(context.conversation.model_id.clone()),
+                        started_at: started_at.clone(),
+                    },
+                );
                 let response = self
                     .call_model(
                         &profile,
@@ -1590,8 +1603,12 @@ impl ChatService {
                         context,
                         &messages,
                         &exchanges,
+                        &usage,
                     )
                     .await;
+                usage
+                    .finish(response.is_ok())
+                    .map_err(ChatCommandError::database)?;
                 let latency_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
                 match response {
                     Ok(response) => {
@@ -1769,6 +1786,15 @@ impl ChatService {
                 let outcome = terminals
                     .execute_companion_round(
                         CompanionCliRoundRequest {
+                            usage_context: UsageContext {
+                                source_kind: "chat_model_call".into(),
+                                source_id: model_call_id.clone(),
+                                project_id: Some(context.conversation.project_id.clone()),
+                                transport: UsageTransport::Cli,
+                                provider_id: backend.as_str().into(),
+                                requested_model: Some(context.conversation.model_id.clone()),
+                                started_at: started_at.clone(),
+                            },
                             project_id: context.conversation.project_id.clone(),
                             backend,
                             model: (context.conversation.model_id != "default")
@@ -1846,7 +1872,11 @@ impl ChatService {
             match envelope {
                 CompanionControlEnvelope::Final { text } => {
                     self.stream_visible_content(context, &text).await?;
-                    self.update_message_usage(&context.assistant_message_id, 0, 0, None)?;
+                    self.connection()?.execute(
+                        "UPDATE chat_messages SET
+                         input_tokens=(SELECT SUM(input_tokens) FROM chat_model_calls WHERE assistant_message_id=?1),
+                         output_tokens=(SELECT SUM(output_tokens) FROM chat_model_calls WHERE assistant_message_id=?1),
+                         updated_at=?2 WHERE id=?1",params![context.assistant_message_id,now_iso()])?;
                     return Ok(());
                 }
                 CompanionControlEnvelope::ToolCalls { calls } => {
@@ -2125,7 +2155,9 @@ impl ChatService {
             "UPDATE chat_model_calls
              SET completed_at=?1,latency_ms=?2,status=?3,error_code=?4,
                  detected_cli_version=?5,exit_code=?6,termination_reason=?7,
-                 output_bytes=?8,redaction_count=?9
+                 output_bytes=?8,redaction_count=?9,
+                 input_tokens=(SELECT SUM(input_tokens) FROM token_usage_records WHERE source_kind='chat_model_call' AND source_id=?10),
+                 output_tokens=(SELECT SUM(output_tokens) FROM token_usage_records WHERE source_kind='chat_model_call' AND source_id=?10)
              WHERE id=?10",
             params![
                 now_iso(),
@@ -2949,6 +2981,7 @@ impl ChatService {
         context: &TurnContext,
         messages: &[ProtocolMessage],
         exchanges: &[ToolExchange],
+        usage: &UsageRecorder,
     ) -> Result<ModelResponse, ModelFailure> {
         let payload = match profile.protocol {
             ProviderProtocol::OpenaiResponses => {
@@ -3028,6 +3061,7 @@ impl ChatService {
                 retryable: false,
             })?;
             let value: Value = serde_json::from_str(&body).unwrap_or_else(|_| json!({}));
+            usage.observe(&crate::usage::api::parse_usage(profile.protocol, &value));
             let message = provider_error_message(&value);
             let classified = profile.classify_http_error(
                 status.as_u16(),
@@ -3056,13 +3090,14 @@ impl ChatService {
                 .map_err(|_| invalid_response("Não foi possível ler a resposta do provider."))?;
             let value: Value = serde_json::from_str(&body)
                 .map_err(|_| invalid_response("O provider retornou uma resposta JSON inválida."))?;
+            usage.observe(&crate::usage::api::parse_usage(profile.protocol, &value));
             return match profile.protocol {
                 ProviderProtocol::OpenaiResponses => parse_openai_responses(&value),
                 ProviderProtocol::OpenaiChat => parse_openai_chat(&value),
                 ProviderProtocol::AnthropicMessages => parse_anthropic(&value),
             };
         }
-        self.parse_streaming_response(response, profile.protocol, context)
+        self.parse_streaming_response(response, profile.protocol, context, usage)
             .await
     }
 
@@ -3071,6 +3106,7 @@ impl ChatService {
         response: reqwest::Response,
         protocol: ProviderProtocol,
         context: &TurnContext,
+        usage: &UsageRecorder,
     ) -> Result<ModelResponse, ModelFailure> {
         let mut parser = SseParser::new(protocol);
         let mut stream = response.bytes_stream();
@@ -3084,7 +3120,9 @@ impl ChatService {
                 message: "O stream do provider foi interrompido.".into(),
                 retryable: content.is_empty(),
             })?;
-            let events = parser.push(&chunk).map_err(|error| ModelFailure {
+            let parsed_events = parser.push(&chunk);
+            usage.observe(parser.usage());
+            let events = parsed_events.map_err(|error| ModelFailure {
                 code: "stream_failed".into(),
                 message: error.message,
                 retryable: content.is_empty(),
@@ -3098,7 +3136,9 @@ impl ChatService {
                 &mut output_tokens,
             )?;
         }
-        let events = parser.finish().map_err(|error| ModelFailure {
+        let parsed_events = parser.finish();
+        usage.observe(parser.usage());
+        let events = parsed_events.map_err(|error| ModelFailure {
             code: "stream_failed".into(),
             message: error.message,
             retryable: content.is_empty(),

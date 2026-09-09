@@ -32,6 +32,7 @@ pub enum ParsedStreamEvent {
 pub struct SseParser {
     protocol: ProviderProtocol,
     buffer: Vec<u8>,
+    usage: crate::usage::UsageMeasurement,
 }
 
 impl SseParser {
@@ -39,7 +40,12 @@ impl SseParser {
         Self {
             protocol,
             buffer: Vec::new(),
+            usage: Default::default(),
         }
+    }
+
+    pub fn usage(&self) -> &crate::usage::UsageMeasurement {
+        &self.usage
     }
 
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<ParsedStreamEvent>, LlmError> {
@@ -105,6 +111,10 @@ impl SseParser {
                 "Evento SSE contém JSON inválido.",
             )
         })?;
+        crate::usage::api::merge_usage(
+            &mut self.usage,
+            &crate::usage::api::parse_usage(self.protocol, &payload),
+        );
         Ok(Some(parse_payload(
             self.protocol,
             frame_event.as_deref(),
@@ -358,6 +368,31 @@ fn parse_anthropic(event_name: Option<&str>, payload: &Value) -> Vec<ParsedStrea
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_only_frames_keep_model_cache_and_reasoning_across_chunks() {
+        let mut chat = SseParser::new(ProviderProtocol::OpenaiChat);
+        let frames=b"data: {\"model\":\"observed-model\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":5,\"total_tokens\":25,\"prompt_tokens_details\":{\"cached_tokens\":15},\"completion_tokens_details\":{\"reasoning_tokens\":3}}}\n\ndata: [DONE]\n\n";
+        for bytes in frames.chunks(3) {
+            chat.push(bytes).unwrap();
+        }
+        chat.finish().unwrap();
+        assert_eq!(chat.usage().counts.total_tokens, Some(25));
+        assert_eq!(chat.usage().counts.cache_read_tokens, Some(15));
+        assert_eq!(chat.usage().counts.reasoning_tokens, Some(3));
+        assert_eq!(
+            chat.usage().observed_model.as_deref(),
+            Some("observed-model")
+        );
+        // Usage already decoded before a subsequent malformed frame is retained.
+        assert!(chat.push(b"data: invalid\n\n").is_err());
+        assert_eq!(chat.usage().counts.total_tokens, Some(25));
+        let mut responses = SseParser::new(ProviderProtocol::OpenaiResponses);
+        let frame=b"event: response.completed\ndata: {\"response\":{\"model\":\"response-model\",\"usage\":{\"input_tokens\":8,\"output_tokens\":2,\"total_tokens\":10}}}\n\n";
+        responses.push(frame).unwrap();
+        responses.push(frame).unwrap();
+        assert_eq!(responses.usage().counts.total_tokens, Some(10));
+    }
 
     #[test]
     fn parses_fragmented_responses_sse() {

@@ -7,7 +7,7 @@ use crate::agents::CliModelPickerTarget;
 use crate::agents_view::cli_model_picker_panel;
 use crate::app_model::AppModel;
 use crate::theme;
-use crate::widgets::{dropdown_item, dropdown_menu, dropdown_select};
+
 use crate::workspace_view::render_markdown_block;
 
 pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
@@ -30,7 +30,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         streaming,
         loading,
         busy,
-        error,
+        _error,
         disclosure_required,
         disclosure_accepted,
         pending_delete,
@@ -149,45 +149,14 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .gap_3()
                 .child(section_header("ACTIVE PROJECT", "Conversations", conversations.len()))
                 .child({
-                    let is_open = model.is_dropdown_open("chat-transport");
+
                     let transport_label = match selected_transport {
                         ChatTransportKind::Api => "API",
                         ChatTransportKind::Cli => "CLI",
                     };
                     div()
-                        .child(dropdown_select(
-                            "chat-transport",
-                            "TRANSPORT",
-                            transport_label,
-                            is_open,
-                            !busy && !streaming,
-                            2,
-                            cx,
-                            |m, cx| m.toggle_dropdown("chat-transport", cx),
-                        ))
-                        .when(is_open, |p| {
-                            p.child(dropdown_menu(
-                                "chat-transport-menu",
-                                [
-                                    dropdown_item(
-                                        "chat-transport:api",
-                                        "API",
-                                        Some("Direct HTTP connection"),
-                                        selected_transport == ChatTransportKind::Api,
-                                        cx,
-                                        |m, cx| m.set_chat_transport(ChatTransportKind::Api, cx),
-                                    ),
-                                    dropdown_item(
-                                        "chat-transport:cli",
-                                        "CLI",
-                                        Some("Local terminal process"),
-                                        selected_transport == ChatTransportKind::Cli,
-                                        cx,
-                                        |m, cx| m.set_chat_transport(ChatTransportKind::Cli, cx),
-                                    ),
-                                ],
-                            ))
-                        })
+                        .child(crate::select_menu::control("chat-transport","TRANSPORT",transport_label,!busy && !streaming,cx))
+
                 })
                 .child({
                     let mut auth_card = div()
@@ -244,104 +213,28 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         );
 
                     if selected_transport == ChatTransportKind::Api && connections.len() > 1 {
-                        let is_open = model.is_dropdown_open("chat-connections");
-                        let mut menu_items = Vec::new();
-                        for conn in &connections {
-                            let conn_id = conn.id.clone();
-                            let is_selected = selected_connection_id.as_ref().is_some_and(|id| id.as_ref() == conn.id.as_str());
-                            menu_items.push(dropdown_item(
-                                format!("chat-conn:{}", conn.id),
-                                conn.display_name.clone(),
-                                Some(conn.default_model.clone()),
-                                is_selected,
-                                cx,
-                                move |m, cx| m.set_chat_connection(conn_id.clone(), cx),
-                            ));
-                        }
-                        let mut conn_wrapper = div().mt_2().child(action(
-                            "chat-cycle-connection",
-                            if is_open { "Close connections" } else { "Switch connection ▾" },
-                            !busy,
-                            cx,
-                            |model, cx| model.toggle_dropdown("chat-connections", cx),
+
+                        let conn_wrapper = div().mt_2().child(crate::select_menu::control(
+                            "chat-cycle-connection", "Connection", selected_connection.map(|c| c.display_name.clone()).unwrap_or_default(), !busy && !streaming, cx,
                         ));
-                        if is_open {
-                            conn_wrapper = conn_wrapper.child(dropdown_menu("chat-connections-menu", menu_items));
-                        }
+
                         auth_card = auth_card.child(conn_wrapper);
                     } else if selected_transport == ChatTransportKind::Cli {
-                        let backend_open = model.is_dropdown_open("chat-cli-backend");
-                        let all_backends = [
-                            hvc_core::terminals::CliBackend::Codex,
-                            hvc_core::terminals::CliBackend::Claude,
-                            hvc_core::terminals::CliBackend::Gemini,
-                            hvc_core::terminals::CliBackend::Opencode,
-                        ];
-                        let profile_open = model.is_dropdown_open("chat-cli-profile");
+
+
+
                         let profiles = model.model_profiles(
                             selected_cli_backend,
                             selected_cli_model.as_deref(),
                             cx,
                         );
-                        let sel_prof = selected_cli_model_profile.clone();
 
-                        let mut backend_div = div().child(dropdown_select(
-                            "chat-cli-backend",
-                            "CLI BACKEND",
-                            selected_cli_backend.label(),
-                            backend_open,
-                            !busy && !streaming,
-                            all_backends.len(),
-                            cx,
-                            |m, cx| m.toggle_dropdown("chat-cli-backend", cx),
-                        ));
-                        if backend_open {
-                            let mut b_items = Vec::new();
-                            for backend in all_backends {
-                                b_items.push(dropdown_item(
-                                    format!("chat-cli-backend:{}", backend.label()),
-                                    backend.label(),
-                                    None::<&str>,
-                                    selected_cli_backend == backend,
-                                    cx,
-                                    move |m, cx| m.set_chat_cli_backend(backend, cx),
-                                ));
-                            }
-                            backend_div = backend_div.child(dropdown_menu("chat-cli-backend-menu", b_items));
-                        }
 
-                        let mut profile_div = div().child(dropdown_select(
-                            "chat-cli-profile",
-                            "PROFILE",
-                            cli_profile_label,
-                            profile_open,
-                            !busy && !streaming && selected_cli_model.is_some() && !profiles.is_empty(),
-                            profiles.len() + 1,
-                            cx,
-                            |m, cx| m.toggle_dropdown("chat-cli-profile", cx),
-                        ));
-                        if profile_open {
-                            let mut items = vec![dropdown_item(
-                                "chat-cli-profile:default",
-                                "Default",
-                                None::<&str>,
-                                sel_prof.is_none(),
-                                cx,
-                                |m, cx| m.set_chat_cli_profile(None, cx),
-                            )];
-                            for prof in profiles {
-                                let prof_clone = prof.clone();
-                                items.push(dropdown_item(
-                                    format!("chat-cli-profile:{prof}"),
-                                    prof.clone(),
-                                    None::<&str>,
-                                    sel_prof.as_deref() == Some(&prof),
-                                    cx,
-                                    move |m, cx| m.set_chat_cli_profile(Some(prof_clone.clone()), cx),
-                                ));
-                            }
-                            profile_div = profile_div.child(dropdown_menu("chat-cli-profile-menu", items));
-                        }
+                        let backend_div = div().child(crate::select_menu::control("chat-cli-backend","CLI BACKEND",selected_cli_backend.label(),!busy && !streaming,cx));
+
+
+                        let profile_div = div().child(crate::select_menu::control("chat-cli-profile","PROFILE",cli_profile_label,!busy && !streaming && selected_cli_model.is_some() && !profiles.is_empty(),cx));
+
 
                         auth_card = auth_card
                             .child(
@@ -487,16 +380,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                     "chat-toggle-activity", if tool_activity_open { "Hide activity" } else { "Show activity" }, true, cx,
                     |model, cx| { model.chat.update(cx, |chat, _| chat.tool_activity_open = !chat.tool_activity_open); cx.notify(); }
                 )))
-                .when_some(error, |panel, error| {
-                    panel.child(
-                        div()
-                            .p_3()
-                            .rounded_md()
-                            .bg(theme::danger_soft())
-                            .text_color(theme::danger())
-                            .child(error.presentable()),
-                    )
-                })
+
                 .when(active_conversation.is_none(), |panel| {
                     panel.child(
                         div()
@@ -730,7 +614,11 @@ fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -> AnyElemen
                     div()
                         .text_xs()
                         .text_color(theme::text_muted())
-                        .child(format!("{} · {}", message.status, message.created_at)),
+                        .child(format!(
+                            "{} · {}",
+                            message.status,
+                            crate::time::format_timestamp(&message.created_at)
+                        )),
                 ),
         )
         .when(message.content.is_empty(), |card| {
@@ -940,7 +828,7 @@ fn action(
     enabled: bool,
     cx: &mut Context<AppModel>,
     handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
-) -> impl IntoElement {
+) -> AnyElement {
     div()
         .id(id)
         .mt_2()
@@ -966,6 +854,7 @@ fn action(
                 .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
         })
         .child(label)
+        .into_any_element()
 }
 
 fn selection(

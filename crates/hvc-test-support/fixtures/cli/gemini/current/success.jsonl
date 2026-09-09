@@ -1,3 +1,4 @@
-{"type":"init","session_id":"gemini-current-session","model":"gemini-3-pro"}
-{"type":"message","role":"assistant","content":"ok gemini current"}
-{"type":"stats","usage":{"input_tokens":4,"output_tokens":3}}
+{"type":"init","timestamp":"2026-01-01T00:00:00.000Z","session_id":"gemini-current-session","model":"gemini-3-pro"}
+{"type":"message","timestamp":"2026-01-01T00:00:00.500Z","role":"user","content":"fixture prompt"}
+{"type":"message","timestamp":"2026-01-01T00:00:01.000Z","role":"assistant","content":"ok gemini current","delta":true}
+{"type":"result","timestamp":"2026-01-01T00:00:01.100Z","status":"success","stats":{"total_tokens":7,"input_tokens":4,"output_tokens":3,"cached":0,"duration_ms":500,"tool_calls":0,"models":{"gemini-3-pro":{"total_tokens":7,"input_tokens":4,"output_tokens":3,"cached":0}}}}

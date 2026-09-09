@@ -296,10 +296,12 @@ pub(crate) enum SettingsSection {
     Connections,
     Routes,
     Runtime,
+    Usage,
 }
 
 #[derive(Debug)]
 pub(crate) struct SettingsModel {
+    pub(crate) usage: crate::usage::UsageState,
     pub(crate) settings_section: SettingsSection,
     pub(crate) creating_connection: bool,
     pub(crate) creating_route: bool,
@@ -324,6 +326,7 @@ pub(crate) struct SettingsModel {
 impl Default for SettingsModel {
     fn default() -> Self {
         Self {
+            usage: Default::default(),
             settings_section: SettingsSection::Connections,
             creating_connection: false,
             creating_route: false,

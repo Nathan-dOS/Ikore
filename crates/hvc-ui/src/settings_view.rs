@@ -5,7 +5,6 @@ use hvc_core::llm::AgentRole;
 use crate::app_model::AppModel;
 use crate::settings::SettingsSection;
 use crate::theme;
-use crate::widgets::{dropdown_item, dropdown_menu, dropdown_select};
 
 pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let settings = model.settings.read(cx);
@@ -14,9 +13,10 @@ pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> An
     let busy = settings.busy;
     let selected_connection = settings.selected_connection_id.clone();
     let selected_route = settings.selected_route_id.clone();
-    let notice = settings.notice.clone();
-    let error = settings.error.clone();
     let section = settings.settings_section;
+    if section == SettingsSection::Usage {
+        return crate::usage::usage_panel(model, cx);
+    }
     let Some(snapshot) = snapshot else {
         return div()
             .flex_1()
@@ -219,10 +219,6 @@ pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> An
                             |model, cx| model.refresh_settings(cx),
                         )),
                 )
-                .when_some(notice, |panel, notice| panel.child(banner(notice, false)))
-                .when_some(error, |panel, error| {
-                    panel.child(banner(error.presentable().into(), true))
-                })
                 .child(
                     div()
                         .id("settings-section-scroll")
@@ -234,6 +230,7 @@ pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> An
                             SettingsSection::Connections => settings_connections(model, cx),
                             SettingsSection::Routes => settings_routes(model, cx),
                             SettingsSection::Runtime => settings_runtime(model, cx),
+                            SettingsSection::Usage => crate::usage::usage_panel(model, cx),
                         }),
                 ),
         )
@@ -257,33 +254,14 @@ fn settings_connections(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElem
     let connection_model = model.settings_connection_model_input.clone();
     let connection_endpoint = model.settings_connection_endpoint_input.clone();
     let connection_secret = model.settings_connection_secret_input.clone();
-    let provider_open = model.is_dropdown_open("settings-provider");
-    let mut provider_div = div().w(px(220.0)).child(dropdown_select(
+
+    let provider_div = div().w(px(220.0)).child(crate::select_menu::control(
         "settings-provider",
         "PROVIDER",
         provider_id.clone(),
-        provider_open,
         !busy,
-        snapshot.profiles.len(),
         cx,
-        |model, cx| model.toggle_dropdown("settings-provider", cx),
     ));
-    if provider_open {
-        let mut items = Vec::new();
-        for profile in &snapshot.profiles {
-            let p_id = profile.id.clone();
-            let p_id_capture = profile.id.clone();
-            items.push(dropdown_item(
-                format!("settings-provider:{p_id}"),
-                profile.display_name.clone(),
-                Some(profile.id.clone()),
-                provider_id.as_ref() == p_id.as_str(),
-                cx,
-                move |model, cx| model.select_settings_provider(p_id_capture.clone(), cx),
-            ));
-        }
-        provider_div = provider_div.child(dropdown_menu("settings-provider-menu", items));
-    }
 
     div()
         .child(
@@ -355,40 +333,14 @@ fn settings_routes(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     );
     let route_target_count = settings.route_targets.len();
     let route_name = model.settings_route_name_input.clone();
-    let strategy_open = model.is_dropdown_open("settings-route-strategy");
-    let strategies = ["priority", "lkgp", "score"];
-    let mut strategy_div = div().child(dropdown_select(
+
+    let strategy_div = div().child(crate::select_menu::control(
         "settings-route-strategy",
         "STRATEGY",
         route_strategy.clone(),
-        strategy_open,
         !busy,
-        strategies.len(),
         cx,
-        |model, cx| model.toggle_dropdown("settings-route-strategy", cx),
     ));
-    if strategy_open {
-        let mut items = Vec::new();
-        for strat in strategies {
-            let s = strat.to_string();
-            let s_capture = strat.to_string();
-            let label = match strat {
-                "priority" => "Priority (fixed order)",
-                "lkgp" => "LKGP (lowest latency)",
-                "score" => "Score (weighted)",
-                other => other,
-            };
-            items.push(dropdown_item(
-                format!("settings-route-strategy:{s}"),
-                label,
-                None::<&str>,
-                route_strategy.as_ref() == s.as_str(),
-                cx,
-                move |model, cx| model.set_route_strategy(s_capture.clone(), cx),
-            ));
-        }
-        strategy_div = strategy_div.child(dropdown_menu("settings-route-strategy-menu", items));
-    }
 
     div().flex().flex_col().gap_4()
         .when(!show_form, |panel| panel.child(empty("Select or create a route.")))
@@ -402,7 +354,7 @@ fn settings_routes(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                             route_limits.0, route_limits.1, route_limits.2, route_target_count
                         )))
                         .child(div().flex().gap_2()
-                            .child(action("settings-route-limits", "Cycle limits", !busy, cx, |model, cx| model.cycle_route_limits(cx)))
+                            .child(crate::select_menu::control(("settings-route-limits").to_string(),"Limits",format!("{} attempts · {} ms", route_limits.0,route_limits.2),!busy,cx))
                             .child(action("settings-target-up", "Target ↑", !busy && selected_connection.is_some(), cx, |model, cx| model.move_selected_route_target(-1, cx)))
                             .child(action("settings-target-down", "Target ↓", !busy && selected_connection.is_some(), cx, |model, cx| model.move_selected_route_target(1, cx))))
                         .child(div().flex().gap_2()
@@ -415,8 +367,8 @@ fn settings_routes(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                         .child(div().text_sm().child(format!("Agent: {binding_role} · stage: {binding_stage}")))
                         .child(div().text_xs().text_color(theme::text_muted()).child(format!("{} persisted binding(s)", snapshot.bindings.len())))
                         .child(div().flex().gap_2()
-                            .child(action("settings-binding-role", "Cycle agent", !busy, cx, |model, cx| model.cycle_binding_role(cx)))
-                            .child(action("settings-binding-stage", "Cycle stage", !busy, cx, |model, cx| model.cycle_binding_stage(cx)))
+                            .child(crate::select_menu::control(("settings-binding-role").to_string(),"Agent",binding_role.clone(),!busy,cx))
+                            .child(crate::select_menu::control(("settings-binding-stage").to_string(),"Stage",binding_stage.clone(),!busy,cx))
                             .child(action("settings-save-binding", "Bind route", !busy && selected_route.is_some(), cx, |model, cx| model.save_settings_binding(cx)))),
                 )
                 .child(
@@ -435,52 +387,28 @@ fn settings_runtime(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement 
     let snapshot = settings.snapshot.clone().expect("settings snapshot");
     let busy = settings.busy;
     let mode = snapshot.config.routing_v2_mode.as_str();
-    let strategy = snapshot.config.context_strategy.as_str();
+    let strategy = match snapshot.config.context_strategy {
+        hvc_core::agent_runtime::ContextStrategy::YamlGraph => "graph",
+        hvc_core::agent_runtime::ContextStrategy::YamlGraphRag => "rag",
+    };
     let adaptive_mode = snapshot.config.adaptive_context_mode.as_str();
     let adaptive_policy = snapshot.config.dynamic_context_policy.clone();
     let embedding_model = model.settings_embedding_model_input.clone();
-    let routing_mode_open = model.is_dropdown_open("settings-routing-mode");
-    let modes = [
-        (hvc_core::llm::RoutingMode::Off, "off", "Off (disabled)"),
-        (
-            hvc_core::llm::RoutingMode::Shadow,
-            "shadow",
-            "Shadow (audit)",
-        ),
-        (hvc_core::llm::RoutingMode::On, "on", "On (enforcing)"),
-    ];
-    let mut routing_mode_div = div().child(dropdown_select(
+
+    let routing_mode_div = div().child(crate::select_menu::control(
         "settings-routing-mode",
         "ROUTING V2",
         mode,
-        routing_mode_open,
         !busy,
-        modes.len(),
         cx,
-        |model, cx| model.toggle_dropdown("settings-routing-mode", cx),
     ));
-    if routing_mode_open {
-        let mut items = Vec::new();
-        for (m_enum, m_str, m_label) in modes {
-            items.push(dropdown_item(
-                format!("settings-routing-mode:{m_str}"),
-                m_label,
-                None::<&str>,
-                mode == m_str,
-                cx,
-                move |model, cx| model.set_routing_mode(m_enum, cx),
-            ));
-        }
-        routing_mode_div =
-            routing_mode_div.child(dropdown_menu("settings-routing-mode-menu", items));
-    }
 
     let auto_open_review = model.auto_open_review;
     div().flex().flex_col().gap_4()
                 .child(
                     div().grid().grid_cols(3).gap_2()
                         .child(routing_mode_div)
-                        .child(toggle("settings-context-strategy", "CONTEXT", strategy, !busy, cx, |model, cx| model.toggle_context_strategy(cx)))
+                        .child(crate::select_menu::control(("settings-context-strategy").to_string(),"CONTEXT",strategy,!busy,cx))
                         .child(toggle("settings-embeddings", "EMBEDDINGS", if snapshot.config.embedding_enabled { "on" } else { "off" }, !busy, cx, |model, cx| model.toggle_embeddings(cx))),
                 )
                 .child(
@@ -498,10 +426,10 @@ fn settings_runtime(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement 
                         .child(model.context_limit_input.clone())
                         .child(action("context-budget-save","Save context budget",!busy,cx,|model,cx|model.save_context_limit(cx)))
                         .child(toggle("learning-enabled", "ADVISORY LEARNING", if snapshot.preparation.learning_enabled {"on"}else{"off"}, !busy,cx,|model,cx|model.toggle_learning(cx)))
-                        .child(toggle("learning-refinement-mode", "GRAPH REFINEMENT", snapshot.preparation.learning_refinement_mode.as_str(), !busy && snapshot.preparation.learning_enabled,cx,|model,cx|model.toggle_learning_refinement_mode(cx)))
+                        .child(crate::select_menu::control(("learning-refinement-mode").to_string(),"GRAPH REFINEMENT",snapshot.preparation.learning_refinement_mode.as_str(),!busy && snapshot.preparation.learning_enabled,cx))
                         .child(div().text_xs().text_color(theme::text_muted()).child("Learning runs after Done or Failed. Observe audits without creating proposals; Propose allows suggestions by host IDs, but all writes still require human approval and CAS."))
-                        .child(toggle("brownfield-llm-budget", "BROWNFIELD · CALLS PER PULSATION", snapshot.preparation.brownfield_llm_budget.to_string(), !busy,cx,|model,cx|model.cycle_brownfield_llm_budget(cx)))
-                        .child(toggle("brownfield-expansion-radius", "BROWNFIELD · RADIUS", format!("k={}", snapshot.preparation.brownfield_expansion_radius), !busy,cx,|model,cx|model.toggle_brownfield_expansion_radius(cx)))
+                        .child(crate::select_menu::control(("brownfield-llm-budget").to_string(),"BROWNFIELD · CALLS PER PULSATION",snapshot.preparation.brownfield_llm_budget.to_string(),!busy,cx))
+                        .child(crate::select_menu::control(("brownfield-expansion-radius").to_string(),"BROWNFIELD · RADIUS",format!("k={}", snapshot.preparation.brownfield_expansion_radius),!busy,cx))
                         .child(div().text_xs().text_color(theme::text_muted()).child("Enrichment is opportunistic: 0 makes no LLM calls; k=1 uses direct neighbors and k=2 allows a second hop. Each batch publishes at most two proposals.")),
                 )
                 .child(
@@ -513,7 +441,7 @@ fn settings_runtime(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement 
                         )))
                         .child(embedding_model)
                         .child(div().flex().gap_2()
-                            .child(action("settings-embedding-top-k", "Cycle top K", !busy, cx, |model, cx| model.cycle_embedding_top_k(cx)))
+                            .child(crate::select_menu::control(("settings-embedding-top-k").to_string(),"Embedding Top K",snapshot.config.embedding_top_k.to_string(),!busy,cx))
                             .child(action("settings-reindex", "Reindex workspace", !busy, cx, |model, cx| model.reindex_embeddings(cx)))),
                 )
                 .child(
@@ -521,18 +449,18 @@ fn settings_runtime(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement 
                         .child(div().text_xs().text_color(theme::text_muted()).child(
                             "Shadow evaluates policy without altering prompt; On enables dynamic expansion and exact code resolution.",
                         ))
-                        .child(toggle("settings-adaptive-mode", "ACTIVATION", adaptive_mode, !busy, cx, |model, cx| model.cycle_adaptive_context_mode(cx)))
+                        .child(crate::select_menu::control(("settings-adaptive-mode").to_string(),"ACTIVATION",adaptive_mode,!busy,cx))
                         .child(
                             div().grid().grid_cols(3).gap_2()
-                                .child(toggle("settings-adaptive-initial-k", "INITIAL K", adaptive_policy.initial_k.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_initial_k(cx)))
-                                .child(toggle("settings-adaptive-max-k", "MAX K", adaptive_policy.max_k.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_max_k(cx)))
-                                .child(toggle("settings-adaptive-similarity", "SIMILARITY", format!("{:.2}", adaptive_policy.min_similarity), !busy, cx, |model, cx| model.cycle_dynamic_min_similarity(cx)))
-                                .child(toggle("settings-adaptive-min-candidates", "MIN NOTES", adaptive_policy.min_candidates_count.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_min_candidates(cx)))
-                                .child(toggle("settings-adaptive-max-notes", "MAX NOTES", adaptive_policy.max_notes_budget.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_max_notes(cx)))
-                                .child(toggle("settings-adaptive-beam", "BEAM", adaptive_policy.beam_width.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_beam_width(cx)))
-                                .child(toggle("settings-adaptive-files", "FILES", adaptive_policy.max_source_files.to_string(), !busy, cx, |model, cx| model.cycle_dynamic_max_source_files(cx)))
-                                .child(toggle("settings-adaptive-code", "CODE", format!("{} chars", adaptive_policy.max_code_chars), !busy, cx, |model, cx| model.cycle_dynamic_max_code_chars(cx)))
-                                .child(toggle("settings-adaptive-timeout", "TIMEOUT", format!("{} ms", adaptive_policy.timeout_ms), !busy, cx, |model, cx| model.cycle_dynamic_timeout(cx))),
+                                .child(crate::select_menu::control(("settings-adaptive-initial-k").to_string(),"INITIAL K",adaptive_policy.initial_k.to_string(),!busy,cx))
+                                .child(crate::select_menu::control(("settings-adaptive-max-k").to_string(),"MAX K",adaptive_policy.max_k.to_string(),!busy,cx))
+                                .child(crate::select_menu::control(("settings-adaptive-similarity").to_string(),"SIMILARITY",format!("{:.2}", adaptive_policy.min_similarity),!busy,cx))
+                                .child(crate::select_menu::control(("settings-adaptive-min-candidates").to_string(),"MIN NOTES",adaptive_policy.min_candidates_count.to_string(),!busy,cx))
+                                .child(crate::select_menu::control(("settings-adaptive-max-notes").to_string(),"MAX NOTES",adaptive_policy.max_notes_budget.to_string(),!busy,cx))
+                                .child(crate::select_menu::control(("settings-adaptive-beam").to_string(),"BEAM",adaptive_policy.beam_width.to_string(),!busy,cx))
+                                .child(crate::select_menu::control(("settings-adaptive-files").to_string(),"FILES",adaptive_policy.max_source_files.to_string(),!busy,cx))
+                                .child(crate::select_menu::control(("settings-adaptive-code").to_string(),"CODE",format!("{} chars", adaptive_policy.max_code_chars),!busy,cx))
+                                .child(crate::select_menu::control(("settings-adaptive-timeout").to_string(),"TIMEOUT",format!("{} ms", adaptive_policy.timeout_ms),!busy,cx)),
                         ),
                 )
                 .child(settings_agent_timeouts())
@@ -783,23 +711,6 @@ fn empty(message: &'static str) -> impl IntoElement {
         .p_3()
         .text_sm()
         .text_color(theme::text_muted())
-        .child(message)
-}
-
-fn banner(message: SharedString, error: bool) -> impl IntoElement {
-    div()
-        .p_3()
-        .rounded_md()
-        .bg(if error {
-            theme::danger_soft()
-        } else {
-            theme::accent_soft()
-        })
-        .text_color(if error {
-            theme::danger()
-        } else {
-            theme::accent()
-        })
         .child(message)
 }
 

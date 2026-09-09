@@ -28,8 +28,8 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
         artifacts_loading,
         awaiting_hitl,
         running_jobs,
-        notice,
-        error,
+        _notice,
+        _error,
         brownfield_coverage,
         section,
         diff_expanded,
@@ -326,28 +326,6 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                 "Create the first pulsation to view the pipeline and artifacts.",
             ))
         })
-        .when_some(notice, |panel, notice| {
-            panel.child(
-                div()
-                    .mt_3()
-                    .p_3()
-                    .rounded_md()
-                    .bg(theme::accent_soft())
-                    .text_color(theme::accent())
-                    .child(notice),
-            )
-        })
-        .when_some(error, |panel, error| {
-            panel.child(
-                div()
-                    .mt_3()
-                    .p_3()
-                    .rounded_md()
-                    .bg(theme::danger_soft())
-                    .text_color(theme::danger())
-                    .child(error),
-            )
-        })
         .into_any_element();
     div()
         .flex_1()
@@ -392,8 +370,14 @@ fn detail_overview(
                 .child(fact("ACTIVE AGENTS", running_jobs.to_string()))
                 .child(fact("PENDING HITL", awaiting_hitl.to_string())),
         )
-        .child(fact("CREATED AT", active.created_at.clone()))
-        .child(fact("LAST TRANSITION", active.updated_at.clone()))
+        .child(fact(
+            "CREATED AT",
+            crate::time::format_timestamp(&active.created_at),
+        ))
+        .child(fact(
+            "LAST TRANSITION",
+            crate::time::format_timestamp(&active.updated_at),
+        ))
         .into_any_element()
 }
 
@@ -616,6 +600,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         if main_actionable && detail.description_editable {
             desc_card = desc_card
                 .child(model.description_review_input.clone())
+                .child(preparation_validation(model, "description", cx))
                 .child(preparation_button(
                     "description-edit",
                     "Edit request",
@@ -663,6 +648,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             }
         }
         questions_card = questions_card
+            .child(preparation_validation(model, "answers", cx))
             .child(preparation_button(
                 "specification-answer",
                 "Submit answers and resume Specification",
@@ -931,6 +917,28 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
     panel = panel.child(learning_card);
 
     panel.into_any_element()
+}
+
+fn preparation_validation(model: &AppModel, field: &'static str, cx: &gpui::App) -> AnyElement {
+    let message = model
+        .pulsations
+        .read(cx)
+        .validation_error
+        .as_ref()
+        .filter(|(target, _)| *target == field)
+        .map(|(_, message)| message.clone())
+        .unwrap_or_default();
+    div()
+        .id(gpui::SharedString::from(format!(
+            "preparation-validation-{field}"
+        )))
+        .h(px(40.0))
+        .flex_shrink_0()
+        .overflow_y_scroll()
+        .text_sm()
+        .text_color(theme::danger())
+        .child(message)
+        .into_any_element()
 }
 
 fn prep_card(title: &'static str) -> gpui::Div {

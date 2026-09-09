@@ -39,3 +39,14 @@
 ## Decisão de risco
 
 Nenhum risco crítico ou alto conhecido permanece aberto no código coberto pelo runtime hermético. Os riscos residuais acima são de severidade média ou menor, têm comportamento fail-closed e não autorizam fallback, shell ou acesso cruzado silencioso.
+
+## Token usage accounting — 2026-09-09
+
+The V28 usage ledger stores counters and bounded metadata only. Raw model output,
+tool content and credentials are excluded; provider-owned deduplication keys are
+hashed and model labels pass the existing secret redactor. Capturing usage adds
+no provider requests or CLI flags that broaden execution permissions. Unknown
+formats remain unavailable, interrupted evidence is partial, and deletion of
+conversation/run history intentionally retains counters. Supplier counters are
+untrusted observability data, not independently verified billing evidence.
+See [implementation and validation](token-usage-implementation.md).

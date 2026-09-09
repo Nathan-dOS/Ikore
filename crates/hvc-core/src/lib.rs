@@ -19,6 +19,7 @@ pub mod repository_context;
 pub mod secret_redactor;
 pub mod stage_briefs;
 pub mod terminals;
+pub mod usage;
 pub mod workspace_service;
 
 pub use agent_timeout::{AgentTimeoutPolicy, ProgressWatchdog, TimeoutReason};

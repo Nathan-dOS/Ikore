@@ -282,6 +282,10 @@ async fn four_official_adapters_capture_and_resume_the_exact_native_session() {
         );
         assert_eq!(resumed.native_session_id, initial.native_session_id);
     }
+    let usage = hvc_core::usage::query_usage(&harness.database_path, &Default::default()).unwrap();
+    assert_eq!(usage.totals.total_tokens, Some(200));
+    assert_eq!(usage.totals.records, 8);
+    assert_eq!(usage.totals.unavailable_records, 0);
 }
 
 #[tokio::test]
@@ -390,6 +394,12 @@ async fn companion_cli_uses_existing_cli_auth_without_hvc_credentials_and_persis
             .unwrap();
         assert_eq!(assistant.status, "completed");
         assert_eq!(assistant.content, "Companion fixture response");
+        assert_eq!(assistant.input_tokens, Some(20));
+        assert_eq!(assistant.output_tokens, Some(5));
+        let usage =
+            hvc_core::usage::query_usage(&harness.database_path, &Default::default()).unwrap();
+        assert_eq!(usage.totals.total_tokens, Some(25));
+        assert_eq!(usage.totals.records, 1);
         assert!(!assistant.content.contains("control_envelope"));
         assert!(!assistant.content.contains("item.completed"));
         assert!(loaded.tool_calls.is_empty());

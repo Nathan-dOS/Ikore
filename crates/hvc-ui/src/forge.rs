@@ -167,6 +167,14 @@ pub(crate) struct ForgeUi {
     pub project_id: Option<String>,
     pub editing_task: Option<(String, u64)>,
     pub source_task: Option<(String, u64)>,
+    /// Set when analysis was requested but the on-screen triage answers differ
+    /// from what is stored, so the developer gets to confirm before the agent
+    /// replaces their edits.
+    pub pending_triage_overwrite: bool,
+    /// A triage analysis was dispatched and its result has not been pulled in
+    /// yet. Starting an analysis only queues the turn, so the verdict lands on
+    /// a later refresh -- this is what tells that refresh to reload the form.
+    pub awaiting_triage_analysis: bool,
 }
 impl ForgeUi {
     pub fn new(cx: &mut Context<AppModel>) -> Self {
@@ -216,6 +224,8 @@ impl ForgeUi {
             project_id: None,
             editing_task: None,
             source_task: None,
+            pending_triage_overwrite: false,
+            awaiting_triage_analysis: false,
         }
     }
     pub fn feature(&self) -> Option<&Feature> {
@@ -294,6 +304,42 @@ impl ForgeUi {
     }
 }
 
+impl ForgeUi {
+    /// Why an agent analysis cannot start right now, or `None` when it can.
+    ///
+    /// Both tabs go through this so their gates cannot drift apart, and the
+    /// reason is a sentence rather than a bool so the disabled button can say
+    /// what is missing -- a greyed-out control with no explanation is worse
+    /// than no control.
+    pub fn analysis_blocked(&self, f: &Feature) -> Option<&'static str> {
+        if self.busy {
+            return Some("Another Forge operation is still running.");
+        }
+        if self.history.iter().any(|turn| turn.status == "running") {
+            return Some("The Feature Agent is still working on this feature.");
+        }
+        if !f.brief.pending_decisions.is_empty() {
+            return Some("Answer the open incubation questions first.");
+        }
+        None
+    }
+
+    /// Dependencies additionally wait for triage, because the structural level
+    /// it assigns is what the agent reasons about when ordering the graph.
+    pub fn dependency_analysis_blocked(&self, f: &Feature) -> Option<&'static str> {
+        if let Some(reason) = self.analysis_blocked(f) {
+            return Some(reason);
+        }
+        if f.state == FeatureState::Incubating || f.evaluation.score().is_none() {
+            return Some("Run the triage analysis first.");
+        }
+        if matches!(f.state, FeatureState::Executing | FeatureState::Done) {
+            return Some("Dependencies are frozen during and after execution.");
+        }
+        None
+    }
+}
+
 #[derive(Clone)]
 pub(crate) enum ForgeAction {
     Refresh,
@@ -331,6 +377,14 @@ pub(crate) enum ForgeAction {
     Evaluate,
     SelectFeatureTasks(String),
     SuggestFeature(String),
+    /// Ask the Feature Agent for the triage judgement. Prompts first if the
+    /// on-screen answers would be overwritten; `ConfirmAnalyzeTriage` is the
+    /// same request past that prompt.
+    AnalyzeTriage,
+    ConfirmAnalyzeTriage,
+    CancelAnalyzeTriage,
+    AnalyzeDependencies,
+    ClearAgentDependencies,
 }
 enum Operation {
     EditTask(String, u64, TaskDraft),
@@ -350,11 +404,60 @@ enum Operation {
     Dependency(String, String, Option<String>),
     SetLimit(u32),
     Evaluate(String, u64, FeatureEvaluation, u8),
+    AnalyzeTriage(String, u64),
+    AnalyzeDependencies(String, u64),
+    /// Feature id plus the prerequisite ids to drop. The list is resolved from
+    /// the snapshot on the UI side so this reuses `set_dependency` rather than
+    /// needing a bulk-delete of its own.
+    ClearAgentDependencies(String, Vec<String>),
 }
 impl AppModel {
     pub(crate) fn refresh_forge(&mut self, cx: &mut Context<Self>) {
         self.run_forge(Operation::Refresh, cx);
     }
+    /// Loads the stored triage verdict into the on-screen controls.
+    ///
+    /// Called when a feature is selected and again once an agent analysis lands
+    /// -- and deliberately nowhere else. A background refresh must not call
+    /// this, or it would wipe answers the developer is in the middle of typing.
+    pub(crate) fn hydrate_triage_inputs(&mut self, cx: &mut Context<Self>) {
+        let Some(f) = self.forge.feature().cloned() else {
+            return;
+        };
+        for (input, value) in self.forge.filters.iter().zip([
+            f.evaluation.value,
+            f.evaluation.alignment,
+            f.evaluation.feasibility,
+            f.evaluation.usability,
+        ]) {
+            input.update(cx, |input, cx| input.set_value(value, cx));
+        }
+        self.forge.impact = f.evaluation.impact.unwrap_or(3);
+        self.forge.confidence = f.evaluation.confidence.unwrap_or(3);
+        self.forge.effort = f.evaluation.effort.unwrap_or(3);
+        self.forge.level = f.structural_level;
+    }
+
+    /// Whether the on-screen triage answers would lose content if the agent
+    /// overwrote them. Only non-empty divergent text counts: an untouched form
+    /// or one that merely matches what is stored is not worth a prompt.
+    fn triage_inputs_diverge(&self, f: &Feature, cx: &Context<Self>) -> bool {
+        let stored = [
+            &f.evaluation.value,
+            &f.evaluation.alignment,
+            &f.evaluation.feasibility,
+            &f.evaluation.usability,
+        ];
+        self.forge
+            .filters
+            .iter()
+            .zip(stored)
+            .any(|(input, stored)| {
+                let current = input.read(cx).value();
+                !current.trim().is_empty() && current.trim() != stored.trim()
+            })
+    }
+
     pub(crate) fn forge_action(&mut self, action: ForgeAction, cx: &mut Context<Self>) {
         match action {
             ForgeAction::EditTask(id) => {
@@ -468,20 +571,8 @@ impl AppModel {
             ForgeAction::SelectFeature(id) => {
                 self.forge.selected_feature = Some(id);
                 self.forge.history.clear();
-                if let Some(f) = self.forge.feature().cloned() {
-                    for (input, value) in self.forge.filters.iter().zip([
-                        f.evaluation.value,
-                        f.evaluation.alignment,
-                        f.evaluation.feasibility,
-                        f.evaluation.usability,
-                    ]) {
-                        input.update(cx, |input, cx| input.set_value(value, cx));
-                    }
-                    self.forge.impact = f.evaluation.impact.unwrap_or(3);
-                    self.forge.confidence = f.evaluation.confidence.unwrap_or(3);
-                    self.forge.effort = f.evaluation.effort.unwrap_or(3);
-                    self.forge.level = f.structural_level;
-                }
+                self.forge.pending_triage_overwrite = false;
+                self.hydrate_triage_inputs(cx);
                 // Selecting a feature from the Backlog section has no core equivalent to land on;
                 // Incubation is the natural first stop in a feature's lifecycle.
                 if self.forge.section == ForgeSection::Backlog {
@@ -565,6 +656,60 @@ impl AppModel {
                     self.forge.capture_feature = true;
                 }
                 cx.notify();
+                return;
+            }
+            ForgeAction::AnalyzeTriage => {
+                if self.forge.busy {
+                    return;
+                }
+                let Some(f) = self.forge.feature().cloned() else {
+                    return;
+                };
+                if self.triage_inputs_diverge(&f, cx) {
+                    self.forge.pending_triage_overwrite = true;
+                    cx.notify();
+                    return;
+                }
+                self.forge.awaiting_triage_analysis = true;
+                self.run_forge(Operation::AnalyzeTriage(f.id, f.revision), cx);
+                return;
+            }
+            ForgeAction::ConfirmAnalyzeTriage => {
+                self.forge.pending_triage_overwrite = false;
+                if let Some(f) = self.forge.feature().cloned() {
+                    self.forge.awaiting_triage_analysis = true;
+                    self.run_forge(Operation::AnalyzeTriage(f.id, f.revision), cx);
+                }
+                return;
+            }
+            ForgeAction::CancelAnalyzeTriage => {
+                self.forge.pending_triage_overwrite = false;
+                cx.notify();
+                return;
+            }
+            ForgeAction::AnalyzeDependencies => {
+                if let Some(f) = self.forge.feature().cloned() {
+                    self.run_forge(Operation::AnalyzeDependencies(f.id, f.revision), cx);
+                }
+                return;
+            }
+            ForgeAction::ClearAgentDependencies => {
+                let Some(f) = self.forge.feature().cloned() else {
+                    return;
+                };
+                let prerequisites = self
+                    .forge
+                    .snapshot
+                    .dependencies
+                    .iter()
+                    .filter(|edge| {
+                        edge.feature_id == f.id && edge.origin == DependencyOrigin::Agent
+                    })
+                    .map(|edge| edge.prerequisite_id.clone())
+                    .collect::<Vec<_>>();
+                if !prerequisites.is_empty() {
+                    self.run_forge(Operation::ClearAgentDependencies(f.id, prerequisites), cx);
+                }
                 return;
             }
             _ => {}
@@ -838,6 +983,24 @@ impl AppModel {
                             Operation::Evaluate(id, revision, evaluation, level) => {
                                 forge.evaluate(&project, &id, revision, evaluation, level)?;
                             }
+                            Operation::AnalyzeTriage(id, revision) => {
+                                core.feature_agent()
+                                    .start_triage_analysis(&project, &id, revision, &key)?;
+                                notice = Some("Feature Agent is evaluating this feature…".into());
+                            }
+                            Operation::AnalyzeDependencies(id, revision) => {
+                                core.feature_agent()
+                                    .start_dependency_analysis(&project, &id, revision, &key)?;
+                                notice = Some("Feature Agent is mapping prerequisites…".into());
+                            }
+                            Operation::ClearAgentDependencies(id, prerequisites) => {
+                                let removed = prerequisites.len();
+                                for prerequisite in prerequisites {
+                                    forge.set_dependency(&project, &id, &prerequisite, None)?;
+                                }
+                                notice =
+                                    Some(format!("Removed {removed} agent-proposed relation(s)."));
+                            }
                         }
                         Ok(())
                     })();
@@ -908,6 +1071,18 @@ impl AppModel {
                         if model.forge.selected_feature == original_selection {
                             model.forge.selected_feature = selected;
                             model.forge.history = history;
+                        }
+                        // Starting an analysis only queues the turn, so the verdict
+                        // lands on a later refresh. Reload the form the moment that
+                        // turn stops running -- and only then, so an unrelated
+                        // refresh never overwrites answers being typed.
+                        if model.forge.awaiting_triage_analysis
+                            && !model.forge.history.iter().any(|turn| {
+                                turn.kind == TurnKind::Triage && turn.status == "running"
+                            })
+                        {
+                            model.forge.awaiting_triage_analysis = false;
+                            model.hydrate_triage_inputs(cx);
                         }
                         if !background || notice.is_some() {
                             model.forge.notice = notice;
@@ -985,7 +1160,7 @@ mod tests {
             forge.busy = true;
             assert!(forge.message_operation(Some("project"), cx).is_none());
             forge.busy = false;
-            forge.history.push(FeatureTurn { id: "turn".into(), feature_id: "feature".into(), feature_revision: 1, status: "running".into(), user_message: "Previous message".into(), assistant_message: None, error: None, suggested_dependencies: vec![] });
+            forge.history.push(FeatureTurn { id: "turn".into(), feature_id: "feature".into(), feature_revision: 1, status: "running".into(), user_message: "Previous message".into(), assistant_message: None, error: None, suggested_dependencies: vec![], kind: TurnKind::Discovery });
             assert!(forge.message_operation(Some("project"), cx).is_none());
             forge.history[0].status = "failed".into();
             assert!(forge.message_operation(Some("project"), cx).is_some());

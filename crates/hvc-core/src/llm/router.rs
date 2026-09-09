@@ -12,6 +12,7 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
+use super::adapter::AccountingSink;
 use super::adapter::{AdapterCall, LlmAdapter, ProtocolAdapter, TokenDeltaSink};
 use super::catalog::estimate_cost_usd;
 use super::credentials::CredentialStore;
@@ -24,6 +25,7 @@ use super::profiles::profile_by_id;
 use super::repository::TestProviderConnectionResponse;
 use super::repository::{LlmRepository, ResolvedRouteTarget, SqliteLlmRepository, endpoint_origin};
 use super::resilience::{cooldown_ms, eligible_at};
+use crate::usage::{UsageContext, UsageTransport, api::UsageRecorder};
 
 const CONNECTION_TEST_MAX_OUTPUT_TOKENS: u32 = 16;
 
@@ -125,7 +127,19 @@ impl ProviderRouter {
             )
         })?;
         let started = Instant::now();
-        let output = timeout(
+        let recorder = UsageRecorder::new(
+            self.repository.database_path(),
+            UsageContext {
+                source_kind: "connection_test".into(),
+                source_id: request.execution_id.0.clone(),
+                project_id: None,
+                transport: UsageTransport::Api,
+                provider_id: profile.id.clone(),
+                requested_model: Some(connection.default_model.clone()),
+                started_at: Utc::now().to_rfc3339(),
+            },
+        );
+        let outcome = timeout(
             Duration::from_secs(30),
             adapter.execute(
                 AdapterCall {
@@ -136,11 +150,22 @@ impl ProviderRouter {
                     request: &request,
                 },
                 &CancellationToken::new(),
-                &NoopDeltaSink,
+                &AccountingSink {
+                    inner: &NoopDeltaSink,
+                    recorder: &recorder,
+                },
             ),
         )
-        .await
-        .map_err(|_| {
+        .await;
+        recorder
+            .finish(matches!(&outcome, Ok(Ok(_))))
+            .map_err(|e| {
+                LlmError::new(
+                    LlmErrorKind::Persistence,
+                    format!("Token usage persistence failed: {e}"),
+                )
+            })?;
+        let output = outcome.map_err(|_| {
             LlmError::new(
                 LlmErrorKind::Timeout,
                 "Teste da conexão excedeu 30 segundos.",
@@ -461,6 +486,22 @@ impl ProviderRouter {
             let remaining = route_deadline.saturating_duration_since(Instant::now());
             let attempt_budget =
                 Duration::from_millis(execution_route.attempt_timeout_ms).min(remaining);
+            let recorder = UsageRecorder::new(
+                self.repository.database_path(),
+                UsageContext {
+                    source_kind: "llm_attempt".into(),
+                    source_id: attempt_id.clone(),
+                    project_id: Some(request.project_id.clone()),
+                    transport: UsageTransport::Api,
+                    provider_id: profile.id.clone(),
+                    requested_model: Some(model.clone()),
+                    started_at: Utc::now().to_rfc3339(),
+                },
+            );
+            let accounting_sink = AccountingSink {
+                inner: &delta_sink,
+                recorder: &recorder,
+            };
             let outcome = tokio::select! {
                 _=call_cancellation.cancelled()=>Ok(Err(LlmError::new(LlmErrorKind::Cancelled,"Chamada cancelada por prioridade ou encerramento."))),
                 result=timeout(
@@ -474,10 +515,18 @@ impl ProviderRouter {
                         request: &effective_request,
                     },
                     &call_cancellation,
-                    &delta_sink,
+                    &accounting_sink,
                 ),
             )=>result
             };
+            recorder
+                .finish(matches!(&outcome, Ok(Ok(_))))
+                .map_err(|e| {
+                    LlmError::new(
+                        LlmErrorKind::Persistence,
+                        format!("Token usage persistence failed: {e}"),
+                    )
+                })?;
             drop(permit);
             delta_sink.flush();
             let visible_partial = delta_sink.visible_output();

@@ -31,6 +31,21 @@ pub struct AdapterOutput {
 
 pub trait TokenDeltaSink: Send + Sync {
     fn push(&self, delta: &str);
+    fn observe_usage(&self, _usage: &crate::usage::UsageMeasurement) {}
+}
+
+pub struct AccountingSink<'a> {
+    pub inner: &'a dyn TokenDeltaSink,
+    pub recorder: &'a crate::usage::api::UsageRecorder,
+}
+
+impl TokenDeltaSink for AccountingSink<'_> {
+    fn push(&self, delta: &str) {
+        self.inner.push(delta);
+    }
+    fn observe_usage(&self, usage: &crate::usage::UsageMeasurement) {
+        self.recorder.observe(usage);
+    }
 }
 
 pub type AdapterFuture<'a> =
@@ -99,12 +114,18 @@ impl LlmAdapter for ProtocolAdapter {
                 _ = cancellation.cancelled() => return Err(LlmError::new(LlmErrorKind::Cancelled, "Execução LLM cancelada.")),
                 result = request.send() => result.map_err(network_error)?,
             };
-            let response =
-                validate_status(response, call.profile, call.connection, call.model).await?;
+            let response = validate_status(
+                response,
+                call.profile,
+                call.connection,
+                call.model,
+                delta_sink,
+            )
+            .await?;
             if call.request.stream && call.profile.capabilities.streaming {
                 consume_stream(response, &payload, self.protocol, cancellation, delta_sink).await
             } else {
-                consume_complete(response, &payload, self.protocol, cancellation).await
+                consume_complete(response, &payload, self.protocol, cancellation, delta_sink).await
             }
         })
     }
@@ -145,6 +166,9 @@ fn build_payload(call: &AdapterCall<'_>) -> Value {
                 "temperature": call.request.temperature,
                 "stream": stream
             });
+            if stream && call.profile.capabilities.usage {
+                payload["stream_options"] = json!({"include_usage":true});
+            }
             if call.profile.capabilities.json_schema {
                 if let ResponseFormat::JsonSchema { name, schema } = &call.request.response_format {
                     payload["response_format"] = json!({"type":"json_schema","json_schema":{"name":name,"schema":schema,"strict":true}});
@@ -179,6 +203,7 @@ async fn validate_status(
     profile: &ProviderProfile,
     connection: &ResolvedConnection,
     model: &str,
+    delta_sink: &dyn TokenDeltaSink,
 ) -> Result<Response, LlmError> {
     if response.status().is_success() {
         return Ok(response);
@@ -191,6 +216,7 @@ async fn validate_status(
         .and_then(|value| parse_retry_after(value, chrono::Utc::now()));
     let body = response.text().await.unwrap_or_default();
     let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    delta_sink.observe_usage(&crate::usage::api::parse_usage(profile.protocol, &parsed));
     let message = parsed
         .pointer("/error/message")
         .or_else(|| parsed.pointer("/message"))
@@ -210,6 +236,7 @@ async fn consume_complete(
     request_payload: &Value,
     protocol: ProviderProtocol,
     cancellation: &CancellationToken,
+    delta_sink: &dyn TokenDeltaSink,
 ) -> Result<AdapterOutput, LlmError> {
     let body = tokio::select! {
         _ = cancellation.cancelled() => return Err(LlmError::new(LlmErrorKind::Cancelled,"Execução LLM cancelada.")),
@@ -221,6 +248,7 @@ async fn consume_complete(
             "Provider retornou JSON inválido.",
         )
     })?;
+    delta_sink.observe_usage(&crate::usage::api::parse_usage(protocol, &parsed));
     let (content, usage, finish_reason) = parse_complete(protocol, &parsed)?;
     Ok(AdapterOutput {
         request_payload: request_payload.clone(),
@@ -248,7 +276,9 @@ async fn consume_stream(
             result = response.chunk() => result.map_err(|error| stream_error(error, &content))?,
         };
         let Some(chunk) = chunk else { break };
-        let events = parser.push(&chunk).map_err(|mut error| {
+        let parsed_events = parser.push(&chunk);
+        delta_sink.observe_usage(parser.usage());
+        let events = parsed_events.map_err(|mut error| {
             if !content.is_empty() {
                 error.visible_partial = Some(content.clone());
             }
@@ -256,7 +286,9 @@ async fn consume_stream(
         })?;
         apply_stream_events(events, &mut content, &mut usage, &mut completed, delta_sink);
     }
-    let final_events = parser.finish().map_err(|mut error| {
+    let parsed_events = parser.finish();
+    delta_sink.observe_usage(parser.usage());
+    let final_events = parsed_events.map_err(|mut error| {
         if !content.is_empty() {
             error.visible_partial = Some(content.clone());
         }

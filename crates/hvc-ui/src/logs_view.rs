@@ -13,7 +13,6 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         output_complete,
         loading,
         poll_in_flight,
-        error,
     ) = {
         let logs = model.logs.read(cx);
         (
@@ -25,7 +24,6 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
             logs.visible_output_complete,
             logs.loading,
             logs.poll_in_flight,
-            logs.error.clone(),
         )
     };
     let logs = model.logs.read(cx);
@@ -170,16 +168,6 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         .font_weight(gpui::FontWeight::BOLD)
                         .child("Logs & Observability"),
                 )
-                .when_some(error, |panel, error| {
-                    panel.child(
-                        div()
-                            .p_3()
-                            .rounded_md()
-                            .bg(theme::danger_soft())
-                            .text_color(theme::danger())
-                            .child(error.presentable()),
-                    )
-                })
                 .child(
                     div()
                         .grid()
@@ -218,10 +206,10 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                             ))
                             .child(fact(
                                 "TIME",
-                                format!(
-                                    "{} → {}",
-                                    run.started_at.unwrap_or_else(|| run.created_at.clone()),
-                                    run.finished_at.unwrap_or_else(|| "in progress".into())
+                                crate::time::format_time_range(
+                                    run.started_at.as_deref().or(Some(&run.created_at)),
+                                    run.finished_at.as_deref(),
+                                    "—",
                                 ),
                             ))
                             .when_some(run.last_error, |section, value| {
@@ -352,14 +340,35 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                                     "{} · {}",
                                                     event.category, event.name
                                                 ))
-                                                .when_some(event.sequence, |row, sequence| {
-                                                    row.child(
-                                                        div()
-                                                            .text_xs()
-                                                            .text_color(theme::text_muted())
-                                                            .child(format!("#{sequence}")),
-                                                    )
-                                                }),
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap_2()
+                                                        .when(!event.timestamp.is_empty(), |row| {
+                                                            row.child(
+                                                                div()
+                                                                    .text_xs()
+                                                                    .text_color(theme::text_muted())
+                                                                    .child(event.timestamp.clone()),
+                                                            )
+                                                        })
+                                                        .when_some(
+                                                            event.sequence,
+                                                            |row, sequence| {
+                                                                row.child(
+                                                                    div()
+                                                                        .text_xs()
+                                                                        .text_color(
+                                                                            theme::text_muted(),
+                                                                        )
+                                                                        .child(format!(
+                                                                            "#{sequence}"
+                                                                        )),
+                                                                )
+                                                            },
+                                                        ),
+                                                ),
                                         )
                                         .child(
                                             div()

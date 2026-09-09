@@ -23,8 +23,6 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
     let tab = agents.tab;
     let loading = agents.loading;
     let busy = agents.busy;
-    let error = agents.error.as_ref().map(|error| error.presentable());
-    let notice = agents.notice.clone();
     let snapshot = agents.snapshot.clone();
     let active_model_picker = agents.active_model_picker.clone();
 
@@ -85,8 +83,6 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                         )),
                 ),
         )
-        .when_some(error, |panel, message| panel.child(banner(message, true)))
-        .when_some(notice, |panel, message| panel.child(banner(message, false)))
         .child(match snapshot {
             None => empty_state(if loading {
                 "Checking CLIs and loading the seven agents…"
@@ -821,6 +817,8 @@ fn agent_detail_panel(
                             executable_ready,
                             running,
                             busy,
+                            selected_run
+                                .is_some_and(|r| model.notifications.copied.contains_key(&r.id)),
                             cx,
                         )
                     }),
@@ -1142,45 +1140,37 @@ fn free_form_card(
                 .flex()
                 .flex_wrap()
                 .gap_2()
-                .child(config_button(
-                    format!("free-form-mode:{}", slot.id),
-                    "MODE",
+                .child(crate::select_menu::mode_control(
+                    (format!("free-form-mode:{}", slot.id)).to_string(),
                     if slot.execution_mode == AgentExecutionMode::CliProcess {
                         "CLI"
                     } else {
                         "API"
                     },
                     !busy && !running,
+                    crate::choices::custom_mode_reason(
+                        slot.backend,
+                        slot.custom_executable.as_deref(),
+                        slot.custom_risk_ack,
+                    ),
                     cx,
-                    {
-                        let slot_id = slot_id.clone();
-                        move |model, cx| model.cycle_free_form_mode(slot_id.clone(), cx)
-                    },
                 ))
-                .child(config_button(
-                    format!("free-form-backend:{}", slot.id),
+                .child(crate::select_menu::control(
+                    (format!("free-form-backend:{}", slot.id)).to_string(),
                     "BACKEND",
                     slot.backend.label(),
                     !busy && !running,
                     cx,
-                    {
-                        let slot_id = slot_id.clone();
-                        move |model, cx| model.cycle_free_form_backend(slot_id.clone(), cx)
-                    },
                 ))
-                .child(config_button(
-                    format!("free-form-thinking:{}", slot.id),
+                .child(crate::select_menu::control(
+                    (format!("free-form-thinking:{}", slot.id)).to_string(),
                     "PROFILE",
                     profile_value,
                     !busy && !running && thinking_available,
                     cx,
-                    {
-                        let slot_id = slot_id.clone();
-                        move |model, cx| model.cycle_free_form_thinking(slot_id.clone(), cx)
-                    },
                 ))
-                .child(config_button(
-                    format!("free-form-session:{}", slot.id),
+                .child(crate::select_menu::control(
+                    (format!("free-form-session:{}", slot.id)).to_string(),
                     "SESSION",
                     match slot.session_policy {
                         hvc_core::terminals::SessionPolicy::FreshPerRun => "new per run",
@@ -1189,10 +1179,6 @@ fn free_form_card(
                     },
                     !busy && !running,
                     cx,
-                    {
-                        let slot_id = slot_id.clone();
-                        move |model, cx| model.cycle_free_form_session_policy(slot_id.clone(), cx)
-                    },
                 )),
         )
         .when_some(label_input, |card, input| card.child(field("NAME", input)))
@@ -1315,20 +1301,21 @@ fn free_form_card(
                             move |model, cx| model.select_free_form_history(slot_id.clone(), 1, cx)
                         },
                     ))
-                    .child(action_button(
-                        SharedString::from(format!("free-form-filter:{}", slot.id)),
-                        format!("Filtro: {}", event_filter.label()).into(),
+                    .child(crate::select_menu::control(
+                        (SharedString::from(format!("free-form-filter:{}", slot.id))).to_string(),
+                        "Filter",
+                        event_filter.label(),
                         true,
-                        false,
                         cx,
-                        {
-                            let key = format!("free-form:{}", slot.id);
-                            move |model, cx| model.cycle_agent_event_filter(key.clone(), cx)
-                        },
                     ))
                     .child(action_button(
                         SharedString::from(format!("free-form-copy:{}", slot.id)),
-                        "Copiar".into(),
+                        if model.notifications.copied.contains_key(&run.id) {
+                            "Copied"
+                        } else {
+                            "Copy"
+                        }
+                        .into(),
                         !busy,
                         false,
                         cx,
@@ -1456,6 +1443,7 @@ fn agent_card(
     executable_ready: bool,
     running: bool,
     busy: bool,
+    history_copied: bool,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     let role = agent.config.agent_role;
@@ -1572,29 +1560,30 @@ fn agent_card(
             div()
                 .flex()
                 .gap_2()
-                .child(config_button(
-                    format!("agent-mode:{}", role.as_str()),
-                    "MODO",
+                .child(crate::select_menu::mode_control(
+                    (format!("agent-mode:{}", role.as_str())).to_string(),
                     mode,
                     !busy && !running,
+                    crate::choices::custom_mode_reason(
+                        agent.config.backend,
+                        agent.config.custom_executable.as_deref(),
+                        agent.config.custom_risk_ack,
+                    ),
                     cx,
-                    move |model, cx| model.cycle_agent_mode(role, cx),
                 ))
-                .child(config_button(
-                    format!("agent-backend:{}", role.as_str()),
+                .child(crate::select_menu::control(
+                    (format!("agent-backend:{}", role.as_str())).to_string(),
                     "BACKEND",
                     agent.config.backend.label(),
                     !busy && !running,
                     cx,
-                    move |model, cx| model.cycle_agent_backend(role, cx),
                 ))
-                .child(config_button(
-                    format!("agent-thinking:{}", role.as_str()),
+                .child(crate::select_menu::control(
+                    (format!("agent-thinking:{}", role.as_str())).to_string(),
                     "PROFILE",
                     profile_value,
                     !busy && !running && thinking_available,
                     cx,
-                    move |model, cx| model.cycle_agent_thinking(role, cx),
                 )),
         )
         .when(!thinking_available, |card| {
@@ -1789,15 +1778,12 @@ fn agent_card(
                         cx,
                         move |model, cx| model.request_clear_agent_history(role, cx),
                     ))
-                    .child(action_button(
-                        SharedString::from(format!("agent-filter:{}", role.as_str())),
-                        format!("Filter: {}", event_filter.label()).into(),
+                    .child(crate::select_menu::control(
+                        (SharedString::from(format!("agent-filter:{}", role.as_str()))).to_string(),
+                        "Filter",
+                        event_filter.label(),
                         true,
-                        false,
                         cx,
-                        move |model, cx| {
-                            model.cycle_agent_event_filter(role.as_str().to_string(), cx)
-                        },
                     ))
                     .child(action_button(
                         SharedString::from(format!("agent-follow:{}", role.as_str())),
@@ -1816,7 +1802,7 @@ fn agent_card(
                     ))
                     .child(action_button(
                         SharedString::from(format!("agent-copy:{}", role.as_str())),
-                        "Copiar".into(),
+                        if history_copied { "Copied" } else { "Copy" }.into(),
                         !busy,
                         false,
                         cx,
@@ -2135,35 +2121,32 @@ fn api_inline_editor(
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(format!("API Configuration · {}", descriptor.name)),
                 )
-                .child(action_button(
-                    SharedString::from(format!("api-cycle-route:{}", role.as_str())),
+                .child(crate::select_menu::control(
+                    (SharedString::from(format!("api-cycle-route:{}", role.as_str()))).to_string(),
+                    "Route",
                     format!(
                         "Route: {}",
                         selected_route
                             .as_ref()
                             .map(|route| route.name.as_str())
                             .unwrap_or("none")
-                    )
-                    .into(),
+                    ),
                     !busy,
-                    false,
                     cx,
-                    move |model, cx| model.cycle_agent_api_route(role, cx),
                 ))
-                .child(action_button(
-                    SharedString::from(format!("api-cycle-connection:{}", role.as_str())),
+                .child(crate::select_menu::control(
+                    (SharedString::from(format!("api-cycle-connection:{}", role.as_str())))
+                        .to_string(),
+                    "Connection",
                     format!(
                         "Connection: {}",
                         selected_connection
                             .as_ref()
                             .map(|connection| connection.display_name.as_str())
                             .unwrap_or("none")
-                    )
-                    .into(),
+                    ),
                     !busy,
-                    false,
                     cx,
-                    move |model, cx| model.cycle_agent_api_connection(role, cx),
                 ))
                 .child(action_button(
                     SharedString::from(format!("api-advanced:{}", role.as_str())),
@@ -2180,13 +2163,12 @@ fn api_inline_editor(
                 .grid_cols(2)
                 .gap_2()
                 .child(field("CONNECTION NAME", connection_name))
-                .child(config_button(
-                    format!("api-provider:{}", role.as_str()),
+                .child(crate::select_menu::control(
+                    (format!("api-provider:{}", role.as_str())).to_string(),
                     "PROVIDER",
                     provider_id,
                     !busy,
                     cx,
-                    |model, cx| model.cycle_settings_provider(cx),
                 ))
                 .child(field("MODEL", connection_model))
                 .child(field("ENDPOINT (WHEN ALLOWED)", connection_endpoint))
@@ -2351,6 +2333,12 @@ fn activity_panel_for_key(
             };
             let content = event.content.clone();
             let event_id = event.id.clone();
+            let time_label = crate::time::format_timestamp_time_only(&event.created_at);
+            let display_text = if time_label.is_empty() {
+                format!("{prefix} · {}", event.content)
+            } else {
+                format!("{time_label} · {prefix} · {}", event.content)
+            };
             div()
                 .id(SharedString::from(format!("terminal-event:{event_id}")))
                 .py_1()
@@ -2369,16 +2357,16 @@ fn activity_panel_for_key(
                         theme::text_muted()
                     },
                 )
-                .child(format!("{prefix} · {}", event.content))
+                .child(display_text)
         }))
 }
 
 fn run_metadata(run: &hvc_core::terminals::TerminalRun) -> String {
-    let duration = match (&run.started_at, &run.finished_at) {
-        (Some(started), Some(finished)) => format!("{started} → {finished}"),
-        (Some(started), None) => format!("since {started}"),
-        _ => run.created_at.clone(),
-    };
+    let duration = crate::time::format_time_range(
+        run.started_at.as_deref().or(Some(&run.created_at)),
+        run.finished_at.as_deref(),
+        &crate::time::format_timestamp(&run.created_at),
+    );
     let session = run
         .native_session_id
         .as_deref()
@@ -2469,8 +2457,10 @@ fn action_button(
     } else {
         theme::text_muted()
     };
+    let is_copy = id.starts_with("agent-copy:") || id.starts_with("free-form-copy:");
     div()
         .id(id.clone())
+        .when(is_copy, |d| d.w(px(84.0)).flex_shrink_0())
         .debug_selector(move || id.to_string())
         .px_3()
         .py_2()
@@ -2503,25 +2493,6 @@ fn chip(label: &'static str, color: Rgba) -> gpui::Div {
         .text_xs()
         .text_color(color)
         .child(label)
-}
-
-fn banner(message: String, error: bool) -> gpui::Div {
-    div()
-        .mx_4()
-        .mt_3()
-        .p_3()
-        .rounded_md()
-        .bg(if error {
-            theme::danger_soft()
-        } else {
-            theme::accent_soft()
-        })
-        .text_color(if error {
-            theme::danger()
-        } else {
-            theme::accent()
-        })
-        .child(message)
 }
 
 fn empty_state(message: &'static str) -> AnyElement {

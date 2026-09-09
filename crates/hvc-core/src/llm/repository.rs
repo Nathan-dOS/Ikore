@@ -185,6 +185,9 @@ pub struct SqliteLlmRepository {
 }
 
 impl SqliteLlmRepository {
+    pub fn database_path(&self) -> &Path {
+        &self.db_path
+    }
     pub fn new(db_path: impl AsRef<Path>) -> Self {
         Self {
             db_path: db_path.as_ref().to_path_buf(),

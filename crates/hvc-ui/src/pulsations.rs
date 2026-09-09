@@ -242,6 +242,7 @@ pub struct PulsationsModel {
     pub runtime_loading: bool,
     pub artifacts_loading: bool,
     pub error: Option<String>,
+    pub(crate) validation_error: Option<(&'static str, String)>,
     pub notice: Option<String>,
     /// Expands the Review section's diff surface to full width, hiding the pulsation list. Formerly
     /// a Workspace concept (`diff_expanded`); moved here with the HITL surface.
@@ -309,6 +310,7 @@ impl PulsationsModel {
         let pulse_changed = current_id != next_id.as_deref()
             || self.project_id.as_ref().map(AsRef::as_ref) != Some(project_id.as_str());
         if pulse_changed {
+            self.validation_error = None;
             self.detail_section = PulsationDetailSection::Overview;
             self.artifacts.clear();
             self.artifact_preview = None;
@@ -363,6 +365,7 @@ impl PulsationsModel {
         let pulse_changed =
             self.active_pulsation_id.as_ref().map(AsRef::as_ref) != Some(pulsation_id);
         if pulse_changed {
+            self.validation_error = None;
             self.detail_section = PulsationDetailSection::Overview;
         }
         self.active_pulsation_id = Some(pulsation_id.to_owned().into());
@@ -528,6 +531,8 @@ mod tests {
             main_agents_count: 1,
             background_agents_count: 0,
             hitl_waiting_count: 0,
+            failure_checkpoints: Vec::new(),
+            failure_waiting_count: 0,
             brownfield_coverage: None,
         };
         model.apply_snapshot("project-1".into(), snapshot.clone(), None);
@@ -607,6 +612,8 @@ mod tests {
                 }],
                 pulsations: vec![pulsation("pulse-1", PulsationStatus::Checkpoint)],
                 hitl_waiting_count: 1,
+                failure_checkpoints: Vec::new(),
+                failure_waiting_count: 0,
                 background_agents_count: 2,
             },
             Some("pulse-1"),
@@ -643,6 +650,8 @@ mod tests {
                 hitl_checkpoints: Vec::new(),
                 pulsations: vec![pulsation("pulse-1", PulsationStatus::Running)],
                 hitl_waiting_count: 0,
+                failure_checkpoints: Vec::new(),
+                failure_waiting_count: 0,
                 background_agents_count: 1,
             },
             None,

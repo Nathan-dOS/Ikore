@@ -29,7 +29,7 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         indexing,
         renaming,
         graph_expanded,
-        notice,
+        _notice,
         error,
     ) = {
         let vault = model.vault.read(cx);
@@ -358,7 +358,7 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                 selected_document,
                 rename_input,
                 renaming,
-                notice,
+                _notice,
                 error,
                 cx,
             ))
@@ -604,8 +604,8 @@ fn inspector(
     document: Option<String>,
     rename_input: gpui::Entity<crate::text_input::NativeTextInput>,
     renaming: bool,
-    notice: Option<String>,
-    error: Option<String>,
+    _notice: Option<String>,
+    _error: Option<String>,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
     let title = selected_path
@@ -781,28 +781,6 @@ fn inspector(
                     .mt_4()
                     .text_color(theme::text_muted())
                     .child("Loading preview…"),
-            )
-        })
-        .when_some(notice, |panel, notice| {
-            panel.child(
-                div()
-                    .mt_3()
-                    .p_2()
-                    .rounded_md()
-                    .bg(theme::accent_soft())
-                    .text_color(theme::accent())
-                    .child(notice),
-            )
-        })
-        .when_some(error, |panel, error| {
-            panel.child(
-                div()
-                    .mt_3()
-                    .p_2()
-                    .rounded_md()
-                    .bg(theme::danger_soft())
-                    .text_color(theme::danger())
-                    .child(error),
             )
         })
 }

@@ -228,22 +228,42 @@ impl PersistenceService {
                 .ok_or_else(|| invalid("Job sem pulsação"))?;
             let p = Self::find_pulsation_by_id(&tx, pulse)?
                 .ok_or_else(|| invalid("Pulsação ausente"))?;
-            Self::transition_pulsation(
+            // Setup can die while the pulsation is still `planning`, before
+            // `execute_claimed_job` performs Planning -> Running.
+            let parked = Self::record_stage_failure_checkpoint(
                 &tx,
                 &p,
-                PulsationStatus::Failed,
                 p.stage,
+                &job.id,
+                None,
+                crate::orchestration::FailureClass::ExecutorSetup,
                 "executor_setup_failed",
-                Some(message),
+                message,
             )?;
-            tx.execute(
-                "UPDATE pulsations SET terminal_reason='executor_setup_failed' WHERE id=?1",
-                [pulse],
-            )?;
-            tx.execute("UPDATE jobs SET status='failed',last_error=?2,finished_at=?3,updated_at=?3 WHERE id=?1",params![job.id,message,Self::now_iso()])?;
-            tx.execute("UPDATE agent_runs SET status='failed',updated_at=?2 WHERE job_id=?1 AND status='running'",params![job.id,Self::now_iso()])?;
-            Self::mark_effects_for_review(&tx, pulse, "executor_failed_with_effects")?;
-            Self::enqueue_learning(&tx, pulse)?;
+            if parked {
+                tx.execute(
+                    "UPDATE agent_runs SET status='awaiting_decision',updated_at=?2
+                     WHERE job_id=?1 AND status='running'",
+                    params![job.id, Self::now_iso()],
+                )?;
+            } else {
+                Self::transition_pulsation(
+                    &tx,
+                    &p,
+                    PulsationStatus::Failed,
+                    p.stage,
+                    "executor_setup_failed",
+                    Some(message),
+                )?;
+                tx.execute(
+                    "UPDATE pulsations SET terminal_reason='executor_setup_failed' WHERE id=?1",
+                    [pulse],
+                )?;
+                tx.execute("UPDATE jobs SET status='failed',last_error=?2,finished_at=?3,updated_at=?3 WHERE id=?1",params![job.id,message,Self::now_iso()])?;
+                tx.execute("UPDATE agent_runs SET status='failed',updated_at=?2 WHERE job_id=?1 AND status='running'",params![job.id,Self::now_iso()])?;
+                Self::mark_effects_for_review(&tx, pulse, "executor_failed_with_effects")?;
+                Self::enqueue_learning(&tx, pulse)?;
+            }
         }
         tx.commit()?;
         Ok(())

@@ -73,6 +73,60 @@ pub(crate) fn button(
         .child(title.into())
         .into_any_element()
 }
+/// A `button` that can be switched off.
+///
+/// Only colour and cursor change between states -- padding, radius and text
+/// size are identical, because `forge_busy_state_never_moves_the_task_controls`
+/// pins the geometry of Forge controls across state changes. Both the click and
+/// the key handler are gated: leaving `on_key_down` bound would let enter or
+/// space fire a disabled action.
+pub(crate) fn gated_button(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    action: ForgeAction,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let id = id.into();
+    let keyboard_action = action.clone();
+    div()
+        .id(id.clone())
+        .debug_selector(move || id.to_string())
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .text_sm()
+        .bg(if enabled {
+            theme::surface_raised()
+        } else {
+            theme::surface()
+        })
+        .text_color(if enabled {
+            theme::accent()
+        } else {
+            theme::text_muted()
+        })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .tab_index(0)
+                .hover(|s| s.bg(theme::accent_soft()))
+                .on_key_down(
+                    cx.listener(move |model, event: &gpui::KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            model.forge_action(keyboard_action.clone(), cx);
+                            cx.stop_propagation();
+                        }
+                    }),
+                )
+                .on_click(
+                    cx.listener(move |model, _, _, cx| model.forge_action(action.clone(), cx)),
+                )
+        })
+        .child(title.into())
+        .into_any_element()
+}
+
 fn focus_capture(model: &AppModel, window: &mut Window, cx: &Context<AppModel>) {
     let input = if model.forge.capture_feature {
         &model.forge.feature_title
@@ -81,17 +135,7 @@ fn focus_capture(model: &AppModel, window: &mut Window, cx: &Context<AppModel>) 
     };
     input.read(cx).focus_handle(cx).focus(window);
 }
-fn status(model: &AppModel) -> Div {
-    div()
-        .debug_selector(|| "forge-status".into())
-        .flex()
-        .flex_col()
-        .gap_2()
-        .when_some(model.forge.notice.clone(), |d, s| d.child(label(s)))
-        .when_some(model.forge.error.clone(), |d, s| {
-            d.child(div().text_color(theme::danger()).child(s))
-        })
-}
+
 pub(crate) fn forge_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     if model.workspace.read(cx).project_id.is_none() {
         return card()
@@ -156,7 +200,6 @@ pub(crate) fn forge_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                 ),
         )
         .child(tabs)
-        .child(status(model))
         .child(body)
         .into_any_element()
 }
@@ -565,10 +608,81 @@ fn brief(f: &Feature) -> Div {
     }
     d
 }
+/// Renders the analysis affordance plus whatever the last analysis said.
+fn triage_analysis_card(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> Div {
+    let blocked = model.forge.analysis_blocked(f);
+    let mut agent = card().child(heading("Feature Agent analysis"));
+    if model.forge.pending_triage_overwrite {
+        agent = agent
+            .child(
+                div()
+                    .text_color(theme::warning())
+                    .child("Your answers on screen differ from what is saved. Running the analysis replaces them."),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(button(
+                        "confirm-analyze-triage",
+                        "Replace with the analysis",
+                        ForgeAction::ConfirmAnalyzeTriage,
+                        cx,
+                    ))
+                    .child(button(
+                        "cancel-analyze-triage",
+                        "Keep my answers",
+                        ForgeAction::CancelAnalyzeTriage,
+                        cx,
+                    )),
+            );
+    } else {
+        agent = agent
+            .child(label(
+                "The agent answers the four screens, sets the ratings and the structural level, then recommends approving or archiving.",
+            ))
+            .child(gated_button(
+                "analyze-triage",
+                "Analyze with Feature Agent",
+                ForgeAction::AnalyzeTriage,
+                blocked.is_none(),
+                cx,
+            ));
+        if let Some(reason) = blocked {
+            agent = agent.child(label(reason));
+        }
+    }
+    if let Some(turn) = model
+        .forge
+        .history
+        .iter()
+        .rev()
+        .find(|turn| turn.kind == TurnKind::Triage)
+    {
+        if turn.status == "running" {
+            agent = agent
+                .child(label("Feature Agent is evaluating this feature…"))
+                .child(button(
+                    format!("cancel-triage-turn-{}", turn.id),
+                    "Cancel analysis",
+                    ForgeAction::CancelTurn(turn.id.clone()),
+                    cx,
+                ));
+        } else if let Some(message) = &turn.assistant_message {
+            agent = agent.child(label(message.clone()));
+        }
+        if let Some(error) = &turn.error {
+            agent = agent.child(div().text_color(theme::danger()).child(error.clone()));
+        }
+    }
+    agent
+}
+
 fn triage(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
     let mut p = card().child(heading("Triage and decision")).child(label(
         "Evaluation guides priority. You decide whether the feature moves forward.",
     ));
+    p = p.child(triage_analysis_card(model, f, cx));
     for (i, name) in [
         "Value and need",
         "Product alignment",
@@ -648,8 +762,67 @@ fn triage(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyEleme
     }
     p.into_any_element()
 }
+fn dependency_analysis_card(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> Div {
+    let blocked = model.forge.dependency_analysis_blocked(f);
+    let agent_edges = model
+        .forge
+        .snapshot
+        .dependencies
+        .iter()
+        .filter(|edge| edge.feature_id == f.id && edge.origin == DependencyOrigin::Agent)
+        .count();
+    let mut agent = card()
+        .child(heading("Feature Agent analysis"))
+        .child(label(
+            "The agent maps prerequisites and applies them directly. Relations it proposes are marked, and you can remove any of them.",
+        ))
+        .child(gated_button(
+            "analyze-dependencies",
+            "Map prerequisites with Feature Agent",
+            ForgeAction::AnalyzeDependencies,
+            blocked.is_none(),
+            cx,
+        ));
+    if let Some(reason) = blocked {
+        agent = agent.child(label(reason));
+    }
+    if agent_edges > 0 {
+        agent = agent.child(button(
+            "clear-agent-dependencies",
+            format!("Remove all {agent_edges} agent-proposed relation(s)"),
+            ForgeAction::ClearAgentDependencies,
+            cx,
+        ));
+    }
+    if let Some(turn) = model
+        .forge
+        .history
+        .iter()
+        .rev()
+        .find(|turn| turn.kind == TurnKind::Dependencies)
+    {
+        if turn.status == "running" {
+            agent = agent
+                .child(label("Feature Agent is mapping prerequisites…"))
+                .child(button(
+                    format!("cancel-dependency-turn-{}", turn.id),
+                    "Cancel analysis",
+                    ForgeAction::CancelTurn(turn.id.clone()),
+                    cx,
+                ));
+        } else if let Some(message) = &turn.assistant_message {
+            agent = agent.child(label(message.clone()));
+        }
+        if let Some(error) = &turn.error {
+            agent = agent.child(div().text_color(theme::danger()).child(error.clone()));
+        }
+    }
+    agent
+}
+
 fn dependencies(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
     let mut p=card().child(heading("Confirmed dependencies")).child(label("Arrows point from the feature to its prerequisites. Adding a relation requires confirmation and rationale.")).child(model.forge.rationale.clone());
+    p = p.child(dependency_analysis_card(model, f, cx));
     for edge in model
         .forge
         .snapshot
@@ -671,6 +844,16 @@ fn dependencies(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> An
                     pre.map(|x| x.title.as_str())
                         .unwrap_or("Feature unavailable")
                 ))
+                .child(match edge.origin {
+                    DependencyOrigin::Agent => div()
+                        .text_xs()
+                        .text_color(theme::warning())
+                        .child("Proposed by the Feature Agent"),
+                    DependencyOrigin::Human => div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child("Confirmed by you"),
+                })
                 .child(label(edge.rationale.clone()))
                 .child(button(
                     format!("remove-edge-{}", edge.prerequisite_id),
@@ -1063,8 +1246,7 @@ pub(crate) fn capture_overlay(model: &AppModel, cx: &mut Context<AppModel>) -> A
                     cx,
                 ))
                 .child(button("close-capture", "Close", ForgeAction::Close, cx)),
-        )
-        .child(status(model));
+        );
     let mut body = div()
         .id("capture-body")
         .debug_selector(|| "forge-capture-body".into())

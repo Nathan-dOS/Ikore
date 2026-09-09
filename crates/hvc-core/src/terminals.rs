@@ -1562,7 +1562,9 @@ impl TerminalRepository {
             },
             _ => unreachable!("only terminal statuses produce a termination reason"),
         });
-        let changed = self.connection()?.execute(
+        let db = self.connection()?;
+        let transaction = db.unchecked_transaction()?;
+        let changed = transaction.execute(
             "UPDATE terminal_runs SET status=?1,exit_code=?2,error_code=?3,error_message=?4,
                started_at=CASE WHEN ?5 THEN COALESCE(started_at,?6) ELSE started_at END,
                finished_at=CASE WHEN ?7 THEN ?6 ELSE finished_at END,updated_at=?6,
@@ -1581,6 +1583,14 @@ impl TerminalRepository {
                 current.status.as_str()
             ],
         )?;
+        if changed > 0 && terminal && status != TerminalRunStatus::Completed {
+            transaction.execute(
+                "UPDATE token_usage_records SET quality='partial',updated_at=?1
+                 WHERE source_kind='terminal_run' AND source_id=?2 AND quality='complete'",
+                params![now, run_id],
+            )?;
+        }
+        transaction.commit()?;
         if changed == 0 {
             let latest = self.get_run(run_id)?;
             return if latest.status == status {
@@ -1936,12 +1946,22 @@ impl TerminalRepository {
 
     pub fn recover_interrupted_runs(&self) -> Result<usize, TerminalError> {
         let now = Utc::now().to_rfc3339();
-        self.connection()?.execute(
+        let db = self.connection()?;
+        let transaction = db.unchecked_transaction()?;
+        transaction.execute(
+            "UPDATE token_usage_records SET quality='partial',updated_at=?1
+             WHERE source_kind='terminal_run' AND quality='complete' AND source_id IN
+             (SELECT id FROM terminal_runs WHERE status IN ('queued','starting','running'))",
+            [&now],
+        )?;
+        let changed = transaction.execute(
             "UPDATE terminal_runs SET status='interrupted',error_code='app_restart',
                error_message='Execução interrompida pelo encerramento do aplicativo.',finished_at=?1,updated_at=?1
              WHERE status IN ('queued','starting','running')",
             [now],
-        ).map_err(TerminalError::from)
+        )?;
+        transaction.commit()?;
+        Ok(changed)
     }
 
     pub fn has_active_manual_run(
@@ -2649,11 +2669,13 @@ async fn run_bounded_probe_in_with_limit(
         abort.clone(),
         max_output_bytes,
         None,
+        None,
     ));
     let stderr_task = tokio::spawn(read_bounded_stream(
         stderr,
         abort.clone(),
         max_output_bytes,
+        None,
         None,
     ));
     let status = tokio::select! {
@@ -2686,7 +2708,7 @@ async fn read_bounded_probe_stream<R: AsyncRead + Unpin>(
     reader: R,
     abort: CancellationToken,
 ) -> Result<Vec<u8>, std::io::Error> {
-    read_bounded_stream(reader, abort, MAX_PROBE_OUTPUT_BYTES, None).await
+    read_bounded_stream(reader, abort, MAX_PROBE_OUTPUT_BYTES, None, None).await
 }
 
 async fn read_bounded_stream<R: AsyncRead + Unpin>(
@@ -2694,12 +2716,26 @@ async fn read_bounded_stream<R: AsyncRead + Unpin>(
     abort: CancellationToken,
     max_output_bytes: usize,
     watchdog: Option<ProgressWatchdog>,
+    usage: Option<Arc<crate::usage::cli::CliUsageRecorder>>,
 ) -> Result<Vec<u8>, std::io::Error> {
     let mut output = Vec::new();
     let mut buffer = [0u8; 4096];
+    let mut usage_offset = 0usize;
     loop {
-        let read = reader.read(&mut buffer).await?;
+        let read = match reader.read(&mut buffer).await {
+            Ok(read) => read,
+            Err(error) => {
+                abort.cancel();
+                return Err(error);
+            }
+        };
         if read == 0 {
+            if let Some(usage) = &usage
+                && let Err(error) = usage.observe_line(&output[usage_offset..])
+            {
+                abort.cancel();
+                return Err(std::io::Error::other(error));
+            }
             return Ok(output);
         }
         if let Some(ref watchdog) = watchdog {
@@ -2713,6 +2749,16 @@ async fn read_bounded_stream<R: AsyncRead + Unpin>(
             ));
         }
         output.extend_from_slice(&buffer[..read]);
+        if let Some(usage) = &usage {
+            while let Some(newline) = output[usage_offset..].iter().position(|b| *b == b'\n') {
+                let end = usage_offset + newline;
+                if let Err(error) = usage.observe_line(&output[usage_offset..end]) {
+                    abort.cancel();
+                    return Err(std::io::Error::other(error));
+                }
+                usage_offset = end + 1;
+            }
+        }
     }
 }
 
@@ -3027,6 +3073,7 @@ pub struct CliCompletion {
 
 #[derive(Debug, Clone)]
 pub struct CompanionCliRoundRequest {
+    pub usage_context: crate::usage::UsageContext,
     pub project_id: String,
     pub backend: CliBackend,
     pub model: Option<String>,
@@ -3309,6 +3356,8 @@ impl TerminalService {
             cancellation,
             deadline,
             availability.version,
+            self.repository.db_path.clone(),
+            request.usage_context,
         )
         .await;
         drop(hardening_guard);
@@ -4474,12 +4523,43 @@ async fn coordinate_process_events(
     let mut event_count = 0usize;
     let mut observed_bytes = 0usize;
     let mut summary = ProcessEventSummary::default();
+    let mut incomplete_stream = false;
+    let usage = crate::usage::cli::CliUsageRecorder::new(
+        &repository.db_path,
+        crate::usage::UsageContext {
+            source_kind: "terminal_run".into(),
+            source_id: run.id.clone(),
+            project_id: Some(run.project_id.clone()),
+            transport: crate::usage::UsageTransport::Cli,
+            provider_id: backend.as_str().into(),
+            requested_model: run.model.clone(),
+            started_at: run
+                .started_at
+                .clone()
+                .unwrap_or_else(|| run.created_at.clone()),
+        },
+        backend,
+    )
+    .map_err(|error| {
+        signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
+        TerminalError::Database(error)
+    })?;
     while let Some(item) = receiver.recv().await {
         watchdog.record_progress();
         let (kind, stream, content, input_bytes, native_session_id, observed_model, is_text) =
             match item {
                 ProcessStreamItem::Frame { stream, bytes } => {
                     let input_bytes = bytes.len();
+                    if stream == "stdout"
+                        && let Err(error) = usage.observe_line(&bytes)
+                    {
+                        signal_process_abort(
+                            &abort_token,
+                            &abort_reason,
+                            ProcessAbortReason::Persistence,
+                        );
+                        return Err(error.into());
+                    }
                     let normalized = adapters::normalize_frame(backend, stream, &bytes);
                     (
                         normalized.kind,
@@ -4492,6 +4572,7 @@ async fn coordinate_process_events(
                     )
                 }
                 ProcessStreamItem::ReadError { stream, message } => {
+                    incomplete_stream = true;
                     let input_bytes = message.len();
                     (
                         TerminalEventKind::Error,
@@ -4554,6 +4635,9 @@ async fn coordinate_process_events(
             summary.last_stderr.clone_from(&event.content);
         }
         sequence = sequence.saturating_add(1);
+    }
+    if incomplete_stream {
+        usage.mark_partial()?;
     }
     Ok(summary)
 }
@@ -4721,6 +4805,8 @@ async fn run_companion_process(
     cancellation: &CancellationToken,
     deadline: Instant,
     detected_cli_version: Option<String>,
+    usage_path: PathBuf,
+    usage_context: crate::usage::UsageContext,
 ) -> Result<CompanionCliRoundOutput, TerminalError> {
     if cancellation.is_cancelled() {
         return Err(TerminalError::Cancelled);
@@ -4750,6 +4836,11 @@ async fn run_companion_process(
     }
     configure_hidden(&mut command);
     let mut child = command.spawn()?;
+    let usage = Arc::new(crate::usage::cli::CliUsageRecorder::new(
+        &usage_path,
+        usage_context,
+        backend,
+    )?);
     let process_tree = ProcessTreeJob::assign(&child)?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(&secured.spec.stdin_payload).await?;
@@ -4777,12 +4868,14 @@ async fn run_companion_process(
         abort.clone(),
         MAX_COMPANION_CLI_OUTPUT_BYTES,
         Some(watchdog.clone()),
+        Some(usage.clone()),
     ));
     let stderr_task = tokio::spawn(read_bounded_stream(
         stderr,
         abort.clone(),
         MAX_COMPANION_CLI_OUTPUT_BYTES,
         Some(watchdog.clone()),
+        None,
     ));
     let termination = tokio::select! {
         status = child.wait() => (ProcessTermination::Exited, Some(status?)),
@@ -4802,15 +4895,26 @@ async fn run_companion_process(
             process_tree.terminate();
             let _ = child.kill().await;
             let _ = child.wait().await;
-            return Err(TerminalError::OutputLimit);
+            (ProcessTermination::Exited, None)
         }
     };
-    let stdout = stdout_task
-        .await
-        .map_err(|error| TerminalError::Process(format!("stdout reader failed: {error}")))??;
-    let stderr = stderr_task
-        .await
-        .map_err(|error| TerminalError::Process(format!("stderr reader failed: {error}")))??;
+    // Drain both readers before settling accounting, including aborts caused by
+    // persistence errors. A database error must not become an output-limit error.
+    let (stdout, stderr) = tokio::join!(stdout_task, stderr_task);
+    let stdout = companion_stream_output(stdout, "stdout");
+    let stderr = companion_stream_output(stderr, "stderr");
+    if termination.0 != ProcessTermination::Exited
+        || termination
+            .1
+            .as_ref()
+            .is_none_or(|status| !status.success())
+        || stdout.is_err()
+        || stderr.is_err()
+    {
+        usage.mark_partial()?;
+    }
+    let stdout = stdout?;
+    let stderr = stderr?;
     match termination.0 {
         ProcessTermination::Cancelled => return Err(TerminalError::Cancelled),
         ProcessTermination::TimedOut(_) => return Err(TerminalError::Timeout),
@@ -4870,6 +4974,32 @@ async fn run_companion_process(
         output_bytes: stdout.text.len().saturating_add(stderr.text.len()),
         redaction_count: stdout.count.saturating_add(stderr.count),
     })
+}
+
+fn companion_stream_output(
+    result: Result<Result<Vec<u8>, std::io::Error>, tokio::task::JoinError>,
+    stream: &str,
+) -> Result<Vec<u8>, TerminalError> {
+    result
+        .map_err(|error| TerminalError::Process(format!("{stream} reader failed: {error}")))?
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::InvalidData {
+                return TerminalError::OutputLimit;
+            }
+            if error
+                .get_ref()
+                .is_some_and(|inner| inner.is::<rusqlite::Error>())
+            {
+                return match error
+                    .into_inner()
+                    .and_then(|inner| inner.downcast::<rusqlite::Error>().ok())
+                {
+                    Some(error) => TerminalError::Database(*error),
+                    None => TerminalError::Process("Token usage persistence failed".into()),
+                };
+            }
+            TerminalError::Io(error)
+        })
 }
 
 fn codex_companion_error(stdout: &str) -> Option<String> {
@@ -5913,6 +6043,108 @@ mod tests {
         );
         assert_eq!(kind, TerminalEventKind::ToolResult);
         assert_eq!(text, "arquivo lido");
+    }
+
+    #[test]
+    fn interrupted_cli_usage_remains_partial_after_history_deletion() {
+        use crate::persistence_service::{CreateProjectRequest, PersistenceService};
+        use crate::usage::{UsageContext, UsageTransport, cli::CliUsageRecorder};
+
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Usage coverage".into()),
+            })
+            .unwrap()
+            .project;
+        let repository = TerminalRepository::new(persistence.database_path());
+        repository
+            .ensure_project_configs(&project.id, true)
+            .unwrap();
+        for cancelled in [true, false] {
+            let run = repository
+                .create_run(CreateTerminalRunRequest {
+                    project_id: project.id.clone(),
+                    agent_role: AgentRole::BackendAgent,
+                    origin: ExecutionOrigin::Manual,
+                    execution_mode: AgentExecutionMode::CliProcess,
+                    backend: Some(CliBackend::Codex),
+                    model: None,
+                    pulsation_id: None,
+                    job_id: None,
+                    agent_run_id: None,
+                    llm_execution_id: None,
+                })
+                .unwrap();
+            repository
+                .set_run_status(&run.id, TerminalRunStatus::Starting, None, None, None)
+                .unwrap();
+            repository
+                .set_run_status(&run.id, TerminalRunStatus::Running, None, None, None)
+                .unwrap();
+            let usage = CliUsageRecorder::new(
+                persistence.database_path(),
+                UsageContext {
+                    source_kind: "terminal_run".into(),
+                    source_id: run.id.clone(),
+                    project_id: Some(project.id.clone()),
+                    transport: UsageTransport::Cli,
+                    provider_id: "codex".into(),
+                    requested_model: None,
+                    started_at: run.created_at.clone(),
+                },
+                CliBackend::Codex,
+            )
+            .unwrap();
+            usage
+                .observe_line(
+                    br#"{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}"#,
+                )
+                .unwrap();
+            if cancelled {
+                repository
+                    .set_run_status(
+                        &run.id,
+                        TerminalRunStatus::Cancelled,
+                        None,
+                        Some("user_cancelled"),
+                        None,
+                    )
+                    .unwrap();
+            } else {
+                assert_eq!(repository.recover_interrupted_runs().unwrap(), 1);
+            }
+        }
+        repository
+            .clear_history(&project.id, Some(AgentRole::BackendAgent))
+            .unwrap();
+        let totals = crate::usage::query_usage(persistence.database_path(), &Default::default())
+            .unwrap()
+            .totals;
+        assert_eq!(totals.total_tokens, Some(20));
+        assert_eq!(totals.partial_records, 2);
+    }
+
+    #[test]
+    fn companion_stream_failure_preserves_database_error_classification() {
+        let error = companion_stream_output(
+            Ok(Err(std::io::Error::other(rusqlite::Error::InvalidQuery))),
+            "stdout",
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "cli_persistence_failed");
+        let error = companion_stream_output(
+            Ok(Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "output limit",
+            ))),
+            "stderr",
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "cli_output_limit");
     }
 
     #[test]

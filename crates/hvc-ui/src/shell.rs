@@ -14,7 +14,8 @@ use crate::hitl::register_hitl_keybindings;
 use crate::logs_view::logs_panel;
 use crate::native_editor::register_editor_keybindings;
 use crate::pulsations_view::pulsations_panel;
-use crate::session::{HeaderNotice, HeaderNoticeKind};
+#[cfg(test)]
+use crate::session::HeaderNoticeKind;
 use crate::settings_view::settings_panel;
 use crate::text_input::register_text_input_keybindings;
 use crate::theme;
@@ -125,7 +126,8 @@ impl Render for AppModel {
         let needs_resync = self.needs_resync();
         let active_tab = self.active_tab();
         let badges = self.sidebar_badges(cx);
-        let notice = self.current_notice().cloned();
+        self.collect_notifications(cx);
+        let unread = self.notifications.queue.unread();
         if self.agents.read(cx).active_model_picker.is_some()
             && matches!(active, AppView::Agents | AppView::Chat)
         {
@@ -136,6 +138,7 @@ impl Render for AppModel {
         }
 
         div()
+            .relative()
             .flex()
             .flex_col()
             .size_full()
@@ -174,7 +177,7 @@ impl Render for AppModel {
                     model.run_next_step(step.target, window, cx);
                 }
             }))
-            .child(header(active_tab, active, badges, notice, cx))
+            .child(header(active_tab, active, badges, unread, cx))
             .child(flow_bar(self, active_tab, active, cx))
             .child(
                 div()
@@ -184,6 +187,10 @@ impl Render for AppModel {
                     .child(content_panel(self, active, cx)),
             )
             .child(status_bar(status, event_count, needs_resync, badges, cx))
+            .child(self.notification_overlay(window, cx))
+            .when_some(self.choice_menu.clone(), |d, menu| {
+                d.child(gpui::deferred(menu).with_priority(20))
+            })
             .when(self.forge.new_open, |panel| {
                 panel.child(crate::forge_view::capture_overlay(self, cx))
             })
@@ -194,7 +201,7 @@ fn header(
     active_tab: AppTab,
     active: AppView,
     badges: TabBadges,
-    notice: Option<HeaderNotice>,
+    unread: usize,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
     div()
@@ -283,9 +290,34 @@ fn header(
                 })
                 .child(
                     div()
+                        .id("notifications")
+                        .debug_selector(|| "notifications".into())
+                        .ml_auto()
+                        .w(px(150.0))
+                        .flex_shrink_0()
+                        .px_2()
+                        .py_2()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .tab_index(0)
+                        .hover(|s| s.bg(theme::surface_raised()))
+                        .on_click(
+                            cx.listener(|m, _, window, cx| {
+                                m.toggle_notification_history(window, cx)
+                            }),
+                        )
+                        .on_key_down(cx.listener(|m, e: &gpui::KeyDownEvent, window, cx| {
+                            if matches!(e.keystroke.key.as_str(), "enter" | "space") {
+                                m.toggle_notification_history(window, cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .child(format!("Notifications {:>3}", unread)),
+                )
+                .child(
+                    div()
                         .id("settings")
                         .debug_selector(|| "settings".into())
-                        .ml_auto()
                         .px_3()
                         .py_2()
                         .rounded_md()
@@ -311,68 +343,6 @@ fn header(
                         .child("Settings"),
                 ),
         )
-        .when_some(notice, |header, notice| {
-            let (background, foreground, prefix) = match notice.kind {
-                HeaderNoticeKind::Notice => (theme::accent_soft(), theme::accent(), "Info"),
-                HeaderNoticeKind::Warning => (theme::warning_soft(), theme::warning(), "Warning"),
-                HeaderNoticeKind::Error => (theme::danger_soft(), theme::danger(), "Error"),
-            };
-            header.child(
-                div()
-                    .id("header-notice")
-                    .min_h(px(34.0))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px_5()
-                    .py_2()
-                    .bg(background)
-                    .text_sm()
-                    .text_color(foreground)
-                    .cursor_pointer()
-                    .on_click(cx.listener(|model, _, _, cx| {
-                        model.dismiss_header_notice(cx);
-                    }))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(format!("{prefix}:")),
-                            )
-                            .child(div().child(notice.message.clone())),
-                    )
-                    .when_some(notice.action.clone(), |header, action| {
-                        header.child(
-                            div()
-                                .id("header-notice-action")
-                                .px_2()
-                                .py_0p5()
-                                .rounded_sm()
-                                .bg(theme::surface_raised())
-                                .text_color(theme::text())
-                                .on_click(cx.listener(move |model, _, _, cx| {
-                                    cx.stop_propagation();
-                                    model.open_pulsation_review(action.pulsation_id.clone(), cx);
-                                    model.dismiss_header_notice(cx);
-                                }))
-                                .child(action.label.clone()),
-                        )
-                    })
-                    .child(
-                        div()
-                            .id("header-notice-close")
-                            .px_2()
-                            .py_0p5()
-                            .rounded_sm()
-                            .hover(|s| s.bg(theme::hover_bg()))
-                            .child("✕ Fechar"),
-                    ),
-            )
-        })
 }
 
 /// The flow bar: sub-view pills for the active tab (or Settings' own Connections/Routes/Runtime
@@ -403,6 +373,11 @@ fn flow_bar(
                 "settings-section-runtime",
                 "Runtime",
             ),
+            (
+                crate::settings::SettingsSection::Usage,
+                "settings-section-usage",
+                "Usage",
+            ),
         ]
         .into_iter()
         .map(|(target, id, label)| {
@@ -429,6 +404,9 @@ fn flow_bar(
                     model.settings.update(cx, |settings, _| {
                         settings.settings_section = target;
                     });
+                    if target == crate::settings::SettingsSection::Usage {
+                        model.refresh_usage(cx);
+                    }
                     cx.notify();
                 }))
                 .child(label)
@@ -686,7 +664,7 @@ mod tests {
         cx.read(|cx| {
             assert_eq!(
                 model.read(cx).current_notice().unwrap().message,
-                "Runtime failure"
+                "Workspace saved"
             );
         });
         model.update(cx, |model, cx| model.dismiss_header_notice(cx));
@@ -700,7 +678,7 @@ mod tests {
         cx.read(|cx| {
             assert_eq!(
                 model.read(cx).current_notice().unwrap().message,
-                "Workspace saved"
+                "Runtime failure"
             );
         });
     }

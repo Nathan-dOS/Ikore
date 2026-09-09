@@ -1,0 +1,358 @@
+//! Supplier-reported generation usage, independent of conversation retention.
+//! Cache and reasoning are breakdowns of normalized input/output, not extra totals.
+
+use std::{path::Path, time::Duration};
+
+use chrono::{DateTime, Utc};
+use rusqlite::{Connection, OpenFlags, params};
+use serde::{Deserialize, Serialize};
+
+pub mod api;
+pub mod cli;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenCounts {
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub cache_read_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
+    pub reasoning_tokens: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UsageMeasurement {
+    pub counts: TokenCounts,
+    pub observed_model: Option<String>,
+    pub partial: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageTransport {
+    Api,
+    Cli,
+}
+
+impl UsageTransport {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Api => "api",
+            Self::Cli => "cli",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UsageContext {
+    pub source_kind: String,
+    pub source_id: String,
+    pub project_id: Option<String>,
+    pub transport: UsageTransport,
+    pub provider_id: String,
+    pub requested_model: Option<String>,
+    pub started_at: String,
+}
+
+fn connection(path: &Path, read_only: bool) -> rusqlite::Result<Connection> {
+    let flags = if read_only {
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+    } else {
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+    };
+    let db = Connection::open_with_flags(path, flags)?;
+    db.busy_timeout(Duration::from_secs(5))?;
+    Ok(db)
+}
+
+/// Upsert a snapshot for one accounting unit. Callers identify real requests,
+/// CLI turns or steps; they must never submit message summaries as extra units.
+pub fn record_usage(
+    path: &Path,
+    context: &UsageContext,
+    unit_key: &str,
+    measurement: &UsageMeasurement,
+) -> rusqlite::Result<()> {
+    record_usage_on(&connection(path, false)?, context, unit_key, measurement)
+}
+
+pub fn record_usage_on(
+    db: &Connection,
+    context: &UsageContext,
+    unit_key: &str,
+    measurement: &UsageMeasurement,
+) -> rusqlite::Result<()> {
+    let mut counts = measurement.counts.clone();
+    let mut partial = measurement.partial;
+    for value in [
+        &mut counts.input_tokens,
+        &mut counts.output_tokens,
+        &mut counts.total_tokens,
+        &mut counts.cache_read_tokens,
+        &mut counts.cache_write_tokens,
+        &mut counts.reasoning_tokens,
+    ] {
+        if value.is_some_and(|n| n < 0) {
+            *value = None;
+            partial = true;
+        }
+    }
+    if counts.total_tokens.is_none()
+        && (counts.input_tokens.is_some() || counts.output_tokens.is_some())
+    {
+        counts.total_tokens = counts
+            .input_tokens
+            .unwrap_or(0)
+            .checked_add(counts.output_tokens.unwrap_or(0));
+        partial |= counts.total_tokens.is_none();
+    }
+    let quality = if counts.input_tokens.is_none()
+        && counts.output_tokens.is_none()
+        && counts.total_tokens.is_none()
+    {
+        "unavailable"
+    } else if partial || counts.input_tokens.is_none() || counts.output_tokens.is_none() {
+        "partial"
+    } else {
+        "complete"
+    };
+    // Only bounded identifiers cross this boundary, never prompt content.
+    let observed = model_identifier(measurement.observed_model.as_deref());
+    let requested = model_identifier(context.requested_model.as_deref());
+    db.execute(
+        "INSERT INTO token_usage_records (
+            source_kind,source_id,unit_key,project_id,transport,provider_id,
+            requested_model,observed_model,input_tokens,output_tokens,total_tokens,
+            cache_read_tokens,cache_write_tokens,reasoning_tokens,quality,started_at,updated_at
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+         ON CONFLICT(source_kind,source_id,unit_key) DO UPDATE SET
+            observed_model=COALESCE(excluded.observed_model,token_usage_records.observed_model),
+            input_tokens=COALESCE(excluded.input_tokens,token_usage_records.input_tokens),
+            output_tokens=COALESCE(excluded.output_tokens,token_usage_records.output_tokens),
+            total_tokens=COALESCE(excluded.total_tokens,token_usage_records.total_tokens),
+            cache_read_tokens=COALESCE(excluded.cache_read_tokens,token_usage_records.cache_read_tokens),
+            cache_write_tokens=COALESCE(excluded.cache_write_tokens,token_usage_records.cache_write_tokens),
+            reasoning_tokens=COALESCE(excluded.reasoning_tokens,token_usage_records.reasoning_tokens),
+            quality=CASE WHEN excluded.quality='unavailable' THEN token_usage_records.quality ELSE excluded.quality END,
+            updated_at=excluded.updated_at",
+        params![context.source_kind, context.source_id, unit_key, context.project_id,
+            context.transport.as_str(), context.provider_id, requested, observed,
+            counts.input_tokens, counts.output_tokens, counts.total_tokens,
+            counts.cache_read_tokens, counts.cache_write_tokens, counts.reasoning_tokens,
+            quality, context.started_at, Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+fn model_identifier(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| {
+        !v.is_empty()
+            && *v != "default"
+            && v.len() <= 256
+            && v.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.:/@+".contains(c))
+            && crate::secret_redactor::redact_secrets(v).is_ok_and(|r| r.count == 0)
+    })
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsagePeriod {
+    #[default]
+    AllTime,
+    Last7Days,
+    Last30Days,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageQuery {
+    pub project_id: Option<String>,
+    pub transport: Option<UsageTransport>,
+    pub period: UsagePeriod,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageTotals {
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub cache_read_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
+    pub reasoning_tokens: Option<i64>,
+    pub records: u64,
+    pub partial_records: u64,
+    pub unavailable_records: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsage {
+    pub provider_id: String,
+    pub model_id: String,
+    pub model_source: String,
+    pub transport: UsageTransport,
+    pub totals: UsageTotals,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageBucket {
+    pub period: String,
+    pub totals: UsageTotals,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageProject {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSummary {
+    pub totals: UsageTotals,
+    pub models: Vec<ModelUsage>,
+    pub series: Vec<UsageBucket>,
+    pub projects: Vec<UsageProject>,
+}
+
+const TOTALS_SQL: &str = "SUM(input_tokens),SUM(output_tokens),SUM(total_tokens),
+    SUM(cache_read_tokens),SUM(cache_write_tokens),SUM(reasoning_tokens),COUNT(*),
+    COALESCE(SUM(quality='partial'),0),COALESCE(SUM(quality='unavailable'),0)";
+const FILTER_SQL: &str = "(?1 IS NULL OR project_id=?1) AND (?2 IS NULL OR transport=?2)
+    AND (?3 IS NULL OR julianday(started_at)>=julianday(?3))
+    AND julianday(started_at)<=julianday(?4)";
+
+fn read_totals(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<UsageTotals> {
+    Ok(UsageTotals {
+        input_tokens: row.get(offset)?,
+        output_tokens: row.get(offset + 1)?,
+        total_tokens: row.get(offset + 2)?,
+        cache_read_tokens: row.get(offset + 3)?,
+        cache_write_tokens: row.get(offset + 4)?,
+        reasoning_tokens: row.get(offset + 5)?,
+        records: row.get(offset + 6)?,
+        partial_records: row.get(offset + 7)?,
+        unavailable_records: row.get(offset + 8)?,
+    })
+}
+
+pub fn query_usage(path: &Path, query: &UsageQuery) -> rusqlite::Result<UsageSummary> {
+    query_usage_at(&connection(path, true)?, query, Utc::now())
+}
+
+fn query_usage_at(
+    db: &Connection,
+    query: &UsageQuery,
+    now: DateTime<Utc>,
+) -> rusqlite::Result<UsageSummary> {
+    let since = match query.period {
+        UsagePeriod::AllTime => None,
+        UsagePeriod::Last7Days => Some(now.date_naive() - chrono::Duration::days(6)),
+        UsagePeriod::Last30Days => Some(now.date_naive() - chrono::Duration::days(29)),
+    }
+    .map(|d| format!("{d}T00:00:00Z"));
+    let transport = query.transport.map(UsageTransport::as_str);
+    let until = now.to_rfc3339();
+    let args = params![query.project_id, transport, since, until];
+    // A single snapshot makes cards, table and graph agree during active calls.
+    let transaction = db.unchecked_transaction()?;
+    let totals = transaction.query_row(
+        &format!("SELECT {TOTALS_SQL} FROM token_usage_records WHERE {FILTER_SQL}"),
+        args,
+        |row| read_totals(row, 0),
+    )?;
+    let models = {
+        let mut statement = transaction.prepare(&format!(
+            "SELECT provider_id,COALESCE(observed_model,requested_model,'Unknown model') AS model,
+             CASE WHEN observed_model IS NOT NULL THEN 'observed' WHEN requested_model IS NOT NULL
+             THEN 'requested' ELSE 'unknown' END AS model_source,transport,{TOTALS_SQL}
+             FROM token_usage_records WHERE {FILTER_SQL}
+             GROUP BY provider_id,model,model_source,transport
+             ORDER BY SUM(total_tokens) DESC,provider_id,model,transport,model_source"
+        ))?;
+        statement
+            .query_map(args, |row| {
+                Ok(ModelUsage {
+                    provider_id: row.get(0)?,
+                    model_id: row.get(1)?,
+                    model_source: row.get(2)?,
+                    transport: if row.get::<_, String>(3)? == "cli" {
+                        UsageTransport::Cli
+                    } else {
+                        UsageTransport::Api
+                    },
+                    totals: read_totals(row, 4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let mut series = {
+        let format = if query.period == UsagePeriod::AllTime {
+            "%Y-%m"
+        } else {
+            "%Y-%m-%d"
+        };
+        let mut statement = transaction.prepare(&format!(
+            "SELECT strftime('{format}',started_at) AS period,{TOTALS_SQL}
+             FROM token_usage_records WHERE {FILTER_SQL} GROUP BY period ORDER BY period"
+        ))?;
+        statement
+            .query_map(args, |row| {
+                Ok(UsageBucket {
+                    period: row.get(0)?,
+                    totals: read_totals(row, 1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    if query.period != UsagePeriod::AllTime && totals.records > 0 {
+        let days = if query.period == UsagePeriod::Last7Days {
+            7
+        } else {
+            30
+        };
+        let mut by_day: std::collections::BTreeMap<_, _> = series
+            .into_iter()
+            .map(|bucket| (bucket.period.clone(), bucket))
+            .collect();
+        series = (0..days)
+            .rev()
+            .map(|offset| {
+                let period = (now.date_naive() - chrono::Duration::days(offset)).to_string();
+                by_day.remove(&period).unwrap_or(UsageBucket {
+                    period,
+                    totals: UsageTotals::default(),
+                })
+            })
+            .collect();
+    }
+    let projects = {
+        let mut statement = transaction.prepare(
+            "SELECT p.id,p.name FROM projects p
+             UNION SELECT DISTINCT r.project_id,'Deleted project' FROM token_usage_records r
+             WHERE r.project_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM projects p WHERE p.id=r.project_id)
+             ORDER BY 2,1")?;
+        statement
+            .query_map([], |row| {
+                Ok(UsageProject {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    transaction.commit()?;
+    Ok(UsageSummary {
+        totals,
+        models,
+        series,
+        projects,
+    })
+}
+
+#[cfg(test)]
+mod tests;

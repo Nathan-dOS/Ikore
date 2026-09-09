@@ -174,14 +174,47 @@ impl Fixture {
 }
 
 #[test]
-fn failed_outcome_never_publishes_or_advances() {
+fn failed_outcome_never_publishes_and_parks_on_a_decision() {
     let f = Fixture::new(PulsationStage::Code);
     f.accept(&f.output("failed", Some("src/result.rs"), "danger"))
         .unwrap();
-    assert_eq!(f.state().status, PulsationStatus::Failed);
+    // The agent gave up, but Code has a revision target, so the pulsation waits on a
+    // human decision instead of dying and forcing the whole pipeline to be re-run.
+    assert_eq!(f.state().status, PulsationStatus::Checkpoint);
+    assert_eq!(f.count("stage_failure_requests"), 1);
+    let (class, retry, revision, target): (String, i64, i64, Option<String>) = f
+        .service
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT failure_class,allow_retry,allow_revision,revision_stage
+             FROM stage_failure_requests",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(class, "model_reported_failure");
+    // A durable stage_acceptances row means the old job can never be resumed.
+    assert_eq!(retry, 0);
+    assert_eq!(revision, 1);
+    assert_eq!(target.as_deref(), Some("Code"));
+
     assert_eq!(f.count("artifacts"), 0);
     assert_eq!(f.count("artifact_publications"), 0);
     assert_eq!(f.count("stage_acceptances"), 1);
+    // The base is untouched: deferring mark_effects_for_review is what keeps the
+    // pulsation resumable while it waits.
+    let blocking: Option<String> = f
+        .service
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT blocking_reason FROM project_pipeline_state WHERE project_id=?1",
+            [&f.pulse.project_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(blocking, None);
     f.service.recover_interrupted_jobs().unwrap();
     assert!(f.service.claim_next_pending_job().unwrap().is_none());
 }

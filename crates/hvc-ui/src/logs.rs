@@ -104,6 +104,7 @@ pub(crate) struct RuntimeEventRecord {
     pub(crate) name: SharedString,
     pub(crate) summary: SharedString,
     pub(crate) sequence: Option<u64>,
+    pub(crate) timestamp: SharedString,
 }
 
 #[derive(Debug, Default)]
@@ -188,6 +189,7 @@ impl LogsModel {
             name: event.kind.into(),
             summary: event.relative_path.into(),
             sequence: None,
+            timestamp: crate::time::current_time_only().into(),
         });
     }
 
@@ -199,6 +201,7 @@ impl LogsModel {
             name: envelope.event.event_name().into(),
             summary: summary.into(),
             sequence: Some(envelope.sequence),
+            timestamp: crate::time::current_time_only().into(),
         });
 
         if classification == SequenceClassification::Stale {

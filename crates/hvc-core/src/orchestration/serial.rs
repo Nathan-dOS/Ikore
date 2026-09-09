@@ -17,7 +17,7 @@ impl PersistenceService {
         pulse: &str,
     ) -> Result<HitlCheckpoint, PersistenceServiceError> {
         let db = self.connection()?;
-        let entries=db.prepare("SELECT p.id,c.id,p.state_version FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.id=?1 AND p.status='checkpoint' AND c.status='waiting'")?.query_map([pulse],|r|Ok(HitlCheckpoint{pulsation_id:r.get(0)?,checkpoint_id:r.get(1)?,state_version:r.get(2)?}))?.collect::<Result<Vec<_>,_>>()?;
+        let entries=db.prepare("SELECT p.id,c.id,p.state_version FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.id=?1 AND p.status='checkpoint' AND c.status='waiting' AND c.purpose='artifact_review'")?.query_map([pulse],|r|Ok(HitlCheckpoint{pulsation_id:r.get(0)?,checkpoint_id:r.get(1)?,state_version:r.get(2)?}))?.collect::<Result<Vec<_>,_>>()?;
         if entries.len() != 1 {
             return Err(invalid("Checkpoint ausente ou ambíguo."));
         }
@@ -509,20 +509,39 @@ impl PersistenceService {
                 Self::enqueue_stage_job(&tx, &updated.id, updated.stage)?;
             }
             StageDisposition::Fail => {
-                Self::transition_pulsation(
+                let (code, message) = match &outcome {
+                    StageOutcome::Failed { code, message } => (code.as_str(), message.as_str()),
+                    _ => ("model_reported_failure", "O agente reportou falha."),
+                };
+                // The acceptance row is durable, so this failure is never retryable;
+                // it opens a checkpoint only where a revision target exists (i.e. not
+                // at Intake), and otherwise stays terminal exactly as before.
+                let parked = Self::record_stage_failure_checkpoint(
                     &tx,
                     &current,
-                    PulsationStatus::Failed,
                     current.stage,
-                    "stage_failed",
-                    Some("O agente reportou falha; nenhum artifact foi publicado."),
+                    &job.id,
+                    Some(run_id),
+                    crate::orchestration::FailureClass::ModelReportedFailure,
+                    code,
+                    message,
                 )?;
-                tx.execute(
-                    "UPDATE pulsations SET terminal_reason='model_reported_failure' WHERE id=?1",
-                    [pulse],
-                )?;
-                Self::mark_effects_for_review(&tx, pulse, "stage_failed")?;
-                Self::enqueue_learning(&tx, pulse)?;
+                if !parked {
+                    Self::transition_pulsation(
+                        &tx,
+                        &current,
+                        PulsationStatus::Failed,
+                        current.stage,
+                        "stage_failed",
+                        Some("O agente reportou falha; nenhum artifact foi publicado."),
+                    )?;
+                    tx.execute(
+                        "UPDATE pulsations SET terminal_reason='model_reported_failure' WHERE id=?1",
+                        [pulse],
+                    )?;
+                    Self::mark_effects_for_review(&tx, pulse, "stage_failed")?;
+                    Self::enqueue_learning(&tx, pulse)?;
+                }
             }
             StageDisposition::AwaitClarification => {
                 let StageOutcome::NeedsClarification { questions } = &outcome else {

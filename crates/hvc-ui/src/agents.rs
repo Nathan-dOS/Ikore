@@ -405,25 +405,13 @@ pub(crate) enum TerminalEventFilter {
 impl TerminalEventFilter {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::All => "todos",
+            Self::All => "all",
             Self::Activity => "activity",
             Self::Tool => "tool",
             Self::Stdout => "stdout",
             Self::Stderr => "stderr",
             Self::Warning => "warning",
             Self::Error => "error",
-        }
-    }
-
-    pub(crate) fn next(self) -> Self {
-        match self {
-            Self::All => Self::Activity,
-            Self::Activity => Self::Tool,
-            Self::Tool => Self::Stdout,
-            Self::Stdout => Self::Stderr,
-            Self::Stderr => Self::Warning,
-            Self::Warning => Self::Error,
-            Self::Error => Self::All,
         }
     }
 

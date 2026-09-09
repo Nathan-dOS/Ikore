@@ -16,7 +16,7 @@ use crate::pulsations::PulsationDetailSection;
 use crate::settings::{SettingsSection, SettingsSnapshot};
 use crate::{AppModel, AppTab, AppView};
 
-fn fixture(cx: &mut Context<AppModel>) -> AppModel {
+pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
     let model = AppModel::new_for_test(cx);
     model.workspace.update(cx, |workspace, _| {
         workspace.project_id = Some("layout-project".into())
@@ -307,6 +307,99 @@ fn select(model: &Entity<AppModel>, visual: &mut VisualTestContext, view: AppVie
 }
 
 #[gpui::test]
+fn notification_and_direct_selector_overlays_do_not_move_controls(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Agents);
+        let before = visual.debug_bounds("agents-cli-scroll").unwrap();
+        let backend = visual.debug_bounds("agent-backend:task_specifier").unwrap();
+        click(visual, "agent-backend:task_specifier");
+        let menu = visual.debug_bounds("selection-menu").unwrap();
+        assert!(menu.left() >= px(0.0) && menu.right() <= px(width));
+        assert!(menu.top() >= px(0.0) && menu.bottom() <= px(height));
+        assert_eq!(visual.debug_bounds("agents-cli-scroll").unwrap(), before);
+        assert_eq!(
+            visual.debug_bounds("agent-backend:task_specifier").unwrap(),
+            backend
+        );
+        visual.simulate_keystrokes("down escape");
+        visual.run_until_parked();
+        assert!(model.read_with(visual, |m, _| m.choice_menu.is_none()));
+        // Escape returns focus to the stable trigger, even after a parent render.
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert!(model.read_with(visual, |m, _| m.choice_menu.is_some()));
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        model.update(visual,|m,cx| {
+            m.push_header_notice(crate::session::HeaderNoticeKind::Error,"A long runtime diagnostic that must stay readable without moving the agent controls or the shell navigation.",cx);
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("agents-cli-scroll").unwrap(), before);
+        click(visual, "notifications");
+        let history = visual.debug_bounds("notification-history").unwrap();
+        assert!(history.right() <= px(width) && history.bottom() <= px(height));
+        assert_eq!(visual.debug_bounds("agents-cli-scroll").unwrap(), before);
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        assert!(!model.read_with(visual, |m, _| m.notifications.history_open));
+    }
+}
+
+#[gpui::test]
+fn changing_project_cancels_an_open_selector_and_isolates_history(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    select(&model, visual, AppView::Agents);
+    model.update(visual, |m, cx| {
+        m.push_header_notice(
+            crate::session::HeaderNoticeKind::Warning,
+            "Project A warning",
+            cx,
+        )
+    });
+    click(visual, "agent-backend:task_specifier");
+    model.update(visual, |m, cx| {
+        m.workspace
+            .update(cx, |w, _| w.project_id = Some("project-b".into()));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    model.read_with(visual, |m, _| {
+        assert!(m.choice_menu.is_none());
+        assert!(m.notifications.queue.history().is_empty());
+    });
+    model.update(visual, |m, cx| {
+        m.workspace
+            .update(cx, |w, _| w.project_id = Some("layout-project".into()));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        model.read_with(visual, |m, _| m.notifications.queue.history().len()),
+        1
+    );
+}
+
+#[gpui::test]
+fn closing_a_selector_does_not_activate_covered_navigation(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    select(&model, visual, AppView::Agents);
+    click(visual, "agent-backend:task_specifier");
+    click(visual, "settings");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Agents
+    );
+    assert!(model.read_with(visual, |m, _| m.choice_menu.is_none()));
+    click(visual, "settings");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Settings
+    );
+}
+
+#[gpui::test]
 fn header_tabs_and_settings_navigate_at_minimum_window_size(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.simulate_resize(size(px(960.0), px(640.0)));
@@ -503,7 +596,6 @@ fn forge_busy_state_never_moves_the_task_controls(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.simulate_resize(size(px(960.0), px(640.0)));
     select(&model, visual, AppView::Forge);
-    let status = visual.debug_bounds("forge-status").unwrap();
     let control = visual.debug_bounds("retry-forge-publications").unwrap();
     for busy in [true, false, true, false] {
         model.update(visual, |m, cx| {
@@ -511,7 +603,6 @@ fn forge_busy_state_never_moves_the_task_controls(cx: &mut TestAppContext) {
             cx.notify();
         });
         visual.run_until_parked();
-        assert_eq!(visual.debug_bounds("forge-status").unwrap(), status);
         assert_eq!(
             visual.debug_bounds("retry-forge-publications").unwrap(),
             control
@@ -549,6 +640,7 @@ fn forge_graph_waves_and_delivery_fit_supported_window_sizes(cx: &mut TestAppCon
             feature_id: "feature-1".into(),
             prerequisite_id: "feature-0".into(),
             rationale: "Foundation provides storage".into(),
+            origin: DependencyOrigin::Human,
         }];
         m.forge.selected_feature = Some("feature-1".into());
         m.select_view(AppView::Forge, cx);
@@ -630,4 +722,51 @@ fn ui_source_contains_no_unapproved_portuguese_literals() {
         "Found unapproved Portuguese characters in UI source files:\n{}",
         violations.join("\n")
     );
+}
+
+#[gpui::test]
+fn forge_analysis_button_keeps_its_geometry_when_gated(cx: &mut TestAppContext) {
+    use hvc_core::feature_forge::*;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1100.0), px(760.0)));
+    model.update(visual, |m, cx| {
+        m.forge.snapshot.features = vec![Feature {
+            id: "feature-1".into(),
+            project_id: "layout-project".into(),
+            title: "Export workflow".into(),
+            original_idea: "Improve export workflow".into(),
+            revision: 2,
+            approved_revision: None,
+            state: FeatureState::Incubating,
+            brief: FeatureBrief {
+                objective: "Improve export workflow".into(),
+                ..Default::default()
+            },
+            evaluation: Default::default(),
+            structural_level: 0,
+            wave: None,
+            position: 0,
+            archive_reason: None,
+        }];
+        m.forge.selected_feature = Some("feature-1".into());
+        m.forge.section = crate::forge::ForgeSection::Triage;
+        m.select_view(AppView::Forge, cx);
+    });
+    visual.run_until_parked();
+    let control = visual.debug_bounds("analyze-triage").unwrap();
+    // An open incubation question disables the control. Disabling may only
+    // recolour it -- if the box moved or resized, the surrounding triage form
+    // would shift under the pointer every time the gate flipped.
+    for pending in [true, false, true, false] {
+        model.update(visual, |m, cx| {
+            m.forge.snapshot.features[0].brief.pending_decisions = if pending {
+                vec!["Choose the export format".into()]
+            } else {
+                vec![]
+            };
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("analyze-triage").unwrap(), control);
+    }
 }

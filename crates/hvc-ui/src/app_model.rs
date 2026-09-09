@@ -22,10 +22,9 @@ use hvc_core::persistence_service::{
     UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
 };
 use hvc_core::terminals::{
-    AgentExecutionMode, CliAgentConfig, CliBackend, CliModelSelectionSource,
-    CreateFreeFormSlotRequest, ResumeManualRunRequest, SessionPolicy, StartFreeFormRunRequest,
-    StartManualRunRequest, TerminalRunStatus, TerminalSlot, ThinkingLevel,
-    UpdateCliAgentConfigRequest, UpdateFreeFormSlotRequest,
+    CliAgentConfig, CliBackend, CliModelSelectionSource, CreateFreeFormSlotRequest,
+    ResumeManualRunRequest, StartFreeFormRunRequest, StartManualRunRequest, TerminalRunStatus,
+    TerminalSlot, ThinkingLevel, UpdateCliAgentConfigRequest, UpdateFreeFormSlotRequest,
 };
 use hvc_core::workspace_service::{
     FileNode, OpenWorkspaceRequest, ReadWorkspaceFileRequest, SearchMode, WorkspaceChangedEvent,
@@ -46,8 +45,8 @@ use crate::pulsations::{
     CorePulsationsBackend, PulsationDetailSection, PulsationsBackend, PulsationsModel,
 };
 use crate::session::{
-    CoreSessionPersistence, HeaderNotice, HeaderNoticeAction, HeaderNoticeKind, HeaderNoticeQueue,
-    SESSION_DEBOUNCE, SessionPersistence,
+    CoreSessionPersistence, HeaderNoticeAction, HeaderNoticeKind, SESSION_DEBOUNCE,
+    SessionPersistence,
 };
 use crate::settings::{CoreSettingsBackend, SettingsBackend, SettingsModel};
 use crate::text_input::NativeTextInput;
@@ -255,8 +254,8 @@ pub struct AppModel {
     workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
     pulsations_backend: Option<Arc<dyn PulsationsBackend>>,
     vault_backend: Option<Arc<dyn VaultBackend>>,
-    settings_backend: Option<Arc<dyn SettingsBackend>>,
-    agents_backend: Option<Arc<dyn AgentsBackend>>,
+    pub(crate) settings_backend: Option<Arc<dyn SettingsBackend>>,
+    pub(crate) agents_backend: Option<Arc<dyn AgentsBackend>>,
     logs_backend: Option<Arc<dyn LogsBackend>>,
     chat_backend: Option<Arc<dyn ChatBackend>>,
     pub navigation: Entity<NavigationModel>,
@@ -310,7 +309,7 @@ pub struct AppModel {
     status: SharedString,
     event_count: u64,
     needs_resync: bool,
-    notices: HeaderNoticeQueue,
+    pub(crate) notifications: crate::notifications::Notifications,
     lifecycle: LifecycleState,
     hydrating: bool,
     session_generation: u64,
@@ -351,6 +350,7 @@ pub struct AppModel {
     pub(crate) confirm_stage_reject: bool,
     pub(crate) confirm_brownfield_revoke: bool,
     pub(crate) active_dropdown: Option<String>,
+    pub(crate) choice_menu: Option<gpui::Entity<crate::select_menu::SelectMenu>>,
     /// Opt-in (default off): jump straight to a pulsation's Review section the moment a checkpoint
     /// appears, instead of only surfacing the "review(s) waiting" notice. See the UI flow plan
     /// Part 4.3; toggled from Settings > Runtime.
@@ -653,7 +653,7 @@ impl AppModel {
             status: "Ready".into(),
             event_count: 0,
             needs_resync: false,
-            notices: HeaderNoticeQueue::default(),
+            notifications: crate::notifications::Notifications::default(),
             lifecycle: LifecycleState::default(),
             hydrating: false,
             session_generation: 0,
@@ -694,6 +694,7 @@ impl AppModel {
             confirm_stage_reject: false,
             confirm_brownfield_revoke: false,
             active_dropdown: None,
+            choice_menu: None,
             auto_open_review: false,
             _subscriptions: subscriptions,
         }
@@ -765,11 +766,17 @@ impl AppModel {
                             crate::settings::SettingsSection::Connections,
                             crate::settings::SettingsSection::Routes,
                             crate::settings::SettingsSection::Runtime,
+                            crate::settings::SettingsSection::Usage,
                         ],
                         settings.settings_section,
                         direction,
                     );
                 });
+                if self.settings.read(cx).settings_section
+                    == crate::settings::SettingsSection::Usage
+                {
+                    self.refresh_usage(cx);
+                }
                 cx.notify();
             }
             _ => {}
@@ -782,6 +789,10 @@ impl AppModel {
 
     pub fn event_count(&self) -> u64 {
         self.event_count
+    }
+
+    pub(crate) fn is_disposed(&self) -> bool {
+        self.lifecycle.is_disposed()
     }
 
     pub fn needs_resync(&self) -> bool {
@@ -802,8 +813,9 @@ impl AppModel {
         self.navigation.read(cx).sidebar_collapsed
     }
 
-    pub(crate) fn current_notice(&self) -> Option<&HeaderNotice> {
-        self.notices.current()
+    #[cfg(test)]
+    pub(crate) fn current_notice(&self) -> Option<&crate::session::HeaderNotice> {
+        self.notifications.queue.current()
     }
 
     /// Per-tab attention counters (see the UI flow plan Part 4.4). Reviews and running jobs belong
@@ -842,6 +854,7 @@ impl AppModel {
         self.confirm_stage_reject = false;
         self.confirm_brownfield_revoke = false;
         self.active_dropdown = None;
+        self.choice_menu = None;
         self.status = format!("{} view active", view.short_label()).into();
         if view == AppView::Chat {
             let project_id = self
@@ -904,18 +917,38 @@ impl AppModel {
     }
 
     pub fn dismiss_header_notice(&mut self, cx: &mut Context<Self>) {
-        self.notices.dismiss();
+        self.notifications.queue.dismiss();
         cx.notify();
     }
 
-    #[cfg(test)]
+    #[track_caller]
     pub(crate) fn push_header_notice(
         &mut self,
         kind: HeaderNoticeKind,
         message: impl Into<String>,
         cx: &mut Context<Self>,
     ) {
-        self.notices.push(kind, message);
+        self.push_actionable_notice(kind, message, None, cx);
+    }
+
+    #[track_caller]
+    pub(crate) fn push_actionable_notice(
+        &mut self,
+        kind: HeaderNoticeKind,
+        message: impl Into<String>,
+        action: Option<HeaderNoticeAction>,
+        cx: &mut Context<Self>,
+    ) {
+        let project = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string);
+        self.notifications.queue.set_project(project);
+        self.notifications
+            .queue
+            .push_actionable(kind, message, action);
         cx.notify();
     }
 
@@ -1159,7 +1192,7 @@ impl AppModel {
                 }
                 Err(error) => {
                     model.status = format!("Failed to open {requested_path}").into();
-                    model.notices.push(HeaderNoticeKind::Error, error.message);
+                    model.push_header_notice(HeaderNoticeKind::Error, error.message, cx);
                     cx.notify();
                 }
             });
@@ -1344,22 +1377,10 @@ impl AppModel {
         cx.notify();
     }
 
-    pub fn is_dropdown_open(&self, id: &str) -> bool {
-        self.active_dropdown.as_deref() == Some(id)
-    }
-
-    pub fn toggle_dropdown(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.active_dropdown.as_deref() == Some(id) {
-            self.active_dropdown = None;
-        } else {
-            self.active_dropdown = Some(id.to_string());
-        }
-        cx.notify();
-    }
-
     pub fn close_dropdown(&mut self, cx: &mut Context<Self>) {
         if self.active_dropdown.is_some() {
             self.active_dropdown = None;
+            self.choice_menu = None;
             cx.notify();
         }
     }
@@ -1409,7 +1430,7 @@ impl AppModel {
                         pulsations.runtime_loading = false;
                         pulsations.error = Some(error.clone());
                     });
-                    model.notices.push(HeaderNoticeKind::Warning, error);
+                    model.push_header_notice(HeaderNoticeKind::Warning, error, cx);
                     cx.notify();
                 }
             });
@@ -1482,13 +1503,14 @@ impl AppModel {
         } else {
             format!("{awaiting_hitl} reviews waiting")
         };
-        self.notices.push_actionable(
+        self.push_actionable_notice(
             HeaderNoticeKind::Warning,
             message,
             Some(HeaderNoticeAction {
                 label: "Review now".into(),
                 pulsation_id: pulsation_id.clone(),
             }),
+            cx,
         );
         if self.auto_open_review && !self.auto_open_review_blocked(cx) {
             self.open_pulsation_review(pulsation_id, cx);
@@ -1501,6 +1523,8 @@ impl AppModel {
     /// background poll callback doesn't have.
     fn auto_open_review_blocked(&self, cx: &Context<Self>) -> bool {
         self.forge.new_open
+            || self.active_dropdown.is_some()
+            || self.notifications.history_open
             || self.agents.read(cx).active_model_picker.is_some()
             || (self.active_view() == AppView::Chat
                 && !self.chat_draft_input.read(cx).value().trim().is_empty())
@@ -1638,7 +1662,7 @@ impl AppModel {
                         pulsations.runtime_loading = false;
                         pulsations.error = Some(error.clone());
                     });
-                    model.notices.push(HeaderNoticeKind::Error, error);
+                    model.push_header_notice(HeaderNoticeKind::Error, error, cx);
                     cx.notify();
                 }
             });
@@ -1750,7 +1774,7 @@ impl AppModel {
                         pulsations.runtime_loading = false;
                         pulsations.error = Some(error.clone());
                     });
-                    model.notices.push(HeaderNoticeKind::Error, error);
+                    model.push_header_notice(HeaderNoticeKind::Error, error, cx);
                     cx.notify();
                 }
             });
@@ -2012,7 +2036,7 @@ impl AppModel {
                         vault.renaming = false;
                         vault.error = Some(error.clone());
                     });
-                    model.notices.push(HeaderNoticeKind::Error, error);
+                    model.push_header_notice(HeaderNoticeKind::Error, error, cx);
                     cx.notify();
                 }
             });
@@ -2100,7 +2124,7 @@ impl AppModel {
                         }
                         Err(error) => {
                             model.status = "Failed to apply HITL decision".into();
-                            model.notices.push(HeaderNoticeKind::Error, error);
+                            model.push_header_notice(HeaderNoticeKind::Error, error, cx);
                         }
                     }
                     cx.notify();
@@ -2311,13 +2335,14 @@ impl AppModel {
                     format!("Save failed: {relative_path}")
                 }
                 .into();
-                self.notices.push(
+                self.push_header_notice(
                     if conflict {
                         HeaderNoticeKind::Warning
                     } else {
                         HeaderNoticeKind::Error
                     },
                     message,
+                    cx,
                 );
             }
         }
@@ -2402,39 +2427,6 @@ impl AppModel {
         }));
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn cycle_chat_connection(&mut self, cx: &mut Context<Self>) {
-        self.chat.update(cx, |chat, _| {
-            let eligible = chat
-                .eligible_connections()
-                .map(|connection| connection.id.clone())
-                .collect::<Vec<_>>();
-            if eligible.is_empty() {
-                chat.selected_connection_id = None;
-                return;
-            }
-            let current = chat
-                .selected_connection_id
-                .as_ref()
-                .and_then(|selected| eligible.iter().position(|id| id == selected.as_ref()))
-                .unwrap_or(eligible.len().saturating_sub(1));
-            chat.selected_connection_id =
-                Some(eligible[(current + 1) % eligible.len()].clone().into());
-        });
-        cx.notify();
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn cycle_chat_transport(&mut self, cx: &mut Context<Self>) {
-        self.chat.update(cx, |chat, _| {
-            chat.selected_transport = match chat.selected_transport {
-                ChatTransportKind::Api => ChatTransportKind::Cli,
-                ChatTransportKind::Cli => ChatTransportKind::Api,
-            };
-        });
-        self.close_cli_model_picker(cx);
-    }
-
     pub(crate) fn set_chat_transport(
         &mut self,
         transport: ChatTransportKind,
@@ -2448,6 +2440,10 @@ impl AppModel {
     }
 
     pub(crate) fn set_chat_cli_backend(&mut self, backend: CliBackend, cx: &mut Context<Self>) {
+        if self.chat.read(cx).selected_cli_backend == backend {
+            self.close_dropdown(cx);
+            return;
+        }
         self.chat.update(cx, |chat, _| {
             chat.selected_cli_backend = backend;
             chat.selected_cli_model = None;
@@ -2475,47 +2471,9 @@ impl AppModel {
         self.close_dropdown(cx);
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn cycle_chat_cli_backend(&mut self, cx: &mut Context<Self>) {
-        let backend = self.chat.update(cx, |chat, _| {
-            chat.selected_cli_backend = match chat.selected_cli_backend {
-                CliBackend::Codex => CliBackend::Claude,
-                CliBackend::Claude => CliBackend::Gemini,
-                CliBackend::Gemini => CliBackend::Opencode,
-                CliBackend::Opencode | CliBackend::Custom => CliBackend::Codex,
-            };
-            chat.selected_cli_model = None;
-            chat.selected_cli_model_profile = None;
-            chat.selected_cli_model_source = CliModelSelectionSource::Default;
-            chat.selected_cli_backend
-        });
-        self.close_cli_model_picker(cx);
-        if !self.agents.read(cx).model_catalogs.contains_key(&backend) {
-            self.load_cli_model_catalog(backend, false, cx);
-        }
-    }
-
     pub(crate) fn open_companion_model_picker(&mut self, cx: &mut Context<Self>) {
         let backend = self.chat.read(cx).selected_cli_backend;
         self.open_cli_model_picker(CliModelPickerTarget::Companion, backend, cx);
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn cycle_chat_cli_profile(&mut self, cx: &mut Context<Self>) {
-        let (backend, model_id, current) = {
-            let chat = self.chat.read(cx);
-            (
-                chat.selected_cli_backend,
-                chat.selected_cli_model.clone(),
-                chat.selected_cli_model_profile.clone(),
-            )
-        };
-        let profiles = self.model_profiles(backend, model_id.as_deref(), cx);
-        let next = Self::next_model_profile(current.as_deref(), &profiles);
-        self.chat.update(cx, |chat, _| {
-            chat.selected_cli_model_profile = next;
-        });
-        cx.notify();
     }
 
     pub(crate) fn create_chat_conversation(&mut self, cx: &mut Context<Self>) {
@@ -2870,68 +2828,6 @@ impl AppModel {
         cx.notify();
     }
 
-    pub(crate) fn cycle_agent_api_route(
-        &mut self,
-        role: hvc_core::llm::AgentRole,
-        cx: &mut Context<Self>,
-    ) {
-        self.configure_agent_api(role, cx);
-        let next = {
-            let settings = self.settings.read(cx);
-            let Some(snapshot) = settings.snapshot.as_ref() else {
-                return;
-            };
-            if snapshot.routes.is_empty() {
-                return;
-            }
-            let current = settings
-                .selected_route_id
-                .as_ref()
-                .and_then(|id| {
-                    snapshot
-                        .routes
-                        .iter()
-                        .position(|route| route.id == id.as_ref())
-                })
-                .unwrap_or(0);
-            snapshot.routes[(current + 1) % snapshot.routes.len()]
-                .id
-                .clone()
-        };
-        self.select_settings_route(next, cx);
-    }
-
-    pub(crate) fn cycle_agent_api_connection(
-        &mut self,
-        role: hvc_core::llm::AgentRole,
-        cx: &mut Context<Self>,
-    ) {
-        self.configure_agent_api(role, cx);
-        let next = {
-            let settings = self.settings.read(cx);
-            let Some(snapshot) = settings.snapshot.as_ref() else {
-                return;
-            };
-            if snapshot.connections.is_empty() {
-                return;
-            }
-            let current = settings
-                .selected_connection_id
-                .as_ref()
-                .and_then(|id| {
-                    snapshot
-                        .connections
-                        .iter()
-                        .position(|connection| connection.id == id.as_ref())
-                })
-                .unwrap_or(0);
-            snapshot.connections[(current + 1) % snapshot.connections.len()]
-                .id
-                .clone()
-        };
-        self.select_settings_connection(next, cx);
-    }
-
     pub(crate) fn save_agent_api_binding(
         &mut self,
         role: hvc_core::llm::AgentRole,
@@ -2956,18 +2852,6 @@ impl AppModel {
 
     pub(crate) fn refresh_agent_diagnostics(&mut self, cx: &mut Context<Self>) {
         self.refresh_agents_inner(true, cx);
-    }
-
-    pub(crate) fn cycle_agent_event_filter(&mut self, key: String, cx: &mut Context<Self>) {
-        self.agents.update(cx, |agents, _| {
-            let current = agents
-                .event_filters
-                .get(&key)
-                .copied()
-                .unwrap_or(crate::agents::TerminalEventFilter::All);
-            agents.event_filters.insert(key, current.next());
-        });
-        cx.notify();
     }
 
     pub(crate) fn toggle_agent_follow_tail(&mut self, key: String, cx: &mut Context<Self>) {
@@ -3010,10 +2894,9 @@ impl AppModel {
             })
             .unwrap_or_default();
         cx.write_to_clipboard(ClipboardItem::new_string(content));
-        self.agents.update(cx, |agents, _| {
-            agents.notice = Some("Redacted history copied.".into());
-        });
-        self.schedule_agents_notice_dismiss(cx);
+        self.notifications
+            .copied
+            .insert(run_id, std::time::Instant::now());
         cx.notify();
     }
 
@@ -3098,7 +2981,7 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
@@ -3107,7 +2990,7 @@ impl AppModel {
         }));
     }
 
-    fn current_agent_config(
+    pub(crate) fn current_agent_config(
         &self,
         role: hvc_core::llm::AgentRole,
         cx: &gpui::App,
@@ -3195,7 +3078,7 @@ impl AppModel {
         }
     }
 
-    fn save_agent_config(&mut self, config: CliAgentConfig, cx: &mut Context<Self>) {
+    pub(crate) fn save_agent_config(&mut self, config: CliAgentConfig, cx: &mut Context<Self>) {
         let Some(backend) = self.agents_backend.clone() else {
             return;
         };
@@ -3231,7 +3114,7 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
@@ -3444,71 +3327,6 @@ impl AppModel {
             .unwrap_or_default()
     }
 
-    fn next_model_profile(current: Option<&str>, profiles: &[String]) -> Option<String> {
-        if profiles.is_empty() {
-            return None;
-        }
-        let next = current
-            .and_then(|current| profiles.iter().position(|profile| profile == current))
-            .map_or(0, |index| index + 1);
-        (next < profiles.len()).then(|| profiles[next].clone())
-    }
-
-    pub(crate) fn cycle_agent_mode(
-        &mut self,
-        role: hvc_core::llm::AgentRole,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(mut config) = self.current_agent_config(role, cx) else {
-            return;
-        };
-        config.execution_mode = match config.execution_mode {
-            AgentExecutionMode::ApiDirect => AgentExecutionMode::CliProcess,
-            AgentExecutionMode::CliProcess => AgentExecutionMode::ApiDirect,
-        };
-        self.save_agent_config(config, cx);
-    }
-
-    pub(crate) fn cycle_agent_backend(
-        &mut self,
-        role: hvc_core::llm::AgentRole,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(mut config) = self.current_agent_config(role, cx) else {
-            return;
-        };
-        config.backend = match config.backend {
-            CliBackend::Codex => CliBackend::Claude,
-            CliBackend::Claude => CliBackend::Gemini,
-            CliBackend::Gemini => CliBackend::Opencode,
-            CliBackend::Opencode => CliBackend::Custom,
-            CliBackend::Custom => CliBackend::Codex,
-        };
-        config.model = None;
-        config.model_profile = None;
-        config.model_source = CliModelSelectionSource::Default;
-        config.thinking_level = ThinkingLevel::Default;
-        if config.backend == CliBackend::Custom {
-            // Custom is configured while inactive; activation remains an explicit second action.
-            config.execution_mode = AgentExecutionMode::ApiDirect;
-        }
-        self.save_agent_config(config, cx);
-    }
-
-    pub(crate) fn cycle_agent_thinking(
-        &mut self,
-        role: hvc_core::llm::AgentRole,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(mut config) = self.current_agent_config(role, cx) else {
-            return;
-        };
-        let profiles = self.model_profiles(config.backend, config.model.as_deref(), cx);
-        config.model_profile = Self::next_model_profile(config.model_profile.as_deref(), &profiles);
-        config.thinking_level = ThinkingLevel::Default;
-        self.save_agent_config(config, cx);
-    }
-
     pub(crate) fn toggle_agent_custom_risk_ack(
         &mut self,
         role: hvc_core::llm::AgentRole,
@@ -3625,7 +3443,7 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
@@ -3634,7 +3452,11 @@ impl AppModel {
         }));
     }
 
-    fn current_free_form_slot(&self, slot_id: &str, cx: &gpui::App) -> Option<TerminalSlot> {
+    pub(crate) fn current_free_form_slot(
+        &self,
+        slot_id: &str,
+        cx: &gpui::App,
+    ) -> Option<TerminalSlot> {
         let snapshot = self.agents.read(cx).snapshot.as_ref()?;
         snapshot
             .free_form_slots
@@ -3672,7 +3494,7 @@ impl AppModel {
                         .agents
                         .update(cx, |agents, _| agents.fail(generation, error))
                     {
-                        model.notices.push(HeaderNoticeKind::Error, message);
+                        model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                     }
                     cx.notify();
                 }
@@ -3713,7 +3535,7 @@ impl AppModel {
         );
     }
 
-    fn save_free_form_slot(&mut self, slot: TerminalSlot, cx: &mut Context<Self>) {
+    pub(crate) fn save_free_form_slot(&mut self, slot: TerminalSlot, cx: &mut Context<Self>) {
         let Some(backend) = self.agents_backend.clone() else {
             return;
         };
@@ -3743,66 +3565,6 @@ impl AppModel {
             }),
             cx,
         );
-    }
-
-    pub(crate) fn cycle_free_form_mode(&mut self, slot_id: String, cx: &mut Context<Self>) {
-        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
-            return;
-        };
-        slot.execution_mode = match slot.execution_mode {
-            AgentExecutionMode::ApiDirect => AgentExecutionMode::CliProcess,
-            AgentExecutionMode::CliProcess => AgentExecutionMode::ApiDirect,
-        };
-        self.save_free_form_slot(slot, cx);
-    }
-
-    pub(crate) fn cycle_free_form_backend(&mut self, slot_id: String, cx: &mut Context<Self>) {
-        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
-            return;
-        };
-        slot.backend = match slot.backend {
-            CliBackend::Codex => CliBackend::Claude,
-            CliBackend::Claude => CliBackend::Gemini,
-            CliBackend::Gemini => CliBackend::Opencode,
-            CliBackend::Opencode => CliBackend::Custom,
-            CliBackend::Custom => CliBackend::Codex,
-        };
-        slot.model = None;
-        slot.model_profile = None;
-        slot.model_source = CliModelSelectionSource::Default;
-        slot.thinking_level = ThinkingLevel::Default;
-        if slot.backend == CliBackend::Custom {
-            slot.execution_mode = AgentExecutionMode::ApiDirect;
-            slot.custom_risk_ack = false;
-        }
-        self.save_free_form_slot(slot, cx);
-    }
-
-    pub(crate) fn cycle_free_form_thinking(&mut self, slot_id: String, cx: &mut Context<Self>) {
-        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
-            return;
-        };
-        let profiles = self.model_profiles(slot.backend, slot.model.as_deref(), cx);
-        slot.model_profile = Self::next_model_profile(slot.model_profile.as_deref(), &profiles);
-        slot.thinking_level = ThinkingLevel::Default;
-        self.save_free_form_slot(slot, cx);
-    }
-
-    pub(crate) fn cycle_free_form_session_policy(
-        &mut self,
-        slot_id: String,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(mut slot) = self.current_free_form_slot(&slot_id, cx) else {
-            return;
-        };
-        slot.session_policy = match slot.session_policy {
-            SessionPolicy::FreshPerRun => SessionPolicy::ResumeExplicit,
-            SessionPolicy::ResumeExplicit | SessionPolicy::ResumePerPulsation => {
-                SessionPolicy::FreshPerRun
-            }
-        };
-        self.save_free_form_slot(slot, cx);
     }
 
     pub(crate) fn toggle_free_form_risk(&mut self, slot_id: String, cx: &mut Context<Self>) {
@@ -3912,7 +3674,7 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
@@ -3975,7 +3737,7 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
@@ -4178,7 +3940,7 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
@@ -4466,7 +4228,7 @@ impl AppModel {
                             .agents
                             .update(cx, |agents, _| agents.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
                 }
@@ -4507,6 +4269,9 @@ impl AppModel {
     }
 
     pub(crate) fn refresh_settings(&mut self, cx: &mut Context<Self>) {
+        if self.settings.read(cx).settings_section == crate::settings::SettingsSection::Usage {
+            self.refresh_usage(cx);
+        }
         if self.lifecycle.is_disposed() {
             return;
         }
@@ -4570,7 +4335,7 @@ impl AppModel {
         }));
     }
 
-    fn run_settings_operation(
+    pub(crate) fn run_settings_operation(
         &mut self,
         operation: crate::settings::SettingsFuture<String>,
         cx: &mut Context<Self>,
@@ -4604,7 +4369,7 @@ impl AppModel {
                             .settings
                             .update(cx, |settings, _| settings.fail(generation, error))
                         {
-                            model.notices.push(HeaderNoticeKind::Error, message);
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                         cx.notify();
                     }
@@ -4613,7 +4378,7 @@ impl AppModel {
         }));
     }
 
-    fn update_runtime_config(
+    pub(crate) fn update_runtime_config(
         &mut self,
         request: UpdateAgentRuntimeConfigRequest,
         success: &'static str,
@@ -4627,27 +4392,6 @@ impl AppModel {
                 backend.update_config(request).await?;
                 Ok(success.to_string())
             }),
-            cx,
-        );
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn cycle_routing_mode(&mut self, cx: &mut Context<Self>) {
-        let current = self
-            .settings
-            .read(cx)
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.config.routing_v2_mode)
-            .unwrap_or(RoutingMode::Off);
-        let next = match current {
-            RoutingMode::Off => RoutingMode::Shadow,
-            RoutingMode::Shadow => RoutingMode::On,
-            RoutingMode::On => RoutingMode::Off,
-        };
-        self.update_runtime_config(
-            runtime_config_update().with_routing_mode(next),
-            "Modo de roteamento atualizado.",
             cx,
         );
     }
@@ -4705,9 +4449,10 @@ impl AppModel {
             .as_ref()
             .map(ToString::to_string)
         else {
-            self.notices.push(
+            self.push_header_notice(
                 HeaderNoticeKind::Warning,
                 "Open a workspace before reindexing embeddings.",
+                cx,
             );
             cx.notify();
             return;
@@ -4734,48 +4479,7 @@ impl AppModel {
         );
     }
 
-    pub(crate) fn cycle_embedding_top_k(&mut self, cx: &mut Context<Self>) {
-        let current = self
-            .settings
-            .read(cx)
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.config.embedding_top_k)
-            .unwrap_or(5);
-        let next = match current {
-            1..=4 => 5,
-            5..=9 => 10,
-            10..=19 => 20,
-            _ => 3,
-        };
-        self.update_runtime_config(
-            runtime_config_update().with_embedding_top_k(next),
-            "Embedding Top K updated.",
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_adaptive_context_mode(&mut self, cx: &mut Context<Self>) {
-        let current = self
-            .settings
-            .read(cx)
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.config.adaptive_context_mode)
-            .unwrap_or(AdaptiveContextMode::Shadow);
-        let next = match current {
-            AdaptiveContextMode::Off => AdaptiveContextMode::Shadow,
-            AdaptiveContextMode::Shadow => AdaptiveContextMode::On,
-            AdaptiveContextMode::On => AdaptiveContextMode::Off,
-        };
-        self.update_runtime_config(
-            runtime_config_update().with_adaptive_context_mode(next),
-            "Adaptive context mode updated.",
-            cx,
-        );
-    }
-
-    fn update_dynamic_context_policy(
+    pub(crate) fn update_dynamic_context_policy(
         &mut self,
         update: impl FnOnce(&mut DynamicContextPolicy),
         cx: &mut Context<Self>,
@@ -4793,155 +4497,6 @@ impl AppModel {
             "Adaptive policy updated.",
             cx,
         );
-    }
-
-    pub(crate) fn cycle_dynamic_initial_k(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.initial_k = if policy.initial_k >= policy.max_k {
-                    1
-                } else {
-                    policy.initial_k + 1
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_max_k(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.max_k = if policy.max_k >= 3 {
-                    1
-                } else {
-                    policy.max_k + 1
-                };
-                policy.initial_k = policy.initial_k.min(policy.max_k);
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_min_similarity(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.min_similarity = match policy.min_similarity {
-                    value if value < 0.60 => 0.65,
-                    value if value < 0.70 => 0.75,
-                    value if value < 0.80 => 0.85,
-                    _ => 0.50,
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_min_candidates(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.min_candidates_count =
-                    if policy.min_candidates_count >= policy.max_notes_budget {
-                        1
-                    } else {
-                        policy.min_candidates_count + 1
-                    };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_max_notes(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.max_notes_budget = match policy.max_notes_budget {
-                    1..=4 => 8,
-                    5..=8 => 12,
-                    9..=12 => 20,
-                    _ => 4,
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_beam_width(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.beam_width = match policy.beam_width {
-                    1..=4 => 8,
-                    5..=8 => 12,
-                    _ => 4,
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_max_source_files(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.max_source_files = match policy.max_source_files {
-                    1..=3 => 5,
-                    4..=5 => 8,
-                    6..=8 => 12,
-                    _ => 3,
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_max_code_chars(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.max_code_chars = match policy.max_code_chars {
-                    0..=16_000 => 32_000,
-                    16_001..=32_000 => 48_000,
-                    32_001..=48_000 => 80_000,
-                    _ => 16_000,
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_dynamic_timeout(&mut self, cx: &mut Context<Self>) {
-        self.update_dynamic_context_policy(
-            |policy| {
-                policy.timeout_ms = match policy.timeout_ms {
-                    0..=500 => 1_000,
-                    501..=1_000 => 1_500,
-                    1_001..=1_500 => 3_000,
-                    1_501..=3_000 => 5_000,
-                    _ => 500,
-                };
-            },
-            cx,
-        );
-    }
-
-    pub(crate) fn cycle_settings_provider(&mut self, cx: &mut Context<Self>) {
-        self.settings.update(cx, |settings, _| {
-            let ids = settings
-                .snapshot
-                .as_ref()
-                .map(|snapshot| {
-                    snapshot
-                        .profiles
-                        .iter()
-                        .map(|profile| profile.id.clone())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            if let Some(index) = ids
-                .iter()
-                .position(|id| id == settings.connection_provider_id.as_ref())
-                && let Some(next) = ids.get((index + 1) % ids.len().max(1))
-            {
-                settings.connection_provider_id = next.clone().into();
-            }
-        });
-        cx.notify();
     }
 
     pub(crate) fn select_settings_provider(&mut self, provider_id: String, cx: &mut Context<Self>) {
@@ -5162,37 +4717,11 @@ impl AppModel {
         cx.notify();
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn cycle_route_strategy(&mut self, cx: &mut Context<Self>) {
-        self.settings.update(cx, |settings, _| {
-            settings.route_strategy = match settings.route_strategy.as_ref() {
-                "priority" => "lkgp".into(),
-                "lkgp" => "score".into(),
-                _ => "priority".into(),
-            };
-        });
-        cx.notify();
-    }
-
     pub(crate) fn set_route_strategy(&mut self, strategy: String, cx: &mut Context<Self>) {
         self.settings.update(cx, |settings, _| {
             settings.route_strategy = strategy.into();
         });
         self.close_dropdown(cx);
-        cx.notify();
-    }
-
-    pub(crate) fn cycle_route_limits(&mut self, cx: &mut Context<Self>) {
-        self.settings.update(cx, |settings, _| {
-            let (attempts, attempt_timeout, route_timeout) = match settings.route_max_attempts {
-                1 => (2, 30_000, 60_000),
-                2 => (3, 45_000, 120_000),
-                _ => (1, 15_000, 30_000),
-            };
-            settings.route_max_attempts = attempts;
-            settings.route_attempt_timeout_ms = attempt_timeout;
-            settings.route_timeout_ms = route_timeout;
-        });
         cx.notify();
     }
 
@@ -5337,46 +4866,6 @@ impl AppModel {
         );
     }
 
-    pub(crate) fn cycle_binding_role(&mut self, cx: &mut Context<Self>) {
-        const ROLES: [&str; 7] = [
-            "intake_router",
-            "task_specifier",
-            "contract_agent",
-            "backend_agent",
-            "test_agent",
-            "integrator",
-            "learning_agent",
-        ];
-        self.settings.update(cx, |settings, _| {
-            let current = ROLES
-                .iter()
-                .position(|role| *role == settings.binding_agent_role.as_ref())
-                .unwrap_or(0);
-            settings.binding_agent_role = ROLES[(current + 1) % ROLES.len()].into();
-        });
-        cx.notify();
-    }
-
-    pub(crate) fn cycle_binding_stage(&mut self, cx: &mut Context<Self>) {
-        const STAGES: [&str; 7] = [
-            "Intake",
-            "Specification",
-            "Contract",
-            "Code",
-            "Test",
-            "Integrator",
-            "Learning",
-        ];
-        self.settings.update(cx, |settings, _| {
-            let current = STAGES
-                .iter()
-                .position(|stage| *stage == settings.binding_stage.as_ref())
-                .unwrap_or(0);
-            settings.binding_stage = STAGES[(current + 1) % STAGES.len()].into();
-        });
-        cx.notify();
-    }
-
     pub(crate) fn save_settings_binding(&mut self, cx: &mut Context<Self>) {
         let Some(backend) = self.settings_backend.clone() else {
             return;
@@ -5388,9 +4877,10 @@ impl AppModel {
             .as_ref()
             .map(ToString::to_string)
         else {
-            self.notices.push(
+            self.push_header_notice(
                 HeaderNoticeKind::Warning,
                 "Open a project before creating the binding.",
+                cx,
             );
             cx.notify();
             return;
@@ -5617,9 +5107,10 @@ impl AppModel {
                                 }
                                 model.refresh_logs(cx);
                             }
-                            Err(error) => model.notices.push(
+                            Err(error) => model.push_header_notice(
                                 HeaderNoticeKind::Warning,
                                 format!("Failed to update runtime: {error}"),
+                                cx,
                             ),
                         }
                         cx.notify();
@@ -5676,14 +5167,15 @@ impl AppModel {
             Ok(Err(error)) => {
                 self.hydrating = false;
                 self.status = format!("Failed to restore session: {error}").into();
-                self.notices.push(HeaderNoticeKind::Error, error);
+                self.push_header_notice(HeaderNoticeKind::Error, error, cx);
             }
             Err(error) => {
                 self.hydrating = false;
                 self.status = format!("Restore worker failed: {error}").into();
-                self.notices.push(
+                self.push_header_notice(
                     HeaderNoticeKind::Error,
                     format!("Restore worker interrupted: {error}"),
+                    cx,
                 );
             }
         }
@@ -5810,7 +5302,7 @@ impl AppModel {
         self.session_dirty = false;
         self.status = format!("Session restored: {}", restored.root_path).into();
         if let Some(notice) = restored.notice {
-            self.notices.push(HeaderNoticeKind::Notice, notice);
+            self.push_header_notice(HeaderNoticeKind::Notice, notice, cx);
         }
         self.hydrating = false;
         self.refresh_pulsations_with_preferred(preferred_pulsation_id, cx);
@@ -5864,8 +5356,11 @@ impl AppModel {
             }
             Err(error) => {
                 self.session_dirty = true;
-                self.notices
-                    .push(HeaderNoticeKind::Warning, format!("Persistence: {error}"));
+                self.push_header_notice(
+                    HeaderNoticeKind::Warning,
+                    format!("Persistence: {error}"),
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -5969,6 +5464,7 @@ impl AppModel {
         self.chat_resync_tasks.clear();
         self.session_task.take();
         self.performance_probe.take();
+        self.notifications.wake.take();
         self.session_generation = self.session_generation.saturating_add(1);
         self.workspace_save_generations.clear();
 
@@ -5999,9 +5495,10 @@ impl AppModel {
                 let _ = this.update(cx, |model, cx| {
                     match result {
                         Ok(_) => model.session_dirty = false,
-                        Err(error) => model.notices.push(
+                        Err(error) => model.push_header_notice(
                             HeaderNoticeKind::Warning,
                             format!("Persistence on shutdown: {error}"),
+                            cx,
                         ),
                     }
                     cx.notify();
@@ -6011,6 +5508,25 @@ impl AppModel {
     }
 
     fn handle_event(&mut self, event: AppEvent, cx: &mut Context<Self>) {
+        let usage_changed = match &event {
+            AppEvent::Llm(envelope) => matches!(
+                envelope.event,
+                hvc_core::llm::LlmStreamEvent::RouteCompleted { .. }
+                    | hvc_core::llm::LlmStreamEvent::RouteFailed { .. }
+                    | hvc_core::llm::LlmStreamEvent::AttemptFailed { .. }
+            ),
+            AppEvent::Chat(envelope) => matches!(
+                envelope.kind,
+                hvc_core::chat_service::ChatEventKind::TurnCompleted
+                    | hvc_core::chat_service::ChatEventKind::TurnFailed
+                    | hvc_core::chat_service::ChatEventKind::TurnCancelled
+            ),
+            AppEvent::Terminal(envelope) => envelope.run.status.is_terminal(),
+            _ => false,
+        };
+        if usage_changed {
+            self.schedule_usage_refresh(cx);
+        }
         self.event_count = self.event_count.saturating_add(1);
         self.status = format!("Event received: {}", event.event_name()).into();
         match event {
@@ -6093,7 +5609,7 @@ impl AppModel {
     }
 }
 
-fn runtime_config_update() -> UpdateAgentRuntimeConfigRequest {
+pub(crate) fn runtime_config_update() -> UpdateAgentRuntimeConfigRequest {
     UpdateAgentRuntimeConfigRequest {
         provider: None,
         model: None,
@@ -6114,7 +5630,7 @@ fn runtime_config_update() -> UpdateAgentRuntimeConfigRequest {
     }
 }
 
-trait RuntimeConfigUpdateExt {
+pub(crate) trait RuntimeConfigUpdateExt {
     fn with_routing_mode(self, mode: RoutingMode) -> Self;
     fn with_context_strategy(self, strategy: ContextStrategy) -> Self;
     fn with_embedding_enabled(self, enabled: bool) -> Self;
@@ -6433,6 +5949,8 @@ mod tests {
                     hitl_checkpoints: Vec::new(),
                     pulsations: vec![test_pulsation()],
                     hitl_waiting_count: 0,
+                    failure_checkpoints: Vec::new(),
+                    failure_waiting_count: 0,
                     background_agents_count: 1,
                     brownfield_coverage: None,
                 })),

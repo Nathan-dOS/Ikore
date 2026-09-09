@@ -238,18 +238,21 @@ pub(crate) fn workspace_content_panel(
                 )
             },
         )
-        .when_some(
-            active_tab.as_ref().and_then(|tab| tab.save_error.clone()),
-            |panel, error| {
-                panel.child(
-                    div()
-                        .p_2()
-                        .rounded_sm()
-                        .bg(theme::danger_soft())
-                        .text_color(theme::danger())
-                        .child(error),
-                )
-            },
+        .child(
+            div()
+                .id("workspace-save-feedback")
+                .h(px(40.0))
+                .flex_shrink_0()
+                .overflow_y_scroll()
+                .px_2()
+                .text_sm()
+                .text_color(theme::danger())
+                .child(
+                    active_tab
+                        .as_ref()
+                        .and_then(|tab| tab.save_error.clone())
+                        .unwrap_or_default(),
+                ),
         )
         .child(
             div()
@@ -355,9 +358,16 @@ fn brownfield_onboarding_card(
                 )
             },
         )
-        .when_some(onboarding.error, |card, error| {
-            card.child(div().text_sm().text_color(theme::danger()).child(error))
-        })
+        .child(
+            div()
+                .id("onboarding-feedback")
+                .h(px(40.0))
+                .flex_shrink_0()
+                .overflow_y_scroll()
+                .text_sm()
+                .text_color(theme::danger())
+                .child(onboarding.error.unwrap_or_default()),
+        )
         .child(
             div()
                 .flex()

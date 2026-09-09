@@ -15,6 +15,41 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+/// What a turn was started for.
+///
+/// All three share the `forge_turns` table so that the partial unique index
+/// `forge_one_active_turn` keeps them mutually exclusive -- an analysis and a
+/// chat reply must never write the same feature concurrently -- and so both
+/// inherit cancellation and the restart sweep. They are distinguished so the
+/// Incubation transcript and, more importantly, the discovery prompt can be
+/// restricted to the conversation proper.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnKind {
+    #[default]
+    Discovery,
+    Triage,
+    Dependencies,
+}
+
+impl TurnKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Discovery => "discovery",
+            Self::Triage => "triage",
+            Self::Dependencies => "dependencies",
+        }
+    }
+
+    fn from_db(value: &str) -> Self {
+        match value {
+            "triage" => Self::Triage,
+            "dependencies" => Self::Dependencies,
+            _ => Self::Discovery,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeatureTurn {
@@ -26,6 +61,8 @@ pub struct FeatureTurn {
     pub assistant_message: Option<String>,
     pub error: Option<String>,
     pub suggested_dependencies: Vec<FeatureDependency>,
+    #[serde(default)]
+    pub kind: TurnKind,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -36,6 +73,39 @@ pub struct FeatureAgentResponse {
     pub brief: FeatureBrief,
     pub evaluation: FeatureEvaluation,
     pub suggested_dependencies: Vec<FeatureDependency>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageRecommendation {
+    Approve,
+    Archive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TriageAnalysisResponse {
+    pub output_language: String,
+    pub message: String,
+    pub evaluation: FeatureEvaluation,
+    pub structural_level: u8,
+    pub recommendation: TriageRecommendation,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProposedDependency {
+    pub prerequisite_id: String,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DependencyAnalysisResponse {
+    pub output_language: String,
+    pub message: String,
+    pub dependencies: Vec<ProposedDependency>,
 }
 
 pub struct FeatureAgentRuntime {
@@ -72,10 +142,69 @@ impl FeatureAgentRuntime {
         feature_id: &str,
     ) -> Result<Vec<FeatureTurn>, Error> {
         feature(db, project, feature_id)?;
-        Ok(db.prepare("SELECT id,feature_id,feature_revision,status,user_message,assistant_message,error,response_json FROM forge_turns WHERE feature_id=?1 ORDER BY ordinal")?.query_map([feature_id],|r|Ok(FeatureTurn{id:r.get(0)?,feature_id:r.get(1)?,feature_revision:r.get(2)?,status:r.get(3)?,user_message:r.get(4)?,assistant_message:r.get(5)?,error:r.get(6)?,suggested_dependencies:r.get::<_,Option<String>>(7)?.and_then(|raw| serde_json::from_str::<FeatureAgentResponse>(&raw).ok()).map(|r|r.suggested_dependencies).unwrap_or_default()}))?.collect::<Result<Vec<_>,_>>()?)
+        Ok(db.prepare("SELECT id,feature_id,feature_revision,status,user_message,assistant_message,error,response_json,kind FROM forge_turns WHERE feature_id=?1 ORDER BY ordinal")?.query_map([feature_id],|r|Ok(FeatureTurn{id:r.get(0)?,feature_id:r.get(1)?,feature_revision:r.get(2)?,status:r.get(3)?,user_message:r.get(4)?,assistant_message:r.get(5)?,error:r.get(6)?,suggested_dependencies:r.get::<_,Option<String>>(7)?.and_then(|raw| serde_json::from_str::<FeatureAgentResponse>(&raw).ok()).map(|r|r.suggested_dependencies).unwrap_or_default(),kind:TurnKind::from_db(&r.get::<_,String>(8)?)}))?.collect::<Result<Vec<_>,_>>()?)
     }
     pub fn start(
         self: &Arc<Self>,
+        project: &str,
+        feature_id: &str,
+        expected: u64,
+        request_id: &str,
+        message: &str,
+    ) -> Result<String, Error> {
+        self.start_turn(
+            TurnKind::Discovery,
+            project,
+            feature_id,
+            expected,
+            request_id,
+            message,
+        )
+    }
+
+    /// Runs the triage judgement: the four business answers, the ICE ratings,
+    /// the structural level and an approve/archive recommendation.
+    ///
+    /// Gated on the incubation having no open questions left, because the
+    /// ratings are only meaningful once the scope has stopped moving.
+    pub fn start_triage_analysis(
+        self: &Arc<Self>,
+        project: &str,
+        feature_id: &str,
+        expected: u64,
+        request_id: &str,
+    ) -> Result<String, Error> {
+        self.start_turn(
+            TurnKind::Triage,
+            project,
+            feature_id,
+            expected,
+            request_id,
+            "Analyze this feature for triage.",
+        )
+    }
+
+    /// Proposes and applies the prerequisite edges for this feature.
+    pub fn start_dependency_analysis(
+        self: &Arc<Self>,
+        project: &str,
+        feature_id: &str,
+        expected: u64,
+        request_id: &str,
+    ) -> Result<String, Error> {
+        self.start_turn(
+            TurnKind::Dependencies,
+            project,
+            feature_id,
+            expected,
+            request_id,
+            "Analyze this feature's dependencies.",
+        )
+    }
+
+    fn start_turn(
+        self: &Arc<Self>,
+        kind: TurnKind,
         project: &str,
         feature_id: &str,
         expected: u64,
@@ -106,8 +235,9 @@ impl FeatureAgentRuntime {
             return Ok(turn);
         }
         editable_feature(&tx, &f, expected)?;
+        validate_analysis_gate(kind, &f)?;
         let turn = id();
-        tx.execute("INSERT INTO forge_turns(id,feature_id,feature_revision,ordinal,request_id,status,user_message,created_at,updated_at) VALUES(?1,?2,?3,(SELECT COALESCE(MAX(ordinal),0)+1 FROM forge_turns WHERE feature_id=?2),?4,'running',?5,?6,?6)",params![turn,feature_id,expected,request_id,message,now()])?;
+        tx.execute("INSERT INTO forge_turns(id,feature_id,feature_revision,ordinal,request_id,status,user_message,kind,created_at,updated_at) VALUES(?1,?2,?3,(SELECT COALESCE(MAX(ordinal),0)+1 FROM forge_turns WHERE feature_id=?2),?4,'running',?5,?6,?7,?7)",params![turn,feature_id,expected,request_id,message,kind.as_str(),now()])?;
         tx.commit()?;
         let token = CancellationToken::new();
         active.insert(turn.clone(), token.clone());
@@ -116,7 +246,11 @@ impl FeatureAgentRuntime {
         let turn_id = turn.clone();
         let project = project.to_string();
         self.runtime.spawn(async move {
-            let outcome=this.run(&f,&turn_id,&token).await;
+            let outcome = match kind {
+                TurnKind::Discovery => this.run(&f, &turn_id, &token).await,
+                TurnKind::Triage => this.run_triage(&f, &turn_id, &token).await,
+                TurnKind::Dependencies => this.run_dependencies(&f, &turn_id, &token).await,
+            };
             if let Err(error) = outcome && let Ok(db) = this.persistence.connection() {
                 let status = if token.is_cancelled() { "cancelled" } else { "failed" };
                 let _ = db.execute(
@@ -163,7 +297,11 @@ impl FeatureAgentRuntime {
         turn: &str,
         cancellation: &CancellationToken,
     ) -> Result<(), Error> {
+        // Analysis turns are not part of the conversation: including them would
+        // both read as chat to the model and spend one of the six slots that
+        // should carry actual developer answers.
         let mut history = self.history(&f.project_id, &f.id)?;
+        history.retain(|turn| turn.kind == TurnKind::Discovery);
         if history.len() > 6 {
             history.drain(..history.len() - 6);
         }
@@ -243,6 +381,7 @@ impl FeatureAgentRuntime {
                     &f.project_id,
                     &f.id,
                     AgentRole::IntakeRouter,
+                    "Intake",
                     prompt,
                     schema,
                     cancellation,
@@ -288,6 +427,7 @@ impl FeatureAgentRuntime {
                 &f.project_id,
                 &f.id,
                 AgentRole::FeatureAgent,
+                "Feature",
                 prompt,
                 schema,
                 cancellation,
@@ -359,6 +499,283 @@ impl FeatureAgentRuntime {
         tx.commit()?;
         Ok(())
     }
+
+    async fn run_triage(
+        &self,
+        f: &Feature,
+        turn: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), Error> {
+        let prompt = format!(
+            "You are FeatureAgent performing triage on a feature whose scope is settled. Judge it on its own merits; do not restate the brief. Answer the four screens concretely: value and need, product alignment, feasibility and engineering risk, usability and adoption. Rate impact, confidence and effort from 1 to 5, where effort 5 is the largest. Set structuralLevel to 0 for foundation work, 1 for domain logic, 2 for interface, 3 for optimization. Recommend approve or archive and justify it in rationale. Never dispatch, write files or implement code. Use English.\n{}",
+            service::json(&json!({"feature": f}))?
+        );
+        let raw = self
+            .persistence
+            .execute_feature_request(
+                &f.project_id,
+                &f.id,
+                AgentRole::FeatureAgent,
+                "Triage",
+                prompt,
+                triage_analysis_schema(),
+                cancellation,
+                self.gateway_override.as_deref(),
+            )
+            .await?;
+        let result: TriageAnalysisResponse = decode(&raw)?;
+        if result.output_language != "en" {
+            return Err(invalid("Invalid triage analysis language"));
+        }
+        validate_prose(&serde_json::to_value(&result.evaluation).map_err(invalid)?)?;
+        crate::agent_output_language::validate_english_text("triage rationale", &result.rationale)
+            .map_err(invalid)?;
+        validate_evaluation(&result.evaluation, result.structural_level)?;
+
+        let mut db = self.persistence.connection()?;
+        let mut tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if cancellation.is_cancelled() {
+            return Err(invalid("Feature analysis cancelled"));
+        }
+        let current = feature(&tx, &f.project_id, &f.id)?;
+        if current.revision != f.revision {
+            return Err(invalid("Feature changed while the analysis was generated"));
+        }
+        let active:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM forge_turns WHERE id=?1 AND feature_revision=?2 AND status='running')",params![turn,f.revision],|r|r.get(0))?;
+        if !active {
+            return Err(invalid("Feature turn is no longer active"));
+        }
+        editable_feature_excluding_turn(&tx, &current, f.revision, turn)?;
+        // Neither of the writes below bumps `revision`, so the turn stays valid
+        // against the revision it was admitted at. That is what makes it correct
+        // to skip `save_brief` here -- going through it would reset the feature
+        // to incubating and undo the very transition being made.
+        apply_evaluation(&tx, &f.id, &result.evaluation, result.structural_level)?;
+
+        let mut skipped_approval = None;
+        let mut approved = false;
+        if result.recommendation == TriageRecommendation::Approve {
+            // Re-read: applying the evaluation moved incubating -> in_triage.
+            let triaged = feature(&tx, &f.project_id, &f.id)?;
+            // A savepoint, because approval writes tasks before it can fail on a
+            // changed source or an unresolvable proposal dependency. Without it a
+            // late failure would leave half-inserted tasks behind in the turn
+            // commit below.
+            let savepoint = tx.savepoint()?;
+            match apply_approval(&savepoint, &f.project_id, &triaged, f.revision) {
+                Ok(_) => {
+                    savepoint.commit()?;
+                    approved = true;
+                }
+                Err(error) => {
+                    drop(savepoint);
+                    skipped_approval = Some(error.to_string());
+                }
+            }
+        }
+
+        let display = format!(
+            "{}\n\nRecommendation: {}\n{}{}",
+            result.message,
+            match result.recommendation {
+                TriageRecommendation::Approve => "approve",
+                TriageRecommendation::Archive => "archive",
+            },
+            result.rationale,
+            match (&skipped_approval, approved) {
+                (Some(reason), _) => format!(
+                    "\n\nApproval was recommended but not applied: {reason}. Resolve that and approve manually."
+                ),
+                (None, true) => "\n\nScope approved and tasks created.".into(),
+                (None, false) => String::new(),
+            }
+        );
+        tx.execute("UPDATE forge_turns SET status='completed',assistant_message=?2,response_json=?3,updated_at=?4 WHERE id=?1",params![turn,display,service::json(&result)?,now()])?;
+        tx.commit()?;
+        // Publication reconciliation opens its own connection and writes to disk,
+        // so it can only run once the turn is committed -- and it must not fail
+        // the turn, since a publication conflict is separately reported and
+        // recoverable through retry_plan_publications.
+        if approved {
+            let _ = FeatureForgeService::new(self.persistence.clone())
+                .reconcile_plan_publications(&f.project_id);
+        }
+        Ok(())
+    }
+
+    async fn run_dependencies(
+        &self,
+        f: &Feature,
+        turn: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), Error> {
+        let snapshot =
+            FeatureForgeService::new(self.persistence.clone()).snapshot(&f.project_id)?;
+        let candidates = snapshot
+            .features
+            .iter()
+            .filter(|other| other.id != f.id && other.state != FeatureState::Archived)
+            .take(30)
+            .map(|other| {
+                json!({
+                    "id": other.id,
+                    "title": other.title,
+                    "state": other.state,
+                    "structuralLevel": other.structural_level,
+                    "objective": clip(&other.brief.objective, 240),
+                })
+            })
+            .collect::<Vec<_>>();
+        let existing = snapshot
+            .dependencies
+            .iter()
+            .filter(|edge| edge.feature_id == f.id)
+            .map(|edge| json!({"prerequisiteId": edge.prerequisite_id, "origin": edge.origin}))
+            .collect::<Vec<_>>();
+        let prompt = format!(
+            "You are FeatureAgent mapping prerequisites. Return only the features that must be delivered BEFORE this one, using ids from knownFeatures. A lower structural level is usually a prerequisite of a higher one. Do not invent ids, do not propose a feature as its own prerequisite, and do not repeat relations already listed in existingDependencies. Prefer few, defensible relations over many speculative ones; an empty list is a valid answer. Justify each with a concrete rationale. Never dispatch, write files or implement code. Use English.\n{}",
+            service::json(&json!({
+                "feature": {"id": f.id, "title": f.title, "objective": f.brief.objective, "scope": f.brief.scope, "structuralLevel": f.structural_level},
+                "knownFeatures": candidates,
+                "existingDependencies": existing,
+            }))?
+        );
+        let raw = self
+            .persistence
+            .execute_feature_request(
+                &f.project_id,
+                &f.id,
+                AgentRole::FeatureAgent,
+                "Dependencies",
+                prompt,
+                dependency_analysis_schema(),
+                cancellation,
+                self.gateway_override.as_deref(),
+            )
+            .await?;
+        let result: DependencyAnalysisResponse = decode(&raw)?;
+        if result.output_language != "en" {
+            return Err(invalid("Invalid dependency analysis language"));
+        }
+        for proposed in &result.dependencies {
+            if proposed.prerequisite_id == f.id
+                || !snapshot
+                    .features
+                    .iter()
+                    .any(|known| known.id == proposed.prerequisite_id)
+            {
+                return Err(invalid("Proposed dependency was not supplied by the host"));
+            }
+            crate::agent_output_language::validate_english_text(
+                "dependency rationale",
+                &proposed.rationale,
+            )
+            .map_err(invalid)?;
+            text(&proposed.rationale, 4000)?;
+        }
+
+        let mut db = self.persistence.connection()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if cancellation.is_cancelled() {
+            return Err(invalid("Feature analysis cancelled"));
+        }
+        let current = feature(&tx, &f.project_id, &f.id)?;
+        if current.revision != f.revision {
+            return Err(invalid("Feature changed while the analysis was generated"));
+        }
+        let active:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM forge_turns WHERE id=?1 AND feature_revision=?2 AND status='running')",params![turn,f.revision],|r|r.get(0))?;
+        if !active {
+            return Err(invalid("Feature turn is no longer active"));
+        }
+        editable_feature_excluding_turn(&tx, &current, f.revision, turn)?;
+
+        let human: std::collections::HashSet<&str> = snapshot
+            .dependencies
+            .iter()
+            .filter(|edge| edge.feature_id == f.id && edge.origin == DependencyOrigin::Human)
+            .map(|edge| edge.prerequisite_id.as_str())
+            .collect();
+        let mut applied = 0usize;
+        let mut skipped = Vec::new();
+        for proposed in &result.dependencies {
+            if human.contains(proposed.prerequisite_id.as_str()) {
+                skipped.push(format!(
+                    "{} (already confirmed by you)",
+                    proposed.prerequisite_id
+                ));
+                continue;
+            }
+            // Checked per edge rather than up front: the walk sees the edges
+            // inserted earlier in this same transaction, so each one is judged
+            // against the graph the previous ones built.
+            if dependency_cycle(&tx, &f.id, &proposed.prerequisite_id)? {
+                skipped.push(format!(
+                    "{} (would create a cycle)",
+                    proposed.prerequisite_id
+                ));
+                continue;
+            }
+            upsert_dependency(
+                &tx,
+                &f.id,
+                &proposed.prerequisite_id,
+                &proposed.rationale,
+                DependencyOrigin::Agent,
+            )?;
+            applied += 1;
+        }
+
+        let display = format!(
+            "{}\n\nApplied {applied} relation(s).{}",
+            result.message,
+            if skipped.is_empty() {
+                String::new()
+            } else {
+                format!("\nSkipped: {}", skipped.join("; "))
+            }
+        );
+        tx.execute("UPDATE forge_turns SET status='completed',assistant_message=?2,response_json=?3,updated_at=?4 WHERE id=?1",params![turn,display,service::json(&result)?,now()])?;
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+/// Preconditions each analysis depends on.
+///
+/// `editable_feature` has already rejected a concurrently running turn, an
+/// active pulsation and an archived feature, so this only covers what is
+/// specific to analysis.
+fn validate_analysis_gate(kind: TurnKind, f: &Feature) -> Result<(), Error> {
+    if kind == TurnKind::Discovery {
+        return Ok(());
+    }
+    if !f.brief.pending_decisions.is_empty() {
+        return Err(invalid(
+            "Resolve the open incubation questions before running an analysis",
+        ));
+    }
+    if kind == TurnKind::Dependencies {
+        // Triage first: the structural level it assigns is the signal the
+        // dependency pass uses to reason about which layer precedes which.
+        if f.state == FeatureState::Incubating || f.evaluation.score().is_none() {
+            return Err(invalid(
+                "Run the triage analysis before mapping dependencies",
+            ));
+        }
+        if matches!(f.state, FeatureState::Executing | FeatureState::Done) {
+            return Err(invalid(
+                "Dependencies cannot change during or after execution",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn clip(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_string();
+    }
+    value.chars().take(limit).collect::<String>() + "…"
 }
 
 fn string() -> Value {
@@ -379,6 +796,29 @@ fn object(properties: Value) -> Value {
 fn array(items: Value) -> Value {
     json!({"type":"array","items":items})
 }
+/// One schema serves every CLI backend here, unlike the discovery response.
+///
+/// The two things that force a Codex-specific variant there are nullable
+/// ratings (`type: [integer, null]` vs `anyOf`) and `const` vs `enum`. Triage
+/// ratings are mandatory -- producing them is the entire point of the pass --
+/// so making them plain required integers removes the first difference, and
+/// using `enum` removes the second.
+pub(crate) fn triage_analysis_schema() -> Value {
+    let rating = json!({"type":"integer","minimum":1,"maximum":5});
+    let evaluation = object(
+        json!({"value":string(),"alignment":string(),"feasibility":string(),"usability":string(),"impact":rating.clone(),"confidence":rating.clone(),"effort":rating}),
+    );
+    object(
+        json!({"outputLanguage":{"type":"string","enum":["en"]},"message":string(),"evaluation":evaluation,"structuralLevel":{"type":"integer","minimum":0,"maximum":3},"recommendation":{"type":"string","enum":["approve","archive"]},"rationale":string()}),
+    )
+}
+
+pub(crate) fn dependency_analysis_schema() -> Value {
+    object(
+        json!({"outputLanguage":{"type":"string","enum":["en"]},"message":string(),"dependencies":array(object(json!({"prerequisiteId":string(),"rationale":string()})))}),
+    )
+}
+
 pub(crate) fn canonical_response_schema() -> Value {
     let criterion = object(json!({"id":string(),"description":string()}));
     let task = object(
