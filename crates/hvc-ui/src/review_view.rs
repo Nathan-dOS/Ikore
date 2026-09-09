@@ -1,48 +1,54 @@
-// The HITL checkpoint review surface. Formerly a Workspace view mode reached through a separate
-// Editor/HITL toggle (three navigation levels away from the pipeline in Pulsations); now a section
-// of Pulsations itself, selected automatically when a checkpoint appears. See the UI flow plan
-// Part 1.2.
+//! Complete checkpoint artifacts, scoped to the persisted producer and independent of Workspace.
 
-use gpui::{AnyElement, Context, IntoElement, div, prelude::*, px};
+use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
 use hvc_core::persistence_service::HitlDecision;
-use hvc_editor::{DiffMark, build_diff_rows};
 
 use crate::app_model::AppModel;
 use crate::hitl::{ApproveHitl, RejectHitl, RequestHitlRevision};
 use crate::theme;
-use crate::workspace::WorkspaceTabModel;
-
-struct HitlSurfaceContent {
-    checkpoint_id: Option<String>,
-    title: Option<String>,
-    input: String,
-    generated: String,
-    busy: bool,
-    error: Option<String>,
-}
+use crate::workspace_view::render_markdown_block;
 
 pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
-    // The diff prefers the Workspace editor's open tab for the checkpoint's file when one happens
-    // to be open (real before/after content); otherwise it falls back to the orchestration
-    // runtime's synthetic checkpoint summary. This mirrors the pre-move behavior exactly.
-    let active_tab = model.workspace.read(cx).active_tab().cloned();
-    let (hitl, diff_expanded, confirm_reject) = {
-        let pulsations = model.pulsations.read(cx);
-        (
-            HitlSurfaceContent {
-                checkpoint_id: pulsations.hitl.pulsation_id.clone(),
-                title: pulsations.hitl.title.clone(),
-                input: pulsations.hitl.input.clone(),
-                generated: pulsations.hitl.generated.clone(),
-                busy: pulsations.hitl.busy,
-                error: pulsations.hitl.error.clone(),
-            },
-            pulsations.diff_expanded,
-            model.confirm_hitl_reject,
-        )
-    };
+    let pulsations = model.pulsations.read(cx);
+    let hitl = &pulsations.hitl;
+    let title = hitl
+        .title
+        .clone()
+        .unwrap_or_else(|| "Checkpoint review".into());
+    let has_checkpoint = hitl.expected_checkpoint.is_some();
+    let can_decide = has_checkpoint && !hitl.busy;
+    let can_approve = hitl.can_approve();
+    let busy = hitl.busy;
+    let loading = hitl.documents_loading;
+    let load_error = hitl.documents_error.clone();
+    let decision_error = hitl.error.clone();
+    let selected = hitl.selected_document;
+    let source = hitl.show_source;
+    let show_feedback = hitl.show_feedback;
+    let expanded = pulsations.diff_expanded;
+    let documents = hitl.documents.clone();
+    let active_document = documents.get(selected).cloned();
+    let reader_id = SharedString::from(format!(
+        "review-reader-{}-{}-{}",
+        hitl.expected_checkpoint
+            .as_ref()
+            .map(|c| c.checkpoint_id.as_str())
+            .unwrap_or("none"),
+        active_document
+            .as_ref()
+            .map(|d| d.artifact.artifact_id.as_str())
+            .unwrap_or("none"),
+        source,
+    ));
+    let confirm_reject = model.confirm_hitl_reject;
+
     div()
         .size_full()
+        .min_w_0()
+        .min_h_0()
+        .overflow_hidden()
+        .flex()
+        .flex_col()
         .key_context("HitlReview")
         .on_action(cx.listener(|model, _: &ApproveHitl, _, cx| {
             model.apply_hitl_decision(HitlDecision::Approve, cx);
@@ -54,58 +60,26 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
             if model.confirm_hitl_reject {
                 model.set_confirm_hitl_reject(false, cx);
                 model.apply_hitl_decision(HitlDecision::Reject, cx);
-            } else {
+            } else if model.pulsations.read(cx).hitl.expected_checkpoint.is_some() {
                 model.set_confirm_hitl_reject(true, cx);
             }
         }))
-        .child(hitl_diff_surface(
-            active_tab,
-            hitl,
-            diff_expanded,
-            confirm_reject,
-            cx,
-        ))
-        .into_any_element()
-}
-
-fn hitl_diff_surface(
-    active_tab: Option<WorkspaceTabModel>,
-    hitl: HitlSurfaceContent,
-    expanded: bool,
-    confirm_reject: bool,
-    cx: &mut Context<AppModel>,
-) -> impl IntoElement {
-    let input = active_tab
-        .as_ref()
-        .map(|tab| tab.base_content.as_str())
-        .unwrap_or(hitl.input.as_str());
-    let generated = active_tab
-        .as_ref()
-        .map(|tab| tab.content.as_str())
-        .unwrap_or(hitl.generated.as_str());
-    let review_title = active_tab
-        .as_ref()
-        .map(|tab| tab.relative_path.to_string())
-        .or(hitl.title)
-        .unwrap_or_else(|| "Markdown Diff".into());
-    let rows = build_diff_rows(input, generated);
-    let has_checkpoint = hitl.checkpoint_id.is_some();
-    let busy = hitl.busy;
-    div()
-        .size_full()
-        .flex()
-        .flex_col()
         .child(
             div()
-                .h(px(52.0))
+                .flex_shrink_0()
+                .min_w_0()
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .justify_between()
-                .px_4()
+                .gap_2()
+                .p_3()
                 .border_b_1()
                 .border_color(theme::border())
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
                         .child(
                             div()
                                 .text_xs()
@@ -115,113 +89,267 @@ fn hitl_diff_surface(
                         .child(
                             div()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child(review_title),
+                                .text_ellipsis()
+                                .child(title),
                         ),
                 )
                 .child(
                     div()
-                        .id("review-diff-expand")
+                        .id("review-expand")
+                        .debug_selector(|| "review-expand".into())
                         .px_3()
                         .py_1()
                         .rounded_sm()
                         .bg(theme::surface_raised())
                         .cursor_pointer()
-                        .on_click(cx.listener(|model, _, _, cx| {
-                            model.toggle_pulsation_diff(cx);
-                        }))
+                        .on_click(cx.listener(|model, _, _, cx| model.toggle_pulsation_diff(cx)))
                         .child(if expanded {
-                            "Collapse diff"
+                            "Show pulsations"
                         } else {
-                            "Expand diff"
+                            "Expand review"
                         }),
                 ),
         )
-        .child(div().flex_1().min_h_0().flex().children(
-            [("Input baseline", true), ("Generated draft", false)].map(|(title, left)| {
+        .when(!documents.is_empty(), |panel| {
+            panel.child(
                 div()
-                    .id(if left {
-                        "review-diff-left"
-                    } else {
-                        "review-diff-right"
-                    })
-                    .flex_1()
+                    .id("review-document-tabs")
+                    .flex_shrink_0()
                     .min_w_0()
-                    .overflow_y_scroll()
-                    .when(left, |panel| {
-                        panel.border_r_1().border_color(theme::border())
-                    })
+                    .h(px(40.0))
+                    .overflow_x_scroll()
+                    .flex()
+                    .gap_1()
+                    .p_2()
+                    .border_b_1()
+                    .border_color(theme::border())
+                    .children(documents.iter().enumerate().map(|(index, document)| {
+                        div()
+                            .id(SharedString::from(format!(
+                                "review-document-{}",
+                                document.artifact.artifact_id
+                            )))
+                            .min_w_0()
+                            .flex_shrink_0()
+                            .max_w_full()
+                            .px_3()
+                            .py_1()
+                            .rounded_sm()
+                            .text_sm()
+                            .bg(if index == selected {
+                                theme::accent_soft()
+                            } else {
+                                theme::surface_raised()
+                            })
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |model, _, _, cx| {
+                                model.set_confirm_hitl_reject(false, cx);
+                                model.pulsations.update(cx, |pulsations, cx| {
+                                    pulsations.hitl.selected_document = index;
+                                    cx.notify();
+                                });
+                                cx.notify();
+                            }))
+                            .child(format!("{}. {}", index + 1, document.artifact.name))
+                    })),
+            )
+        })
+        .when_some(active_document.clone(), |panel, document| {
+            let copy = document.artifact.content.clone();
+            panel.child(
+                div()
+                    .flex_shrink_0()
+                    .min_w_0()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
                     .child(
                         div()
-                            .p_3()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(theme::text_muted())
+                            .text_ellipsis()
+                            .child(document.artifact.relative_path.clone().unwrap_or_else(|| {
+                                format!("{} · Persisted document", document.artifact.kind)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("review-source-toggle")
+                            .debug_selector(|| "review-source-toggle".into())
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
                             .bg(theme::surface_raised())
                             .text_sm()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(title),
-                    )
-                    .children(rows.iter().map(move |row| {
-                        let side = if left { &row.left } else { &row.right };
-                        let color = match side.mark {
-                            DiffMark::Add => theme::accent(),
-                            DiffMark::Remove | DiffMark::Change => theme::warning(),
-                            DiffMark::Neutral | DiffMark::Empty => theme::text_muted(),
-                        };
-                        div()
-                            .min_h(px(24.0))
-                            .flex()
-                            .gap_2()
-                            .px_3()
-                            .font_family(theme::FONT_MONO)
-                            .text_sm()
-                            .text_color(color)
-                            .child(
-                                div().w(px(34.0)).text_color(theme::text_muted()).child(
-                                    side.line.map(|line| line.to_string()).unwrap_or_default(),
-                                ),
-                            )
-                            .child(side.marker.to_string())
-                            .child(if side.text.is_empty() {
-                                " ".to_owned()
+                            .cursor_pointer()
+                            .on_click(cx.listener(|model, _, _, cx| {
+                                model.pulsations.update(cx, |pulsations, cx| {
+                                    pulsations.hitl.show_source = !pulsations.hitl.show_source;
+                                    cx.notify();
+                                });
+                                cx.notify();
+                            }))
+                            .child(if source {
+                                "Document"
                             } else {
-                                side.text.clone()
+                                "Markdown source"
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("review-copy-document")
+                            .debug_selector(|| "review-copy-document".into())
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
+                            .bg(theme::surface_raised())
+                            .text_sm()
+                            .cursor_pointer()
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))
                             })
-                    }))
-            }),
-        ))
-        .when_some(hitl.error, |surface, error| {
-            surface.child(
-                div()
-                    .px_4()
-                    .py_2()
-                    .bg(theme::danger_soft())
-                    .text_color(theme::danger())
-                    .child(error),
+                            .child("Copy Markdown"),
+                    ),
             )
         })
         .child(
             div()
+                .id(reader_id)
+                .debug_selector(|| "review-document-reader".into())
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .overflow_scroll()
+                .p_4()
+                .when(!has_checkpoint, |reader| {
+                    reader.child("No checkpoint awaiting decision.")
+                })
+                .when(loading, |reader| {
+                    reader.child("Loading complete checkpoint documents…")
+                })
+                .when_some(load_error, |reader, error| {
+                    reader
+                        .child(div().text_color(theme::danger()).child(error))
+                        .child(
+                            div()
+                                .id("review-retry")
+                                .mt_3()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .bg(theme::surface_raised())
+                                .cursor_pointer()
+                                .on_click(cx.listener(|model, _, _, cx| {
+                                    model.pulsations.update(cx, |pulsations, _| {
+                                        pulsations.hitl.retry_documents()
+                                    });
+                                    model.refresh_hitl_documents(cx);
+                                }))
+                                .child("Retry loading documents"),
+                        )
+                })
+                .when_some(active_document, |reader, document| {
+                    if source {
+                        reader.child(
+                            div()
+                                .min_w_0()
+                                .w_full()
+                                .whitespace_normal()
+                                .font_family(theme::FONT_MONO)
+                                .text_sm()
+                                .line_height(px(22.0))
+                                .child(document.artifact.content),
+                        )
+                    } else {
+                        reader.children(document.preview.into_iter().map(render_markdown_block))
+                    }
+                }),
+        )
+        .child(
+            div()
+                .id("review-validation")
+                .flex_shrink_0()
+                .h(px(28.0))
+                .overflow_y_scroll()
+                .px_3()
+                .text_sm()
+                .text_color(theme::danger())
+                .child(decision_error.unwrap_or_default()),
+        )
+        .when(has_checkpoint && show_feedback, |panel| {
+            panel.child(
+                div()
+                    .flex_shrink_0()
+                    .px_3()
+                    .py_2()
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .child(
+                        div()
+                            .mb_1()
+                            .text_xs()
+                            .text_color(theme::text_muted())
+                            .child("Revision feedback"),
+                    )
+                    .child(model.stage_feedback_input.clone()),
+            )
+        })
+        .child(
+            div()
+                .debug_selector(|| "review-decision-bar".into())
+                .flex_shrink_0()
                 .min_h(px(54.0))
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap_2()
-                .px_4()
+                .p_3()
                 .border_t_1()
                 .border_color(theme::border())
                 .child(hitl_button(
                     "hitl-approve",
-                    "Approve  Enter",
-                    !busy && has_checkpoint,
+                    "Approve",
+                    can_approve,
                     HitlDecision::Approve,
                     false,
                     cx,
                 ))
                 .child(hitl_button(
                     "hitl-revision",
-                    "Request revision  R",
-                    !busy && has_checkpoint,
+                    "Request revision",
+                    can_decide,
                     HitlDecision::RequestRevision,
                     false,
                     cx,
                 ))
+                .when(has_checkpoint, |bar| {
+                    bar.child(
+                        div()
+                            .id("review-feedback-toggle")
+                            .px_2()
+                            .py_1()
+                            .text_xs()
+                            .cursor_pointer()
+                            .text_color(theme::text_muted())
+                            .on_click(cx.listener(|model, _, _, cx| {
+                                model.pulsations.update(cx, |state, _| {
+                                    state.hitl.show_feedback = !state.hitl.show_feedback
+                                });
+                                cx.notify();
+                            }))
+                            .child(if show_feedback {
+                                "Hide feedback"
+                            } else {
+                                "Add feedback"
+                            }),
+                    )
+                })
                 .child(hitl_reject_button(
                     "hitl-reject",
                     if confirm_reject {
@@ -229,29 +357,20 @@ fn hitl_diff_surface(
                     } else {
                         "Reject"
                     },
-                    !busy && has_checkpoint,
+                    can_decide,
                     confirm_reject,
                     cx,
                 ))
-                .when(!has_checkpoint, |bar| {
-                    bar.child(
-                        div()
-                            .ml_auto()
-                            .text_sm()
-                            .text_color(theme::text_muted())
-                            .child("No checkpoint awaiting decision."),
-                    )
-                })
                 .when(busy, |bar| {
                     bar.child(
                         div()
-                            .ml_auto()
                             .text_sm()
                             .text_color(theme::accent())
                             .child("Applying decision…"),
                     )
                 }),
         )
+        .into_any_element()
 }
 
 fn hitl_button(
@@ -264,6 +383,7 @@ fn hitl_button(
 ) -> impl IntoElement {
     div()
         .id(id)
+        .debug_selector(move || id.into())
         .px_3()
         .py_2()
         .rounded_md()
@@ -300,6 +420,7 @@ fn hitl_reject_button(
 ) -> impl IntoElement {
     div()
         .id(id)
+        .debug_selector(move || id.into())
         .px_3()
         .py_2()
         .rounded_md()

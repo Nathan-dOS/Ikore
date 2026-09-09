@@ -780,6 +780,18 @@ pub struct HitlCheckpoint {
     pub state_version: u64,
 }
 
+/// Complete persisted output of the job that opened an artifact-review checkpoint.
+/// Workspace files may have changed since generation and are never a review source.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HitlReviewDocument {
+    pub artifact_id: String,
+    pub name: String,
+    pub kind: String,
+    pub relative_path: Option<String>,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CliFallbackCheckpoint {

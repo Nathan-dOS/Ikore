@@ -100,6 +100,186 @@ impl Render for ModelHarness {
     }
 }
 
+#[gpui::test]
+fn pulsation_groups_keep_user_choices_when_leaving_and_returning(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    select(&model, visual, AppView::Pulsations);
+    assert!(model.read_with(visual, |m, cx| {
+        m.pulsations
+            .read(cx)
+            .group_expanded(PulsationStatus::Running)
+    }));
+    assert!(!model.read_with(visual, |m, cx| {
+        m.pulsations
+            .read(cx)
+            .group_expanded(PulsationStatus::Planning)
+    }));
+    click(visual, "pulsation-group-running");
+    click(visual, "pulsation-group-planning");
+    let before_width = visual
+        .debug_bounds("pulsations-columns-left")
+        .unwrap()
+        .size
+        .width;
+    let sash = visual
+        .debug_bounds("pulsations-columns-sash")
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(sash, gpui::MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        sash + gpui::point(px(60.0), px(0.0)),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        sash + gpui::point(px(60.0), px(0.0)),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let resized_width = visual
+        .debug_bounds("pulsations-columns-left")
+        .unwrap()
+        .size
+        .width;
+    assert!(resized_width > before_width);
+    select(&model, visual, AppView::Workspace);
+    select(&model, visual, AppView::Pulsations);
+    assert_eq!(
+        visual
+            .debug_bounds("pulsations-columns-left")
+            .unwrap()
+            .size
+            .width,
+        resized_width
+    );
+    assert!(!model.read_with(visual, |m, cx| {
+        m.pulsations
+            .read(cx)
+            .group_expanded(PulsationStatus::Running)
+    }));
+    assert!(model.read_with(visual, |m, cx| {
+        m.pulsations
+            .read(cx)
+            .group_expanded(PulsationStatus::Planning)
+    }));
+    assert!(
+        visual
+            .debug_bounds("pulsation-group-running")
+            .unwrap()
+            .top()
+            < visual
+                .debug_bounds("pulsation-group-planning")
+                .unwrap()
+                .top()
+    );
+}
+
+#[gpui::test]
+fn complete_review_and_workspace_readers_fit_small_and_large_windows(cx: &mut TestAppContext) {
+    use hvc_core::persistence_service::{HitlCheckpoint, HitlReviewDocument};
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::hitl::register_hitl_keybindings(cx));
+    let complete = format!(
+        "# Complete review\n\n{}\nLast checkpoint paragraph.",
+        "Long content for scrolling and reading.\n\n".repeat(80)
+    );
+    model.update(visual, |m, cx| {
+        m.workspace.update(cx, |workspace, cx| {
+            let tab = crate::workspace::WorkspaceTabModel::new(
+                "unrelated.md",
+                "# Unrelated workspace file\n\nDifferent content.".into(),
+                "v1".into(),
+            );
+            workspace.editor.update(cx, |editor, _| {
+                editor
+                    .restore_workspace_snapshot("unrelated.md", tab.editor_snapshot())
+                    .unwrap()
+            });
+            workspace.active_relative_path = Some(tab.relative_path.clone());
+            workspace.tabs = vec![tab];
+        });
+        m.pulsations.update(cx, |state, _| {
+            state.pulsations[0].status = PulsationStatus::Checkpoint;
+            let pulse = state.pulsations[0].clone();
+            let checkpoint = HitlCheckpoint {
+                pulsation_id: pulse.id.clone(),
+                checkpoint_id: "layout-checkpoint".into(),
+                state_version: 1,
+            };
+            state.hitl.load_checkpoint(Some(&pulse), Some(checkpoint));
+            let (generation, checkpoint) = state.hitl.begin_documents().unwrap();
+            state.hitl.finish_documents(
+                generation,
+                &checkpoint,
+                Ok(vec![HitlReviewDocument {
+                    artifact_id: "review-artifact".into(),
+                    name: "Complete checkpoint document".into(),
+                    kind: "stage_output".into(),
+                    relative_path: Some("review.md".into()),
+                    content: complete.clone(),
+                }]),
+            );
+            state.detail_section = PulsationDetailSection::Review;
+        });
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let actions = visual.debug_bounds("review-decision-bar").unwrap();
+        assert!(
+            reader.size.height >= px(100.0),
+            "reader too small: {reader:?}"
+        );
+        assert!(reader.bottom() <= actions.top() && actions.bottom() <= px(height));
+        for action in ["hitl-approve", "hitl-revision", "hitl-reject"] {
+            let button = visual.debug_bounds(action).unwrap();
+            assert!(button.left() >= actions.left() && button.right() <= actions.right());
+        }
+        click(visual, "review-copy-document");
+        visual.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some(complete.as_str())
+            )
+        });
+        click(visual, "review-source-toggle");
+        assert_eq!(visual.debug_bounds("review-decision-bar").unwrap(), actions);
+        click(visual, "review-source-toggle");
+        select(&model, visual, AppView::Workspace);
+        let editor = visual.debug_bounds("workspace-editor-viewport").unwrap();
+        let preview = visual.debug_bounds("workspace-markdown-preview").unwrap();
+        assert!(editor.right() <= preview.left());
+        assert!(editor.size.height > px(100.0) && preview.size.height > px(100.0));
+        assert!(
+            preview.right() <= px(width) && preview.bottom() <= px(height),
+            "window={width}x{height}; editor={editor:?}; preview={preview:?}"
+        );
+    }
+    select(&model, visual, AppView::Pulsations);
+    model.update(visual, |model, cx| {
+        model
+            .pulsations
+            .update(cx, |state, _| state.hitl.show_feedback = true);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        let input = model.read(cx).stage_feedback_input.clone();
+        gpui::Focusable::focus_handle(input.read(cx), cx).focus(window);
+    });
+    visual.simulate_keystrokes("r d enter");
+    visual.run_until_parked();
+    model.read_with(visual, |model, cx| {
+        // The single-line input normalizes the inserted newline to a space.
+        assert_eq!(model.stage_feedback_input.read(cx).value(), "rd ");
+        assert!(model.pulsations.read(cx).hitl.can_approve());
+        assert!(model.pulsations.read(cx).hitl.error.is_none());
+        assert!(!model.confirm_hitl_reject);
+    });
+}
+
 fn assert_absent(model: &Entity<AppModel>, visual: &mut VisualTestContext, selector: &'static str) {
     // GPUI 0.2.2 keeps debug selectors in reused frames, so test absence in a fresh window.
     let (_, fresh) = visual.add_window_view(|_, _| ModelHarness(model.clone()));

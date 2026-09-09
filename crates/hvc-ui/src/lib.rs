@@ -25,6 +25,7 @@ mod session;
 mod settings;
 mod settings_view;
 mod shell;
+mod split_pane;
 #[cfg(test)]
 mod test_support;
 mod text_input;

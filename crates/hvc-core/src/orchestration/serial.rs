@@ -217,6 +217,69 @@ impl PersistenceService {
             })
     }
 
+    /// Read the exact candidate output behind a still-current HITL checkpoint in one snapshot.
+    pub fn read_hitl_review(
+        &self,
+        checkpoint: &HitlCheckpoint,
+    ) -> Result<Vec<HitlReviewDocument>, PersistenceServiceError> {
+        let mut db = self.connection()?;
+        let tx = db.transaction()?;
+        let valid: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM checkpoints c JOIN pulsations p ON p.id=c.pulsation_id
+             WHERE c.id=?1 AND p.id=?2 AND p.state_version=?3
+             AND c.status='waiting' AND c.purpose='artifact_review' AND p.status='checkpoint'
+             AND c.input_revision=p.input_revision
+             AND (c.stage=p.stage OR (c.stage='Specification' AND p.stage='SPECIFICATION'))
+             AND (SELECT COUNT(*) FROM checkpoints w WHERE w.pulsation_id=p.id AND w.status='waiting')=1)",
+            params![checkpoint.checkpoint_id, checkpoint.pulsation_id, checkpoint.state_version],
+            |row| row.get(0),
+        )?;
+        if !valid {
+            return Err(invalid(
+                "Checkpoint/versão obsoleto ou ambíguo. Atualize antes de revisar.",
+            ));
+        }
+        let documents = tx
+            .prepare(
+                "SELECT a.id,a.name,a.kind,a.relative_path,a.content FROM artifacts a
+             JOIN checkpoints c ON c.pulsation_id=a.pulsation_id
+               AND c.producer_job_id=a.producer_job_id AND c.generation=a.generation
+               AND c.input_revision=a.input_revision AND c.stage=a.producer_stage
+             WHERE c.id=?1 AND a.pulsation_id=?2 AND a.acceptance='candidate'
+             ORDER BY a.output_position,a.id",
+            )?
+            .query_map(
+                params![checkpoint.checkpoint_id, checkpoint.pulsation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        if documents.is_empty() || documents.iter().any(|document| document.4.is_none()) {
+            return Err(invalid(
+                "Conteúdo do checkpoint indisponível/ambíguo; nenhuma reconstrução foi inventada.",
+            ));
+        }
+        Ok(documents
+            .into_iter()
+            .map(
+                |(artifact_id, name, kind, relative_path, content)| HitlReviewDocument {
+                    artifact_id,
+                    name,
+                    kind,
+                    relative_path,
+                    content: content.expect("content checked"),
+                },
+            )
+            .collect())
+    }
+
     pub(super) fn load_stage_handoff(
         &self,
         fence: &ExecutionFence,

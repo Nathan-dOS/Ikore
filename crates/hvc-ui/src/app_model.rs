@@ -262,6 +262,10 @@ pub struct AppModel {
     pub navigation: Entity<NavigationModel>,
     pub workspace: Entity<WorkspaceEditorModel>,
     pub pulsations: Entity<PulsationsModel>,
+    pub(crate) pulsations_split: Entity<crate::split_pane::SplitPaneState>,
+    pub(crate) workspace_tree_split: Entity<crate::split_pane::SplitPaneState>,
+    pub(crate) workspace_preview_split: Entity<crate::split_pane::SplitPaneState>,
+    pub(crate) workspace_context_split: Entity<crate::split_pane::SplitPaneState>,
     pub vault: Entity<VaultModel>,
     #[cfg(test)]
     pub(crate) pulsation_feature_input: Entity<NativeTextInput>,
@@ -326,6 +330,7 @@ pub struct AppModel {
     preparation_action_task: Option<Task<()>>,
     artifact_preview_task: Option<Task<()>>,
     pulsation_artifacts_task: Option<Task<()>>,
+    hitl_documents_task: Option<Task<()>>,
     vault_refresh_task: Option<Task<()>>,
     vault_search_task: Option<Task<()>>,
     vault_rename_task: Option<Task<()>>,
@@ -536,7 +541,19 @@ impl AppModel {
                 )
             })
             .collect::<HashMap<_, _>>();
+        let pulsations_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::new(292.0, 220.0, 480.0, 420.0));
+        let workspace_tree_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::new(220.0, 160.0, 400.0, 480.0));
+        let workspace_preview_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.6, 240.0, 220.0));
+        let workspace_context_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.78, 480.0, 180.0));
         let mut subscriptions = vec![
+            cx.observe(&pulsations_split, |_, _, cx| cx.notify()),
+            cx.observe(&workspace_tree_split, |_, _, cx| cx.notify()),
+            cx.observe(&workspace_preview_split, |_, _, cx| cx.notify()),
+            cx.observe(&workspace_context_split, |_, _, cx| cx.notify()),
             cx.observe(&editor, |model, _, cx| {
                 model.handle_editor_update(cx);
                 model.schedule_vault_context_documents(cx);
@@ -590,6 +607,10 @@ impl AppModel {
             navigation,
             workspace,
             pulsations: cx.new(|_| PulsationsModel::default()),
+            pulsations_split,
+            workspace_tree_split,
+            workspace_preview_split,
+            workspace_context_split,
             vault: cx.new(|_| VaultModel::default()),
             #[cfg(test)]
             pulsation_feature_input,
@@ -652,6 +673,7 @@ impl AppModel {
             preparation_action_task: None,
             artifact_preview_task: None,
             pulsation_artifacts_task: None,
+            hitl_documents_task: None,
             vault_refresh_task: None,
             vault_search_task: None,
             vault_rename_task: None,
@@ -1402,6 +1424,16 @@ impl AppModel {
         preferred_id: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Option<String> {
+        if self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(AsRef::as_ref)
+            != Some(project_id.as_str())
+        {
+            return None;
+        }
         let forge_changed = crate::forge::task_runtime_changed(
             &self.pulsations.read(cx).pulsations,
             &snapshot.pulsations,
@@ -1410,6 +1442,7 @@ impl AppModel {
         let active_id = self.pulsations.update(cx, |pulsations, _| {
             pulsations.apply_snapshot(project_id, snapshot, preferred_id)
         });
+        self.refresh_hitl_documents(cx);
         self.sync_preparation_inputs(cx);
         if forge_changed && self.active_view() == AppView::Forge {
             self.refresh_forge(cx);
@@ -1491,6 +1524,31 @@ impl AppModel {
         }));
     }
 
+    pub(crate) fn refresh_hitl_documents(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let Some((generation, checkpoint)) = self
+            .pulsations
+            .update(cx, |state, _| state.hitl.begin_documents())
+        else {
+            return;
+        };
+        let project_id = self.workspace.read(cx).project_id.clone();
+        self.hitl_documents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.review_documents(checkpoint.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                if model.workspace.read(cx).project_id != project_id {
+                    return;
+                }
+                model.pulsations.update(cx, |state, _| {
+                    state.hitl.finish_documents(generation, &checkpoint, result);
+                });
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn select_pulsation(
         &mut self,
         pulsation_id: impl Into<String>,
@@ -1503,6 +1561,7 @@ impl AppModel {
         if !selected {
             return;
         }
+        self.refresh_hitl_documents(cx);
         self.sync_preparation_inputs(cx);
         self.pulsations.update(cx, |pulsations, _| {
             pulsations.diff_expanded = false;
@@ -1995,6 +2054,11 @@ impl AppModel {
         self.status = "Applying HITL decision…".into();
         cx.notify();
         let runtime = core.runtime_handle().clone();
+        let decision_scope = (
+            request.pulsation_id.clone(),
+            request.checkpoint_id.clone(),
+            request.expected_state_version,
+        );
         self.hitl_task = Some(cx.spawn(async move |this, cx| {
             let result = runtime
                 .spawn_blocking(move || {
@@ -2006,30 +2070,41 @@ impl AppModel {
                 .await
                 .map_err(|error| format!("HITL worker interrupted: {error}"))
                 .and_then(|result| result);
-            let _ = this.update(cx, |model, cx| {
-                if model.lifecycle.is_disposed() {
-                    return;
-                }
-                model.pulsations.update(cx, |pulsations, _| {
-                    pulsations.hitl.finish(result.clone());
-                    if result.is_ok() {
-                        pulsations.awaiting_hitl = pulsations.awaiting_hitl.saturating_sub(1);
-                        pulsations.diff_expanded = false;
+            let _ =
+                this.update(cx, |model, cx| {
+                    if model.lifecycle.is_disposed() {
+                        return;
                     }
+                    model.pulsations.update(cx, |pulsations, _| {
+                        let same_review = pulsations.hitl.expected_checkpoint.as_ref().is_some_and(
+                            |checkpoint| {
+                                checkpoint.pulsation_id == decision_scope.0
+                                    && checkpoint.checkpoint_id == decision_scope.1
+                                    && checkpoint.state_version == decision_scope.2
+                            },
+                        );
+                        if same_review {
+                            pulsations.hitl.finish(result.clone());
+                            if result.is_ok() {
+                                pulsations.awaiting_hitl =
+                                    pulsations.awaiting_hitl.saturating_sub(1);
+                                pulsations.diff_expanded = false;
+                            }
+                        }
+                    });
+                    match result {
+                        Ok(()) => {
+                            model.status = "HITL decision applied".into();
+                            model.schedule_session_persistence(cx);
+                            model.refresh_pulsations(cx);
+                        }
+                        Err(error) => {
+                            model.status = "Failed to apply HITL decision".into();
+                            model.notices.push(HeaderNoticeKind::Error, error);
+                        }
+                    }
+                    cx.notify();
                 });
-                match result {
-                    Ok(()) => {
-                        model.status = "HITL decision applied".into();
-                        model.schedule_session_persistence(cx);
-                        model.refresh_pulsations(cx);
-                    }
-                    Err(error) => {
-                        model.status = "Failed to apply HITL decision".into();
-                        model.notices.push(HeaderNoticeKind::Error, error);
-                    }
-                }
-                cx.notify();
-            });
         }));
     }
 
@@ -5878,6 +5953,7 @@ impl AppModel {
         let preparation_action = self.preparation_action_task.take();
         self.artifact_preview_task.take();
         self.pulsation_artifacts_task.take();
+        self.hitl_documents_task.take();
         self.vault_refresh_task.take();
         self.vault_search_task.take();
         self.vault_rename_task.take();
@@ -6366,6 +6442,12 @@ mod tests {
     }
 
     impl PulsationsBackend for RecordingPulsationsBackend {
+        fn review_documents(
+            &self,
+            _checkpoint: hvc_core::persistence_service::HitlCheckpoint,
+        ) -> PulsationsFuture<Vec<hvc_core::persistence_service::HitlReviewDocument>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
         fn action(&self, action: crate::pulsations::PulsationAction) -> PulsationsFuture<()> {
             self.actions.lock().unwrap().push(action);
             Box::pin(async { Ok(()) })

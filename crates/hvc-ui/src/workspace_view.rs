@@ -58,9 +58,49 @@ pub(crate) fn workspace_content_panel(
             .collect::<Vec<_>>()
     };
 
+    let editor_panel = div()
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .rounded_lg()
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .overflow_hidden()
+        .child(workspace_editor_surface(
+            tabs.clone(),
+            active_path.clone(),
+            active_tab.clone(),
+            editor,
+            &model.workspace_preview_split,
+            cx,
+        ))
+        .into_any_element();
+    let tree_panel = workspace_tree_panel(tree_rows, active_path.as_deref(), cx).into_any_element();
+    let columns = crate::split_pane::split_pane(
+        "workspace-columns",
+        &model.workspace_tree_split,
+        tree_panel,
+        editor_panel,
+        cx,
+    );
+    let columns = if context_drawer_open {
+        crate::split_pane::split_pane(
+            "workspace-context-columns",
+            &model.workspace_context_split,
+            columns,
+            context_drawer(active_tab.as_ref(), context_documents).into_any_element(),
+            cx,
+        )
+    } else {
+        columns
+    };
+
     div()
         .flex_1()
         .min_w_0()
+        .min_h_0()
+        .overflow_hidden()
         .p_4()
         .flex()
         .flex_col()
@@ -215,30 +255,9 @@ pub(crate) fn workspace_content_panel(
             div()
                 .flex_1()
                 .min_h_0()
-                .flex()
-                .gap_3()
-                .child(workspace_tree_panel(tree_rows, active_path.as_deref(), cx))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .min_h_0()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(theme::border())
-                        .bg(theme::surface())
-                        .overflow_hidden()
-                        .child(workspace_editor_surface(
-                            tabs.clone(),
-                            active_path.clone(),
-                            active_tab.clone(),
-                            editor,
-                            cx,
-                        )),
-                )
-                .when(context_drawer_open, |layout| {
-                    layout.child(context_drawer(active_tab.as_ref(), context_documents))
-                }),
+                .min_w_0()
+                .overflow_hidden()
+                .child(columns),
         )
 }
 
@@ -568,7 +587,8 @@ fn workspace_tree_panel(
 ) -> impl IntoElement {
     div()
         .id("workspace-tree-scroll")
-        .w(px(220.0))
+        .size_full()
+        .min_w_0()
         .min_h_0()
         .p_2()
         .rounded_lg()
@@ -634,6 +654,7 @@ fn workspace_editor_surface(
     active_path: Option<String>,
     active_tab: Option<WorkspaceTabModel>,
     editor: gpui::Entity<crate::NativeEditor>,
+    split: &gpui::Entity<crate::split_pane::SplitPaneState>,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
     let preview = active_tab
@@ -642,11 +663,17 @@ fn workspace_editor_surface(
         .unwrap_or_default();
     div()
         .size_full()
+        .min_h_0()
+        .min_w_0()
+        .overflow_hidden()
         .flex()
         .flex_col()
         .child(
             div()
-                .min_h(px(38.0))
+                .id("workspace-file-tabs")
+                .h(px(38.0))
+                .flex_shrink_0()
+                .overflow_x_scroll()
                 .flex()
                 .items_end()
                 .gap_1()
@@ -715,26 +742,28 @@ fn workspace_editor_surface(
         })
         .when(active_tab.is_some(), |surface| {
             surface.child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .child(
+                div().flex_1().min_h_0().min_w_0().overflow_hidden().child(
+                    crate::split_pane::split_pane(
+                        "workspace-editor-columns",
+                        split,
                         div()
-                            .flex_1()
+                            .id("workspace-editor-viewport")
+                            .debug_selector(|| "workspace-editor-viewport".into())
+                            .size_full()
                             .min_w_0()
+                            .min_h_0()
+                            .overflow_hidden()
                             .p_3()
-                            .border_r_1()
-                            .border_color(theme::border())
-                            .child(editor),
-                    )
-                    .child(
+                            .child(editor)
+                            .into_any_element(),
                         div()
                             .id("workspace-markdown-preview")
-                            .w(px(360.0))
+                            .debug_selector(|| "workspace-markdown-preview".into())
+                            .size_full()
+                            .min_w_0()
                             .min_h_0()
                             .p_4()
-                            .overflow_y_scroll()
+                            .overflow_scroll()
                             .child(
                                 div()
                                     .pb_3()
@@ -742,14 +771,47 @@ fn workspace_editor_surface(
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .child("Markdown Preview"),
                             )
-                            .children(preview.into_iter().map(render_markdown_block)),
+                            .children(preview.into_iter().map(render_markdown_block))
+                            .into_any_element(),
+                        cx,
                     ),
+                ),
             )
         })
 }
 
 pub(crate) fn render_markdown_block(block: MarkdownBlock) -> AnyElement {
     match block {
+        MarkdownBlock::Table { headers, rows } => div()
+            .mb_3()
+            .min_w_0()
+            .border_1()
+            .border_color(theme::border())
+            .children(
+                std::iter::once((true, headers))
+                    .chain(rows.into_iter().map(|row| (false, row)))
+                    .map(|(header, row)| {
+                        div()
+                            .flex()
+                            .min_w_0()
+                            .when(header, |row| {
+                                row.bg(theme::surface_raised())
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                            })
+                            .children(row.into_iter().map(|text| {
+                                div()
+                                    .flex_1()
+                                    .min_w(px(100.0))
+                                    .p_2()
+                                    .text_sm()
+                                    .border_b_1()
+                                    .border_r_1()
+                                    .border_color(theme::border())
+                                    .child(text)
+                            }))
+                    }),
+            )
+            .into_any_element(),
         MarkdownBlock::Heading { level, text } => div()
             .mt_2()
             .mb_2()
@@ -821,7 +883,11 @@ fn context_drawer(
     let overflow_count = total_documents.saturating_sub(display_limit);
 
     div()
-        .w(px(210.0))
+        .id("workspace-context-scroll")
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .overflow_y_scroll()
         .p_3()
         .rounded_lg()
         .border_1()

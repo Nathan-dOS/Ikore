@@ -4,7 +4,10 @@ use hvc_core::orchestration::brownfield::BrownfieldCoverageMetrics;
 use hvc_core::persistence_service::{Pulsation, PulsationStage, PulsationStatus};
 
 use crate::app_model::AppModel;
-use crate::pulsations::{PIPELINE_STAGES, PulsationDetailSection, stage_label, status_label};
+use crate::pulsations::{
+    PIPELINE_STAGES, PulsationDetailSection, STATUS_GROUPS, stage_label, status_group_id,
+    status_label,
+};
 use crate::theme;
 
 pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
@@ -58,218 +61,311 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
         .into_any_element();
     }
 
+    let list = div()
+        .size_full()
+        .min_w_0()
+        .overflow_hidden()
+        .min_h_0()
+        .p_3()
+        .rounded_lg()
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(section_heading(
+            "PROJECT FLOW",
+            "Pulsations",
+            pulsations.len(),
+        ))
+        .child(crate::forge_view::button(
+            "compose-task-batch",
+            "Compose pulsation with tasks",
+            crate::forge::ForgeAction::OpenBacklog,
+            cx,
+        ))
+        .child(
+            div()
+                .id("pulsation-list")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .when(pulsations.is_empty(), |list| {
+                    list.child(
+                        div()
+                            .p_3()
+                            .text_sm()
+                            .text_color(theme::text_muted())
+                            .child("Create this project's first pulsation."),
+                    )
+                })
+                .children(STATUS_GROUPS.into_iter().filter_map(|status| {
+                    let members: Vec<_> = pulsations
+                        .iter()
+                        .filter(|pulse| pulse.status == status)
+                        .cloned()
+                        .collect();
+                    // Keep Running anchored even while no job is running.
+                    if members.is_empty() && status != PulsationStatus::Running {
+                        return None;
+                    }
+                    let expanded = model.pulsations.read(cx).group_expanded(status);
+                    let selected = members
+                        .iter()
+                        .any(|pulse| Some(pulse.id.as_str()) == active_id.as_deref());
+                    let id = gpui::SharedString::from(format!(
+                        "pulsation-group-{}",
+                        status_group_id(status)
+                    ));
+                    let debug_id = id.clone();
+                    Some(
+                        div()
+                            .flex_shrink_0()
+                            .min_w_0()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(theme::border())
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .id(id)
+                                    .debug_selector(move || debug_id.to_string())
+                                    .px_3()
+                                    .py_2()
+                                    .cursor_pointer()
+                                    .text_sm()
+                                    .bg(theme::surface_raised())
+                                    .text_color(if selected {
+                                        theme::accent()
+                                    } else {
+                                        theme::text()
+                                    })
+                                    .hover(|style| style.bg(theme::accent_soft()))
+                                    .on_click(cx.listener(move |model, _, _, cx| {
+                                        model
+                                            .pulsations
+                                            .update(cx, |state, _| state.toggle_group(status));
+                                        cx.notify();
+                                    }))
+                                    .child(format!(
+                                        "{} {} · {}{}",
+                                        if expanded { "▾" } else { "▸" },
+                                        status_label(status, None),
+                                        members.len(),
+                                        if selected && !expanded {
+                                            " · selected"
+                                        } else {
+                                            ""
+                                        }
+                                    )),
+                            )
+                            .when(expanded, |group| {
+                                group.child(
+                                    div()
+                                        .p_2()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_2()
+                                        .when(members.is_empty(), |list| {
+                                            list.child(
+                                                div()
+                                                    .p_2()
+                                                    .text_sm()
+                                                    .text_color(theme::text_muted())
+                                                    .child("No running pulsations."),
+                                            )
+                                        })
+                                        .children(members.into_iter().map(|pulse| {
+                                            let position =
+                                                queue.iter().find(|p| p.pulsation_id == pulse.id);
+                                            let label = position.map(|p| {
+                                                format!(
+                                                    "#{} · {}",
+                                                    p.sequence,
+                                                    blocking_label(p.blocking_reason.as_deref())
+                                                )
+                                            });
+                                            pulsation_card(pulse, active_id.as_deref(), label, cx)
+                                        })),
+                                )
+                            }),
+                    )
+                })),
+        )
+        .into_any_element();
+    let detail = div()
+        .id("pulsation-detail-scroll")
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .flex()
+        .flex_col()
+        .gap_3()
+        .when_some(active, |panel, active| {
+            let section = model.pulsations.read(cx).detail_section;
+            let review_pending = model.pulsations.read(cx).hitl.expected_checkpoint.is_some();
+            let preparation_pending = review_pending
+                || model.pulsations.read(cx).detail().is_some_and(|detail| {
+                    detail.questions.is_some() || detail.description_editable
+                });
+            panel
+                .when(section != PulsationDetailSection::Review, |panel| {
+                    panel.child(
+                        div()
+                            .flex_shrink_0()
+                            .child(pulsation_detail_header(active.clone(), runtime_loading, cx))
+                            .child(pipeline(active.stage)),
+                    )
+                })
+                .child(
+                    div().flex().flex_wrap().flex_shrink_0().gap_2().children(
+                        [
+                            (
+                                PulsationDetailSection::Review,
+                                "pulsation-review",
+                                if review_pending {
+                                    "Review · pending"
+                                } else {
+                                    "Review"
+                                },
+                            ),
+                            (
+                                PulsationDetailSection::Overview,
+                                "pulsation-overview",
+                                "Overview",
+                            ),
+                            (
+                                PulsationDetailSection::Preparation,
+                                "pulsation-preparation",
+                                if preparation_pending {
+                                    "Preparation · pending"
+                                } else {
+                                    "Preparation"
+                                },
+                            ),
+                            (
+                                PulsationDetailSection::Artifacts,
+                                "pulsation-artifacts",
+                                "Artifacts",
+                            ),
+                        ]
+                        .into_iter()
+                        .map(|(target, id, label)| {
+                            div()
+                                .id(id)
+                                .debug_selector(move || id.into())
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .text_sm()
+                                .bg(if section == target {
+                                    theme::accent_soft()
+                                } else {
+                                    theme::surface_raised()
+                                })
+                                .text_color(if section == target {
+                                    theme::accent()
+                                } else {
+                                    theme::text_muted()
+                                })
+                                .on_click(cx.listener(move |model, _, _, cx| {
+                                    model
+                                        .pulsations
+                                        .update(cx, |state, _| state.detail_section = target);
+                                    cx.notify();
+                                }))
+                                .child(label)
+                        }),
+                    ),
+                )
+                .child(
+                    div()
+                        .id("pulsation-section-scroll")
+                        .debug_selector(|| "pulsation-section-scroll".into())
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .when(section == PulsationDetailSection::Review, |panel| {
+                            panel.overflow_hidden()
+                        })
+                        .when(section != PulsationDetailSection::Review, |panel| {
+                            panel.overflow_y_scroll()
+                        })
+                        .child(match section {
+                            PulsationDetailSection::Review => {
+                                crate::review_view::review_panel(model, cx)
+                            }
+                            PulsationDetailSection::Overview => detail_overview(
+                                model,
+                                &active,
+                                running_jobs,
+                                awaiting_hitl,
+                                brownfield_coverage,
+                                cx,
+                            ),
+                            PulsationDetailSection::Preparation => preparation_panel(model, cx),
+                            PulsationDetailSection::Artifacts => {
+                                detail_artifacts(model, artifacts, artifacts_loading, cx)
+                            }
+                        }),
+                )
+        })
+        .when(active_id.is_none(), |panel| {
+            panel.child(empty_panel(
+                "No pulsations",
+                "Create the first pulsation to view the pipeline and artifacts.",
+            ))
+        })
+        .when_some(notice, |panel, notice| {
+            panel.child(
+                div()
+                    .mt_3()
+                    .p_3()
+                    .rounded_md()
+                    .bg(theme::accent_soft())
+                    .text_color(theme::accent())
+                    .child(notice),
+            )
+        })
+        .when_some(error, |panel, error| {
+            panel.child(
+                div()
+                    .mt_3()
+                    .p_3()
+                    .rounded_md()
+                    .bg(theme::danger_soft())
+                    .text_color(theme::danger())
+                    .child(error),
+            )
+        })
+        .into_any_element();
     div()
         .flex_1()
         .min_w_0()
         .min_h_0()
         .p_4()
-        .flex()
-        .gap_3()
-        .when(!hide_pulsation_list, |row| {
-            row.child(
-                div()
-                    .w(px(292.0))
-                    .min_h_0()
-                    .p_3()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(theme::border())
-                    .bg(theme::surface())
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(section_heading(
-                        "PROJECT FLOW",
-                        "Pulsations",
-                        pulsations.len(),
-                    ))
-                    .child(crate::forge_view::button(
-                        "compose-task-batch",
-                        "Compose pulsation with tasks",
-                        crate::forge::ForgeAction::OpenBacklog,
-                        cx,
-                    ))
-                    .child(
-                        div()
-                            .id("pulsation-list")
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .when(pulsations.is_empty(), |list| {
-                                list.child(
-                                    div()
-                                        .p_3()
-                                        .text_sm()
-                                        .text_color(theme::text_muted())
-                                        .child("Create this project's first pulsation."),
-                                )
-                            })
-                            .children(pulsations.into_iter().map(|pulsation| {
-                                let position =
-                                    queue.iter().find(|p| p.pulsation_id == pulsation.id);
-                                let label = position.map(|p| {
-                                    format!(
-                                        "#{} · {}",
-                                        p.sequence,
-                                        blocking_label(p.blocking_reason.as_deref())
-                                    )
-                                });
-                                pulsation_card(pulsation, active_id.as_deref(), label, cx)
-                            })),
-                    ),
+        .overflow_hidden()
+        .child(if hide_pulsation_list {
+            detail
+        } else {
+            crate::split_pane::split_pane(
+                "pulsations-columns",
+                &model.pulsations_split,
+                list,
+                detail,
+                cx,
             )
         })
-        .child(
-            div()
-                .id("pulsation-detail-scroll")
-                .flex_1()
-                .min_w_0()
-                .min_h_0()
-                .p_4()
-                .rounded_lg()
-                .border_1()
-                .border_color(theme::border())
-                .bg(theme::surface())
-                .flex()
-                .flex_col()
-                .gap_3()
-                .when_some(active, |panel, active| {
-                    let section = model.pulsations.read(cx).detail_section;
-                    let review_pending =
-                        model.pulsations.read(cx).hitl.expected_checkpoint.is_some();
-                    let preparation_pending = review_pending
-                        || model.pulsations.read(cx).detail().is_some_and(|detail| {
-                            detail.questions.is_some() || detail.description_editable
-                        });
-                    panel
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .child(pulsation_detail_header(active.clone(), runtime_loading, cx))
-                                .child(pipeline(active.stage)),
-                        )
-                        .child(
-                            div().flex().flex_shrink_0().gap_2().children(
-                                [
-                                    (
-                                        PulsationDetailSection::Review,
-                                        "pulsation-review",
-                                        if review_pending {
-                                            "Review · pending"
-                                        } else {
-                                            "Review"
-                                        },
-                                    ),
-                                    (
-                                        PulsationDetailSection::Overview,
-                                        "pulsation-overview",
-                                        "Overview",
-                                    ),
-                                    (
-                                        PulsationDetailSection::Preparation,
-                                        "pulsation-preparation",
-                                        if preparation_pending {
-                                            "Preparation · pending"
-                                        } else {
-                                            "Preparation"
-                                        },
-                                    ),
-                                    (
-                                        PulsationDetailSection::Artifacts,
-                                        "pulsation-artifacts",
-                                        "Artifacts",
-                                    ),
-                                ]
-                                .into_iter()
-                                .map(|(target, id, label)| {
-                                    div()
-                                        .id(id)
-                                        .debug_selector(move || id.into())
-                                        .px_3()
-                                        .py_2()
-                                        .rounded_md()
-                                        .cursor_pointer()
-                                        .text_sm()
-                                        .bg(if section == target {
-                                            theme::accent_soft()
-                                        } else {
-                                            theme::surface_raised()
-                                        })
-                                        .text_color(if section == target {
-                                            theme::accent()
-                                        } else {
-                                            theme::text_muted()
-                                        })
-                                        .on_click(cx.listener(move |model, _, _, cx| {
-                                            model.pulsations.update(cx, |state, _| {
-                                                state.detail_section = target
-                                            });
-                                            cx.notify();
-                                        }))
-                                        .child(label)
-                                }),
-                            ),
-                        )
-                        .child(
-                            div()
-                                .id("pulsation-section-scroll")
-                                .debug_selector(|| "pulsation-section-scroll".into())
-                                .flex_1()
-                                .min_h_0()
-                                .overflow_y_scroll()
-                                .child(match section {
-                                    PulsationDetailSection::Review => {
-                                        crate::review_view::review_panel(model, cx)
-                                    }
-                                    PulsationDetailSection::Overview => detail_overview(
-                                        model,
-                                        &active,
-                                        running_jobs,
-                                        awaiting_hitl,
-                                        brownfield_coverage,
-                                        cx,
-                                    ),
-                                    PulsationDetailSection::Preparation => {
-                                        preparation_panel(model, cx)
-                                    }
-                                    PulsationDetailSection::Artifacts => {
-                                        detail_artifacts(model, artifacts, artifacts_loading, cx)
-                                    }
-                                }),
-                        )
-                })
-                .when(active_id.is_none(), |panel| {
-                    panel.child(empty_panel(
-                        "No pulsations",
-                        "Create the first pulsation to view the pipeline and artifacts.",
-                    ))
-                })
-                .when_some(notice, |panel, notice| {
-                    panel.child(
-                        div()
-                            .mt_3()
-                            .p_3()
-                            .rounded_md()
-                            .bg(theme::accent_soft())
-                            .text_color(theme::accent())
-                            .child(notice),
-                    )
-                })
-                .when_some(error, |panel, error| {
-                    panel.child(
-                        div()
-                            .mt_3()
-                            .p_3()
-                            .rounded_md()
-                            .bg(theme::danger_soft())
-                            .text_color(theme::danger())
-                            .child(error),
-                    )
-                }),
-        )
         .into_any_element()
 }
 

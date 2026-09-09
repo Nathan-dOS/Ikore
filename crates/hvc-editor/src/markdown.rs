@@ -13,6 +13,10 @@ pub enum MarkdownBlock {
     },
     Quote(String),
     ListItem(String),
+    Table {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
     Rule,
 }
 
@@ -26,6 +30,9 @@ pub fn parse_markdown(source: &str) -> Vec<MarkdownBlock> {
     let mut current = String::new();
     let mut block = BlockKind::Paragraph;
     let mut suppressed_raw_tag: Option<&'static str> = None;
+    let mut table_headers = Vec::new();
+    let mut table_rows = Vec::new();
+    let mut table_row = Vec::new();
 
     for event in parser {
         if let Some(tag) = suppressed_raw_tag {
@@ -41,6 +48,20 @@ pub fn parse_markdown(source: &str) -> Vec<MarkdownBlock> {
             continue;
         }
         match event {
+            Event::Start(Tag::Table(_)) => {
+                current.clear();
+                table_headers.clear();
+                table_rows.clear();
+            }
+            Event::Start(Tag::TableHead | Tag::TableRow) => table_row.clear(),
+            Event::Start(Tag::TableCell) => current.clear(),
+            Event::End(TagEnd::TableCell) => table_row.push(std::mem::take(&mut current)),
+            Event::End(TagEnd::TableHead) => table_headers = std::mem::take(&mut table_row),
+            Event::End(TagEnd::TableRow) => table_rows.push(std::mem::take(&mut table_row)),
+            Event::End(TagEnd::Table) => blocks.push(MarkdownBlock::Table {
+                headers: std::mem::take(&mut table_headers),
+                rows: std::mem::take(&mut table_rows),
+            }),
             Event::Start(Tag::Paragraph) => {
                 current.clear();
                 block = BlockKind::Paragraph;
@@ -163,6 +184,27 @@ fn heading_level(level: HeadingLevel) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retains_complete_tables_between_review_paragraphs() {
+        let blocks = parse_markdown(
+            "Before.\n\n| Requirement | Status |\n| --- | --- |\n| **Long** requirement | Ready |\n| Last requirement | Pending |\n\nAfter.",
+        );
+        assert_eq!(
+            blocks,
+            vec![
+                MarkdownBlock::Paragraph("Before.".into()),
+                MarkdownBlock::Table {
+                    headers: vec!["Requirement".into(), "Status".into()],
+                    rows: vec![
+                        vec!["Long requirement".into(), "Ready".into()],
+                        vec!["Last requirement".into(), "Pending".into()]
+                    ],
+                },
+                MarkdownBlock::Paragraph("After.".into()),
+            ]
+        );
+    }
 
     #[test]
     fn parses_gfm_blocks_and_ignores_raw_html() {

@@ -187,6 +187,119 @@ fn failed_outcome_never_publishes_or_advances() {
 }
 
 #[test]
+fn hitl_review_reads_complete_exact_producer_documents_independent_of_workspace() {
+    let fixture = Fixture::new(PulsationStage::Contract);
+    let content = format!(
+        "# Complete contract\n\n{}\nLast review paragraph.\n",
+        "Detailed requirement.\n".repeat(700)
+    );
+    fixture
+        .accept(&fixture.output_artifacts(
+            "checkpoint_ready",
+            vec![
+                GeneratedArtifact {
+                    name: "Contract".into(),
+                    kind: "stage_output".into(),
+                    relative_path: Some("review.md".into()),
+                    content: content.clone(),
+                },
+                GeneratedArtifact {
+                    name: "Internal notes".into(),
+                    kind: "stage_output".into(),
+                    relative_path: None,
+                    content: "# Internal notes\n\nPathless artifact content.".into(),
+                },
+            ],
+        ))
+        .unwrap();
+    std::fs::write(
+        fixture.workspace.path().join("review.md"),
+        "Unrelated human edits",
+    )
+    .unwrap();
+    let db = fixture.service.connection().unwrap();
+    db.execute(
+        "INSERT INTO artifacts(id,pulsation_id,name,kind,content,created_at,updated_at,producer_job_id,producer_stage,generation,input_revision,producer_state_version,output_position,acceptance)
+         SELECT 'unrelated-generation',pulsation_id,'Wrong generation',kind,'Never show this',created_at,updated_at,producer_job_id,producer_stage,generation+1,input_revision,producer_state_version,output_position,'candidate'
+         FROM artifacts WHERE name='Contract'", [],
+    ).unwrap();
+    let checkpoint = fixture
+        .service
+        .get_hitl_checkpoint(&fixture.pulse.id)
+        .unwrap();
+    let documents = fixture.service.read_hitl_review(&checkpoint).unwrap();
+    assert_eq!(documents.len(), 2);
+    assert_eq!(documents[0].name, "Contract");
+    assert_eq!(documents[0].content, content);
+    assert_eq!(documents[1].name, "Internal notes");
+    assert_eq!(documents[1].relative_path, None);
+    assert!(documents[1].content.contains("Pathless artifact content."));
+}
+
+#[test]
+fn hitl_review_rejects_stale_cross_pulsation_and_resolved_checkpoints() {
+    let fixture = Fixture::new(PulsationStage::Specification);
+    fixture
+        .accept(&fixture.output(
+            "checkpoint_ready",
+            None,
+            "# Specification\n\nComplete proposal.",
+        ))
+        .unwrap();
+    let checkpoint = fixture
+        .service
+        .get_hitl_checkpoint(&fixture.pulse.id)
+        .unwrap();
+    assert_eq!(
+        fixture.service.read_hitl_review(&checkpoint).unwrap().len(),
+        1
+    );
+    for altered in [
+        HitlCheckpoint {
+            pulsation_id: "different-pulse".into(),
+            ..checkpoint.clone()
+        },
+        HitlCheckpoint {
+            checkpoint_id: "different-checkpoint".into(),
+            ..checkpoint.clone()
+        },
+        HitlCheckpoint {
+            state_version: checkpoint.state_version + 1,
+            ..checkpoint.clone()
+        },
+    ] {
+        assert!(fixture.service.read_hitl_review(&altered).is_err());
+    }
+    fixture
+        .service
+        .apply_hitl_decision(fixture.decision(HitlDecision::RequestRevision))
+        .unwrap();
+    assert!(fixture.service.read_hitl_review(&checkpoint).is_err());
+}
+
+#[test]
+fn hitl_review_never_reconstructs_missing_legacy_content() {
+    let fixture = Fixture::new(PulsationStage::Contract);
+    fixture
+        .accept(&fixture.output("checkpoint_ready", None, "# Contract\n\nComplete proposal."))
+        .unwrap();
+    let checkpoint = fixture
+        .service
+        .get_hitl_checkpoint(&fixture.pulse.id)
+        .unwrap();
+    fixture
+        .service
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE artifacts SET content=NULL WHERE pulsation_id=?1",
+            [&fixture.pulse.id],
+        )
+        .unwrap();
+    assert!(fixture.service.read_hitl_review(&checkpoint).is_err());
+}
+
+#[test]
 fn stale_revision_generation_or_version_rolls_back_all_acceptance_effects() {
     for column in ["input_revision", "state_version", "generation"] {
         let f = Fixture::new(PulsationStage::Specification);

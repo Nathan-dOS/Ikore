@@ -1,15 +1,20 @@
 use gpui::{App, KeyBinding, actions};
 use hvc_core::persistence_service::{
-    ApplyHitlDecisionRequest, HitlCheckpoint, HitlDecision, Pulsation,
+    ApplyHitlDecisionRequest, HitlCheckpoint, HitlDecision, HitlReviewDocument, Pulsation,
 };
+use hvc_editor::{MarkdownBlock, parse_markdown};
 
 actions!(hitl, [ApproveHitl, RequestHitlRevision, RejectHitl]);
 
 pub(crate) fn register_hitl_keybindings(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("enter", ApproveHitl, Some("HitlReview")),
-        KeyBinding::new("r", RequestHitlRevision, Some("HitlReview")),
-        KeyBinding::new("d", RejectHitl, Some("HitlReview")),
+        KeyBinding::new("enter", ApproveHitl, Some("HitlReview && !NativeTextInput")),
+        KeyBinding::new(
+            "r",
+            RequestHitlRevision,
+            Some("HitlReview && !NativeTextInput"),
+        ),
+        KeyBinding::new("d", RejectHitl, Some("HitlReview && !NativeTextInput")),
     ]);
 }
 
@@ -49,38 +54,121 @@ pub(crate) struct HitlReviewState {
     pub(crate) expected_checkpoint: Option<HitlCheckpoint>,
     pub(crate) pulsation_id: Option<String>,
     pub(crate) title: Option<String>,
-    pub(crate) input: String,
-    pub(crate) generated: String,
+    pub(crate) documents: Vec<ReviewDocument>,
+    pub(crate) selected_document: usize,
+    pub(crate) show_source: bool,
+    pub(crate) show_feedback: bool,
+    pub(crate) documents_loading: bool,
+    pub(crate) documents_error: Option<String>,
     pub(crate) busy: bool,
     pub(crate) error: Option<String>,
+    load_generation: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReviewDocument {
+    pub(crate) artifact: HitlReviewDocument,
+    pub(crate) preview: Vec<MarkdownBlock>,
+}
+
+fn same_checkpoint(left: Option<&HitlCheckpoint>, right: Option<&HitlCheckpoint>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            left.pulsation_id == right.pulsation_id
+                && left.checkpoint_id == right.checkpoint_id
+                && left.state_version == right.state_version
+        }
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 impl HitlReviewState {
-    pub(crate) fn load_checkpoint(&mut self, pulsation: Option<&Pulsation>) {
-        let Some(pulsation) = pulsation else {
-            self.expected_checkpoint = None;
-            self.pulsation_id = None;
-            self.title = None;
-            self.input.clear();
-            self.generated.clear();
-            return;
-        };
-        let stage = format!("{:?}", pulsation.stage);
-        let status = format!("{:?}", pulsation.status);
-        self.pulsation_id = Some(pulsation.id.clone());
-        self.title = Some(format!("{stage} Review — {}", pulsation.feature_name));
-        self.input = format!(
-            "- Pulsation: {}\n- Stage: {stage}\n- Status: {status}\n- Source snapshot loaded from the orchestration runtime",
-            pulsation.feature_name
-        );
-        self.generated = format!(
-            "- Pulsation: {}\n- Stage: {stage}\n- Runtime status: {status}\n- Generated checkpoint draft ready for a HITL decision",
-            pulsation.feature_name
-        );
+    pub(crate) fn load_checkpoint(
+        &mut self,
+        pulsation: Option<&Pulsation>,
+        checkpoint: Option<HitlCheckpoint>,
+    ) {
+        let checkpoint = checkpoint.filter(|checkpoint| {
+            pulsation.is_some_and(|pulse| pulse.id == checkpoint.pulsation_id)
+        });
+        if !same_checkpoint(self.expected_checkpoint.as_ref(), checkpoint.as_ref()) {
+            self.load_generation = self.load_generation.wrapping_add(1);
+            self.documents.clear();
+            self.selected_document = 0;
+            self.show_source = false;
+            self.show_feedback = false;
+            self.busy = false;
+            self.documents_loading = false;
+            self.documents_error = None;
+            self.error = None;
+        }
+        self.expected_checkpoint = checkpoint;
+        self.pulsation_id = self
+            .expected_checkpoint
+            .as_ref()
+            .map(|c| c.pulsation_id.clone());
+        self.title = pulsation
+            .filter(|_| self.expected_checkpoint.is_some())
+            .map(|pulse| format!("{:?} Review — {}", pulse.stage, pulse.feature_name));
+    }
+
+    pub(crate) fn begin_documents(&mut self) -> Option<(u64, HitlCheckpoint)> {
+        if self.documents_loading || !self.documents.is_empty() || self.documents_error.is_some() {
+            return None;
+        }
+        let checkpoint = self.expected_checkpoint.clone()?;
+        self.load_generation = self.load_generation.wrapping_add(1);
+        self.documents_loading = true;
+        Some((self.load_generation, checkpoint))
+    }
+
+    pub(crate) fn finish_documents(
+        &mut self,
+        generation: u64,
+        checkpoint: &HitlCheckpoint,
+        result: Result<Vec<HitlReviewDocument>, String>,
+    ) -> bool {
+        if generation != self.load_generation
+            || !same_checkpoint(self.expected_checkpoint.as_ref(), Some(checkpoint))
+        {
+            return false;
+        }
+        self.documents_loading = false;
+        match result {
+            Ok(documents) if !documents.is_empty() => {
+                self.documents = documents
+                    .into_iter()
+                    .map(|artifact| ReviewDocument {
+                        preview: parse_markdown(&artifact.content),
+                        artifact,
+                    })
+                    .collect();
+                self.documents_error = None;
+            }
+            Ok(_) => {
+                self.documents_error =
+                    Some("No persisted documents are available for this checkpoint.".into())
+            }
+            Err(error) => self.documents_error = Some(error),
+        }
+        true
+    }
+
+    pub(crate) fn retry_documents(&mut self) {
+        self.documents_error = None;
+    }
+
+    pub(crate) fn can_approve(&self) -> bool {
+        !self.busy
+            && !self.documents_loading
+            && !self.documents.is_empty()
+            && self.documents_error.is_none()
+            && self.expected_checkpoint.is_some()
     }
 
     pub(crate) fn begin(&mut self, decision: HitlDecision) -> Option<ApplyHitlDecisionRequest> {
-        if self.busy {
+        if self.busy || (decision == HitlDecision::Approve && !self.can_approve()) {
             return None;
         }
         let pulsation_id = self.pulsation_id.clone()?;
@@ -103,11 +191,7 @@ impl HitlReviewState {
         self.busy = false;
         match result {
             Ok(()) => {
-                self.expected_checkpoint = None;
-                self.pulsation_id = None;
-                self.title = None;
-                self.input.clear();
-                self.generated.clear();
+                self.load_checkpoint(None, None);
                 self.error = None;
             }
             Err(error) => self.error = Some(error),
@@ -134,31 +218,87 @@ mod tests {
         assert_eq!(ReviewShortcut::from_key("r", true), None);
     }
 
-    #[gpui::test]
-    fn disables_decisions_while_request_is_pending(_: &mut gpui::TestAppContext) {
-        let mut state = HitlReviewState::default();
-        state.load_checkpoint(Some(&Pulsation {
+    fn pulse(id: &str) -> Pulsation {
+        Pulsation {
             terminal_reason: None,
-            id: "pulse-1".into(),
+            id: id.into(),
             project_id: "project-1".into(),
-            feature_name: "Editor nativo".into(),
+            feature_name: "Native editor".into(),
             stage: PulsationStage::Code,
             status: PulsationStatus::Checkpoint,
             created_at: "2026-08-24T00:00:00Z".into(),
             updated_at: "2026-08-24T00:00:00Z".into(),
-        }));
-        assert_eq!(state.title.as_deref(), Some("Code Review — Editor nativo"));
-        assert!(state.input.contains("Source snapshot loaded"));
-        assert!(state.generated.contains("Generated checkpoint draft"));
-        state.expected_checkpoint = Some(HitlCheckpoint {
-            pulsation_id: "pulse-1".into(),
-            checkpoint_id: "checkpoint-1".into(),
+        }
+    }
+
+    fn checkpoint(id: &str) -> HitlCheckpoint {
+        HitlCheckpoint {
+            pulsation_id: id.into(),
+            checkpoint_id: format!("checkpoint-{id}"),
             state_version: 1,
-        });
+        }
+    }
+
+    fn documents() -> Vec<HitlReviewDocument> {
+        vec![HitlReviewDocument {
+            artifact_id: "artifact-1".into(),
+            name: "Contract".into(),
+            kind: "stage_output".into(),
+            relative_path: None,
+            content: "# Complete contract\n\nReview the entire document.\n".into(),
+        }]
+    }
+
+    #[test]
+    fn requires_real_content_before_approval_and_blocks_duplicate_decisions() {
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("pulse-1")), Some(checkpoint("pulse-1")));
+        assert_eq!(state.title.as_deref(), Some("Code Review — Native editor"));
+        assert!(state.begin(HitlDecision::Approve).is_none());
+        let (generation, checkpoint) = state.begin_documents().unwrap();
+        assert!(state.begin_documents().is_none());
+        assert!(state.finish_documents(generation, &checkpoint, Ok(documents())));
         assert!(state.begin(HitlDecision::Approve).is_some());
         assert!(state.busy);
         assert!(state.begin(HitlDecision::Reject).is_none());
         state.finish(Ok(()));
         assert!(!state.busy);
+    }
+
+    #[test]
+    fn rejects_late_documents_and_preserves_same_checkpoint_reader_state() {
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));
+        let (old_generation, old_checkpoint) = state.begin_documents().unwrap();
+        state.load_checkpoint(Some(&pulse("second")), Some(checkpoint("second")));
+        let (generation, current) = state.begin_documents().unwrap();
+        assert!(!state.finish_documents(old_generation, &old_checkpoint, Ok(documents())));
+        assert!(state.documents.is_empty());
+        assert!(state.documents_loading);
+        assert!(state.finish_documents(generation, &current, Ok(documents())));
+        state.show_source = true;
+        state.load_checkpoint(Some(&pulse("second")), Some(checkpoint("second")));
+        assert!(state.show_source);
+        assert_eq!(state.documents[0].artifact.content, documents()[0].content);
+        let mut advanced = checkpoint("second");
+        advanced.state_version += 1;
+        state.load_checkpoint(Some(&pulse("second")), Some(advanced));
+        assert!(state.documents.is_empty());
+        assert!(!state.show_source);
+        assert!(!state.finish_documents(generation, &current, Ok(documents())));
+    }
+
+    #[test]
+    fn failed_read_can_retry_or_request_revision_without_fabricated_content() {
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));
+        let (generation, checkpoint) = state.begin_documents().unwrap();
+        state.finish_documents(generation, &checkpoint, Err("Read failed".into()));
+        assert!(state.documents.is_empty());
+        assert!(!state.can_approve());
+        assert!(state.begin_documents().is_none());
+        state.retry_documents();
+        assert!(state.begin_documents().is_some());
+        assert!(state.begin(HitlDecision::RequestRevision).is_some());
     }
 }
