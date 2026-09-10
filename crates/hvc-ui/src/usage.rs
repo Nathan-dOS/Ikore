@@ -11,10 +11,28 @@ pub(crate) struct UsageState {
     pub loading: bool,
     pub error: Option<String>,
     generation: u64,
+    expanded_pulsations: std::collections::HashSet<String>,
     refresh_pending: bool,
 }
 
 impl UsageState {
+    fn begin_query(&mut self, query: UsageQuery) -> u64 {
+        if self.query.project_id != query.project_id
+            || self.query.pulsation_id != query.pulsation_id
+        {
+            self.summary = None;
+        }
+        self.query = query;
+        self.begin()
+    }
+
+    pub(crate) fn invalidated(self) -> Self {
+        Self {
+            generation: self.generation.saturating_add(1),
+            ..Default::default()
+        }
+    }
+
     fn begin(&mut self) -> u64 {
         self.generation = self.generation.saturating_add(1);
         self.loading = true;
@@ -37,6 +55,100 @@ impl UsageState {
 }
 
 impl AppModel {
+    pub(crate) fn refresh_pulsation_usage(&mut self, cx: &mut Context<Self>) {
+        if self.is_disposed() {
+            return;
+        }
+        let project_id = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string);
+        let pulsation_id = self.pulsations.read(cx).active_id();
+        let query = UsageQuery {
+            project_id,
+            pulsation_id,
+            ..Default::default()
+        };
+        let generation = self
+            .pulsations
+            .update(cx, |state, _| state.usage.begin_query(query.clone()));
+        if query.project_id.is_none() || query.pulsation_id.is_none() {
+            self.pulsations.update(cx, |state, _| {
+                state.usage.loading = false;
+                state.usage.summary = None;
+            });
+            return;
+        }
+        if self.active_view() != AppView::Pulsations {
+            self.pulsations
+                .update(cx, |state, _| state.usage.loading = false);
+            return;
+        }
+        let Some(core) = self.core.clone() else {
+            self.pulsations
+                .update(cx, |state, _| state.usage.loading = false);
+            return;
+        };
+        let runtime = core.runtime_handle().clone();
+        cx.spawn(async move |this, cx| {
+            let expected = query.clone();
+            let result = runtime
+                .spawn_blocking(move || {
+                    hvc_core::usage::query_usage(core.persistence().database_path(), &query)
+                })
+                .await
+                .map_err(|e| format!("Usage worker failed: {e}"))
+                .and_then(|result| result.map_err(|e| format!("Unable to load token usage: {e}")));
+            let _ = this.update(cx, |model, cx| {
+                if model.is_disposed() {
+                    return;
+                }
+                let current_project = model
+                    .workspace
+                    .read(cx)
+                    .project_id
+                    .as_ref()
+                    .map(ToString::to_string);
+                if current_project != expected.project_id
+                    || model.pulsations.read(cx).active_id() != expected.pulsation_id
+                {
+                    return;
+                }
+                model
+                    .pulsations
+                    .update(cx, |state, _| state.usage.apply(generation, result));
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn schedule_pulsation_usage_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.active_view() != AppView::Pulsations
+            || self.pulsations.read(cx).usage.refresh_pending
+        {
+            return;
+        }
+        self.pulsations
+            .update(cx, |state, _| state.usage.refresh_pending = true);
+        let timer = cx.background_executor().timer(Duration::from_millis(350));
+        cx.spawn(async move |this, cx| {
+            timer.await;
+            let _ = this.update(cx, |model, cx| {
+                model
+                    .pulsations
+                    .update(cx, |state, _| state.usage.refresh_pending = false);
+                if model.active_view() == AppView::Pulsations {
+                    model.refresh_pulsation_usage(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
     pub(crate) fn refresh_usage(&mut self, cx: &mut Context<Self>) {
         if self.is_disposed() {
             return;
@@ -71,6 +183,7 @@ impl AppModel {
     }
 
     pub(crate) fn schedule_usage_refresh(&mut self, cx: &mut Context<Self>) {
+        self.schedule_pulsation_usage_refresh(cx);
         if self.active_view() != AppView::Settings
             || self.settings.read(cx).settings_section != SettingsSection::Usage
         {
@@ -287,7 +400,8 @@ pub(crate) fn usage_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                 "{} accounting units · {} partial · {} unavailable. Cache is included in input; reasoning is included in output when reported. Historical records may be incomplete. CLI collection begins with this feature.",
                 summary.totals.records,summary.totals.partial_records,summary.totals.unavailable_records)))
             .child(usage_chart(&summary,period))
-            .child(model_table(&summary)))
+            .child(model_table(&summary))
+            .child(pulsation_table(&summary, &state, cx)))
         .into_any_element()
 }
 
@@ -413,44 +527,55 @@ fn cell(text: impl Into<SharedString>, width: f32) -> AnyElement {
 }
 
 fn model_table(summary: &UsageSummary) -> AnyElement {
+    model_rows(&summary.models, "usage-model-table".into())
+}
+
+fn model_rows(models: &[hvc_core::usage::ModelUsage], id: SharedString) -> AnyElement {
+    let debug_id = id.clone();
     div()
-        .id("usage-model-table")
-        .debug_selector(|| "usage-model-table".into())
-        .p_4()
-        .rounded_lg()
-        .bg(theme::surface())
-        .border_1()
-        .border_color(theme::border())
+        .id(id)
+        .debug_selector(move || debug_id.to_string())
+        .min_w_0()
+        .overflow_x_scroll()
         .flex_shrink_0()
         .child(
             div()
-                .text_sm()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child("Usage by model"),
-        )
-        .child(
-            div()
-                .mt_3()
-                .flex()
-                .gap_3()
-                .text_color(theme::text_muted())
-                .child(div().flex_1().child("Model / provider"))
-                .child(cell("Transport", 70.0))
-                .child(cell("Input", 105.0))
-                .child(cell("Output", 105.0))
-                .child(cell("Total", 105.0)),
-        )
-        .when(summary.models.is_empty(), |table| {
-            table.child(
-                div()
-                    .mt_3()
-                    .text_sm()
-                    .text_color(theme::text_muted())
-                    .child("Run an agent or send a Companion message to record usage."),
-            )
-        })
-        .children(summary.models.iter().map(|entry| {
-            div()
+                .min_w(px(580.0))
+                .p_4()
+                .rounded_lg()
+                .bg(theme::surface())
+                .border_1()
+                .border_color(theme::border())
+                .flex_shrink_0()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Usage by model"),
+                )
+                .child(
+                    div()
+                        .mt_3()
+                        .flex()
+                        .gap_3()
+                        .text_color(theme::text_muted())
+                        .child(div().flex_1().child("Model / provider"))
+                        .child(cell("Transport", 70.0))
+                        .child(cell("Input", 105.0))
+                        .child(cell("Output", 105.0))
+                        .child(cell("Total", 105.0)),
+                )
+                .when(models.is_empty(), |table| {
+                    table.child(
+                        div()
+                            .mt_3()
+                            .text_sm()
+                            .text_color(theme::text_muted())
+                            .child("No model usage recorded."),
+                    )
+                })
+                .children(models.iter().map(|entry| {
+                    div()
                 .mt_3()
                 .pt_3()
                 .border_t_1()
@@ -488,7 +613,117 @@ fn model_table(summary: &UsageSummary) -> AnyElement {
                             count(entry.totals.reasoning_tokens)
                         )),
                 )
+                })),
+        )
+        .into_any_element()
+}
+
+fn pulsation_table(
+    summary: &UsageSummary,
+    state: &UsageState,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    div().id("usage-pulsation-table").debug_selector(|| "usage-pulsation-table".into())
+        .p_4().rounded_lg().bg(theme::surface()).border_1().border_color(theme::border()).flex_shrink_0()
+        .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child("Tokens per pulsation"))
+        .child(div().mt_2().text_xs().text_color(theme::text_muted()).child("Reported usage within the selected filters. Expand a pulsation to view its models."))
+        .when(summary.pulsations.is_empty(), |panel| panel.child(div().mt_3().text_sm().child("No pulsation usage recorded in this period.")))
+        .children(summary.pulsations.iter().map(|pulse| {
+            let id = pulse.pulsation_id.clone();
+            let expanded = state.expanded_pulsations.contains(&id);
+            div().mt_3().pt_3().border_t_1().border_color(theme::border())
+                .child(div().id(SharedString::from(format!("usage-pulsation-{id}"))).cursor_pointer()
+                    .on_click(cx.listener(move |model, _, _, cx| {
+                        model.settings.update(cx, |settings, _| {
+                            if !settings.usage.expanded_pulsations.remove(&id) { settings.usage.expanded_pulsations.insert(id.clone()); }
+                        });
+                        cx.notify();
+                    }))
+                    .child(div().text_sm().child(format!("{} {}", if expanded { "▾" } else { "▸" }, pulse.name)))
+                    .child(div().text_xs().text_color(theme::text_muted()).child(pulse.pulsation_id.clone()))
+                    .child(div().mt_1().text_sm().child(format!("Input: {} · Output: {} · Total: {}", count(pulse.totals.input_tokens), count(pulse.totals.output_tokens), count(pulse.totals.total_tokens))))
+                    .child(div().text_xs().text_color(theme::text_muted()).child(coverage(&pulse.totals))))
+                .when(expanded, |row| row.child(div().mt_2().child(model_rows(&pulse.models, format!("pulse-models-{}", pulse.pulsation_id).into()))))
         }))
+        .child(div().mt_4().text_sm().child(format!("Usage without pulsation · Total: {} · Input: {} · Output: {}",
+            if summary.without_pulsation.records == 0 { "0".into() } else { count(summary.without_pulsation.total_tokens) },
+            if summary.without_pulsation.records == 0 { "0".into() } else { count(summary.without_pulsation.input_tokens) },
+            if summary.without_pulsation.records == 0 { "0".into() } else { count(summary.without_pulsation.output_tokens) })))
+        .child(div().text_xs().text_color(theme::text_muted()).child(coverage(&summary.without_pulsation)))
+        .into_any_element()
+}
+
+pub(crate) fn pulsation_usage_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    let pulse = model.pulsations.read(cx);
+    let state = &pulse.usage;
+    let matches_selection = state.query.pulsation_id == pulse.active_id();
+    let summary = state.summary.as_ref().filter(|_| matches_selection);
+    div()
+        .id("pulsation-token-usage")
+        .debug_selector(|| "pulsation-token-usage".into())
+        .mt_4()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .items_center()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Token usage"),
+                )
+                .child(
+                    div()
+                        .id("pulsation-usage-refresh")
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(theme::accent())
+                        .on_click(cx.listener(|model, _, _, cx| model.refresh_pulsation_usage(cx)))
+                        .child("Refresh"),
+                ),
+        )
+        .child(div().text_xs().text_color(theme::text_muted()).child(
+            "All-time usage for this pulsation, including retries and associated Learning calls.",
+        ))
+        .when_some(
+            state.error.clone().filter(|_| matches_selection),
+            |panel, error| panel.child(div().text_sm().text_color(theme::danger()).child(error)),
+        )
+        .when(summary.is_none(), |panel| {
+            panel.child(div().text_sm().child("Token usage has not loaded yet."))
+        })
+        .when_some(summary, |panel, summary| {
+            panel
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(card(
+                            "pulse-usage-total",
+                            "Total tokens",
+                            summary.totals.total_tokens,
+                            &summary.totals,
+                        ))
+                        .child(card(
+                            "pulse-usage-input",
+                            "Input tokens",
+                            summary.totals.input_tokens,
+                            &summary.totals,
+                        ))
+                        .child(card(
+                            "pulse-usage-output",
+                            "Output tokens",
+                            summary.totals.output_tokens,
+                            &summary.totals,
+                        )),
+                )
+                .child(model_rows(&summary.models, "pulsation-usage-models".into()))
+        })
         .into_any_element()
 }
 
@@ -509,6 +744,107 @@ mod tests {
         assert_eq!(count(None), "Unavailable");
         assert_eq!(count(Some(0)), "0");
         assert_eq!(count(Some(1234567)), "1,234,567");
+    }
+
+    #[test]
+    fn pulsation_switch_and_reset_invalidate_in_flight_usage() {
+        let mut state = UsageState::default();
+        let query = |id: &str| UsageQuery {
+            project_id: Some("project".into()),
+            pulsation_id: Some(id.into()),
+            ..Default::default()
+        };
+        let a = state.begin_query(query("a"));
+        let b = state.begin_query(query("b"));
+        state.apply(a, Ok(UsageSummary::default()));
+        assert!(state.summary.is_none());
+        state.apply(b, Ok(UsageSummary::default()));
+        assert!(state.summary.is_some());
+        let old = state.begin_query(query("a"));
+        assert!(state.summary.is_none());
+        state = state.invalidated();
+        let current = state.begin_query(query("a"));
+        state.apply(old, Ok(UsageSummary::default()));
+        assert!(state.summary.is_none());
+        state.apply(current, Err("Fixture read failure".into()));
+        assert!(!state.loading);
+        assert_eq!(state.error.as_deref(), Some("Fixture read failure"));
+    }
+
+    fn pulse_fixture_summary() -> UsageSummary {
+        let totals = UsageTotals {
+            input_tokens: Some(120),
+            output_tokens: Some(30),
+            total_tokens: Some(150),
+            records: 2,
+            partial_records: 1,
+            ..Default::default()
+        };
+        let models = vec![hvc_core::usage::ModelUsage {
+            provider_id: "openai".into(),
+            model_id: "model-a".into(),
+            model_source: "observed".into(),
+            transport: UsageTransport::Api,
+            totals: totals.clone(),
+        }];
+        UsageSummary {
+            totals: totals.clone(),
+            models: models.clone(),
+            pulsations: vec![hvc_core::usage::PulsationUsage {
+                pulsation_id: "pulse-a".into(),
+                name: "Fixture feature".into(),
+                totals,
+                models,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[gpui::test]
+    fn pulsation_usage_mounts_independently_of_settings_and_handles_selection(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (model, visual) = cx.add_window_view(|_, cx| {
+            let mut model = crate::layout_tests::fixture(cx);
+            model.select_view(AppView::Pulsations, cx);
+            model.settings.update(cx, |state, _| {
+                state.usage.query.period = UsagePeriod::Last7Days;
+                state.usage.query.transport = Some(UsageTransport::Cli);
+            });
+            model.pulsations.update(cx, |state, _| {
+                state.detail_section = crate::pulsations::PulsationDetailSection::Overview;
+                let generation = state.usage.begin_query(UsageQuery {
+                    project_id: Some("layout-project".into()),
+                    pulsation_id: Some("pulse-a".into()),
+                    ..Default::default()
+                });
+                state.usage.apply(generation, Ok(pulse_fixture_summary()));
+            });
+            model
+        });
+        visual.simulate_resize(gpui::size(px(960.0), px(640.0)));
+        visual.run_until_parked();
+        let panel = visual.debug_bounds("pulsation-token-usage").unwrap();
+        let models = visual.debug_bounds("pulsation-usage-models").unwrap();
+        assert!(panel.size.width > px(0.0));
+        assert!(models.size.width <= panel.size.width);
+        let before = visual.debug_bounds("pulse-usage-total").unwrap();
+        model.update(visual, |model, cx| {
+            model.pulsations.update(cx, |state, _| {
+                state.usage.begin();
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("pulse-usage-total").unwrap(), before);
+        model.update(visual, |model, cx| {
+            model.select_pulsation("pulse-b", cx);
+            let state = &model.pulsations.read(cx).usage;
+            assert!(state.summary.is_none());
+            assert_eq!(state.query.pulsation_id.as_deref(), Some("pulse-b"));
+            assert_eq!(state.query.period, UsagePeriod::AllTime);
+            assert_eq!(state.query.transport, None);
+        });
     }
 
     #[gpui::test]
@@ -539,6 +875,8 @@ mod tests {
                     ..Default::default()
                 };
                 let summary = UsageSummary {
+                    pulsations: pulse_fixture_summary().pulsations,
+                    without_pulsation: UsageTotals::default(),
                     totals: totals.clone(),
                     models: vec![hvc_core::usage::ModelUsage {
                         provider_id: "openai".into(),
@@ -558,11 +896,28 @@ mod tests {
                 };
                 let generation = settings.usage.begin();
                 settings.usage.apply(generation, Ok(summary));
+                settings.usage.expanded_pulsations.insert("pulse-a".into());
             });
             cx.notify();
         });
         visual.simulate_resize(gpui::size(px(960.0), px(640.0)));
         visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("usage-pulsation-table")
+                .unwrap()
+                .size
+                .width
+                > px(0.0)
+        );
+        assert!(
+            visual
+                .debug_bounds("pulse-models-pulse-a")
+                .unwrap()
+                .size
+                .width
+                > px(0.0)
+        );
         let card_before = visual.debug_bounds("usage-total").unwrap();
         let panel = visual.debug_bounds("usage-panel").unwrap();
         let table = visual.debug_bounds("usage-model-table").unwrap();

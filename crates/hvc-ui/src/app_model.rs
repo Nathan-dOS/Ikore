@@ -881,6 +881,7 @@ impl AppModel {
             }
         }
         match view {
+            AppView::Pulsations => self.refresh_pulsation_usage(cx),
             AppView::Forge => self.refresh_forge(cx),
             AppView::Agents => self.refresh_agents(cx),
             AppView::Settings => self.refresh_settings(cx),
@@ -1489,6 +1490,7 @@ impl AppModel {
         }
         self.refresh_hitl_documents(cx);
         self.refresh_failure_detail(cx);
+        self.refresh_pulsation_usage(cx);
         self.sync_preparation_inputs(cx);
         if forge_changed && self.active_view() == AppView::Forge {
             self.refresh_forge(cx);
@@ -1769,6 +1771,7 @@ impl AppModel {
         self.confirm_failure_abort = false;
         self.refresh_hitl_documents(cx);
         self.refresh_failure_detail(cx);
+        self.refresh_pulsation_usage(cx);
         self.sync_preparation_inputs(cx);
         self.pulsations.update(cx, |pulsations, _| {
             pulsations.diff_expanded = false;

@@ -1587,6 +1587,7 @@ impl ChatService {
                     UsageContext {
                         source_kind: "chat_model_call".into(),
                         source_id: model_call_id.clone(),
+                        pulsation_id: None,
                         project_id: Some(context.conversation.project_id.clone()),
                         transport: UsageTransport::Api,
                         provider_id: context.conversation.provider_id.clone(),
@@ -1789,6 +1790,7 @@ impl ChatService {
                             usage_context: UsageContext {
                                 source_kind: "chat_model_call".into(),
                                 source_id: model_call_id.clone(),
+                                pulsation_id: None,
                                 project_id: Some(context.conversation.project_id.clone()),
                                 transport: UsageTransport::Cli,
                                 provider_id: backend.as_str().into(),

@@ -19,6 +19,7 @@ fn context(id: &str) -> UsageContext {
     UsageContext {
         source_kind: "llm_attempt".into(),
         source_id: id.into(),
+        pulsation_id: None,
         project_id: Some("project-a".into()),
         transport: UsageTransport::Api,
         provider_id: "openai".into(),
@@ -258,6 +259,7 @@ fn project_transport_and_utc_period_filters_keep_cards_and_series_consistent() {
     }
 
     let mut filter = UsageQuery {
+        pulsation_id: None,
         project_id: Some("project-a".into()),
         transport: Some(UsageTransport::Api),
         period: UsagePeriod::Last7Days,
@@ -417,4 +419,137 @@ fn provider_owned_identifiers_cannot_persist_secret_shaped_text() {
     assert!(!unit.contains("fixturesecret"));
     assert!(model.is_none());
     assert_eq!(summary(&db).models[0].model_id, "Unknown model");
+}
+
+#[test]
+fn pulsation_totals_reconcile_with_models_filters_and_unassigned_usage() {
+    let (_root, db) = database();
+    db.execute_batch("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at) VALUES
+        ('pulse-a','project-a','First feature','Code','running','2026-01-01','2026-01-01'),
+        ('pulse-b','project-b','Second feature','Code','failed','2026-01-01','2026-01-01');").unwrap();
+    let mut a = context("attempt-a");
+    a.pulsation_id = Some("pulse-a".into());
+    record_usage_on(&db, &a, "response", &measurement(10, 2)).unwrap();
+    record_usage_on(&db, &a, "response", &measurement(10, 2)).unwrap();
+    let mut retry = a.clone();
+    retry.source_id = "retry-a".into();
+    retry.requested_model = Some("retry-model".into());
+    record_usage_on(
+        &db,
+        &retry,
+        "response",
+        &UsageMeasurement {
+            partial: true,
+            ..measurement(3, 1)
+        },
+    )
+    .unwrap();
+    let mut cli = a.clone();
+    cli.source_kind = "terminal_run".into();
+    cli.source_id = "cli-a".into();
+    cli.transport = UsageTransport::Cli;
+    record_usage_on(&db, &cli, "turn", &measurement(5, 1)).unwrap();
+    let mut learning = a.clone();
+    learning.source_id = "learning-a".into();
+    learning.started_at = "2026-08-01T10:00:00Z".into();
+    record_usage_on(&db, &learning, "response", &measurement(1, 1)).unwrap();
+    let mut b = context("attempt-b");
+    b.pulsation_id = Some("pulse-b".into());
+    b.project_id = Some("project-b".into());
+    record_usage_on(&db, &b, "response", &measurement(40, 10)).unwrap();
+    record_usage_on(&db, &context("unassigned"), "response", &measurement(7, 0)).unwrap();
+    let result = summary(&db);
+    assert_eq!(result.totals.total_tokens, Some(81));
+    assert_eq!(result.without_pulsation.total_tokens, Some(7));
+    assert_eq!(result.pulsations[0].pulsation_id, "pulse-b");
+    let pulse = &result.pulsations[1];
+    assert_eq!(pulse.name, "First feature");
+    assert_eq!(pulse.totals.total_tokens, Some(24));
+    assert_eq!(pulse.totals.records, 4);
+    assert_eq!(pulse.totals.partial_records, 1);
+    assert_eq!(
+        pulse
+            .models
+            .iter()
+            .filter_map(|m| m.totals.total_tokens)
+            .sum::<i64>(),
+        24
+    );
+    let mut query = UsageQuery {
+        pulsation_id: a.pulsation_id.clone(),
+        ..Default::default()
+    };
+    assert_eq!(
+        query_usage_at(&db, &query, now()).unwrap().totals,
+        pulse.totals
+    );
+    query.period = UsagePeriod::Last7Days;
+    query.transport = Some(UsageTransport::Api);
+    assert_eq!(
+        query_usage_at(&db, &query, now())
+            .unwrap()
+            .totals
+            .total_tokens,
+        Some(16)
+    );
+    query.project_id = Some("project-b".into());
+    assert_eq!(
+        query_usage_at(&db, &query, now()).unwrap().totals.records,
+        0
+    );
+    db.execute("DELETE FROM pulsations WHERE id='pulse-a'", [])
+        .unwrap();
+    let retained = summary(&db);
+    assert_eq!(retained.totals, result.totals);
+    assert_eq!(retained.pulsations[1].name, "Deleted pulsation");
+    assert_eq!(retained.pulsations[1].totals, pulse.totals);
+    // A missing attribution in a later snapshot cannot erase a durable link.
+    a.pulsation_id = None;
+    record_usage_on(&db, &a, "response", &measurement(10, 2)).unwrap();
+    assert_eq!(summary(&db).pulsations[1].totals, pulse.totals);
+}
+
+#[test]
+fn pulsation_missing_partial_and_reported_zero_remain_distinct() {
+    let (_root, db) = database();
+    for (id, evidence) in [
+        ("missing", UsageMeasurement::default()),
+        ("zero", measurement(0, 0)),
+        (
+            "partial",
+            UsageMeasurement {
+                counts: TokenCounts {
+                    input_tokens: Some(8),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ),
+    ] {
+        let mut source = context(id);
+        source.pulsation_id = Some(id.into());
+        record_usage_on(&db, &source, "response", &evidence).unwrap();
+    }
+    let result = summary(&db);
+    let missing = result
+        .pulsations
+        .iter()
+        .find(|p| p.pulsation_id == "missing")
+        .unwrap();
+    assert_eq!(missing.totals.total_tokens, None);
+    assert_eq!(missing.totals.unavailable_records, 1);
+    let zero = result
+        .pulsations
+        .iter()
+        .find(|p| p.pulsation_id == "zero")
+        .unwrap();
+    assert_eq!(zero.totals.total_tokens, Some(0));
+    assert_eq!(zero.totals.unavailable_records, 0);
+    let partial = result
+        .pulsations
+        .iter()
+        .find(|p| p.pulsation_id == "partial")
+        .unwrap();
+    assert_eq!(partial.totals.total_tokens, Some(8));
+    assert_eq!(partial.totals.partial_records, 1);
 }

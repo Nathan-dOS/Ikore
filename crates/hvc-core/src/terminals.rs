@@ -4529,6 +4529,7 @@ async fn coordinate_process_events(
         crate::usage::UsageContext {
             source_kind: "terminal_run".into(),
             source_id: run.id.clone(),
+            pulsation_id: run.pulsation_id.clone(),
             project_id: Some(run.project_id.clone()),
             transport: crate::usage::UsageTransport::Cli,
             provider_id: backend.as_str().into(),
@@ -6090,6 +6091,7 @@ mod tests {
                 UsageContext {
                     source_kind: "terminal_run".into(),
                     source_id: run.id.clone(),
+                    pulsation_id: run.pulsation_id.clone(),
                     project_id: Some(project.id.clone()),
                     transport: UsageTransport::Cli,
                     provider_id: "codex".into(),

@@ -79,6 +79,7 @@ async fn adapters_persist_native_usage_on_complete_streamed_and_failed_responses
             UsageContext {
                 source_kind: "test_adapter".into(),
                 source_id: id,
+                pulsation_id: None,
                 project_id: None,
                 transport: UsageTransport::Api,
                 provider_id: profile.id.clone(),
@@ -182,4 +183,48 @@ fn v28_imports_canonical_api_history_once_and_retains_it_after_deletion() {
         query_usage(&path, &UsageQuery::default()).unwrap().totals,
         totals
     );
+}
+
+#[test]
+fn v29_attributes_existing_ledger_without_recounting_and_survives_source_deletion() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    migrations::migrations::runner()
+        .set_target(refinery::Target::Version(28))
+        .run(&mut db)
+        .unwrap();
+    db.execute_batch("PRAGMA foreign_keys=ON;
+        INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','Project','C:/v29-fixture','2026-01-01','2026-01-01');
+        INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at) VALUES('pulse','p','Feature','Code','failed','2026-01-01','2026-01-01');
+        INSERT INTO jobs(id,pulsation_id,kind,status,created_at,updated_at) VALUES('job','pulse','code','completed','2026-01-01','2026-01-01');
+        INSERT INTO agent_runs(id,job_id,agent_name,status,created_at,updated_at) VALUES('legacy','job','backend_agent','completed','2026-01-01','2026-01-01');
+        INSERT INTO provider_connections(id,provider_id,display_name,credential_ref,default_model,created_at,updated_at) VALUES('c','openai','Fixture','fixture','m','2026-01-01','2026-01-01');
+        INSERT INTO provider_routes(id,name,created_at,updated_at) VALUES('r','Fixture','2026-01-01','2026-01-01');
+        INSERT INTO llm_route_executions(id,generation_id,project_id,pulsation_id,job_id,route_id,agent_role,stage,strategy,mode,status,decision_json,started_at)
+        VALUES('e','g','p','pulse','job','r','backend_agent','Code','priority','on','completed','{}','2026-01-01');
+        INSERT INTO llm_attempts(id,execution_id,ordinal,connection_id,provider_id,model_id,outcome,started_at) VALUES('attempt','e',1,'c','openai','m','success','2026-01-01');
+        INSERT INTO terminal_runs(id,project_id,pulsation_id,agent_role,origin,execution_mode,backend,status,created_at,updated_at)
+        VALUES('terminal','p','pulse','backend_agent','pipeline','cli_process','codex','failed','2026-01-01','2026-01-01');
+        INSERT INTO token_usage_records(source_kind,source_id,unit_key,project_id,transport,provider_id,input_tokens,output_tokens,total_tokens,quality,started_at,updated_at) VALUES
+        ('llm_attempt','attempt','response','p','api','openai',10,2,12,'complete','2026-01-01','2026-01-01'),
+        ('terminal_run','terminal','turn','p','cli','codex',5,1,6,'complete','2026-01-01','2026-01-01'),
+        ('legacy_agent_run','legacy','response','p','api','openai',3,1,4,'partial','2026-01-01','2026-01-01'),
+        ('llm_attempt','deleted-attempt','response','p','api','openai',1,1,2,'complete','2026-01-01','2026-01-01');
+    ").unwrap();
+    migrations::migrations::runner().run(&mut db).unwrap();
+    let result = query_usage(&path, &UsageQuery::default()).unwrap();
+    assert_eq!(result.totals.total_tokens, Some(24));
+    assert_eq!(result.totals.records, 4);
+    assert_eq!(result.pulsations.len(), 1);
+    assert_eq!(result.pulsations[0].totals.total_tokens, Some(22));
+    assert_eq!(result.pulsations[0].models.len(), 2);
+    assert_eq!(result.without_pulsation.total_tokens, Some(2));
+    db.execute_batch("DELETE FROM llm_route_executions; DELETE FROM terminal_runs; DELETE FROM jobs; DELETE FROM projects;").unwrap();
+    migrations::migrations::runner().run(&mut db).unwrap();
+    let retained = query_usage(&path, &UsageQuery::default()).unwrap();
+    assert_eq!(retained.totals, result.totals);
+    assert_eq!(retained.pulsations[0].totals, result.pulsations[0].totals);
+    assert_eq!(retained.pulsations[0].name, "Deleted pulsation");
+    assert_eq!(retained.pulsations[0].pulsation_id, "pulse");
 }

@@ -244,6 +244,7 @@ pub enum PulsationDetailSection {
 
 #[derive(Default)]
 pub struct PulsationsModel {
+    pub(crate) usage: crate::usage::UsageState,
     /// User choices survive view navigation and runtime polling for this project.
     pub(crate) group_expansion: std::collections::HashMap<&'static str, bool>,
     pub detail_section: PulsationDetailSection,
@@ -294,7 +295,9 @@ impl PulsationsModel {
         self.details.iter().find(|d| d.pulsation_id == active.id)
     }
     pub(crate) fn reset(&mut self, project_id: Option<String>) {
+        let usage = std::mem::take(&mut self.usage).invalidated();
         *self = Self {
+            usage,
             project_id: project_id.map(Into::into),
             ..Self::default()
         };

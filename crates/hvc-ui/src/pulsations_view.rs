@@ -360,6 +360,7 @@ fn detail_overview(
             panel.child(brownfield_progress_panel(coverage))
         })
         .child(coordination_panel(model, cx))
+        .child(crate::usage::pulsation_usage_panel(model, cx))
         .child(
             div()
                 .grid()

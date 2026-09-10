@@ -58,3 +58,7 @@ formats remain unavailable, interrupted evidence is partial, and deletion of
 conversation/run history intentionally retains counters. Supplier counters are
 untrusted observability data, not independently verified billing evidence.
 See [implementation and validation](token-usage-implementation.md).
+
+## Pulsation attribution — 2026-09-10
+
+V29 stores the host-owned pulsation ID alongside existing counters, without copying names or content. Attribution survives source deletion; names are resolved on read. No new provider call or execution capability is introduced. Previously deleted source relations remain unassigned. See [validation](pulsation-token-usage.md).

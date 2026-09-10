@@ -132,6 +132,7 @@ impl ProviderRouter {
             UsageContext {
                 source_kind: "connection_test".into(),
                 source_id: request.execution_id.0.clone(),
+                pulsation_id: None,
                 project_id: None,
                 transport: UsageTransport::Api,
                 provider_id: profile.id.clone(),
@@ -491,6 +492,7 @@ impl ProviderRouter {
                 UsageContext {
                     source_kind: "llm_attempt".into(),
                     source_id: attempt_id.clone(),
+                    pulsation_id: request.pulsation_id.clone(),
                     project_id: Some(request.project_id.clone()),
                     transport: UsageTransport::Api,
                     provider_id: profile.id.clone(),
