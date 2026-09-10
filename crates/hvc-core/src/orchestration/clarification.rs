@@ -48,9 +48,9 @@ impl PersistenceService {
             ),
         )?;
         Self::open_checkpoint(db, &updated.id, updated.stage)?;
-        db.execute("UPDATE checkpoints SET kind='clarification',purpose='clarification',input_revision=?2,state_version=(SELECT state_version FROM pulsations WHERE id=?1),producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting'",params![current.id,fence.input_revision,fence.job_id,fence.generation])?;
+        db.execute("UPDATE checkpoints SET kind='clarification',purpose='clarification',input_revision=?2,state_version=(SELECT state_version FROM pulsations WHERE id=?1),producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting' AND purpose='artifact_review'",params![current.id,fence.input_revision,fence.job_id,fence.generation])?;
         let (checkpoint, state): (String, u64) = db.query_row(
-            "SELECT id,state_version FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
+            "SELECT id,state_version FROM checkpoints WHERE pulsation_id=?1 AND status='waiting' AND purpose='clarification'",
             [&current.id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;

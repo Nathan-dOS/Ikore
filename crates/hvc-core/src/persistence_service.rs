@@ -2961,9 +2961,10 @@ impl PersistenceService {
         let stage = PulsationStage::from_db_value(&stage_raw).ok_or_else(|| {
             PersistenceServiceError::Runtime("Etapa inválida no checkpoint de falha.".to_string())
         })?;
-        let class = crate::orchestration::FailureClass::from_db_value(&class_raw).ok_or_else(
-            || PersistenceServiceError::Runtime("Classe de falha inválida.".to_string()),
-        )?;
+        let class =
+            crate::orchestration::FailureClass::from_db_value(&class_raw).ok_or_else(|| {
+                PersistenceServiceError::Runtime("Classe de falha inválida.".to_string())
+            })?;
         let current =
             Self::find_pulsation_by_id(&transaction, &pulsation_id)?.ok_or_else(|| {
                 PersistenceServiceError::NotFound("Pulsação da falha não encontrada.".to_string())
@@ -3120,10 +3121,8 @@ impl PersistenceService {
                        AND artifact_id IN (SELECT id FROM artifacts WHERE acceptance='superseded')",
                     [&pulsation_id],
                 )?;
-                let feedback = Self::stage_failure_revision_feedback(
-                    request.feedback.as_deref(),
-                    &error_code,
-                );
+                let feedback =
+                    Self::stage_failure_revision_feedback(request.feedback.as_deref(), &error_code);
                 transaction.execute(
                     "UPDATE pulsations SET revision_feedback=?2 WHERE id=?1",
                     params![pulsation_id, feedback],
@@ -3537,6 +3536,8 @@ impl PersistenceService {
         Self::mark_effects_for_review(&tx, &pulse, "user_cancel_with_effects")?;
         tx.execute("UPDATE artifact_publications SET state='cancelled' WHERE pulsation_id=?1 AND state IN ('pending','applying')",[&pulse])?;
         tx.execute("UPDATE checkpoints SET status='rejected',updated_at=?2 WHERE pulsation_id=?1 AND status='waiting'",params![pulse,now])?;
+        tx.execute("UPDATE stage_failure_requests SET decision='abort',resolved_at=?2,updated_at=?2 WHERE pulsation_id=?1 AND decision IS NULL",params![pulse,now])?;
+        tx.execute("UPDATE cli_fallback_requests SET decision='cancel',resolved_at=?2,updated_at=?2 WHERE pulsation_id=?1 AND decision IS NULL",params![pulse,now])?;
         Self::enqueue_learning(&tx, &pulse)?;
         tx.commit()?;
         for id in &ids {
@@ -4932,6 +4933,127 @@ mod tests {
             db.query_row("SELECT value FROM runtime_settings WHERE key='orchestration.learning_refinement_mode'", [], |row| row.get::<_,String>(0)).unwrap(),
             "observe"
         );
+    }
+
+    /// V27 rebuilds `checkpoints` to widen both CHECK constraints, and SQLite cannot
+    /// alter a CHECK in place. Four tables reference this one, so the rebuild has to
+    /// survive DROP+RENAME with their foreign keys intact and no rows lost.
+    #[test]
+    fn v26_to_v27_rebuilds_checkpoints_without_losing_rows_or_references() {
+        let root = tempfile::tempdir().expect("tempdir should be created");
+        let db_path = root.path().join("hard-vibe-code.db");
+        let mut connection = Connection::open(&db_path).expect("v26 db should open");
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .expect("foreign keys should enable");
+        embedded::migrations::runner()
+            .set_target(refinery::Target::Version(26))
+            .run(&mut connection)
+            .expect("v1-v26 should apply");
+        let now = Utc::now().to_rfc3339();
+        connection.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('project-v26','Project V26',?1,?2,?2)",params![root.path().to_string_lossy(),now]).unwrap();
+        connection.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,queue_sequence,pipeline_version,state_version) VALUES('pulse-v26','project-v26','Feature','Integrator','checkpoint',?1,?1,1,2,7)",[&now]).unwrap();
+        connection.execute("INSERT INTO jobs(id,pulsation_id,kind,status,created_at,updated_at,project_id,input_revision,generation,state_version,idempotency_key) VALUES('job-v26','pulse-v26','run_stage::Integrator','interrupted',?1,?1,'project-v26',1,3,7,'job-v26')",[&now]).unwrap();
+        // One checkpoint of each purpose V26 knows about. The cli_fallback row carries
+        // the mismatched kind V20 forced on it, which V27 realigns.
+        connection.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,producer_job_id,generation,purpose) VALUES('review-v26','pulse-v26','Integrator','approved',?1,?1,'artifact_review',1,7,'job-v26',3,'artifact_review')",[&now]).unwrap();
+        connection.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,producer_job_id,generation,purpose) VALUES('clarify-v26','pulse-v26','SPECIFICATION','approved',?1,?1,'clarification',1,7,'job-v26',4,'clarification')",[&now]).unwrap();
+        connection.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,producer_job_id,generation,purpose) VALUES('fallback-v26','pulse-v26','Integrator','waiting',?1,?1,'artifact_review',1,7,'job-v26',5,'cli_fallback')",[&now]).unwrap();
+        connection.execute("INSERT INTO cli_fallback_requests(checkpoint_id,pulsation_id,agent_role,error_code,diagnostic,created_at,updated_at) VALUES('fallback-v26','pulse-v26','integrator','cli_exit','boom',?1,?1)",[&now]).unwrap();
+        connection.execute("INSERT INTO pulse_execution_overrides(pulsation_id,agent_role,execution_mode,source_checkpoint_id,created_at) VALUES('pulse-v26','integrator','api_direct','fallback-v26',?1)",[&now]).unwrap();
+        connection.execute("INSERT INTO specification_question_sets(id,checkpoint_id,pulsation_id,input_revision,generation,state_version,conversation_id,questions_json) VALUES('questions-v26','clarify-v26','pulse-v26',1,4,7,'conversation-v26','[]')",[]).unwrap();
+        connection.execute("UPDATE pulsations SET integration_checkpoint_id='review-v26',integration_state_version=7 WHERE id='pulse-v26'",[]).unwrap();
+        drop(connection);
+
+        let service = PersistenceService::initialize(root.path()).expect("v27 should upgrade");
+        let db = service.connection().expect("migrated db should open");
+
+        let violations = db
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .count();
+        assert_eq!(violations, 0, "the rebuild broke a foreign key");
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM checkpoints", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            3,
+            "the rebuild lost checkpoint rows"
+        );
+        for (table, column, id, expected) in [
+            (
+                "pulsations",
+                "integration_checkpoint_id",
+                "pulse-v26",
+                "review-v26",
+            ),
+            (
+                "specification_question_sets",
+                "checkpoint_id",
+                "questions-v26",
+                "clarify-v26",
+            ),
+            (
+                "pulse_execution_overrides",
+                "source_checkpoint_id",
+                "pulse-v26",
+                "fallback-v26",
+            ),
+        ] {
+            let key = if table == "pulse_execution_overrides" {
+                "pulsation_id"
+            } else {
+                "id"
+            };
+            assert_eq!(
+                db.query_row(
+                    &format!("SELECT {column} FROM {table} WHERE {key}=?1"),
+                    [id],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                expected,
+                "{table}.{column} lost its reference"
+            );
+        }
+
+        // V20 left `kind` behind `purpose`, forcing open_cli_fallback to write a false
+        // kind. V27 realigns them so idx_checkpoint_producer separates the types again.
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM checkpoints WHERE kind<>purpose",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "kind and purpose are still out of step"
+        );
+
+        for index in [
+            "idx_checkpoint_producer",
+            "idx_checkpoints_purpose",
+            "idx_checkpoints_pulsation_id",
+        ] {
+            assert!(
+                db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
+                    [index],
+                    |r| r.get::<_, bool>(0)
+                )
+                .unwrap(),
+                "{index} did not survive the rebuild"
+            );
+        }
+        // Still UNIQUE: two checkpoints of one kind for the same job generation.
+        db.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,producer_job_id,generation,purpose) VALUES('dup-v27','pulse-v26','Integrator','waiting',?1,?1,'artifact_review',1,7,'job-v26',3,'artifact_review')",[&now]).expect_err("idx_checkpoint_producer stopped being unique");
+
+        db.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,producer_job_id,generation,purpose) VALUES('failure-v27','pulse-v26','Integrator','waiting',?1,?1,'stage_failure',1,7,'job-v26',9,'stage_failure')",[&now]).expect("V27 should accept the stage_failure purpose and kind");
+        // A checkpoint offering only Abort is a dead end; the schema refuses to store one.
+        db.execute("INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,error_code,diagnostic,created_at,updated_at) VALUES('failure-v27','pulse-v26','job-v26','Integrator','model_reported_failure',0,0,'gave_up','boom',?1,?1)",[&now]).expect_err("a decision set of abort-only must be rejected");
+        db.execute("INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,revision_stage,error_code,diagnostic,created_at,updated_at) VALUES('failure-v27','pulse-v26','job-v26','Integrator','model_reported_failure',0,1,'Code','gave_up','boom',?1,?1)",[&now]).expect("a revisable failure should be storable");
     }
 
     #[test]

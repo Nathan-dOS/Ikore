@@ -92,6 +92,12 @@ Global **Novo** separates multiple backlog tasks from a new feature conversation
 FeatureAgent refines product scope with the developer; approval creates tasks without
 starting execution. Engine provides Tasks, Feature Forge, Pulsations and Vault.
 
+V26 adds developer-started triage/dependency analysis. A validated triage pass may
+approve ready scope and create tasks; dependency analysis can apply agent-origin
+relations while preserving human ones. V27 parks supported stage failures for
+Retry, Revision or confirmed Abort in Pulsations → Review.
+See [synchronization and validation](quality/cerebro-sync-validation-2026-09-09.md).
+
 A pulsation selects task revisions and freezes their approved feature context. Pipeline
 version 3 keeps all six existing stages and integrates the batch atomically. Database
 V24 preserves prior pulsations and adds feature, task, conversation, dependency, wave

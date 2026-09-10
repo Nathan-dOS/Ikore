@@ -8,6 +8,7 @@ mod chat;
 mod chat_view;
 mod choices;
 mod errors;
+mod failure_checkpoint;
 mod flow;
 mod forge;
 mod forge_view;

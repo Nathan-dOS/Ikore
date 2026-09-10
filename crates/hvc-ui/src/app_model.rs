@@ -19,7 +19,7 @@ use hvc_core::orchestration::brownfield::BrownfieldOnboardingStatus;
 use hvc_core::persistence_service::{
     CliFallbackDecision, EnsureProjectForWorkspaceRequest, HitlDecision, LoadUiSessionRequest,
     PulsationRuntimeSnapshot, PulsationStatus, ResolveCliFallbackRequest, SaveUiSessionRequest,
-    UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
+    StageFailureDecision, UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
 };
 use hvc_core::terminals::{
     CliAgentConfig, CliBackend, CliModelSelectionSource, CreateFreeFormSlotRequest,
@@ -330,6 +330,8 @@ pub struct AppModel {
     artifact_preview_task: Option<Task<()>>,
     pulsation_artifacts_task: Option<Task<()>>,
     hitl_documents_task: Option<Task<()>>,
+    failure_task: Option<Task<()>>,
+    failure_detail_task: Option<Task<()>>,
     vault_refresh_task: Option<Task<()>>,
     vault_search_task: Option<Task<()>>,
     vault_rename_task: Option<Task<()>>,
@@ -348,6 +350,7 @@ pub struct AppModel {
     pub(crate) confirm_workspace_overwrite: Option<String>,
     pub(crate) confirm_hitl_reject: bool,
     pub(crate) confirm_stage_reject: bool,
+    pub(crate) confirm_failure_abort: bool,
     pub(crate) confirm_brownfield_revoke: bool,
     pub(crate) active_dropdown: Option<String>,
     pub(crate) choice_menu: Option<gpui::Entity<crate::select_menu::SelectMenu>>,
@@ -674,6 +677,8 @@ impl AppModel {
             artifact_preview_task: None,
             pulsation_artifacts_task: None,
             hitl_documents_task: None,
+            failure_task: None,
+            failure_detail_task: None,
             vault_refresh_task: None,
             vault_search_task: None,
             vault_rename_task: None,
@@ -692,6 +697,7 @@ impl AppModel {
             confirm_workspace_overwrite: None,
             confirm_hitl_reject: false,
             confirm_stage_reject: false,
+            confirm_failure_abort: false,
             confirm_brownfield_revoke: false,
             active_dropdown: None,
             choice_menu: None,
@@ -852,6 +858,7 @@ impl AppModel {
         self.confirm_workspace_overwrite = None;
         self.confirm_hitl_reject = false;
         self.confirm_stage_reject = false;
+        self.confirm_failure_abort = false;
         self.confirm_brownfield_revoke = false;
         self.active_dropdown = None;
         self.choice_menu = None;
@@ -1367,6 +1374,11 @@ impl AppModel {
         cx.notify();
     }
 
+    pub fn set_confirm_failure_abort(&mut self, value: bool, cx: &mut Context<Self>) {
+        self.confirm_failure_abort = value;
+        cx.notify();
+    }
+
     pub fn set_confirm_stage_reject(&mut self, value: bool, cx: &mut Context<Self>) {
         self.confirm_stage_reject = value;
         cx.notify();
@@ -1460,15 +1472,29 @@ impl AppModel {
             &snapshot.pulsations,
         );
         let previously_awaiting_hitl = self.pulsations.read(cx).awaiting_hitl;
+        let previously_awaiting_failure = self.pulsations.read(cx).awaiting_failure;
+        let previous_failure = self.pulsations.read(cx).failure.checkpoint.clone();
         let active_id = self.pulsations.update(cx, |pulsations, _| {
             pulsations.apply_snapshot(project_id, snapshot, preferred_id)
         });
+        let current_failure = &self.pulsations.read(cx).failure.checkpoint;
+        if previous_failure
+            .as_ref()
+            .map(|c| (&c.checkpoint_id, c.state_version))
+            != current_failure
+                .as_ref()
+                .map(|c| (&c.checkpoint_id, c.state_version))
+        {
+            self.confirm_failure_abort = false;
+        }
         self.refresh_hitl_documents(cx);
+        self.refresh_failure_detail(cx);
         self.sync_preparation_inputs(cx);
         if forge_changed && self.active_view() == AppView::Forge {
             self.refresh_forge(cx);
         }
         self.notify_review_waiting(previously_awaiting_hitl, cx);
+        self.notify_failure_waiting(previously_awaiting_failure, cx);
         cx.notify();
         active_id
     }
@@ -1477,6 +1503,54 @@ impl AppModel {
     /// (`awaiting_hitl` going from 0 to more than 0), and — only when the developer has opted into
     /// `auto_open_review` and nothing suggests they're mid-composition elsewhere — jumps straight
     /// there. See the UI flow plan Part 4.2.
+    /// The failure twin of `notify_review_waiting`. Kept separate rather than folded into
+    /// the review counter: a parked failure raising `awaiting_hitl` would trip that
+    /// function's `previously_awaiting_hitl != 0` guard and silently swallow the notice
+    /// for a genuine artifact review opening afterwards.
+    fn notify_failure_waiting(
+        &mut self,
+        previously_awaiting_failure: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let (awaiting, failure_pulsation_id) = {
+            let pulsations = self.pulsations.read(cx);
+            let id = pulsations
+                .active()
+                .filter(|pulsation| {
+                    pulsation.status == PulsationStatus::Checkpoint
+                        && pulsations
+                            .failure_checkpoints
+                            .iter()
+                            .any(|c| c.pulsation_id == pulsation.id)
+                })
+                .map(|pulsation| pulsation.id.clone());
+            (pulsations.awaiting_failure, id)
+        };
+        if previously_awaiting_failure != 0 || awaiting == 0 {
+            return;
+        }
+        let Some(pulsation_id) = failure_pulsation_id else {
+            return;
+        };
+        let message = if awaiting == 1 {
+            "1 stage failure waiting on a decision".to_string()
+        } else {
+            format!("{awaiting} stage failures waiting on a decision")
+        };
+        self.push_actionable_notice(
+            HeaderNoticeKind::Error,
+            message,
+            Some(HeaderNoticeAction {
+                label: "Decide now".into(),
+                pulsation_id: pulsation_id.clone(),
+            }),
+            cx,
+        );
+        if self.auto_open_review && !self.auto_open_review_blocked(cx) {
+            self.open_pulsation_review(pulsation_id, cx);
+        }
+    }
+
     fn notify_review_waiting(&mut self, previously_awaiting_hitl: usize, cx: &mut Context<Self>) {
         let (awaiting_hitl, checkpoint_pulsation_id) = {
             let pulsations = self.pulsations.read(cx);
@@ -1573,6 +1647,113 @@ impl AppModel {
         }));
     }
 
+    pub(crate) fn refresh_failure_detail(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let Some((generation, checkpoint_id)) = self
+            .pulsations
+            .update(cx, |state, _| state.failure.begin_detail())
+        else {
+            return;
+        };
+        let project_id = self.workspace.read(cx).project_id.clone();
+        self.failure_detail_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.stage_failure_detail(checkpoint_id.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                if model.workspace.read(cx).project_id != project_id {
+                    return;
+                }
+                model.pulsations.update(cx, |state, _| {
+                    state
+                        .failure
+                        .finish_detail(generation, &checkpoint_id, result);
+                });
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn resolve_stage_failure(
+        &mut self,
+        decision: StageFailureDecision,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_failure_abort = false;
+        let request = self
+            .pulsations
+            .update(cx, |pulsations, _| pulsations.failure.begin(decision));
+        let request = request.map(|mut request| {
+            if decision == StageFailureDecision::RequestRevision {
+                request.feedback = Some(self.stage_feedback_input.read(cx).value().to_owned());
+            }
+            request
+        });
+        let Some(request) = request else {
+            return;
+        };
+        let Some(core) = self.core.clone() else {
+            self.pulsations.update(cx, |pulsations, _| {
+                pulsations.failure.finish(Err(
+                    "Stage failure decision unavailable in test environment".into(),
+                ));
+            });
+            cx.notify();
+            return;
+        };
+        self.status = "Applying failure decision…".into();
+        cx.notify();
+        let runtime = core.runtime_handle().clone();
+        let decision_scope = (
+            request.checkpoint_id.clone(),
+            request.expected_state_version,
+        );
+        self.failure_task = Some(cx.spawn(async move |this, cx| {
+            let result = runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .resolve_stage_failure(request)
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("Failure decision worker interrupted: {error}"))
+                .and_then(|result| result);
+            let _ = this.update(cx, |model, cx| {
+                if model.lifecycle.is_disposed() {
+                    return;
+                }
+                model.pulsations.update(cx, |pulsations, _| {
+                    // A snapshot may have replaced the checkpoint while the decision was
+                    // in flight; applying the result to a different one would lie.
+                    let same_checkpoint = pulsations.failure.checkpoint.as_ref().is_some_and(|c| {
+                        c.checkpoint_id == decision_scope.0 && c.state_version == decision_scope.1
+                    });
+                    if same_checkpoint {
+                        pulsations.failure.finish(result.clone());
+                        if result.is_ok() {
+                            pulsations.awaiting_failure =
+                                pulsations.awaiting_failure.saturating_sub(1);
+                            pulsations.diff_expanded = false;
+                        }
+                    }
+                });
+                match result {
+                    Ok(()) => {
+                        model.status = "Failure decision applied".into();
+                        model.schedule_session_persistence(cx);
+                        model.refresh_pulsations(cx);
+                    }
+                    Err(error) => {
+                        model.status = "Failed to apply failure decision".into();
+                        model.push_header_notice(HeaderNoticeKind::Error, error, cx);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn select_pulsation(
         &mut self,
         pulsation_id: impl Into<String>,
@@ -1585,7 +1766,9 @@ impl AppModel {
         if !selected {
             return;
         }
+        self.confirm_failure_abort = false;
         self.refresh_hitl_documents(cx);
+        self.refresh_failure_detail(cx);
         self.sync_preparation_inputs(cx);
         self.pulsations.update(cx, |pulsations, _| {
             pulsations.diff_expanded = false;
@@ -2054,6 +2237,7 @@ impl AppModel {
     pub(crate) fn apply_hitl_decision(&mut self, decision: HitlDecision, cx: &mut Context<Self>) {
         self.confirm_hitl_reject = false;
         self.confirm_stage_reject = false;
+        self.confirm_failure_abort = false;
         let request = self
             .pulsations
             .update(cx, |pulsations, _| pulsations.hitl.begin(decision));
@@ -5965,6 +6149,18 @@ mod tests {
             _checkpoint: hvc_core::persistence_service::HitlCheckpoint,
         ) -> PulsationsFuture<Vec<hvc_core::persistence_service::HitlReviewDocument>> {
             Box::pin(async { Ok(Vec::new()) })
+        }
+        fn stage_failure_detail(
+            &self,
+            checkpoint_id: String,
+        ) -> PulsationsFuture<hvc_core::persistence_service::StageFailureDetail> {
+            Box::pin(async move {
+                Ok(hvc_core::persistence_service::StageFailureDetail {
+                    checkpoint_id,
+                    raw_output: None,
+                    validation_error: None,
+                })
+            })
         }
         fn action(&self, action: crate::pulsations::PulsationAction) -> PulsationsFuture<()> {
             self.actions.lock().unwrap().push(action);

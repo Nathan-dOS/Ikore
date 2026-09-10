@@ -1,5 +1,7 @@
 # Feature Forge implementation and validation
 
+Historical 2026-09-06 baseline. The advisory-only triage contract below was superseded by the explicitly confirmed V26 analysis authority on 2026-09-09; see [current synchronization evidence](cerebro-sync-validation-2026-09-09.md). Historical results remain unchanged.
+
 ## Baseline and scope
 
 - Date: 2026-09-06.

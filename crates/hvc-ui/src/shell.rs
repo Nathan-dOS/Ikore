@@ -63,6 +63,7 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
     register_editor_keybindings(cx);
     register_text_input_keybindings(cx);
     register_hitl_keybindings(cx);
+    crate::failure_checkpoint::register_failure_keybindings(cx);
     register_navigation_keybindings(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {

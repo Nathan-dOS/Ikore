@@ -22,11 +22,19 @@ Resultado preliminar em 26/08/2026, no mesmo computador e com diretório de dado
 novo: aproximadamente 615,254 ms para 534,180 ms até a janela Win32, uma melhora
 de 13,177%. O gate funcional e o smoke test Windows continuam obrigatórios.
 
+## HVC-GPUI-002 — Windows window visibility and activation
+
+Source: HVC commit `afac99605d81d4fe2afa377f3be767c992d7f4c6` (2026-09-04), a local integration correction; no upstream backport provenance is claimed.
+
+`src/platform/windows/window.rs` sets `placement.showCmd` to `SW_SHOWNORMAL`, calls `ShowWindowAsync(SW_SHOWNORMAL)` after applying visible window placement, and shows a hidden window during activation. Minimized windows retain the `SW_RESTORE` path. The application shell explicitly calls `activate_window()` on the newly opened window before `cx.activate(true)`.
+
+Validation disposition: implementation verified by source review on 2026-09-09; fresh physical Windows startup/activation smoke remains deferred. See `quality/stage7-report.md` and `quality/cerebro-sync-validation-2026-09-09.md`.
+
 ## Integridade
 
 - Versão-base: `gpui` 0.2.2.
 - Fonte-base: crates.io.
-- Patch funcional mantido exclusivamente no arquivo indicado acima.
+- Functional patches are maintained in `src/platform/windows/directx_devices.rs` (HVC-GPUI-001) and `src/platform/windows/window.rs` (HVC-GPUI-002).
 - Ajuste adicional em `src/taffy.rs` explicita literais `f32` exigidos pelo
   Rust 1.98; ele não altera comportamento nem desempenho.
 - Mudanças futuras devem receber um identificador `HVC-GPUI-NNN` e registrar

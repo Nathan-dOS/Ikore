@@ -1,14 +1,336 @@
 //! Complete checkpoint artifacts, scoped to the persisted producer and independent of Workspace.
 
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
-use hvc_core::persistence_service::HitlDecision;
+use hvc_core::persistence_service::{
+    HitlDecision, StageFailureCheckpoint, StageFailureDecision, StageFailureDetail,
+};
 
 use crate::app_model::AppModel;
+use crate::failure_checkpoint::{AbortFailedStage, RetryFailedStage, ReviseFailedStage};
 use crate::hitl::{ApproveHitl, RejectHitl, RequestHitlRevision};
 use crate::theme;
 use crate::workspace_view::render_markdown_block;
 
+/// The decision surface for a stage failure parked on a checkpoint.
+///
+/// Shares the Review tab with the artifact review: a pulsation holds at most one waiting
+/// checkpoint, so exactly one of the two is ever showing. Which buttons exist comes from
+/// the host's persisted `allow_retry`/`allow_revision`, never from a local guess.
+fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    let pulsations = model.pulsations.read(cx);
+    let failure = &pulsations.failure;
+    let Some(checkpoint) = failure.checkpoint.clone() else {
+        return div().into_any_element();
+    };
+    let title = failure.title().unwrap_or_else(|| "Stage failure".into());
+    let rationale = failure.rationale().unwrap_or_default();
+    let busy = failure.busy;
+    let can_decide = !busy;
+    let allow_retry = checkpoint.allow_retry;
+    let allow_revision = checkpoint.allow_revision;
+    let show_feedback = failure.show_feedback;
+    let detail = failure.detail.clone();
+    let detail_loading = failure.detail_loading;
+    let detail_error = failure.detail_error.clone();
+    let decision_error = failure.error.clone();
+    let confirm_abort = model.confirm_failure_abort;
+    let revision_label = checkpoint
+        .revision_stage
+        .map(|stage| format!("Request revision to {stage:?}"))
+        .unwrap_or_else(|| "Request revision".to_string());
+
+    div()
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .key_context("FailureCheckpoint")
+        .on_action(cx.listener(|model, _: &RetryFailedStage, _, cx| {
+            model.resolve_stage_failure(StageFailureDecision::RetryStage, cx);
+        }))
+        .on_action(cx.listener(|model, _: &ReviseFailedStage, _, cx| {
+            model.resolve_stage_failure(StageFailureDecision::RequestRevision, cx);
+        }))
+        .on_action(cx.listener(|model, _: &AbortFailedStage, _, cx| {
+            if model.confirm_failure_abort {
+                model.set_confirm_failure_abort(false, cx);
+                model.resolve_stage_failure(StageFailureDecision::Abort, cx);
+            } else if model.pulsations.read(cx).failure.checkpoint.is_some() {
+                model.set_confirm_failure_abort(true, cx);
+            }
+        }))
+        .child(
+            div()
+                .flex_shrink_0()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_3()
+                .border_b_1()
+                .border_color(theme::border())
+                .bg(theme::danger_soft())
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::danger())
+                        .child("STAGE FAILURE"),
+                )
+                .child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_ellipsis()
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(rationale),
+                ),
+        )
+        .child(
+            div()
+                .id("failure-detail")
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .p_3()
+                .child(failure_facts(&checkpoint))
+                .child(match (detail_loading, detail_error, detail) {
+                    (true, _, _) => div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child("Loading the rejected output…")
+                        .into_any_element(),
+                    (_, Some(error), _) => div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme::danger())
+                                .child(format!("Could not read the last attempt: {error}")),
+                        )
+                        .child(crate::widgets::btn(
+                            "failure-detail-retry",
+                            "Try again",
+                            crate::widgets::ButtonVariant::Secondary,
+                            true,
+                            cx,
+                            |model, cx| {
+                                model.pulsations.update(cx, |state, _| {
+                                    state.failure.retry_detail();
+                                });
+                                model.refresh_failure_detail(cx);
+                            },
+                        ))
+                        .into_any_element(),
+                    // Never invent an output: an executor that died before the agent ran
+                    // has nothing to show, and saying so is the honest thing.
+                    (_, _, Some(detail))
+                        if detail.raw_output.is_some() || detail.validation_error.is_some() =>
+                    {
+                        rejected_output(&detail)
+                    }
+                    _ => div()
+                        .text_sm()
+                        .text_color(theme::text_muted())
+                        .child("No model output was persisted for this attempt.")
+                        .into_any_element(),
+                }),
+        )
+        .when_some(decision_error, |panel, error| {
+            panel.child(
+                div()
+                    .flex_shrink_0()
+                    .px_3()
+                    .py_2()
+                    .text_sm()
+                    .text_color(theme::danger())
+                    .child(error),
+            )
+        })
+        .when(show_feedback && allow_revision, |panel| {
+            panel.child(
+                div()
+                    .flex_shrink_0()
+                    .min_w_0()
+                    .p_3()
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .child(
+                        div()
+                            .mb_1()
+                            .text_xs()
+                            .text_color(theme::text_muted())
+                            .child("Guidance for the retried stage"),
+                    )
+                    .child(model.stage_feedback_input.clone()),
+            )
+        })
+        .child(
+            div()
+                .debug_selector(|| "failure-decision-bar".into())
+                .flex_shrink_0()
+                .min_h(px(54.0))
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .p_3()
+                .border_t_1()
+                .border_color(theme::border())
+                .when(allow_retry, |bar| {
+                    bar.child(crate::widgets::btn(
+                        "failure-retry",
+                        "Retry stage",
+                        crate::widgets::ButtonVariant::Primary,
+                        can_decide,
+                        cx,
+                        |model, cx| {
+                            model.resolve_stage_failure(StageFailureDecision::RetryStage, cx);
+                        },
+                    ))
+                })
+                .when(allow_revision, |bar| {
+                    bar.child(crate::widgets::btn(
+                        "failure-revision",
+                        revision_label.clone(),
+                        crate::widgets::ButtonVariant::Secondary,
+                        can_decide,
+                        cx,
+                        |model, cx| {
+                            model.resolve_stage_failure(StageFailureDecision::RequestRevision, cx);
+                        },
+                    ))
+                })
+                .when(allow_revision, |bar| {
+                    bar.child(
+                        div()
+                            .id("failure-feedback-toggle")
+                            .px_2()
+                            .py_1()
+                            .text_xs()
+                            .cursor_pointer()
+                            .text_color(theme::text_muted())
+                            .on_click(cx.listener(|model, _, _, cx| {
+                                model.pulsations.update(cx, |state, _| {
+                                    state.failure.show_feedback = !state.failure.show_feedback
+                                });
+                                cx.notify();
+                            }))
+                            .child(if show_feedback {
+                                "Hide guidance"
+                            } else {
+                                "Add guidance"
+                            }),
+                    )
+                })
+                .child(crate::widgets::btn_confirm(
+                    "failure-abort",
+                    "Abort pulsation",
+                    "Confirm abort",
+                    confirm_abort,
+                    can_decide,
+                    crate::widgets::ButtonVariant::Danger,
+                    cx,
+                    |model, cx| model.set_confirm_failure_abort(true, cx),
+                    |model, cx| {
+                        model.set_confirm_failure_abort(false, cx);
+                        model.resolve_stage_failure(StageFailureDecision::Abort, cx);
+                    },
+                ))
+                .when(busy, |bar| {
+                    bar.child(
+                        div()
+                            .text_sm()
+                            .text_color(theme::accent())
+                            .child("Applying decision…"),
+                    )
+                }),
+        )
+        .into_any_element()
+}
+
+fn failure_facts(checkpoint: &StageFailureCheckpoint) -> AnyElement {
+    let rows = [
+        ("Error", checkpoint.error_code.clone()),
+        ("Stage", format!("{:?}", checkpoint.stage)),
+        ("Attempts", checkpoint.attempts.max(0).to_string()),
+        ("Diagnostic", checkpoint.diagnostic.clone()),
+    ];
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .children(rows.map(|(label, value)| {
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .w(px(140.0))
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(label),
+                )
+                .child(div().flex_1().min_w_0().text_sm().child(value))
+        }))
+        .into_any_element()
+}
+
+fn rejected_output(detail: &StageFailureDetail) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .when_some(detail.validation_error.clone(), |block, error| {
+            block.child(
+                div()
+                    .text_xs()
+                    .text_color(theme::danger())
+                    .child(format!("Rejected because: {error}")),
+            )
+        })
+        .when_some(detail.raw_output.clone(), |block, raw| {
+            block
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child("Last output from the agent"),
+                )
+                .child(
+                    div()
+                        .id("failure-raw-output")
+                        .max_h(px(360.0))
+                        .overflow_y_scroll()
+                        .p_2()
+                        .rounded_sm()
+                        .bg(theme::surface_raised())
+                        .text_xs()
+                        .child(raw),
+                )
+        })
+        .into_any_element()
+}
+
 pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    // A pulsation holds at most one waiting checkpoint, so the failure surface simply
+    // takes over the Review tab when that checkpoint is a parked failure.
+    if model.pulsations.read(cx).failure.checkpoint.is_some() {
+        return failure_panel(model, cx);
+    }
     let pulsations = model.pulsations.read(cx);
     let hitl = &pulsations.hitl;
     let title = hitl

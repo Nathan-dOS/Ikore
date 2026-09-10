@@ -40,6 +40,14 @@
 
 Nenhum risco crítico ou alto conhecido permanece aberto no código coberto pelo runtime hermético. Os riscos residuais acima são de severidade média ou menor, têm comportamento fail-closed e não autorizam fallback, shell ou acesso cruzado silencioso.
 
+## Forge analysis and failure recovery — 2026-09-09
+
+The confirmed ADR-016 extension permits developer-started triage to approve eligible scope/create tasks and dependency analysis to apply agent-origin edges. Host revision/cancellation/active-turn checks, approval savepoints, project membership, cycle checks and preservation of human relations constrain these mutations. Misleading analysis can now affect approved planning work, so the evaluation and graph remain reviewable before explicit dispatch. Archive, waves, HITL and final acceptance retain developer gates.
+
+Stage-failure resolution validates the unique waiting checkpoint, purpose, state/input revision and persisted decision permissions transactionally. Retry preserves the spent attempts budget and advances generation. Rejected output is untrusted plain text and may contain private run content; it is distinct from the content-free usage ledger. LF/CRLF migration reconciliation recognizes only a computed equivalent checksum; arbitrary drift still fails.
+
+See [synchronization evidence](cerebro-sync-validation-2026-09-09.md).
+
 ## Token usage accounting — 2026-09-09
 
 The V28 usage ledger stores counters and bounded metadata only. Raw model output,
