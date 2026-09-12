@@ -217,12 +217,20 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                 || model.pulsations.read(cx).detail().is_some_and(|detail| {
                     detail.questions.is_some() || detail.description_editable
                 });
+            let backend_override = model.pulsations.read(cx).backend_override.clone();
+            let backend_override_busy = model.pulsations.read(cx).backend_override_busy;
             panel
                 .when(section != PulsationDetailSection::Review, |panel| {
                     panel.child(
                         div()
                             .flex_shrink_0()
-                            .child(pulsation_detail_header(active.clone(), runtime_loading, cx))
+                            .child(pulsation_detail_header(
+                                active.clone(),
+                                runtime_loading,
+                                backend_override,
+                                backend_override_busy,
+                                cx,
+                            ))
                             .child(pipeline(active.stage)),
                     )
                 })
@@ -1265,6 +1273,8 @@ fn coordination_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElemen
 fn pulsation_detail_header(
     pulsation: Pulsation,
     busy: bool,
+    backend_override: Option<hvc_core::terminals::BackendOverrideStatus>,
+    backend_override_busy: bool,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
     let busy = busy
@@ -1342,6 +1352,71 @@ fn pulsation_detail_header(
                         .child("Cancel pulsation"),
                 ),
         )
+        .when_some(backend_override, |header, backend_override| {
+            let can_retry =
+                !backend_override_busy && backend_override.job_status.as_deref() == Some("pending");
+            header.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .p_2()
+                    .rounded_md()
+                    .bg(theme::warning_soft())
+                    .debug_selector(|| "pulsation-backend-override".into())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .min_w_0()
+                            .child(
+                                div().text_sm().text_color(theme::warning()).child(format!(
+                                    "Running on {} (automatic failover)",
+                                    backend_override.backend.label()
+                                )),
+                            )
+                            .when_some(backend_override.reason.clone(), |col, reason| {
+                                col.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme::text_muted())
+                                        .child(reason),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("clear-backend-override")
+                            .debug_selector(|| "pulsation-clear-override".into())
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .bg(if can_retry {
+                                theme::accent_soft()
+                            } else {
+                                theme::surface_raised()
+                            })
+                            .text_color(if can_retry {
+                                theme::accent()
+                            } else {
+                                theme::text_muted()
+                            })
+                            .when(can_retry, |button| {
+                                button.cursor_pointer().on_click(cx.listener(
+                                    |model, _, _, cx| model.clear_backend_override_and_retry(cx),
+                                ))
+                            })
+                            .child(if backend_override_busy {
+                                "Clearing…"
+                            } else {
+                                "Clear override and retry"
+                            }),
+                    ),
+            )
+        })
 }
 
 fn pipeline(current_stage: PulsationStage) -> impl IntoElement {
@@ -1520,7 +1595,7 @@ mod tests {
                 updated_at: String::new(),
             };
             div().w(self.width).child(self.model.update(cx, |_, cx| {
-                pulsation_detail_header(pulse, false, cx).into_any_element()
+                pulsation_detail_header(pulse, false, None, false, cx).into_any_element()
             }))
         }
     }

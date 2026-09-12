@@ -275,6 +275,12 @@ pub struct PulsationsModel {
     pub diff_expanded: bool,
     pub(crate) hitl: HitlReviewState,
     pub(crate) failure: FailureCheckpointState,
+    /// The backend the active pulsation's current stage silently failed
+    /// over to (see `elect_next_backend` in hvc-core), when there is one.
+    /// `None` means the stage is running on the project's configured
+    /// default backend.
+    pub backend_override: Option<hvc_core::terminals::BackendOverrideStatus>,
+    pub backend_override_busy: bool,
 }
 
 impl PulsationsModel {
@@ -359,6 +365,7 @@ impl PulsationsModel {
             self.detail_section = PulsationDetailSection::Overview;
             self.artifacts.clear();
             self.artifact_preview = None;
+            self.backend_override = None;
         }
         let had_checkpoint = self.hitl.pulsation_id.is_some() || self.failure.checkpoint.is_some();
         self.project_id = Some(project_id.into());

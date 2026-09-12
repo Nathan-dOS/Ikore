@@ -6512,6 +6512,116 @@ mod tests {
     }
 
     #[test]
+    fn backend_override_status_reports_the_current_stage_election_and_reason() {
+        use crate::persistence_service::{
+            CreatePulsationRequest, CreateProjectRequest, PersistenceService,
+        };
+
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Override status".into()),
+            })
+            .unwrap()
+            .project;
+        let pulse = persistence
+            .create_pulsation(CreatePulsationRequest {
+                project_id: project.id.clone(),
+                feature_name: "Override status".into(),
+            })
+            .unwrap()
+            .pulsation;
+        let repository = TerminalRepository::new(persistence.database_path());
+        let role = AgentRole::for_stage(pulse.stage.as_db_value());
+
+        let connection = Connection::open(persistence.database_path()).unwrap();
+        connection
+            .execute(
+                "INSERT INTO pulse_execution_overrides(pulsation_id,agent_role,execution_mode,backend,source_checkpoint_id,created_at) \
+                 VALUES(?1,?2,'cli_process',?3,NULL,?4)",
+                params![pulse.id, role.as_str(), CliBackend::Codex.as_str(), "2026-09-10T00:00:00Z"],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO pulse_events(id,pulsation_id,event_type,from_status,to_status,from_stage,to_stage,message,created_at) \
+                 VALUES('evt-election',?1,'cli_backend_elected','idle','idle',?2,?2,?3,?4)",
+                params![
+                    pulse.id,
+                    pulse.stage.as_db_value(),
+                    "OpenCode falhou (cli_not_found); a etapa será repetida em Codex.",
+                    "2026-09-10T00:00:01Z"
+                ],
+            )
+            .unwrap();
+
+        let status = repository
+            .backend_override_status(&pulse.id)
+            .unwrap()
+            .expect("an active override should be reported");
+        assert_eq!(status.backend, CliBackend::Codex);
+        assert_eq!(status.agent_role, role);
+        assert_eq!(
+            status.reason.as_deref(),
+            Some("OpenCode falhou (cli_not_found); a etapa será repetida em Codex.")
+        );
+        // create_pulsation enqueues the first stage's job and leaves it pending.
+        assert_eq!(status.job_status.as_deref(), Some("pending"));
+    }
+
+    #[test]
+    fn backend_override_status_is_none_once_the_stage_moved_on() {
+        use crate::persistence_service::{
+            CreatePulsationRequest, CreateProjectRequest, PersistenceService,
+        };
+
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Override stale".into()),
+            })
+            .unwrap()
+            .project;
+        let pulse = persistence
+            .create_pulsation(CreatePulsationRequest {
+                project_id: project.id.clone(),
+                feature_name: "Override stale".into(),
+            })
+            .unwrap()
+            .pulsation;
+        let repository = TerminalRepository::new(persistence.database_path());
+        let stale_role = AgentRole::for_stage(pulse.stage.as_db_value());
+
+        let connection = Connection::open(persistence.database_path()).unwrap();
+        connection
+            .execute(
+                "INSERT INTO pulse_execution_overrides(pulsation_id,agent_role,execution_mode,backend,source_checkpoint_id,created_at) \
+                 VALUES(?1,?2,'cli_process',?3,NULL,?4)",
+                params![pulse.id, stale_role.as_str(), CliBackend::Codex.as_str(), "2026-09-10T00:00:00Z"],
+            )
+            .unwrap();
+        // The pulsation moved past the stage that override belonged to; a
+        // fresh probe of the *current* stage must not report stale data.
+        connection
+            .execute(
+                "UPDATE pulsations SET stage='Contract' WHERE id=?1",
+                [&pulse.id],
+            )
+            .unwrap();
+
+        assert!(
+            repository.backend_override_status(&pulse.id).unwrap().is_none(),
+            "an override left behind by a stage the pulsation already left must not surface"
+        );
+    }
+
+    #[test]
     fn custom_identity_change_requires_a_fresh_explicit_acknowledgement() {
         use crate::persistence_service::{CreateProjectRequest, PersistenceService};
 
@@ -7138,5 +7248,83 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(output.raw_output, "{\"a\":1,\"b\":2}");
+    }
+
+    #[tokio::test]
+    async fn discovery_rescans_after_the_ttl_elapses_even_without_force() {
+        use crate::persistence_service::PersistenceService;
+
+        let data = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let sink: Arc<dyn TerminalEventSink> = Arc::new(CollectTerminalEvents::default());
+        let service = TerminalService::new(
+            persistence.database_path(),
+            tokio::runtime::Handle::current(),
+            sink,
+        )
+        .unwrap();
+
+        let _first = service.discovery(false).await;
+        let stale_at = Instant::now()
+            .checked_sub(CLI_DISCOVERY_CACHE_TTL + Duration::from_secs(1))
+            .expect("test clock should support subtracting the TTL");
+        {
+            let mut guard = service
+                .discovery_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard
+                .as_mut()
+                .expect("first call must populate the cache")
+                .discovered_at = stale_at;
+        }
+        let _second = service.discovery(false).await;
+        let refreshed_at = service
+            .discovery_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .unwrap()
+            .discovered_at;
+        assert!(
+            refreshed_at > stale_at,
+            "a cache older than the TTL must be rescanned even without force=true"
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_reuses_a_still_fresh_cache_without_rescanning() {
+        use crate::persistence_service::PersistenceService;
+
+        let data = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let sink: Arc<dyn TerminalEventSink> = Arc::new(CollectTerminalEvents::default());
+        let service = TerminalService::new(
+            persistence.database_path(),
+            tokio::runtime::Handle::current(),
+            sink,
+        )
+        .unwrap();
+
+        let _first = service.discovery(false).await;
+        let first_stamp = service
+            .discovery_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .unwrap()
+            .discovered_at;
+        let _second = service.discovery(false).await;
+        let second_stamp = service
+            .discovery_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .unwrap()
+            .discovered_at;
+        assert_eq!(
+            first_stamp, second_stamp,
+            "a fresh cache must not trigger a rescan on every call"
+        );
     }
 }

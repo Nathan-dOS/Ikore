@@ -17,9 +17,10 @@ use hvc_core::llm::{
 };
 use hvc_core::orchestration::brownfield::BrownfieldOnboardingStatus;
 use hvc_core::persistence_service::{
-    CliFallbackDecision, EnsureProjectForWorkspaceRequest, HitlDecision, LoadUiSessionRequest,
-    PulsationRuntimeSnapshot, PulsationStatus, ResolveCliFallbackRequest, SaveUiSessionRequest,
-    StageFailureDecision, UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
+    ClearExecutionOverrideRequest, CliFallbackDecision, EnsureProjectForWorkspaceRequest,
+    HitlDecision, LoadUiSessionRequest, PulsationRuntimeSnapshot, PulsationStatus,
+    ResolveCliFallbackRequest, SaveUiSessionRequest, StageFailureDecision, UiSessionState,
+    UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
 };
 use hvc_core::terminals::{
     CliAgentConfig, CliBackend, CliModelSelectionSource, CreateFreeFormSlotRequest,
@@ -340,6 +341,7 @@ pub struct AppModel {
     hitl_documents_task: Option<Task<()>>,
     failure_task: Option<Task<()>>,
     failure_detail_task: Option<Task<()>>,
+    backend_override_task: Option<Task<()>>,
     vault_refresh_task: Option<Task<()>>,
     vault_search_task: Option<Task<()>>,
     vault_rename_task: Option<Task<()>>,
@@ -699,6 +701,7 @@ impl AppModel {
             hitl_documents_task: None,
             failure_task: None,
             failure_detail_task: None,
+            backend_override_task: None,
             vault_refresh_task: None,
             vault_search_task: None,
             vault_rename_task: None,
@@ -1512,6 +1515,9 @@ impl AppModel {
         self.refresh_failure_detail(cx);
         self.refresh_pulsation_usage(cx);
         self.sync_preparation_inputs(cx);
+        if let Some(active_id) = active_id.clone() {
+            self.refresh_backend_override(active_id, cx);
+        }
         if forge_changed && self.active_view() == AppView::Forge {
             self.refresh_forge(cx);
         }
@@ -1639,6 +1645,105 @@ impl AppModel {
                 model.pulsations.update(cx, |pulsations, _| {
                     pulsations.finish_artifacts(&pulsation_id, result);
                 });
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Fetches whether the given pulsation's current stage is silently
+    /// running on a failover backend (`elect_next_backend` in hvc-core),
+    /// so the detail panel can offer an explicit way back to the project's
+    /// configured default. Never applied to a pulsation the user has since
+    /// navigated away from.
+    fn refresh_backend_override(&mut self, pulsation_id: String, cx: &mut Context<Self>) {
+        let Some(core) = self.core.clone() else {
+            return;
+        };
+        let runtime = core.runtime_handle().clone();
+        let scope = pulsation_id.clone();
+        self.backend_override_task = Some(cx.spawn(async move |this, cx| {
+            let result = runtime
+                .spawn_blocking(move || {
+                    core.terminals()
+                        .repository()
+                        .backend_override_status(&pulsation_id)
+                })
+                .await;
+            let status = match result {
+                Ok(Ok(status)) => status,
+                _ => None,
+            };
+            let _ = this.update(cx, |model, cx| {
+                model.pulsations.update(cx, |pulsations, _| {
+                    if pulsations.active_id().as_deref() == Some(scope.as_str()) {
+                        pulsations.backend_override = status;
+                    }
+                });
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Explicit undo for an automatic CLI backend failover: clears the
+    /// pinned override on the active pulsation's current stage so its next
+    /// job pickup falls back to the project's configured default backend.
+    /// Deliberately a user-triggered button rather than something a
+    /// background CLI-discovery refresh does on its own.
+    pub(crate) fn clear_backend_override_and_retry(&mut self, cx: &mut Context<Self>) {
+        let Some(pulsation_id) = self.pulsations.read(cx).active_id() else {
+            return;
+        };
+        let Some(agent_role) = self
+            .pulsations
+            .read(cx)
+            .backend_override
+            .as_ref()
+            .map(|status| status.agent_role)
+        else {
+            return;
+        };
+        let Some(core) = self.core.clone() else {
+            return;
+        };
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.backend_override_busy = true;
+        });
+        cx.notify();
+        let runtime = core.runtime_handle().clone();
+        self.backend_override_task = Some(cx.spawn(async move |this, cx| {
+            let result = runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .clear_execution_override_and_retry(ClearExecutionOverrideRequest {
+                            pulsation_id,
+                            agent_role,
+                        })
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("Backend override worker interrupted: {error}"))
+                .and_then(|result| result);
+            let _ = this.update(cx, |model, cx| {
+                model.pulsations.update(cx, |pulsations, _| {
+                    pulsations.backend_override_busy = false;
+                });
+                match result {
+                    Ok(response) => {
+                        model.pulsations.update(cx, |pulsations, _| {
+                            pulsations.backend_override = None;
+                            pulsations.notice = Some(if response.retried {
+                                "Override cleared; the stage will retry on the default backend."
+                                    .to_string()
+                            } else {
+                                "No active override to clear.".to_string()
+                            });
+                        });
+                        model.refresh_pulsations(cx);
+                    }
+                    Err(error) => {
+                        model.push_header_notice(HeaderNoticeKind::Error, error, cx);
+                    }
+                }
                 cx.notify();
             });
         }));
@@ -1796,7 +1901,8 @@ impl AppModel {
         self.pulsations.update(cx, |pulsations, _| {
             pulsations.diff_expanded = false;
         });
-        self.refresh_pulsation_artifacts(pulsation_id, cx);
+        self.refresh_pulsation_artifacts(pulsation_id.clone(), cx);
+        self.refresh_backend_override(pulsation_id, cx);
         self.refresh_logs(cx);
         self.schedule_session_persistence(cx);
         cx.notify();

@@ -6554,6 +6554,319 @@ mod tests {
         (project, pulse, job, agent_run_id)
     }
 
+    /// Regression for the incident where a pulsation stayed stuck in
+    /// `Planning` forever after the OpenCode CLI failed and Codex was
+    /// elected in its place: `elect_next_backend` bumped the pulsation's
+    /// `state_version` via `transition_pulsation` but the job UPDATE right
+    /// after it never carried the new version along, fencing the job out of
+    /// `claim_next_pending_job` (`j.state_version=p.state_version`) for
+    /// good. `elect_next_backend` itself cannot be driven end-to-end here --
+    /// it depends on `TerminalService::available_backends()`, a real
+    /// environment probe with no discovery seam to inject from a test -- so
+    /// this reproduces its two writes (the pulsation transition, then the
+    /// job UPDATE with the corrected `state_version` subquery) verbatim and
+    /// proves the requeued job survives the claim fence. Written against
+    /// the unfixed UPDATE, this test fails at the final claim.
+    #[test]
+    fn backend_ladder_keeps_the_requeued_job_claimable_after_the_pulsation_bumps_version() {
+        let (root, service) = prepare_service();
+        let workspace = root.path().join("workspace-version-fence");
+        fs::create_dir_all(&workspace).unwrap();
+        let (_project, pulse, job, _agent_run_id) =
+            claimed_cli_job_fixture(&service, workspace.to_string_lossy().as_ref());
+
+        let mut connection = service.connection().expect("database should open");
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("transaction should start");
+        let current = PersistenceService::find_pulsation_by_id(&transaction, &pulse.id)
+            .expect("pulse should load")
+            .expect("pulse should exist");
+        PersistenceService::transition_pulsation(
+            &transaction,
+            &current,
+            PulsationStatus::Planning,
+            current.stage,
+            "cli_backend_elected",
+            Some("OpenCode falhou (cli_not_found); a etapa será repetida em Codex."),
+        )
+        .expect("election should transition the pulsation");
+        let changed = transaction
+            .execute(
+                "UPDATE jobs SET status='pending',generation=generation+1,available_at=NULL,last_error=?2,updated_at=?3,\
+                 state_version=(SELECT state_version FROM pulsations WHERE id=?4) WHERE id=?1 AND status='running'",
+                params![
+                    job.id,
+                    "execução CLI falhou: OpenCode não está pronto",
+                    PersistenceService::now_iso(),
+                    pulse.id
+                ],
+            )
+            .expect("job requeue should apply");
+        assert_eq!(changed, 1);
+        transaction.commit().expect("transaction should commit");
+        // The real failure path releases the job's runtime slot before
+        // electing a new backend (the job stopped executing); the fixture's
+        // initial claim reserved one and nothing has freed it since.
+        service
+            .connection()
+            .expect("database should open")
+            .execute("DELETE FROM runtime_slots WHERE job_id=?1", [&job.id])
+            .expect("runtime slot should release");
+
+        let (reclaimed, _cancellation) = service
+            .claim_next_pending_job()
+            .expect("claim should succeed")
+            .expect("a job requeued after a backend switch must be reclaimable");
+        assert_eq!(reclaimed.id, job.id);
+    }
+
+    /// The other half of the same fix: the corrected UPDATE also checks
+    /// `rows_affected`, so a race where the job stopped being `running`
+    /// between the failure being reported and this transaction running
+    /// (e.g. a concurrent cancellation) is caught instead of silently
+    /// reporting success while touching nothing.
+    #[test]
+    fn backend_switch_update_matches_nothing_once_the_job_left_running() {
+        let (root, service) = prepare_service();
+        let workspace = root.path().join("workspace-version-fence-race");
+        fs::create_dir_all(&workspace).unwrap();
+        let (_project, pulse, job, _agent_run_id) =
+            claimed_cli_job_fixture(&service, workspace.to_string_lossy().as_ref());
+        service
+            .connection()
+            .expect("database should open")
+            .execute(
+                "UPDATE jobs SET status='failed' WHERE id=?1",
+                [&job.id],
+            )
+            .expect("job status should update");
+
+        let mut connection = service.connection().expect("database should open");
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("transaction should start");
+        let current = PersistenceService::find_pulsation_by_id(&transaction, &pulse.id)
+            .expect("pulse should load")
+            .expect("pulse should exist");
+        PersistenceService::transition_pulsation(
+            &transaction,
+            &current,
+            PulsationStatus::Planning,
+            current.stage,
+            "cli_backend_elected",
+            Some("OpenCode falhou (cli_not_found); a etapa será repetida em Codex."),
+        )
+        .expect("election should transition the pulsation");
+        let changed = transaction
+            .execute(
+                "UPDATE jobs SET status='pending',generation=generation+1,available_at=NULL,last_error=?2,updated_at=?3,\
+                 state_version=(SELECT state_version FROM pulsations WHERE id=?4) WHERE id=?1 AND status='running'",
+                params![
+                    job.id,
+                    "execução CLI falhou: OpenCode não está pronto",
+                    PersistenceService::now_iso(),
+                    pulse.id
+                ],
+            )
+            .expect("update should run even though it matches nothing");
+        assert_eq!(
+            changed, 0,
+            "a job that already left 'running' must not be silently requeued"
+        );
+    }
+
+    #[test]
+    fn repair_state_version_drift_makes_a_stranded_pending_job_claimable_again() {
+        let (root, service) = prepare_service();
+        let workspace = root.path().join("workspace-drift");
+        fs::create_dir_all(&workspace).unwrap();
+        let (_project, pulse, job, _agent_run_id) =
+            claimed_cli_job_fixture(&service, workspace.to_string_lossy().as_ref());
+
+        // Reproduce the exact state the unfixed elect_next_backend left
+        // behind: the pulsation moves to a new state_version, but the job
+        // is put back to 'pending' still carrying the old one.
+        let connection = service.connection().expect("database should open");
+        connection
+            .execute(
+                "UPDATE pulsations SET state_version = state_version + 1 WHERE id = ?1",
+                [&pulse.id],
+            )
+            .expect("pulsation version should bump");
+        connection
+            .execute(
+                "UPDATE jobs SET status='pending', available_at=NULL WHERE id=?1",
+                [&job.id],
+            )
+            .expect("job should be stranded pending");
+        assert!(
+            service
+                .claim_next_pending_job()
+                .expect("claim should succeed")
+                .is_none(),
+            "precondition: the drifted job must be stranded before the repair runs"
+        );
+        // The real failure path releases the job's runtime slot before the
+        // job ever goes back to 'pending'; the fixture's initial claim
+        // reserved one and nothing has freed it since.
+        connection
+            .execute("DELETE FROM runtime_slots WHERE job_id=?1", [&job.id])
+            .expect("runtime slot should release");
+
+        let repaired = service
+            .repair_state_version_drift()
+            .expect("repair should succeed");
+        assert_eq!(repaired, vec![pulse.id.clone()]);
+
+        let (reclaimed, _cancellation) = service
+            .claim_next_pending_job()
+            .expect("claim should succeed")
+            .expect("the repaired job must be claimable again");
+        assert_eq!(reclaimed.id, job.id);
+
+        let event_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pulse_events WHERE pulsation_id=?1 AND event_type='state_version_drift_repaired'",
+                [&pulse.id],
+                |row| row.get(0),
+            )
+            .expect("event count should query");
+        assert_eq!(event_count, 1);
+    }
+
+    #[test]
+    fn repair_state_version_drift_is_a_no_op_on_a_healthy_database() {
+        let (_root, service) = prepare_service();
+        assert_eq!(
+            service.repair_state_version_drift().unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    fn pulsation_with_override_fixture(
+        service: &PersistenceService,
+        workspace_path: &str,
+    ) -> (Pulsation, AgentRole) {
+        let project = service
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: workspace_path.to_string(),
+                preferred_name: Some("Clear override fixture".to_string()),
+            })
+            .expect("project should be created")
+            .project;
+        let pulse = service
+            .create_pulsation(CreatePulsationRequest {
+                project_id: project.id.clone(),
+                feature_name: "Clear override".to_string(),
+            })
+            .expect("pulse should be created")
+            .pulsation;
+        let role = AgentRole::for_stage(pulse.stage.as_db_value());
+        service
+            .connection()
+            .expect("database should open")
+            .execute(
+                "INSERT INTO pulse_execution_overrides(pulsation_id,agent_role,execution_mode,backend,source_checkpoint_id,created_at) \
+                 VALUES(?1,?2,'cli_process','codex',NULL,?3)",
+                params![pulse.id, role.as_str(), PersistenceService::now_iso()],
+            )
+            .expect("override should be seeded");
+        (pulse, role)
+    }
+
+    fn count_overrides(service: &PersistenceService, pulsation_id: &str) -> i64 {
+        service
+            .connection()
+            .expect("database should open")
+            .query_row(
+                "SELECT COUNT(*) FROM pulse_execution_overrides WHERE pulsation_id=?1",
+                [pulsation_id],
+                |row| row.get(0),
+            )
+            .expect("override count should query")
+    }
+
+    #[test]
+    fn clear_execution_override_and_retry_wakes_a_pending_job_on_the_default_backend() {
+        let (root, service) = prepare_service();
+        let workspace = root.path().join("workspace-clear-override-pending");
+        fs::create_dir_all(&workspace).unwrap();
+        let (pulse, role) = pulsation_with_override_fixture(&service, workspace.to_string_lossy().as_ref());
+
+        let response = service
+            .clear_execution_override_and_retry(ClearExecutionOverrideRequest {
+                pulsation_id: pulse.id.clone(),
+                agent_role: role,
+            })
+            .expect("clearing a pending-job override should succeed");
+        assert!(response.cleared);
+        assert!(response.retried);
+        assert_eq!(count_overrides(&service, &pulse.id), 0);
+
+        let (reclaimed, _cancellation) = service
+            .claim_next_pending_job()
+            .expect("claim should succeed")
+            .expect("the woken job must still be claimable on the default backend");
+        assert_eq!(reclaimed.pulsation_id.as_deref(), Some(pulse.id.as_str()));
+    }
+
+    #[test]
+    fn clear_execution_override_and_retry_refuses_while_the_job_is_running() {
+        let (root, service) = prepare_service();
+        let workspace = root.path().join("workspace-clear-override-running");
+        fs::create_dir_all(&workspace).unwrap();
+        let (pulse, role) = pulsation_with_override_fixture(&service, workspace.to_string_lossy().as_ref());
+        service
+            .claim_next_pending_job()
+            .expect("claim should succeed")
+            .expect("the stage job should be claimable");
+
+        let error = service
+            .clear_execution_override_and_retry(ClearExecutionOverrideRequest {
+                pulsation_id: pulse.id.clone(),
+                agent_role: role,
+            })
+            .expect_err("clearing while the job is running must be refused");
+        assert!(matches!(error, PersistenceServiceError::Validation(_)));
+        assert_eq!(
+            count_overrides(&service, &pulse.id),
+            1,
+            "a refused clear must leave the override untouched"
+        );
+    }
+
+    #[test]
+    fn clear_execution_override_and_retry_is_a_harmless_no_op_when_nothing_to_clear() {
+        let (root, service) = prepare_service();
+        let workspace = root.path().join("workspace-clear-override-none");
+        fs::create_dir_all(&workspace).unwrap();
+        let project = service
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: workspace.to_string_lossy().into_owned(),
+                preferred_name: Some("No override fixture".to_string()),
+            })
+            .unwrap()
+            .project;
+        let pulse = service
+            .create_pulsation(CreatePulsationRequest {
+                project_id: project.id.clone(),
+                feature_name: "No override".to_string(),
+            })
+            .unwrap()
+            .pulsation;
+        let role = AgentRole::for_stage(pulse.stage.as_db_value());
+
+        let response = service
+            .clear_execution_override_and_retry(ClearExecutionOverrideRequest {
+                pulsation_id: pulse.id,
+                agent_role: role,
+            })
+            .expect("a no-op clear must not error");
+        assert!(!response.cleared);
+        assert!(!response.retried);
+    }
+
     /// Field incident, 2026-09-10: the Integrator failed five times on the same
     /// backend across three human checkpoints, and what finally worked was the
     /// developer switching backend by hand in project settings, mid-run. The
