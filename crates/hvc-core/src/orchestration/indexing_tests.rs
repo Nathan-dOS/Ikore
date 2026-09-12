@@ -1,7 +1,23 @@
 use super::*;
 use crate::embedding_service::{EmbeddingError, EmbeddingFuture};
 use crate::persistence_service::serial::tests::Fixture;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+#[derive(Default)]
+struct RecordingSink(StdMutex<Vec<IndexingEvent>>);
+
+impl IndexingEventSink for RecordingSink {
+    fn emit(&self, event: &IndexingEvent) {
+        self.0.lock().unwrap().push(event.clone());
+    }
+}
+
+impl RecordingSink {
+    fn events(&self) -> Vec<IndexingEvent> {
+        self.0.lock().unwrap().clone()
+    }
+}
 
 #[derive(Default)]
 struct Embeddings {
@@ -158,6 +174,8 @@ fn late_vector_is_fenced_by_current_bytes_then_new_delta_can_run() {
 #[test]
 fn unavailable_provider_has_no_automatic_retry_loop_and_manual_retry_is_coordinated() {
     let (f, gateway) = fixture();
+    let sink = Arc::new(RecordingSink::default());
+    f.service.attach_indexing_event_sink(sink.clone());
     gateway.fail.store(true, Ordering::SeqCst);
     runtime().block_on(async {
         write(&f, "content");
@@ -173,6 +191,12 @@ fn unavailable_provider_has_no_automatic_retry_loop_and_manual_retry_is_coordina
             .await
             .unwrap();
         assert_eq!(gateway.calls.load(Ordering::SeqCst), 1);
+        assert!(
+            sink.events()
+                .iter()
+                .any(|event| matches!(event, IndexingEvent::Failed { .. })),
+            "an unreachable provider must surface as a Failed indexing event, not silence"
+        );
         gateway.fail.store(false, Ordering::SeqCst);
         assert_eq!(enqueue(&f).await.queued_count, 1);
         f.service
@@ -181,6 +205,64 @@ fn unavailable_provider_has_no_automatic_retry_loop_and_manual_retry_is_coordina
             .unwrap();
         assert_eq!(gateway.calls.load(Ordering::SeqCst), 2);
         assert_eq!(f.state().status, PulsationStatus::Running);
+        assert!(matches!(
+            sink.events().last(),
+            Some(IndexingEvent::Idle { .. })
+        ));
+    });
+}
+
+#[test]
+fn indexing_events_progress_then_idle_exactly_once() {
+    let (f, gateway) = fixture();
+    let sink = Arc::new(RecordingSink::default());
+    f.service.attach_indexing_event_sink(sink.clone());
+    fs::write(f.workspace.path().join("knowledge/obsidian/note-a.md"), "a").unwrap();
+    fs::write(f.workspace.path().join("knowledge/obsidian/note-b.md"), "b").unwrap();
+    let expected_workspace_path = f.workspace.path().canonicalize().unwrap().to_string_lossy().to_string();
+    runtime().block_on(async {
+        assert_eq!(enqueue(&f).await.queued_count, 2);
+        f.service
+            .process_indexing(&CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(matches!(
+            sink.events().last(),
+            Some(IndexingEvent::Progress { remaining: 1, .. })
+        ));
+        f.service
+            .process_indexing(&CancellationToken::new())
+            .await
+            .unwrap();
+        let events = sink.events();
+        assert!(matches!(events.last(), Some(IndexingEvent::Idle { .. })));
+        assert_eq!(gateway.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, IndexingEvent::Idle { .. }))
+                .count(),
+            1,
+            "reaching Idle must only be reported once"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event.workspace_path() == expected_workspace_path)
+        );
+        // Nothing left to do: re-running must not re-emit Idle (no queued/running deltas left
+        // to recompute `remaining` from).
+        f.service
+            .process_indexing(&CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            sink.events()
+                .iter()
+                .filter(|event| matches!(event, IndexingEvent::Idle { .. }))
+                .count(),
+            1
+        );
     });
 }
 
@@ -333,6 +415,8 @@ fn component_note_changes_use_exact_embedding_deltas_and_delete_vectors() {
 #[test]
 fn pending_user_job_always_wins_over_embedding_maintenance() {
     let (f, gateway) = fixture();
+    let sink = Arc::new(RecordingSink::default());
+    f.service.attach_indexing_event_sink(sink.clone());
     write(&f, "queued note");
     runtime().block_on(async {
         enqueue(&f).await;
@@ -352,6 +436,23 @@ fn pending_user_job_always_wins_over_embedding_maintenance() {
                 .unwrap()
         );
         assert_eq!(gateway.calls.load(Ordering::SeqCst), 0);
+        // A second tick while still paused must not repeat the same Paused event.
+        assert!(
+            !f.service
+                .process_indexing(&CancellationToken::new())
+                .await
+                .unwrap()
+        );
+        let paused_events: Vec<_> = sink
+            .events()
+            .into_iter()
+            .filter(|event| matches!(event, IndexingEvent::Paused { remaining: 1, .. }))
+            .collect();
+        assert_eq!(
+            paused_events.len(),
+            1,
+            "an unchanged pause must be deduped across supervisor ticks"
+        );
         f.service
             .connection()
             .unwrap()
@@ -364,5 +465,11 @@ fn pending_user_job_always_wins_over_embedding_maintenance() {
                 .unwrap()
         );
         assert_eq!(gateway.calls.load(Ordering::SeqCst), 1);
+        // The pause→resume transition must always surface, even though the dedup key changed
+        // from Paused to Idle rather than repeating an identical value.
+        assert!(matches!(
+            sink.events().last(),
+            Some(IndexingEvent::Idle { .. })
+        ));
     });
 }

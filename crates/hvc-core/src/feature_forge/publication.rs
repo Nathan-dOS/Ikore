@@ -27,7 +27,7 @@ pub(crate) fn queue_plan(db: &Connection, feature: &Feature) -> Result<(), Error
         content.push_str(&format!("- {decision}\n"));
     }
     // Validate authored prose before adding opaque source paths.
-    crate::agent_output_language::validate_english_text("feature plan", &content)
+    crate::agent_output_language::validate_english_prose("feature plan", &content)
         .map_err(invalid)?;
     content.push_str("\n## Observed sources\n\n");
     for s in &b.sources {

@@ -326,9 +326,14 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(theme::warning())
                                     .child(format!(
-                                        "{} broken physical reference(s)",
+                                        "File reference issues ({})",
                                         broken_file_references.len()
                                     )),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .child("Checks referenced files, not test execution."),
                             )
                             .children(broken_file_references.into_iter().map(|reference| {
                                 let source = reference.source_path.clone();
@@ -347,6 +352,7 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                                         "{} · {} → {}",
                                         reference.source_path, reference.field, reference.target
                                     ))
+                                    .child(div().text_xs().child(reference.reason))
                             })),
                     )
                 }),

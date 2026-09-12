@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, Utc};
-use hvc_core::embedding_service::{EmbeddingError, EmbeddingFuture, EmbeddingGateway};
+use hvc_core::embedding_service::{
+    EmbeddingError, EmbeddingFuture, EmbeddingGateway, ModelListFuture, ModelPullEvent,
+    ModelPullFuture,
+};
 use hvc_core::llm::{Clock, CredentialStore, JitterSource, LlmError, LlmErrorKind};
 
 #[derive(Clone)]
@@ -165,6 +168,9 @@ impl CredentialStore for MemoryCredentialStore {
 pub struct FixedEmbeddingGateway {
     result: Arc<Mutex<Result<Vec<f64>, String>>>,
     calls: Arc<Mutex<Vec<(String, String)>>>,
+    models: Arc<Mutex<Vec<String>>>,
+    list_models_error: Arc<Mutex<Option<String>>>,
+    pull_error: Arc<Mutex<Option<String>>>,
 }
 
 impl FixedEmbeddingGateway {
@@ -172,6 +178,9 @@ impl FixedEmbeddingGateway {
         Self {
             result: Arc::new(Mutex::new(Ok(values))),
             calls: Arc::new(Mutex::new(Vec::new())),
+            models: Arc::new(Mutex::new(Vec::new())),
+            list_models_error: Arc::new(Mutex::new(None)),
+            pull_error: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -179,6 +188,9 @@ impl FixedEmbeddingGateway {
         Self {
             result: Arc::new(Mutex::new(Err(message.into()))),
             calls: Arc::new(Mutex::new(Vec::new())),
+            models: Arc::new(Mutex::new(Vec::new())),
+            list_models_error: Arc::new(Mutex::new(None)),
+            pull_error: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -187,6 +199,30 @@ impl FixedEmbeddingGateway {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
+    }
+
+    /// Marks `models` as already installed, for `list_models()`/readiness checks.
+    pub fn set_installed_models(&self, models: Vec<String>) {
+        *self
+            .models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = models;
+    }
+
+    /// Makes `list_models()` fail, simulating Ollama being unreachable.
+    pub fn fail_list_models_with(&self, message: impl Into<String>) {
+        *self
+            .list_models_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message.into());
+    }
+
+    /// Makes `pull_model()` fail after `Started`, instead of the default `Started`→`Completed`.
+    pub fn fail_pull_with(&self, message: impl Into<String>) {
+        *self
+            .pull_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message.into());
     }
 }
 
@@ -208,6 +244,57 @@ impl EmbeddingGateway for FixedEmbeddingGateway {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         Box::pin(async move { result.map_err(EmbeddingError) })
+    }
+
+    fn list_models<'a>(&'a self) -> ModelListFuture<'a> {
+        let error = self
+            .list_models_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let models = self
+            .models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        Box::pin(async move {
+            match error {
+                Some(message) => Err(EmbeddingError(message)),
+                None => Ok(models),
+            }
+        })
+    }
+
+    fn pull_model<'a>(
+        &'a self,
+        model: &'a str,
+        on_event: &'a (dyn Fn(ModelPullEvent) + Send + Sync),
+    ) -> ModelPullFuture<'a> {
+        let error = self
+            .pull_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        Box::pin(async move {
+            on_event(ModelPullEvent::Started {
+                model: model.to_string(),
+            });
+            match error {
+                Some(message) => {
+                    on_event(ModelPullEvent::Failed {
+                        model: model.to_string(),
+                        error: message.clone(),
+                    });
+                    Err(EmbeddingError(message))
+                }
+                None => {
+                    on_event(ModelPullEvent::Completed {
+                        model: model.to_string(),
+                    });
+                    Ok(())
+                }
+            }
+        })
     }
 }
 

@@ -749,6 +749,15 @@ pub(crate) fn apply_approval(
     f: &Feature,
     expected: u64,
 ) -> Result<Feature, Error> {
+    // Approval happens once per revision. Running it twice supersedes the tasks
+    // the first run created and inserts a fresh copy of every one of them, so a
+    // caller that skips this check silently duplicates delivered work. `approve`
+    // keeps its own copy of this guard: it returns before `editable_feature`, so
+    // a feature whose tasks are mid-pulsation still answers idempotently instead
+    // of erroring. Both are load-bearing -- do not collapse them into one.
+    if f.approved_revision == Some(expected) {
+        return Ok(f.clone());
+    }
     let feature_id = f.id.as_str();
     validate_ready_brief(&f.brief)?;
     for source in &f.brief.sources {

@@ -100,3 +100,7 @@ Computer Use, so physical Windows rendering is not certified by this run.
 - [OpenCode session token normalization](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/session.ts).
 
 Unrelated local changes are retained. No commit or push was requested or performed.
+
+## Tokens per pulsation extension — 2026-09-10
+
+V29 adds durable pulsation attribution, all-time usage in Pulsations Overview, and a filter-aware comparison with expandable model rows in Settings Usage. See [implementation and validation](pulsation-token-usage.md).

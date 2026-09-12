@@ -7,6 +7,7 @@ mod core_harness;
 mod doubles;
 mod http_fixture;
 mod parity;
+pub mod pulsation_analysis;
 pub mod pulsation_benchmark;
 mod pulsation_fixture;
 

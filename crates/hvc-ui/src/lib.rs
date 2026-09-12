@@ -8,6 +8,8 @@ mod chat;
 mod chat_view;
 mod choices;
 mod errors;
+mod fading_title;
+mod failure_checkpoint;
 mod flow;
 mod forge;
 mod forge_view;

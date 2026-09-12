@@ -449,7 +449,7 @@ impl FeatureAgentRuntime {
             {
                 return Err(invalid("Suggested dependency was not supplied by the host"));
             }
-            crate::agent_output_language::validate_english_text(
+            crate::agent_output_language::validate_english_prose(
                 "dependency rationale",
                 &d.rationale,
             )
@@ -528,7 +528,7 @@ impl FeatureAgentRuntime {
             return Err(invalid("Invalid triage analysis language"));
         }
         validate_prose(&serde_json::to_value(&result.evaluation).map_err(invalid)?)?;
-        crate::agent_output_language::validate_english_text("triage rationale", &result.rationale)
+        crate::agent_output_language::validate_english_prose("triage rationale", &result.rationale)
             .map_err(invalid)?;
         validate_evaluation(&result.evaluation, result.structural_level)?;
 
@@ -557,19 +557,28 @@ impl FeatureAgentRuntime {
         if result.recommendation == TriageRecommendation::Approve {
             // Re-read: applying the evaluation moved incubating -> in_triage.
             let triaged = feature(&tx, &f.project_id, &f.id)?;
-            // A savepoint, because approval writes tasks before it can fail on a
-            // changed source or an unresolvable proposal dependency. Without it a
-            // late failure would leave half-inserted tasks behind in the turn
-            // commit below.
-            let savepoint = tx.savepoint()?;
-            match apply_approval(&savepoint, &f.project_id, &triaged, f.revision) {
-                Ok(_) => {
-                    savepoint.commit()?;
-                    approved = true;
-                }
-                Err(error) => {
-                    drop(savepoint);
-                    skipped_approval = Some(error.to_string());
+            if triaged.approved_revision == Some(f.revision) {
+                // Once a revision is approved its tasks exist and may already be
+                // in delivery. Approving again would supersede them and insert a
+                // duplicate of every one, so the evaluation written above stands
+                // and only the approval is declined.
+                skipped_approval =
+                    Some("this revision is already approved and its tasks already exist".into());
+            } else {
+                // A savepoint, because approval writes tasks before it can fail on
+                // a changed source or an unresolvable proposal dependency. Without
+                // it a late failure would leave half-inserted tasks behind in the
+                // turn commit below.
+                let savepoint = tx.savepoint()?;
+                match apply_approval(&savepoint, &f.project_id, &triaged, f.revision) {
+                    Ok(_) => {
+                        savepoint.commit()?;
+                        approved = true;
+                    }
+                    Err(error) => {
+                        drop(savepoint);
+                        skipped_approval = Some(error.to_string());
+                    }
                 }
             }
         }
@@ -583,9 +592,9 @@ impl FeatureAgentRuntime {
             },
             result.rationale,
             match (&skipped_approval, approved) {
-                (Some(reason), _) => format!(
-                    "\n\nApproval was recommended but not applied: {reason}. Resolve that and approve manually."
-                ),
+                (Some(reason), _) => {
+                    format!("\n\nApproval was recommended but not applied: {reason}.")
+                }
                 (None, true) => "\n\nScope approved and tasks created.".into(),
                 (None, false) => String::new(),
             }
@@ -666,7 +675,7 @@ impl FeatureAgentRuntime {
             {
                 return Err(invalid("Proposed dependency was not supplied by the host"));
             }
-            crate::agent_output_language::validate_english_text(
+            crate::agent_output_language::validate_english_prose(
                 "dependency rationale",
                 &proposed.rationale,
             )
@@ -886,7 +895,7 @@ pub(crate) fn response_schema() -> Value {
 fn validate_prose(value: &Value) -> Result<(), Error> {
     match value {
         Value::String(s) => {
-            crate::agent_output_language::validate_english_text("feature artifact", s)
+            crate::agent_output_language::validate_english_prose("feature artifact", s)
                 .map_err(invalid)?
         }
         Value::Array(items) => {

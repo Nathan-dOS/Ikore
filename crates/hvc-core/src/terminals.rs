@@ -120,6 +120,10 @@ const MAX_CUSTOM_ARG_CHARS: usize = 1_024;
 const MAX_EVENT_CHARS: usize = 64 * 1_024;
 const MAX_PENDING_STREAM_BYTES: usize = 256 * 1_024;
 const MAX_RUN_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
+/// How much of the CLI prompt is kept on the agent run. Without it the stored
+/// request is only the transport mode, so a rejected generation cannot be
+/// reproduced from the record. Matches the context character budget.
+const CLI_REQUEST_PROMPT_MAX_CHARS: usize = 64_000;
 const MAX_RUN_EVENTS: usize = 100_000;
 const PROCESS_EVENT_CHANNEL_CAPACITY: usize = 256;
 const DEFAULT_MANUAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -150,8 +154,27 @@ pub enum TerminalError {
     Process(String),
     #[error("execução CLI excedeu o tempo limite")]
     Timeout,
+    /// The process went quiet past its silence window rather than running out
+    /// of total time. Separate because the remedy differs: the ceiling means
+    /// the work is too big, silence usually means the model is reasoning and
+    /// the window is too narrow for it.
+    #[error("execução CLI ficou inativa além do limite sem produzir saída")]
+    InactivityTimeout,
     #[error("execução CLI excedeu o limite de saída")]
     OutputLimit,
+    /// The model itself ran out of output budget mid-answer. Distinct from
+    /// `OutputLimit` (the host's own byte ceiling on a run) and from `Process`
+    /// (the CLI failed): the process succeeded and the answer is simply
+    /// incomplete, so retrying the same prompt against the same budget
+    /// truncates again at the same place.
+    #[error(
+        "{backend} interrompeu a saída por limite de tokens ({reason}) após {produced_chars} caracteres"
+    )]
+    OutputTruncated {
+        backend: String,
+        reason: String,
+        produced_chars: usize,
+    },
     #[error("execução CLI foi cancelada")]
     Cancelled,
     #[error("{0} requer autenticação")]
@@ -179,7 +202,9 @@ impl TerminalError {
             Self::Json(_) => "cli_output_invalid",
             Self::Process(_) => "cli_process_failed",
             Self::Timeout => "cli_timeout",
+            Self::InactivityTimeout => "cli_inactivity_timeout",
             Self::OutputLimit => "cli_output_limit",
+            Self::OutputTruncated { .. } => "cli_output_truncated",
             Self::Cancelled => "cli_cancelled",
             Self::AuthRequired(_) => "cli_auth_required",
             Self::VersionUnsupported(_) => "cli_version_unsupported",
@@ -1554,7 +1579,10 @@ impl TerminalRepository {
             }
             TerminalRunStatus::Interrupted => "interrupted",
             TerminalRunStatus::Failed => match error_code {
-                Some("cli_timeout") => "timeout",
+                // `termination_reason` has a fixed vocabulary in the schema and
+                // both timeouts belong to its `timeout` value; the distinction
+                // between them lives in `error_code`.
+                Some("cli_timeout" | "cli_inactivity_timeout") => "timeout",
                 Some("cli_output_limit") => "output_limit",
                 Some("cli_persistence_failed") => "persistence_failed",
                 Some("cli_io_failed") => "io_failed",
@@ -2076,6 +2104,115 @@ impl TerminalRepository {
             |row|row.get(0),
         ).map_err(TerminalError::from)
     }
+
+    /// The backend this pulsation elected for the role after an earlier one
+    /// failed, when there is one. Scoped to the pulsation so a recovery never
+    /// silently rewrites the project's own configuration.
+    pub fn backend_override(
+        &self,
+        pulsation_id: &str,
+        role: AgentRole,
+    ) -> Result<Option<CliBackend>, TerminalError> {
+        let raw: Option<String> = self
+            .connection()?
+            .query_row(
+                "SELECT backend FROM pulse_execution_overrides WHERE pulsation_id=?1 AND agent_role=?2 AND execution_mode='cli_process'",
+                params![required(pulsation_id, "pulsationId")?, role.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(raw.as_deref().and_then(CliBackend::parse))
+    }
+
+    /// The backend this pulsation is silently running on for its *current*
+    /// stage, when the ladder in `elect_next_backend` already switched it
+    /// away from the project's configured default. `None` means no override
+    /// is active right now (either none was ever elected, or it belongs to
+    /// a stage the pulsation already left behind).
+    ///
+    /// `pulse_events` carries no `agent_role` column, so `reason` is the
+    /// latest `cli_backend_elected` message for the pulsation as a whole,
+    /// not guaranteed to be scoped to this role specifically -- acceptable
+    /// because only one stage/role is ever "in flight" per pulsation.
+    pub fn backend_override_status(
+        &self,
+        pulsation_id: &str,
+    ) -> Result<Option<BackendOverrideStatus>, TerminalError> {
+        let pulsation_id = required(pulsation_id, "pulsationId")?;
+        let connection = self.connection()?;
+
+        let stage: Option<String> = connection
+            .query_row(
+                "SELECT stage FROM pulsations WHERE id=?1",
+                [pulsation_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(stage) = stage else {
+            return Ok(None);
+        };
+        let role = AgentRole::for_stage(&stage);
+
+        let override_row: Option<(Option<String>, String)> = connection
+            .query_row(
+                "SELECT backend, created_at FROM pulse_execution_overrides
+                 WHERE pulsation_id=?1 AND agent_role=?2 AND execution_mode='cli_process'",
+                params![pulsation_id, role.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((backend_raw, elected_at)) = override_row else {
+            return Ok(None);
+        };
+        let Some(backend) = backend_raw.as_deref().and_then(CliBackend::parse) else {
+            return Ok(None);
+        };
+
+        let reason: Option<String> = connection
+            .query_row(
+                "SELECT message FROM pulse_events
+                 WHERE pulsation_id=?1 AND event_type='cli_backend_elected'
+                 ORDER BY created_at DESC LIMIT 1",
+                [pulsation_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+
+        let job_status: Option<String> = connection
+            .query_row(
+                "SELECT status FROM jobs
+                 WHERE pulsation_id=?1
+                   AND (kind='run_stage::'||?2 OR (?2='SPECIFICATION' AND kind='run_stage::Specification'))
+                 ORDER BY created_at DESC LIMIT 1",
+                params![pulsation_id, stage],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(Some(BackendOverrideStatus {
+            pulsation_id: pulsation_id.to_string(),
+            agent_role: role,
+            backend,
+            elected_at,
+            reason,
+            job_status,
+        }))
+    }
+}
+
+/// Read-only view of `backend_override_status` for the UI: the backend a
+/// pulsation's current stage silently failed over to, why, and whether its
+/// job is still `pending` (the only state `clear_execution_override_and_retry`
+/// can act on immediately).
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendOverrideStatus {
+    pub pulsation_id: String,
+    pub agent_role: AgentRole,
+    pub backend: CliBackend,
+    pub elected_at: String,
+    pub reason: Option<String>,
+    pub job_status: Option<String>,
 }
 
 fn map_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<CliAgentConfig> {
@@ -3098,6 +3235,8 @@ struct CliProcessOutcome {
     exit_code: Option<i32>,
     raw_output: String,
     termination: ProcessTermination,
+    /// The provider's stop reason for the final turn, when it reported one.
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3129,6 +3268,10 @@ enum ProcessStreamItem {
 struct ProcessEventSummary {
     raw_output: String,
     last_stderr: String,
+    /// The stop reason the provider reported for the final turn, when it gave
+    /// one. Used to tell an output cut off by the token budget apart from a
+    /// model that genuinely returned nothing.
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -3207,15 +3350,40 @@ impl TerminalService {
         &self.repository
     }
 
+    /// Backends that are installed, supported and authenticated right now, in
+    /// the fixed order of `CliBackend::ALL`. Used to elect the next backend for
+    /// a role whose current one just failed.
+    pub async fn available_backends(&self) -> Vec<CliBackend> {
+        self.discovery(false)
+            .await
+            .into_iter()
+            .filter(|item| item.state == CliAvailabilityState::Available)
+            .map(|item| item.backend)
+            // Custom is user-supplied and carries no read-only guarantee, so it
+            // is never elected automatically.
+            .filter(|backend| *backend != CliBackend::Custom)
+            .collect()
+    }
+
+    /// The cached discovery items, but only when still inside
+    /// `CLI_DISCOVERY_CACHE_TTL`. `None` means "must (re)scan" — either the
+    /// cache is empty or stale. Synchronous on purpose: `resolve_launch`
+    /// cannot await, so this is the single source of truth both it and
+    /// `discovery()` read, instead of duplicating the TTL check.
+    fn cache_if_fresh(&self) -> Option<Vec<CliAvailability>> {
+        self.discovery_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|cache| cache.discovered_at.elapsed() < CLI_DISCOVERY_CACHE_TTL)
+            .map(|cache| cache.items.clone())
+    }
+
     async fn discovery(&self, force: bool) -> Vec<CliAvailability> {
         if !force
-            && let Some(cache) = self
-                .discovery_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
+            && let Some(items) = self.cache_if_fresh()
         {
-            return cache.items.clone();
+            return items;
         }
         let handle = self.runtime.clone();
         let mut items = match handle.spawn(discover_clis_with_probes()).await {
@@ -3515,12 +3683,7 @@ impl TerminalService {
             ));
         }
         let availability = self
-            .discovery_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .filter(|cache| cache.discovered_at.elapsed() < CLI_DISCOVERY_CACHE_TTL)
-            .map(|cache| cache.items.clone())
+            .cache_if_fresh()
             .ok_or_else(|| {
                 TerminalError::Validation(
                     "os diagnósticos das CLIs ainda não foram executados ou expiraram; atualize o painel antes de iniciar"
@@ -3890,6 +4053,19 @@ impl TerminalService {
         if config.execution_mode == AgentExecutionMode::ApiDirect {
             return Ok(None);
         }
+        // A pulsation that already burned a backend on this role carries the
+        // one the host elected next. Project configuration is left untouched.
+        let mut config = config;
+        if let Some(pulsation_id) = request.pulsation_id.as_deref()
+            && let Some(elected) = self
+                .repository
+                .backend_override(pulsation_id, request.agent_role)?
+            && elected != config.backend
+        {
+            config.backend = elected;
+            config.model = None;
+            config.model_profile = None;
+        }
         let feature_discovery =
             request.pulsation_id.is_none() && request.job_chain.starts_with("feature:");
         if feature_discovery && config.backend == CliBackend::Custom {
@@ -3979,6 +4155,9 @@ impl TerminalService {
             Some(directory) => directory.path().to_path_buf(),
             None => self.repository.project_workspace(&request.project_id)?,
         };
+        let recorded_prompt =
+            crate::agent_runtime::clip_text(&prompt, CLI_REQUEST_PROMPT_MAX_CHARS);
+        let recorded_prompt_chars = prompt.chars().count();
         let mut spec = build_process_spec(CliInvocationRequest {
             executable,
             backend: config.backend,
@@ -4019,7 +4198,7 @@ impl TerminalService {
             model: config.model.clone(),
             pulsation_id: request.pulsation_id.clone(),
             job_id: request.job_id.clone(),
-            agent_run_id: None,
+            agent_run_id: request.agent_run_id.clone(),
             llm_execution_id: Some(request.execution_id.0.clone()),
         })?;
         let run = self
@@ -4059,7 +4238,12 @@ impl TerminalService {
         let outcome = outcome?;
         match outcome.termination {
             ProcessTermination::Cancelled => return Err(TerminalError::Cancelled),
-            ProcessTermination::TimedOut(_) => return Err(TerminalError::Timeout),
+            ProcessTermination::TimedOut(TimeoutReason::Inactivity) => {
+                return Err(TerminalError::InactivityTimeout);
+            }
+            ProcessTermination::TimedOut(TimeoutReason::MaxCeiling) => {
+                return Err(TerminalError::Timeout);
+            }
             ProcessTermination::Exited => {}
         }
         if !outcome.success {
@@ -4083,6 +4267,17 @@ impl TerminalService {
                 },
             );
         }
+        if let Some(reason) = outcome
+            .finish_reason
+            .as_deref()
+            .filter(|reason| adapters::is_output_truncation(reason))
+        {
+            return Err(TerminalError::OutputTruncated {
+                backend: config.backend.label().into(),
+                reason: reason.to_string(),
+                produced_chars: outcome.raw_output.chars().count(),
+            });
+        }
         if outcome.raw_output.trim().is_empty() {
             return Err(TerminalError::Process(format!(
                 "{} não produziu conteúdo final",
@@ -4094,7 +4289,14 @@ impl TerminalService {
             backend: config.backend,
             model: config.model.unwrap_or_else(|| "default".into()),
             raw_output: outcome.raw_output,
-            request_payload: serde_json::json!({"mode":"cli_process","backend":config.backend.as_str(),"thinking":config.thinking_level.as_str()}),
+            request_payload: serde_json::json!({
+                "mode": "cli_process",
+                "backend": config.backend.as_str(),
+                "thinking": config.thinking_level.as_str(),
+                "promptChars": recorded_prompt_chars,
+                "promptTruncated": recorded_prompt_chars > CLI_REQUEST_PROMPT_MAX_CHARS,
+                "prompt": recorded_prompt,
+            }),
             response_payload: serde_json::json!({"terminalRunId":run.id,"exitCode":outcome.exit_code}),
         }))
     }
@@ -4343,7 +4545,12 @@ impl TerminalService {
                 ),
                 ProcessTermination::TimedOut(reason) => (
                     TerminalRunStatus::Failed,
-                    Some("cli_timeout"),
+                    // Keep the two apart. Collapsing them into `cli_timeout`
+                    // told the developer at the checkpoint that a run had
+                    // exceeded its four-minute ceiling when it had actually
+                    // gone quiet for ninety seconds while the model reasoned -
+                    // the same word for opposite problems.
+                    Some(reason.as_str()),
                     Some(reason.description()),
                     TerminalEventKind::Error,
                     match reason {
@@ -4385,6 +4592,7 @@ impl TerminalService {
             exit_code: status.code(),
             raw_output: process_events.raw_output,
             termination,
+            finish_reason: process_events.finish_reason,
         })
     }
 
@@ -4524,11 +4732,13 @@ async fn coordinate_process_events(
     let mut observed_bytes = 0usize;
     let mut summary = ProcessEventSummary::default();
     let mut incomplete_stream = false;
+    let mut raw_output_delta_active = false;
     let usage = crate::usage::cli::CliUsageRecorder::new(
         &repository.db_path,
         crate::usage::UsageContext {
             source_kind: "terminal_run".into(),
             source_id: run.id.clone(),
+            pulsation_id: run.pulsation_id.clone(),
             project_id: Some(run.project_id.clone()),
             transport: crate::usage::UsageTransport::Cli,
             provider_id: backend.as_str().into(),
@@ -4546,45 +4756,64 @@ async fn coordinate_process_events(
     })?;
     while let Some(item) = receiver.recv().await {
         watchdog.record_progress();
-        let (kind, stream, content, input_bytes, native_session_id, observed_model, is_text) =
-            match item {
-                ProcessStreamItem::Frame { stream, bytes } => {
-                    let input_bytes = bytes.len();
-                    if stream == "stdout"
-                        && let Err(error) = usage.observe_line(&bytes)
-                    {
-                        signal_process_abort(
-                            &abort_token,
-                            &abort_reason,
-                            ProcessAbortReason::Persistence,
-                        );
-                        return Err(error.into());
-                    }
-                    let normalized = adapters::normalize_frame(backend, stream, &bytes);
-                    (
-                        normalized.kind,
-                        stream,
-                        normalized.content,
-                        input_bytes,
-                        normalized.native_session_id,
-                        normalized.observed_model,
-                        normalized.is_text,
-                    )
+        let (frame, stream, input_bytes) = match item {
+            ProcessStreamItem::Frame { stream, bytes } => {
+                let input_bytes = bytes.len();
+                if stream == "stdout"
+                    && let Err(error) = usage.observe_line(&bytes)
+                {
+                    signal_process_abort(
+                        &abort_token,
+                        &abort_reason,
+                        ProcessAbortReason::Persistence,
+                    );
+                    return Err(error.into());
                 }
-                ProcessStreamItem::ReadError { stream, message } => {
-                    incomplete_stream = true;
-                    let input_bytes = message.len();
-                    (
-                        TerminalEventKind::Error,
-                        stream,
-                        message,
-                        input_bytes,
-                        None,
-                        None,
-                        false,
-                    )
-                }
-            };
+                (
+                    adapters::normalize_frame(backend, stream, &bytes),
+                    stream,
+                    input_bytes,
+                )
+            }
+            ProcessStreamItem::ReadError { stream, message } => {
+                incomplete_stream = true;
+                let input_bytes = message.len();
+                (
+                    adapters::NormalizedCliFrame {
+                        kind: TerminalEventKind::Error,
+                        content: message,
+                        native_session_id: None,
+                        observed_model: None,
+                        is_text: false,
+                        is_delta: false,
+                        finish_reason: None,
+                        is_reasoning: false,
+                    },
+                    stream,
+                    input_bytes,
+                )
+            }
+        };
+        let adapters::NormalizedCliFrame {
+            kind,
+            content,
+            native_session_id,
+            observed_model,
+            is_text,
+            is_delta,
+            finish_reason,
+            is_reasoning,
+        } = frame;
+        // A thinking turn keeps the run alive but produces nothing, so the
+        // silence that follows must be measured on a wider ruler.
+        if is_reasoning {
+            watchdog.record_reasoning();
+        }
+        // The last reason the provider gave wins: a turn that ends on `length`
+        // has been cut off even if earlier turns ended normally.
+        if let Some(reason) = finish_reason {
+            summary.finish_reason = Some(reason);
+        }
         if let Some(session_id) = native_session_id
             && let Err(error) = repository.set_native_session_id(&run.id, &session_id)
         {
@@ -4629,7 +4858,12 @@ async fn coordinate_process_events(
                     | TerminalEventKind::Stdout
             )
         {
-            summary.raw_output.clone_from(&event.content);
+            if is_delta && event.kind == TerminalEventKind::Message && raw_output_delta_active {
+                summary.raw_output.push_str(&event.content);
+            } else {
+                summary.raw_output.clone_from(&event.content);
+                raw_output_delta_active = is_delta && event.kind == TerminalEventKind::Message;
+            }
         }
         if stream == "stderr" {
             summary.last_stderr.clone_from(&event.content);
@@ -4767,8 +5001,6 @@ fn harden_spec(
                 settings.path().to_string_lossy().into_owned(),
             ));
             spec.args.extend(["--extensions".into(), "none".into()]);
-            spec.args
-                .extend(["--allowed-mcp-server-names".into(), String::new()]);
             settings_guard = Some(settings);
         }
         CliBackend::Opencode => {
@@ -6090,6 +6322,7 @@ mod tests {
                 UsageContext {
                     source_kind: "terminal_run".into(),
                     source_id: run.id.clone(),
+                    pulsation_id: run.pulsation_id.clone(),
                     project_id: Some(project.id.clone()),
                     transport: UsageTransport::Cli,
                     provider_id: "codex".into(),
@@ -6275,6 +6508,116 @@ mod tests {
                 .clear_history(&project.id, Some(AgentRole::BackendAgent))
                 .unwrap(),
             1
+        );
+    }
+
+    #[test]
+    fn backend_override_status_reports_the_current_stage_election_and_reason() {
+        use crate::persistence_service::{
+            CreatePulsationRequest, CreateProjectRequest, PersistenceService,
+        };
+
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Override status".into()),
+            })
+            .unwrap()
+            .project;
+        let pulse = persistence
+            .create_pulsation(CreatePulsationRequest {
+                project_id: project.id.clone(),
+                feature_name: "Override status".into(),
+            })
+            .unwrap()
+            .pulsation;
+        let repository = TerminalRepository::new(persistence.database_path());
+        let role = AgentRole::for_stage(pulse.stage.as_db_value());
+
+        let connection = Connection::open(persistence.database_path()).unwrap();
+        connection
+            .execute(
+                "INSERT INTO pulse_execution_overrides(pulsation_id,agent_role,execution_mode,backend,source_checkpoint_id,created_at) \
+                 VALUES(?1,?2,'cli_process',?3,NULL,?4)",
+                params![pulse.id, role.as_str(), CliBackend::Codex.as_str(), "2026-09-10T00:00:00Z"],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO pulse_events(id,pulsation_id,event_type,from_status,to_status,from_stage,to_stage,message,created_at) \
+                 VALUES('evt-election',?1,'cli_backend_elected','idle','idle',?2,?2,?3,?4)",
+                params![
+                    pulse.id,
+                    pulse.stage.as_db_value(),
+                    "OpenCode falhou (cli_not_found); a etapa será repetida em Codex.",
+                    "2026-09-10T00:00:01Z"
+                ],
+            )
+            .unwrap();
+
+        let status = repository
+            .backend_override_status(&pulse.id)
+            .unwrap()
+            .expect("an active override should be reported");
+        assert_eq!(status.backend, CliBackend::Codex);
+        assert_eq!(status.agent_role, role);
+        assert_eq!(
+            status.reason.as_deref(),
+            Some("OpenCode falhou (cli_not_found); a etapa será repetida em Codex.")
+        );
+        // create_pulsation enqueues the first stage's job and leaves it pending.
+        assert_eq!(status.job_status.as_deref(), Some("pending"));
+    }
+
+    #[test]
+    fn backend_override_status_is_none_once_the_stage_moved_on() {
+        use crate::persistence_service::{
+            CreatePulsationRequest, CreateProjectRequest, PersistenceService,
+        };
+
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Override stale".into()),
+            })
+            .unwrap()
+            .project;
+        let pulse = persistence
+            .create_pulsation(CreatePulsationRequest {
+                project_id: project.id.clone(),
+                feature_name: "Override stale".into(),
+            })
+            .unwrap()
+            .pulsation;
+        let repository = TerminalRepository::new(persistence.database_path());
+        let stale_role = AgentRole::for_stage(pulse.stage.as_db_value());
+
+        let connection = Connection::open(persistence.database_path()).unwrap();
+        connection
+            .execute(
+                "INSERT INTO pulse_execution_overrides(pulsation_id,agent_role,execution_mode,backend,source_checkpoint_id,created_at) \
+                 VALUES(?1,?2,'cli_process',?3,NULL,?4)",
+                params![pulse.id, stale_role.as_str(), CliBackend::Codex.as_str(), "2026-09-10T00:00:00Z"],
+            )
+            .unwrap();
+        // The pulsation moved past the stage that override belonged to; a
+        // fresh probe of the *current* stage must not report stale data.
+        connection
+            .execute(
+                "UPDATE pulsations SET stage='Contract' WHERE id=?1",
+                [&pulse.id],
+            )
+            .unwrap();
+
+        assert!(
+            repository.backend_override_status(&pulse.id).unwrap().is_none(),
+            "an override left behind by a stage the pulsation already left must not surface"
         );
     }
 
@@ -6809,6 +7152,179 @@ mod tests {
         assert_eq!(
             output.raw_output,
             "{\"outputLanguage\":\"en\",\"message\":\"ok\"}"
+        );
+    }
+
+    #[tokio::test]
+    async fn coordinate_process_events_accumulates_streamed_deltas_and_drops_the_prompt_echo() {
+        use crate::persistence_service::{CreateProjectRequest, PersistenceService};
+
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Agents stream deltas".into()),
+            })
+            .unwrap()
+            .project;
+        let repository = TerminalRepository::new(persistence.database_path());
+        repository
+            .ensure_project_configs(&project.id, true)
+            .unwrap();
+        let run = repository
+            .create_run(CreateTerminalRunRequest {
+                project_id: project.id,
+                agent_role: AgentRole::BackendAgent,
+                origin: ExecutionOrigin::Manual,
+                execution_mode: AgentExecutionMode::CliProcess,
+                backend: Some(CliBackend::Gemini),
+                model: None,
+                pulsation_id: None,
+                job_id: None,
+                agent_run_id: None,
+                llm_execution_id: None,
+            })
+            .unwrap();
+        repository
+            .set_run_status(&run.id, TerminalRunStatus::Starting, None, None, None)
+            .unwrap();
+        let run = repository
+            .set_run_status(&run.id, TerminalRunStatus::Running, None, None, None)
+            .unwrap();
+        let collected = Arc::new(CollectTerminalEvents::default());
+        let sink: Arc<dyn TerminalEventSink> = collected.clone();
+        let (sender, receiver) = mpsc::channel(PROCESS_EVENT_CHANNEL_CAPACITY);
+        // The prompt is echoed back first with no `delta` marker - it must never
+        // survive into raw_output once real assistant deltas start arriving.
+        sender
+            .send(ProcessStreamItem::Frame {
+                stream: "stdout",
+                bytes: br#"{"type":"message","role":"user","content":"do the task"}"#.to_vec(),
+            })
+            .await
+            .unwrap();
+        sender
+            .send(ProcessStreamItem::Frame {
+                stream: "stdout",
+                bytes:
+                    br#"{"type":"message","role":"assistant","content":"{\"a\":1,","delta":true}"#
+                        .to_vec(),
+            })
+            .await
+            .unwrap();
+        sender
+            .send(ProcessStreamItem::Frame {
+                stream: "stdout",
+                bytes:
+                    br#"{"type":"message","role":"assistant","content":"\"b\":2}","delta":true}"#
+                        .to_vec(),
+            })
+            .await
+            .unwrap();
+        // The final `result` frame carries no visible text and must not clobber
+        // the fragments already accumulated.
+        sender
+            .send(ProcessStreamItem::Frame {
+                stream: "stdout",
+                bytes: br#"{"type":"result","status":"success","stats":{"input_tokens":1}}"#
+                    .to_vec(),
+            })
+            .await
+            .unwrap();
+        drop(sender);
+
+        let output = coordinate_process_events(
+            repository.clone(),
+            sink,
+            run,
+            CliBackend::Gemini,
+            receiver,
+            CancellationToken::new(),
+            Arc::new(Mutex::new(None)),
+            ProgressWatchdog::new(AgentTimeoutPolicy::default()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.raw_output, "{\"a\":1,\"b\":2}");
+    }
+
+    #[tokio::test]
+    async fn discovery_rescans_after_the_ttl_elapses_even_without_force() {
+        use crate::persistence_service::PersistenceService;
+
+        let data = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let sink: Arc<dyn TerminalEventSink> = Arc::new(CollectTerminalEvents::default());
+        let service = TerminalService::new(
+            persistence.database_path(),
+            tokio::runtime::Handle::current(),
+            sink,
+        )
+        .unwrap();
+
+        let _first = service.discovery(false).await;
+        let stale_at = Instant::now()
+            .checked_sub(CLI_DISCOVERY_CACHE_TTL + Duration::from_secs(1))
+            .expect("test clock should support subtracting the TTL");
+        {
+            let mut guard = service
+                .discovery_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard
+                .as_mut()
+                .expect("first call must populate the cache")
+                .discovered_at = stale_at;
+        }
+        let _second = service.discovery(false).await;
+        let refreshed_at = service
+            .discovery_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .unwrap()
+            .discovered_at;
+        assert!(
+            refreshed_at > stale_at,
+            "a cache older than the TTL must be rescanned even without force=true"
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_reuses_a_still_fresh_cache_without_rescanning() {
+        use crate::persistence_service::PersistenceService;
+
+        let data = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let sink: Arc<dyn TerminalEventSink> = Arc::new(CollectTerminalEvents::default());
+        let service = TerminalService::new(
+            persistence.database_path(),
+            tokio::runtime::Handle::current(),
+            sink,
+        )
+        .unwrap();
+
+        let _first = service.discovery(false).await;
+        let first_stamp = service
+            .discovery_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .unwrap()
+            .discovered_at;
+        let _second = service.discovery(false).await;
+        let second_stamp = service
+            .discovery_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .unwrap()
+            .discovered_at;
+        assert_eq!(
+            first_stamp, second_stamp,
+            "a fresh cache must not trigger a rescan on every call"
         );
     }
 }

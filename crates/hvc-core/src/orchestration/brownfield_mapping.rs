@@ -180,6 +180,7 @@ impl PersistenceService {
             [&project_id],
             |row| row.get(0),
         )?;
+        let mut deferred_bootstrap: Vec<(String, String)> = Vec::new();
         if !frontier_initialized {
             let repository = RepositoryContext::new(Path::new(&root))
                 .map_err(|error| coordination::invalid(error.to_string()))?;
@@ -189,17 +190,27 @@ impl PersistenceService {
             metrics.coverage_partial =
                 coverage.state != crate::orchestration::CoverageState::Complete;
             metrics.diagnostics.extend(coverage.diagnostics);
-            for source in &sources {
+            for (index, source) in sources.iter().enumerate() {
                 if cancellation.is_cancelled() {
                     return Err(PersistenceServiceError::Cancelled(
                         "Mapeamento brownfield cancelado.".into(),
                     ));
                 }
-                if started.elapsed().as_millis() >= u128::from(budget.max_duration_ms) {
+                // O orçamento nunca pode zerar o progresso do lote: sem ao menos uma
+                // fonte processada a continuação agendada abaixo se repetiria sem fim.
+                if index > 0 && started.elapsed().as_millis() >= u128::from(budget.max_duration_ms)
+                {
                     metrics.coverage_partial = true;
                     metrics.diagnostics.push(
-                        "budget_exhausted: bootstrap preservou uma fronteira parcial.".into(),
+                        "budget_exhausted: bootstrap agendou a continuação das fontes restantes."
+                            .into(),
                     );
+                    deferred_bootstrap.extend(sources[index..].iter().map(|pending| {
+                        (
+                            pending.revision().relative_path.as_str().to_owned(),
+                            pending.revision().content_sha256.as_str().to_owned(),
+                        )
+                    }));
                     break;
                 }
                 self.process_brownfield_source(
@@ -239,6 +250,18 @@ impl PersistenceService {
                 "UPDATE brownfield_refresh_queue AS queue SET state='done',diagnostic=NULL,updated_at=?2 WHERE queue.project_id=?1 AND queue.state='pending' AND ((queue.content_sha256 IS NULL AND NOT EXISTS(SELECT 1 FROM brownfield_source_cache cache WHERE cache.project_id=queue.project_id AND cache.relative_path=queue.relative_path)) OR EXISTS(SELECT 1 FROM brownfield_source_cache cache WHERE cache.project_id=queue.project_id AND cache.relative_path=queue.relative_path AND cache.content_sha256=queue.content_sha256))",
                 params![project_id, Self::now_iso()],
             )?;
+            // As fontes que o orçamento deixou de fora entram na fila de refresh depois
+            // da quitação acima, para que a continuação seja agendada e nenhum arquivo
+            // fique permanentemente fora do mapa estrutural.
+            for (path, content_sha256) in &deferred_bootstrap {
+                Self::enqueue_brownfield_refresh_tx(
+                    &tx,
+                    &project_id,
+                    path,
+                    Some(content_sha256),
+                    "bootstrap_budget_exhausted",
+                )?;
+            }
         }
         Self::recalculate_brownfield_frontier_tx(&tx, &project_id)?;
         metrics.elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
@@ -274,19 +297,23 @@ impl PersistenceService {
         budget: CollectionBudget,
         metrics: &mut BrownfieldMappingMetrics,
     ) -> Result<(), PersistenceServiceError> {
+        let mut attempted = false;
         loop {
             if cancellation.is_cancelled() {
                 return Err(PersistenceServiceError::Cancelled(
                     "Refresh brownfield cancelado.".into(),
                 ));
             }
-            if started.elapsed().as_millis() >= u128::from(budget.max_duration_ms) {
+            // Cada lote precisa consumir ao menos uma entrada: um orçamento já estourado
+            // na entrada apenas reagendaria o mesmo job indefinidamente.
+            if attempted && started.elapsed().as_millis() >= u128::from(budget.max_duration_ms) {
                 metrics.coverage_partial = true;
                 metrics
                     .diagnostics
                     .push("budget_exhausted: refresh restante permaneceu na fila.".into());
                 return Ok(());
             }
+            attempted = true;
             let mut db = self.connection()?;
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             Self::validate_mapping_fence(&tx, &job.id, generation, project_id)?;

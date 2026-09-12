@@ -28,11 +28,33 @@ fn number(value: &Value, key: &str) -> Option<i64> {
 fn plus(value: Option<i64>, extra: Option<i64>) -> Option<i64> {
     value.and_then(|n| n.checked_add(extra.unwrap_or(0)))
 }
+/// True when a per-model entry actually accounts for something. Gemini and
+/// Claude report every model the session knows about, including ones that
+/// never ran; persisting those adds an all-zero row beside the real one and
+/// makes a run look like it used two models.
+fn is_measured(counts: &TokenCounts) -> bool {
+    [
+        counts.input_tokens,
+        counts.output_tokens,
+        counts.total_tokens,
+        counts.cache_read_tokens,
+        counts.cache_write_tokens,
+        counts.reasoning_tokens,
+    ]
+    .iter()
+    .any(|value| value.unwrap_or(0) > 0)
+}
+
 fn snake_counts(value: &Value) -> TokenCounts {
+    // Gemini bills thinking separately from `output_tokens` and only folds it
+    // into `total_tokens`. Leaving it unattributed makes in+out disagree with
+    // the total and hides the budget that reasoning models actually consume.
+    let reasoning = number(value, "/thoughts_tokens").or_else(|| number(value, "/thinking_tokens"));
     TokenCounts {
         input_tokens: number(value, "/input_tokens"),
         output_tokens: number(value, "/output_tokens"),
         total_tokens: number(value, "/total_tokens"),
+        reasoning_tokens: reasoning,
         ..Default::default()
     }
 }
@@ -104,6 +126,9 @@ impl CliUsageTracker {
                             cache_write_tokens: write,
                             ..Default::default()
                         };
+                        if !is_measured(&counts) {
+                            continue;
+                        }
                         changes.push((
                             format!("model:{model}"),
                             UsageMeasurement {
@@ -142,6 +167,9 @@ impl CliUsageTracker {
                         for (model, usage) in models {
                             let mut counts = snake_counts(usage);
                             counts.cache_read_tokens = number(usage, "/cached");
+                            if !is_measured(&counts) {
+                                continue;
+                            }
                             changes.push((
                                 format!("model:{model}"),
                                 UsageMeasurement {
@@ -373,5 +401,32 @@ mod tests {
         );
         assert_eq!(gemini.totals().input_tokens, Some(27));
         assert_eq!(gemini.units.len(), 2);
+    }
+
+    #[test]
+    fn a_model_the_session_knew_but_never_ran_is_not_recorded() {
+        // Gemini reports every model configured for the session. Persisting the
+        // all-zero entries put a second, phantom model beside the real one on
+        // every single call, so a run looked like it used two models.
+        let mut gemini = CliUsageTracker::default();
+        gemini.observe(
+            CliBackend::Gemini,
+            &json!({"type":"result","stats":{"models":{
+            "gemini-pro-preview":{"input_tokens":0,"output_tokens":0,"cached":0},
+            "gemini-flash-preview":{"input_tokens":17180,"output_tokens":923,"cached":0}}}}),
+        );
+        assert_eq!(gemini.units.len(), 1);
+        assert!(gemini.units.contains_key("model:gemini-flash-preview"));
+        assert_eq!(gemini.totals().input_tokens, Some(17180));
+
+        let mut claude = CliUsageTracker::default();
+        claude.observe(
+            CliBackend::Claude,
+            &json!({"type":"result","modelUsage":{
+            "claude-idle":{"inputTokens":0,"outputTokens":0},
+            "claude-sonnet-5":{"inputTokens":22784,"outputTokens":15349}}}),
+        );
+        assert_eq!(claude.units.len(), 1);
+        assert!(claude.units.contains_key("model:claude-sonnet-5"));
     }
 }

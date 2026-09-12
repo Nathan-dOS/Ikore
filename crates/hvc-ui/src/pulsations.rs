@@ -16,6 +16,7 @@ use hvc_core::persistence_service::{
     PulsationStatus,
 };
 
+use crate::failure_checkpoint::FailureCheckpointState;
 use crate::hitl::HitlReviewState;
 use hvc_core::orchestration::{
     ConfirmDescriptionReviewRequest, PulsationCoordinationSnapshot,
@@ -30,6 +31,10 @@ pub(crate) trait PulsationsBackend: Send + Sync {
         &self,
         checkpoint: hvc_core::persistence_service::HitlCheckpoint,
     ) -> PulsationsFuture<Vec<hvc_core::persistence_service::HitlReviewDocument>>;
+    fn stage_failure_detail(
+        &self,
+        checkpoint_id: String,
+    ) -> PulsationsFuture<hvc_core::persistence_service::StageFailureDetail>;
     fn action(&self, action: PulsationAction) -> PulsationsFuture<()>;
     fn artifact_content(&self, pulse: String, artifact: String) -> PulsationsFuture<String>;
     fn runtime_snapshot(&self, project_id: String) -> PulsationsFuture<PulsationRuntimeSnapshot>;
@@ -76,6 +81,22 @@ impl PulsationsBackend for CorePulsationsBackend {
                 .spawn_blocking(move || core.persistence().read_hitl_review(&checkpoint))
                 .await
                 .map_err(|e| Self::worker_error("review", e))?
+                .map_err(|e| e.to_string())
+        })
+    }
+    fn stage_failure_detail(
+        &self,
+        checkpoint_id: String,
+    ) -> PulsationsFuture<hvc_core::persistence_service::StageFailureDetail> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence().read_stage_failure_detail(&checkpoint_id)
+                })
+                .await
+                .map_err(|e| Self::worker_error("failure detail", e))?
                 .map_err(|e| e.to_string())
         })
     }
@@ -223,6 +244,7 @@ pub enum PulsationDetailSection {
 
 #[derive(Default)]
 pub struct PulsationsModel {
+    pub(crate) usage: crate::usage::UsageState,
     /// User choices survive view navigation and runtime polling for this project.
     pub(crate) group_expansion: std::collections::HashMap<&'static str, bool>,
     pub detail_section: PulsationDetailSection,
@@ -233,12 +255,16 @@ pub struct PulsationsModel {
     pub coordination: Option<ProjectCoordinationSnapshot>,
     pub reconciliation_busy: bool,
     pub hitl_checkpoints: Vec<hvc_core::persistence_service::HitlCheckpoint>,
+    pub failure_checkpoints: Vec<hvc_core::persistence_service::StageFailureCheckpoint>,
     pub project_id: Option<SharedString>,
     pub pulsations: Vec<Pulsation>,
     pub active_pulsation_id: Option<SharedString>,
     pub artifacts: Vec<Artifact>,
     pub running_jobs: usize,
     pub awaiting_hitl: usize,
+    /// Counted apart from `awaiting_hitl` so a parked failure cannot suppress the
+    /// notification for an artifact review that opens after it.
+    pub awaiting_failure: usize,
     pub runtime_loading: bool,
     pub artifacts_loading: bool,
     pub error: Option<String>,
@@ -248,6 +274,13 @@ pub struct PulsationsModel {
     /// a Workspace concept (`diff_expanded`); moved here with the HITL surface.
     pub diff_expanded: bool,
     pub(crate) hitl: HitlReviewState,
+    pub(crate) failure: FailureCheckpointState,
+    /// The backend the active pulsation's current stage silently failed
+    /// over to (see `elect_next_backend` in hvc-core), when there is one.
+    /// `None` means the stage is running on the project's configured
+    /// default backend.
+    pub backend_override: Option<hvc_core::terminals::BackendOverrideStatus>,
+    pub backend_override_busy: bool,
 }
 
 impl PulsationsModel {
@@ -268,7 +301,9 @@ impl PulsationsModel {
         self.details.iter().find(|d| d.pulsation_id == active.id)
     }
     pub(crate) fn reset(&mut self, project_id: Option<String>) {
+        let usage = std::mem::take(&mut self.usage).invalidated();
         *self = Self {
+            usage,
             project_id: project_id.map(Into::into),
             ..Self::default()
         };
@@ -284,6 +319,22 @@ impl PulsationsModel {
 
     pub(crate) fn active_id(&self) -> Option<String> {
         self.active().map(|pulsation| pulsation.id.clone())
+    }
+
+    /// The waiting failure checkpoint for the active pulsation, if any. A pulsation
+    /// holds at most one waiting checkpoint of any purpose, so this and the HITL
+    /// review are mutually exclusive by construction.
+    fn active_failure_checkpoint(
+        &self,
+    ) -> Option<hvc_core::persistence_service::StageFailureCheckpoint> {
+        let active = self.active()?;
+        if active.status != PulsationStatus::Checkpoint {
+            return None;
+        }
+        self.failure_checkpoints
+            .iter()
+            .find(|c| c.pulsation_id == active.id)
+            .cloned()
     }
 
     pub(crate) fn apply_snapshot(
@@ -314,13 +365,16 @@ impl PulsationsModel {
             self.detail_section = PulsationDetailSection::Overview;
             self.artifacts.clear();
             self.artifact_preview = None;
+            self.backend_override = None;
         }
-        let had_checkpoint = self.hitl.pulsation_id.is_some();
+        let had_checkpoint = self.hitl.pulsation_id.is_some() || self.failure.checkpoint.is_some();
         self.project_id = Some(project_id.into());
         self.pulsations = snapshot.pulsations;
         self.details = snapshot.details;
         self.hitl_checkpoints = snapshot.hitl_checkpoints;
+        self.failure_checkpoints = snapshot.failure_checkpoints;
         self.awaiting_hitl = snapshot.hitl_waiting_count;
+        self.awaiting_failure = snapshot.failure_waiting_count;
         self.running_jobs = snapshot.main_agents_count + snapshot.background_agents_count;
         self.coordination = snapshot.coordination;
         self.brownfield_coverage = snapshot.brownfield_coverage;
@@ -344,11 +398,15 @@ impl PulsationsModel {
             .cloned();
         self.hitl
             .load_checkpoint(checkpoint.as_ref(), expected_checkpoint);
+        let failure = self.active_failure_checkpoint();
+        let waiting = checkpoint.is_some() || failure.is_some();
+        self.failure.load_checkpoint(failure);
         // Take the user to Review exactly when a checkpoint newly appears for the active
         // pulsation, or when the active pulsation changed while a checkpoint was already waiting.
         // An ordinary refresh that doesn't change checkpoint availability leaves the user's chosen
-        // section alone (see the UI flow plan Part 1.2).
-        if checkpoint.is_some() && (pulse_changed || !had_checkpoint) {
+        // section alone (see the UI flow plan Part 1.2). A parked failure is a checkpoint for this
+        // purpose: it is exactly as urgent as a review.
+        if waiting && (pulse_changed || !had_checkpoint) {
             self.detail_section = PulsationDetailSection::Review;
         }
         next_id
@@ -389,9 +447,12 @@ impl PulsationsModel {
             .cloned();
         self.hitl
             .load_checkpoint(checkpoint.as_ref(), expected_checkpoint);
+        let failure = self.active_failure_checkpoint();
+        let waiting = checkpoint.is_some() || failure.is_some();
+        self.failure.load_checkpoint(failure);
         // Selecting a pulsation that is already at a checkpoint takes the user straight to Review
         // (see the UI flow plan Part 1.2).
-        if pulse_changed && checkpoint.is_some() {
+        if pulse_changed && waiting {
             self.detail_section = PulsationDetailSection::Review;
         }
         true
@@ -490,9 +551,20 @@ pub(crate) fn stage_label(stage: PulsationStage) -> &'static str {
 
 pub(crate) fn status_label(status: PulsationStatus, terminal_reason: Option<&str>) -> &'static str {
     if status == PulsationStatus::Failed {
+        // Everything the host writes as a terminal_reason gets a name here; a bare
+        // "Failed" tells the developer nothing about whether it was their doing,
+        // the provider's, or the agent giving up.
         match terminal_reason {
             Some("user_cancel") => return "Cancelled",
             Some("publication_conflict") => return "Publication conflict",
+            Some("hitl_rejected") => return "Rejected",
+            Some("retry_budget_exhausted") => return "Retries exhausted",
+            Some("provider_configuration") => return "Provider not configured",
+            Some("provider_transport") => return "Provider failed",
+            Some("infrastructure") => return "Local storage failed",
+            Some("executor_setup") | Some("executor_setup_failed") => return "Executor failed",
+            Some("host_contract") => return "Contract violated",
+            Some("model_reported_failure") => return "Agent gave up",
             _ => {}
         }
     }

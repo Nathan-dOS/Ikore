@@ -1267,12 +1267,12 @@ pub fn get_workspace_vault_index(
                     .map_err(|error| error.to_string())
                     .and_then(|path| {
                         repository
-                            .validate_code_source_path(&path)
+                            .validate_file_reference(&path)
                             .map_err(|error| error.to_string())
                     });
                 if let Err(reason) = validation {
                     schema_warnings.push(format!(
-                        "referência física quebrada em `{field}`: `{target}`."
+                        "File reference issue in `{field}`: `{target}`. {reason}"
                     ));
                     broken_file_references.push(VaultBrokenFileReference {
                         source_path: note.relative_path.clone(),
@@ -3452,6 +3452,106 @@ mod tests {
             note.schema_warnings
                 .iter()
                 .any(|warning| warning.contains("src/missing.rs"))
+        );
+    }
+
+    #[test]
+    fn vault_document_references_are_valid_and_rechecked_after_removal() {
+        let root = prepare_root();
+        fs::create_dir_all(root.path().join("docs/architecture")).unwrap();
+        fs::create_dir_all(root.path().join("knowledge/obsidian/tests")).unwrap();
+        let documents = [
+            "docs/architecture/adr.md",
+            "docs/architecture/architecture.md",
+            "docs/architecture/contract.md",
+            "docs/architecture/spec.md",
+        ];
+        for path in documents {
+            fs::write(root.path().join(path), "# Architecture\n").unwrap();
+        }
+        let note = format!(
+            "---\nsource-files:\n{}test-files:\n  - knowledge/obsidian/tests/scenarios.md\n---\n# Architecture tests\nScenarios are authored. No execution evidence is available.\n",
+            documents
+                .iter()
+                .map(|p| format!("  - {p}\n"))
+                .collect::<String>()
+        );
+        for name in ["scenarios.md", "report.md"] {
+            fs::write(
+                root.path().join("knowledge/obsidian/tests").join(name),
+                &note,
+            )
+            .unwrap();
+        }
+        let mut cache = VaultIndexCache::default();
+        let index = get_workspace_vault_index(
+            root.path(),
+            &mut cache,
+            GetWorkspaceVaultIndexRequest {
+                force_rebuild: true,
+            },
+        )
+        .unwrap();
+        assert!(index.broken_file_references.is_empty());
+        assert_eq!(
+            index
+                .notes
+                .iter()
+                .map(|note| note.source_files.len() + note.test_files.len())
+                .sum::<usize>(),
+            10
+        );
+
+        fs::remove_file(root.path().join(documents[0])).unwrap();
+        // Reference validity is refreshed even when the referring notes did not change.
+        let index = get_workspace_vault_index(
+            root.path(),
+            &mut cache,
+            GetWorkspaceVaultIndexRequest {
+                force_rebuild: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(index.broken_file_references.len(), 2);
+        assert!(
+            index
+                .broken_file_references
+                .iter()
+                .all(|issue| issue.target == documents[0] && !issue.reason.is_empty())
+        );
+    }
+
+    #[test]
+    fn vault_file_reference_issues_preserve_invalid_directory_and_security_failures() {
+        let root = prepare_root();
+        fs::create_dir_all(root.path().join("docs")).unwrap();
+        fs::write(root.path().join(".env"), "TOKEN=fixture\n").unwrap();
+        fs::write(root.path().join("ignored.rs"), "fn ignored() {}\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "ignored.rs\n").unwrap();
+        fs::write(root.path().join("references.md"), "---\nsource-files: ['../outside.md', docs, .env, ignored.rs]\ntest-files: [missing.rs]\n---\n# References\n").unwrap();
+        let index = get_workspace_vault_index(
+            root.path(),
+            &mut VaultIndexCache::default(),
+            GetWorkspaceVaultIndexRequest {
+                force_rebuild: true,
+            },
+        )
+        .unwrap();
+        let mut targets = index
+            .broken_file_references
+            .iter()
+            .map(|issue| issue.target.as_str())
+            .collect::<Vec<_>>();
+        targets.sort();
+        assert_eq!(
+            targets,
+            vec!["../outside.md", ".env", "docs", "ignored.rs", "missing.rs"]
+        );
+        assert!(
+            index
+                .broken_file_references
+                .iter()
+                .all(|issue| !issue.reason.is_empty())
         );
     }
 

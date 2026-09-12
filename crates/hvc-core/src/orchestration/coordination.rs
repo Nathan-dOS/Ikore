@@ -10,6 +10,15 @@ pub(super) fn invalid(message: impl Into<String>) -> PersistenceServiceError {
     PersistenceServiceError::Validation(message.into())
 }
 
+/// Distinct from `invalid()`: the rejection reads the model's own output, so it
+/// is the model's fault rather than the host's, and another sample can fix it.
+/// `Validation` is never retried, which is why a report that only had to be
+/// rewritten in English used to end the whole Learning run on its first call
+/// while two thirds of its budget went unspent.
+pub(super) fn model_output_invalid(message: impl Into<String>) -> PersistenceServiceError {
+    PersistenceServiceError::ModelOutputInvalid(message.into())
+}
+
 pub(super) fn class_name(class: JobClass) -> &'static str {
     match class {
         JobClass::Main => "main",

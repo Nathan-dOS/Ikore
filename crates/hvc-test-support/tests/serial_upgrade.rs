@@ -127,7 +127,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        28
+        31
     );
     assert_eq!(
         db.query_row(
@@ -258,7 +258,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        28
+        31
     );
     assert_eq!(
         db.query_row(

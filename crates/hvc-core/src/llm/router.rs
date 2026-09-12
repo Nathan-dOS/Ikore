@@ -36,6 +36,7 @@ fn connection_test_request(provider_id: &str, model: &str) -> LlmRequest {
         project_id: "connection-test".to_string(),
         pulsation_id: None,
         job_id: None,
+        agent_run_id: None,
         job_chain: "connection-test".to_string(),
         agent_role: super::domain::AgentRole::IntakeRouter,
         stage: "connection_test".to_string(),
@@ -132,6 +133,7 @@ impl ProviderRouter {
             UsageContext {
                 source_kind: "connection_test".into(),
                 source_id: request.execution_id.0.clone(),
+                pulsation_id: None,
                 project_id: None,
                 transport: UsageTransport::Api,
                 provider_id: profile.id.clone(),
@@ -491,6 +493,7 @@ impl ProviderRouter {
                 UsageContext {
                     source_kind: "llm_attempt".into(),
                     source_id: attempt_id.clone(),
+                    pulsation_id: request.pulsation_id.clone(),
                     project_id: Some(request.project_id.clone()),
                     transport: UsageTransport::Api,
                     provider_id: profile.id.clone(),
@@ -1293,6 +1296,7 @@ mod tests {
             project_id: "p".into(),
             pulsation_id: Some("pulse".into()),
             job_id: Some("j".into()),
+            agent_run_id: None,
             job_chain: "chain".into(),
             agent_role: AgentRole::Integrator,
             stage: "Integrator".into(),

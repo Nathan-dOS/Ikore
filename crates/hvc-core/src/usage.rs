@@ -46,6 +46,7 @@ impl UsageTransport {
 
 #[derive(Debug, Clone)]
 pub struct UsageContext {
+    pub pulsation_id: Option<String>,
     pub source_kind: String,
     pub source_id: String,
     pub project_id: Option<String>,
@@ -124,9 +125,10 @@ pub fn record_usage_on(
         "INSERT INTO token_usage_records (
             source_kind,source_id,unit_key,project_id,transport,provider_id,
             requested_model,observed_model,input_tokens,output_tokens,total_tokens,
-            cache_read_tokens,cache_write_tokens,reasoning_tokens,quality,started_at,updated_at
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+            cache_read_tokens,cache_write_tokens,reasoning_tokens,quality,started_at,updated_at,pulsation_id
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
          ON CONFLICT(source_kind,source_id,unit_key) DO UPDATE SET
+            pulsation_id=COALESCE(token_usage_records.pulsation_id,excluded.pulsation_id),
             observed_model=COALESCE(excluded.observed_model,token_usage_records.observed_model),
             input_tokens=COALESCE(excluded.input_tokens,token_usage_records.input_tokens),
             output_tokens=COALESCE(excluded.output_tokens,token_usage_records.output_tokens),
@@ -140,7 +142,7 @@ pub fn record_usage_on(
             context.transport.as_str(), context.provider_id, requested, observed,
             counts.input_tokens, counts.output_tokens, counts.total_tokens,
             counts.cache_read_tokens, counts.cache_write_tokens, counts.reasoning_tokens,
-            quality, context.started_at, Utc::now().to_rfc3339()],
+            quality, context.started_at, Utc::now().to_rfc3339(), context.pulsation_id],
     )?;
     Ok(())
 }
@@ -168,6 +170,7 @@ pub enum UsagePeriod {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageQuery {
+    pub pulsation_id: Option<String>,
     pub project_id: Option<String>,
     pub transport: Option<UsageTransport>,
     pub period: UsagePeriod,
@@ -213,10 +216,21 @@ pub struct UsageProject {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSummary {
+    pub pulsations: Vec<PulsationUsage>,
+    pub without_pulsation: UsageTotals,
     pub totals: UsageTotals,
     pub models: Vec<ModelUsage>,
     pub series: Vec<UsageBucket>,
     pub projects: Vec<UsageProject>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PulsationUsage {
+    pub pulsation_id: String,
+    pub name: String,
+    pub totals: UsageTotals,
+    pub models: Vec<ModelUsage>,
 }
 
 const TOTALS_SQL: &str = "SUM(input_tokens),SUM(output_tokens),SUM(total_tokens),
@@ -224,7 +238,7 @@ const TOTALS_SQL: &str = "SUM(input_tokens),SUM(output_tokens),SUM(total_tokens)
     COALESCE(SUM(quality='partial'),0),COALESCE(SUM(quality='unavailable'),0)";
 const FILTER_SQL: &str = "(?1 IS NULL OR project_id=?1) AND (?2 IS NULL OR transport=?2)
     AND (?3 IS NULL OR julianday(started_at)>=julianday(?3))
-    AND julianday(started_at)<=julianday(?4)";
+    AND julianday(started_at)<=julianday(?4) AND (?5 IS NULL OR pulsation_id=?5)";
 
 fn read_totals(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<UsageTotals> {
     Ok(UsageTotals {
@@ -257,7 +271,13 @@ fn query_usage_at(
     .map(|d| format!("{d}T00:00:00Z"));
     let transport = query.transport.map(UsageTransport::as_str);
     let until = now.to_rfc3339();
-    let args = params![query.project_id, transport, since, until];
+    let args = params![
+        query.project_id,
+        transport,
+        since,
+        until,
+        query.pulsation_id
+    ];
     // A single snapshot makes cards, table and graph agree during active calls.
     let transaction = db.unchecked_transaction()?;
     let totals = transaction.query_row(
@@ -345,8 +365,68 @@ fn query_usage_at(
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
     };
+    let without_pulsation = transaction.query_row(
+        &format!("SELECT {TOTALS_SQL} FROM token_usage_records WHERE {FILTER_SQL} AND pulsation_id IS NULL"),
+        args, |row| read_totals(row, 0),
+    )?;
+    let mut pulsations = {
+        let mut statement = transaction.prepare(&format!(
+            "SELECT pulsation_id,COALESCE((SELECT feature_name FROM pulsations p WHERE p.id=r.pulsation_id),'Deleted pulsation'),{TOTALS_SQL}
+             FROM token_usage_records r WHERE {FILTER_SQL} AND pulsation_id IS NOT NULL
+             GROUP BY pulsation_id ORDER BY SUM(total_tokens) DESC,pulsation_id"
+        ))?;
+        statement
+            .query_map(args, |row| {
+                Ok(PulsationUsage {
+                    pulsation_id: row.get(0)?,
+                    name: row.get(1)?,
+                    totals: read_totals(row, 2)?,
+                    models: Vec::new(),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    // One grouped query for all pulsation/model pairs, rather than one read per row.
+    {
+        let mut statement = transaction.prepare(&format!(
+            "SELECT pulsation_id,provider_id,COALESCE(observed_model,requested_model,'Unknown model') AS model,
+             CASE WHEN observed_model IS NOT NULL THEN 'observed' WHEN requested_model IS NOT NULL
+             THEN 'requested' ELSE 'unknown' END AS model_source,transport,{TOTALS_SQL}
+             FROM token_usage_records WHERE {FILTER_SQL} AND pulsation_id IS NOT NULL
+             GROUP BY pulsation_id,provider_id,model,model_source,transport
+             ORDER BY SUM(total_tokens) DESC,provider_id,model,transport,model_source"
+        ))?;
+        let indices: std::collections::HashMap<_, _> = pulsations
+            .iter()
+            .enumerate()
+            .map(|(index, pulse)| (pulse.pulsation_id.clone(), index))
+            .collect();
+        for entry in statement.query_map(args, |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                ModelUsage {
+                    provider_id: row.get(1)?,
+                    model_id: row.get(2)?,
+                    model_source: row.get(3)?,
+                    transport: if row.get::<_, String>(4)? == "cli" {
+                        UsageTransport::Cli
+                    } else {
+                        UsageTransport::Api
+                    },
+                    totals: read_totals(row, 5)?,
+                },
+            ))
+        })? {
+            let (id, model) = entry?;
+            if let Some(index) = indices.get(&id) {
+                pulsations[*index].models.push(model);
+            }
+        }
+    }
     transaction.commit()?;
     Ok(UsageSummary {
+        pulsations,
+        without_pulsation,
         totals,
         models,
         series,

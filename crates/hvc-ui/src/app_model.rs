@@ -15,11 +15,13 @@ use hvc_core::llm::{
     RouteTarget, RoutingMode, TestProviderConnectionRequest, UpsertProviderConnectionRequest,
     UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
 };
+use hvc_core::orchestration::IndexingEvent;
 use hvc_core::orchestration::brownfield::BrownfieldOnboardingStatus;
 use hvc_core::persistence_service::{
-    CliFallbackDecision, EnsureProjectForWorkspaceRequest, HitlDecision, LoadUiSessionRequest,
-    PulsationRuntimeSnapshot, PulsationStatus, ResolveCliFallbackRequest, SaveUiSessionRequest,
-    UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
+    ClearExecutionOverrideRequest, CliFallbackDecision, EnsureProjectForWorkspaceRequest,
+    HitlDecision, LoadUiSessionRequest, PulsationRuntimeSnapshot, PulsationStatus,
+    ResolveCliFallbackRequest, SaveUiSessionRequest, StageFailureDecision, UiSessionState,
+    UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
 };
 use hvc_core::terminals::{
     CliAgentConfig, CliBackend, CliModelSelectionSource, CreateFreeFormSlotRequest,
@@ -265,6 +267,14 @@ pub struct AppModel {
     pub(crate) workspace_tree_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) workspace_preview_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) workspace_context_split: Entity<crate::split_pane::SplitPaneState>,
+    /// Feature list against the section body, shared by every Forge section.
+    pub(crate) forge_feature_split: Entity<crate::split_pane::SplitPaneState>,
+    /// Incubation only: conversation against the proposed specification.
+    pub(crate) forge_incubation_split: Entity<crate::split_pane::SplitPaneState>,
+    /// Triage only: the evaluation form against the agent's analysis. Separate
+    /// from the incubation split because a form and a transcript want different
+    /// proportions.
+    pub(crate) forge_triage_split: Entity<crate::split_pane::SplitPaneState>,
     pub vault: Entity<VaultModel>,
     #[cfg(test)]
     pub(crate) pulsation_feature_input: Entity<NativeTextInput>,
@@ -309,6 +319,8 @@ pub struct AppModel {
     status: SharedString,
     event_count: u64,
     needs_resync: bool,
+    pub(crate) indexing_status: Option<hvc_core::orchestration::IndexingEvent>,
+    pub(crate) model_pull_status: Option<hvc_core::embedding_service::ModelPullEvent>,
     pub(crate) notifications: crate::notifications::Notifications,
     lifecycle: LifecycleState,
     hydrating: bool,
@@ -330,12 +342,17 @@ pub struct AppModel {
     artifact_preview_task: Option<Task<()>>,
     pulsation_artifacts_task: Option<Task<()>>,
     hitl_documents_task: Option<Task<()>>,
+    failure_task: Option<Task<()>>,
+    failure_detail_task: Option<Task<()>>,
+    backend_override_task: Option<Task<()>>,
     vault_refresh_task: Option<Task<()>>,
     vault_search_task: Option<Task<()>>,
     vault_rename_task: Option<Task<()>>,
     vault_context_task: Option<Task<()>>,
     vault_document_tasks: HashMap<String, Task<()>>,
     settings_task: Option<Task<()>>,
+    embedding_readiness_task: Option<Task<()>>,
+    model_pull_task: Option<Task<()>>,
     agents_task: Option<Task<()>>,
     agents_notice_timer: Option<Task<()>>,
     model_catalog_task: Option<Task<()>>,
@@ -348,6 +365,7 @@ pub struct AppModel {
     pub(crate) confirm_workspace_overwrite: Option<String>,
     pub(crate) confirm_hitl_reject: bool,
     pub(crate) confirm_stage_reject: bool,
+    pub(crate) confirm_failure_abort: bool,
     pub(crate) confirm_brownfield_revoke: bool,
     pub(crate) active_dropdown: Option<String>,
     pub(crate) choice_menu: Option<gpui::Entity<crate::select_menu::SelectMenu>>,
@@ -549,11 +567,20 @@ impl AppModel {
             cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.6, 240.0, 220.0));
         let workspace_context_split =
             cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.78, 480.0, 180.0));
+        let forge_feature_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::new(245.0, 180.0, 420.0, 460.0));
+        let forge_incubation_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.55, 300.0, 260.0));
+        let forge_triage_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.58, 300.0, 260.0));
         let mut subscriptions = vec![
             cx.observe(&pulsations_split, |_, _, cx| cx.notify()),
             cx.observe(&workspace_tree_split, |_, _, cx| cx.notify()),
             cx.observe(&workspace_preview_split, |_, _, cx| cx.notify()),
             cx.observe(&workspace_context_split, |_, _, cx| cx.notify()),
+            cx.observe(&forge_feature_split, |_, _, cx| cx.notify()),
+            cx.observe(&forge_incubation_split, |_, _, cx| cx.notify()),
+            cx.observe(&forge_triage_split, |_, _, cx| cx.notify()),
             cx.observe(&editor, |model, _, cx| {
                 model.handle_editor_update(cx);
                 model.schedule_vault_context_documents(cx);
@@ -611,6 +638,9 @@ impl AppModel {
             workspace_tree_split,
             workspace_preview_split,
             workspace_context_split,
+            forge_feature_split,
+            forge_incubation_split,
+            forge_triage_split,
             vault: cx.new(|_| VaultModel::default()),
             #[cfg(test)]
             pulsation_feature_input,
@@ -653,6 +683,8 @@ impl AppModel {
             status: "Ready".into(),
             event_count: 0,
             needs_resync: false,
+            indexing_status: None,
+            model_pull_status: None,
             notifications: crate::notifications::Notifications::default(),
             lifecycle: LifecycleState::default(),
             hydrating: false,
@@ -674,12 +706,17 @@ impl AppModel {
             artifact_preview_task: None,
             pulsation_artifacts_task: None,
             hitl_documents_task: None,
+            failure_task: None,
+            failure_detail_task: None,
+            backend_override_task: None,
             vault_refresh_task: None,
             vault_search_task: None,
             vault_rename_task: None,
             vault_context_task: None,
             vault_document_tasks: HashMap::new(),
             settings_task: None,
+            embedding_readiness_task: None,
+            model_pull_task: None,
             agents_task: None,
             agents_notice_timer: None,
             model_catalog_task: None,
@@ -692,6 +729,7 @@ impl AppModel {
             confirm_workspace_overwrite: None,
             confirm_hitl_reject: false,
             confirm_stage_reject: false,
+            confirm_failure_abort: false,
             confirm_brownfield_revoke: false,
             active_dropdown: None,
             choice_menu: None,
@@ -799,6 +837,14 @@ impl AppModel {
         self.needs_resync
     }
 
+    pub fn indexing_status(&self) -> Option<&hvc_core::orchestration::IndexingEvent> {
+        self.indexing_status.as_ref()
+    }
+
+    pub fn model_pull_status(&self) -> Option<&hvc_core::embedding_service::ModelPullEvent> {
+        self.model_pull_status.as_ref()
+    }
+
     pub(crate) fn observe_performance_frame(&mut self, window: &Window) {
         if self
             .performance_probe
@@ -852,6 +898,7 @@ impl AppModel {
         self.confirm_workspace_overwrite = None;
         self.confirm_hitl_reject = false;
         self.confirm_stage_reject = false;
+        self.confirm_failure_abort = false;
         self.confirm_brownfield_revoke = false;
         self.active_dropdown = None;
         self.choice_menu = None;
@@ -874,6 +921,7 @@ impl AppModel {
             }
         }
         match view {
+            AppView::Pulsations => self.refresh_pulsation_usage(cx),
             AppView::Forge => self.refresh_forge(cx),
             AppView::Agents => self.refresh_agents(cx),
             AppView::Settings => self.refresh_settings(cx),
@@ -1367,6 +1415,11 @@ impl AppModel {
         cx.notify();
     }
 
+    pub fn set_confirm_failure_abort(&mut self, value: bool, cx: &mut Context<Self>) {
+        self.confirm_failure_abort = value;
+        cx.notify();
+    }
+
     pub fn set_confirm_stage_reject(&mut self, value: bool, cx: &mut Context<Self>) {
         self.confirm_stage_reject = value;
         cx.notify();
@@ -1460,15 +1513,33 @@ impl AppModel {
             &snapshot.pulsations,
         );
         let previously_awaiting_hitl = self.pulsations.read(cx).awaiting_hitl;
+        let previously_awaiting_failure = self.pulsations.read(cx).awaiting_failure;
+        let previous_failure = self.pulsations.read(cx).failure.checkpoint.clone();
         let active_id = self.pulsations.update(cx, |pulsations, _| {
             pulsations.apply_snapshot(project_id, snapshot, preferred_id)
         });
+        let current_failure = &self.pulsations.read(cx).failure.checkpoint;
+        if previous_failure
+            .as_ref()
+            .map(|c| (&c.checkpoint_id, c.state_version))
+            != current_failure
+                .as_ref()
+                .map(|c| (&c.checkpoint_id, c.state_version))
+        {
+            self.confirm_failure_abort = false;
+        }
         self.refresh_hitl_documents(cx);
+        self.refresh_failure_detail(cx);
+        self.refresh_pulsation_usage(cx);
         self.sync_preparation_inputs(cx);
+        if let Some(active_id) = active_id.clone() {
+            self.refresh_backend_override(active_id, cx);
+        }
         if forge_changed && self.active_view() == AppView::Forge {
             self.refresh_forge(cx);
         }
         self.notify_review_waiting(previously_awaiting_hitl, cx);
+        self.notify_failure_waiting(previously_awaiting_failure, cx);
         cx.notify();
         active_id
     }
@@ -1477,6 +1548,54 @@ impl AppModel {
     /// (`awaiting_hitl` going from 0 to more than 0), and — only when the developer has opted into
     /// `auto_open_review` and nothing suggests they're mid-composition elsewhere — jumps straight
     /// there. See the UI flow plan Part 4.2.
+    /// The failure twin of `notify_review_waiting`. Kept separate rather than folded into
+    /// the review counter: a parked failure raising `awaiting_hitl` would trip that
+    /// function's `previously_awaiting_hitl != 0` guard and silently swallow the notice
+    /// for a genuine artifact review opening afterwards.
+    fn notify_failure_waiting(
+        &mut self,
+        previously_awaiting_failure: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let (awaiting, failure_pulsation_id) = {
+            let pulsations = self.pulsations.read(cx);
+            let id = pulsations
+                .active()
+                .filter(|pulsation| {
+                    pulsation.status == PulsationStatus::Checkpoint
+                        && pulsations
+                            .failure_checkpoints
+                            .iter()
+                            .any(|c| c.pulsation_id == pulsation.id)
+                })
+                .map(|pulsation| pulsation.id.clone());
+            (pulsations.awaiting_failure, id)
+        };
+        if previously_awaiting_failure != 0 || awaiting == 0 {
+            return;
+        }
+        let Some(pulsation_id) = failure_pulsation_id else {
+            return;
+        };
+        let message = if awaiting == 1 {
+            "1 stage failure waiting on a decision".to_string()
+        } else {
+            format!("{awaiting} stage failures waiting on a decision")
+        };
+        self.push_actionable_notice(
+            HeaderNoticeKind::Error,
+            message,
+            Some(HeaderNoticeAction {
+                label: "Decide now".into(),
+                pulsation_id: pulsation_id.clone(),
+            }),
+            cx,
+        );
+        if self.auto_open_review && !self.auto_open_review_blocked(cx) {
+            self.open_pulsation_review(pulsation_id, cx);
+        }
+    }
+
     fn notify_review_waiting(&mut self, previously_awaiting_hitl: usize, cx: &mut Context<Self>) {
         let (awaiting_hitl, checkpoint_pulsation_id) = {
             let pulsations = self.pulsations.read(cx);
@@ -1548,6 +1667,105 @@ impl AppModel {
         }));
     }
 
+    /// Fetches whether the given pulsation's current stage is silently
+    /// running on a failover backend (`elect_next_backend` in hvc-core),
+    /// so the detail panel can offer an explicit way back to the project's
+    /// configured default. Never applied to a pulsation the user has since
+    /// navigated away from.
+    fn refresh_backend_override(&mut self, pulsation_id: String, cx: &mut Context<Self>) {
+        let Some(core) = self.core.clone() else {
+            return;
+        };
+        let runtime = core.runtime_handle().clone();
+        let scope = pulsation_id.clone();
+        self.backend_override_task = Some(cx.spawn(async move |this, cx| {
+            let result = runtime
+                .spawn_blocking(move || {
+                    core.terminals()
+                        .repository()
+                        .backend_override_status(&pulsation_id)
+                })
+                .await;
+            let status = match result {
+                Ok(Ok(status)) => status,
+                _ => None,
+            };
+            let _ = this.update(cx, |model, cx| {
+                model.pulsations.update(cx, |pulsations, _| {
+                    if pulsations.active_id().as_deref() == Some(scope.as_str()) {
+                        pulsations.backend_override = status;
+                    }
+                });
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Explicit undo for an automatic CLI backend failover: clears the
+    /// pinned override on the active pulsation's current stage so its next
+    /// job pickup falls back to the project's configured default backend.
+    /// Deliberately a user-triggered button rather than something a
+    /// background CLI-discovery refresh does on its own.
+    pub(crate) fn clear_backend_override_and_retry(&mut self, cx: &mut Context<Self>) {
+        let Some(pulsation_id) = self.pulsations.read(cx).active_id() else {
+            return;
+        };
+        let Some(agent_role) = self
+            .pulsations
+            .read(cx)
+            .backend_override
+            .as_ref()
+            .map(|status| status.agent_role)
+        else {
+            return;
+        };
+        let Some(core) = self.core.clone() else {
+            return;
+        };
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.backend_override_busy = true;
+        });
+        cx.notify();
+        let runtime = core.runtime_handle().clone();
+        self.backend_override_task = Some(cx.spawn(async move |this, cx| {
+            let result = runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .clear_execution_override_and_retry(ClearExecutionOverrideRequest {
+                            pulsation_id,
+                            agent_role,
+                        })
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("Backend override worker interrupted: {error}"))
+                .and_then(|result| result);
+            let _ = this.update(cx, |model, cx| {
+                model.pulsations.update(cx, |pulsations, _| {
+                    pulsations.backend_override_busy = false;
+                });
+                match result {
+                    Ok(response) => {
+                        model.pulsations.update(cx, |pulsations, _| {
+                            pulsations.backend_override = None;
+                            pulsations.notice = Some(if response.retried {
+                                "Override cleared; the stage will retry on the default backend."
+                                    .to_string()
+                            } else {
+                                "No active override to clear.".to_string()
+                            });
+                        });
+                        model.refresh_pulsations(cx);
+                    }
+                    Err(error) => {
+                        model.push_header_notice(HeaderNoticeKind::Error, error, cx);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn refresh_hitl_documents(&mut self, cx: &mut Context<Self>) {
         let Some(backend) = self.pulsations_backend.clone() else {
             return;
@@ -1573,6 +1791,113 @@ impl AppModel {
         }));
     }
 
+    pub(crate) fn refresh_failure_detail(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let Some((generation, checkpoint_id)) = self
+            .pulsations
+            .update(cx, |state, _| state.failure.begin_detail())
+        else {
+            return;
+        };
+        let project_id = self.workspace.read(cx).project_id.clone();
+        self.failure_detail_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.stage_failure_detail(checkpoint_id.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                if model.workspace.read(cx).project_id != project_id {
+                    return;
+                }
+                model.pulsations.update(cx, |state, _| {
+                    state
+                        .failure
+                        .finish_detail(generation, &checkpoint_id, result);
+                });
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn resolve_stage_failure(
+        &mut self,
+        decision: StageFailureDecision,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_failure_abort = false;
+        let request = self
+            .pulsations
+            .update(cx, |pulsations, _| pulsations.failure.begin(decision));
+        let request = request.map(|mut request| {
+            if decision == StageFailureDecision::RequestRevision {
+                request.feedback = Some(self.stage_feedback_input.read(cx).value().to_owned());
+            }
+            request
+        });
+        let Some(request) = request else {
+            return;
+        };
+        let Some(core) = self.core.clone() else {
+            self.pulsations.update(cx, |pulsations, _| {
+                pulsations.failure.finish(Err(
+                    "Stage failure decision unavailable in test environment".into(),
+                ));
+            });
+            cx.notify();
+            return;
+        };
+        self.status = "Applying failure decision…".into();
+        cx.notify();
+        let runtime = core.runtime_handle().clone();
+        let decision_scope = (
+            request.checkpoint_id.clone(),
+            request.expected_state_version,
+        );
+        self.failure_task = Some(cx.spawn(async move |this, cx| {
+            let result = runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .resolve_stage_failure(request)
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("Failure decision worker interrupted: {error}"))
+                .and_then(|result| result);
+            let _ = this.update(cx, |model, cx| {
+                if model.lifecycle.is_disposed() {
+                    return;
+                }
+                model.pulsations.update(cx, |pulsations, _| {
+                    // A snapshot may have replaced the checkpoint while the decision was
+                    // in flight; applying the result to a different one would lie.
+                    let same_checkpoint = pulsations.failure.checkpoint.as_ref().is_some_and(|c| {
+                        c.checkpoint_id == decision_scope.0 && c.state_version == decision_scope.1
+                    });
+                    if same_checkpoint {
+                        pulsations.failure.finish(result.clone());
+                        if result.is_ok() {
+                            pulsations.awaiting_failure =
+                                pulsations.awaiting_failure.saturating_sub(1);
+                            pulsations.diff_expanded = false;
+                        }
+                    }
+                });
+                match result {
+                    Ok(()) => {
+                        model.status = "Failure decision applied".into();
+                        model.schedule_session_persistence(cx);
+                        model.refresh_pulsations(cx);
+                    }
+                    Err(error) => {
+                        model.status = "Failed to apply failure decision".into();
+                        model.push_header_notice(HeaderNoticeKind::Error, error, cx);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn select_pulsation(
         &mut self,
         pulsation_id: impl Into<String>,
@@ -1585,12 +1910,16 @@ impl AppModel {
         if !selected {
             return;
         }
+        self.confirm_failure_abort = false;
         self.refresh_hitl_documents(cx);
+        self.refresh_failure_detail(cx);
+        self.refresh_pulsation_usage(cx);
         self.sync_preparation_inputs(cx);
         self.pulsations.update(cx, |pulsations, _| {
             pulsations.diff_expanded = false;
         });
-        self.refresh_pulsation_artifacts(pulsation_id, cx);
+        self.refresh_pulsation_artifacts(pulsation_id.clone(), cx);
+        self.refresh_backend_override(pulsation_id, cx);
         self.refresh_logs(cx);
         self.schedule_session_persistence(cx);
         cx.notify();
@@ -2054,6 +2383,7 @@ impl AppModel {
     pub(crate) fn apply_hitl_decision(&mut self, decision: HitlDecision, cx: &mut Context<Self>) {
         self.confirm_hitl_reject = false;
         self.confirm_stage_reject = false;
+        self.confirm_failure_abort = false;
         let request = self
             .pulsations
             .update(cx, |pulsations, _| pulsations.hitl.begin(decision));
@@ -4323,6 +4653,9 @@ impl AppModel {
                                     input.set_value(embedding_model, cx);
                                 });
                         }
+                        if applied && model.settings.read(cx).embedding_readiness.is_none() {
+                            model.refresh_embedding_readiness(cx);
+                        }
                     }
                     Err(error) => {
                         model
@@ -4477,6 +4810,57 @@ impl AppModel {
             }),
             cx,
         );
+    }
+
+    /// Runs the 3-step Ollama readiness check independently of `run_settings_operation`
+    /// (which is for a single mutation → one notice): this is a silent diagnostic that can run
+    /// alongside other settings actions and is re-triggered automatically whenever indexing
+    /// reports a failure (see `apply_indexing_event`), so the checklist stays current without
+    /// the developer having to ask for it.
+    pub(crate) fn refresh_embedding_readiness(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        self.settings.update(cx, |settings, _| {
+            settings.embedding_readiness_loading = true;
+        });
+        cx.notify();
+        self.embedding_readiness_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.check_embedding_readiness().await;
+            let _ = this.update(cx, |model, cx| {
+                model.settings.update(cx, |settings, _| {
+                    settings.embedding_readiness_loading = false;
+                    if let Ok(report) = result {
+                        settings.embedding_readiness = Some(report);
+                    }
+                });
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Downloads the model named in the current readiness report (the one the checklist just
+    /// flagged as missing) via Ollama's own pull API — no terminal required. Progress streams
+    /// in through `model_pull_status`; completion re-checks readiness automatically.
+    pub(crate) fn pull_embedding_model(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let model = self
+            .settings
+            .read(cx)
+            .embedding_readiness
+            .as_ref()
+            .map(|report| report.model.clone());
+        self.model_pull_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.pull_embedding_model(model).await;
+            let _ = this.update(cx, |model, cx| {
+                if let Err(error) = result {
+                    model.push_header_notice(HeaderNoticeKind::Error, error.presentable(), cx);
+                }
+                model.refresh_embedding_readiness(cx);
+            });
+        }));
     }
 
     pub(crate) fn update_dynamic_context_policy(
@@ -5237,9 +5621,14 @@ impl AppModel {
             navigation.active_tab = self.active_tab;
             navigation.sidebar_collapsed = session.is_some_and(|value| value.sidebar_collapsed);
         });
+        self.indexing_status = None;
         self.workspace.update(cx, |workspace, cx| {
             workspace.project_id = Some(restored.project_id.clone().into());
             workspace.root_path = Some(restored.root_path.clone().into());
+            workspace.root_path_canonical = std::path::Path::new(&restored.root_path)
+                .canonicalize()
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned());
             workspace.tree = restored.tree.clone();
             workspace.active_relative_path = active_path.clone().map(Into::into);
             workspace.tabs = tabs;
@@ -5508,6 +5897,17 @@ impl AppModel {
     }
 
     fn handle_event(&mut self, event: AppEvent, cx: &mut Context<Self>) {
+        // Indexing progress ticks at supervisor cadence and must not steal the status bar's
+        // main text (see the generic "Event received: ..." below) on every delta.
+        if let AppEvent::Indexing(event) = event {
+            self.apply_indexing_event(event, cx);
+            return;
+        }
+        if let AppEvent::ModelPull(event) = event {
+            self.model_pull_status = Some(event);
+            cx.notify();
+            return;
+        }
         let usage_changed = match &event {
             AppEvent::Llm(envelope) => matches!(
                 envelope.event,
@@ -5573,7 +5973,26 @@ impl AppModel {
                 }
             }
             AppEvent::Chat(envelope) => self.handle_chat_event(envelope, cx),
+            // Returned early above, before the generic event-count/status preamble.
+            AppEvent::Indexing(_) => unreachable!(),
+            AppEvent::ModelPull(_) => unreachable!(),
         }
+        cx.notify();
+    }
+
+    /// Applies a background embedding milestone, filtered to the workspace currently open in
+    /// the UI (the supervisor iterates every registered project, not just the active one).
+    fn apply_indexing_event(&mut self, event: IndexingEvent, cx: &mut Context<Self>) {
+        let active = self.workspace.read(cx).root_path_canonical.clone();
+        if active.as_deref() != Some(event.workspace_path()) {
+            return;
+        }
+        // A real failure is exactly when the developer needs to know *why* — re-run the
+        // readiness checklist so it points at the actual blocking step instead of a raw error.
+        if matches!(event, IndexingEvent::Failed { .. }) {
+            self.refresh_embedding_readiness(cx);
+        }
+        self.indexing_status = Some(event);
         cx.notify();
     }
 
@@ -5965,6 +6384,18 @@ mod tests {
             _checkpoint: hvc_core::persistence_service::HitlCheckpoint,
         ) -> PulsationsFuture<Vec<hvc_core::persistence_service::HitlReviewDocument>> {
             Box::pin(async { Ok(Vec::new()) })
+        }
+        fn stage_failure_detail(
+            &self,
+            checkpoint_id: String,
+        ) -> PulsationsFuture<hvc_core::persistence_service::StageFailureDetail> {
+            Box::pin(async move {
+                Ok(hvc_core::persistence_service::StageFailureDetail {
+                    checkpoint_id,
+                    raw_output: None,
+                    validation_error: None,
+                })
+            })
         }
         fn action(&self, action: crate::pulsations::PulsationAction) -> PulsationsFuture<()> {
             self.actions.lock().unwrap().push(action);

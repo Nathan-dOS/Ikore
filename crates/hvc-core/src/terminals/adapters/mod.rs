@@ -17,6 +17,18 @@ pub(super) struct NormalizedCliFrame {
     pub native_session_id: Option<String>,
     pub observed_model: Option<String>,
     pub is_text: bool,
+    /// True when `content` is an incremental fragment of the assistant's
+    /// message (streamed token-by-token) rather than the complete text -
+    /// callers must append it to prior fragments instead of replacing them.
+    pub is_delta: bool,
+    /// The provider's own stop reason for this turn, when it reported one.
+    /// Discarding it is why an output cut off by the model's token budget
+    /// surfaced as "produced no final content" and was retried identically.
+    pub finish_reason: Option<String>,
+    /// True when the frame says the model has started thinking. Nothing else
+    /// arrives until it finishes, so the watchdog must widen its silence window
+    /// rather than read the quiet as a stuck process.
+    pub is_reasoning: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,6 +260,9 @@ fn normalize_json_frame(
             native_session_id: None,
             observed_model: None,
             is_text: false,
+            is_delta: false,
+            finish_reason: None,
+            is_reasoning: false,
         };
     }
     let Ok(value) = serde_json::from_str::<Value>(&sanitized) else {
@@ -257,19 +272,79 @@ fn normalize_json_frame(
             native_session_id: None,
             observed_model: None,
             is_text: true,
+            is_delta: false,
+            finish_reason: None,
+            is_reasoning: false,
         };
     };
     let kind = classify(&value);
     let visible = extract_visible_text(&value);
     let is_text = visible.is_some();
     let content = visible.unwrap_or_else(|| format!("{}: {sanitized}", backend.label()));
+    // Covers both known incremental-streaming shapes: Gemini's explicit
+    // `"delta":true` marker and Claude's `stream_event`/content-block-delta
+    // frames (emitted because the adapter passes `--include-partial-messages`).
+    let is_delta = value.get("delta").and_then(Value::as_bool) == Some(true)
+        || event_type(&value) == "stream_event";
     NormalizedCliFrame {
         kind,
         content: sanitize_terminal_text(content.as_bytes()),
         native_session_id: find_session_id(&value),
         observed_model: find_model_id(&value),
         is_text,
+        is_delta,
+        finish_reason: find_finish_reason(&value),
+        is_reasoning: is_reasoning_frame(&value),
     }
+}
+
+/// True when the frame announces a reasoning turn rather than carrying output.
+/// OpenCode emits `step_start` and then goes silent for the whole thinking
+/// phase; Claude and Gemini name theirs explicitly.
+fn is_reasoning_frame(value: &Value) -> bool {
+    let kind = event_type(value).to_ascii_lowercase();
+    kind == "step_start"
+        || kind.contains("thinking")
+        || kind.contains("reasoning")
+        || kind.contains("thought")
+}
+
+/// The provider's stop reason for a turn, under whichever key that backend
+/// uses. OpenCode reports `part.reason`, Claude `stop_reason`, Gemini
+/// `finishReason`, Codex `finish_reason`.
+fn find_finish_reason(value: &Value) -> Option<String> {
+    if let Value::Object(values) = value {
+        for key in [
+            "reason",
+            "stop_reason",
+            "stopReason",
+            "finish_reason",
+            "finishReason",
+        ] {
+            if let Some(reason) = values
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty() && value.len() <= 64)
+            {
+                return Some(reason.to_string());
+            }
+        }
+        return values.values().find_map(find_finish_reason);
+    }
+    if let Value::Array(values) = value {
+        return values.iter().find_map(find_finish_reason);
+    }
+    None
+}
+
+/// True when a stop reason means the model ran out of output budget. The
+/// distinction matters because the remedy is never a plain retry: the same
+/// prompt against the same budget truncates again, identically.
+pub(super) fn is_output_truncation(reason: &str) -> bool {
+    matches!(
+        reason.trim().to_ascii_lowercase().as_str(),
+        "length" | "max_tokens" | "max_output_tokens" | "output_limit" | "token_limit"
+    )
 }
 
 fn event_type(value: &Value) -> &str {
@@ -549,5 +624,59 @@ mod tests {
             );
             assert!(!text.contains("-----BEGIN PRIVATE KEY-----"));
         }
+    }
+
+    #[test]
+    fn a_step_finished_by_the_token_budget_reports_its_stop_reason() {
+        // The Integrator lost three full generations to this frame. The host
+        // read it as "completed", saw empty or unparseable text, and asked a
+        // human whether to retry the CLI - never saying the model had been cut
+        // off, and never learning that an identical retry cannot help.
+        let frame = normalize_frame(
+            CliBackend::Opencode,
+            "stdout",
+            br#"{"type":"step_finish","part":{"id":"prt_1","type":"step-finish","reason":"length","tokens":{"total":32269,"input":24269,"output":0,"reasoning":8877}}}"#,
+        );
+        assert_eq!(frame.finish_reason.as_deref(), Some("length"));
+        assert!(is_output_truncation("length"));
+
+        // A turn that simply ended is not a truncation.
+        let finished = normalize_frame(
+            CliBackend::Opencode,
+            "stdout",
+            br#"{"type":"step_finish","part":{"id":"prt_2","reason":"stop"}}"#,
+        );
+        assert_eq!(finished.finish_reason.as_deref(), Some("stop"));
+        assert!(!is_output_truncation("stop"));
+
+        // Each backend spells the same condition differently.
+        for (backend, bytes, expected) in [
+            (
+                CliBackend::Claude,
+                &br#"{"type":"result","stop_reason":"max_tokens"}"#[..],
+                "max_tokens",
+            ),
+            (
+                CliBackend::Gemini,
+                &br#"{"type":"result","candidates":[{"finishReason":"MAX_TOKENS"}]}"#[..],
+                "MAX_TOKENS",
+            ),
+        ] {
+            let frame = normalize_frame(backend, "stdout", bytes);
+            assert_eq!(
+                frame.finish_reason.as_deref(),
+                Some(expected),
+                "{backend:?}"
+            );
+            assert!(is_output_truncation(expected), "{backend:?}");
+        }
+    }
+
+    #[test]
+    fn stderr_and_unparseable_stdout_report_no_stop_reason() {
+        let stderr = normalize_frame(CliBackend::Gemini, "stderr", b"boom");
+        assert_eq!(stderr.finish_reason, None);
+        let text = normalize_frame(CliBackend::Gemini, "stdout", b"not json");
+        assert_eq!(text.finish_reason, None);
     }
 }

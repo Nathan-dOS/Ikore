@@ -6,6 +6,7 @@ use gpui::{
     TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
 };
 use hvc_core::AppCore;
+use hvc_core::orchestration::IndexingEvent;
 
 use crate::agents_view::agents_panel;
 use crate::app_model::{AppModel, AppTab, AppView, TabBadges};
@@ -63,6 +64,7 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
     register_editor_keybindings(cx);
     register_text_input_keybindings(cx);
     register_hitl_keybindings(cx);
+    crate::failure_checkpoint::register_failure_keybindings(cx);
     register_navigation_keybindings(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
@@ -124,6 +126,7 @@ impl Render for AppModel {
         let status = self.status().clone();
         let event_count = self.event_count();
         let needs_resync = self.needs_resync();
+        let indexing = self.indexing_status().cloned();
         let active_tab = self.active_tab();
         let badges = self.sidebar_badges(cx);
         self.collect_notifications(cx);
@@ -186,7 +189,7 @@ impl Render for AppModel {
                     .min_h_0()
                     .child(content_panel(self, active, cx)),
             )
-            .child(status_bar(status, event_count, needs_resync, badges, cx))
+            .child(status_bar(status, event_count, needs_resync, badges, indexing, cx))
             .child(self.notification_overlay(window, cx))
             .when_some(self.choice_menu.clone(), |d, menu| {
                 d.child(gpui::deferred(menu).with_priority(20))
@@ -540,10 +543,14 @@ fn status_bar(
     event_count: u64,
     needs_resync: bool,
     badges: TabBadges,
+    indexing: Option<IndexingEvent>,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
     let hitl_count = badges.engine_awaiting_hitl;
     let active_jobs = badges.engine_running_jobs;
+    // `Idle` means the backlog is caught up — nothing to show, fall back to "System ready"
+    // below instead of a chip that would otherwise linger for the rest of the session.
+    let indexing = indexing.filter(|event| !matches!(event, IndexingEvent::Idle { .. }));
     div()
         .id("status-bar")
         .h(px(28.0))
@@ -598,9 +605,33 @@ fn status_bar(
                         cx,
                     ))
                 })
-                .when(hitl_count == 0 && active_jobs == 0, |seg| {
-                    seg.child(div().text_color(theme::text_muted()).child("System ready"))
-                }),
+                .when_some(indexing.as_ref(), |seg, event| {
+                    let (color, label) = match event {
+                        IndexingEvent::Progress { remaining, .. } => (
+                            theme::accent(),
+                            format!("↻ Indexing knowledge: {remaining} remaining"),
+                        ),
+                        IndexingEvent::Paused { remaining, .. } => (
+                            theme::text_muted(),
+                            format!("⏸ Indexing paused ({remaining}) — foreground priority"),
+                        ),
+                        IndexingEvent::Failed { .. } => {
+                            (theme::danger(), "⚠ Embedding failed".to_string())
+                        }
+                        IndexingEvent::Idle { .. } => unreachable!("filtered out above"),
+                    };
+                    seg.child(status_segment(
+                        "status-indexing",
+                        color,
+                        label,
+                        AppView::Settings,
+                        cx,
+                    ))
+                })
+                .when(
+                    hitl_count == 0 && active_jobs == 0 && indexing.is_none(),
+                    |seg| seg.child(div().text_color(theme::text_muted()).child("System ready")),
+                ),
         )
         .child(status_segment(
             "status-events",
@@ -614,6 +645,7 @@ fn status_bar(
 #[cfg(test)]
 mod tests {
     use gpui::TestAppContext;
+    use hvc_core::embedding_service::ModelPullEvent;
 
     use super::*;
 
@@ -649,6 +681,73 @@ mod tests {
             let badges = model.sidebar_badges(cx);
             assert_eq!(badges.engine_awaiting_hitl, 2);
             assert_eq!(badges.engine_running_jobs, 3);
+        });
+    }
+
+    #[gpui::test]
+    fn indexing_status_reflects_the_latest_applied_event(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+
+        assert!(cx.read(|cx| model.read(cx).indexing_status().is_none()));
+
+        model.update(cx, |model, _| {
+            model.indexing_status = Some(IndexingEvent::Progress {
+                workspace_path: "C:\\vault".into(),
+                remaining: 3,
+            });
+        });
+        cx.read(|cx| {
+            assert!(matches!(
+                model.read(cx).indexing_status(),
+                Some(IndexingEvent::Progress { remaining: 3, .. })
+            ));
+        });
+
+        model.update(cx, |model, _| {
+            model.indexing_status = Some(IndexingEvent::Failed {
+                workspace_path: "C:\\vault".into(),
+                error: "Ollama unreachable".into(),
+            });
+        });
+        cx.read(|cx| {
+            assert!(matches!(
+                model.read(cx).indexing_status(),
+                Some(IndexingEvent::Failed { .. })
+            ));
+        });
+    }
+
+    #[gpui::test]
+    fn model_pull_status_reflects_the_latest_applied_event(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+
+        assert!(cx.read(|cx| model.read(cx).model_pull_status().is_none()));
+
+        model.update(cx, |model, _| {
+            model.model_pull_status = Some(ModelPullEvent::Progress {
+                model: "nomic-embed-text".into(),
+                status: "downloading".into(),
+                completed: 50,
+                total: 100,
+            });
+        });
+        cx.read(|cx| {
+            assert!(matches!(
+                model.read(cx).model_pull_status(),
+                Some(ModelPullEvent::Progress { completed: 50, total: 100, .. })
+            ));
+        });
+
+        model.update(cx, |model, _| {
+            model.model_pull_status = Some(ModelPullEvent::Completed {
+                model: "nomic-embed-text".into(),
+            });
+        });
+        cx.read(|cx| {
+            assert!(matches!(
+                model.read(cx).model_pull_status(),
+                Some(ModelPullEvent::Completed { .. })
+            ));
         });
     }
 

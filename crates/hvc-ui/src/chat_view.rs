@@ -302,6 +302,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 .as_ref()
                                 .is_some_and(|active| active.id == id);
                             let delete_id = id.clone();
+                            let title_selector = format!("chat-title:{id}");
                             let awaiting_confirmation = pending_delete
                                 .as_ref()
                                 .is_some_and(|pending| pending.as_ref() == id);
@@ -329,8 +330,13 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                         }))
                                         .child(
                                              div()
+                                                .debug_selector(move || title_selector.clone())
                                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                .child(conversation.title),
+                                                .min_w_0()
+                                                .child(crate::fading_title::FadingTitle::new(
+                                                    conversation.title,
+                                                    if selected { theme::accent_soft() } else { theme::surface_raised() },
+                                                )),
                                         )
                                         .child(
                                             div()

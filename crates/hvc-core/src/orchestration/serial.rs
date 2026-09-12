@@ -495,7 +495,7 @@ impl PersistenceService {
                     Some("Checkpoint pronto para revisão HITL."),
                 )?;
                 Self::open_checkpoint(&tx, &updated.id, updated.stage)?;
-                tx.execute("UPDATE checkpoints SET state_version=(SELECT state_version FROM pulsations WHERE id=?1),input_revision=?2,producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting'",params![pulse,handoff.recipient.input_revision,job.id,handoff.recipient.generation])?;
+                tx.execute("UPDATE checkpoints SET state_version=(SELECT state_version FROM pulsations WHERE id=?1),input_revision=?2,producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting' AND purpose='artifact_review'",params![pulse,handoff.recipient.input_revision,job.id,handoff.recipient.generation])?;
             }
             StageDisposition::Advance(next) => {
                 let updated = Self::transition_pulsation(

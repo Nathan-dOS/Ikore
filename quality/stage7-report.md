@@ -64,6 +64,10 @@ Foram aprovados:
 Permanece somente o aviso de incompatibilidade futura de
 `proc-macro-error2 2.0.1`, transitivo e já registrado.
 
+## Windows activation follow-up — 2026-09-09
+
+HVC-GPUI-002 records the subsequent `afac996` startup/activation correction in `third_party/gpui/HVC-PATCHES.md`. Source review confirms normal-window visibility, hidden-window activation and the separate minimized-window restore path. A fresh physical Windows smoke for this patch is deferred; the historical Stage 7 results above do not certify this later change. Current synchronization evidence is in `quality/cerebro-sync-validation-2026-09-09.md`.
+
 ## Distribuição
 
 O executável release está tecnicamente operável, mas distribuição externa não

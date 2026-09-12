@@ -13,8 +13,8 @@ use hvc_core::llm::{
     UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
 };
 use hvc_core::persistence_service::{
-    PersistenceCommandError, ReindexWorkspaceEmbeddingsRequest, ReindexWorkspaceEmbeddingsResponse,
-    UpdateAgentRuntimeConfigRequest,
+    EmbeddingReadinessReport, PersistenceCommandError, ReindexWorkspaceEmbeddingsRequest,
+    ReindexWorkspaceEmbeddingsResponse, UpdateAgentRuntimeConfigRequest,
 };
 
 use crate::errors::UiCommandError;
@@ -65,6 +65,8 @@ pub(crate) trait SettingsBackend: Send + Sync {
         workspace_path: String,
         model: Option<String>,
     ) -> SettingsFuture<ReindexWorkspaceEmbeddingsResponse>;
+    fn check_embedding_readiness(&self) -> SettingsFuture<EmbeddingReadinessReport>;
+    fn pull_embedding_model(&self, model: Option<String>) -> SettingsFuture<()>;
 }
 
 pub(crate) struct CoreSettingsBackend {
@@ -288,6 +290,32 @@ impl SettingsBackend for CoreSettingsBackend {
                 .map_err(command_error)
         })
     }
+
+    fn check_embedding_readiness(&self) -> SettingsFuture<EmbeddingReadinessReport> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn(async move { core.persistence().check_embedding_readiness().await })
+                .await
+                .map_err(|error| {
+                    UiCommandError::worker(format!("readiness check task aborted: {error}"))
+                })?
+                .map_err(command_error)
+        })
+    }
+
+    fn pull_embedding_model(&self, model: Option<String>) -> SettingsFuture<()> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn(async move { core.persistence().pull_embedding_model(model).await })
+                .await
+                .map_err(|error| UiCommandError::worker(format!("model pull task aborted: {error}")))?
+                .map_err(command_error)
+        })
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -321,6 +349,8 @@ pub(crate) struct SettingsModel {
     pub(crate) route_attempt_timeout_ms: u64,
     pub(crate) route_timeout_ms: u64,
     pub(crate) route_targets: Vec<RouteTarget>,
+    pub(crate) embedding_readiness: Option<EmbeddingReadinessReport>,
+    pub(crate) embedding_readiness_loading: bool,
 }
 
 impl Default for SettingsModel {
@@ -346,6 +376,8 @@ impl Default for SettingsModel {
             route_attempt_timeout_ms: 45_000,
             route_timeout_ms: 120_000,
             route_targets: Vec::new(),
+            embedding_readiness: None,
+            embedding_readiness_loading: false,
         }
     }
 }
@@ -528,6 +560,42 @@ mod tests {
         assert_eq!(response.unwrap().routing_v2_mode, RoutingMode::Shadow);
         let snapshot = core.runtime_handle().block_on(backend.snapshot()).unwrap();
         assert_eq!(snapshot.config.routing_v2_mode, RoutingMode::Shadow);
+    }
+
+    #[test]
+    fn readiness_check_reflects_the_fixed_gateways_installed_models() {
+        let harness = CoreTestHarness::new();
+        let core = harness.core();
+        let backend = CoreSettingsBackend::new(Arc::clone(&core));
+
+        let report = core
+            .runtime_handle()
+            .block_on(backend.check_embedding_readiness())
+            .unwrap();
+        assert!(report.ollama_reachable);
+        assert!(!report.model_installed);
+
+        harness.embeddings().set_installed_models(vec![report.model.clone()]);
+        let report = core
+            .runtime_handle()
+            .block_on(backend.check_embedding_readiness())
+            .unwrap();
+        assert!(report.model_installed);
+        assert!(report.embedding_call_ok);
+    }
+
+    #[test]
+    fn pull_embedding_model_forwards_the_gateways_failure() {
+        let harness = CoreTestHarness::new();
+        let core = harness.core();
+        harness.embeddings().fail_pull_with("model not found");
+        let backend = CoreSettingsBackend::new(Arc::clone(&core));
+
+        let error = core
+            .runtime_handle()
+            .block_on(backend.pull_embedding_model(Some("nomic-embed-text".into())))
+            .unwrap_err();
+        assert!(error.presentable().contains("model not found"));
     }
 
     #[test]

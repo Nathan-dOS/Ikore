@@ -164,6 +164,7 @@ pub struct LlmRequest {
     pub project_id: String,
     pub pulsation_id: Option<String>,
     pub job_id: Option<String>,
+    pub agent_run_id: Option<String>,
     pub job_chain: String,
     pub agent_role: AgentRole,
     pub stage: String,
