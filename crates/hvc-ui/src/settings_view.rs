@@ -1,6 +1,9 @@
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
 use hvc_core::AgentTimeoutPolicy;
+use hvc_core::embedding_service::ModelPullEvent;
 use hvc_core::llm::AgentRole;
+use hvc_core::orchestration::IndexingEvent;
+use hvc_core::persistence_service::EmbeddingReadinessReport;
 
 use crate::app_model::AppModel;
 use crate::settings::SettingsSection;
@@ -386,6 +389,8 @@ fn settings_runtime(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement 
     let settings = model.settings.read(cx);
     let snapshot = settings.snapshot.clone().expect("settings snapshot");
     let busy = settings.busy;
+    let embedding_readiness = settings.embedding_readiness.clone();
+    let embedding_readiness_loading = settings.embedding_readiness_loading;
     let mode = snapshot.config.routing_v2_mode.as_str();
     let strategy = match snapshot.config.context_strategy {
         hvc_core::agent_runtime::ContextStrategy::YamlGraph => "graph",
@@ -432,8 +437,12 @@ fn settings_runtime(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement 
                         .child(crate::select_menu::control(("brownfield-expansion-radius").to_string(),"BROWNFIELD · RADIUS",format!("k={}", snapshot.preparation.brownfield_expansion_radius),!busy,cx))
                         .child(div().text_xs().text_color(theme::text_muted()).child("Enrichment is opportunistic: 0 makes no LLM calls; k=1 uses direct neighbors and k=2 allows a second hop. Each batch publishes at most two proposals.")),
                 )
-                .child(
+                .child({
+                    let pull_status = model.model_pull_status().cloned();
                     card("RAG / YAML Graph")
+                        .child(div().text_sm().text_color(theme::text_muted()).child(
+                            "Turns your knowledge notes (knowledge/obsidian/) into vectors so agents pull in the most relevant context instead of the whole vault. Needs a local Ollama, with the model below downloaded and running in the background — the checklist further down shows exactly what is missing. Once synced, the status bar chip reads \"Knowledge index synced\"."
+                        ))
                         .child(div().text_sm().text_color(theme::text_muted()).child(format!(
                             "Provider: {} · top K: {} · {} key(s) in keyring",
                             snapshot.config.embedding_provider.as_str(), snapshot.config.embedding_top_k,
@@ -442,8 +451,40 @@ fn settings_runtime(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement 
                         .child(embedding_model)
                         .child(div().flex().gap_2()
                             .child(crate::select_menu::control(("settings-embedding-top-k").to_string(),"Embedding Top K",snapshot.config.embedding_top_k.to_string(),!busy,cx))
-                            .child(action("settings-reindex", "Reindex workspace", !busy, cx, |model, cx| model.reindex_embeddings(cx)))),
-                )
+                            .child(action("settings-reindex", "Reindex workspace", !busy, cx, |model, cx| model.reindex_embeddings(cx))))
+                        .child(div().text_xs().text_color(theme::text_muted()).child(
+                            "Embedding Top K: how many matching notes get pulled into an agent's context per query. Higher finds more but costs more tokens and can dilute focus; lower is faster and cheaper but may miss relevant notes."
+                        ))
+                        .child(div().text_xs().text_color(theme::text_muted()).child(
+                            "Reindex workspace: recomputes vectors for notes that changed since the last sync. Safe to run anytime — it queues background work and never blocks a running pulsation, which always keeps priority."
+                        ))
+                        .child(embedding_readiness_checklist(
+                            embedding_readiness.as_ref(),
+                            embedding_readiness_loading,
+                            pull_status.as_ref(),
+                            busy,
+                            cx,
+                        ))
+                        .when_some(model.indexing_status(), |card, event| {
+                            let (color, label) = match event {
+                                IndexingEvent::Progress { remaining, .. } => (
+                                    theme::accent(),
+                                    format!("↻ Indexing knowledge: {remaining} note(s) remaining"),
+                                ),
+                                IndexingEvent::Paused { remaining, .. } => (
+                                    theme::text_muted(),
+                                    format!("⏸ Indexing paused ({remaining} remaining) — a pulsation has foreground priority"),
+                                ),
+                                IndexingEvent::Idle { .. } => {
+                                    (theme::success(), "✓ Knowledge index synced".to_string())
+                                }
+                                IndexingEvent::Failed { error, .. } => {
+                                    (theme::danger(), format!("⚠ Embedding failed: {error}"))
+                                }
+                            };
+                            card.child(div().text_sm().text_color(color).child(label))
+                        })
+                })
                 .child(
                     card("Second Brain adaptive navigation")
                         .child(div().text_xs().text_color(theme::text_muted()).child(
@@ -465,6 +506,151 @@ fn settings_runtime(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement 
                 )
                 .child(settings_agent_timeouts())
         .into_any_element()
+}
+
+/// Three ordered facts, each gating the next, so the developer sees exactly which step is
+/// blocking embeddings instead of a raw HTTP error. Only the first failing step is
+/// highlighted — steps after it depend on it and haven't really been evaluated yet.
+fn embedding_readiness_checklist(
+    report: Option<&EmbeddingReadinessReport>,
+    loading: bool,
+    pull_status: Option<&ModelPullEvent>,
+    busy: bool,
+    cx: &mut Context<AppModel>,
+) -> gpui::Div {
+    let mut container = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .p_2()
+        .rounded_md()
+        .bg(theme::surface())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme::text_muted())
+                        .child("EMBEDDING SETUP CHECKLIST"),
+                )
+                .child(action(
+                    "settings-readiness-check",
+                    if loading { "Checking…" } else { "Check again" },
+                    !busy && !loading,
+                    cx,
+                    |model, cx| model.refresh_embedding_readiness(cx),
+                )),
+        );
+    let Some(report) = report else {
+        return container.child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child("Checking Ollama…"),
+        );
+    };
+    let first_blocking = if !report.ollama_reachable {
+        Some(0)
+    } else if !report.model_installed {
+        Some(1)
+    } else if !report.embedding_call_ok {
+        Some(2)
+    } else {
+        None
+    };
+    let row = |index: usize, label: String| {
+        let (icon, color) = if first_blocking == Some(index) {
+            ("⚠", theme::warning())
+        } else if first_blocking.is_none_or(|blocked| index < blocked) {
+            ("✓", theme::success())
+        } else {
+            ("○", theme::text_muted())
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .when(first_blocking == Some(index), |row| {
+                row.bg(theme::warning_soft())
+            })
+            .child(div().text_color(color).child(icon))
+            .child(div().text_sm().child(label))
+    };
+    let pulling = matches!(
+        pull_status,
+        Some(ModelPullEvent::Started { .. } | ModelPullEvent::Progress { .. })
+    );
+    container = container
+        .child(row(0, "Ollama is reachable at 127.0.0.1:11434".to_string()))
+        .child(row(1, format!("Model '{}' is downloaded", report.model)))
+        .when(first_blocking == Some(1) && !pulling, |section| {
+            section.child(div().pl_6().child(action(
+                "settings-download-model",
+                "Download model",
+                !busy,
+                cx,
+                |model, cx| model.pull_embedding_model(cx),
+            )))
+        })
+        .child(row(2, "A test embedding call succeeds".to_string()));
+    if let Some(status) = pull_status {
+        let (color, text) = match status {
+            ModelPullEvent::Started { model } => {
+                (theme::accent(), format!("Starting download of {model}…"))
+            }
+            ModelPullEvent::Progress {
+                status,
+                completed,
+                total,
+                ..
+            } => {
+                let text = match completed.checked_mul(100).and_then(|n| n.checked_div(*total)) {
+                    Some(percent) => format!(
+                        "{status}: {}% ({} MB / {} MB)",
+                        percent.min(100),
+                        completed / 1_000_000,
+                        total / 1_000_000
+                    ),
+                    None => status.clone(),
+                };
+                (theme::accent(), text)
+            }
+            ModelPullEvent::Completed { model } => {
+                (theme::success(), format!("{model} downloaded."))
+            }
+            ModelPullEvent::Failed { error, .. } => {
+                (theme::danger(), format!("Download failed: {error}"))
+            }
+        };
+        container = container.child(div().text_xs().text_color(color).child(text));
+    }
+    if let Some(error) = &report.error {
+        container = container.child(
+            div()
+                .text_xs()
+                .text_color(theme::danger())
+                .child(format!("Last error: {error}")),
+        );
+    }
+    if first_blocking == Some(2) {
+        container = container.child(
+            div().text_xs().text_color(theme::text_muted()).child(
+                "Ollama is running and the model is downloaded, but a real embedding call still \
+                 fails — this usually means Ollama itself needs attention: update it \
+                 (`ollama pull` again, or reinstall) if it's old, check `ollama ps`/its logs \
+                 while reindexing, and make sure the machine has enough free RAM/VRAM for this \
+                 model.",
+            ),
+        );
+    }
+    container
 }
 
 fn settings_agent_timeouts() -> gpui::Div {

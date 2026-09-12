@@ -1,7 +1,7 @@
 //! Deterministic, coalesced note deltas. All network work uses the supervisor background slot.
 use super::*;
 use crate::{
-    orchestration::{ContentSha256, JobClass},
+    orchestration::{ContentSha256, IndexingEvent, JobClass},
     workspace_service,
 };
 use coordination::invalid;
@@ -368,6 +368,24 @@ impl PersistenceService {
         )
     }
 
+    /// Deltas still pending or running for `workspace_key` (already canonicalized) under
+    /// `model`. Used as a countdown for `IndexingEvent`, not a fixed total — the queue can grow
+    /// between `reconcile_index_batch` passes.
+    fn embedding_remaining(
+        db: &Connection,
+        workspace_key: &str,
+        model: &str,
+    ) -> Result<usize, PersistenceServiceError> {
+        let remaining: i64 = db.query_row(
+            "SELECT COUNT(*) FROM jobs j JOIN embedding_deltas d ON d.job_id=j.id \
+             WHERE j.job_class='background' AND j.status IN ('pending','running') \
+               AND j.kind='index_embedding' AND d.embedding_model=?1 AND d.workspace_path=?2",
+            params![model, workspace_key],
+            |r| r.get(0),
+        )?;
+        Ok(remaining.max(0) as usize)
+    }
+
     pub(super) async fn process_indexing(
         &self,
         shutdown: &CancellationToken,
@@ -383,21 +401,46 @@ impl PersistenceService {
             let db = service.connection()?;
             // Registered workspaces are discovered once. Later edits arrive as exact watcher deltas.
             let roots = db.prepare("SELECT workspace_path FROM projects WHERE is_archived=0")?.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
-            for root in roots {
-                if crate::orchestration::publication::safe_target(Path::new(&root), "knowledge/obsidian", false).is_err() { continue; }
-                if let Ok(root)=Path::new(&root).canonicalize() {
+            for root in &roots {
+                if crate::orchestration::publication::safe_target(Path::new(root), "knowledge/obsidian", false).is_err() { continue; }
+                if let Ok(root)=Path::new(root).canonicalize() {
                     db.execute("INSERT OR IGNORE INTO embedding_sync_state(workspace_path,next_reconcile_at) VALUES(?1,?2)",params![root.to_string_lossy(),service.clock.now().to_rfc3339()])?;
                 }
             }
             let main_waiting:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM runtime_slots WHERE job_class='main') OR EXISTS(SELECT 1 FROM jobs WHERE job_class='main' AND status='pending' AND cancellation_reason IS NULL) OR EXISTS(SELECT 1 FROM artifact_publications WHERE job_class='main' AND state IN ('pending','applying'))",[],|r|r.get(0))?;
-            if main_waiting { return Ok(false); }
+            if main_waiting {
+                // Foreground has absolute priority; tell the UI why the backlog isn't moving
+                // instead of letting it look stalled.
+                for root in &roots {
+                    let Ok(key) = Path::new(root).canonicalize() else { continue };
+                    let key = key.to_string_lossy().to_string();
+                    if let Ok(remaining) = Self::embedding_remaining(&db, &key, &model)
+                        && remaining > 0
+                    {
+                        service.emit_indexing_event(IndexingEvent::Paused { workspace_path: key, remaining });
+                    }
+                }
+                return Ok(false);
+            }
             let root: Option<String> = db.query_row("SELECT workspace_path FROM embedding_sync_state WHERE dirty=1 OR embedding_model!=?1 ORDER BY workspace_path LIMIT 1",[&model],|r|r.get(0)).optional()?;
             let Some(root)=root else { return Ok(false); };
             let token = format!("index-scan:{}",Uuid::new_v4());
             if !Self::reserve_slot(&db,JobClass::Background,&token,None,None)? { return Ok(false); }
             let _slot=service.slot_guard(token).quiet();
-            if let Err(error) = service.reconcile_index_batch(Path::new(&root),&model,false,&stop) {
-                db.execute("UPDATE embedding_sync_state SET dirty=0,embedding_model=?4,next_reconcile_at=?2,last_error=?3 WHERE workspace_path=?1",params![root,(service.clock.now()+chrono::Duration::seconds(30)).to_rfc3339(),error.to_string(),model])?;
+            match service.reconcile_index_batch(Path::new(&root),&model,false,&stop) {
+                Ok(_) => {
+                    if let Ok(remaining) = Self::embedding_remaining(&db, &root, &model) {
+                        service.emit_indexing_event(if remaining == 0 {
+                            IndexingEvent::Idle { workspace_path: root.clone() }
+                        } else {
+                            IndexingEvent::Progress { workspace_path: root.clone(), remaining }
+                        });
+                    }
+                }
+                Err(error) => {
+                    db.execute("UPDATE embedding_sync_state SET dirty=0,embedding_model=?4,next_reconcile_at=?2,last_error=?3 WHERE workspace_path=?1",params![root,(service.clock.now()+chrono::Duration::seconds(30)).to_rfc3339(),error.to_string(),model])?;
+                    service.emit_indexing_event(IndexingEvent::Failed { workspace_path: root.clone(), error: error.to_string() });
+                }
             }
             Ok(true)
         }).await.map_err(|e|invalid(e.to_string()))??;
@@ -425,6 +468,36 @@ impl PersistenceService {
     }
 
     async fn execute_embedding_delta(
+        &self,
+        claim: &BackgroundClaim,
+        config: &AgentRuntimeConfig,
+        shutdown: &CancellationToken,
+    ) -> Result<(), PersistenceServiceError> {
+        let workspace_path: Option<String> = self
+            .connection()?
+            .query_row(
+                "SELECT workspace_path FROM embedding_deltas WHERE job_id=?1",
+                [&claim.job.id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let result = self
+            .execute_embedding_delta_attempt(claim, config, shutdown)
+            .await;
+        // `Cancelled` covers shutdown and supersession by a newer edit — both benign, not a
+        // real failure the developer needs to see.
+        if let (Err(error), Some(workspace_path)) = (&result, workspace_path)
+            && !matches!(error, PersistenceServiceError::Cancelled(_))
+        {
+            self.emit_indexing_event(IndexingEvent::Failed {
+                workspace_path,
+                error: error.to_string(),
+            });
+        }
+        result
+    }
+
+    async fn execute_embedding_delta_attempt(
         &self,
         claim: &BackgroundClaim,
         config: &AgentRuntimeConfig,
@@ -466,6 +539,7 @@ impl PersistenceService {
             if !valid { return Ok(()); }
             let content=read_optional_document(Path::new(&root),&path)?;
             let fresh=content.as_ref().filter(|c|workspace_service::is_embedding_document(&path,c)).map(|c|ContentSha256::of(c.as_bytes()).as_str().to_string());
+            let mut processed = false;
             if !Self::embedding_config_matches(&tx,&model)? || fresh!=hash || (hash.is_some() && vector.is_none()) {
                 tx.execute("UPDATE jobs SET status='failed',cancellation_reason='superseded',updated_at=?2 WHERE id=?1",params![id,Self::now_iso()])?;
                 Self::mark_index_dirty(&tx,Path::new(&root))?;
@@ -474,8 +548,19 @@ impl PersistenceService {
                     tx.execute("INSERT INTO workspace_note_embeddings(id,workspace_path,relative_path,revision_hash,embedding_model,embedding_vector_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(workspace_path,relative_path,embedding_model) DO UPDATE SET revision_hash=excluded.revision_hash,embedding_vector_json=excluded.embedding_vector_json,updated_at=excluded.updated_at",params![Uuid::new_v4().to_string(),root,path,hash,model,vector,Self::now_iso()])?;
                 } else { tx.execute("DELETE FROM workspace_note_embeddings WHERE workspace_path=?1 AND relative_path=?2 AND embedding_model=?3",params![root,path,model])?; }
                 tx.execute("UPDATE jobs SET status='done',finished_at=?2,updated_at=?2 WHERE id=?1",params![id,Self::now_iso()])?;
+                processed = true;
             }
-            tx.commit()?; Ok(())
+            tx.commit()?;
+            if processed
+                && let Ok(remaining) = Self::embedding_remaining(&db, &root, &model)
+            {
+                service.emit_indexing_event(if remaining == 0 {
+                    IndexingEvent::Idle { workspace_path: root.clone() }
+                } else {
+                    IndexingEvent::Progress { workspace_path: root.clone(), remaining }
+                });
+            }
+            Ok(())
         }).await.map_err(|e|invalid(e.to_string()))?
     }
 }

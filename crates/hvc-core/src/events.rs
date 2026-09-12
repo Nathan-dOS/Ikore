@@ -4,7 +4,9 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::chat_service::{ChatEventEnvelope, ChatEventSink};
+use crate::embedding_service::{ModelPullEvent, ModelPullEventSink};
 use crate::llm::{LlmEventEnvelope, LlmEventSink};
+use crate::orchestration::{IndexingEvent, IndexingEventSink};
 use crate::persistence_service::PersistenceService;
 use crate::terminals::{TerminalEventEnvelope, TerminalEventSink};
 use crate::workspace_service::{WorkspaceChangedEvent, WorkspaceEventSink};
@@ -18,6 +20,8 @@ pub enum AppEvent {
     Llm(LlmEventEnvelope),
     Chat(ChatEventEnvelope),
     Terminal(Box<TerminalEventEnvelope>),
+    Indexing(IndexingEvent),
+    ModelPull(ModelPullEvent),
 }
 
 impl AppEvent {
@@ -28,6 +32,18 @@ impl AppEvent {
             Self::Llm(envelope) => envelope.event.event_name(),
             Self::Chat(envelope) => envelope.event_name(),
             Self::Terminal(envelope) => envelope.event_name(),
+            Self::Indexing(event) => match event {
+                IndexingEvent::Progress { .. } => "indexing://progress",
+                IndexingEvent::Paused { .. } => "indexing://paused",
+                IndexingEvent::Idle { .. } => "indexing://idle",
+                IndexingEvent::Failed { .. } => "indexing://failed",
+            },
+            Self::ModelPull(event) => match event {
+                ModelPullEvent::Started { .. } => "model_pull://started",
+                ModelPullEvent::Progress { .. } => "model_pull://progress",
+                ModelPullEvent::Completed { .. } => "model_pull://completed",
+                ModelPullEvent::Failed { .. } => "model_pull://failed",
+            },
         }
     }
 }
@@ -111,6 +127,18 @@ impl ChatEventSink for AppEventBus {
 impl TerminalEventSink for AppEventBus {
     fn emit(&self, envelope: &TerminalEventEnvelope) {
         self.publish(AppEvent::Terminal(Box::new(envelope.clone())));
+    }
+}
+
+impl IndexingEventSink for AppEventBus {
+    fn emit(&self, event: &IndexingEvent) {
+        self.publish(AppEvent::Indexing(event.clone()));
+    }
+}
+
+impl ModelPullEventSink for AppEventBus {
+    fn emit(&self, event: &ModelPullEvent) {
+        self.publish(AppEvent::ModelPull(event.clone()));
     }
 }
 

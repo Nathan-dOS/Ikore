@@ -15,6 +15,7 @@ use hvc_core::llm::{
     RouteTarget, RoutingMode, TestProviderConnectionRequest, UpsertProviderConnectionRequest,
     UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
 };
+use hvc_core::orchestration::IndexingEvent;
 use hvc_core::orchestration::brownfield::BrownfieldOnboardingStatus;
 use hvc_core::persistence_service::{
     ClearExecutionOverrideRequest, CliFallbackDecision, EnsureProjectForWorkspaceRequest,
@@ -318,6 +319,8 @@ pub struct AppModel {
     status: SharedString,
     event_count: u64,
     needs_resync: bool,
+    pub(crate) indexing_status: Option<hvc_core::orchestration::IndexingEvent>,
+    pub(crate) model_pull_status: Option<hvc_core::embedding_service::ModelPullEvent>,
     pub(crate) notifications: crate::notifications::Notifications,
     lifecycle: LifecycleState,
     hydrating: bool,
@@ -348,6 +351,8 @@ pub struct AppModel {
     vault_context_task: Option<Task<()>>,
     vault_document_tasks: HashMap<String, Task<()>>,
     settings_task: Option<Task<()>>,
+    embedding_readiness_task: Option<Task<()>>,
+    model_pull_task: Option<Task<()>>,
     agents_task: Option<Task<()>>,
     agents_notice_timer: Option<Task<()>>,
     model_catalog_task: Option<Task<()>>,
@@ -678,6 +683,8 @@ impl AppModel {
             status: "Ready".into(),
             event_count: 0,
             needs_resync: false,
+            indexing_status: None,
+            model_pull_status: None,
             notifications: crate::notifications::Notifications::default(),
             lifecycle: LifecycleState::default(),
             hydrating: false,
@@ -708,6 +715,8 @@ impl AppModel {
             vault_context_task: None,
             vault_document_tasks: HashMap::new(),
             settings_task: None,
+            embedding_readiness_task: None,
+            model_pull_task: None,
             agents_task: None,
             agents_notice_timer: None,
             model_catalog_task: None,
@@ -826,6 +835,14 @@ impl AppModel {
 
     pub fn needs_resync(&self) -> bool {
         self.needs_resync
+    }
+
+    pub fn indexing_status(&self) -> Option<&hvc_core::orchestration::IndexingEvent> {
+        self.indexing_status.as_ref()
+    }
+
+    pub fn model_pull_status(&self) -> Option<&hvc_core::embedding_service::ModelPullEvent> {
+        self.model_pull_status.as_ref()
     }
 
     pub(crate) fn observe_performance_frame(&mut self, window: &Window) {
@@ -4636,6 +4653,9 @@ impl AppModel {
                                     input.set_value(embedding_model, cx);
                                 });
                         }
+                        if applied && model.settings.read(cx).embedding_readiness.is_none() {
+                            model.refresh_embedding_readiness(cx);
+                        }
                     }
                     Err(error) => {
                         model
@@ -4790,6 +4810,57 @@ impl AppModel {
             }),
             cx,
         );
+    }
+
+    /// Runs the 3-step Ollama readiness check independently of `run_settings_operation`
+    /// (which is for a single mutation → one notice): this is a silent diagnostic that can run
+    /// alongside other settings actions and is re-triggered automatically whenever indexing
+    /// reports a failure (see `apply_indexing_event`), so the checklist stays current without
+    /// the developer having to ask for it.
+    pub(crate) fn refresh_embedding_readiness(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        self.settings.update(cx, |settings, _| {
+            settings.embedding_readiness_loading = true;
+        });
+        cx.notify();
+        self.embedding_readiness_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.check_embedding_readiness().await;
+            let _ = this.update(cx, |model, cx| {
+                model.settings.update(cx, |settings, _| {
+                    settings.embedding_readiness_loading = false;
+                    if let Ok(report) = result {
+                        settings.embedding_readiness = Some(report);
+                    }
+                });
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Downloads the model named in the current readiness report (the one the checklist just
+    /// flagged as missing) via Ollama's own pull API — no terminal required. Progress streams
+    /// in through `model_pull_status`; completion re-checks readiness automatically.
+    pub(crate) fn pull_embedding_model(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let model = self
+            .settings
+            .read(cx)
+            .embedding_readiness
+            .as_ref()
+            .map(|report| report.model.clone());
+        self.model_pull_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.pull_embedding_model(model).await;
+            let _ = this.update(cx, |model, cx| {
+                if let Err(error) = result {
+                    model.push_header_notice(HeaderNoticeKind::Error, error.presentable(), cx);
+                }
+                model.refresh_embedding_readiness(cx);
+            });
+        }));
     }
 
     pub(crate) fn update_dynamic_context_policy(
@@ -5550,9 +5621,14 @@ impl AppModel {
             navigation.active_tab = self.active_tab;
             navigation.sidebar_collapsed = session.is_some_and(|value| value.sidebar_collapsed);
         });
+        self.indexing_status = None;
         self.workspace.update(cx, |workspace, cx| {
             workspace.project_id = Some(restored.project_id.clone().into());
             workspace.root_path = Some(restored.root_path.clone().into());
+            workspace.root_path_canonical = std::path::Path::new(&restored.root_path)
+                .canonicalize()
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned());
             workspace.tree = restored.tree.clone();
             workspace.active_relative_path = active_path.clone().map(Into::into);
             workspace.tabs = tabs;
@@ -5821,6 +5897,17 @@ impl AppModel {
     }
 
     fn handle_event(&mut self, event: AppEvent, cx: &mut Context<Self>) {
+        // Indexing progress ticks at supervisor cadence and must not steal the status bar's
+        // main text (see the generic "Event received: ..." below) on every delta.
+        if let AppEvent::Indexing(event) = event {
+            self.apply_indexing_event(event, cx);
+            return;
+        }
+        if let AppEvent::ModelPull(event) = event {
+            self.model_pull_status = Some(event);
+            cx.notify();
+            return;
+        }
         let usage_changed = match &event {
             AppEvent::Llm(envelope) => matches!(
                 envelope.event,
@@ -5886,7 +5973,26 @@ impl AppModel {
                 }
             }
             AppEvent::Chat(envelope) => self.handle_chat_event(envelope, cx),
+            // Returned early above, before the generic event-count/status preamble.
+            AppEvent::Indexing(_) => unreachable!(),
+            AppEvent::ModelPull(_) => unreachable!(),
         }
+        cx.notify();
+    }
+
+    /// Applies a background embedding milestone, filtered to the workspace currently open in
+    /// the UI (the supervisor iterates every registered project, not just the active one).
+    fn apply_indexing_event(&mut self, event: IndexingEvent, cx: &mut Context<Self>) {
+        let active = self.workspace.read(cx).root_path_canonical.clone();
+        if active.as_deref() != Some(event.workspace_path()) {
+            return;
+        }
+        // A real failure is exactly when the developer needs to know *why* — re-run the
+        // readiness checklist so it points at the actual blocking step instead of a raw error.
+        if matches!(event, IndexingEvent::Failed { .. }) {
+            self.refresh_embedding_readiness(cx);
+        }
+        self.indexing_status = Some(event);
         cx.notify();
     }
 

@@ -10,7 +10,9 @@ use crate::agent_runtime::{
     ContextStrategy, DynamicContextPolicy, EmbeddingProvider, LlmProvider, ProviderKeyStatus,
     StageExecutionInput, StageExecutionResult, execute_stage_with_cli,
 };
-use crate::embedding_service::{EmbeddingGateway, OllamaEmbeddingGateway};
+use crate::embedding_service::{
+    EmbeddingGateway, ModelPullEvent, ModelPullEventSink, OllamaEmbeddingGateway,
+};
 use crate::llm::{
     AgentRole, Clock, CompressionPreview, CompressionPreviewRequest, CredentialStore,
     DeleteProviderConnectionRequest, DeleteProviderRouteRequest, JitterSource,
@@ -35,6 +37,7 @@ use uuid::Uuid;
 use crate::orchestration::brownfield::{
     BrownfieldConsentState, BrownfieldCoverageMetrics, BrownfieldOnboardingStatus,
 };
+use crate::orchestration::{IndexingEvent, IndexingEventSink};
 use crate::terminals::{CliBackend, TerminalService};
 
 #[path = "orchestration/anticipation.rs"]
@@ -979,6 +982,19 @@ pub struct ReindexWorkspaceEmbeddingsResponse {
     pub failed_count: usize,
 }
 
+/// Three independent, ordered facts about whether embeddings can work at all: each one gates
+/// the next, so the UI can point at exactly the step that is blocking the developer instead of
+/// surfacing a raw HTTP error.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingReadinessReport {
+    pub model: String,
+    pub ollama_reachable: bool,
+    pub model_installed: bool,
+    pub embedding_call_ok: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveProviderApiKeyRequest {
@@ -1167,6 +1183,13 @@ pub struct PersistenceService {
     credentials: Arc<dyn CredentialStore>,
     llm_router: Arc<ProviderRouter>,
     terminal_service: Arc<Mutex<Option<Arc<TerminalService>>>>,
+    // Attached post-construction (not a constructor param) purely to avoid changing the
+    // signature of `initialize_with_dependencies`, which many tests call directly. Unlike
+    // `terminal_service`, there is no circular-dependency reason for this shape here.
+    indexing_events: Arc<Mutex<Option<Arc<dyn IndexingEventSink>>>>,
+    indexing_last_emitted: Arc<Mutex<HashMap<String, IndexingEvent>>>,
+    // Same "attach after construction" shape as `indexing_events`, for the same reason.
+    model_pull_events: Arc<Mutex<Option<Arc<dyn ModelPullEventSink>>>>,
     pub(crate) document_cache: crate::document_cache::SharedDocumentCache,
     clock: Arc<dyn Clock>,
 }
@@ -1249,6 +1272,9 @@ impl PersistenceService {
             credentials,
             llm_router,
             terminal_service: Arc::new(Mutex::new(None)),
+            indexing_events: Arc::new(Mutex::new(None)),
+            indexing_last_emitted: Arc::new(Mutex::new(HashMap::new())),
+            model_pull_events: Arc::new(Mutex::new(None)),
             document_cache: Default::default(),
             clock,
         })
@@ -1266,6 +1292,54 @@ impl PersistenceService {
             .terminal_service
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(service);
+    }
+
+    pub fn attach_indexing_event_sink(&self, sink: Arc<dyn IndexingEventSink>) {
+        *self
+            .indexing_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
+    }
+
+    pub fn attach_model_pull_event_sink(&self, sink: Arc<dyn ModelPullEventSink>) {
+        *self
+            .model_pull_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
+    }
+
+    /// Publishes `event` unless it is identical to the last event emitted for its workspace,
+    /// so a paused/steady state does not re-publish every supervisor tick.
+    fn emit_indexing_event(&self, event: IndexingEvent) {
+        let key = event.workspace_path().to_string();
+        let mut last = self
+            .indexing_last_emitted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last.get(&key) == Some(&event) {
+            return;
+        }
+        last.insert(key, event.clone());
+        drop(last);
+        if let Some(sink) = self
+            .indexing_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            sink.emit(&event);
+        }
+    }
+
+    fn emit_model_pull_event(&self, event: ModelPullEvent) {
+        if let Some(sink) = self
+            .model_pull_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            sink.emit(&event);
+        }
     }
 
     fn now_iso() -> String {
@@ -3433,6 +3507,82 @@ impl PersistenceService {
             .map_err(PersistenceServiceError::from)
     }
 
+    /// Longer and more "note-shaped" than a trivial "ping": the readiness check exists to catch
+    /// problems before a real reindex hits them, and a one-word probe would miss failures that
+    /// only show up on realistic input (e.g. a legacy Ollama endpoint that doesn't truncate long
+    /// prompts and crashes instead of erroring cleanly).
+    const READINESS_PROBE_PROMPT: &str = "# Fixture note\n\nThis is a readiness probe standing in for a real knowledge note: a short paragraph of ordinary prose, roughly the length of a note's opening summary, so the check exercises the same code path a real reindex would use rather than a trivial one-word prompt.";
+
+    /// Three independent checks, each gating the next, so the UI can point at exactly the step
+    /// blocking embeddings instead of a raw HTTP error. Never returns `Err` for an unready
+    /// state — "not ready yet" is a normal result, not a command failure.
+    pub async fn check_embedding_readiness(
+        &self,
+    ) -> Result<EmbeddingReadinessReport, PersistenceServiceError> {
+        let config = self.load_runtime_config()?;
+        let model = config.embedding_model.clone();
+        let models = match self.embedding_gateway.list_models().await {
+            Ok(models) => models,
+            Err(error) => {
+                return Ok(EmbeddingReadinessReport {
+                    model,
+                    ollama_reachable: false,
+                    model_installed: false,
+                    embedding_call_ok: false,
+                    error: Some(error.to_string()),
+                });
+            }
+        };
+        let model_installed = models
+            .iter()
+            .any(|installed| crate::embedding_service::model_names_match(installed, &model));
+        if !model_installed {
+            return Ok(EmbeddingReadinessReport {
+                model,
+                ollama_reachable: true,
+                model_installed: false,
+                embedding_call_ok: false,
+                error: None,
+            });
+        }
+        match self
+            .embedding_gateway
+            .embed(&model, Self::READINESS_PROBE_PROMPT)
+            .await
+        {
+            Ok(_) => Ok(EmbeddingReadinessReport {
+                model,
+                ollama_reachable: true,
+                model_installed: true,
+                embedding_call_ok: true,
+                error: None,
+            }),
+            Err(error) => Ok(EmbeddingReadinessReport {
+                model,
+                ollama_reachable: true,
+                model_installed: true,
+                embedding_call_ok: false,
+                error: Some(error.to_string()),
+            }),
+        }
+    }
+
+    /// Downloads `model` (or the configured embedding model when `None`), publishing
+    /// `ModelPullEvent`s as it goes so Settings can show live progress without polling.
+    pub async fn pull_embedding_model(
+        &self,
+        model: Option<String>,
+    ) -> Result<(), PersistenceServiceError> {
+        let model = match model {
+            Some(model) => model,
+            None => self.load_runtime_config()?.embedding_model,
+        };
+        self.embedding_gateway
+            .pull_model(&model, &|event| self.emit_model_pull_event(event))
+            .await
+            .map_err(|error| PersistenceServiceError::Validation(error.to_string()))
+    }
+
     pub fn list_provider_routes(
         &self,
     ) -> Result<ListProviderRoutesResponse, PersistenceServiceError> {
@@ -5153,6 +5303,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::embedding_service::{EmbeddingError, EmbeddingFuture, ModelListFuture, ModelPullFuture};
     use crate::llm::LlmRepository;
 
     fn prepare_service() -> (tempfile::TempDir, PersistenceService) {
@@ -5190,6 +5341,132 @@ mod tests {
         // A host-side error must not be silently made retryable by this change.
         let host_side = PersistenceServiceError::Validation("Sem pulsação".to_string());
         assert!(!service.should_retry(&host_side, 1, &config));
+    }
+
+    #[derive(Default)]
+    struct FakeReadinessGateway {
+        models: Mutex<Vec<String>>,
+        list_error: Mutex<Option<String>>,
+        embed_error: Mutex<Option<String>>,
+    }
+
+    impl EmbeddingGateway for FakeReadinessGateway {
+        fn embed<'a>(&'a self, _model: &'a str, _prompt: &'a str) -> EmbeddingFuture<'a> {
+            Box::pin(async move {
+                match self.embed_error.lock().unwrap().clone() {
+                    Some(error) => Err(EmbeddingError(error)),
+                    None => Ok(vec![0.1, 0.2]),
+                }
+            })
+        }
+
+        fn list_models<'a>(&'a self) -> ModelListFuture<'a> {
+            Box::pin(async move {
+                match self.list_error.lock().unwrap().clone() {
+                    Some(error) => Err(EmbeddingError(error)),
+                    None => Ok(self.models.lock().unwrap().clone()),
+                }
+            })
+        }
+
+        fn pull_model<'a>(
+            &'a self,
+            model: &'a str,
+            on_event: &'a (dyn Fn(ModelPullEvent) + Send + Sync),
+        ) -> ModelPullFuture<'a> {
+            Box::pin(async move {
+                on_event(ModelPullEvent::Started {
+                    model: model.to_string(),
+                });
+                on_event(ModelPullEvent::Completed {
+                    model: model.to_string(),
+                });
+                Ok(())
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingModelPullSink(Mutex<Vec<ModelPullEvent>>);
+
+    impl ModelPullEventSink for RecordingModelPullSink {
+        fn emit(&self, event: &ModelPullEvent) {
+            self.0.lock().unwrap().push(event.clone());
+        }
+    }
+
+    #[tokio::test]
+    async fn pull_embedding_model_forwards_gateway_events_to_the_attached_sink() {
+        let (_root, mut service) = prepare_service();
+        service.embedding_gateway = Arc::new(FakeReadinessGateway::default());
+        let sink = Arc::new(RecordingModelPullSink::default());
+        service.attach_model_pull_event_sink(sink.clone());
+
+        service
+            .pull_embedding_model(Some("nomic-embed-text".into()))
+            .await
+            .unwrap();
+
+        let events = sink.0.lock().unwrap();
+        assert!(matches!(events[0], ModelPullEvent::Started { .. }));
+        assert!(matches!(events[1], ModelPullEvent::Completed { .. }));
+    }
+
+    #[tokio::test]
+    async fn readiness_report_flags_unreachable_ollama() {
+        let (_root, mut service) = prepare_service();
+        let gateway = Arc::new(FakeReadinessGateway::default());
+        *gateway.list_error.lock().unwrap() = Some("connection refused".into());
+        service.embedding_gateway = gateway;
+        let report = service.check_embedding_readiness().await.unwrap();
+        assert!(!report.ollama_reachable);
+        assert!(!report.model_installed);
+        assert!(!report.embedding_call_ok);
+        assert!(report.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn readiness_report_flags_missing_model_without_calling_embed() {
+        let (_root, mut service) = prepare_service();
+        let gateway = Arc::new(FakeReadinessGateway::default());
+        *gateway.models.lock().unwrap() = vec!["llama3:8b".into()];
+        *gateway.embed_error.lock().unwrap() = Some("must not be reached".into());
+        service.embedding_gateway = gateway;
+        let report = service.check_embedding_readiness().await.unwrap();
+        assert!(report.ollama_reachable);
+        assert!(!report.model_installed);
+        assert!(!report.embedding_call_ok);
+        assert!(report.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn readiness_report_surfaces_embed_failure_once_model_is_installed() {
+        let (_root, mut service) = prepare_service();
+        let gateway = Arc::new(FakeReadinessGateway::default());
+        *gateway.models.lock().unwrap() = vec!["nomic-embed-text:latest".into()];
+        *gateway.embed_error.lock().unwrap() = Some("Ollama embedding falhou com status HTTP 500.".into());
+        service.embedding_gateway = gateway;
+        let report = service.check_embedding_readiness().await.unwrap();
+        assert!(report.ollama_reachable);
+        assert!(report.model_installed);
+        assert!(!report.embedding_call_ok);
+        assert_eq!(
+            report.error.as_deref(),
+            Some("Ollama embedding falhou com status HTTP 500.")
+        );
+    }
+
+    #[tokio::test]
+    async fn readiness_report_is_all_clear_once_installed_model_embeds() {
+        let (_root, mut service) = prepare_service();
+        let gateway = Arc::new(FakeReadinessGateway::default());
+        *gateway.models.lock().unwrap() = vec!["nomic-embed-text:latest".into()];
+        service.embedding_gateway = gateway;
+        let report = service.check_embedding_readiness().await.unwrap();
+        assert!(report.ollama_reachable);
+        assert!(report.model_installed);
+        assert!(report.embedding_call_ok);
+        assert!(report.error.is_none());
     }
 
     fn spawn_http_response(

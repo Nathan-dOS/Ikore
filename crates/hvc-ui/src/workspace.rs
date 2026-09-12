@@ -304,6 +304,12 @@ impl WorkspaceTabModel {
 pub struct WorkspaceEditorModel {
     pub project_id: Option<SharedString>,
     pub root_path: Option<SharedString>,
+    /// Canonicalized form of `root_path` (computed once when the workspace opens/restores),
+    /// matching the `workspace_path` key the core emits on `IndexingEvent` — the core keys its
+    /// embedding tables by `Path::canonicalize()`, which on Windows adds a `\\?\` extended-path
+    /// prefix that `root_path` does not have. Plain `String` (not `SharedString`) since this is
+    /// only ever compared against, never rendered.
+    pub root_path_canonical: Option<String>,
     pub tree: Vec<FileNode>,
     pub active_relative_path: Option<SharedString>,
     pub editor: Entity<NativeEditor>,
@@ -317,6 +323,7 @@ impl WorkspaceEditorModel {
         Self {
             project_id: None,
             root_path: None,
+            root_path_canonical: None,
             tree: Vec::new(),
             active_relative_path: None,
             editor: cx.new(NativeEditor::new),

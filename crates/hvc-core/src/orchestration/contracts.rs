@@ -156,6 +156,33 @@ pub enum JobClass {
     Background,
 }
 
+/// Discrete milestones for background embedding reconciliation, pushed to the UI over
+/// `AppEventBus`. `remaining` is a countdown of pending/running `index_embedding` jobs for the
+/// workspace, not a fixed total: `reconcile_index_batch` paginates, so the queue can grow between
+/// passes and a fixed "X/Y" would lie mid-run.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IndexingEvent {
+    Progress { workspace_path: String, remaining: usize },
+    Paused { workspace_path: String, remaining: usize },
+    Idle { workspace_path: String },
+    Failed { workspace_path: String, error: String },
+}
+
+impl IndexingEvent {
+    pub fn workspace_path(&self) -> &str {
+        match self {
+            Self::Progress { workspace_path, .. }
+            | Self::Paused { workspace_path, .. }
+            | Self::Idle { workspace_path }
+            | Self::Failed { workspace_path, .. } => workspace_path,
+        }
+    }
+}
+
+pub trait IndexingEventSink: Send + Sync {
+    fn emit(&self, event: &IndexingEvent);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "stage", rename_all = "snake_case")]
 pub enum OrchestrationJobKind {

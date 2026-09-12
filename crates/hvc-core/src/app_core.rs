@@ -12,13 +12,13 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::chat_service::{ChatEventSink, ChatService};
-use crate::embedding_service::{EmbeddingGateway, OllamaEmbeddingGateway};
+use crate::embedding_service::{EmbeddingGateway, ModelPullEventSink, OllamaEmbeddingGateway};
 use crate::events::{AppEvent, AppEventBus};
 use crate::llm::{
     Clock, CredentialStore, JitterSource, KeyringCredentialStore, LlmEventSink, StableJitter,
     SystemClock,
 };
-use crate::orchestration::CollectionBudget;
+use crate::orchestration::{CollectionBudget, IndexingEventSink};
 use crate::orchestration::brownfield::{
     BrownfieldOnboardingResult, BrownfieldOnboardingStatus, InventoryScanner,
     SetBrownfieldConsentRequest, SetBrownfieldIgnoredRequest,
@@ -245,6 +245,10 @@ impl AppCore {
         )?);
         chat.attach_terminal_service(Arc::clone(&terminals));
         persistence.attach_terminal_service(Arc::clone(&terminals));
+        let indexing_sink: Arc<dyn IndexingEventSink> = events.clone();
+        persistence.attach_indexing_event_sink(indexing_sink);
+        let model_pull_sink: Arc<dyn ModelPullEventSink> = events.clone();
+        persistence.attach_model_pull_event_sink(model_pull_sink);
         let feature_agent = Arc::new(crate::feature_forge::FeatureAgentRuntime::new(
             persistence.clone(),
             events.clone(),
