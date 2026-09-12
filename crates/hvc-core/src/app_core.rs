@@ -227,6 +227,7 @@ impl AppCore {
             dependencies.http_client,
         )?;
         persistence.recover_interrupted_jobs()?;
+        persistence.repair_state_version_drift()?;
         let chat_sink: Arc<dyn ChatEventSink> = events.clone();
         let chat = Arc::new(ChatService::with_http_client_and_runtime(
             persistence.database_path(),

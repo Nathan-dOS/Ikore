@@ -2,7 +2,9 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent_output_language::{validate_agent_artifact, validate_english_text};
+use crate::agent_output_language::{
+    validate_agent_artifact, validate_english_prose, validate_english_text,
+};
 use crate::persistence_service::{HitlDecision, PulsationStage, PulsationStatus};
 
 use super::{
@@ -414,7 +416,7 @@ impl ComponentProposalDraft {
             return Err(ContractError::Invalid("proposta de componente"));
         }
         validate_english_text("component proposal title", &self.title)
-            .and_then(|_| validate_english_text("component proposal summary", &self.summary))
+            .and_then(|_| validate_english_prose("component proposal summary", &self.summary))
             .map_err(|_| ContractError::Invalid("component proposal must be English"))?;
         Ok(())
     }

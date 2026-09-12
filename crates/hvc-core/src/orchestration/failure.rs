@@ -30,6 +30,12 @@ pub enum FailureClass {
     HostContract,
     /// The agent itself reported a failed status update.
     ModelReportedFailure,
+    /// The model ran out of output budget mid-answer. The process succeeded;
+    /// the answer is simply incomplete. Re-running the identical call spends a
+    /// full generation to truncate at the same place, so retry is never
+    /// offered - what has to change is the amount of output asked for, or the
+    /// backend that has to produce it.
+    OutputTruncated,
 }
 
 impl FailureClass {
@@ -42,6 +48,7 @@ impl FailureClass {
             Self::ExecutorSetup => "executor_setup",
             Self::HostContract => "host_contract",
             Self::ModelReportedFailure => "model_reported_failure",
+            Self::OutputTruncated => "output_truncated",
         }
     }
 
@@ -54,6 +61,7 @@ impl FailureClass {
             "executor_setup" => Self::ExecutorSetup,
             "host_contract" => Self::HostContract,
             "model_reported_failure" => Self::ModelReportedFailure,
+            "output_truncated" => Self::OutputTruncated,
             _ => return None,
         })
     }
@@ -66,9 +74,10 @@ impl FailureClass {
             | Self::ProviderTransport
             | Self::Infrastructure
             | Self::ExecutorSetup => true,
-            // The model already produced a durable `stage_acceptances` row, or the
-            // host rejected its output on a rule a resample would hit again.
-            Self::HostContract | Self::ModelReportedFailure => false,
+            // The model already produced a durable `stage_acceptances` row, the
+            // host rejected its output on a rule a resample would hit again, or
+            // the same budget would cut the same answer at the same place.
+            Self::HostContract | Self::ModelReportedFailure | Self::OutputTruncated => false,
         }
     }
 
@@ -76,7 +85,12 @@ impl FailureClass {
     /// Still gated by `failure_revision_target(stage)` having a target at all.
     pub fn offers_revision(self) -> bool {
         match self {
-            Self::RetryBudgetExhausted | Self::HostContract | Self::ModelReportedFailure => true,
+            Self::RetryBudgetExhausted
+            | Self::HostContract
+            | Self::ModelReportedFailure
+            // Feedback is exactly the lever here: it can narrow the scope so
+            // the answer fits the budget.
+            | Self::OutputTruncated => true,
             // The model never produced output; feedback cannot supply an API key.
             Self::ProviderConfiguration
             | Self::ProviderTransport
@@ -97,7 +111,14 @@ impl FailureClass {
 /// checkpoint (`open_cli_fallback`), so both stay out.
 pub fn classify_stage_failure(error: &PersistenceServiceError) -> Option<FailureClass> {
     Some(match error {
-        PersistenceServiceError::Cancelled(_) | PersistenceServiceError::Cli { .. } => return None,
+        PersistenceServiceError::Cancelled(_) => return None,
+        // A truncated answer reaches here as a CLI fault, but "retry the CLI"
+        // is precisely the wrong offer for it, so it does not opt out with the
+        // rest of the CLI faults.
+        PersistenceServiceError::Cli { code, .. } if code == "cli_output_truncated" => {
+            FailureClass::OutputTruncated
+        }
+        PersistenceServiceError::Cli { .. } => return None,
         PersistenceServiceError::Retryable(_) | PersistenceServiceError::ModelOutputInvalid(_) => {
             FailureClass::RetryBudgetExhausted
         }
@@ -224,7 +245,10 @@ mod tests {
     #[test]
     fn classifies_every_llm_kind() {
         for (kind, expected) in [
-            (LlmErrorKind::RateLimited, FailureClass::RetryBudgetExhausted),
+            (
+                LlmErrorKind::RateLimited,
+                FailureClass::RetryBudgetExhausted,
+            ),
             (LlmErrorKind::Timeout, FailureClass::RetryBudgetExhausted),
             (LlmErrorKind::Network, FailureClass::RetryBudgetExhausted),
             (
@@ -248,7 +272,10 @@ mod tests {
                 FailureClass::ProviderConfiguration,
             ),
             (LlmErrorKind::Billing, FailureClass::ProviderConfiguration),
-            (LlmErrorKind::Permission, FailureClass::ProviderConfiguration),
+            (
+                LlmErrorKind::Permission,
+                FailureClass::ProviderConfiguration,
+            ),
             (
                 LlmErrorKind::ModelNotFound,
                 FailureClass::ProviderConfiguration,
@@ -257,7 +284,10 @@ mod tests {
                 LlmErrorKind::RouteConflict,
                 FailureClass::ProviderConfiguration,
             ),
-            (LlmErrorKind::InvalidRequest, FailureClass::ProviderTransport),
+            (
+                LlmErrorKind::InvalidRequest,
+                FailureClass::ProviderTransport,
+            ),
             (
                 LlmErrorKind::InvalidResponse,
                 FailureClass::ProviderTransport,
@@ -327,8 +357,12 @@ mod tests {
             FailureClass::ExecutorSetup,
             FailureClass::HostContract,
             FailureClass::ModelReportedFailure,
+            FailureClass::OutputTruncated,
         ] {
-            assert_eq!(FailureClass::from_db_value(class.as_db_value()), Some(class));
+            assert_eq!(
+                FailureClass::from_db_value(class.as_db_value()),
+                Some(class)
+            );
         }
         assert_eq!(FailureClass::from_db_value("nope"), None);
     }
@@ -390,5 +424,34 @@ mod tests {
             assert!(!offered.allow_revision, "{class:?}");
             assert_eq!(offered.revision_stage, None, "{class:?}");
         }
+    }
+
+    #[test]
+    fn a_truncated_answer_offers_revision_and_never_an_identical_retry() {
+        // The Integrator burned three full generations on this: two answers cut
+        // off at the same output ceiling and one that spent the entire budget
+        // on reasoning. "Retry the CLI" repeats it exactly.
+        let error = PersistenceServiceError::Cli {
+            code: "cli_output_truncated".into(),
+            message: "OpenCode interrompeu a saída por limite de tokens (length)".into(),
+        };
+        assert_eq!(
+            classify_stage_failure(&error),
+            Some(FailureClass::OutputTruncated)
+        );
+        let offered = offered_decisions(FailureClass::OutputTruncated, PulsationStage::Integrator)
+            .expect("truncation is recoverable through a revision");
+        assert!(!offered.allow_retry);
+        assert!(offered.allow_revision);
+        assert_eq!(offered.revision_stage, Some(PulsationStage::Code));
+
+        // Every other CLI fault keeps its own older checkpoint.
+        assert_eq!(
+            classify_stage_failure(&PersistenceServiceError::Cli {
+                code: "cli_timeout".into(),
+                message: "execução CLI excedeu o tempo limite".into(),
+            }),
+            None
+        );
     }
 }

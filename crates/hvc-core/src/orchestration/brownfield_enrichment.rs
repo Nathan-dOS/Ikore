@@ -194,6 +194,7 @@ impl PersistenceService {
             project_id,
             pulsation_id: Some(pulse),
             job_id: Some(claim.job.id.clone()),
+            agent_run_id: None,
             job_chain: format!("brownfield-enrich:{}", claim.job.id),
             agent_role: AgentRole::LearningAgent,
             stage: "BrownfieldEnrichment".into(),

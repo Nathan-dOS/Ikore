@@ -392,16 +392,13 @@ impl RepositoryContext {
         .map_err(|error| RepositoryError(error.to_string()))
     }
 
-    pub(crate) fn validate_code_source_path(
+    /// Validate a physical reference independently of its eligibility as code.
+    /// Documents use the same containment, visibility and symlink checks.
+    pub(crate) fn validate_file_reference(
         &self,
         relative: &crate::orchestration::RelativeSourcePath,
     ) -> Result<(), RepositoryError> {
-        let path = self.resolve_relative(relative.as_str(), false)?;
-        if !is_code_path(&path) {
-            return Err(RepositoryError(
-                "O path informado não é uma fonte de código elegível.".into(),
-            ));
-        }
+        self.resolve_relative(relative.as_str(), false)?;
         Ok(())
     }
 
@@ -435,10 +432,7 @@ impl RepositoryContext {
             if cancellation.is_cancelled() {
                 return Err(ContractError::Cancelled);
             }
-            if started.elapsed().as_millis() >= u128::from(budget.max_duration_ms)
-                || sources.len() >= budget.max_package_files as usize
-                || coverage.read_bytes >= budget.max_read_bytes
-            {
+            if started.elapsed().as_millis() >= u128::from(budget.max_duration_ms) {
                 coverage.truncated = true;
                 break;
             }
@@ -448,14 +442,24 @@ impl RepositoryContext {
             coverage.enumerated_files = coverage.enumerated_files.saturating_add(1);
             let path = match self.resolve_relative(relative.as_str(), false) {
                 Ok(path) if is_code_path(&path) => path,
-                _ => {
+                // Existing non-code references are valid, but do not belong in
+                // the code projection or imply incomplete code coverage.
+                Ok(_) => continue,
+                Err(error) => {
                     coverage.state = CoverageState::Partial;
-                    coverage
-                        .diagnostics
-                        .push(format!("broken_file_reference: {}", relative.as_str()));
+                    coverage.diagnostics.push(format!(
+                        "broken_file_reference: {}: {error}",
+                        relative.as_str()
+                    ));
                     continue;
                 }
             };
+            if sources.len() >= budget.max_package_files as usize
+                || coverage.read_bytes >= budget.max_read_bytes
+            {
+                coverage.truncated = true;
+                break;
+            }
             let limit = budget
                 .max_file_bytes
                 .min(budget.max_read_bytes.saturating_sub(coverage.read_bytes));
@@ -946,6 +950,65 @@ fn truncate_chars(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_code_context_skips_valid_documents_but_reports_broken_references() {
+        use crate::orchestration::{CollectionBudget, CoverageState, RelativeSourcePath};
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("docs")).unwrap();
+        fs::write(temp.path().join("docs/spec.md"), "# Specification\n").unwrap();
+        fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        fs::write(temp.path().join(".env"), "TOKEN=fixture\n").unwrap();
+        let repository = RepositoryContext::new(temp.path()).unwrap();
+        let path = |value: &str| RelativeSourcePath::new(value).unwrap();
+        let budget = CollectionBudget {
+            max_package_files: 1,
+            ..Default::default()
+        };
+        let cancel = CancellationToken::new();
+        for paths in [
+            vec![path("docs/spec.md"), path("main.rs")],
+            vec![path("main.rs"), path("docs/spec.md")],
+            vec![path("docs/spec.md")],
+        ] {
+            let (sources, coverage) = repository
+                .capture_exact_code_sources("fixture", &paths, budget, &cancel)
+                .unwrap();
+            assert_eq!(sources.len(), usize::from(paths.len() == 2));
+            assert_eq!(coverage.state, CoverageState::Complete);
+            assert!(!coverage.truncated);
+            assert!(
+                !coverage
+                    .diagnostics
+                    .iter()
+                    .any(|message| message.contains("broken_file_reference"))
+            );
+        }
+        for invalid in ["missing.md", ".env", "docs"] {
+            let (_, coverage) = repository
+                .capture_exact_code_sources(
+                    "fixture",
+                    &[path("docs/spec.md"), path(invalid)],
+                    budget,
+                    &cancel,
+                )
+                .unwrap();
+            assert_eq!(coverage.state, CoverageState::Partial);
+            assert!(
+                coverage
+                    .diagnostics
+                    .iter()
+                    .any(|message| message.contains("broken_file_reference")
+                        && message.contains(invalid))
+            );
+        }
+        // A valid document cannot become a source snapshot through the strict API.
+        assert!(
+            repository
+                .capture_code_source("fixture", &path("docs/spec.md"))
+                .is_err()
+        );
+    }
 
     #[test]
     fn blocks_traversal_secrets_ignored_files_and_binary_content() {

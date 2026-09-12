@@ -280,11 +280,15 @@ fn real_learning_request_is_bounded_and_unknown_evidence_never_publishes() {
                 Ok((r.get(0)?, r.get(1)?))
             })
             .unwrap();
+        // A report citing evidence it was never given is the model's mistake,
+        // not the host's, so it is parked for another of the three granted
+        // calls rather than ending the run on its first. What must never happen
+        // either way is publication - asserted just below.
         assert_eq!(
             state,
             (
                 if unknown_evidence {
-                    "failed"
+                    "pending"
                 } else {
                     "publishing"
                 }

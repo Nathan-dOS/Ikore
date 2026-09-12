@@ -28,6 +28,7 @@ fn input(fixture: &PulsationFixture) -> StageExecutionInput {
         workspace_path: fixture.project_a_root().to_string_lossy().into_owned(),
         runtime_db_path: fixture.database_path().to_string_lossy().into_owned(),
         previous_attempt: None,
+        agent_run_id: None,
     }
 }
 

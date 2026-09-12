@@ -1562,3 +1562,63 @@ async fn analysis_turns_stay_out_of_the_discovery_transcript() {
         0
     );
 }
+
+#[tokio::test]
+async fn triage_analysis_never_recreates_tasks_for_an_approved_feature() {
+    let f = Fixture::new();
+    let subject = f.feature("Export workflow");
+    f.forge()
+        .approve(&f.project, &subject.id, subject.revision)
+        .unwrap();
+    let before = f.tasks().list(&f.project).unwrap();
+    assert_eq!(before.len(), 1);
+
+    // The exact shape of the regression: the feature is already approved and its
+    // tasks may be in delivery, and the analysis recommends approving again.
+    let runtime = analysis_runtime(&f, triage_payload("approve"));
+    runtime
+        .start_triage_analysis(&f.project, &subject.id, subject.revision, &id())
+        .unwrap();
+    runtime.wait_for_idle().await;
+
+    let after = f.tasks().list(&f.project).unwrap();
+    assert_eq!(
+        after, before,
+        "re-approving supersedes the delivered tasks and inserts a duplicate of each"
+    );
+    assert!(after.iter().all(|t| t.state != "superseded"));
+
+    // The evaluation still lands -- declining the approval must not cost the
+    // developer the judgement they asked for.
+    let stored = f.forge().get(&f.project, &subject.id).unwrap();
+    assert_eq!(stored.evaluation.impact, Some(4));
+    assert_eq!(stored.approved_revision, Some(subject.revision));
+
+    let turn = runtime
+        .history(&f.project, &subject.id)
+        .unwrap()
+        .into_iter()
+        .find(|turn| turn.kind == TurnKind::Triage)
+        .unwrap();
+    assert_eq!(turn.status, "completed");
+    assert!(turn.assistant_message.unwrap().contains("already approved"));
+}
+
+#[test]
+fn apply_approval_is_idempotent_on_the_approved_revision() {
+    let f = Fixture::new();
+    let subject = f.feature("Export workflow");
+    f.forge()
+        .approve(&f.project, &subject.id, subject.revision)
+        .unwrap();
+    let before = f.tasks().list(&f.project).unwrap();
+
+    // Called directly, bypassing the guard `approve` keeps for its own callers.
+    // This is the path the agent turn commit takes, so the protection has to
+    // live here too and not only in the public method.
+    let db = f.service.connection().unwrap();
+    let approved = feature(&db, &f.project, &subject.id).unwrap();
+    apply_approval(&db, &f.project, &approved, subject.revision).unwrap();
+
+    assert_eq!(f.tasks().list(&f.project).unwrap(), before);
+}

@@ -4,7 +4,7 @@ use crate::{
 };
 use gpui::{AppContext, Context, Entity, Subscription};
 use hvc_core::feature_forge::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Sections of the merged Forge view (Tasks/Backlog + Feature Forge, see the UI flow plan Part 1.1).
 /// `Backlog` is UI-only and never persisted through `ForgeNavigation`; the other five map onto the
@@ -51,6 +51,31 @@ impl ForgeSection {
         }
     }
 
+    /// One line under the header saying what the section is for. Kept next to
+    /// `label` so a new section cannot ship with a name but no explanation.
+    pub(crate) const fn description(self) -> &'static str {
+        match self {
+            Self::Backlog => {
+                "Loose tasks that belong to no feature. Capture a bug or chore here and dispatch it without going through discovery."
+            }
+            Self::Incubation => {
+                "Shape the idea with the Feature Agent until the scope stops moving. Answer its questions and the proposed specification fills in on the right."
+            }
+            Self::Triage => {
+                "Decide whether the feature is worth building. Rate impact, confidence and effort, or let the agent judge it and approve the scope to create tasks."
+            }
+            Self::Dependencies => {
+                "Declare what must ship before this feature. Prerequisites block dispatch until they are delivered, so the graph is what keeps waves honest."
+            }
+            Self::Waves => {
+                "Choose what is in flight now. Current-wave capacity limits how much is committed at once; it does not change execution concurrency."
+            }
+            Self::Delivery => {
+                "Track the tasks a feature produced through execution and review, and close the feature when all of them are done."
+            }
+        }
+    }
+
     /// The core only knows about the five Feature Forge sections; `Backlog` has no equivalent and
     /// never round-trips through `ForgeNavigation`.
     pub(crate) const fn to_core_index(self) -> Option<usize> {
@@ -72,6 +97,35 @@ impl ForgeSection {
             3 => Self::Waves,
             _ => Self::Delivery,
         }
+    }
+}
+
+/// Lifecycle order for the grouped feature list, mirroring `STATUS_GROUPS` in
+/// `pulsations.rs`. A feature moves down this list as it progresses, so the
+/// order is the pipeline itself.
+pub(crate) const FEATURE_STATE_GROUPS: [FeatureState; 8] = [
+    FeatureState::Incubating,
+    FeatureState::InTriage,
+    FeatureState::Approved,
+    FeatureState::Planned,
+    FeatureState::Executing,
+    FeatureState::ReadyForReview,
+    FeatureState::Done,
+    FeatureState::Archived,
+];
+
+/// Stable key for expansion state. Deliberately not the serde name: this keys a
+/// UI preference and must not move if the wire format ever changes.
+pub(crate) const fn feature_state_group_id(state: FeatureState) -> &'static str {
+    match state {
+        FeatureState::Incubating => "incubating",
+        FeatureState::InTriage => "in-triage",
+        FeatureState::Approved => "approved",
+        FeatureState::Planned => "planned",
+        FeatureState::Executing => "executing",
+        FeatureState::ReadyForReview => "ready-for-review",
+        FeatureState::Done => "done",
+        FeatureState::Archived => "archived",
     }
 }
 
@@ -175,6 +229,13 @@ pub(crate) struct ForgeUi {
     /// yet. Starting an analysis only queues the turn, so the verdict lands on
     /// a later refresh -- this is what tells that refresh to reload the form.
     pub awaiting_triage_analysis: bool,
+    /// Whether the Triage analysis column is showing. The column carries the
+    /// agent's verdict, so it opens on request and stays out of the way until
+    /// there is something to read.
+    pub triage_aside_open: bool,
+    /// Collapsed/expanded state per feature-state group in the list, keyed by
+    /// [`feature_state_group_id`].
+    pub group_expansion: HashMap<&'static str, bool>,
 }
 impl ForgeUi {
     pub fn new(cx: &mut Context<AppModel>) -> Self {
@@ -196,7 +257,11 @@ impl ForgeUi {
             message,
             _message_submit: message_submit,
             batch_title: cx.new(|cx| NativeTextInput::new("Pulsation title", cx)),
-            rationale: cx.new(|cx| NativeTextInput::new("Dependency or archiving rationale", cx)),
+            rationale: cx.new(|cx| {
+                NativeTextInput::new("Dependency or archiving rationale", cx)
+                    .multiline()
+                    .max_rows(6)
+            }),
             wave_limit: cx.new(|cx| NativeTextInput::new("Current Wave capacity (default: 3)", cx)),
             filters: [
                 "Value and need",
@@ -205,7 +270,12 @@ impl ForgeUi {
                 "Usability and adoption",
             ]
             .into_iter()
-            .map(|s| cx.new(|cx| NativeTextInput::new(s, cx)))
+            // Multiline, because these hold written answers: a single-line input
+            // clips to one row and scrolls sideways, hiding everything the agent
+            // wrote past the first line. Shift+Enter inserts a newline here --
+            // plain Enter emits Submit, which the Forge only listens for on the
+            // chat composer.
+            .map(|s| cx.new(|cx| NativeTextInput::new(s, cx).multiline().max_rows(14)))
             .collect(),
             impact: 3,
             confidence: 3,
@@ -226,6 +296,8 @@ impl ForgeUi {
             source_task: None,
             pending_triage_overwrite: false,
             awaiting_triage_analysis: false,
+            triage_aside_open: false,
+            group_expansion: HashMap::new(),
         }
     }
     pub fn feature(&self) -> Option<&Feature> {
@@ -305,6 +377,23 @@ impl ForgeUi {
 }
 
 impl ForgeUi {
+    /// Terminal states start collapsed: a finished or abandoned feature is
+    /// history, and leaving it expanded buries the work in flight.
+    pub fn group_expanded(&self, state: FeatureState) -> bool {
+        self.group_expansion
+            .get(feature_state_group_id(state))
+            .copied()
+            .unwrap_or(!matches!(
+                state,
+                FeatureState::Done | FeatureState::Archived
+            ))
+    }
+
+    pub fn toggle_group(&mut self, state: FeatureState) {
+        self.group_expansion
+            .insert(feature_state_group_id(state), !self.group_expanded(state));
+    }
+
     /// Why an agent analysis cannot start right now, or `None` when it can.
     ///
     /// Both tabs go through this so their gates cannot drift apart, and the
@@ -385,6 +474,8 @@ pub(crate) enum ForgeAction {
     CancelAnalyzeTriage,
     AnalyzeDependencies,
     ClearAgentDependencies,
+    CloseTriageAside,
+    ToggleFeatureGroup(FeatureState),
 }
 enum Operation {
     EditTask(String, u64, TaskDraft),
@@ -572,6 +663,7 @@ impl AppModel {
                 self.forge.selected_feature = Some(id);
                 self.forge.history.clear();
                 self.forge.pending_triage_overwrite = false;
+                self.forge.triage_aside_open = false;
                 self.hydrate_triage_inputs(cx);
                 // Selecting a feature from the Backlog section has no core equivalent to land on;
                 // Incubation is the natural first stop in a feature's lifecycle.
@@ -671,6 +763,7 @@ impl AppModel {
                     return;
                 }
                 self.forge.awaiting_triage_analysis = true;
+                self.forge.triage_aside_open = true;
                 self.run_forge(Operation::AnalyzeTriage(f.id, f.revision), cx);
                 return;
             }
@@ -678,12 +771,23 @@ impl AppModel {
                 self.forge.pending_triage_overwrite = false;
                 if let Some(f) = self.forge.feature().cloned() {
                     self.forge.awaiting_triage_analysis = true;
+                    self.forge.triage_aside_open = true;
                     self.run_forge(Operation::AnalyzeTriage(f.id, f.revision), cx);
                 }
                 return;
             }
             ForgeAction::CancelAnalyzeTriage => {
                 self.forge.pending_triage_overwrite = false;
+                cx.notify();
+                return;
+            }
+            ForgeAction::CloseTriageAside => {
+                self.forge.triage_aside_open = false;
+                cx.notify();
+                return;
+            }
+            ForgeAction::ToggleFeatureGroup(state) => {
+                self.forge.toggle_group(state);
                 cx.notify();
                 return;
             }

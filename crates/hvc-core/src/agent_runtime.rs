@@ -233,6 +233,29 @@ impl Default for AgentRuntimeConfig {
 }
 
 impl AgentRuntimeConfig {
+    /// The output budget for one role, never below what that role's contract
+    /// requires it to produce.
+    ///
+    /// The configured value is a single global number, and at its default of
+    /// 1400 tokens it is roughly one five-kilobyte file - while the Code stage
+    /// is told to return "the complete final file, never a diff or a fragment"
+    /// for *every* file it touched, and the Integrator to return two full
+    /// reports inline in one JSON string. Those roles were structurally unable
+    /// to answer within the budget they were given.
+    pub fn output_budget_for(&self, role: AgentRole) -> u32 {
+        let floor = match role {
+            // Whole source files, one JSON string each.
+            AgentRole::BackendAgent | AgentRole::TestAgent => 16_000,
+            // Full reports plus their evidence, inline.
+            AgentRole::Integrator | AgentRole::TaskSpecifier | AgentRole::ContractAgent => 8_000,
+            // Triage and conversation: a decision and a short note. Learning
+            // is not listed here at all - its report is deliberately capped
+            // rather than floored, and it sets its own budget.
+            AgentRole::IntakeRouter | AgentRole::FeatureAgent | AgentRole::LearningAgent => 1_600,
+        };
+        self.max_output_tokens.max(floor)
+    }
+
     pub fn sanitized(mut self) -> Self {
         let normalized_model = self.model.trim();
         if normalized_model.is_empty() {
@@ -247,7 +270,10 @@ impl AgentRuntimeConfig {
             self.temperature = self.temperature.clamp(0.0, 1.5);
         }
 
-        self.max_output_tokens = self.max_output_tokens.clamp(128, 4000);
+        // The old ceiling of 4000 could not hold a single stage answer for the
+        // roles that must emit whole files, so `output_budget_for` raises the
+        // configured value per role and this clamp has to leave room for it.
+        self.max_output_tokens = self.max_output_tokens.clamp(128, 32_000);
         self.timeout_ms = self.timeout_ms.clamp(5000, 300_000);
 
         if self.max_retries > 5 {
@@ -366,6 +392,22 @@ pub struct PreviousAttempt {
     pub error: String,
 }
 
+impl PreviousAttempt {
+    /// True when the previous answer ended mid-document instead of being wrong.
+    /// `serde_json` reports a premature end as "EOF while parsing"; the CLI
+    /// transport reports the provider's own stop reason.
+    ///
+    /// This decides whether showing the model its previous output helps or
+    /// hurts. For every other rejection it is the fastest route to a correct
+    /// answer. For a truncation it is the opposite: the broken text is already
+    /// the size of the output budget, so re-sending it inflates the prompt by
+    /// roughly the number of tokens that just overflowed and leaves even less
+    /// room for the answer than the attempt that failed.
+    pub fn was_truncated(&self) -> bool {
+        self.error.contains("EOF while parsing") || self.error.contains("cli_output_truncated")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StageExecutionInput {
     pub anticipatory: bool,
@@ -378,6 +420,10 @@ pub struct StageExecutionInput {
     pub runtime_db_path: String,
     pub handoff: Option<crate::orchestration::StageHandoffV1>,
     pub previous_attempt: Option<PreviousAttempt>,
+    /// The agent run this execution reports into. Without it a CLI process
+    /// cannot be joined back to the attempt that consumed it, and a rejected
+    /// output can only be matched to its process by guessing on timestamps.
+    pub agent_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -785,6 +831,7 @@ async fn execute_stage_inner(
             project_id: input.project_id.clone(),
             pulsation_id: Some(input.pulsation_id.clone()),
             job_id: Some(input.job_id.clone()),
+            agent_run_id: input.agent_run_id.clone(),
             job_chain: input.pulsation_id.clone(),
             agent_role: AgentRole::for_stage(&input.stage_name),
             stage: input.stage_name.clone(),
@@ -794,7 +841,7 @@ async fn execute_stage_inner(
                 name: "hard_vibe_stage_output".to_string(),
                 schema: schema_json.clone(),
             },
-            max_output_tokens: config.max_output_tokens,
+            max_output_tokens: config.output_budget_for(AgentRole::for_stage(&input.stage_name)),
             temperature: config.temperature,
             deadline: std::time::Instant::now()
                 + crate::agent_timeout::AgentTimeoutPolicy::for_role(AgentRole::for_stage(
@@ -1050,16 +1097,32 @@ fn build_stage_prompt(
 
     prompt.push_str("Every property listed under `required` below MUST appear as its own top-level key in your JSON, in the order shown, even when its value is an empty array - never omit a required key because it has nothing meaningful to hold. Close each array with its own `]` immediately after its last element, before writing the next key; do not defer a closing bracket to later in the document.\n\n");
 
+    // A JSON document that ends mid-array is unusable in full - the host cannot
+    // salvage the artifacts that did arrive. Saying so is what makes the model
+    // spend its budget on structure first and prose second.
+    prompt.push_str("Your entire reply must fit in a single response. If you run out of room the JSON ends unclosed and EVERYTHING you wrote is discarded - there is no partial credit. Budget accordingly: write the complete structure first and keep prose tight, rather than writing an exhaustive report and being cut off before you can close it. Do not repeat the same finding under several headings, and do not restate in an artifact what `summary` already says.\n\n");
+
     if let Some(previous_attempt) = &input.previous_attempt {
         prompt.push_str("## Previous attempt correction\n");
         prompt.push_str("Your previous attempt for this exact stage failed with this error:\n> ");
         prompt.push_str(&previous_attempt.error);
-        prompt.push_str("\n\nYour complete previous raw output was:\n```\n");
-        prompt.push_str(&clip_text(
-            &previous_attempt.raw_output,
-            PREVIOUS_ATTEMPT_MAX_CHARS,
-        ));
-        prompt.push_str("\n```\nFix ONLY what the error above describes. Preserve every other decision, artifact, and piece of content from the previous attempt unless the error specifically requires changing it. Return the complete corrected JSON matching the schema below in full - never a diff or partial output.\n\n");
+        if previous_attempt.was_truncated() {
+            // Deliberately withhold the previous output here. It was cut off by
+            // the output budget, so it is already as large as that budget
+            // allows; quoting it back spends the same room twice and guarantees
+            // the same ending. Ask for less instead.
+            prompt.push_str(&format!(
+                "\n\nThat answer was not wrong - it was cut off. You produced {} characters and the JSON document ended before it was closed, so none of it could be used. Do NOT attempt to reproduce that answer.\n\nWrite the same structure again, substantially shorter. Keep every required key and every artifact the stage owes, but cut the prose inside `summary`, `notes`, each `reason` and each artifact's `content` to roughly a third of what you wrote. Prefer short declarative lines over paragraphs, drop repeated restatements of the same finding, and never present the same evidence under more than one heading. Structure is what must survive; prose is what must give way.\n\n",
+                previous_attempt.raw_output.chars().count(),
+            ));
+        } else {
+            prompt.push_str("\n\nYour complete previous raw output was:\n```\n");
+            prompt.push_str(&clip_text(
+                &previous_attempt.raw_output,
+                PREVIOUS_ATTEMPT_MAX_CHARS,
+            ));
+            prompt.push_str("\n```\nFix ONLY what the error above describes. Preserve every other decision, artifact, and piece of content from the previous attempt unless the error specifically requires changing it. Return the complete corrected JSON matching the schema below in full - never a diff or partial output.\n\n");
+        }
     }
 
     prompt.push_str("## Output schema\n");
@@ -1097,6 +1160,7 @@ fn stage_output_schema() -> Value {
             },
             "artifacts": {
                 "type": "array",
+                "maxItems": 20,
                 "items": {
                     "type": "object",
                     "required": ["name", "kind", "relativePath", "content"],
@@ -1580,8 +1644,27 @@ async fn retrieve_context_candidates(
             })
         })
         .collect::<Vec<_>>();
+    // The handoff already carries this pulsation's own published artifacts in
+    // full. Spending retrieval slots on them re-sends the same bytes in the
+    // same prompt and leaves genuinely new material below the cut: in the
+    // reference run every one of the Integrator's four delivered documents was
+    // a file the handoff had already supplied, and it cited none of them.
+    let already_in_handoff = input
+        .handoff
+        .as_ref()
+        .map(|handoff| {
+            handoff
+                .publication_bases
+                .iter()
+                .map(|base| base.relative_path.as_str().to_ascii_lowercase())
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
     let selected = considered
         .iter()
+        .filter(|candidate| {
+            !already_in_handoff.contains(&candidate.relative_path.to_ascii_lowercase())
+        })
         .take(selection_limit)
         .cloned()
         .collect::<Vec<_>>();
@@ -1838,7 +1921,7 @@ fn select_physical_references_for_stage<'a>(
 /// `context_chars_limit`, so this must agree with them. Guarding in bytes while
 /// slicing in characters used to append a truncation marker to untruncated
 /// accented text, telling the model context was missing when it was not.
-fn clip_text(content: &str, max_chars: usize) -> String {
+pub(crate) fn clip_text(content: &str, max_chars: usize) -> String {
     match content.char_indices().nth(max_chars) {
         None => content.to_string(),
         Some((offset, _)) => format!("{}\n...[truncated]", &content[..offset]),
@@ -2233,7 +2316,7 @@ pub(crate) fn validate_stage_output_language(
         ));
     }
     let validate = |field, value: &str| {
-        crate::agent_output_language::validate_english_text(field, value)
+        crate::agent_output_language::validate_english_prose(field, value)
             .map_err(|error| AgentRuntimeError::ModelOutputInvalid(error.to_string()))
     };
 
@@ -2705,6 +2788,7 @@ mod m4_context_tests {
             runtime_db_path: root.join("test.db").to_str().unwrap().into(),
             handoff: None,
             previous_attempt: None,
+            agent_run_id: None,
         }
     }
     fn db(input: &StageExecutionInput) -> Connection {
@@ -3020,6 +3104,7 @@ mod prompt_tests {
             runtime_db_path: ":memory:".into(),
             handoff,
             previous_attempt: None,
+            agent_run_id: None,
         }
     }
 
@@ -3167,6 +3252,32 @@ mod prompt_tests {
     /// despite already being schema-required. Belt-and-suspenders: the schema
     /// dump alone did not stop either omission, so the prompt now says so in
     /// prose too, right before the schema is shown.
+    /// The Code brief demands "the complete final file, never a diff or a
+    /// fragment" for every file the stage touched, and the Integrator returns
+    /// whole reports inline in one JSON string. At the configured default of
+    /// 1400 tokens neither could fit its own contract.
+    #[test]
+    fn a_roles_output_budget_is_never_below_what_its_contract_must_produce() {
+        let config = AgentRuntimeConfig::default().sanitized();
+        assert_eq!(config.max_output_tokens, 1400);
+
+        assert_eq!(config.output_budget_for(AgentRole::BackendAgent), 16_000);
+        assert_eq!(config.output_budget_for(AgentRole::TestAgent), 16_000);
+        assert_eq!(config.output_budget_for(AgentRole::Integrator), 8_000);
+        assert_eq!(config.output_budget_for(AgentRole::TaskSpecifier), 8_000);
+        // Triage stays small; it only has a decision and a note to return.
+        assert_eq!(config.output_budget_for(AgentRole::IntakeRouter), 1_600);
+
+        // A developer who configures more than a role's floor keeps it.
+        let generous = AgentRuntimeConfig {
+            max_output_tokens: 24_000,
+            ..AgentRuntimeConfig::default()
+        }
+        .sanitized();
+        assert_eq!(generous.output_budget_for(AgentRole::IntakeRouter), 24_000);
+        assert_eq!(generous.output_budget_for(AgentRole::BackendAgent), 24_000);
+    }
+
     #[test]
     fn output_schema_section_warns_against_omitting_required_keys_or_deferring_brackets() {
         let prompt = prompt_for("Code", &[]);
@@ -3205,6 +3316,53 @@ mod prompt_tests {
         let first_attempt_prompt =
             build_stage_prompt(&base, &[], &stage_output_schema()).expect("prompt builds");
         assert!(!first_attempt_prompt.contains("## Previous attempt correction"));
+    }
+
+    /// Field incident, 2026-09-10: the Integrator truncated at 8000 output
+    /// tokens, and the corrective retry quoted the 32,690 broken characters
+    /// back at it. Input went from 14,091 to 24,269 tokens and the next attempt
+    /// produced no content at all - the whole budget went to reasoning before
+    /// a single artifact character was written. A truncation must ask for less,
+    /// not resend what already overflowed.
+    #[test]
+    fn a_truncated_previous_attempt_is_not_quoted_back_into_the_prompt() {
+        let base = input(
+            "Integrator",
+            Some(handoff(PulsationStage::Integrator, Some(manifest()))),
+        );
+        let overflowed = "x".repeat(32_690);
+        let truncated = StageExecutionInput {
+            previous_attempt: Some(PreviousAttempt {
+                raw_output: overflowed.clone(),
+                error: "Não foi possível extrair JSON válido da resposta do modelo: EOF while parsing a list at line 1 column 30962".into(),
+            }),
+            ..base.clone()
+        };
+        let prompt =
+            build_stage_prompt(&truncated, &[], &stage_output_schema()).expect("prompt builds");
+
+        assert!(prompt.contains("## Previous attempt correction"));
+        assert!(prompt.contains("EOF while parsing a list"));
+        // The point of the change: the overflowed text never comes back.
+        assert!(!prompt.contains(&overflowed));
+        assert!(!prompt.contains("Your complete previous raw output was"));
+        assert!(prompt.contains("it was cut off"));
+        assert!(prompt.contains("32690 characters"));
+        assert!(prompt.contains("substantially shorter"));
+
+        // A rejection that is not a truncation keeps the correction that works.
+        let wrong = StageExecutionInput {
+            previous_attempt: Some(PreviousAttempt {
+                raw_output: "{\"contentSha256\": \"nope\"}".into(),
+                error: "Output fora do schema esperado: Additional properties are not allowed ('contentSha256' was unexpected)".into(),
+            }),
+            ..base
+        };
+        let prompt =
+            build_stage_prompt(&wrong, &[], &stage_output_schema()).expect("prompt builds");
+        assert!(prompt.contains("Your complete previous raw output was"));
+        assert!(prompt.contains("contentSha256"));
+        assert!(!prompt.contains("it was cut off"));
     }
 
     /// Closes the loop that used to fail the stage: every path the prompt shows

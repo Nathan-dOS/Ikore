@@ -64,6 +64,9 @@ impl CliAdapter for CustomAdapter {
             native_session_id: None,
             observed_model: None,
             is_text: stream != "stderr",
+            is_delta: false,
+            finish_reason: None,
+            is_reasoning: false,
         }
     }
 

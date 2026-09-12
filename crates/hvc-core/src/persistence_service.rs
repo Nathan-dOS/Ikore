@@ -35,7 +35,7 @@ use uuid::Uuid;
 use crate::orchestration::brownfield::{
     BrownfieldConsentState, BrownfieldCoverageMetrics, BrownfieldOnboardingStatus,
 };
-use crate::terminals::TerminalService;
+use crate::terminals::{CliBackend, TerminalService};
 
 #[path = "orchestration/anticipation.rs"]
 mod anticipation;
@@ -891,6 +891,23 @@ pub struct ResolveCliFallbackRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ResolveCliFallbackResponse {
     pub pulsation: Pulsation,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearExecutionOverrideRequest {
+    pub pulsation_id: String,
+    pub agent_role: AgentRole,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearExecutionOverrideResponse {
+    /// False when there was nothing to clear (the situation already
+    /// resolved itself, e.g. the pulsation advanced past that stage).
+    pub cleared: bool,
+    /// True when a pending job was woken to retry on the default backend.
+    pub retried: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -2707,7 +2724,11 @@ impl PersistenceService {
                            pulsation_id,agent_role,execution_mode,source_checkpoint_id,created_at
                          ) VALUES(?1,?2,'api_direct',?3,?4)
                          ON CONFLICT(pulsation_id,agent_role) DO UPDATE SET
-                           execution_mode='api_direct',source_checkpoint_id=excluded.source_checkpoint_id,
+                           execution_mode='api_direct',
+                           -- The ladder may have already elected a CLI backend
+                           -- here; an api_direct row must carry none.
+                           backend=NULL,
+                           source_checkpoint_id=excluded.source_checkpoint_id,
                            created_at=excluded.created_at",
                         params![pulsation_id, role.as_str(), checkpoint_id, now],
                     )?;
@@ -3652,6 +3673,68 @@ impl PersistenceService {
         self.reconcile_publications()
     }
 
+    /// Startup self-heal for the `elect_next_backend` state_version desync:
+    /// a job left `pending` by the CLI backend ladder could carry a
+    /// `state_version` older than its pulsation's, fencing it out of
+    /// `claim_next_pending_job` forever. Finds every such job, realigns its
+    /// fence to the pulsation's current version, and records one
+    /// `pulse_events` row per repaired pulsation.
+    ///
+    /// Idempotent: a database with no drift touches nothing and returns an
+    /// empty vec. Safe to run on every boot, ahead of the scheduler.
+    pub fn repair_state_version_drift(&self) -> Result<Vec<String>, PersistenceServiceError> {
+        let mut db = self.connection()?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let now = Self::now_iso();
+
+        let drifted_pulsations: Vec<String> = tx
+            .prepare(
+                "SELECT DISTINCT j.pulsation_id
+                 FROM jobs j JOIN pulsations p ON p.id = j.pulsation_id
+                 WHERE j.status = 'pending' AND j.state_version <> p.state_version",
+            )?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut repaired = Vec::new();
+        for pulsation_id in drifted_pulsations {
+            let Some(current) = Self::find_pulsation_by_id(&tx, &pulsation_id)? else {
+                continue;
+            };
+            let changed = tx.execute(
+                "UPDATE jobs
+                 SET state_version = (SELECT state_version FROM pulsations WHERE id = ?1),
+                     updated_at = ?2
+                 WHERE pulsation_id = ?1 AND status = 'pending'
+                   AND state_version <> (SELECT state_version FROM pulsations WHERE id = ?1)",
+                params![pulsation_id, now],
+            )?;
+            let event_id = Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO pulse_events (
+                   id, pulsation_id, event_type, from_status, to_status, from_stage, to_stage, message, created_at
+                 ) VALUES (?1, ?2, 'state_version_drift_repaired', ?3, ?3, ?4, ?4, ?5, ?6)",
+                params![
+                    event_id,
+                    pulsation_id,
+                    current.status.as_db_value(),
+                    current.stage.as_db_value(),
+                    format!(
+                        "Reparo automático na inicialização: {changed} job(s) pending com state_version desalinhado foram realinhados."
+                    ),
+                    now,
+                ],
+            )?;
+            repaired.push(pulsation_id);
+        }
+
+        tx.commit()?;
+        if !repaired.is_empty() {
+            self.wake_scheduler();
+        }
+        Ok(repaired)
+    }
+
     fn stage_from_job_kind(kind: &str) -> Option<PulsationStage> {
         let stage_raw = kind.strip_prefix("run_stage::")?;
         PulsationStage::from_db_value(stage_raw)
@@ -3672,6 +3755,17 @@ impl PersistenceService {
         } else {
             "orchestrator::unknown".to_string()
         };
+        // Seed the transport that is actually about to run. Seeding the
+        // API-direct legacy defaults instead attributes every failed attempt to
+        // a provider that never executed, because only the success path
+        // (`update_agent_run_metrics`) ever corrected them.
+        let (provider, model) = Self::planned_transport(&connection, job, &agent_name)?
+            .unwrap_or_else(|| {
+                (
+                    runtime_config.provider.as_str().to_string(),
+                    runtime_config.model.clone(),
+                )
+            });
 
         connection.execute(
             "INSERT INTO agent_runs (
@@ -3687,17 +3781,54 @@ impl PersistenceService {
                created_at,
                updated_at
              ) VALUES (?1, ?2, ?3, 'running', NULL, NULL, ?4, ?5, NULL, ?6, ?6)",
-            params![
-                id,
-                job.id.as_str(),
-                agent_name,
-                runtime_config.provider.as_str(),
-                runtime_config.model.as_str(),
-                now
-            ],
+            params![id, job.id.as_str(), agent_name, provider, model, now],
         )?;
 
         Ok(id)
+    }
+
+    /// The transport this job will use, as `("cli:<backend>", model)`, or
+    /// `None` when the call goes to the HTTP router and the caller's legacy
+    /// provider/model are the right answer. Mirrors the order
+    /// `TerminalService::execute_llm_request` resolves in: a per-pulsation
+    /// API override wins over the project's per-role configuration.
+    fn planned_transport(
+        connection: &Connection,
+        job: &Job,
+        agent_role: &str,
+    ) -> Result<Option<(String, String)>, PersistenceServiceError> {
+        let Some(pulsation_id) = job.pulsation_id.as_deref() else {
+            return Ok(None);
+        };
+        let overridden: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pulse_execution_overrides WHERE pulsation_id=?1 AND agent_role=?2)",
+            params![pulsation_id, agent_role],
+            |row| row.get(0),
+        )?;
+        if overridden {
+            return Ok(None);
+        }
+        let configured = connection
+            .query_row(
+                "SELECT config.execution_mode,config.backend,config.model FROM cli_agent_configs config JOIN pulsations pulse ON pulse.project_id=config.project_id WHERE pulse.id=?1 AND config.agent_role=?2",
+                params![pulsation_id, agent_role],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        Ok(configured.and_then(|(execution_mode, backend, model)| {
+            (execution_mode == "cli_process").then(|| {
+                (
+                    format!("cli:{backend}"),
+                    model.unwrap_or_else(|| "default".into()),
+                )
+            })
+        }))
     }
 
     fn finish_agent_run(
@@ -4064,6 +4195,247 @@ impl PersistenceService {
         Self::enqueue_learning(&transaction, pulsation_id)?;
         transaction.commit()?;
         Ok(())
+    }
+
+    /// Whether a different CLI could plausibly succeed where this one failed.
+    /// Host-side faults (bad configuration, our own storage, a cancelled run)
+    /// travel with the host, so switching backend only wastes another call.
+    fn backend_switch_can_help(error_code: &str) -> bool {
+        matches!(
+            error_code,
+            "cli_process_failed"
+                | "cli_timeout"
+                | "cli_inactivity_timeout"
+                | "cli_auth_required"
+                | "cli_version_unsupported"
+                | "cli_rate_limited"
+                | "cli_not_found"
+                | "cli_output_limit"
+                | "cli_output_invalid"
+        )
+    }
+
+    /// The first healthy backend this pulsation has not already burned on the
+    /// role, in the fixed order availability reports. `None` means the ladder
+    /// is exhausted and only a human can decide what happens next.
+    fn elect_backend(available: &[CliBackend], spent: &[String]) -> Option<CliBackend> {
+        available
+            .iter()
+            .copied()
+            .find(|candidate| !spent.iter().any(|used| used == candidate.as_str()))
+    }
+
+    /// Elects the next healthy CLI backend for a role whose current one just
+    /// failed, records the burned one, and requeues the job to run on it.
+    ///
+    /// Returns `false` when nothing is left to try, which is when the human
+    /// checkpoint is the right answer. Before this existed, the first CLI fault
+    /// always stopped the pipeline on a question the host could answer itself:
+    /// in the reference run the developer eventually fixed the Integrator by
+    /// editing project settings by hand, after five failed attempts and three
+    /// checkpoints on a backend that could not produce the answer.
+    async fn elect_next_backend(
+        &self,
+        job: &Job,
+        error_code: &str,
+        diagnostic: &str,
+    ) -> Result<bool, PersistenceServiceError> {
+        if !Self::backend_switch_can_help(error_code) {
+            return Ok(false);
+        }
+        let Some(pulsation_id) = job.pulsation_id.clone() else {
+            return Ok(false);
+        };
+        let Some(stage) = Self::stage_from_job_kind(&job.kind) else {
+            return Ok(false);
+        };
+        let role = AgentRole::for_stage(stage.as_db_value());
+        let terminals = self
+            .terminal_service
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(terminals) = terminals else {
+            return Ok(false);
+        };
+        let available = terminals.available_backends().await;
+        if available.is_empty() {
+            return Ok(false);
+        }
+
+        let mut connection = self.connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current =
+            Self::find_pulsation_by_id(&transaction, &pulsation_id)?.ok_or_else(|| {
+                PersistenceServiceError::NotFound("Pulsação do job não encontrada.".to_string())
+            })?;
+        if current.status != PulsationStatus::Running || current.stage != stage {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        // The backend that just ran, read from the process that ran it rather
+        // than from configuration, which an override may already have changed.
+        let burned: Option<String> = transaction
+            .query_row(
+                "SELECT backend FROM terminal_runs WHERE pulsation_id=?1 AND agent_role=?2 ORDER BY created_at DESC LIMIT 1",
+                params![pulsation_id, role.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        if let Some(burned) = burned.as_deref() {
+            transaction.execute(
+                "INSERT INTO cli_backend_attempts(pulsation_id,agent_role,backend,error_code,diagnostic,created_at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(pulsation_id,agent_role,backend) DO UPDATE SET error_code=excluded.error_code,diagnostic=excluded.diagnostic",
+                params![pulsation_id, role.as_str(), burned, error_code, diagnostic, Self::now_iso()],
+            )?;
+        }
+        let mut spent: Vec<String> = transaction
+            .prepare(
+                "SELECT backend FROM cli_backend_attempts WHERE pulsation_id=?1 AND agent_role=?2",
+            )?
+            .query_map(params![pulsation_id, role.as_str()], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        if let Some(burned) = burned {
+            spent.push(burned);
+        }
+        let Some(elected) = Self::elect_backend(&available, &spent) else {
+            transaction.commit()?;
+            return Ok(false);
+        };
+
+        transaction.execute(
+            "INSERT INTO pulse_execution_overrides(pulsation_id,agent_role,execution_mode,backend,source_checkpoint_id,created_at) VALUES(?1,?2,'cli_process',?3,NULL,?4) ON CONFLICT(pulsation_id,agent_role) DO UPDATE SET execution_mode='cli_process',backend=excluded.backend,source_checkpoint_id=NULL",
+            params![pulsation_id, role.as_str(), elected.as_str(), Self::now_iso()],
+        )?;
+        let message = format!(
+            "{} falhou ({error_code}); a etapa será repetida em {}.",
+            spent
+                .last()
+                .map(String::as_str)
+                .unwrap_or("A CLI configurada"),
+            elected.label()
+        );
+        Self::transition_pulsation(
+            &transaction,
+            &current,
+            PulsationStatus::Planning,
+            stage,
+            "cli_backend_elected",
+            Some(&message),
+        )?;
+        let changed = transaction.execute(
+            "UPDATE jobs SET status='pending',generation=generation+1,available_at=NULL,last_error=?2,updated_at=?3,\
+             state_version=(SELECT state_version FROM pulsations WHERE id=?4) WHERE id=?1 AND status='running'",
+            params![job.id, diagnostic, Self::now_iso(), pulsation_id],
+        )?;
+        if changed != 1 {
+            return Err(PersistenceServiceError::Validation(
+                "O job não estava mais em execução ao eleger o próximo backend; a pulsação pode ter sido cancelada nesse meio-tempo.".to_string(),
+            ));
+        }
+        transaction.commit()?;
+        self.wake_scheduler();
+        Ok(true)
+    }
+
+    /// Explicit, human-triggered undo for `elect_next_backend`'s automatic
+    /// failover: removes the pinned backend override for a pulsation's
+    /// current stage so the next job pickup falls back to the project's
+    /// configured default backend (see `execute_llm_request` in
+    /// terminals.rs, which only overrides `config.backend` when
+    /// `backend_override` returns `Some`). Deliberately never automatic --
+    /// mirrors the ADR-010 principle that switching execution transport is
+    /// a human decision, not something a background refresh should trigger.
+    pub fn clear_execution_override_and_retry(
+        &self,
+        request: ClearExecutionOverrideRequest,
+    ) -> Result<ClearExecutionOverrideResponse, PersistenceServiceError> {
+        let mut db = self.connection()?;
+        let transaction = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+        let current = Self::find_pulsation_by_id(&transaction, &request.pulsation_id)?
+            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação não encontrada.".to_string()))?;
+
+        let has_override: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pulse_execution_overrides WHERE pulsation_id=?1 AND agent_role=?2 AND execution_mode='cli_process')",
+            params![request.pulsation_id, request.agent_role.as_str()],
+            |row| row.get(0),
+        )?;
+        if !has_override {
+            transaction.commit()?;
+            return Ok(ClearExecutionOverrideResponse {
+                cleared: false,
+                retried: false,
+            });
+        }
+
+        let stage_value = current.stage.as_db_value();
+        let job_status: Option<String> = transaction
+            .query_row(
+                "SELECT status FROM jobs
+                 WHERE pulsation_id=?1
+                   AND (kind='run_stage::'||?2 OR (?2='SPECIFICATION' AND kind='run_stage::Specification'))
+                 ORDER BY created_at DESC LIMIT 1",
+                params![request.pulsation_id, stage_value],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        match job_status.as_deref() {
+            Some("pending") => {
+                let now = Self::now_iso();
+                transaction.execute(
+                    "DELETE FROM pulse_execution_overrides WHERE pulsation_id=?1 AND agent_role=?2 AND execution_mode='cli_process'",
+                    params![request.pulsation_id, request.agent_role.as_str()],
+                )?;
+                // Defensive realignment: a no-op after the elect_next_backend
+                // state_version fix, cheap insurance against residual drift.
+                transaction.execute(
+                    "UPDATE jobs SET available_at=NULL, updated_at=?2,
+                        state_version=(SELECT state_version FROM pulsations WHERE id=?1)
+                     WHERE pulsation_id=?1 AND status='pending'
+                       AND (kind='run_stage::'||?3 OR (?3='SPECIFICATION' AND kind='run_stage::Specification'))",
+                    params![request.pulsation_id, now, stage_value],
+                )?;
+                transaction.execute(
+                    "INSERT INTO pulse_events (
+                       id, pulsation_id, event_type, from_status, to_status, from_stage, to_stage, message, created_at
+                     ) VALUES (?1, ?2, 'cli_backend_override_cleared', ?3, ?3, ?4, ?4, ?5, ?6)",
+                    params![
+                        Uuid::new_v4().to_string(),
+                        request.pulsation_id,
+                        current.status.as_db_value(),
+                        stage_value,
+                        "Override de backend removido manualmente; a etapa será repetida no backend padrão do projeto.",
+                        now,
+                    ],
+                )?;
+                transaction.commit()?;
+                self.wake_scheduler();
+                Ok(ClearExecutionOverrideResponse {
+                    cleared: true,
+                    retried: true,
+                })
+            }
+            Some(other) => Err(PersistenceServiceError::Validation(format!(
+                "Não é possível limpar o override agora: o job desta etapa está '{other}'. Cancele a pulsação para agir imediatamente."
+            ))),
+            None => {
+                // No job matches the current stage anymore -- the situation
+                // already moved on. Clearing the stale row is still safe
+                // housekeeping.
+                transaction.execute(
+                    "DELETE FROM pulse_execution_overrides WHERE pulsation_id=?1 AND agent_role=?2 AND execution_mode='cli_process'",
+                    params![request.pulsation_id, request.agent_role.as_str()],
+                )?;
+                transaction.commit()?;
+                Ok(ClearExecutionOverrideResponse {
+                    cleared: true,
+                    retried: false,
+                })
+            }
+        }
     }
 
     fn open_cli_fallback(
@@ -4509,6 +4881,7 @@ impl PersistenceService {
             workspace_path: project.workspace_path.clone(),
             runtime_db_path: self.db_path.to_string_lossy().to_string(),
             previous_attempt,
+            agent_run_id: Some(agent_run_id.to_string()),
         };
 
         tokio::select! {
@@ -4674,7 +5047,22 @@ impl PersistenceService {
                     return Ok(());
                 }
 
-                if let PersistenceServiceError::Cli { code, message } = &error {
+                // A truncated answer arrives as a CLI fault but is not a
+                // transport problem, so it must not be offered the CLI
+                // fallback's "retry the CLI": the same prompt against the same
+                // budget stops at the same place. It falls through to the
+                // stage-failure checkpoint, which offers a revision instead.
+                let truncated = matches!(
+                    &error,
+                    PersistenceServiceError::Cli { code, .. } if code == "cli_output_truncated"
+                );
+                if !truncated && let PersistenceServiceError::Cli { code, message } = &error {
+                    // Ask the human only once the host has run out of backends
+                    // to try on its own.
+                    if self.elect_next_backend(job, code, message).await? {
+                        self.finish_agent_run(&agent_run_id, "retrying")?;
+                        return Ok(());
+                    }
                     self.open_cli_fallback(job, &agent_run_id, code, message)?;
                     self.wake_scheduler();
                     return Ok(());
@@ -4683,11 +5071,11 @@ impl PersistenceService {
                 // The automatic budget is spent, but the job and its fence are intact.
                 // Park on a decision instead of burning the whole pipeline. Falls
                 // through to the terminal path when the class offers nothing but abort.
-                if let Some(class) = crate::orchestration::classify_stage_failure(&error) {
-                    if self.open_stage_failure(job, Some(&agent_run_id), class, &error)? {
-                        self.wake_scheduler();
-                        return Ok(());
-                    }
+                if let Some(class) = crate::orchestration::classify_stage_failure(&error)
+                    && self.open_stage_failure(job, Some(&agent_run_id), class, &error)?
+                {
+                    self.wake_scheduler();
+                    return Ok(());
                 }
 
                 self.transition_for_failed_job(job, &error, false)?;
@@ -6166,6 +6554,118 @@ mod tests {
         (project, pulse, job, agent_run_id)
     }
 
+    /// Field incident, 2026-09-10: the Integrator failed five times on the same
+    /// backend across three human checkpoints, and what finally worked was the
+    /// developer switching backend by hand in project settings, mid-run. The
+    /// host has the same information and can make that move itself; the human
+    /// checkpoint belongs at the end of the ladder, not at its first rung.
+    #[test]
+    fn the_backend_ladder_skips_what_a_pulsation_already_burned_and_then_gives_up() {
+        let available = [CliBackend::Codex, CliBackend::Claude, CliBackend::Gemini];
+
+        // Nothing burned yet: the first healthy backend wins.
+        assert_eq!(
+            PersistenceService::elect_backend(&available, &[]),
+            Some(CliBackend::Codex)
+        );
+        // A burned backend is never re-elected, whatever its position.
+        assert_eq!(
+            PersistenceService::elect_backend(&available, &["codex".to_string()]),
+            Some(CliBackend::Claude)
+        );
+        assert_eq!(
+            PersistenceService::elect_backend(
+                &available,
+                &["codex".to_string(), "claude".to_string()]
+            ),
+            Some(CliBackend::Gemini)
+        );
+        // Exhausted: this is where the human checkpoint is the right answer.
+        assert_eq!(
+            PersistenceService::elect_backend(
+                &available,
+                &[
+                    "codex".to_string(),
+                    "claude".to_string(),
+                    "gemini".to_string()
+                ]
+            ),
+            None
+        );
+        // Nothing installed is also exhausted, not a panic.
+        assert_eq!(PersistenceService::elect_backend(&[], &[]), None);
+    }
+
+    #[test]
+    fn only_faults_a_different_cli_could_survive_trigger_a_backend_switch() {
+        for code in [
+            "cli_process_failed",
+            "cli_timeout",
+            "cli_inactivity_timeout",
+            "cli_auth_required",
+            "cli_version_unsupported",
+            "cli_rate_limited",
+            "cli_not_found",
+            "cli_output_limit",
+            "cli_output_invalid",
+        ] {
+            assert!(
+                PersistenceService::backend_switch_can_help(code),
+                "{code} is a transport fault another CLI could survive"
+            );
+        }
+        // These travel with the host: another CLI spends a call to fail the
+        // same way.
+        for code in [
+            "cli_cancelled",
+            "cli_configuration_invalid",
+            "cli_security_failed",
+            "cli_persistence_failed",
+            "cli_redaction_failed",
+            "cli_invalid_state_transition",
+            "cli_output_truncated",
+        ] {
+            assert!(
+                !PersistenceService::backend_switch_can_help(code),
+                "{code} must not spend another backend"
+            );
+        }
+    }
+
+    /// The ladder writes a CLI backend into the same row the API fallback uses.
+    /// Choosing "use the API" afterwards has to clear it, or the row claims to
+    /// be api_direct while still naming a backend and the write is rejected.
+    #[test]
+    fn authorizing_the_api_clears_a_backend_the_ladder_had_elected() {
+        let (root, service) = prepare_service();
+        let workspace = root.path().join("workspace-override-swap");
+        fs::create_dir_all(&workspace).unwrap();
+        let (_project, pulse, _job, _agent_run_id) =
+            claimed_cli_job_fixture(&service, workspace.to_string_lossy().as_ref());
+        let connection = service.connection().unwrap();
+        connection
+            .execute(
+                "INSERT INTO pulse_execution_overrides(pulsation_id,agent_role,execution_mode,backend,source_checkpoint_id,created_at) VALUES(?1,'integrator','cli_process','gemini',NULL,?2)",
+                params![pulse.id, PersistenceService::now_iso()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO pulse_execution_overrides(pulsation_id,agent_role,execution_mode,source_checkpoint_id,created_at) VALUES(?1,'integrator','api_direct',NULL,?2) ON CONFLICT(pulsation_id,agent_role) DO UPDATE SET execution_mode='api_direct',backend=NULL,source_checkpoint_id=NULL,created_at=excluded.created_at",
+                params![pulse.id, PersistenceService::now_iso()],
+            )
+            .expect("switching an elected backend to the API must be a legal write");
+        let (mode, backend): (String, Option<String>) = connection
+            .query_row(
+                "SELECT execution_mode,backend FROM pulse_execution_overrides WHERE pulsation_id=?1 AND agent_role='integrator'",
+                params![pulse.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(mode, "api_direct");
+        assert_eq!(backend, None);
+    }
+
     #[test]
     fn cli_failure_requires_explicit_api_authorization_and_requeues_same_job() {
         let (root, service) = prepare_service();
@@ -6876,6 +7376,7 @@ mod tests {
             project_id: project.id,
             pulsation_id: None,
             job_id: None,
+            agent_run_id: None,
             job_chain: "fallback-e2e".to_string(),
             agent_role: AgentRole::BackendAgent,
             stage: "Code".to_string(),
@@ -7018,6 +7519,7 @@ mod tests {
             project_id: project.id,
             pulsation_id: None,
             job_id: None,
+            agent_run_id: None,
             job_chain: "stream-no-fallback".to_string(),
             agent_role: AgentRole::BackendAgent,
             stage: "Code".to_string(),
@@ -7156,6 +7658,7 @@ mod tests {
             project_id: project.id.clone(),
             pulsation_id: None,
             job_id: None,
+            agent_run_id: None,
             job_chain: "fallback-401".to_string(),
             agent_role: AgentRole::BackendAgent,
             stage: "Code".to_string(),
@@ -7314,6 +7817,7 @@ mod tests {
             project_id: project.id.clone(),
             pulsation_id: None,
             job_id: None,
+            agent_run_id: None,
             job_chain: "fallback-lockout".to_string(),
             agent_role: AgentRole::BackendAgent,
             stage: "Code".to_string(),
@@ -7558,6 +8062,7 @@ mod tests {
             project_id: project.id,
             pulsation_id: None,
             job_id: None,
+            agent_run_id: None,
             job_chain: "route-max-2".to_string(),
             agent_role: AgentRole::BackendAgent,
             stage: "Code".to_string(),
@@ -7699,6 +8204,7 @@ mod tests {
             project_id: project.id.clone(),
             pulsation_id: None,
             job_id: None,
+            agent_run_id: None,
             job_chain: "route-lkgp".to_string(),
             agent_role: AgentRole::BackendAgent,
             stage: "Code".to_string(),
@@ -7764,6 +8270,7 @@ mod tests {
             project_id: "cancel-test".to_string(),
             pulsation_id: None,
             job_id: None,
+            agent_run_id: None,
             job_chain: "cancel-test".to_string(),
             agent_role: AgentRole::BackendAgent,
             stage: "Code".to_string(),

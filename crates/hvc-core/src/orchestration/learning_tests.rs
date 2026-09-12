@@ -141,7 +141,8 @@ fn switching_to_observe_during_learning_keeps_the_audit_but_discards_new_proposa
     let mut input = f
         .service
         .begin_learning_attempt(&learning_id, claim.generation)
-        .unwrap();
+        .unwrap()
+        .0;
     let evidence_id = input.evidence[0].id.clone();
     input.graph_candidates.push(LearningGraphCandidate {
         candidate_id: "candidate:observe-switch".into(),
@@ -555,7 +556,8 @@ fn frozen_input_is_bounded_and_recurrence_requires_two_distinct_pulses() {
     let input = f
         .service
         .begin_learning_attempt(&id, claim.generation)
-        .unwrap();
+        .unwrap()
+        .0;
     assert!(input.omitted > 0);
     assert!(serde_json::to_string(&input).unwrap().chars().count() <= 16_000);
     db.execute("UPDATE artifacts SET content='later edit'", [])
@@ -589,7 +591,8 @@ fn proposed_outbox_replay_and_conflict_never_hold_next_pulse() {
         let input = f
             .service
             .begin_learning_attempt(&id, claim.generation)
-            .unwrap();
+            .unwrap()
+            .0;
         f.service
             .accept_learning_report(&id, claim.generation, &input, &report(&input))
             .unwrap();
@@ -641,7 +644,8 @@ fn disable_recovery_and_dismiss_fence_late_reports_without_resetting_budget() {
     let input = f
         .service
         .begin_learning_attempt(&id, claim.generation)
-        .unwrap();
+        .unwrap()
+        .0;
     let mut flags = f.service.get_preparation_settings().unwrap();
     flags.learning_enabled = false;
     f.service
@@ -678,4 +682,68 @@ fn disable_recovery_and_dismiss_fence_late_reports_without_resetting_budget() {
     assert_eq!(state(&f).0, "cancelled");
     assert_eq!(f.count("artifact_publications"), 0);
     assert_done_unblocked(&f);
+}
+
+/// Field incident, 2026-09-10: the most expensive call of the whole pulsation
+/// produced a report that was merely written in the wrong language, and the run
+/// died on its first of three granted calls. Five of eleven historical Learning
+/// failures were this exact rejection, and two more were unparseable JSON -
+/// seven failures a second sample could have fixed, all routed through
+/// `Validation`, which is never retried.
+#[test]
+fn a_report_rejected_for_its_language_is_retryable_and_the_retry_is_told_why() {
+    let (f, id, _) = done();
+    let claim = f.service.claim_background_id(&id).unwrap().unwrap();
+    let (input, first_rejection) = f
+        .service
+        .begin_learning_attempt(&id, claim.generation)
+        .unwrap();
+    // Nothing has been rejected yet on the first call of a run.
+    assert_eq!(first_rejection, None);
+    assert_eq!(state(&f), ("running".into(), 1, 1));
+
+    let mut portuguese = report(&input);
+    portuguese.observations[0].text = "Revisar o resultado aprovado da etapa".into();
+    let error = f
+        .service
+        .accept_learning_report(&id, claim.generation, &input, &portuguese)
+        .expect_err("the English contract rejects the report");
+    assert!(
+        matches!(error, PersistenceServiceError::ModelOutputInvalid(_)),
+        "language rejections must be retryable, got {error:?}"
+    );
+    assert!(error.to_string().contains("must be English"));
+
+    // What the background lane does with that error: park the run back on
+    // `pending` with the diagnostic, instead of ending it.
+    f.service
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE learning_runs SET state='pending',diagnostic=?1 WHERE job_id=?2",
+            params![error.to_string(), id],
+        )
+        .unwrap();
+    release(&f, &claim);
+    f.service.recover_interrupted_jobs().unwrap();
+
+    let claim = f.service.claim_background_id(&id).unwrap().unwrap();
+    let (_, second_rejection) = f
+        .service
+        .begin_learning_attempt(&id, claim.generation)
+        .unwrap();
+    assert!(
+        second_rejection
+            .as_deref()
+            .is_some_and(|rejection| rejection.contains("must be English")),
+        "the corrective retry must carry the reason forward, got {second_rejection:?}"
+    );
+    // The second of the three granted calls is now actually spent.
+    assert_eq!(state(&f), ("running".into(), 2, 2));
+
+    // English passes the same contract.
+    f.service
+        .accept_learning_report(&id, claim.generation, &input, &report(&input))
+        .unwrap();
+    assert_eq!(state(&f).0, "publishing");
 }

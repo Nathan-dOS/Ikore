@@ -61,6 +61,9 @@ pub(crate) struct NativeTextInput {
     last_line: Option<ShapedLine>,
     scroll_x: Pixels,
     multiline: bool,
+    /// Rows a multiline input grows to before it scrolls internally. Six suits
+    /// a chat composer; a field holding a written answer needs more.
+    max_rows: usize,
     rows: Vec<InputRow>,
     scroll_y: Pixels,
     follow_caret: bool,
@@ -84,6 +87,7 @@ impl NativeTextInput {
             last_line: None,
             scroll_x: px(0.0),
             multiline: false,
+            max_rows: 6,
             rows: Vec::new(),
             scroll_y: px(0.0),
             follow_caret: true,
@@ -100,6 +104,12 @@ impl NativeTextInput {
 
     pub(crate) fn multiline(mut self) -> Self {
         self.multiline = true;
+        self
+    }
+
+    /// Raises the height cap of a multiline input. No effect single-line.
+    pub(crate) fn max_rows(mut self, rows: usize) -> Self {
+        self.max_rows = rows.max(1);
         self
     }
 
@@ -680,8 +690,10 @@ impl Element for MultilineInputElement {
                 gpui::AvailableSpace::Definite(width) => width,
                 _ => px(320.0),
             });
-            let rows = shape_input_rows(input.read(cx), width, window);
-            size(width, px(rows.len().clamp(1, 6) as f32 * 24.0))
+            let text_input = input.read(cx);
+            let max_rows = text_input.max_rows;
+            let rows = shape_input_rows(text_input, width, window);
+            size(width, px(rows.len().clamp(1, max_rows) as f32 * 24.0))
         });
         (id, ())
     }

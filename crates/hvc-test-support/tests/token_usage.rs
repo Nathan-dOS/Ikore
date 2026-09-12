@@ -61,6 +61,7 @@ async fn adapters_persist_native_usage_on_complete_streamed_and_failed_responses
             project_id: "fixture".into(),
             pulsation_id: None,
             job_id: None,
+            agent_run_id: None,
             job_chain: id.clone(),
             agent_role: AgentRole::BackendAgent,
             stage: "Code".into(),

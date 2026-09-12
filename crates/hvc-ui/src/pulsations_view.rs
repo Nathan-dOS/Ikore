@@ -462,6 +462,7 @@ fn pulsation_card(
 ) -> AnyElement {
     let selected = active_id == Some(pulsation.id.as_str());
     let id = pulsation.id.clone();
+    let title_selector = format!("pulsation-title:{id}");
     div()
         .id(gpui::SharedString::from(format!("pulsation:{id}")))
         .p_3()
@@ -488,11 +489,19 @@ fn pulsation_card(
                 .gap_2()
                 .child(
                     div()
+                        .debug_selector(move || title_selector.clone())
                         .flex_1()
                         .min_w_0()
                         .overflow_hidden()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(pulsation.feature_name),
+                        .child(crate::fading_title::FadingTitle::new(
+                            pulsation.feature_name,
+                            if selected {
+                                theme::accent_soft()
+                            } else {
+                                theme::surface_raised()
+                            },
+                        )),
                 )
                 .child(status_dot(pulsation.status)),
         )

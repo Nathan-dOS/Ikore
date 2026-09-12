@@ -33,6 +33,22 @@ pub fn validate_english_text(
     field: &'static str,
     value: &str,
 ) -> Result<(), AgentOutputLanguageError> {
+    validate_span(field, value)
+}
+
+/// Same guard, applied only to the parts of a document that are prose.
+///
+/// Use this for text the model composed and the strict form for the short
+/// identifiers it invented - an artifact name or a destination path is a whole
+/// token the model chose, and it must be English.
+pub fn validate_english_prose(
+    field: &'static str,
+    value: &str,
+) -> Result<(), AgentOutputLanguageError> {
+    validate_span(field, &prose_only(value))
+}
+
+fn validate_span(field: &'static str, value: &str) -> Result<(), AgentOutputLanguageError> {
     if let Some(character) = value
         .chars()
         .find(|character| character.is_alphabetic() && !character.is_ascii())
@@ -69,11 +85,63 @@ pub fn validate_agent_artifact(
     relative_path: Option<&str>,
     content: &str,
 ) -> Result<(), AgentOutputLanguageError> {
+    // The name and the destination path are identifiers the model invented, so
+    // they are judged whole. The body is prose that legitimately quotes paths
+    // and identifiers it was required to copy verbatim.
     validate_english_text("artifact name", name)?;
     if let Some(relative_path) = relative_path {
         validate_english_text("artifact path", relative_path)?;
     }
-    validate_english_text("artifact content", content)
+    validate_english_prose("artifact content", content)
+}
+
+/// Drops the spans this guard has no business judging: code spans and fenced
+/// blocks, and any token that is a path, URL or filename.
+///
+/// The contract says opaque identifiers and existing source paths must be
+/// preserved exactly, never translated - so the guard cannot then reject the
+/// document for containing them. In a workspace whose own files and task titles
+/// are Portuguese, a correct English report naturally quotes
+/// `knowledge/obsidian/tarefas/relatorio.md`, and judging that as prose failed
+/// the whole report over text the model was required to copy verbatim.
+///
+/// Deliberately narrow: everything outside those spans is still judged in full,
+/// so genuine non-English prose is caught exactly as before.
+fn prose_only(value: &str) -> String {
+    let mut prose = String::with_capacity(value.len());
+    let mut in_code_span = false;
+    for token in value.split_inclusive(char::is_whitespace) {
+        let backticks = token.matches('`').count();
+        let opened_here = in_code_span;
+        if backticks % 2 == 1 {
+            in_code_span = !in_code_span;
+        }
+        if opened_here || backticks > 0 || is_path_like(token.trim()) {
+            // Keep the whitespace so word boundaries elsewhere are unchanged.
+            prose.extend(token.chars().filter(|character| character.is_whitespace()));
+            continue;
+        }
+        prose.push_str(token);
+    }
+    prose
+}
+
+/// A token that names a file, path or URL rather than saying something.
+fn is_path_like(token: &str) -> bool {
+    let token = token.trim_matches(|character: char| !character.is_alphanumeric());
+    if token.is_empty() {
+        return false;
+    }
+    token.contains('/')
+        || token.contains('\\')
+        || token.contains("://")
+        || token.contains('_')
+        || matches!(
+            token.rsplit_once('.'),
+            Some((_, extension))
+                if (1..=5).contains(&extension.len())
+                    && extension.chars().all(|character| character.is_ascii_alphanumeric())
+        )
 }
 
 fn ascii_words(value: &str) -> Vec<String> {
@@ -197,6 +265,55 @@ mod tests {
             validate_agent_artifact("Report", Some("reports/output.md"), "Nenhum teste falhou")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn prose_keeps_the_paths_and_identifiers_the_contract_forbids_translating() {
+        // The contract requires opaque identifiers and existing source paths to
+        // be preserved exactly. Judging them as prose failed correct English
+        // reports over the very text the model was told to copy verbatim.
+        validate_english_prose(
+            "fixture",
+            "The report cites knowledge/obsidian/tarefas/relatorio-de-execucao.md and the `resultado_final` field.",
+        )
+        .unwrap();
+        validate_english_prose(
+            "fixture",
+            "Coverage is recorded in docs/arquitetura/contrato.md; see also https://example.com/relatorio.",
+        )
+        .unwrap();
+
+        // Prose outside those spans is still judged in full.
+        let portuguese = validate_english_prose(
+            "fixture",
+            "O arquivo docs/arquitetura/contrato.md foi gerado sem chamada externa",
+        )
+        .unwrap_err();
+        assert!(portuguese.to_string().contains("arquivo"));
+        assert!(
+            validate_english_prose("fixture", "Relatório de validação da etapa").is_err(),
+            "accented prose is still rejected"
+        );
+    }
+
+    #[test]
+    fn a_name_or_destination_path_the_model_invented_is_still_judged_whole() {
+        // These are single tokens the model chose, not text it had to quote.
+        assert!(
+            validate_agent_artifact("Relatorio", Some("reports/output.md"), "English body")
+                .is_err()
+        );
+        assert!(
+            validate_agent_artifact("Report", Some("relatorios/output.md"), "English body")
+                .is_err()
+        );
+        // ...while the body may quote that same path.
+        validate_agent_artifact(
+            "Report",
+            Some("reports/output.md"),
+            "Superseded by relatorios/output.md, which the workspace already owns.",
+        )
+        .unwrap();
     }
 
     #[test]

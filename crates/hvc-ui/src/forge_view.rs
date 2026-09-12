@@ -1,6 +1,6 @@
 use crate::{
     AppModel,
-    forge::{ForgeAction, ForgeSection},
+    forge::{FEATURE_STATE_GROUPS, ForgeAction, ForgeSection, feature_state_group_id},
     theme,
 };
 use gpui::{
@@ -173,11 +173,25 @@ pub(crate) fn forge_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(heading("Forge"))
+                .gap_3()
+                .child(
+                    // The description takes the slack so the buttons keep their
+                    // place; `min_w_0` is what lets it shrink instead of pushing
+                    // them off the edge on a narrow window.
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .flex_1()
+                        .min_w_0()
+                        .child(heading("Forge"))
+                        .child(label(model.forge.section.description()).min_w_0()),
+                )
                 .child(
                     div()
                         .flex()
                         .items_center()
+                        .flex_shrink_0()
                         .gap_2()
                         .child(button(
                             "capture-feature",
@@ -413,91 +427,222 @@ impl Render for FeatureDrag {
     }
 }
 
-fn feature_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+/// A scrolling pane that fills its column. Every column owns its own scroll:
+/// nesting one inside another traps the wheel in the inner box.
+///
+/// `size_full`, not `flex_1`: `split_pane` gives each pane a fixed box and does
+/// not lay its child out as flex, so a `flex_1` root has nothing to stretch
+/// against and grows to its content instead of scrolling.
+fn scroll_column(id: &'static str, content: AnyElement) -> AnyElement {
+    div()
+        .id(id)
+        .debug_selector(move || id.to_string())
+        .size_full()
+        .min_h_0()
+        .min_w_0()
+        .overflow_y_scroll()
+        .child(content)
+        .into_any_element()
+}
+
+fn feature_card(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
+    let selected = model.forge.selected_feature.as_ref() == Some(&f.id);
+    let selector = SharedString::from(format!("feature-{}", f.id));
+    let debug_id = selector.clone();
+    let title_selector = format!("feature-title:{}", f.id);
+    div()
+        .id(selector)
+        .debug_selector(move || debug_id.to_string())
+        .p_3()
+        .rounded_md()
+        .bg(if selected {
+            theme::accent_soft()
+        } else {
+            theme::surface_raised()
+        })
+        .cursor_pointer()
+        .on_click(cx.listener({
+            let id = f.id.clone();
+            move |m, _, _, cx| m.forge_action(ForgeAction::SelectFeature(id.clone()), cx)
+        }))
+        // Dragging a feature moves it between waves; it never reorders the list,
+        // so grouping the list does not compete with it.
+        .on_drag(
+            FeatureDrag {
+                id: f.id.clone(),
+                title: f.title.clone(),
+            },
+            |drag, _, _, cx| cx.new(|_| drag.clone()),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .debug_selector(move || title_selector.clone())
+                        .child(crate::fading_title::FadingTitle::new(
+                            f.title.clone(),
+                            if selected {
+                                theme::accent_soft()
+                            } else {
+                                theme::surface_raised()
+                            },
+                        )),
+                )
+                .child(label(
+                    f.evaluation
+                        .score()
+                        .map(|s| format!("score {s:.1}"))
+                        .unwrap_or_else(|| "not scored".into()),
+                )),
+        )
+        .into_any_element()
+}
+
+/// The feature list, grouped by lifecycle state the way Pulsations groups by
+/// status. The state moves to the group header, so the cards themselves no
+/// longer repeat it.
+fn feature_list(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let mut list = div()
         .id("feature-list")
-        .flex_1()
+        .debug_selector(|| "feature-list".into())
+        .size_full()
         .min_h_0()
+        .min_w_0()
         .overflow_y_scroll()
         .flex()
         .flex_col()
         .gap_2();
-    for f in &model.forge.snapshot.features {
-        let selected = model.forge.selected_feature.as_ref() == Some(&f.id);
-        list = list.child(
-            div()
-                .id(SharedString::from(format!("feature-{}", f.id)))
-                .p_3()
-                .rounded_md()
-                .bg(if selected {
-                    theme::accent_soft()
-                } else {
-                    theme::surface_raised()
-                })
-                .cursor_pointer()
-                .on_click(cx.listener({
-                    let id = f.id.clone();
-                    move |m, _, _, cx| m.forge_action(ForgeAction::SelectFeature(id.clone()), cx)
-                }))
-                .on_drag(
-                    FeatureDrag {
-                        id: f.id.clone(),
-                        title: f.title.clone(),
-                    },
-                    |drag, _, _, cx| cx.new(|_| drag.clone()),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(f.title.clone())
-                        .child(label(format!(
-                            "{} · {}",
-                            state(f.state),
-                            f.evaluation
-                                .score()
-                                .map(|s| format!("score {s:.1}"))
-                                .unwrap_or_else(|| "sem score".into())
-                        ))),
-                ),
-        );
-    }
-    let detail_content = if model.forge.section == ForgeSection::Waves {
-        waves(model, cx)
-    } else if let Some(f) = model.forge.feature() {
-        match model.forge.section {
-            ForgeSection::Incubation => incubation(model, f, cx),
-            ForgeSection::Triage => triage(model, f, cx),
-            ForgeSection::Dependencies => dependencies(model, f, cx),
-            _ => delivery(model, f, cx),
+    for group_state in FEATURE_STATE_GROUPS {
+        let members = model
+            .forge
+            .snapshot
+            .features
+            .iter()
+            .filter(|f| f.state == group_state)
+            .collect::<Vec<_>>();
+        if members.is_empty() {
+            continue;
         }
-    } else {
-        card().child(heading("Turn an idea into an executable plan")).child(label("Capture the idea to discuss with the Feature Agent, evaluate alternatives, and prepare tasks.")).child(button("forge-first-feature","New feature",ForgeAction::New(true),cx)).into_any_element()
+        let expanded = model.forge.group_expanded(group_state);
+        let selected = members
+            .iter()
+            .any(|f| model.forge.selected_feature.as_ref() == Some(&f.id));
+        let id = SharedString::from(format!(
+            "feature-group-{}",
+            feature_state_group_id(group_state)
+        ));
+        let debug_id = id.clone();
+        let mut group = div()
+            .flex_shrink_0()
+            .min_w_0()
+            .rounded_md()
+            .border_1()
+            .border_color(theme::border())
+            .overflow_hidden()
+            .child(
+                div()
+                    .id(id)
+                    .debug_selector(move || debug_id.to_string())
+                    .px_3()
+                    .py_2()
+                    .cursor_pointer()
+                    .text_sm()
+                    .bg(theme::surface_raised())
+                    .text_color(if selected {
+                        theme::accent()
+                    } else {
+                        theme::text()
+                    })
+                    .hover(|style| style.bg(theme::accent_soft()))
+                    .on_click(cx.listener(move |m, _, _, cx| {
+                        m.forge_action(ForgeAction::ToggleFeatureGroup(group_state), cx)
+                    }))
+                    .child(format!(
+                        "{} {} · {}{}",
+                        if expanded { "▾" } else { "▸" },
+                        state(group_state),
+                        members.len(),
+                        if selected && !expanded {
+                            " · selected"
+                        } else {
+                            ""
+                        }
+                    )),
+            );
+        if expanded {
+            let mut cards = div().p_2().flex().flex_col().gap_2();
+            for f in members {
+                cards = cards.child(feature_card(model, f, cx));
+            }
+            group = group.child(cards);
+        }
+        list = list.child(group);
+    }
+    list.into_any_element()
+}
+
+/// The right-hand side of the feature split: either one pane, or two when the
+/// section has an aside.
+fn section_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    if model.forge.section == ForgeSection::Waves {
+        return scroll_column("forge-detail", waves(model, cx));
+    }
+    let Some(f) = model.forge.feature() else {
+        return scroll_column(
+            "forge-detail",
+            card().child(heading("Turn an idea into an executable plan")).child(label("Capture the idea to discuss with the Feature Agent, evaluate alternatives, and prepare tasks.")).child(button("forge-first-feature","New feature",ForgeAction::New(true),cx)).into_any_element(),
+        );
     };
-    let detail = div()
-        .id("forge-detail")
-        .debug_selector(|| "forge-detail".into())
-        .flex_1()
-        .min_h_0()
-        .min_w_0()
-        .overflow_y_scroll()
-        .child(detail_content);
+    match model.forge.section {
+        ForgeSection::Incubation => crate::split_pane::split_pane(
+            "forge-incubation-columns",
+            &model.forge_incubation_split,
+            scroll_column("forge-detail", incubation_main(model, f, cx)),
+            scroll_column("forge-incubation-aside", incubation_aside(model, f, cx)),
+            cx,
+        ),
+        ForgeSection::Triage => {
+            let main = scroll_column("forge-detail", triage_main(model, f, cx));
+            // Conditional, following the workspace context drawer: the analysis
+            // column earns its width only once there is a verdict to read.
+            if model.forge.triage_aside_open {
+                crate::split_pane::split_pane(
+                    "forge-triage-columns",
+                    &model.forge_triage_split,
+                    main,
+                    scroll_column("forge-triage-aside", triage_aside(model, f, cx)),
+                    cx,
+                )
+            } else {
+                main
+            }
+        }
+        ForgeSection::Dependencies => scroll_column("forge-detail", dependencies(model, f, cx)),
+        _ => scroll_column("forge-detail", delivery(model, f, cx)),
+    }
+}
+
+fn feature_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    let list = feature_list(model, cx);
+    let body = section_body(model, cx);
     div()
         .flex_1()
         .min_h_0()
+        .min_w_0()
         .flex()
-        .gap_3()
-        .child(
-            div()
-                .w(px(245.0))
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .child(list),
-        )
-        .child(detail)
+        .child(crate::split_pane::split_pane(
+            "forge-feature-columns",
+            &model.forge_feature_split,
+            list,
+            body,
+            cx,
+        ))
         .into_any_element()
 }
 fn state(s: FeatureState) -> &'static str {
@@ -512,7 +657,9 @@ fn state(s: FeatureState) -> &'static str {
         FeatureState::Archived => "Archived",
     }
 }
-fn incubation(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
+/// The conversation column: what the feature is, the exchange with the agent,
+/// and the composer.
+fn incubation_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
     let mut panel = card()
         .child(heading(f.title.clone()))
         .child(label(format!(
@@ -522,7 +669,14 @@ fn incubation(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyE
             f.brief.coverage
         )))
         .child(label(f.original_idea.clone()));
-    for turn in &model.forge.history {
+    // Analysis turns share the table but are not conversation -- their verdicts
+    // are read in the Triage and Dependencies columns, not here.
+    for turn in model
+        .forge
+        .history
+        .iter()
+        .filter(|turn| turn.kind == TurnKind::Discovery)
+    {
         panel = panel.child(card().child(label("You")).child(turn.user_message.clone()));
         if let Some(reply) = &turn.assistant_message {
             panel = panel.child(card().child(label("Feature Agent")).child(reply.clone()));
@@ -557,13 +711,35 @@ fn incubation(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyE
                 cx,
             )),
     );
-    if !f.brief.objective.is_empty() {
-        panel = panel.child(brief(f)).child(button(
-            "approve-feature",
-            "Approve scope and create tasks",
-            ForgeAction::Approve,
-            cx,
+    panel.into_any_element()
+}
+
+/// The specification column: what the agent has assembled so far, and the
+/// control that turns it into tasks.
+fn incubation_aside(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
+    if f.brief.objective.is_empty() {
+        return card()
+            .child(heading("Proposed specification"))
+            .child(label(
+                "Nothing proposed yet. Describe the idea and answer the agent's questions -- the specification fills in here as the scope settles.",
+            ))
+            .into_any_element();
+    }
+    let already_approved = f.approved_revision == Some(f.revision);
+    let mut panel = card().child(brief(f)).child(gated_button(
+        "approve-feature",
+        "Approve scope and create tasks",
+        ForgeAction::Approve,
+        !already_approved,
+        cx,
+    ));
+    if already_approved {
+        panel = panel.child(label(
+            "This revision is already approved and its tasks exist. Keep talking to the agent to produce a new revision.",
         ));
+    }
+    if model.forge.busy {
+        panel = panel.child(label("Working…"));
     }
     panel.into_any_element()
 }
@@ -609,7 +785,9 @@ fn brief(f: &Feature) -> Div {
     d
 }
 /// Renders the analysis affordance plus whatever the last analysis said.
-fn triage_analysis_card(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> Div {
+/// The control that asks for an analysis. Stays in the main column, because the
+/// analysis column is what it opens.
+fn triage_analysis_trigger(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> Div {
     let blocked = model.forge.analysis_blocked(f);
     let mut agent = card().child(heading("Feature Agent analysis"));
     if model.forge.pending_triage_overwrite {
@@ -652,37 +830,65 @@ fn triage_analysis_card(model: &AppModel, f: &Feature, cx: &mut Context<AppModel
             agent = agent.child(label(reason));
         }
     }
-    if let Some(turn) = model
+    agent
+}
+
+/// The analysis column: whatever the last triage turn produced.
+fn triage_aside(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
+    let mut agent = card()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(heading("Feature Agent analysis"))
+                .child(button(
+                    "close-triage-aside",
+                    "Close",
+                    ForgeAction::CloseTriageAside,
+                    cx,
+                )),
+        )
+        .child(label(format!("Feature: {}", f.title)));
+    match model
         .forge
         .history
         .iter()
         .rev()
         .find(|turn| turn.kind == TurnKind::Triage)
     {
-        if turn.status == "running" {
-            agent = agent
-                .child(label("Feature Agent is evaluating this feature…"))
-                .child(button(
-                    format!("cancel-triage-turn-{}", turn.id),
-                    "Cancel analysis",
-                    ForgeAction::CancelTurn(turn.id.clone()),
-                    cx,
-                ));
-        } else if let Some(message) = &turn.assistant_message {
-            agent = agent.child(label(message.clone()));
+        Some(turn) => {
+            if turn.status == "running" {
+                agent = agent
+                    .child(label("Feature Agent is evaluating this feature…"))
+                    .child(button(
+                        format!("cancel-triage-turn-{}", turn.id),
+                        "Cancel analysis",
+                        ForgeAction::CancelTurn(turn.id.clone()),
+                        cx,
+                    ));
+            } else if let Some(message) = &turn.assistant_message {
+                agent = agent.child(message.clone());
+            }
+            if let Some(error) = &turn.error {
+                agent = agent.child(div().text_color(theme::danger()).child(error.clone()));
+            }
         }
-        if let Some(error) = &turn.error {
-            agent = agent.child(div().text_color(theme::danger()).child(error.clone()));
+        None => {
+            agent = agent.child(label(
+                "No analysis for this feature yet. Run one from the evaluation column and the verdict lands here.",
+            ));
         }
     }
-    agent
+    agent.into_any_element()
 }
 
-fn triage(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
+fn triage_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
     let mut p = card().child(heading("Triage and decision")).child(label(
         "Evaluation guides priority. You decide whether the feature moves forward.",
     ));
-    p = p.child(triage_analysis_card(model, f, cx));
+    p = p.child(triage_analysis_trigger(model, f, cx));
     for (i, name) in [
         "Value and need",
         "Product alignment",
@@ -746,6 +952,10 @@ fn triage(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyEleme
             cx,
         ));
     } else {
+        // Approval is once per revision: the tasks it created already exist and
+        // may be in delivery. The core declines the repeat, so the control says
+        // so instead of offering an action that does nothing.
+        let already_approved = f.approved_revision == Some(f.revision);
         p = p
             .child(button(
                 "archive-feature",
@@ -753,12 +963,18 @@ fn triage(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyEleme
                 ForgeAction::Archive,
                 cx,
             ))
-            .child(button(
+            .child(gated_button(
                 "triage-approve",
                 "Approve scope and tasks",
                 ForgeAction::Approve,
+                !already_approved,
                 cx,
             ));
+        if already_approved {
+            p = p.child(label(
+                "This revision is already approved and its tasks exist. Revise the scope in Incubation to produce a new revision.",
+            ));
+        }
     }
     p.into_any_element()
 }

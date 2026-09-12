@@ -265,6 +265,14 @@ pub struct AppModel {
     pub(crate) workspace_tree_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) workspace_preview_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) workspace_context_split: Entity<crate::split_pane::SplitPaneState>,
+    /// Feature list against the section body, shared by every Forge section.
+    pub(crate) forge_feature_split: Entity<crate::split_pane::SplitPaneState>,
+    /// Incubation only: conversation against the proposed specification.
+    pub(crate) forge_incubation_split: Entity<crate::split_pane::SplitPaneState>,
+    /// Triage only: the evaluation form against the agent's analysis. Separate
+    /// from the incubation split because a form and a transcript want different
+    /// proportions.
+    pub(crate) forge_triage_split: Entity<crate::split_pane::SplitPaneState>,
     pub vault: Entity<VaultModel>,
     #[cfg(test)]
     pub(crate) pulsation_feature_input: Entity<NativeTextInput>,
@@ -552,11 +560,20 @@ impl AppModel {
             cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.6, 240.0, 220.0));
         let workspace_context_split =
             cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.78, 480.0, 180.0));
+        let forge_feature_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::new(245.0, 180.0, 420.0, 460.0));
+        let forge_incubation_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.55, 300.0, 260.0));
+        let forge_triage_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.58, 300.0, 260.0));
         let mut subscriptions = vec![
             cx.observe(&pulsations_split, |_, _, cx| cx.notify()),
             cx.observe(&workspace_tree_split, |_, _, cx| cx.notify()),
             cx.observe(&workspace_preview_split, |_, _, cx| cx.notify()),
             cx.observe(&workspace_context_split, |_, _, cx| cx.notify()),
+            cx.observe(&forge_feature_split, |_, _, cx| cx.notify()),
+            cx.observe(&forge_incubation_split, |_, _, cx| cx.notify()),
+            cx.observe(&forge_triage_split, |_, _, cx| cx.notify()),
             cx.observe(&editor, |model, _, cx| {
                 model.handle_editor_update(cx);
                 model.schedule_vault_context_documents(cx);
@@ -614,6 +631,9 @@ impl AppModel {
             workspace_tree_split,
             workspace_preview_split,
             workspace_context_split,
+            forge_feature_split,
+            forge_incubation_split,
+            forge_triage_split,
             vault: cx.new(|_| VaultModel::default()),
             #[cfg(test)]
             pulsation_feature_input,

@@ -503,6 +503,7 @@ mod tests {
             project_id: "p".to_string(),
             pulsation_id: None,
             job_id: None,
+            agent_run_id: None,
             job_chain: "j".to_string(),
             agent_role: AgentRole::BackendAgent,
             stage: "Code".to_string(),

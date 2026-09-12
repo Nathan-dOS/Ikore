@@ -138,6 +138,7 @@ fn request(project_id: &str, deadline: Instant) -> LlmRequest {
         project_id: project_id.into(),
         pulsation_id: None,
         job_id: None,
+        agent_run_id: None,
         job_chain: "fixture".into(),
         agent_role: AgentRole::BackendAgent,
         stage: "Code".into(),

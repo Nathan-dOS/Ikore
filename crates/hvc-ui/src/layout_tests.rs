@@ -892,3 +892,266 @@ fn forge_analysis_button_keeps_its_geometry_when_gated(cx: &mut TestAppContext) 
         assert_eq!(visual.debug_bounds("analyze-triage").unwrap(), control);
     }
 }
+
+/// Builds one feature with a filled-in brief, selected, so the three-column
+/// sections have something to render in every pane.
+#[cfg(test)]
+fn forge_feature_fixture(
+    model: &Entity<AppModel>,
+    visual: &mut VisualTestContext,
+    states: &[hvc_core::feature_forge::FeatureState],
+) {
+    use hvc_core::feature_forge::*;
+    model.update(visual, |m, cx| {
+        m.forge.snapshot.features = states
+            .iter()
+            .enumerate()
+            .map(|(i, state)| Feature {
+                id: format!("feature-{i}"),
+                project_id: "layout-project".into(),
+                title: format!("Feature {i}"),
+                original_idea: "Improve the export workflow".into(),
+                revision: 2,
+                approved_revision: None,
+                state: *state,
+                brief: FeatureBrief {
+                    objective: "Improve the export workflow end to end".into(),
+                    audience: "Project developers".into(),
+                    behavior: "Validate the input and show the result".into(),
+                    scope: "A bounded, validated workflow".into(),
+                    ..Default::default()
+                },
+                evaluation: Default::default(),
+                structural_level: 0,
+                wave: None,
+                position: 0,
+                archive_reason: None,
+            })
+            .collect();
+        m.forge.selected_feature = Some("feature-0".into());
+        m.forge.section = crate::forge::ForgeSection::Incubation;
+        m.select_view(AppView::Forge, cx);
+    });
+    visual.run_until_parked();
+}
+
+#[gpui::test]
+fn all_three_navigation_lists_keep_long_titles_on_one_line(cx: &mut TestAppContext) {
+    use hvc_core::chat_service::{ChatConversation, ChatTransportKind};
+    use hvc_core::feature_forge::FeatureState;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    forge_feature_fixture(&model, visual, &[FeatureState::Incubating]);
+    model.update(visual, |m, cx| {
+        m.pulsations
+            .update(cx, |p, _| p.toggle_group(PulsationStatus::Planning));
+        m.chat.update(cx, |chat, _| {
+            chat.project_id = Some("layout-project".into());
+            chat.conversations = vec![ChatConversation {
+                id: "title-chat".into(),
+                project_id: "layout-project".into(),
+                connection_id: None,
+                provider_id: "codex".into(),
+                model_id: "default".into(),
+                transport: ChatTransportKind::Cli,
+                cli_backend: Some(CliBackend::Codex),
+                model_profile: None,
+                model_source: CliModelSelectionSource::Default,
+                title: "Short".into(),
+                connection_available: true,
+                created_at: "now".into(),
+                updated_at: "now".into(),
+            }];
+            chat.active_conversation = Some("title-chat".into());
+        });
+    });
+    let conversations = model.read_with(visual, |m, cx| m.chat.read(cx).conversations.clone());
+    for (view, selector) in [
+        (AppView::Chat, "chat-title:title-chat"),
+        (AppView::Forge, "feature-title:feature-0"),
+        (AppView::Pulsations, "pulsation-title:pulse-a"),
+    ] {
+        select(&model, visual, view);
+        // Chat navigation starts hydration; this geometry fixture has no backend.
+        model.update(visual, |m, cx| {
+            m.chat.update(cx, |chat, _| {
+                chat.conversations = conversations.clone();
+                chat.loading = false;
+            });
+        });
+        for width in [960.0, 1440.0] {
+            visual.simulate_resize(size(px(width), px(900.0)));
+            let mut heights = Vec::new();
+            for title in [
+                "Short".to_string(),
+                "VeryLongUnbrokenTitle".repeat(50),
+                "Caf\u{e9} 👩‍💻\nAn explicitly wrapped title ".repeat(30),
+            ] {
+                model.update(visual, |m, cx| {
+                    m.forge.snapshot.features[0].title = title.clone();
+                    m.pulsations
+                        .update(cx, |p, _| p.pulsations[0].feature_name = title.clone());
+                    m.chat
+                        .update(cx, |chat, _| chat.conversations[0].title = title.clone());
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                let bounds = visual
+                    .debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("missing {selector}"));
+                assert!(
+                    bounds.size.width > px(20.0),
+                    "title has no usable width: {bounds:?}"
+                );
+                assert!(bounds.left() >= px(0.0) && bounds.right() <= px(width));
+                assert!(
+                    bounds.size.height > px(0.0) && bounds.size.height <= px(32.0),
+                    "title wrapped: {bounds:?}"
+                );
+                heights.push(bounds.size.height);
+                assert_eq!(
+                    model.read_with(visual, |m, cx| m.chat.read(cx).conversations[0]
+                        .title
+                        .clone()),
+                    title
+                );
+            }
+            assert!(heights.windows(2).all(|pair| pair[0] == pair[1]));
+        }
+    }
+}
+
+#[gpui::test]
+fn forge_incubation_and_triage_render_three_resizable_columns(cx: &mut TestAppContext) {
+    use hvc_core::feature_forge::FeatureState;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    forge_feature_fixture(&model, visual, &[FeatureState::InTriage]);
+
+    // The analysis column costs width, so it stays out of the way until asked for.
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Forge);
+    model.update(visual, |m, cx| {
+        m.forge.section = crate::forge::ForgeSection::Triage;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("forge-detail").is_some());
+    assert!(
+        visual.debug_bounds("forge-triage-aside").is_none(),
+        "the analysis column should not open on its own"
+    );
+
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Forge);
+
+        model.update(visual, |m, cx| {
+            m.forge.section = crate::forge::ForgeSection::Incubation;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let list = visual.debug_bounds("feature-list").unwrap();
+        let main = visual.debug_bounds("forge-detail").unwrap();
+        let aside = visual.debug_bounds("forge-incubation-aside").unwrap();
+        // Left to right, none of them past the window edge.
+        assert!(list.right() <= main.left(), "list overlaps chat: {list:?}");
+        assert!(main.right() <= aside.left(), "chat overlaps spec: {main:?}");
+        assert!(
+            aside.right() <= px(width) && aside.bottom() <= px(height),
+            "spec column overflows at {width}x{height}: {aside:?}"
+        );
+
+        model.update(visual, |m, cx| {
+            m.forge.section = crate::forge::ForgeSection::Triage;
+            m.forge.triage_aside_open = false;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        model.update(visual, |m, cx| {
+            m.forge.triage_aside_open = true;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let main = visual.debug_bounds("forge-detail").unwrap();
+        let aside = visual.debug_bounds("forge-triage-aside").unwrap();
+        assert!(main.right() <= aside.left(), "form overlaps analysis");
+        assert!(
+            aside.right() <= px(width) && aside.bottom() <= px(height),
+            "analysis column overflows at {width}x{height}: {aside:?}"
+        );
+    }
+
+    // The sash moves the boundary, and a double-click puts it back.
+    let before = visual
+        .debug_bounds("forge-feature-columns-left")
+        .unwrap()
+        .size
+        .width;
+    let sash = visual
+        .debug_bounds("forge-feature-columns-sash")
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(sash, gpui::MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        sash + gpui::point(px(70.0), px(0.0)),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        sash + gpui::point(px(70.0), px(0.0)),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let resized = visual
+        .debug_bounds("forge-feature-columns-left")
+        .unwrap()
+        .size
+        .width;
+    assert!(resized > before, "sash did not widen the list column");
+}
+
+#[gpui::test]
+fn forge_feature_list_groups_by_state_and_collapses_finished_work(cx: &mut TestAppContext) {
+    use hvc_core::feature_forge::FeatureState;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    forge_feature_fixture(
+        &model,
+        visual,
+        &[
+            FeatureState::Incubating,
+            FeatureState::Done,
+            FeatureState::Archived,
+        ],
+    );
+
+    // Live work is expanded; finished and abandoned work starts collapsed so it
+    // does not bury what is in flight.
+    assert!(
+        visual.debug_bounds("feature-feature-0").is_some(),
+        "an incubating feature should be visible without expanding"
+    );
+    assert!(visual.debug_bounds("feature-feature-1").is_none());
+    assert!(visual.debug_bounds("feature-feature-2").is_none());
+
+    // Groups with no members are not rendered at all.
+    assert!(visual.debug_bounds("feature-group-executing").is_none());
+    assert!(visual.debug_bounds("feature-group-done").is_some());
+
+    click(visual, "feature-group-done");
+    assert!(
+        model.read_with(visual, |m, _| m.forge.group_expanded(FeatureState::Done)),
+        "clicking the Done header should toggle its expansion state"
+    );
+    assert!(
+        visual.debug_bounds("feature-feature-1").is_some(),
+        "expanding the Done group should reveal its feature"
+    );
+    click(visual, "feature-group-incubating");
+    assert!(
+        !model.read_with(visual, |m, _| m
+            .forge
+            .group_expanded(FeatureState::Incubating)),
+        "clicking an expanded header should collapse it"
+    );
+}

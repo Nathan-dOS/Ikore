@@ -88,7 +88,7 @@ pub fn accept_evidence(
         if !seen.insert(&entry.task_id) {
             return Err(model_output_invalid("Duplicate task evidence"));
         }
-        crate::agent_output_language::validate_english_text("task evidence", &entry.summary)
+        crate::agent_output_language::validate_english_prose("task evidence", &entry.summary)
             .map_err(model_output_invalid)?;
         if entry.artifact_positions.is_empty() {
             return Err(model_output_invalid(format!(

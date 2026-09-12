@@ -1,7 +1,7 @@
 use super::*;
 use crate::orchestration::{BaseState, ConfirmBaseReconciliationRequest};
-use crate::persistence_service::{ResolveStageFailureRequest, StageFailureDecision};
 use crate::persistence_service::serial::tests::Fixture;
+use crate::persistence_service::{ResolveStageFailureRequest, StageFailureDecision};
 
 fn queue(f: &Fixture, project: &str, stage: PulsationStage) -> Pulsation {
     let p = f
@@ -664,10 +664,9 @@ fn setup_failure_parks_on_a_decision_without_leaving_a_running_job() {
             feedback: None,
         })
         .unwrap();
-    let aborted =
-        PersistenceService::find_pulsation_by_id(&f.service.connection().unwrap(), &b.id)
-            .unwrap()
-            .unwrap();
+    let aborted = PersistenceService::find_pulsation_by_id(&f.service.connection().unwrap(), &b.id)
+        .unwrap()
+        .unwrap();
     assert_eq!(aborted.status, PulsationStatus::Failed);
     assert_eq!(aborted.terminal_reason.as_deref(), Some("executor_setup"));
     assert!(state(&f).pipeline.active_pulsation_id.is_none());
@@ -675,8 +674,11 @@ fn setup_failure_parks_on_a_decision_without_leaving_a_running_job() {
         f.service
             .connection()
             .unwrap()
-            .query_row("SELECT status FROM jobs WHERE pulsation_id=?1", [&b.id], |r| r
-                .get::<_, String>(0))
+            .query_row(
+                "SELECT status FROM jobs WHERE pulsation_id=?1",
+                [&b.id],
+                |r| r.get::<_, String>(0)
+            )
             .unwrap(),
         "failed"
     );

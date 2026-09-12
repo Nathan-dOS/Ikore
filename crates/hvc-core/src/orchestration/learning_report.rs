@@ -1,6 +1,6 @@
 //! Consultative output: only host-supplied evidence IDs are admissible.
 use super::{ContentSha256, ContractError};
-use crate::agent_output_language::validate_english_text;
+use crate::agent_output_language::validate_english_prose;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -347,7 +347,7 @@ fn validate_learning_report_english(report: &LearningReportV2) -> Result<(), Con
         )
         .chain(report.limitations.iter().map(String::as_str));
     for text in text_fields {
-        validate_english_text("Learning report text", text)
+        validate_english_prose("Learning report text", text)
             .map_err(|_| ContractError::Invalid("Learning report must be English"))?;
     }
     Ok(())
