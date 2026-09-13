@@ -283,6 +283,7 @@ pub struct AppModel {
     pub(crate) specification_answer_inputs: Vec<(String, Entity<NativeTextInput>)>,
     pub(crate) stage_feedback_input: Entity<NativeTextInput>,
     pub(crate) preparation_threshold_input: Entity<NativeTextInput>,
+    pub(crate) composition_override_model_input: Entity<NativeTextInput>,
     pub(crate) context_limit_input: Entity<NativeTextInput>,
     preparation_scope: Option<(String, u64, Option<String>)>,
     pub(crate) learning_graph_decisions:
@@ -501,6 +502,8 @@ impl AppModel {
             cx.new(|cx| NativeTextInput::new("Feedback to request stage review", cx));
         let preparation_threshold_input =
             cx.new(|cx| NativeTextInput::new("Threshold from 0 to 100", cx));
+        let composition_override_model_input =
+            cx.new(|cx| NativeTextInput::new("Model id (empty = inherit from the stage)", cx));
         let context_limit_input =
             cx.new(|cx| NativeTextInput::new("Context budget: 2,000 to 80,000 characters", cx));
         let vault_search_input = cx.new(|cx| NativeTextInput::new("Text or regex", cx));
@@ -592,6 +595,7 @@ impl AppModel {
             cx.observe(&description_review_input, |_, _, cx| cx.notify()),
             cx.observe(&stage_feedback_input, |_, _, cx| cx.notify()),
             cx.observe(&preparation_threshold_input, |_, _, cx| cx.notify()),
+            cx.observe(&composition_override_model_input, |_, _, cx| cx.notify()),
             cx.observe(&context_limit_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_search_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_rename_input, |_, _, cx| cx.notify()),
@@ -648,6 +652,7 @@ impl AppModel {
             description_review_input,
             stage_feedback_input,
             preparation_threshold_input,
+            composition_override_model_input,
             context_limit_input,
             specification_answer_inputs: Vec::new(),
             preparation_scope: None,
@@ -1824,9 +1829,15 @@ impl AppModel {
         cx: &mut Context<Self>,
     ) {
         self.confirm_failure_abort = false;
-        let request = self
-            .pulsations
-            .update(cx, |pulsations, _| pulsations.failure.begin(decision));
+        let (request, revision_target) = self.pulsations.update(cx, |pulsations, _| {
+            let target = pulsations
+                .failure
+                .checkpoint
+                .as_ref()
+                .filter(|c| !c.allowed_revision_targets.is_empty())
+                .and_then(|_| pulsations.failure.selected_revision_target());
+            (pulsations.failure.begin(decision), target)
+        });
         let request = request.map(|mut request| {
             if decision == StageFailureDecision::RequestRevision {
                 request.feedback = Some(self.stage_feedback_input.read(cx).value().to_owned());
@@ -1856,7 +1867,7 @@ impl AppModel {
             let result = runtime
                 .spawn_blocking(move || {
                     core.persistence()
-                        .resolve_stage_failure(request)
+                        .resolve_stage_failure_with_target(request, revision_target)
                         .map(|_| ())
                         .map_err(|error| error.to_string())
                 })
@@ -7329,6 +7340,7 @@ mod tests {
             learning: LearningState::Unavailable,
             learning_run: None,
             artifact_ids: vec![],
+            stage_execution: None,
         }
     }
 

@@ -437,6 +437,7 @@ fn settings_runtime(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement 
                         .child(crate::select_menu::control(("brownfield-expansion-radius").to_string(),"BROWNFIELD · RADIUS",format!("k={}", snapshot.preparation.brownfield_expansion_radius),!busy,cx))
                         .child(div().text_xs().text_color(theme::text_muted()).child("Enrichment is opportunistic: 0 makes no LLM calls; k=1 uses direct neighbors and k=2 allows a second hop. Each batch publishes at most two proposals.")),
                 )
+                .child(crate::composition_ui::composition_settings_card(model, cx))
                 .child({
                     let pull_status = model.model_pull_status().cloned();
                     card("RAG / YAML Graph")
@@ -539,7 +540,11 @@ fn embedding_readiness_checklist(
                 )
                 .child(action(
                     "settings-readiness-check",
-                    if loading { "Checking…" } else { "Check again" },
+                    if loading {
+                        "Checking…"
+                    } else {
+                        "Check again"
+                    },
                     !busy && !loading,
                     cx,
                     |model, cx| model.refresh_embedding_readiness(cx),
@@ -611,7 +616,10 @@ fn embedding_readiness_checklist(
                 total,
                 ..
             } => {
-                let text = match completed.checked_mul(100).and_then(|n| n.checked_div(*total)) {
+                let text = match completed
+                    .checked_mul(100)
+                    .and_then(|n| n.checked_div(*total))
+                {
                     Some(percent) => format!(
                         "{status}: {}% ({} MB / {} MB)",
                         percent.min(100),
@@ -640,15 +648,13 @@ fn embedding_readiness_checklist(
         );
     }
     if first_blocking == Some(2) {
-        container = container.child(
-            div().text_xs().text_color(theme::text_muted()).child(
-                "Ollama is running and the model is downloaded, but a real embedding call still \
+        container = container.child(div().text_xs().text_color(theme::text_muted()).child(
+            "Ollama is running and the model is downloaded, but a real embedding call still \
                  fails — this usually means Ollama itself needs attention: update it \
                  (`ollama pull` again, or reinstall) if it's old, check `ollama ps`/its logs \
                  while reindexing, and make sure the machine has enough free RAM/VRAM for this \
                  model.",
-            ),
-        );
+        ));
     }
     container
 }
@@ -879,7 +885,7 @@ fn section_header(kicker: &'static str, title: &'static str, count: usize) -> im
         )
 }
 
-fn card(title: &'static str) -> gpui::Div {
+pub(crate) fn card(title: impl Into<SharedString>) -> gpui::Div {
     div()
         .p_3()
         .rounded_lg()
@@ -889,7 +895,11 @@ fn card(title: &'static str) -> gpui::Div {
         .flex()
         .flex_col()
         .gap_2()
-        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title))
+        .child(
+            div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(title.into()),
+        )
 }
 
 fn empty(message: &'static str) -> impl IntoElement {
@@ -900,7 +910,7 @@ fn empty(message: &'static str) -> impl IntoElement {
         .child(message)
 }
 
-fn action(
+pub(crate) fn action(
     id: &'static str,
     label: &'static str,
     enabled: bool,
@@ -931,7 +941,7 @@ fn action(
         .child(label)
 }
 
-fn toggle(
+pub(crate) fn toggle(
     id: &'static str,
     label: &'static str,
     value: impl Into<SharedString>,

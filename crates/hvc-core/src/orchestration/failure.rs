@@ -36,6 +36,22 @@ pub enum FailureClass {
     /// offered - what has to change is the amount of output asked for, or the
     /// backend that has to produce it.
     OutputTruncated,
+    // --- Composed stages only (ADR-022). Never produced by v1-v3 paths. ---
+    /// The shared stage budget has no permit left for another real invocation.
+    BudgetExhausted,
+    /// A host check failed or a semantic blocker remains after the bounded
+    /// repair; production repair needs a human.
+    ValidationFailed,
+    /// A required check could not run (missing toolchain/profile).
+    ValidationUnavailable,
+    /// The worker diagnosed a conflict with an approved contract.
+    ContractConflict,
+    /// The plan or the required output does not fit the frozen envelope.
+    CapacityExceeded,
+    /// A worker tried to write outside its ownership.
+    OwnershipViolation,
+    /// A delivered input changed under the execution.
+    StaleInput,
 }
 
 impl FailureClass {
@@ -49,6 +65,13 @@ impl FailureClass {
             Self::HostContract => "host_contract",
             Self::ModelReportedFailure => "model_reported_failure",
             Self::OutputTruncated => "output_truncated",
+            Self::BudgetExhausted => "budget_exhausted",
+            Self::ValidationFailed => "validation_failed",
+            Self::ValidationUnavailable => "validation_unavailable",
+            Self::ContractConflict => "contract_conflict",
+            Self::CapacityExceeded => "capacity_exceeded",
+            Self::OwnershipViolation => "ownership_violation",
+            Self::StaleInput => "stale_input",
         }
     }
 
@@ -62,6 +85,13 @@ impl FailureClass {
             "host_contract" => Self::HostContract,
             "model_reported_failure" => Self::ModelReportedFailure,
             "output_truncated" => Self::OutputTruncated,
+            "budget_exhausted" => Self::BudgetExhausted,
+            "validation_failed" => Self::ValidationFailed,
+            "validation_unavailable" => Self::ValidationUnavailable,
+            "contract_conflict" => Self::ContractConflict,
+            "capacity_exceeded" => Self::CapacityExceeded,
+            "ownership_violation" => Self::OwnershipViolation,
+            "stale_input" => Self::StaleInput,
             _ => return None,
         })
     }
@@ -78,6 +108,19 @@ impl FailureClass {
             // host rejected its output on a rule a resample would hit again, or
             // the same budget would cut the same answer at the same place.
             Self::HostContract | Self::ModelReportedFailure | Self::OutputTruncated => false,
+            // Composed classes: an identical retry cannot buy a permit, run a
+            // missing toolchain, change an approved contract, shrink the
+            // envelope, widen ownership or refresh a fenced input. Retry is
+            // offered only through `offered_decisions_v4` when an allowance
+            // still exists (StaleInput re-reads the input under a new
+            // generation).
+            Self::BudgetExhausted
+            | Self::ValidationFailed
+            | Self::ValidationUnavailable
+            | Self::ContractConflict
+            | Self::CapacityExceeded
+            | Self::OwnershipViolation => false,
+            Self::StaleInput => true,
         }
     }
 
@@ -96,6 +139,15 @@ impl FailureClass {
             | Self::ProviderTransport
             | Self::Infrastructure
             | Self::ExecutorSetup => false,
+            // Composed classes recoverable through a human scope/contract/code
+            // revision; a missing toolchain is fixed in settings, not by prose.
+            Self::BudgetExhausted
+            | Self::ValidationFailed
+            | Self::ContractConflict
+            | Self::CapacityExceeded
+            | Self::OwnershipViolation
+            | Self::StaleInput => true,
+            Self::ValidationUnavailable => false,
         }
     }
 
@@ -187,6 +239,66 @@ pub fn failure_revision_target(stage: PulsationStage) -> Option<PulsationStage> 
         // Nothing precedes Intake, and it has no artifacts to supersede.
         PulsationStage::Intake => None,
     }
+}
+
+/// The decisions a composed stage failure offers (ADR-022). Retry is a real
+/// invocation and therefore needs a remaining extra permit; revision targets
+/// are the stage's own failure target plus, for a diagnosed approved-contract
+/// conflict, the earlier Specification/Contract stages already approved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfferedDecisionsV4 {
+    pub class: FailureClass,
+    pub allow_retry: bool,
+    pub revision_targets: Vec<PulsationStage>,
+}
+
+impl OfferedDecisionsV4 {
+    pub fn allow_revision(&self) -> bool {
+        !self.revision_targets.is_empty()
+    }
+
+    /// The target a legacy `RequestRevision` decision resolves to: the
+    /// stage's own failure target when offered, else the earliest permitted.
+    pub fn primary_revision_stage(&self) -> Option<PulsationStage> {
+        self.revision_targets.first().copied()
+    }
+}
+
+pub fn offered_decisions_v4(
+    class: FailureClass,
+    stage: PulsationStage,
+    remaining_extra_invocations: u32,
+) -> Option<OfferedDecisionsV4> {
+    let allow_retry = match class {
+        FailureClass::StaleInput => true,
+        FailureClass::ProviderConfiguration
+        | FailureClass::ProviderTransport
+        | FailureClass::Infrastructure
+        | FailureClass::ExecutorSetup
+        | FailureClass::RetryBudgetExhausted => remaining_extra_invocations > 0,
+        _ => false,
+    };
+    let mut revision_targets = Vec::new();
+    if class.offers_revision()
+        && let Some(target) = failure_revision_target(stage)
+    {
+        revision_targets.push(target);
+    }
+    if class == FailureClass::ContractConflict {
+        for earlier in [PulsationStage::Specification, PulsationStage::Contract] {
+            if earlier < stage && !revision_targets.contains(&earlier) {
+                revision_targets.push(earlier);
+            }
+        }
+    }
+    if !allow_retry && revision_targets.is_empty() {
+        return None;
+    }
+    Some(OfferedDecisionsV4 {
+        class,
+        allow_retry,
+        revision_targets,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,6 +470,13 @@ mod tests {
             FailureClass::HostContract,
             FailureClass::ModelReportedFailure,
             FailureClass::OutputTruncated,
+            FailureClass::BudgetExhausted,
+            FailureClass::ValidationFailed,
+            FailureClass::ValidationUnavailable,
+            FailureClass::ContractConflict,
+            FailureClass::CapacityExceeded,
+            FailureClass::OwnershipViolation,
+            FailureClass::StaleInput,
         ] {
             assert_eq!(
                 FailureClass::from_db_value(class.as_db_value()),
@@ -424,6 +543,50 @@ mod tests {
             assert!(!offered.allow_revision, "{class:?}");
             assert_eq!(offered.revision_stage, None, "{class:?}");
         }
+    }
+
+    #[test]
+    fn composed_failures_offer_retry_only_with_a_permit_and_gate_earlier_targets() {
+        use PulsationStage::*;
+        // Transport failure with a permit left: retry; without: revision only.
+        let with = offered_decisions_v4(FailureClass::ProviderTransport, Code, 1).unwrap();
+        assert!(with.allow_retry && !with.allow_revision());
+        assert_eq!(
+            offered_decisions_v4(FailureClass::ProviderTransport, Code, 0),
+            None
+        );
+        let exhausted = offered_decisions_v4(FailureClass::BudgetExhausted, Code, 0).unwrap();
+        assert!(!exhausted.allow_retry);
+        assert_eq!(exhausted.revision_targets, vec![Code]);
+        // A production defect found in Test routes to Code, never to Test itself.
+        let defect = offered_decisions_v4(FailureClass::ValidationFailed, Test, 2).unwrap();
+        assert!(!defect.allow_retry);
+        assert_eq!(defect.revision_targets, vec![Code]);
+        // A contract conflict in Code exposes the earlier approved stages as targets.
+        let conflict = offered_decisions_v4(FailureClass::ContractConflict, Code, 2).unwrap();
+        assert!(!conflict.allow_retry);
+        assert_eq!(
+            conflict.revision_targets,
+            vec![Code, Specification, Contract]
+        );
+        // ...but not stages that come after the failing one.
+        let early = offered_decisions_v4(FailureClass::ContractConflict, Specification, 0).unwrap();
+        assert_eq!(early.revision_targets, vec![Specification]);
+        // Missing toolchain: nothing a model or prose can fix; terminal.
+        assert_eq!(
+            offered_decisions_v4(FailureClass::ValidationUnavailable, Code, 2),
+            None
+        );
+        // Intake has no revision target: budget exhaustion there is terminal.
+        assert_eq!(
+            offered_decisions_v4(FailureClass::BudgetExhausted, Intake, 0),
+            None
+        );
+        assert!(
+            offered_decisions_v4(FailureClass::StaleInput, Test, 0)
+                .unwrap()
+                .allow_retry
+        );
     }
 
     #[test]

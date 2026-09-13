@@ -1,0 +1,72 @@
+{
+  "id": "simple-03-trim-username",
+  "family": "simple_maintenance",
+  "heldOut": false,
+  "sources": {
+    "src/user.rs": "pub fn normalize(name: &str) -> String {\n    name.to_string()\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Normalize user names",
+      "kind": "bug",
+      "description": "normalize in src/user.rs must trim whitespace and lowercase; add tests/user_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "normalize returns the trimmed, lowercased name"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_change",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/user.rs"
+      ],
+      "destinationPath": "src/user.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_change",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/user.rs"
+      ],
+      "destinationPath": "tests/user_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/user.rs": "pub fn normalize(name: &str) -> String {\n    name.trim().to_lowercase()\n}\n",
+    "tests/user_test.rs": "#[test]\nfn names_are_trimmed_and_lowercased() {\n    assert_eq!(user::normalize(\"  Ada \"), \"ada\");\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/user.rs",
+      "mustContain": [
+        ".trim().to_lowercase()"
+      ],
+      "mustNotContain": [
+        "pub fn normalize(name: &str) -> String {\n    name.to_string()\n}"
+      ]
+    },
+    {
+      "path": "tests/user_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": null
+}

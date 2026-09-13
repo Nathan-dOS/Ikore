@@ -1,0 +1,127 @@
+{
+  "id": "recovery-03-transport-on-test",
+  "family": "failure_recovery",
+  "heldOut": false,
+  "sources": {
+    "src/user.rs": "pub fn normalize(name: &str) -> String {\n    name.to_string()\n}\n",
+    "src/config.rs": "pub fn parse_port(raw: &str) -> u16 {\n    raw.parse().unwrap()\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Normalize user names",
+      "kind": "bug",
+      "description": "normalize in src/user.rs must trim and lowercase; add tests/user_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "normalize returns the trimmed, lowercased name"
+        }
+      ]
+    },
+    {
+      "title": "Port parsing must not panic",
+      "kind": "bug",
+      "description": "parse_port in src/config.rs must return Option<u16>; add tests/config_test.rs",
+      "criteria": [
+        {
+          "id": "ac-2",
+          "description": "parse_port returns None for a non-numeric port"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_first",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/user.rs"
+      ],
+      "destinationPath": "src/user.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "implement_second",
+      "kind": "code",
+      "task": 1,
+      "criterionIds": [
+        "ac-2"
+      ],
+      "inputPaths": [
+        "src/config.rs"
+      ],
+      "destinationPath": "src/config.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_first",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/user.rs"
+      ],
+      "destinationPath": "tests/user_test.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_second",
+      "kind": "test",
+      "task": 1,
+      "criterionIds": [
+        "ac-2"
+      ],
+      "inputPaths": [
+        "src/config.rs"
+      ],
+      "destinationPath": "tests/config_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/user.rs": "pub fn normalize(name: &str) -> String {\n    name.trim().to_lowercase()\n}\n",
+    "src/config.rs": "pub fn parse_port(raw: &str) -> Option<u16> {\n    raw.trim().parse::<u16>().ok()\n}\n",
+    "tests/user_test.rs": "#[test]\nfn names_are_trimmed_and_lowercased() {\n    assert_eq!(user::normalize(\"  Ada \"), \"ada\");\n}\n",
+    "tests/config_test.rs": "#[test]\nfn invalid_port_is_none() {\n    assert_eq!(config::parse_port(\"abc\"), None);\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/user.rs",
+      "mustContain": [
+        ".trim().to_lowercase()"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "src/config.rs",
+      "mustContain": [
+        "Option<u16>"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/user_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/config_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": {
+    "kind": "transport_once",
+    "stage": "Test"
+  }
+}

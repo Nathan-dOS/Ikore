@@ -1,0 +1,1483 @@
+{
+  "schemaVersion": 1,
+  "status": "proposed",
+  "implementationStatus": "not_started",
+  "note": "Standalone shape examples use illustrative UUIDs/hashes. schemaValid is tested by JSON Schema; hostRuleViolation cases require future Rust semantic tests and are not claimed executed.",
+  "examples": [
+    {
+      "name": "code_anchor_response",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "outcome": "completed",
+        "executorKind": "code_implementer",
+        "payload": {
+          "edits": [
+            {
+              "artifactKey": "edit_a",
+              "edit": {
+                "operation": "replace_anchor",
+                "anchorRef": "anchor_a",
+                "content": "return Ok(value);"
+              }
+            }
+          ],
+          "evidence": [
+            {
+              "taskRef": "task_a",
+              "criterionRefs": [
+                "criterion_a"
+              ],
+              "artifactKeys": [
+                "edit_a"
+              ],
+              "inputRefs": [
+                "source_a"
+              ],
+              "explanation": "The owned change implements the approved behavior."
+            }
+          ],
+          "usedRefs": [
+            "source_a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "specification_response",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "outcome": "completed",
+        "executorKind": "specification_author",
+        "payload": {
+          "objective": "Implement the approved behavior.",
+          "exclusions": [
+            "No unrelated interface change."
+          ],
+          "decisions": [
+            "Preserve the public signature."
+          ],
+          "requirements": [
+            {
+              "taskRef": "task_a",
+              "criterionRef": "criterion_a",
+              "requirement": "Return the approved value.",
+              "verificationIntent": "Execute the configured behavioral test.",
+              "verificationMode": "executed_check",
+              "requiredCheckRefs": [
+                "behavior_check"
+              ],
+              "notApplicableReason": null
+            }
+          ],
+          "existingFileRefs": [
+            "source_a"
+          ],
+          "plannedFileRefs": [
+            "new_test"
+          ],
+          "interfaceIntent": [
+            {
+              "intent": "preserve",
+              "sourceRefs": [
+                "source_a"
+              ],
+              "criterionRefs": [
+                "criterion_a"
+              ],
+              "description": "Preserve the existing public signature."
+            }
+          ],
+          "unitProposals": [
+            {
+              "unitKey": "implement_a",
+              "kind": "code",
+              "taskRefs": [
+                "task_a"
+              ],
+              "criterionRefs": [
+                "criterion_a"
+              ],
+              "inputRefs": [
+                "source_a"
+              ],
+              "destinationRefs": [
+                "source_a"
+              ],
+              "dependsOn": [],
+              "objective": "Implement the approved behavior."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "intake_response",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "outcome": "completed",
+        "executorKind": "intake_classifier",
+        "payload": {
+          "tasks": [
+            {
+              "taskRef": "task_a",
+              "classification": "bugfix",
+              "risk": "unknown",
+              "summary": "Classify the requested behavior correction."
+            }
+          ],
+          "issues": [
+            "The baseline check has not run."
+          ],
+          "usedRefs": []
+        }
+      }
+    },
+    {
+      "name": "contract_preservation_response",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "outcome": "completed",
+        "executorKind": "contract_author",
+        "payload": {
+          "groups": [
+            {
+              "interfaceKey": "public_api",
+              "intent": "preserve",
+              "sourceRefs": [
+                "source_a"
+              ],
+              "criterionRefs": [
+                "criterion_a"
+              ],
+              "signature": "fn value() -> Result<Value, Error>",
+              "invariants": [
+                "Preserve error behavior."
+              ]
+            }
+          ],
+          "unitBindings": [
+            {
+              "unitKey": "implement_a",
+              "interfaceKeys": [
+                "public_api"
+              ],
+              "dependsOn": []
+            }
+          ],
+          "usedRefs": [
+            "source_a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "test_author_response",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "outcome": "completed",
+        "executorKind": "test_author",
+        "payload": {
+          "edits": [],
+          "coverage": [
+            {
+              "taskRef": "task_a",
+              "criterionRef": "criterion_a",
+              "coverage": "existing",
+              "testArtifactKeys": [],
+              "testInputRefs": [
+                "test_a"
+              ],
+              "checkRefs": [
+                "behavior_check"
+              ],
+              "explanation": "The approved existing test covers this criterion."
+            }
+          ],
+          "evidence": [
+            {
+              "taskRef": "task_a",
+              "criterionRefs": [
+                "criterion_a"
+              ],
+              "artifactKeys": [],
+              "inputRefs": [
+                "test_a"
+              ],
+              "explanation": "The owned change implements the approved behavior."
+            }
+          ],
+          "usedRefs": [
+            "test_a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "test_repairer_response",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "outcome": "completed",
+        "executorKind": "test_repairer",
+        "payload": {
+          "edits": [],
+          "coverage": [
+            {
+              "taskRef": "task_a",
+              "criterionRef": "criterion_a",
+              "coverage": "existing",
+              "testArtifactKeys": [],
+              "testInputRefs": [
+                "test_a"
+              ],
+              "checkRefs": [
+                "behavior_check"
+              ],
+              "explanation": "The approved existing test covers this criterion."
+            }
+          ],
+          "evidence": [
+            {
+              "taskRef": "task_a",
+              "criterionRefs": [
+                "criterion_a"
+              ],
+              "artifactKeys": [],
+              "inputRefs": [
+                "test_a"
+              ],
+              "explanation": "The owned change implements the approved behavior."
+            }
+          ],
+          "usedRefs": [
+            "test_a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "code_repairer_response",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "outcome": "completed",
+        "executorKind": "code_repairer",
+        "payload": {
+          "edits": [
+            {
+              "artifactKey": "edit_a",
+              "edit": {
+                "operation": "replace_anchor",
+                "anchorRef": "anchor_a",
+                "content": "return Ok(value);"
+              }
+            }
+          ],
+          "evidence": [
+            {
+              "taskRef": "task_a",
+              "criterionRefs": [
+                "criterion_a"
+              ],
+              "artifactKeys": [
+                "edit_a"
+              ],
+              "inputRefs": [
+                "source_a"
+              ],
+              "explanation": "The owned change implements the approved behavior."
+            }
+          ],
+          "usedRefs": [
+            "source_a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "integration_response",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "outcome": "completed",
+        "executorKind": "integration_reviewer",
+        "payload": {
+          "assessments": [
+            {
+              "taskRef": "task_a",
+              "criterionRef": "criterion_a",
+              "verdict": "unverified",
+              "inputRefs": [
+                "source_a"
+              ],
+              "checkRefs": [
+                "behavior_check"
+              ],
+              "explanation": "The required receipt is unavailable."
+            }
+          ],
+          "blockers": [
+            "Required execution evidence is unavailable."
+          ],
+          "documentationEdits": [],
+          "usedRefs": [
+            "source_a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "clarification_response",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "outcome": "needs_input",
+        "missingRefs": [
+          "missing_a"
+        ],
+        "questions": [
+          {
+            "key": "question_a",
+            "taskRefs": [
+              "task_a"
+            ],
+            "question": "Which public behavior is required?",
+            "rationale": "The approved input contains conflicting expectations."
+          }
+        ]
+      }
+    },
+    {
+      "name": "contract_conflict_response",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "outcome": "failed",
+        "code": "contract_conflict",
+        "message": "The requested behavior conflicts with the approved interface invariant.",
+        "relatedRefs": [
+          "source_a"
+        ]
+      }
+    },
+    {
+      "name": "existing_source_reference",
+      "definition": "ReferenceEntryV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "ref": "source_a",
+        "kind": "existing_source",
+        "relativePath": "src/lib.rs",
+        "contentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "sourceRole": "source"
+      }
+    },
+    {
+      "name": "planned_destination_reference",
+      "definition": "ReferenceEntryV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "ref": "new_test",
+        "kind": "planned_destination",
+        "relativePath": "tests/behavior.rs",
+        "sourceRole": "test"
+      }
+    },
+    {
+      "name": "candidate_source_reference",
+      "definition": "ReferenceEntryV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "ref": "source_a",
+        "kind": "candidate_source",
+        "relativePath": "src/lib.rs",
+        "contentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "sourceRole": "source",
+        "producerUnitId": "10000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "unavailable_reference",
+      "definition": "ReferenceEntryV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "ref": "missing_a",
+        "kind": "unavailable",
+        "reason": "missing",
+        "hint": "The test source is not present."
+      }
+    },
+    {
+      "name": "create_file_edit",
+      "definition": "EditOperationV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "operation": "create_file",
+        "destinationRef": "new_test",
+        "content": "// Approved test fixture.\n"
+      }
+    },
+    {
+      "name": "replace_file_edit",
+      "definition": "EditOperationV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "operation": "replace_file",
+        "sourceRef": "source_a",
+        "content": "fn value() {}\n"
+      }
+    },
+    {
+      "name": "remove_exact_region_edit",
+      "definition": "EditOperationV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "operation": "replace_anchor",
+        "anchorRef": "anchor_a",
+        "content": ""
+      }
+    },
+    {
+      "name": "execution_plan",
+      "definition": "StageExecutionPlanV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "stageExecutionId": "10000000-0000-4000-8000-000000000002",
+        "budgetAccountId": "10000000-0000-4000-8000-000000000001",
+        "parentFence": {
+          "projectId": "10000000-0000-4000-8000-000000000001",
+          "pulsationId": "10000000-0000-4000-8000-000000000002",
+          "inputRevision": 1,
+          "jobId": "10000000-0000-4000-8000-000000000001",
+          "generation": 1,
+          "stateVersion": 1
+        },
+        "stage": "code",
+        "recipeVersion": 1,
+        "policySha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "batchSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "approvedContractSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "planSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "scope": [
+          {
+            "taskRef": "task_a",
+            "criterionRefs": [
+              "criterion_a"
+            ]
+          }
+        ],
+        "references": [
+          {
+            "ref": "source_a",
+            "kind": "existing_source",
+            "relativePath": "src/lib.rs",
+            "contentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "sourceRole": "source"
+          },
+          {
+            "ref": "new_test",
+            "kind": "planned_destination",
+            "relativePath": "tests/behavior.rs",
+            "sourceRole": "test"
+          }
+        ],
+        "anchors": [
+          {
+            "anchorRef": "anchor_a",
+            "sourceRef": "source_a",
+            "sourceSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "startByte": 0,
+            "endByte": 4,
+            "regionSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "checkRefs": [
+          "behavior_check"
+        ],
+        "units": [
+          {
+            "schemaVersion": 1,
+            "unitId": "10000000-0000-4000-8000-000000000001",
+            "logicalUnitKey": "implement_a",
+            "stage": "code",
+            "executorKind": "code_implementer",
+            "taskRefs": [
+              "task_a"
+            ],
+            "criterionRefs": [
+              "criterion_a"
+            ],
+            "dependencies": [],
+            "inputRefs": [
+              "source_a"
+            ],
+            "ownedDestinationRefs": [
+              "source_a"
+            ],
+            "requiredCheckRefs": [
+              "behavior_check"
+            ],
+            "objective": "Implement the approved behavior.",
+            "maxOutputTokens": 1000
+          }
+        ],
+        "profileBindings": [
+          {
+            "unitId": "10000000-0000-4000-8000-000000000001",
+            "executorKind": "code_implementer",
+            "profileSnapshotId": "10000000-0000-4000-8000-000000000001"
+          },
+          {
+            "unitId": "10000000-0000-4000-8000-000000000001",
+            "executorKind": "code_repairer",
+            "profileSnapshotId": "10000000-0000-4000-8000-000000000002"
+          }
+        ],
+        "budget": {
+          "initialInvocationLimit": 1,
+          "extraInvocationLimit": 2,
+          "perUnitExtraInvocationLimit": 1,
+          "initialOutputTokenLimit": 2000,
+          "extraOutputTokenLimit": 2000,
+          "initialPromptCharacterLimit": 64000,
+          "extraPromptCharacterLimit": 64000,
+          "maxInFlightUnits": 1
+        }
+      }
+    },
+    {
+      "name": "host_result",
+      "definition": "WorkUnitResultV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "stageExecutionId": "10000000-0000-4000-8000-000000000002",
+        "unitId": "10000000-0000-4000-8000-000000000001",
+        "attemptId": "10000000-0000-4000-8000-000000000002",
+        "unitGeneration": 1,
+        "inputSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "resultSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "validationState": "validated",
+        "profileSnapshotId": "10000000-0000-4000-8000-000000000001",
+        "originalAttemptId": "10000000-0000-4000-8000-000000000002",
+        "response": {
+          "schemaVersion": 1,
+          "outcome": "completed",
+          "executorKind": "code_implementer",
+          "payload": {
+            "edits": [
+              {
+                "artifactKey": "edit_a",
+                "edit": {
+                  "operation": "replace_anchor",
+                  "anchorRef": "anchor_a",
+                  "content": "return Ok(value);"
+                }
+              }
+            ],
+            "evidence": [
+              {
+                "taskRef": "task_a",
+                "criterionRefs": [
+                  "criterion_a"
+                ],
+                "artifactKeys": [
+                  "edit_a"
+                ],
+                "inputRefs": [
+                  "source_a"
+                ],
+                "explanation": "The owned change implements the approved behavior."
+              }
+            ],
+            "usedRefs": [
+              "source_a"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "aggregate",
+      "definition": "StageAggregateV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "stageExecutionId": "10000000-0000-4000-8000-000000000002",
+        "stage": "code",
+        "planSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "artifacts": [
+          {
+            "artifactKey": "edit_a",
+            "relativePath": "src/lib.rs",
+            "kind": "code",
+            "content": "fn value() {}\n",
+            "contentSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "taskEvidence": [
+          {
+            "taskRef": "task_a",
+            "criterionRefs": [
+              "criterion_a"
+            ],
+            "artifactKeys": [
+              "edit_a"
+            ],
+            "inputRefs": [
+              "source_a"
+            ],
+            "explanation": "The owned change implements the approved behavior."
+          }
+        ],
+        "validationReceiptIds": [
+          "10000000-0000-4000-8000-000000000001"
+        ],
+        "findings": []
+      }
+    },
+    {
+      "name": "passed_receipt_shape",
+      "definition": "ValidationReceiptV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "receiptId": "10000000-0000-4000-8000-000000000001",
+        "stageExecutionId": "10000000-0000-4000-8000-000000000002",
+        "parentGeneration": 1,
+        "checkRef": "behavior_check",
+        "profileSnapshotId": "10000000-0000-4000-8000-000000000001",
+        "profileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "candidateSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "inputManifestSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "toolchainSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "environmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "status": "passed",
+        "exitCode": 0,
+        "startedAt": "2026-09-12T12:00:00Z",
+        "finishedAt": "2026-09-12T12:00:01Z",
+        "stdout": {
+          "text": "Fixture check completed.",
+          "truncated": false
+        },
+        "stderr": {
+          "text": "",
+          "truncated": false
+        },
+        "diagnostics": [],
+        "baselineReceiptId": null
+      }
+    },
+    {
+      "name": "not_run_receipt_shape",
+      "definition": "ValidationReceiptV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "receiptId": "10000000-0000-4000-8000-000000000001",
+        "stageExecutionId": "10000000-0000-4000-8000-000000000002",
+        "parentGeneration": 1,
+        "checkRef": "behavior_check",
+        "profileSnapshotId": "10000000-0000-4000-8000-000000000001",
+        "profileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "candidateSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "inputManifestSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "toolchainSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "environmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "status": "not_run",
+        "exitCode": null,
+        "startedAt": null,
+        "finishedAt": null,
+        "stdout": {
+          "text": "Fixture check completed.",
+          "truncated": false
+        },
+        "stderr": {
+          "text": "",
+          "truncated": false
+        },
+        "diagnostics": [],
+        "baselineReceiptId": null
+      }
+    },
+    {
+      "name": "validation_profile",
+      "definition": "ValidationCommandProfileV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "profileId": "10000000-0000-4000-8000-000000000001",
+        "profileVersion": 1,
+        "checkRef": "behavior_check",
+        "kind": "test",
+        "required": true,
+        "executable": "C:/configured-tools/fixture-check.exe",
+        "argv": [
+          "--fixture",
+          "behavior"
+        ],
+        "cwdRelativePath": ".",
+        "inputGlobs": [
+          "src/**",
+          "tests/**",
+          "Cargo.lock"
+        ],
+        "environmentNames": [],
+        "toolchainIdentity": "Pinned fixture runner revision.",
+        "timeoutSeconds": 180,
+        "maxLogBytes": 1048576
+      }
+    },
+    {
+      "name": "retry_command",
+      "definition": "StageRecoveryCommandV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "projectId": "10000000-0000-4000-8000-000000000001",
+        "pulsationId": "10000000-0000-4000-8000-000000000002",
+        "stageExecutionId": "10000000-0000-4000-8000-000000000001",
+        "requestId": "10000000-0000-4000-8000-000000000002",
+        "expectedParentGeneration": 1,
+        "expectedParentStateVersion": 1,
+        "expectedExecutionVersion": 1,
+        "action": "retry",
+        "profileSnapshotId": null
+      }
+    },
+    {
+      "name": "revise_command",
+      "definition": "StageRecoveryCommandV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "projectId": "10000000-0000-4000-8000-000000000001",
+        "pulsationId": "10000000-0000-4000-8000-000000000002",
+        "stageExecutionId": "10000000-0000-4000-8000-000000000001",
+        "requestId": "10000000-0000-4000-8000-000000000002",
+        "expectedParentGeneration": 1,
+        "expectedParentStateVersion": 1,
+        "expectedExecutionVersion": 1,
+        "action": "revise",
+        "targetStage": "contract",
+        "reason": "Resolve the diagnosed approved-contract conflict."
+      }
+    },
+    {
+      "name": "abort_command",
+      "definition": "StageRecoveryCommandV1",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "projectId": "10000000-0000-4000-8000-000000000001",
+        "pulsationId": "10000000-0000-4000-8000-000000000002",
+        "stageExecutionId": "10000000-0000-4000-8000-000000000001",
+        "requestId": "10000000-0000-4000-8000-000000000002",
+        "expectedParentGeneration": 1,
+        "expectedParentStateVersion": 1,
+        "expectedExecutionVersion": 1,
+        "action": "abort"
+      }
+    },
+    {
+      "name": "snapshot",
+      "definition": "StageExecutionSnapshot",
+      "schemaValid": true,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "projectId": "10000000-0000-4000-8000-000000000001",
+        "pulsationId": "10000000-0000-4000-8000-000000000002",
+        "stageExecutionId": "10000000-0000-4000-8000-000000000001",
+        "stage": "code",
+        "parentGeneration": 1,
+        "parentStateVersion": 1,
+        "executionVersion": 1,
+        "status": "parked",
+        "units": [
+          {
+            "unitId": "10000000-0000-4000-8000-000000000001",
+            "logicalUnitKey": "implement_a",
+            "executorKind": "code_implementer",
+            "generation": 1,
+            "stateVersion": 1,
+            "state": "failed",
+            "reusedFromAttemptId": null,
+            "attempts": [
+              {
+                "attemptId": "10000000-0000-4000-8000-000000000002",
+                "state": "rejected",
+                "executorKind": "code_implementer",
+                "effectiveModel": "configured-cheap-model",
+                "profileSnapshotId": "10000000-0000-4000-8000-000000000001",
+                "errorCode": "invalid_shape",
+                "usage": {
+                  "inputTokens": null,
+                  "outputTokens": null,
+                  "reasoningTokens": null,
+                  "cachedInputTokens": null,
+                  "completeness": "unavailable"
+                }
+              }
+            ]
+          }
+        ],
+        "blockedReason": "A bounded recovery decision is required.",
+        "checks": [],
+        "remainingBudget": {
+          "initialInvocations": 0,
+          "extraInvocations": 2,
+          "initialOutputTokens": 1000,
+          "extraOutputTokens": 2000,
+          "initialPromptCharacters": 60000,
+          "extraPromptCharacters": 64000
+        },
+        "usage": {
+          "inputTokens": null,
+          "outputTokens": null,
+          "reasoningTokens": null,
+          "cachedInputTokens": null,
+          "completeness": "unavailable"
+        }
+      }
+    },
+    {
+      "name": "unknown_version",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 2,
+        "outcome": "completed",
+        "executorKind": "code_implementer",
+        "payload": {
+          "edits": [
+            {
+              "artifactKey": "edit_a",
+              "edit": {
+                "operation": "replace_anchor",
+                "anchorRef": "anchor_a",
+                "content": "return Ok(value);"
+              }
+            }
+          ],
+          "evidence": [
+            {
+              "taskRef": "task_a",
+              "criterionRefs": [
+                "criterion_a"
+              ],
+              "artifactKeys": [
+                "edit_a"
+              ],
+              "inputRefs": [
+                "source_a"
+              ],
+              "explanation": "The owned change implements the approved behavior."
+            }
+          ],
+          "usedRefs": [
+            "source_a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "worker_forces_stage",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "outcome": "completed",
+        "executorKind": "code_implementer",
+        "payload": {
+          "edits": [
+            {
+              "artifactKey": "edit_a",
+              "edit": {
+                "operation": "replace_anchor",
+                "anchorRef": "anchor_a",
+                "content": "return Ok(value);"
+              }
+            }
+          ],
+          "evidence": [
+            {
+              "taskRef": "task_a",
+              "criterionRefs": [
+                "criterion_a"
+              ],
+              "artifactKeys": [
+                "edit_a"
+              ],
+              "inputRefs": [
+                "source_a"
+              ],
+              "explanation": "The owned change implements the approved behavior."
+            }
+          ],
+          "usedRefs": [
+            "source_a"
+          ]
+        },
+        "nextStage": "test"
+      }
+    },
+    {
+      "name": "mismatched_specialty_payload",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "outcome": "completed",
+        "executorKind": "intake_classifier",
+        "payload": {
+          "edits": [
+            {
+              "artifactKey": "edit_a",
+              "edit": {
+                "operation": "replace_anchor",
+                "anchorRef": "anchor_a",
+                "content": "return Ok(value);"
+              }
+            }
+          ],
+          "evidence": [
+            {
+              "taskRef": "task_a",
+              "criterionRefs": [
+                "criterion_a"
+              ],
+              "artifactKeys": [
+                "edit_a"
+              ],
+              "inputRefs": [
+                "source_a"
+              ],
+              "explanation": "The owned change implements the approved behavior."
+            }
+          ],
+          "usedRefs": [
+            "source_a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "raw_command_edit",
+      "definition": "EditOperationV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "operation": "shell",
+        "command": "cargo test"
+      }
+    },
+    {
+      "name": "raw_path_edit",
+      "definition": "EditOperationV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "operation": "create_file",
+        "destinationRef": "new_test",
+        "content": "x",
+        "path": "src/x.rs"
+      }
+    },
+    {
+      "name": "planned_fake_hash",
+      "definition": "ReferenceEntryV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "ref": "new_test",
+        "kind": "planned_destination",
+        "relativePath": "tests/behavior.rs",
+        "sourceRole": "test",
+        "contentSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "name": "missing_existing_hash",
+      "definition": "ReferenceEntryV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "ref": "source_a",
+        "kind": "existing_source",
+        "relativePath": "src/lib.rs",
+        "sourceRole": "source"
+      }
+    },
+    {
+      "name": "traversal_path",
+      "definition": "RelativePath",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": "../secret"
+    },
+    {
+      "name": "drive_path",
+      "definition": "RelativePath",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": "C:/secret"
+    },
+    {
+      "name": "backslash_path",
+      "definition": "RelativePath",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": "src\\lib.rs"
+    },
+    {
+      "name": "double_separator_path",
+      "definition": "RelativePath",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": "src//lib.rs"
+    },
+    {
+      "name": "trailing_space_path",
+      "definition": "RelativePath",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": "src/a /b"
+    },
+    {
+      "name": "too_many_parallel_units",
+      "definition": "StageBudgetV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "initialInvocationLimit": 1,
+        "extraInvocationLimit": 2,
+        "perUnitExtraInvocationLimit": 1,
+        "initialOutputTokenLimit": 2000,
+        "extraOutputTokenLimit": 2000,
+        "initialPromptCharacterLimit": 64000,
+        "extraPromptCharacterLimit": 64000,
+        "maxInFlightUnits": 3
+      }
+    },
+    {
+      "name": "duplicate_dependency",
+      "definition": "WorkUnitSpecV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "unitId": "10000000-0000-4000-8000-000000000001",
+        "logicalUnitKey": "implement_a",
+        "stage": "code",
+        "executorKind": "code_implementer",
+        "taskRefs": [
+          "task_a"
+        ],
+        "criterionRefs": [
+          "criterion_a"
+        ],
+        "dependencies": [
+          "10000000-0000-4000-8000-000000000002",
+          "10000000-0000-4000-8000-000000000002"
+        ],
+        "inputRefs": [
+          "source_a"
+        ],
+        "ownedDestinationRefs": [
+          "source_a"
+        ],
+        "requiredCheckRefs": [
+          "behavior_check"
+        ],
+        "objective": "Implement the approved behavior.",
+        "maxOutputTokens": 1000
+      }
+    },
+    {
+      "name": "worker_claims_test_pass",
+      "definition": "TestPayloadV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "edits": [],
+        "coverage": [
+          {
+            "taskRef": "task_a",
+            "criterionRef": "criterion_a",
+            "coverage": "existing",
+            "testArtifactKeys": [],
+            "testInputRefs": [
+              "test_a"
+            ],
+            "checkRefs": [
+              "behavior_check"
+            ],
+            "explanation": "The approved existing test covers this criterion."
+          }
+        ],
+        "evidence": [
+          {
+            "taskRef": "task_a",
+            "criterionRefs": [
+              "criterion_a"
+            ],
+            "artifactKeys": [],
+            "inputRefs": [
+              "test_a"
+            ],
+            "explanation": "The owned change implements the approved behavior."
+          }
+        ],
+        "usedRefs": [
+          "test_a"
+        ],
+        "passed": true
+      }
+    },
+    {
+      "name": "missing_nullable_receipt_field",
+      "definition": "ValidationReceiptV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "receiptId": "10000000-0000-4000-8000-000000000001",
+        "stageExecutionId": "10000000-0000-4000-8000-000000000002",
+        "parentGeneration": 1,
+        "checkRef": "behavior_check",
+        "profileSnapshotId": "10000000-0000-4000-8000-000000000001",
+        "profileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "candidateSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "inputManifestSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "toolchainSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "environmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "status": "passed",
+        "exitCode": 0,
+        "startedAt": "2026-09-12T12:00:00Z",
+        "finishedAt": "2026-09-12T12:00:01Z",
+        "stdout": {
+          "text": "Fixture check completed.",
+          "truncated": false
+        },
+        "stderr": {
+          "text": "",
+          "truncated": false
+        },
+        "diagnostics": []
+      }
+    },
+    {
+      "name": "float_generation",
+      "definition": "WorkUnitSpecV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "unitId": "10000000-0000-4000-8000-000000000001",
+        "logicalUnitKey": "implement_a",
+        "stage": "code",
+        "executorKind": "code_implementer",
+        "taskRefs": [
+          "task_a"
+        ],
+        "criterionRefs": [
+          "criterion_a"
+        ],
+        "dependencies": [],
+        "inputRefs": [
+          "source_a"
+        ],
+        "ownedDestinationRefs": [
+          "source_a"
+        ],
+        "requiredCheckRefs": [
+          "behavior_check"
+        ],
+        "objective": "Implement the approved behavior.",
+        "maxOutputTokens": 1.5
+      }
+    },
+    {
+      "name": "boolean_token_limit",
+      "definition": "WorkUnitSpecV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "unitId": "10000000-0000-4000-8000-000000000001",
+        "logicalUnitKey": "implement_a",
+        "stage": "code",
+        "executorKind": "code_implementer",
+        "taskRefs": [
+          "task_a"
+        ],
+        "criterionRefs": [
+          "criterion_a"
+        ],
+        "dependencies": [],
+        "inputRefs": [
+          "source_a"
+        ],
+        "ownedDestinationRefs": [
+          "source_a"
+        ],
+        "requiredCheckRefs": [
+          "behavior_check"
+        ],
+        "objective": "Implement the approved behavior.",
+        "maxOutputTokens": true
+      }
+    },
+    {
+      "name": "revise_without_reason",
+      "definition": "StageRecoveryCommandV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "projectId": "10000000-0000-4000-8000-000000000001",
+        "pulsationId": "10000000-0000-4000-8000-000000000002",
+        "stageExecutionId": "10000000-0000-4000-8000-000000000001",
+        "requestId": "10000000-0000-4000-8000-000000000002",
+        "expectedParentGeneration": 1,
+        "expectedParentStateVersion": 1,
+        "expectedExecutionVersion": 1,
+        "action": "revise",
+        "targetStage": "contract"
+      }
+    },
+    {
+      "name": "empty_clarification",
+      "definition": "UnitModelResponseV1",
+      "schemaValid": false,
+      "hostRuleViolation": null,
+      "purpose": "Shape conformance fixture; hashes, IDs and source content are illustrative, not execution evidence.",
+      "instance": {
+        "schemaVersion": 1,
+        "outcome": "needs_input",
+        "missingRefs": [],
+        "questions": []
+      }
+    },
+    {
+      "name": "host_rejects_unknown_task",
+      "definition": "EvidenceItemV1",
+      "schemaValid": true,
+      "hostRuleViolation": "SC-002",
+      "purpose": "Host resolves task and criterion ownership against the frozen batch.",
+      "instance": {
+        "taskRef": "not_in_batch",
+        "criterionRefs": [
+          "criterion_a"
+        ],
+        "artifactKeys": [
+          "edit_a"
+        ],
+        "inputRefs": [
+          "source_a"
+        ],
+        "explanation": "The owned change implements the approved behavior."
+      }
+    },
+    {
+      "name": "host_rejects_self_dependency",
+      "definition": "WorkUnitSpecV1",
+      "schemaValid": true,
+      "hostRuleViolation": "SC-006",
+      "purpose": "Host graph admission rejects self edges and cycles.",
+      "instance": {
+        "schemaVersion": 1,
+        "unitId": "10000000-0000-4000-8000-000000000001",
+        "logicalUnitKey": "implement_a",
+        "stage": "code",
+        "executorKind": "code_implementer",
+        "taskRefs": [
+          "task_a"
+        ],
+        "criterionRefs": [
+          "criterion_a"
+        ],
+        "dependencies": [
+          "10000000-0000-4000-8000-000000000001"
+        ],
+        "inputRefs": [
+          "source_a"
+        ],
+        "ownedDestinationRefs": [
+          "source_a"
+        ],
+        "requiredCheckRefs": [
+          "behavior_check"
+        ],
+        "objective": "Implement the approved behavior.",
+        "maxOutputTokens": 1000
+      }
+    },
+    {
+      "name": "host_rejects_fake_pass",
+      "definition": "ValidationReceiptV1",
+      "schemaValid": true,
+      "hostRuleViolation": "SC-011",
+      "purpose": "Only actual successful host execution can produce a passed receipt.",
+      "instance": {
+        "schemaVersion": 1,
+        "receiptId": "10000000-0000-4000-8000-000000000001",
+        "stageExecutionId": "10000000-0000-4000-8000-000000000002",
+        "parentGeneration": 1,
+        "checkRef": "behavior_check",
+        "profileSnapshotId": "10000000-0000-4000-8000-000000000001",
+        "profileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "candidateSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "inputManifestSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "toolchainSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "environmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "status": "passed",
+        "exitCode": null,
+        "startedAt": null,
+        "finishedAt": null,
+        "stdout": {
+          "text": "Fixture check completed.",
+          "truncated": false
+        },
+        "stderr": {
+          "text": "",
+          "truncated": false
+        },
+        "diagnostics": [],
+        "baselineReceiptId": null
+      }
+    },
+    {
+      "name": "host_rejects_reserved_device",
+      "definition": "RelativePath",
+      "schemaValid": true,
+      "hostRuleViolation": "SC-003",
+      "purpose": "Windows device-name and canonical identity checks are host rules.",
+      "instance": "src/CON.rs"
+    },
+    {
+      "name": "host_rejects_unknown_anchor",
+      "definition": "EditOperationV1",
+      "schemaValid": true,
+      "hostRuleViolation": "SC-009",
+      "purpose": "The host rejects an anchor not issued for the frozen source.",
+      "instance": {
+        "operation": "replace_anchor",
+        "anchorRef": "not_delivered",
+        "content": "x"
+      }
+    },
+    {
+      "name": "host_rejects_task_criterion_mismatch",
+      "definition": "EvidenceItemV1",
+      "schemaValid": true,
+      "hostRuleViolation": "SC-010",
+      "purpose": "The host verifies criterion ownership, not only handle shape.",
+      "instance": {
+        "taskRef": "task_a",
+        "criterionRefs": [
+          "criterion_from_another_task"
+        ],
+        "artifactKeys": [
+          "edit_a"
+        ],
+        "inputRefs": [
+          "source_a"
+        ],
+        "explanation": "The owned change implements the approved behavior."
+      }
+    }
+  ]
+}

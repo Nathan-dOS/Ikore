@@ -12,8 +12,8 @@ use super::{
     SourceRevision,
 };
 
-pub const LEGACY_PIPELINE_VERSION: u8 = 1;
-pub const CURRENT_PIPELINE_VERSION: u8 = 2;
+pub const LEGACY_PIPELINE_VERSION: u8 = super::PipelineVersion::V1.as_u8();
+pub const CURRENT_PIPELINE_VERSION: u8 = super::PipelineVersion::FREE_FORM.as_u8();
 pub const MAX_DESCRIPTION_CHARS: usize = 16_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,10 +162,21 @@ pub enum JobClass {
 /// passes and a fixed "X/Y" would lie mid-run.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IndexingEvent {
-    Progress { workspace_path: String, remaining: usize },
-    Paused { workspace_path: String, remaining: usize },
-    Idle { workspace_path: String },
-    Failed { workspace_path: String, error: String },
+    Progress {
+        workspace_path: String,
+        remaining: usize,
+    },
+    Paused {
+        workspace_path: String,
+        remaining: usize,
+    },
+    Idle {
+        workspace_path: String,
+    },
+    Failed {
+        workspace_path: String,
+        error: String,
+    },
 }
 
 impl IndexingEvent {
@@ -506,8 +517,31 @@ pub enum StageOutcome {
     },
 }
 
+/// Which artifacts the English guard judges at acceptance.
+///
+/// A legacy stage accepts prose the model composed, so every artifact is
+/// judged whole. A composed stage (ADR-022) judges each model-authored field
+/// before rendering (SC-008) and then renders documents that quote the
+/// developer's own task titles and criteria verbatim; judging those documents
+/// again would reject a correct English report for the Portuguese scope it
+/// was required to copy. Only the composed coordinator selects `HostRendered`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArtifactLanguageGuard {
+    #[default]
+    ModelAuthored,
+    HostRendered,
+}
+
 impl StageOutcome {
     pub fn validate_for(&self, stage: PulsationStage) -> Result<(), ContractError> {
+        self.validate_with(stage, ArtifactLanguageGuard::ModelAuthored)
+    }
+
+    pub fn validate_with(
+        &self,
+        stage: PulsationStage,
+        guard: ArtifactLanguageGuard,
+    ) -> Result<(), ContractError> {
         match self {
             Self::Completed {
                 summary, artifacts, ..
@@ -540,16 +574,18 @@ impl StageOutcome {
                         return Err(ContractError::Invalid("artifact component_proposal"));
                     }
                 }
-                for artifact in artifacts {
-                    validate_agent_artifact(
-                        &artifact.name,
-                        artifact
-                            .relative_path
-                            .as_ref()
-                            .map(RelativeSourcePath::as_str),
-                        &artifact.content,
-                    )
-                    .map_err(|_| ContractError::Invalid("agent artifact must be English"))?;
+                if guard == ArtifactLanguageGuard::ModelAuthored {
+                    for artifact in artifacts {
+                        validate_agent_artifact(
+                            &artifact.name,
+                            artifact
+                                .relative_path
+                                .as_ref()
+                                .map(RelativeSourcePath::as_str),
+                            &artifact.content,
+                        )
+                        .map_err(|_| ContractError::Invalid("agent artifact must be English"))?;
+                    }
                 }
             }
             Self::NeedsClarification { questions } => {
@@ -698,4 +734,9 @@ pub struct PulsationCoordinationSnapshot {
     pub learning: LearningState,
     pub learning_run: Option<super::LearningRunSnapshot>,
     pub artifact_ids: Vec<String>,
+    /// The latest composed stage execution (pipeline v4) with its units,
+    /// attempts, checks and remaining budget; `None` for v1-v3 pulsations
+    /// or before the first admission (ADR-022).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_execution: Option<super::composition::StageExecutionSnapshot>,
 }

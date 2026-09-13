@@ -368,6 +368,7 @@ fn detail_overview(
             panel.child(brownfield_progress_panel(coverage))
         })
         .child(coordination_panel(model, cx))
+        .child(composition_panel(model, cx))
         .child(crate::usage::pulsation_usage_panel(model, cx))
         .child(
             div()
@@ -1270,6 +1271,131 @@ fn coordination_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElemen
         .into_any_element()
 }
 
+/// The composed execution of the active pulsation's current stage (pipeline
+/// v4, ADR-022): units with their real states, attempts, effective model and
+/// real versus reserved usage, host checks apart from authored coverage, and
+/// the remaining shared budget. Child results have no approval control here
+/// (SC-021): the human decides on the stage's Markdown review.
+fn composition_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    use hvc_core::orchestration::composition::{
+        AttemptState, CheckStatus, ExecutionStatus, UnitState, UsageCompleteness,
+    };
+    let state = model.pulsations.read(cx);
+    let Some(snapshot) = state
+        .detail()
+        .and_then(|detail| detail.stage_execution.clone())
+    else {
+        return div().into_any_element();
+    };
+    let status = match snapshot.status {
+        ExecutionStatus::Planned => "planned",
+        ExecutionStatus::Running => "running",
+        ExecutionStatus::Validating => "validating",
+        ExecutionStatus::Ready => "ready",
+        ExecutionStatus::Accepted => "accepted",
+        ExecutionStatus::Parked => "parked · awaiting a decision",
+        ExecutionStatus::Cancelled => "cancelled",
+        ExecutionStatus::Superseded => "superseded",
+        ExecutionStatus::Failed => "failed",
+    };
+    let tokens = |value: Option<u32>| {
+        value
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "unavailable".into())
+    };
+    let completeness = match snapshot.usage.completeness {
+        UsageCompleteness::Complete => "complete",
+        UsageCompleteness::Partial => "partial",
+        UsageCompleteness::Unavailable => "unavailable",
+    };
+    let budget = snapshot.remaining_budget.clone();
+    div().mb_3().p_3().rounded_md().border_1().border_color(theme::border())
+        .debug_selector(|| "composition-panel".into())
+        .child(div().text_sm().child(format!(
+            "Composed stage (v4) · {} · {status} · generation {} · execution v{}",
+            snapshot.stage.as_str(), snapshot.parent_generation, snapshot.execution_version
+        )))
+        .when_some(snapshot.blocked_reason.clone(), |panel, reason| panel
+            .child(div().mt_1().text_xs().text_color(theme::warning()).child(reason)))
+        .child(div().mt_2().text_xs().text_color(theme::text_muted()).child(format!(
+            "Usage ({completeness}): input {} · output {} · reasoning {} · cached {} — from the ledger, never an estimate.",
+            tokens(snapshot.usage.input_tokens), tokens(snapshot.usage.output_tokens),
+            tokens(snapshot.usage.reasoning_tokens), tokens(snapshot.usage.cached_input_tokens)
+        )))
+        .child(div().mt_1().text_xs().text_color(theme::text_muted()).child(format!(
+            "Remaining budget: {} initial / {} extra invocation(s) · {} / {} output tokens · {} / {} prompt characters.",
+            budget.initial_invocations, budget.extra_invocations,
+            budget.initial_output_tokens, budget.extra_output_tokens,
+            budget.initial_prompt_characters, budget.extra_prompt_characters
+        )))
+        .child(div().mt_2().text_xs().text_color(theme::text_muted()).child("UNITS"))
+        .children(snapshot.units.iter().map(|unit| {
+            let unit_state = match unit.state {
+                UnitState::Pending => "pending",
+                UnitState::Running => "running",
+                UnitState::Validated => "validated by the host",
+                UnitState::Failed => "failed",
+                UnitState::Cancelled => "cancelled",
+                UnitState::Invalidated => "invalidated",
+            };
+            let origin = if unit.reused_from_attempt_id.is_some() {
+                " · reused (no call)"
+            } else if unit.attempts.is_empty() && unit.state == UnitState::Validated {
+                " · synthesized by the host (no call)"
+            } else {
+                ""
+            };
+            let selector = format!("composition-unit-{}", unit.logical_unit_key.as_str());
+            div().mt_1().p_2().rounded_md().bg(theme::surface_raised())
+                .debug_selector(move || selector.clone())
+                .child(div().text_sm().child(format!(
+                    "`{}` · {} · gen {} · {unit_state}{origin}",
+                    unit.logical_unit_key.as_str(), unit.executor_kind.as_str(), unit.generation
+                )))
+                .children(unit.attempts.iter().enumerate().map(|(index, attempt)| {
+                    let attempt_state = match attempt.state {
+                        AttemptState::Reserved => "reserved",
+                        AttemptState::Running => "running",
+                        AttemptState::Succeeded => "succeeded",
+                        AttemptState::Rejected => "rejected",
+                        AttemptState::Interrupted => "interrupted",
+                        AttemptState::Cancelled => "cancelled",
+                    };
+                    div().text_xs().text_color(theme::text_muted()).child(format!(
+                        "attempt {} · {} · model {} · {attempt_state}{} · in {} / out {}",
+                        index + 1,
+                        attempt.executor_kind.as_str(),
+                        attempt.effective_model,
+                        attempt.error_code.as_ref().map(|c| format!(" ({})", c.as_str())).unwrap_or_default(),
+                        tokens(attempt.usage.input_tokens),
+                        tokens(attempt.usage.output_tokens)
+                    ))
+                }))
+        }))
+        .when(!snapshot.checks.is_empty(), |panel| panel
+            .child(div().mt_2().text_xs().text_color(theme::text_muted()).child("HOST CHECKS (separate from authored coverage)"))
+            .children(snapshot.checks.iter().map(|check| {
+                let (label, color) = match check.status {
+                    CheckStatus::Passed => ("passed", theme::success()),
+                    CheckStatus::Failed => ("failed", theme::danger()),
+                    CheckStatus::TimedOut => ("timed out", theme::danger()),
+                    CheckStatus::Cancelled => ("cancelled", theme::warning()),
+                    CheckStatus::Unavailable => ("unavailable", theme::warning()),
+                    CheckStatus::Error => ("runner error", theme::danger()),
+                    CheckStatus::NotRun => ("not run", theme::text_muted()),
+                    CheckStatus::Pending => ("pending", theme::text_muted()),
+                    CheckStatus::Running => ("running", theme::text_muted()),
+                };
+                div().mt_1().text_xs().text_color(color).child(format!(
+                    "`{}` · {} · {label}{}",
+                    check.check_ref.as_str(),
+                    if check.required { "required" } else { "optional" },
+                    check.receipt_id.as_ref().map(|id| format!(" · receipt {}", id.as_str().chars().take(8).collect::<String>())).unwrap_or_default()
+                ))
+            })))
+        .into_any_element()
+}
+
 fn pulsation_detail_header(
     pulsation: Pulsation,
     busy: bool,
@@ -1372,12 +1498,10 @@ fn pulsation_detail_header(
                             .flex_col()
                             .gap_1()
                             .min_w_0()
-                            .child(
-                                div().text_sm().text_color(theme::warning()).child(format!(
-                                    "Running on {} (automatic failover)",
-                                    backend_override.backend.label()
-                                )),
-                            )
+                            .child(div().text_sm().text_color(theme::warning()).child(format!(
+                                "Running on {} (automatic failover)",
+                                backend_override.backend.label()
+                            )))
                             .when_some(backend_override.reason.clone(), |col, reason| {
                                 col.child(
                                     div()
@@ -1405,9 +1529,11 @@ fn pulsation_detail_header(
                                 theme::text_muted()
                             })
                             .when(can_retry, |button| {
-                                button.cursor_pointer().on_click(cx.listener(
-                                    |model, _, _, cx| model.clear_backend_override_and_retry(cx),
-                                ))
+                                button
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|model, _, _, cx| {
+                                        model.clear_backend_override_and_retry(cx)
+                                    }))
                             })
                             .child(if backend_override_busy {
                                 "Clearing…"
@@ -1687,6 +1813,7 @@ mod tests {
                                 graph_proposals: vec![],
                             }),
                             artifact_ids: vec![],
+                            stage_execution: None,
                         }];
                     });
                 });

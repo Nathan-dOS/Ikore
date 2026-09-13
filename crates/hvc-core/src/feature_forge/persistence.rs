@@ -32,7 +32,7 @@ impl PersistenceService {
             user_prompt:prompt, response_format:ResponseFormat::JsonSchema{name:format!("feature_{}",stage.to_lowercase()),schema:schema.clone()},
             max_output_tokens:config.max_output_tokens, temperature:config.temperature,
             deadline:std::time::Instant::now()+crate::agent_timeout::AgentTimeoutPolicy::for_role(role).base_timeout().max(Duration::from_millis(config.timeout_ms)),stream:true,
-            legacy_provider:config.provider.as_str().into(),legacy_model:config.model,
+            legacy_provider:config.provider.as_str().into(),legacy_model:config.model,dispatch:crate::llm::DispatchPolicy::default(),
         };
         let terminals = self
             .terminal_service
@@ -243,9 +243,26 @@ impl PersistenceService {
                 "Batch exceeds the context budget; select a smaller batch or increase the configured budget",
             ));
         }
+        // Composition (ADR-022) is a per-project opt-in that only applies to
+        // batches; a v4 scope needs at least one acceptance criterion per task
+        // because units and evidence are keyed by criterion.
+        let composition = Self::composition_settings_for(&tx, &request.project_id)?;
+        let pipeline_version =
+            crate::orchestration::PipelineVersion::for_new_batch(composition.enabled);
+        if pipeline_version.supports_composition()
+            && let Some(task) = manifest
+                .tasks
+                .iter()
+                .find(|task| task.draft.criteria.is_empty())
+        {
+            return Err(invalid(format!(
+                "Task '{}' has no acceptance criteria; composed pulsations require at least one per task",
+                task.draft.title
+            )));
+        }
         let pulse = id();
         let now = now();
-        tx.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,queue_sequence,pipeline_version) VALUES(?1,?2,?3,'Intake','idle',?4,?4,(SELECT COALESCE(MAX(queue_sequence),0)+1 FROM pulsations WHERE project_id=?2),3)",params![pulse,request.project_id,request.title,now])?;
+        tx.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,queue_sequence,pipeline_version) VALUES(?1,?2,?3,'Intake','idle',?4,?4,(SELECT COALESCE(MAX(queue_sequence),0)+1 FROM pulsations WHERE project_id=?2),?5)",params![pulse,request.project_id,request.title,now,pipeline_version.as_u8()])?;
         tx.execute("INSERT INTO pulsation_batches(pulsation_id,manifest_json,manifest_sha256) VALUES(?1,?2,?3)",params![pulse,encoded,crate::orchestration::ContentSha256::of(encoded.as_bytes()).as_str()])?;
         for (position, t) in manifest.tasks.iter().enumerate() {
             tx.execute("INSERT INTO pulsation_tasks(pulsation_id,task_id,revision,position) VALUES(?1,?2,?3,?4)",params![pulse,t.id,t.revision,position])?;

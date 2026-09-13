@@ -61,6 +61,7 @@ pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
     });
     model.settings.update(cx, |settings, _| {
         settings.snapshot = Some(SettingsSnapshot {
+            composition: None,
             preparation: Default::default(),
             config: Default::default(),
             profiles: vec![],
@@ -313,6 +314,9 @@ fn parked_failure_window<'a>(
                 attempts: 3,
                 state_version: 1,
                 created_at: "2026-09-09T00:00:00Z".into(),
+                allowed_revision_targets: Vec::new(),
+                remaining_extra_invocations: None,
+                stage_execution_id: None,
             }));
             state.detail_section = PulsationDetailSection::Review;
         });
@@ -400,6 +404,190 @@ fn failure_abort_confirmation_expires_when_selecting_another_pulsation(cx: &mut 
         m.select_pulsation("pulse-b", cx);
         assert!(!m.confirm_failure_abort);
     });
+}
+
+/// A parked composed stage (ADR-022): the failure checkpoint carries the
+/// permitted revision targets and the execution snapshot lists units.
+fn composed_detail(pulse: &Pulsation) -> hvc_core::orchestration::PulsationCoordinationSnapshot {
+    use hvc_core::orchestration::composition::{
+        AttemptState, AttemptSummaryV1, CheckStatus, CheckSummaryV1, ExecutionStatus, ExecutorKind,
+        Handle, RemainingBudgetV1, Stage, StageExecutionSnapshot, UnitSnapshotV1, UnitState,
+        UsageCompleteness, UsageSummaryV1, Uuid,
+    };
+    use hvc_core::orchestration::*;
+    let fresh_id = || Uuid::new(uuid::Uuid::new_v4().to_string()).unwrap();
+    let attempt = |kind: ExecutorKind, state: AttemptState, error: Option<&str>| AttemptSummaryV1 {
+        attempt_id: fresh_id(),
+        state,
+        executor_kind: kind,
+        effective_model: "cheap-model".into(),
+        profile_snapshot_id: fresh_id(),
+        error_code: error.map(|e| Handle::new(e).unwrap()),
+        usage: UsageSummaryV1 {
+            input_tokens: Some(1_200),
+            output_tokens: Some(300),
+            reasoning_tokens: None,
+            cached_input_tokens: None,
+            completeness: UsageCompleteness::Partial,
+        },
+    };
+    let unit =
+        |key: &str, kind: ExecutorKind, state: UnitState, attempts: Vec<AttemptSummaryV1>| {
+            UnitSnapshotV1 {
+                unit_id: fresh_id(),
+                logical_unit_key: Handle::new(key).unwrap(),
+                executor_kind: kind,
+                generation: 1,
+                state_version: 2,
+                state,
+                reused_from_attempt_id: None,
+                attempts,
+            }
+        };
+    PulsationCoordinationSnapshot {
+        description_editable: false,
+        context_disposition: None,
+        diagnostic: None,
+        pulsation_id: pulse.id.clone(),
+        project_id: pulse.project_id.clone(),
+        queue_sequence: 1,
+        pipeline_version: 4,
+        input_revision: 1,
+        state_version: 3,
+        stage: PulsationStage::Code,
+        status: PulsationStatus::Checkpoint,
+        blocking_reason: None,
+        preparation: PreparationSnapshot {
+            assessment: None,
+            description_review: DescriptionReviewState::Pending,
+            prespec_state: PreSpecState::NotScheduled,
+            context_artifact_id: None,
+            skip_reason: None,
+        },
+        questions: None,
+        learning: LearningState::Unavailable,
+        learning_run: None,
+        artifact_ids: vec![],
+        stage_execution: Some(StageExecutionSnapshot {
+            schema_version: hvc_core::orchestration::SchemaV1,
+            project_id: fresh_id(),
+            pulsation_id: fresh_id(),
+            stage_execution_id: fresh_id(),
+            stage: Stage::Code,
+            parent_generation: 1,
+            parent_state_version: 3,
+            execution_version: 2,
+            status: ExecutionStatus::Parked,
+            units: vec![
+                unit(
+                    "unit_core",
+                    ExecutorKind::CodeImplementer,
+                    UnitState::Validated,
+                    vec![attempt(
+                        ExecutorKind::CodeImplementer,
+                        AttemptState::Succeeded,
+                        None,
+                    )],
+                ),
+                unit(
+                    "unit_api",
+                    ExecutorKind::CodeImplementer,
+                    UnitState::Failed,
+                    vec![
+                        attempt(
+                            ExecutorKind::CodeImplementer,
+                            AttemptState::Rejected,
+                            Some("ownership_violation"),
+                        ),
+                        attempt(
+                            ExecutorKind::CodeRepairer,
+                            AttemptState::Rejected,
+                            Some("ownership_violation"),
+                        ),
+                    ],
+                ),
+            ],
+            blocked_reason: Some("Unit `unit_api` wrote outside its ownership twice.".into()),
+            checks: vec![CheckSummaryV1 {
+                check_ref: Handle::new("cargo_check").unwrap(),
+                required: true,
+                receipt_id: None,
+                status: CheckStatus::NotRun,
+            }],
+            remaining_budget: RemainingBudgetV1 {
+                initial_invocations: 0,
+                extra_invocations: 0,
+                initial_output_tokens: 0,
+                extra_output_tokens: 0,
+                initial_prompt_characters: 0,
+                extra_prompt_characters: 0,
+            },
+            usage: UsageSummaryV1 {
+                input_tokens: Some(3_600),
+                output_tokens: Some(900),
+                reasoning_tokens: None,
+                cached_input_tokens: None,
+                completeness: UsageCompleteness::Partial,
+            },
+        }),
+    }
+}
+
+#[gpui::test]
+fn a_composed_stage_lists_its_units_and_offers_only_permitted_revision_targets(
+    cx: &mut TestAppContext,
+) {
+    let (model, visual) =
+        parked_failure_window(cx, "ownership_violation", false, true, (1440.0, 900.0));
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            let pulse = state.pulsations[0].clone();
+            let mut checkpoint = state.failure.checkpoint.clone().unwrap();
+            checkpoint.stage = PulsationStage::Code;
+            checkpoint.error_code = "ownership_violation".into();
+            checkpoint.allowed_revision_targets =
+                vec![PulsationStage::Code, PulsationStage::Specification];
+            checkpoint.remaining_extra_invocations = Some(0);
+            checkpoint.stage_execution_id = Some("exec-1".into());
+            state.failure.load_checkpoint(Some(checkpoint));
+            state.details = vec![composed_detail(&pulse)];
+        });
+        cx.notify();
+    });
+    select(&model, visual, AppView::Pulsations);
+
+    // Review: no permit left means no Retry; the permitted targets are offered
+    // and the pick is durable in the model before any request is sent.
+    assert!(visual.debug_bounds("failure-retry").is_none());
+    visual.debug_bounds("failure-target-Code").unwrap();
+    assert!(visual.debug_bounds("failure-target-Test").is_none());
+    click(visual, "failure-target-Specification");
+    model.read_with(visual, |m, cx| {
+        assert_eq!(
+            m.pulsations.read(cx).failure.selected_revision_target(),
+            Some(PulsationStage::Specification)
+        );
+    });
+    visual.debug_bounds("failure-revision").unwrap();
+
+    // Overview: the execution snapshot renders one row per unit, with the
+    // host checks separate from the units and no per-unit approval control.
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            state.detail_section = PulsationDetailSection::Overview;
+        });
+        cx.notify();
+    });
+    select(&model, visual, AppView::Pulsations);
+    let panel = visual.debug_bounds("composition-panel").unwrap();
+    for unit in ["composition-unit-unit_core", "composition-unit-unit_api"] {
+        let row = visual.debug_bounds(unit).unwrap();
+        assert!(
+            row.top() >= panel.top() && row.bottom() <= panel.bottom(),
+            "{unit} escapes the panel: {row:?} vs {panel:?}"
+        );
+    }
+    assert!(visual.debug_bounds("composition-unit-approve").is_none());
 }
 
 fn assert_absent(model: &Entity<AppModel>, visual: &mut VisualTestContext, selector: &'static str) {

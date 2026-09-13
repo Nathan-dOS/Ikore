@@ -216,6 +216,7 @@ impl PersistenceService {
             stream: false,
             legacy_provider: config.provider.as_str().into(),
             legacy_model: config.model.clone(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
         if shutdown.is_cancelled() {
             claim.cancellation.cancel();

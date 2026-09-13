@@ -682,19 +682,79 @@ struct ToolTraceEntry {
     at: String,
 }
 
+/// One completed model call, whichever transport carried it.
 #[derive(Debug, Clone)]
-struct LlmCallOutput {
-    request_payload: Value,
-    response_payload: Value,
-    raw_output: String,
-    input_tokens: Option<i64>,
-    output_tokens: Option<i64>,
-    provider: String,
-    model: String,
-    route_id: Option<String>,
-    connection_id: Option<String>,
-    execution_id: Option<String>,
-    estimated_cost_usd: Option<f64>,
+pub(crate) struct LlmCallOutput {
+    pub(crate) request_payload: Value,
+    pub(crate) response_payload: Value,
+    pub(crate) raw_output: String,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) provider: String,
+    pub(crate) model: String,
+    pub(crate) route_id: Option<String>,
+    pub(crate) connection_id: Option<String>,
+    pub(crate) execution_id: Option<String>,
+    pub(crate) estimated_cost_usd: Option<f64>,
+}
+
+/// Sends one request through the CLI transport when the project routes the
+/// role there, otherwise through the HTTP router. Shared by the legacy stage
+/// runtime and the composed work-unit dispatcher; neither retries here.
+pub(crate) async fn dispatch_llm(
+    gateway: &dyn LlmGateway,
+    terminals: Option<&std::sync::Arc<TerminalService>>,
+    request: &LlmRequest,
+    cancellation: &CancellationToken,
+) -> Result<LlmCallOutput, AgentRuntimeError> {
+    if let Some(completion) = match terminals {
+        Some(terminals) => terminals
+            .execute_llm_request(request, cancellation)
+            .await
+            .map_err(|error| AgentRuntimeError::Cli {
+                code: error.code().to_string(),
+                message: error.to_string(),
+            })?,
+        None => None,
+    } {
+        return Ok(LlmCallOutput {
+            request_payload: completion.request_payload,
+            response_payload: completion.response_payload,
+            raw_output: completion.raw_output,
+            input_tokens: None,
+            output_tokens: None,
+            provider: format!("cli:{}", completion.backend.as_str()),
+            model: completion.model,
+            route_id: None,
+            connection_id: None,
+            execution_id: Some(completion.terminal_run_id),
+            estimated_cost_usd: None,
+        });
+    }
+    let response = gateway
+        .execute(request, cancellation)
+        .await
+        .map_err(AgentRuntimeError::Llm)?;
+    if response.execution_id != request.execution_id
+        || response.generation_id != request.generation_id
+    {
+        return Err(AgentRuntimeError::Schema(
+            "Resposta de outra execução/geração.".into(),
+        ));
+    }
+    Ok(LlmCallOutput {
+        request_payload: response.request_payload,
+        response_payload: response.response_payload,
+        raw_output: response.content,
+        input_tokens: response.usage.input_tokens,
+        output_tokens: response.usage.output_tokens,
+        provider: response.provider_id.0,
+        model: response.model,
+        route_id: Some(response.route_id.0),
+        connection_id: Some(response.connection_id.0),
+        execution_id: Some(response.execution_id.0),
+        estimated_cost_usd: response.estimated_cost_usd,
+    })
 }
 
 pub async fn execute_stage(
@@ -852,56 +912,9 @@ async fn execute_stage_inner(
             stream: true,
             legacy_provider: config.provider.as_str().to_string(),
             legacy_model: config.model.clone(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
-        if let Some(completion) = match terminals {
-            Some(terminals) => terminals
-                .execute_llm_request(&request, cancellation)
-                .await
-                .map_err(|error| AgentRuntimeError::Cli {
-                    code: error.code().to_string(),
-                    message: error.to_string(),
-                })?,
-            None => None,
-        } {
-            LlmCallOutput {
-                request_payload: completion.request_payload,
-                response_payload: completion.response_payload,
-                raw_output: completion.raw_output,
-                input_tokens: None,
-                output_tokens: None,
-                provider: format!("cli:{}", completion.backend.as_str()),
-                model: completion.model,
-                route_id: None,
-                connection_id: None,
-                execution_id: Some(completion.terminal_run_id),
-                estimated_cost_usd: None,
-            }
-        } else {
-            let response = gateway
-                .execute(&request, cancellation)
-                .await
-                .map_err(AgentRuntimeError::Llm)?;
-            if response.execution_id != request.execution_id
-                || response.generation_id != request.generation_id
-            {
-                return Err(AgentRuntimeError::Schema(
-                    "Resposta de outra execução/geração.".into(),
-                ));
-            }
-            LlmCallOutput {
-                request_payload: response.request_payload,
-                response_payload: response.response_payload,
-                raw_output: response.content,
-                input_tokens: response.usage.input_tokens,
-                output_tokens: response.usage.output_tokens,
-                provider: response.provider_id.0,
-                model: response.model,
-                route_id: Some(response.route_id.0),
-                connection_id: Some(response.connection_id.0),
-                execution_id: Some(response.execution_id.0),
-                estimated_cost_usd: response.estimated_cost_usd,
-            }
-        }
+        dispatch_llm(gateway, terminals, &request, cancellation).await?
     };
 
     // Captured before validation so a corrective retry can show the model its

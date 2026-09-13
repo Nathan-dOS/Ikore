@@ -1,0 +1,96 @@
+{
+  "id": "cohesive-02-money-format",
+  "family": "cohesive_multi_file",
+  "heldOut": false,
+  "sources": {
+    "src/money.rs": "pub fn cents_to_string(cents: i64) -> String {\n    cents.to_string()\n}\n",
+    "src/invoice.rs": "pub fn total_line(cents: i64) -> String {\n    cents.to_string()\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Format invoice totals",
+      "kind": "bug",
+      "description": "cents_to_string in src/money.rs must render dollars and cents and total_line in src/invoice.rs must use it; add tests/invoice_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "total_line renders 1234 cents as Total: 12.34"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_core",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/money.rs"
+      ],
+      "destinationPath": "src/money.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "implement_caller",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/money.rs",
+        "src/invoice.rs"
+      ],
+      "destinationPath": "src/invoice.rs",
+      "dependsOn": [
+        "implement_core"
+      ]
+    },
+    {
+      "unitKey": "test_change",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/money.rs",
+        "src/invoice.rs"
+      ],
+      "destinationPath": "tests/invoice_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/money.rs": "pub fn cents_to_string(cents: i64) -> String {\n    format!(\"{}.{:02}\", cents / 100, cents % 100)\n}\n",
+    "src/invoice.rs": "pub fn total_line(cents: i64) -> String {\n    format!(\"Total: {}\", crate::money::cents_to_string(cents))\n}\n",
+    "tests/invoice_test.rs": "#[test]\nfn total_line_is_formatted() {\n    assert_eq!(invoice::total_line(1234), \"Total: 12.34\");\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/money.rs",
+      "mustContain": [
+        "{:02}"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "src/invoice.rs",
+      "mustContain": [
+        "crate::money::cents_to_string"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/invoice_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": null
+}

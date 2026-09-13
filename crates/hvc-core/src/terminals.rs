@@ -34,7 +34,7 @@ pub use model_catalog::{
 };
 
 #[cfg(windows)]
-struct ProcessTreeJob {
+pub(crate) struct ProcessTreeJob {
     handle: windows_sys::Win32::Foundation::HANDLE,
 }
 
@@ -43,7 +43,7 @@ unsafe impl Send for ProcessTreeJob {}
 
 #[cfg(windows)]
 impl ProcessTreeJob {
-    fn assign(child: &tokio::process::Child) -> std::io::Result<Self> {
+    pub(crate) fn assign(child: &tokio::process::Child) -> std::io::Result<Self> {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -84,7 +84,7 @@ impl ProcessTreeJob {
         }
     }
 
-    fn terminate(&self) {
+    pub(crate) fn terminate(&self) {
         // SAFETY: `handle` remains owned by this guard until Drop.
         unsafe {
             windows_sys::Win32::System::JobObjects::TerminateJobObject(self.handle, 1);
@@ -103,15 +103,15 @@ impl Drop for ProcessTreeJob {
 }
 
 #[cfg(not(windows))]
-struct ProcessTreeJob;
+pub(crate) struct ProcessTreeJob;
 
 #[cfg(not(windows))]
 impl ProcessTreeJob {
-    fn assign(_child: &tokio::process::Child) -> std::io::Result<Self> {
+    pub(crate) fn assign(_child: &tokio::process::Child) -> std::io::Result<Self> {
         Ok(Self)
     }
 
-    fn terminate(&self) {}
+    pub(crate) fn terminate(&self) {}
 }
 
 const MAX_MODEL_CHARS: usize = 200;
@@ -311,7 +311,7 @@ impl ThinkingLevel {
         }
     }
 
-    fn parse(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
             "default" => Some(Self::Default),
             "low" => Some(Self::Low),
@@ -656,6 +656,16 @@ pub struct UpdateFreeFormSlotRequest {
     pub position: u32,
     pub archived: bool,
     pub expected_version: u64,
+}
+
+/// A composed-stage specialty's optional configuration override (ADR-022).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpecialtyOverride {
+    pub execution_mode: AgentExecutionMode,
+    pub backend: Option<CliBackend>,
+    pub model: Option<String>,
+    pub thinking_level: ThinkingLevel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2124,6 +2134,42 @@ impl TerminalRepository {
         Ok(raw.as_deref().and_then(CliBackend::parse))
     }
 
+    /// Optional per-specialty configuration for composed stage workers
+    /// (ADR-022). Absent for every project that never configured one; the
+    /// stage's own role configuration then applies.
+    pub fn specialty_override(
+        &self,
+        project_id: &str,
+        executor_kind: &str,
+    ) -> Result<Option<SpecialtyOverride>, TerminalError> {
+        self.connection()?
+            .query_row(
+                "SELECT execution_mode,backend,model,thinking_level FROM composition_specialty_overrides WHERE project_id=?1 AND executor_kind=?2",
+                params![required(project_id, "projectId")?, executor_kind],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()?
+            .map(|(mode, backend, model, thinking)| {
+                Ok(SpecialtyOverride {
+                    execution_mode: match mode.as_str() {
+                        "cli_process" => AgentExecutionMode::CliProcess,
+                        _ => AgentExecutionMode::ApiDirect,
+                    },
+                    backend: backend.as_deref().and_then(CliBackend::parse),
+                    model: model.filter(|value| !value.trim().is_empty()),
+                    thinking_level: ThinkingLevel::parse(&thinking).unwrap_or(ThinkingLevel::Default),
+                })
+            })
+            .transpose()
+    }
+
     /// The backend this pulsation is silently running on for its *current*
     /// stage, when the ladder in `elect_next_backend` already switched it
     /// away from the project's configured default. `None` means no override
@@ -3380,9 +3426,7 @@ impl TerminalService {
     }
 
     async fn discovery(&self, force: bool) -> Vec<CliAvailability> {
-        if !force
-            && let Some(items) = self.cache_if_fresh()
-        {
+        if !force && let Some(items) = self.cache_if_fresh() {
             return items;
         }
         let handle = self.runtime.clone();
@@ -4050,12 +4094,27 @@ impl TerminalService {
             }
             Err(error) => return Err(error),
         };
+        // A composed work unit may carry a specialty override; it replaces the
+        // role's transport/model/thinking for that specialty only.
+        let mut config = config;
+        if let Some(unit) = &request.dispatch.unit
+            && let Some(specialty) = self
+                .repository
+                .specialty_override(&request.project_id, &unit.executor_kind)?
+        {
+            config.execution_mode = specialty.execution_mode;
+            if let Some(backend) = specialty.backend {
+                config.backend = backend;
+            }
+            config.model = specialty.model.clone();
+            config.model_profile = None;
+            config.thinking_level = specialty.thinking_level;
+        }
         if config.execution_mode == AgentExecutionMode::ApiDirect {
             return Ok(None);
         }
         // A pulsation that already burned a backend on this role carries the
         // one the host elected next. Project configuration is left untouched.
-        let mut config = config;
         if let Some(pulsation_id) = request.pulsation_id.as_deref()
             && let Some(elected) = self
                 .repository
@@ -4121,7 +4180,13 @@ impl TerminalService {
         };
         let mut schema_guard = None;
         let schema = match &request.response_format {
-            ResponseFormat::JsonSchema { schema, .. } => Some(schema.clone()),
+            ResponseFormat::JsonSchema { schema, .. } => {
+                Some(match (&request.dispatch.strict_schema, config.backend) {
+                    // Codex enforces OpenAI structured-output strictness.
+                    (Some(strict), CliBackend::Codex) => strict.clone(),
+                    _ => schema.clone(),
+                })
+            }
             _ => None,
         };
         let schema_file = if config.backend == CliBackend::Codex {
@@ -5601,7 +5666,7 @@ fn find_node_for_shim(shim_directory: &Path) -> Result<PathBuf, TerminalError> {
         .map_err(TerminalError::Io)
 }
 
-fn hash_launch_files(paths: &[&Path]) -> Result<String, TerminalError> {
+pub(crate) fn hash_launch_files(paths: &[&Path]) -> Result<String, TerminalError> {
     let mut digest = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     for path in paths {
@@ -5618,7 +5683,7 @@ fn hash_launch_files(paths: &[&Path]) -> Result<String, TerminalError> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-fn configure_hidden(command: &mut Command) {
+pub(crate) fn configure_hidden(command: &mut Command) {
     #[cfg(windows)]
     {
         command.creation_flags(0x0800_0000);
@@ -6514,7 +6579,7 @@ mod tests {
     #[test]
     fn backend_override_status_reports_the_current_stage_election_and_reason() {
         use crate::persistence_service::{
-            CreatePulsationRequest, CreateProjectRequest, PersistenceService,
+            CreateProjectRequest, CreatePulsationRequest, PersistenceService,
         };
 
         let data = tempfile::tempdir().unwrap();
@@ -6575,7 +6640,7 @@ mod tests {
     #[test]
     fn backend_override_status_is_none_once_the_stage_moved_on() {
         use crate::persistence_service::{
-            CreatePulsationRequest, CreateProjectRequest, PersistenceService,
+            CreateProjectRequest, CreatePulsationRequest, PersistenceService,
         };
 
         let data = tempfile::tempdir().unwrap();
@@ -6616,7 +6681,10 @@ mod tests {
             .unwrap();
 
         assert!(
-            repository.backend_override_status(&pulse.id).unwrap().is_none(),
+            repository
+                .backend_override_status(&pulse.id)
+                .unwrap()
+                .is_none(),
             "an override left behind by a stage the pulsation already left must not surface"
         );
     }

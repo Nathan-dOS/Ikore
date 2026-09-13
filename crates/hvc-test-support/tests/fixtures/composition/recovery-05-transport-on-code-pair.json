@@ -1,0 +1,127 @@
+{
+  "id": "recovery-05-transport-on-code-pair",
+  "family": "failure_recovery",
+  "heldOut": true,
+  "sources": {
+    "src/window.rs": "pub fn in_window(ts: u64, start: u64, len: u64) -> bool {\n    let _ = (ts, start, len);\n    true\n}\n",
+    "src/money.rs": "pub fn cents_to_string(cents: i64) -> String {\n    cents.to_string()\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Bound the rate window",
+      "kind": "bug",
+      "description": "in_window in src/window.rs must check the bounds; add tests/window_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "in_window returns false outside the window"
+        }
+      ]
+    },
+    {
+      "title": "Format cents",
+      "kind": "bug",
+      "description": "cents_to_string in src/money.rs must render dollars and cents; add tests/money_test.rs",
+      "criteria": [
+        {
+          "id": "ac-2",
+          "description": "cents_to_string renders 1234 as 12.34"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_first",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/window.rs"
+      ],
+      "destinationPath": "src/window.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "implement_second",
+      "kind": "code",
+      "task": 1,
+      "criterionIds": [
+        "ac-2"
+      ],
+      "inputPaths": [
+        "src/money.rs"
+      ],
+      "destinationPath": "src/money.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_first",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/window.rs"
+      ],
+      "destinationPath": "tests/window_test.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_second",
+      "kind": "test",
+      "task": 1,
+      "criterionIds": [
+        "ac-2"
+      ],
+      "inputPaths": [
+        "src/money.rs"
+      ],
+      "destinationPath": "tests/money_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/window.rs": "pub fn in_window(ts: u64, start: u64, len: u64) -> bool {\n    ts >= start && ts < start + len\n}\n",
+    "src/money.rs": "pub fn cents_to_string(cents: i64) -> String {\n    format!(\"{}.{:02}\", cents / 100, cents % 100)\n}\n",
+    "tests/window_test.rs": "#[test]\nfn outside_window_is_false() {\n    assert!(!window::in_window(200, 0, 60));\n}\n",
+    "tests/money_test.rs": "#[test]\nfn cents_are_formatted() {\n    assert_eq!(money::cents_to_string(1234), \"12.34\");\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/window.rs",
+      "mustContain": [
+        "ts >= start && ts < start + len"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "src/money.rs",
+      "mustContain": [
+        "{:02}"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/window_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/money_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": {
+    "kind": "transport_once",
+    "stage": "Code"
+  }
+}

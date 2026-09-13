@@ -56,6 +56,10 @@ mod brownfield_resolution;
 mod clarification;
 #[path = "orchestration/component_notes.rs"]
 mod component_notes;
+#[path = "orchestration/composition/host_coordinator.rs"]
+mod composition_coordinator;
+#[path = "orchestration/composition/host_persistence.rs"]
+mod composition_persistence;
 #[path = "orchestration/coordination.rs"]
 mod coordination;
 #[path = "feature_forge/persistence.rs"]
@@ -467,7 +471,7 @@ pub struct SaveUiSessionResponse {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum PulsationStage {
     #[serde(rename = "Intake")]
     Intake,
@@ -855,6 +859,15 @@ pub struct StageFailureCheckpoint {
     pub attempts: i64,
     pub state_version: u64,
     pub created_at: String,
+    /// Composed stages (ADR-022): every revision target the host permits,
+    /// the extra permits the failed unit could still take, and the
+    /// execution the checkpoint parks. Empty/`None` for legacy failures.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_revision_targets: Vec<PulsationStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_extra_invocations: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_execution_id: Option<String>,
 }
 
 /// The model output that was rejected on the last attempt, so the operator can see
@@ -2536,14 +2549,15 @@ impl PersistenceService {
                created_at,
                updated_at, queue_sequence, pipeline_version
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6,
-               (SELECT COALESCE(MAX(queue_sequence),0)+1 FROM pulsations WHERE project_id=?2), 2)",
+               (SELECT COALESCE(MAX(queue_sequence),0)+1 FROM pulsations WHERE project_id=?2), ?7)",
             params![
                 pulsation_id.as_str(),
                 project_id.as_str(),
                 feature_name.as_str(),
                 PulsationStage::Intake.as_db_value(),
                 PulsationStatus::Idle.as_db_value(),
-                now
+                now,
+                crate::orchestration::PipelineVersion::FREE_FORM.as_u8()
             ],
         )?;
 
@@ -2888,7 +2902,8 @@ impl PersistenceService {
         let mut statement = connection.prepare(
             "SELECT c.id,c.pulsation_id,p.project_id,p.feature_name,f.stage,f.failure_class,
                     f.error_code,f.diagnostic,f.allow_retry,f.allow_revision,f.revision_stage,
-                    COALESCE(j.attempts,0),p.state_version,c.created_at
+                    COALESCE(j.attempts,0),p.state_version,c.created_at,
+                    f.allowed_revision_targets_json,f.remaining_budget_json,f.stage_execution_id
              FROM stage_failure_requests f
              JOIN checkpoints c ON c.id=f.checkpoint_id
              JOIN pulsations p ON p.id=f.pulsation_id
@@ -2900,6 +2915,23 @@ impl PersistenceService {
         let rows = statement.query_map([project_id], |row| {
             let stage: String = row.get(4)?;
             let revision_stage: Option<String> = row.get(10)?;
+            let targets_json: Option<String> = row.get(14)?;
+            let remaining_json: Option<String> = row.get(15)?;
+            let allowed_revision_targets = targets_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
+                .map(|targets| {
+                    targets
+                        .iter()
+                        .filter_map(|raw| PulsationStage::from_db_value(raw))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let remaining_extra_invocations = remaining_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+                .and_then(|value| value["extraInvocations"].as_u64())
+                .map(|value| value as u32);
             Ok(StageFailureCheckpoint {
                 checkpoint_id: row.get(0)?,
                 pulsation_id: row.get(1)?,
@@ -2918,6 +2950,9 @@ impl PersistenceService {
                 attempts: row.get(11)?,
                 state_version: row.get(12)?,
                 created_at: row.get(13)?,
+                allowed_revision_targets,
+                remaining_extra_invocations,
+                stage_execution_id: row.get(16)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -2971,6 +3006,18 @@ impl PersistenceService {
         &self,
         request: ResolveStageFailureRequest,
     ) -> Result<ResolveStageFailureResponse, PersistenceServiceError> {
+        self.resolve_stage_failure_with_target(request, None)
+    }
+
+    /// `revision_target` selects among the targets a composed stage failure
+    /// permits (ADR-022); `None` resolves to the checkpoint's primary target.
+    /// A target outside the permitted set is refused by the host regardless of
+    /// what the UI offered.
+    pub fn resolve_stage_failure_with_target(
+        &self,
+        request: ResolveStageFailureRequest,
+        revision_target: Option<PulsationStage>,
+    ) -> Result<ResolveStageFailureResponse, PersistenceServiceError> {
         let checkpoint_id = request.checkpoint_id.trim();
         if checkpoint_id.is_empty() {
             return Err(PersistenceServiceError::Validation(
@@ -2993,7 +3040,8 @@ impl PersistenceService {
         let found = transaction
             .query_row(
                 "SELECT c.pulsation_id,f.stage,f.job_id,f.failure_class,f.allow_retry,
-                        f.allow_revision,f.revision_stage,f.error_code
+                        f.allow_revision,f.revision_stage,f.error_code,f.stage_execution_id,
+                        f.allowed_revision_targets_json
                  FROM stage_failure_requests f
                  JOIN checkpoints c ON c.id=f.checkpoint_id
                  JOIN pulsations p ON p.id=f.pulsation_id
@@ -3013,6 +3061,8 @@ impl PersistenceService {
                         row.get::<_, i64>(5)? != 0,
                         row.get::<_, Option<String>>(6)?,
                         row.get::<_, String>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
                     ))
                 },
             )
@@ -3026,6 +3076,8 @@ impl PersistenceService {
             allow_revision,
             revision_stage_raw,
             error_code,
+            stage_execution_id,
+            allowed_targets_json,
         )) = found
         else {
             return Err(PersistenceServiceError::Validation(
@@ -3133,6 +3185,9 @@ impl PersistenceService {
                     [&pulsation_id],
                 )?;
                 Self::enqueue_learning(&transaction, &pulsation_id)?;
+                if stage_execution_id.is_some() {
+                    Self::cancel_stage_executions(&transaction, &pulsation_id)?;
+                }
                 updated
             }
             StageFailureDecision::RetryStage => {
@@ -3175,9 +3230,29 @@ impl PersistenceService {
                         "Checkpoint de falha sem alvo de revisão.".to_string(),
                     )
                 })?;
-                let target = PulsationStage::from_db_value(&target_raw).ok_or_else(|| {
+                let primary = PulsationStage::from_db_value(&target_raw).ok_or_else(|| {
                     PersistenceServiceError::Runtime("Alvo de revisão inválido.".to_string())
                 })?;
+                let permitted: Vec<PulsationStage> = match &allowed_targets_json {
+                    Some(json) => serde_json::from_str::<Vec<String>>(json)
+                        .map_err(|e| PersistenceServiceError::Runtime(e.to_string()))?
+                        .iter()
+                        .filter_map(|raw| PulsationStage::from_db_value(raw))
+                        .collect(),
+                    None => vec![primary],
+                };
+                let target = match revision_target {
+                    Some(requested) if permitted.contains(&requested) => requested,
+                    Some(_) => {
+                        return Err(PersistenceServiceError::Validation(
+                            "Este alvo de revisão não é permitido para esta falha.".to_string(),
+                        ));
+                    }
+                    None => primary,
+                };
+                if stage_execution_id.is_some() {
+                    Self::supersede_stage_executions(&transaction, &pulsation_id, target)?;
+                }
                 // The producer job is `interrupted`, not `done` as in the HITL path.
                 // `complete_integrations` refuses to finalize while any job on the
                 // pulsation is pending/running/interrupted, so leaving it behind would
@@ -3816,6 +3891,7 @@ impl PersistenceService {
         tx.execute("UPDATE jobs SET status='pending',state_version=(SELECT state_version FROM pulsations WHERE id=jobs.pulsation_id),generation=generation+1,started_at=NULL,cancel_requested_at=NULL,cancellation_reason=NULL,available_at=?1,updated_at=?1 WHERE status IN ('running','interrupted') AND (cancellation_reason IS NULL OR cancellation_reason IN ('shutdown','preempted')) AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.job_id=jobs.id) AND EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND p.status IN ('planning','running') AND p.input_revision=jobs.input_revision)",[&now])?;
         tx.execute("UPDATE agent_runs SET status='interrupted',updated_at=?1 WHERE status='running' AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.agent_run_id=agent_runs.id)",[&now])?;
         Self::recover_coordination(&tx)?;
+        Self::recover_stage_executions(&tx)?;
         Self::recover_knowledge_background(&tx)?;
         tx.execute("UPDATE jobs SET status='failed',cancellation_reason='superseded',last_error='Preparação interrompida no restart; usar contexto sob demanda.' WHERE kind='prepare_context' AND status IN ('pending','running','interrupted')",[])?;
         tx.execute("UPDATE pulsation_preparation SET prespec_state='cancelled',diagnostic='Preparação interrompida no restart; usar contexto sob demanda.' WHERE prespec_state IN ('pending','running')",[])?;
@@ -4504,8 +4580,10 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let transaction = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-        let current = Self::find_pulsation_by_id(&transaction, &request.pulsation_id)?
-            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação não encontrada.".to_string()))?;
+        let current =
+            Self::find_pulsation_by_id(&transaction, &request.pulsation_id)?.ok_or_else(|| {
+                PersistenceServiceError::NotFound("Pulsação não encontrada.".to_string())
+            })?;
 
         let has_override: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM pulse_execution_overrides WHERE pulsation_id=?1 AND agent_role=?2 AND execution_mode='cli_process')",
@@ -4987,6 +5065,29 @@ impl PersistenceService {
             stage.as_db_value(),
             runtime_config.provider.as_str(),
         )?;
+        // Single branch point for pipeline v4 (ADR-022): composed stages run
+        // under the host coordinator; v1-v3 keep the legacy path untouched.
+        let pipeline_version: u8 = connection.query_row(
+            "SELECT pipeline_version FROM pulsations WHERE id=?1",
+            [&current.id],
+            |row| row.get(0),
+        )?;
+        if crate::orchestration::PipelineVersion::from_db(pipeline_version)
+            .is_some_and(|version| version.supports_composition())
+        {
+            drop(connection);
+            return self
+                .execute_composed_stage(
+                    job,
+                    agent_run_id,
+                    stage,
+                    &current,
+                    &project,
+                    runtime_config,
+                    cancellation,
+                )
+                .await;
+        }
         let mut handoff = self.load_stage_handoff(
             &Self::execution_fence(&connection, &job.id)?,
             stage,
@@ -5303,7 +5404,9 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::embedding_service::{EmbeddingError, EmbeddingFuture, ModelListFuture, ModelPullFuture};
+    use crate::embedding_service::{
+        EmbeddingError, EmbeddingFuture, ModelListFuture, ModelPullFuture,
+    };
     use crate::llm::LlmRepository;
 
     fn prepare_service() -> (tempfile::TempDir, PersistenceService) {
@@ -5444,7 +5547,8 @@ mod tests {
         let (_root, mut service) = prepare_service();
         let gateway = Arc::new(FakeReadinessGateway::default());
         *gateway.models.lock().unwrap() = vec!["nomic-embed-text:latest".into()];
-        *gateway.embed_error.lock().unwrap() = Some("Ollama embedding falhou com status HTTP 500.".into());
+        *gateway.embed_error.lock().unwrap() =
+            Some("Ollama embedding falhou com status HTTP 500.".into());
         service.embedding_gateway = gateway;
         let report = service.check_embedding_readiness().await.unwrap();
         assert!(report.ollama_reachable);
@@ -6913,10 +7017,7 @@ mod tests {
         service
             .connection()
             .expect("database should open")
-            .execute(
-                "UPDATE jobs SET status='failed' WHERE id=?1",
-                [&job.id],
-            )
+            .execute("UPDATE jobs SET status='failed' WHERE id=?1", [&job.id])
             .expect("job status should update");
 
         let mut connection = service.connection().expect("database should open");
@@ -7069,7 +7170,8 @@ mod tests {
         let (root, service) = prepare_service();
         let workspace = root.path().join("workspace-clear-override-pending");
         fs::create_dir_all(&workspace).unwrap();
-        let (pulse, role) = pulsation_with_override_fixture(&service, workspace.to_string_lossy().as_ref());
+        let (pulse, role) =
+            pulsation_with_override_fixture(&service, workspace.to_string_lossy().as_ref());
 
         let response = service
             .clear_execution_override_and_retry(ClearExecutionOverrideRequest {
@@ -7093,7 +7195,8 @@ mod tests {
         let (root, service) = prepare_service();
         let workspace = root.path().join("workspace-clear-override-running");
         fs::create_dir_all(&workspace).unwrap();
-        let (pulse, role) = pulsation_with_override_fixture(&service, workspace.to_string_lossy().as_ref());
+        let (pulse, role) =
+            pulsation_with_override_fixture(&service, workspace.to_string_lossy().as_ref());
         service
             .claim_next_pending_job()
             .expect("claim should succeed")
@@ -7979,6 +8082,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -8122,6 +8226,7 @@ mod tests {
             stream: true,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -8261,6 +8366,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
 
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -8420,6 +8526,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
 
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -8665,6 +8772,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
 
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -8807,6 +8915,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
 
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -8873,6 +8982,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
 
         let runtime = tokio::runtime::Builder::new_current_thread()

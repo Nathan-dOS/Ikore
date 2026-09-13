@@ -401,6 +401,8 @@ pub(crate) fn usage_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                 summary.totals.records,summary.totals.partial_records,summary.totals.unavailable_records)))
             .child(usage_chart(&summary,period))
             .child(model_table(&summary))
+            .when(!summary.executors.is_empty(),|panel|panel
+                .child(executor_rows(&summary.executors,"usage-executor-table".into())))
             .child(pulsation_table(&summary, &state, cx)))
         .into_any_element()
 }
@@ -618,6 +620,86 @@ fn model_rows(models: &[hvc_core::usage::ModelUsage], id: SharedString) -> AnyEl
         .into_any_element()
 }
 
+/// Breakdown of the same ledger rows by composition specialty (ADR-022).
+/// Rendered only when at least one record carries a unit attribution, so
+/// legacy pulsations keep the panel unchanged.
+fn executor_rows(executors: &[hvc_core::usage::ExecutorUsage], id: SharedString) -> AnyElement {
+    let debug_id = id.clone();
+    div()
+        .id(id)
+        .debug_selector(move || debug_id.to_string())
+        .min_w_0()
+        .overflow_x_scroll()
+        .flex_shrink_0()
+        .child(
+            div()
+                .min_w(px(580.0))
+                .p_4()
+                .rounded_lg()
+                .bg(theme::surface())
+                .border_1()
+                .border_color(theme::border())
+                .flex_shrink_0()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Usage by specialty (composed stages)"),
+                )
+                .child(div().mt_1().text_xs().text_color(theme::text_muted()).child(
+                    "Attempts dispatched by the host coordinator, attributed per work unit. Included in the totals above, never added to them.",
+                ))
+                .child(
+                    div()
+                        .mt_3()
+                        .flex()
+                        .gap_3()
+                        .text_color(theme::text_muted())
+                        .child(div().flex_1().child("Specialty"))
+                        .child(cell("Attempts", 80.0))
+                        .child(cell("Input", 105.0))
+                        .child(cell("Output", 105.0))
+                        .child(cell("Total", 105.0)),
+                )
+                .children(executors.iter().map(|entry| {
+                    div()
+                        .mt_3()
+                        .pt_3()
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .child(
+                            div()
+                                .flex()
+                                .gap_3()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(div().text_sm().child(entry.executor_kind.clone())),
+                                )
+                                .child(cell(entry.attempts.to_string(), 80.0))
+                                .child(cell(count(entry.totals.input_tokens), 105.0))
+                                .child(cell(count(entry.totals.output_tokens), 105.0))
+                                .child(cell(count(entry.totals.total_tokens), 105.0)),
+                        )
+                        .child(
+                            div()
+                                .mt_1()
+                                .text_xs()
+                                .text_color(theme::text_muted())
+                                .child(format!(
+                                    "{} · Cache read: {} · Reasoning: {}",
+                                    coverage(&entry.totals),
+                                    count(entry.totals.cache_read_tokens),
+                                    count(entry.totals.reasoning_tokens)
+                                )),
+                        )
+                })),
+        )
+        .into_any_element()
+}
+
 fn pulsation_table(
     summary: &UsageSummary,
     state: &UsageState,
@@ -723,6 +805,12 @@ pub(crate) fn pulsation_usage_panel(model: &AppModel, cx: &mut Context<AppModel>
                         )),
                 )
                 .child(model_rows(&summary.models, "pulsation-usage-models".into()))
+                .when(!summary.executors.is_empty(), |panel| {
+                    panel.child(executor_rows(
+                        &summary.executors,
+                        "pulsation-usage-executors".into(),
+                    ))
+                })
         })
         .into_any_element()
 }
@@ -893,6 +981,7 @@ mod tests {
                         id: "project-a".into(),
                         name: "Project A".into(),
                     }],
+                    executors: Vec::new(),
                 };
                 let generation = settings.usage.begin();
                 settings.usage.apply(generation, Ok(summary));

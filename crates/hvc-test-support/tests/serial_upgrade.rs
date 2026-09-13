@@ -127,7 +127,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        31
+        32
     );
     assert_eq!(
         db.query_row(
@@ -258,7 +258,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        31
+        32
     );
     assert_eq!(
         db.query_row(
@@ -750,4 +750,157 @@ fn genuinely_altered_migration_checksum_is_never_silently_reconciled() {
         Err(error) => assert!(matches!(error, PersistenceServiceError::Migration(_))),
         Ok(_) => panic!("expected the genuinely altered checksum to fail initialization"),
     }
+}
+
+/// SC-T019: V32 rebuilds `pulsations` and `stage_failure_requests` to admit
+/// pipeline v4 and the composed failure classes. A populated V31 database
+/// with legacy pulsations in every state must migrate without losing rows,
+/// indexes, the FIFO trigger or foreign keys, and the widened CHECKs must
+/// admit exactly the new values.
+#[test]
+fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(31))
+        .run(&mut db)
+        .unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V31 fixture','C:/fixture','now','now')",[]).unwrap();
+    for (id, status, version, sequence) in [
+        ("queued", "planning", 2, 1),
+        ("running", "running", 3, 2),
+        ("parked", "checkpoint", 3, 3),
+        ("finished", "done", 2, 4),
+    ] {
+        db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,queue_sequence,pipeline_version,state_version) VALUES(?1,'p','Legacy','Code',?2,?4,?4,?5,?3,3)",params![id,status,version,now,sequence]).unwrap();
+    }
+    db.execute("INSERT INTO jobs(id,pulsation_id,kind,status,created_at,updated_at,project_id,input_revision,generation,state_version,idempotency_key) VALUES('job','parked','run_stage::Code','interrupted',?1,?1,'p',1,2,3,'job')",[&now]).unwrap();
+    db.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,producer_job_id,generation,purpose) VALUES('failure','parked','Code','waiting',?1,?1,'stage_failure',1,3,'job',2,'stage_failure')",[&now]).unwrap();
+    db.execute("INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,revision_stage,error_code,diagnostic,created_at,updated_at) VALUES('failure','parked','job','Code','output_truncated',0,1,'Code','truncated','boom',?1,?1)",[&now]).unwrap();
+    let legacy_indexes: Vec<String> = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('pulsations','stage_failure_requests') AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        32
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    let states: Vec<(String, String, u8, i64)> = db
+        .prepare("SELECT id,status,pipeline_version,queue_sequence FROM pulsations ORDER BY queue_sequence")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        states,
+        vec![
+            ("queued".into(), "planning".into(), 2, 1),
+            ("running".into(), "running".into(), 3, 2),
+            ("parked".into(), "checkpoint".into(), 3, 3),
+            ("finished".into(), "done".into(), 2, 4),
+        ]
+    );
+    let migrated_indexes: Vec<String> = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('pulsations','stage_failure_requests') AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    for index in &legacy_indexes {
+        assert!(
+            migrated_indexes.contains(index),
+            "{index} did not survive the rebuild"
+        );
+    }
+    // The FIFO sequence stays immutable after the rebuild.
+    db.execute(
+        "UPDATE pulsations SET queue_sequence=9 WHERE id='queued'",
+        [],
+    )
+    .expect_err("pulse_sequence_immutable trigger must survive V32");
+    // The legacy failure row is intact and its new columns are empty.
+    let legacy: (String, Option<String>, Option<String>) = db
+        .query_row(
+            "SELECT failure_class,stage_execution_id,allowed_revision_targets_json FROM stage_failure_requests WHERE checkpoint_id='failure'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(legacy, ("output_truncated".into(), None, None));
+    // The widened CHECKs admit exactly the new values.
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,queue_sequence,pipeline_version) VALUES('v4','p','Composed','Intake','idle',?1,?1,5,4)",[&now]).expect("pipeline_version 4 is admitted");
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,queue_sequence,pipeline_version) VALUES('v5','p','Unknown','Intake','idle',?1,?1,6,5)",[&now]).expect_err("pipeline_version 5 is refused");
+    db.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,producer_job_id,generation,purpose) VALUES('composed','parked','Code','waiting',?1,?1,'stage_failure',1,3,'job',3,'stage_failure')",[&now]).unwrap();
+    db.execute(r#"INSERT INTO stage_failure_requests(checkpoint_id,pulsation_id,job_id,stage,failure_class,allow_retry,allow_revision,revision_stage,error_code,diagnostic,created_at,updated_at,allowed_revision_targets_json,remaining_budget_json) VALUES('composed','parked','job','Code','contract_conflict',0,1,'Code','contract_conflict','boom',?1,?1,'["Code","SPECIFICATION"]','{"extraInvocations":1}')"#,[&now]).expect("composed failure classes are admitted");
+    db.execute(
+        "UPDATE stage_failure_requests SET failure_class='made_up' WHERE checkpoint_id='composed'",
+        [],
+    )
+    .expect_err("unknown failure classes stay refused");
+    db.execute("UPDATE stage_failure_requests SET allowed_revision_targets_json='not json' WHERE checkpoint_id='composed'", [])
+        .expect_err("revision targets must be JSON");
+    for table in [
+        "composition_policy_snapshots",
+        "stage_budget_accounts",
+        "stage_executions",
+        "stage_work_units",
+        "stage_unit_dependencies",
+        "stage_unit_ownership",
+        "stage_invocation_reservations",
+        "stage_work_unit_attempts",
+        "host_validation_runs",
+        "project_composition_settings",
+        "composition_specialty_overrides",
+        "project_validation_profiles",
+    ] {
+        assert!(
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap(),
+            "V32 table {table} is missing"
+        );
+    }
+    for column in [
+        "stage_execution_id",
+        "work_unit_id",
+        "attempt_id",
+        "executor_kind",
+    ] {
+        assert!(
+            db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('token_usage_records') WHERE name=?1)", [column], |r| r.get::<_, bool>(0)).unwrap(),
+            "token_usage_records.{column} is missing"
+        );
+    }
+    assert!(
+        db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('stage_acceptances') WHERE name='stage_execution_id')", [], |r| r.get::<_, bool>(0)).unwrap()
+    );
 }

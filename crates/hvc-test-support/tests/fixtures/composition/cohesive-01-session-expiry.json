@@ -1,0 +1,96 @@
+{
+  "id": "cohesive-01-session-expiry",
+  "family": "cohesive_multi_file",
+  "heldOut": false,
+  "sources": {
+    "src/auth.rs": "pub fn validate_token(expires_at: u64, now: u64) -> bool {\n    let _ = (expires_at, now);\n    true\n}\n",
+    "src/session.rs": "pub fn open_session(expires_at: u64, now: u64) -> bool {\n    let _ = (expires_at, now);\n    true\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Sessions reject expired tokens",
+      "kind": "bug",
+      "description": "validate_token in src/auth.rs must compare the expiry and open_session in src/session.rs must use it; add tests/session_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "open_session returns false for an expired token"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_core",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/auth.rs"
+      ],
+      "destinationPath": "src/auth.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "implement_caller",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/auth.rs",
+        "src/session.rs"
+      ],
+      "destinationPath": "src/session.rs",
+      "dependsOn": [
+        "implement_core"
+      ]
+    },
+    {
+      "unitKey": "test_change",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/auth.rs",
+        "src/session.rs"
+      ],
+      "destinationPath": "tests/session_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/auth.rs": "pub fn validate_token(expires_at: u64, now: u64) -> bool {\n    expires_at > now\n}\n",
+    "src/session.rs": "pub fn open_session(expires_at: u64, now: u64) -> bool {\n    crate::auth::validate_token(expires_at, now)\n}\n",
+    "tests/session_test.rs": "#[test]\nfn session_rejects_expired() {\n    assert!(!session::open_session(1, 2));\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/auth.rs",
+      "mustContain": [
+        "expires_at > now"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "src/session.rs",
+      "mustContain": [
+        "crate::auth::validate_token"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/session_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": null
+}

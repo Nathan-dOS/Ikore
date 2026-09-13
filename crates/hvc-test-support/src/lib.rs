@@ -1,5 +1,7 @@
 pub mod brownfield_benchmark;
 pub mod brownfield_graph_benchmark;
+pub mod composition_benchmark;
+pub mod composition_replies;
 #[cfg(test)]
 mod contracts;
 mod controlled_gateway;

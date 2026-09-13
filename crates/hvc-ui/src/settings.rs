@@ -22,8 +22,29 @@ use crate::errors::UiCommandError;
 pub(crate) type SettingsFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, UiCommandError>> + Send + 'static>>;
 
+/// Per-project composition settings (ADR-022) of the last active project:
+/// the opt-in itself, the validation profiles with their enabled flag, the
+/// presets the host detects from the project's manifests, and the specialty
+/// overrides. Absent when no project is active.
+#[derive(Debug, Clone)]
+pub(crate) struct CompositionProjectSettings {
+    pub(crate) project_id: String,
+    pub(crate) project_name: String,
+    pub(crate) settings: hvc_core::orchestration::composition::settings::CompositionSettings,
+    pub(crate) profiles: Vec<(
+        hvc_core::orchestration::composition::ValidationCommandProfileV1,
+        bool,
+    )>,
+    pub(crate) presets: Vec<hvc_core::orchestration::composition::ValidationCommandProfileV1>,
+    pub(crate) overrides: Vec<(
+        hvc_core::orchestration::composition::ExecutorKind,
+        hvc_core::terminals::SpecialtyOverride,
+    )>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SettingsSnapshot {
+    pub(crate) composition: Option<CompositionProjectSettings>,
     pub(crate) preparation: hvc_core::orchestration::PreparationSettings,
     pub(crate) config: AgentRuntimeConfig,
     pub(crate) profiles: Vec<ProviderProfile>,
@@ -38,6 +59,33 @@ pub(crate) trait SettingsBackend: Send + Sync {
     fn update_preparation(
         &self,
         settings: hvc_core::orchestration::PreparationSettings,
+    ) -> SettingsFuture<()>;
+    fn update_composition(
+        &self,
+        project_id: String,
+        settings: hvc_core::orchestration::composition::settings::CompositionSettings,
+    ) -> SettingsFuture<()>;
+    fn upsert_validation_profile(
+        &self,
+        project_id: String,
+        profile: hvc_core::orchestration::composition::ValidationCommandProfileV1,
+        enabled: bool,
+    ) -> SettingsFuture<()>;
+    fn delete_validation_profile(
+        &self,
+        project_id: String,
+        check_ref: String,
+    ) -> SettingsFuture<()>;
+    fn upsert_specialty_override(
+        &self,
+        project_id: String,
+        executor_kind: hvc_core::orchestration::composition::ExecutorKind,
+        setting: hvc_core::terminals::SpecialtyOverride,
+    ) -> SettingsFuture<()>;
+    fn delete_specialty_override(
+        &self,
+        project_id: String,
+        executor_kind: hvc_core::orchestration::composition::ExecutorKind,
     ) -> SettingsFuture<()>;
     fn snapshot(&self) -> SettingsFuture<SettingsSnapshot>;
     fn update_config(
@@ -83,6 +131,28 @@ fn command_error(error: hvc_core::persistence_service::PersistenceServiceError) 
     UiCommandError::from(PersistenceCommandError::from(error))
 }
 
+impl CoreSettingsBackend {
+    fn blocking<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(
+            &hvc_core::persistence_service::PersistenceService,
+        )
+            -> Result<T, hvc_core::persistence_service::PersistenceServiceError>
+        + Send
+        + 'static,
+    ) -> SettingsFuture<T> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || operation(core.persistence()))
+                .await
+                .map_err(|e| UiCommandError::worker(e.to_string()))?
+                .map_err(command_error)
+        })
+    }
+}
+
 impl SettingsBackend for CoreSettingsBackend {
     fn update_preparation(
         &self,
@@ -99,6 +169,57 @@ impl SettingsBackend for CoreSettingsBackend {
                 .map_err(command_error)
         })
     }
+    fn update_composition(
+        &self,
+        project_id: String,
+        settings: hvc_core::orchestration::composition::settings::CompositionSettings,
+    ) -> SettingsFuture<()> {
+        self.blocking(move |persistence| {
+            persistence
+                .update_composition_settings(&project_id, settings)
+                .map(|_| ())
+        })
+    }
+    fn upsert_validation_profile(
+        &self,
+        project_id: String,
+        profile: hvc_core::orchestration::composition::ValidationCommandProfileV1,
+        enabled: bool,
+    ) -> SettingsFuture<()> {
+        self.blocking(move |persistence| {
+            persistence
+                .upsert_validation_profile(&project_id, profile, enabled)
+                .map(|_| ())
+        })
+    }
+    fn delete_validation_profile(
+        &self,
+        project_id: String,
+        check_ref: String,
+    ) -> SettingsFuture<()> {
+        self.blocking(move |persistence| {
+            persistence.delete_validation_profile(&project_id, &check_ref)
+        })
+    }
+    fn upsert_specialty_override(
+        &self,
+        project_id: String,
+        executor_kind: hvc_core::orchestration::composition::ExecutorKind,
+        setting: hvc_core::terminals::SpecialtyOverride,
+    ) -> SettingsFuture<()> {
+        self.blocking(move |persistence| {
+            persistence.upsert_specialty_override(&project_id, executor_kind, setting)
+        })
+    }
+    fn delete_specialty_override(
+        &self,
+        project_id: String,
+        executor_kind: hvc_core::orchestration::composition::ExecutorKind,
+    ) -> SettingsFuture<()> {
+        self.blocking(move |persistence| {
+            persistence.delete_specialty_override(&project_id, executor_kind)
+        })
+    }
     fn snapshot(&self) -> SettingsFuture<SettingsSnapshot> {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
@@ -106,7 +227,19 @@ impl SettingsBackend for CoreSettingsBackend {
             runtime
                 .spawn_blocking(move || {
                     let persistence = core.persistence();
+                    let composition = match persistence.get_last_active_project()?.project {
+                        Some(project) => Some(CompositionProjectSettings {
+                            settings: persistence.get_composition_settings(&project.id)?,
+                            profiles: persistence.list_validation_profiles(&project.id)?,
+                            presets: persistence.detect_validation_presets(&project.id)?,
+                            overrides: persistence.list_specialty_overrides(&project.id)?,
+                            project_id: project.id,
+                            project_name: project.name,
+                        }),
+                        None => None,
+                    };
                     Ok(SettingsSnapshot {
+                        composition,
                         preparation: persistence.get_preparation_settings()?,
                         config: persistence.get_agent_runtime_config()?.config,
                         profiles: persistence.list_provider_profiles().profiles,
@@ -312,7 +445,9 @@ impl SettingsBackend for CoreSettingsBackend {
             runtime
                 .spawn(async move { core.persistence().pull_embedding_model(model).await })
                 .await
-                .map_err(|error| UiCommandError::worker(format!("model pull task aborted: {error}")))?
+                .map_err(|error| {
+                    UiCommandError::worker(format!("model pull task aborted: {error}"))
+                })?
                 .map_err(command_error)
         })
     }
@@ -351,6 +486,11 @@ pub(crate) struct SettingsModel {
     pub(crate) route_targets: Vec<RouteTarget>,
     pub(crate) embedding_readiness: Option<EmbeddingReadinessReport>,
     pub(crate) embedding_readiness_loading: bool,
+    /// Specialty-override form (composition settings card).
+    pub(crate) composition_override_kind: SharedString,
+    pub(crate) composition_override_mode: SharedString,
+    pub(crate) composition_override_backend: SharedString,
+    pub(crate) composition_override_thinking: SharedString,
 }
 
 impl Default for SettingsModel {
@@ -378,6 +518,10 @@ impl Default for SettingsModel {
             route_targets: Vec::new(),
             embedding_readiness: None,
             embedding_readiness_loading: false,
+            composition_override_kind: "code_implementer".into(),
+            composition_override_mode: "api_direct".into(),
+            composition_override_backend: "codex".into(),
+            composition_override_thinking: "default".into(),
         }
     }
 }
@@ -474,6 +618,7 @@ mod tests {
         model.apply_snapshot(
             generation,
             SettingsSnapshot {
+                composition: None,
                 preparation: Default::default(),
                 config: AgentRuntimeConfig::default(),
                 profiles: Vec::new(),
@@ -575,7 +720,9 @@ mod tests {
         assert!(report.ollama_reachable);
         assert!(!report.model_installed);
 
-        harness.embeddings().set_installed_models(vec![report.model.clone()]);
+        harness
+            .embeddings()
+            .set_installed_models(vec![report.model.clone()]);
         let report = core
             .runtime_handle()
             .block_on(backend.check_embedding_readiness())

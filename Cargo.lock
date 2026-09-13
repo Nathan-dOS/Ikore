@@ -2695,6 +2695,7 @@ dependencies = [
  "chrono",
  "fs2",
  "futures",
+ "globset",
  "icu_normalizer",
  "ignore",
  "jsonschema",

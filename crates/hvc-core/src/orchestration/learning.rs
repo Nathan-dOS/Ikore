@@ -436,7 +436,7 @@ impl PersistenceService {
         db: &Connection,
         pulse: &str,
     ) -> Result<(), PersistenceServiceError> {
-        let eligible:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM pulsations WHERE id=?1 AND pipeline_version IN (2,3) AND status IN ('done','failed')) AND EXISTS(SELECT 1 FROM runtime_settings WHERE key='orchestration.learning_enabled' AND value='true')",[pulse],|r|r.get(0))?;
+        let eligible:bool=db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM pulsations WHERE id=?1 AND pipeline_version IN {} AND status IN ('done','failed')) AND EXISTS(SELECT 1 FROM runtime_settings WHERE key='orchestration.learning_enabled' AND value='true')",crate::orchestration::PipelineVersion::learning_eligible_sql_list()),[pulse],|r|r.get(0))?;
         if !eligible {
             return Ok(());
         }
@@ -534,6 +534,47 @@ impl PersistenceService {
             metrics,
             500,
         );
+        // Composed stages (ADR-022): one compact line per stage execution
+        // built from the durable tables - units, attempts, reuse, checks and
+        // the parked reason. No extra call; the same rows the UI renders.
+        let composed=db.prepare("SELECT e.id,e.stage,e.parent_generation,e.status,COALESCE(e.blocked_code,''),            (SELECT COUNT(*) FROM stage_work_units u WHERE u.execution_id=e.id),            (SELECT COUNT(*) FROM stage_work_units u WHERE u.execution_id=e.id AND u.reused_from_attempt_id IS NOT NULL),            (SELECT COUNT(*) FROM stage_work_unit_attempts a WHERE a.execution_id=e.id AND a.state<>'reserved'),            (SELECT COUNT(*) FROM stage_work_unit_attempts a WHERE a.execution_id=e.id AND a.state='rejected'),            (SELECT COALESCE(GROUP_CONCAT(v.check_ref||':'||v.status,', '),'') FROM host_validation_runs v WHERE v.execution_id=e.id AND v.baseline_receipt_id IS NULL),            (SELECT COALESCE(GROUP_CONCAT(u.logical_unit_key||'='||COALESCE(u.failure_code,'?'),', '),'') FROM stage_work_units u WHERE u.execution_id=e.id AND u.state='failed')            FROM stage_executions e WHERE e.pulsation_id=?1 ORDER BY e.created_at,e.id LIMIT 24")?
+            .query_map([&pulse],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,i64>(5)?,r.get::<_,i64>(6)?,r.get::<_,i64>(7)?,r.get::<_,i64>(8)?,r.get::<_,String>(9)?,r.get::<_,String>(10)?)))?
+            .collect::<Result<Vec<_>,_>>()?;
+        for (
+            id,
+            stage,
+            generation,
+            status,
+            blocked,
+            units,
+            reused,
+            attempts,
+            rejected,
+            checks,
+            failed,
+        ) in composed
+        {
+            let mut text = format!(
+                "stage={stage}; generation={generation}; status={status}; units={units}; reused={reused}; attempts={attempts}; rejected={rejected}"
+            );
+            if !checks.is_empty() {
+                text.push_str(&format!("; checks={checks}"));
+            }
+            if !failed.is_empty() {
+                text.push_str(&format!("; failed_units={failed}"));
+            }
+            if !blocked.is_empty() {
+                text.push_str(&format!("; blocked={blocked}"));
+            }
+            add(
+                &mut input,
+                format!("execution:{id}"),
+                pulse.clone(),
+                "composed_stage_metrics",
+                text,
+                500,
+            );
+        }
         let events=db.prepare("SELECT id,event_type,COALESCE(message,'') FROM pulse_events WHERE pulsation_id=?1 ORDER BY created_at DESC,id LIMIT 24")?.query_map([&pulse],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
         for (id, kind, message) in events {
             add(
@@ -1075,6 +1116,7 @@ impl PersistenceService {
             stream: true,
             legacy_provider: config.provider.as_str().into(),
             legacy_model: config.model.clone(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
         if shutdown.is_cancelled() {
             claim.cancellation.cancel();

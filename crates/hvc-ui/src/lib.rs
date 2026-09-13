@@ -7,6 +7,7 @@ mod app_model;
 mod chat;
 mod chat_view;
 mod choices;
+mod composition_ui;
 mod errors;
 mod fading_title;
 mod failure_checkpoint;

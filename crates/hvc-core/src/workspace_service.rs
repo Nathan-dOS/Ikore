@@ -2120,6 +2120,44 @@ pub(crate) fn validate_generated_vault_note(
         return Ok(());
     }
     let parsed = parse_frontmatter_and_body(content)?;
+    let frontmatter = parsed.parsed.as_ref().and_then(Value::as_object);
+    // The versioned stage-composition contract (ADR-022) distinguishes physical
+    // files from approved planned destinations, so its physical arrays may be
+    // empty; it must instead carry all four arrays and a coverage state. Legacy
+    // notes keep the original non-empty rule unchanged.
+    let reference_contract = frontmatter
+        .and_then(|object| object.get("reference-contract"))
+        .and_then(Value::as_str);
+    if reference_contract == Some(crate::orchestration::composition::render::REFERENCE_CONTRACT) {
+        for field in [
+            "source-files",
+            "test-files",
+            "planned-source-files",
+            "planned-test-files",
+        ] {
+            let present = frontmatter.is_some_and(|object| {
+                matches!(
+                    object.get(field),
+                    Some(Value::Array(_)) | Some(Value::String(_))
+                )
+            });
+            if !present {
+                return Err(WorkspaceServiceError::InvalidQuery(format!(
+                    "Nota gerada em `{relative_path}` (stage-composition-v1) deve declarar `{field}` (lista, possivelmente vazia)."
+                )));
+            }
+        }
+        let coverage = frontmatter
+            .and_then(|object| object.get("coverage-state"))
+            .and_then(Value::as_str)
+            .and_then(crate::orchestration::composition::render::CoverageState::parse);
+        if coverage.is_none() {
+            return Err(WorkspaceServiceError::InvalidQuery(format!(
+                "Nota gerada em `{relative_path}` (stage-composition-v1) deve declarar `coverage-state` como complete, partial ou unavailable."
+            )));
+        }
+        return Ok(());
+    }
     for field in ["source-files", "test-files"] {
         let paths = frontmatter_string_list(parsed.parsed.as_ref(), field);
         if paths.is_empty() {

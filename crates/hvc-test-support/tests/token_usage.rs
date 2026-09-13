@@ -74,6 +74,7 @@ async fn adapters_persist_native_usage_on_complete_streamed_and_failed_responses
             stream: index == 1,
             legacy_provider: profile.id.clone(),
             legacy_model: "requested".into(),
+            dispatch: hvc_core::llm::DispatchPolicy::default(),
         };
         let recorder = UsageRecorder::new(
             persistence.database_path(),

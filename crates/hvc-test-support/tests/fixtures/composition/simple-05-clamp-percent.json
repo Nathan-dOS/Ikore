@@ -1,0 +1,72 @@
+{
+  "id": "simple-05-clamp-percent",
+  "family": "simple_maintenance",
+  "heldOut": true,
+  "sources": {
+    "src/percent.rs": "pub fn clamp_percent(value: i32) -> i32 {\n    value\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Clamp percentages",
+      "kind": "bug",
+      "description": "clamp_percent in src/percent.rs must clamp to 0..=100; add tests/percent_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "clamp_percent returns 100 for 140 and 0 for -5"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_change",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/percent.rs"
+      ],
+      "destinationPath": "src/percent.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_change",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/percent.rs"
+      ],
+      "destinationPath": "tests/percent_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/percent.rs": "pub fn clamp_percent(value: i32) -> i32 {\n    value.clamp(0, 100)\n}\n",
+    "tests/percent_test.rs": "#[test]\nfn percent_is_clamped() {\n    assert_eq!(percent::clamp_percent(140), 100);\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/percent.rs",
+      "mustContain": [
+        "clamp(0, 100)"
+      ],
+      "mustNotContain": [
+        "pub fn clamp_percent(value: i32) -> i32 {\n    value\n}"
+      ]
+    },
+    {
+      "path": "tests/percent_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": null
+}

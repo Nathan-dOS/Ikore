@@ -5,7 +5,10 @@ use reqwest::{Client, Response};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::domain::{LlmRequest, LlmUsage, ProviderProtocol, ResolvedConnection, ResponseFormat};
+use super::domain::{
+    LlmRequest, LlmUsage, ProviderProtocol, ResolvedConnection, ResponseFormat,
+    effective_response_format,
+};
 use super::error::{LlmError, LlmErrorKind};
 use super::profiles::{AuthStyle, ProviderProfile};
 use super::resilience::parse_retry_after;
@@ -133,9 +136,10 @@ impl LlmAdapter for ProtocolAdapter {
 
 fn build_payload(call: &AdapterCall<'_>) -> Value {
     let stream = call.request.stream && call.profile.capabilities.streaming;
+    let response_format = effective_response_format(call.request, call.profile);
     match call.profile.protocol {
         ProviderProtocol::OpenaiResponses => {
-            let text_format = match &call.request.response_format {
+            let text_format = match &response_format {
                 ResponseFormat::Text => None,
                 ResponseFormat::JsonObject => Some(json!({"type":"json_object"})),
                 ResponseFormat::JsonSchema { name, schema } => Some(json!({
@@ -170,7 +174,7 @@ fn build_payload(call: &AdapterCall<'_>) -> Value {
                 payload["stream_options"] = json!({"include_usage":true});
             }
             if call.profile.capabilities.json_schema {
-                if let ResponseFormat::JsonSchema { name, schema } = &call.request.response_format {
+                if let ResponseFormat::JsonSchema { name, schema } = &response_format {
                     payload["response_format"] = json!({"type":"json_schema","json_schema":{"name":name,"schema":schema,"strict":true}});
                 }
             } else if call.profile.capabilities.json_object
@@ -516,6 +520,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "model".to_string(),
+            dispatch: Default::default(),
         }
     }
 

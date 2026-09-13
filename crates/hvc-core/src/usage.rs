@@ -158,6 +158,65 @@ fn model_identifier(value: Option<&str>) -> Option<&str> {
     })
 }
 
+/// Composition identity stamped on usage rows after a work-unit attempt
+/// completes (ADR-022). Attribution never creates rows and never changes
+/// counts; a reused or host-only step produces no usage at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnitAttribution {
+    pub stage_execution_id: String,
+    pub work_unit_id: String,
+    pub attempt_id: String,
+    pub executor_kind: String,
+}
+
+/// Stamps `unit` on every usage row produced by one LLM execution: the API
+/// attempts of that execution or the CLI run that carried its execution id.
+/// Idempotent; returns the number of rows touched.
+pub fn attribute_execution_on(
+    db: &Connection,
+    llm_execution_id: &str,
+    unit: &UnitAttribution,
+) -> rusqlite::Result<usize> {
+    db.execute(
+        "UPDATE token_usage_records
+         SET stage_execution_id=?1, work_unit_id=?2, attempt_id=?3, executor_kind=?4
+         WHERE (source_kind='llm_attempt'
+                AND source_id IN (SELECT id FROM llm_attempts WHERE execution_id=?5))
+            OR (source_kind='terminal_run'
+                AND source_id IN (SELECT id FROM terminal_runs WHERE llm_execution_id=?5))",
+        params![
+            unit.stage_execution_id,
+            unit.work_unit_id,
+            unit.attempt_id,
+            unit.executor_kind,
+            llm_execution_id
+        ],
+    )
+}
+
+/// Actual supplier-reported usage for one composed stage execution, with
+/// unknown counters kept unknown.
+pub fn stage_execution_totals(
+    db: &Connection,
+    stage_execution_id: &str,
+) -> rusqlite::Result<UsageTotals> {
+    db.query_row(
+        &format!("SELECT {TOTALS_SQL} FROM token_usage_records WHERE stage_execution_id=?1"),
+        [stage_execution_id],
+        |row| read_totals(row, 0),
+    )
+}
+
+/// Actual usage for one work-unit attempt.
+pub fn attempt_totals(db: &Connection, attempt_id: &str) -> rusqlite::Result<UsageTotals> {
+    db.query_row(
+        &format!("SELECT {TOTALS_SQL} FROM token_usage_records WHERE attempt_id=?1"),
+        [attempt_id],
+        |row| read_totals(row, 0),
+    )
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UsagePeriod {
@@ -222,6 +281,19 @@ pub struct UsageSummary {
     pub models: Vec<ModelUsage>,
     pub series: Vec<UsageBucket>,
     pub projects: Vec<UsageProject>,
+    /// Composed-stage attempts grouped by executor specialty (ADR-022);
+    /// empty when no record carries a unit attribution. The same ledger
+    /// rows the totals count - a breakdown, never an addition.
+    #[serde(default)]
+    pub executors: Vec<ExecutorUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutorUsage {
+    pub executor_kind: String,
+    pub attempts: i64,
+    pub totals: UsageTotals,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -423,6 +495,20 @@ fn query_usage_at(
             }
         }
     }
+    let executors = transaction
+        .prepare(&format!(
+            "SELECT executor_kind,COUNT(DISTINCT attempt_id),{TOTALS_SQL}
+             FROM token_usage_records WHERE {FILTER_SQL} AND executor_kind IS NOT NULL
+             GROUP BY executor_kind ORDER BY SUM(total_tokens) DESC,executor_kind"
+        ))?
+        .query_map(args, |row| {
+            Ok(ExecutorUsage {
+                executor_kind: row.get(0)?,
+                attempts: row.get(1)?,
+                totals: read_totals(row, 2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     transaction.commit()?;
     Ok(UsageSummary {
         pulsations,
@@ -431,6 +517,7 @@ fn query_usage_at(
         models,
         series,
         projects,
+        executors,
     })
 }
 

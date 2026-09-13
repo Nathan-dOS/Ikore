@@ -1,0 +1,96 @@
+{
+  "id": "cohesive-05-checksum-verify",
+  "family": "cohesive_multi_file",
+  "heldOut": true,
+  "sources": {
+    "src/checksum.rs": "pub fn checksum(bytes: &[u8]) -> u32 {\n    let _ = bytes;\n    0\n}\n",
+    "src/verify.rs": "pub fn verify(bytes: &[u8], expected: u32) -> bool {\n    let _ = (bytes, expected);\n    true\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Verify checksums",
+      "kind": "bug",
+      "description": "checksum in src/checksum.rs must sum the bytes and verify in src/verify.rs must compare; add tests/verify_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "verify returns false when the checksum differs"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_core",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/checksum.rs"
+      ],
+      "destinationPath": "src/checksum.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "implement_caller",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/checksum.rs",
+        "src/verify.rs"
+      ],
+      "destinationPath": "src/verify.rs",
+      "dependsOn": [
+        "implement_core"
+      ]
+    },
+    {
+      "unitKey": "test_change",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/checksum.rs",
+        "src/verify.rs"
+      ],
+      "destinationPath": "tests/verify_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/checksum.rs": "pub fn checksum(bytes: &[u8]) -> u32 {\n    bytes.iter().map(|b| *b as u32).sum()\n}\n",
+    "src/verify.rs": "pub fn verify(bytes: &[u8], expected: u32) -> bool {\n    crate::checksum::checksum(bytes) == expected\n}\n",
+    "tests/verify_test.rs": "#[test]\nfn wrong_checksum_is_refused() {\n    assert!(!verify::verify(b\"ab\", 1));\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/checksum.rs",
+      "mustContain": [
+        "bytes.iter()"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "src/verify.rs",
+      "mustContain": [
+        "crate::checksum::checksum"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/verify_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": null
+}

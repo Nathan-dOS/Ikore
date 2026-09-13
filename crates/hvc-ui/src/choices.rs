@@ -342,6 +342,47 @@ impl AppModel {
                 .into_iter()
                 .map(|v| Choice::new(v, v, prep.learning_refinement_mode.as_str() == v))
                 .collect(),
+            "composition-max-in-flight" => {
+                let current = snapshot
+                    .composition
+                    .as_ref()
+                    .map(|c| c.settings.max_in_flight_units)
+                    .unwrap_or(1);
+                // 2 became selectable with the M6 parity gate (parallel result
+                // equal to the sequential one); it stays off by default.
+                vec![
+                    Choice::new("1", "1 (sequential)", current == 1),
+                    Choice::new("2", "2 (independent units together)", current == 2),
+                ]
+            }
+            "composition-override-kind" => hvc_core::orchestration::composition::ExecutorKind::ALL
+                .iter()
+                .map(|kind| {
+                    Choice::new(
+                        kind.as_str(),
+                        kind.as_str(),
+                        settings.composition_override_kind.as_ref() == kind.as_str(),
+                    )
+                })
+                .collect(),
+            "composition-override-mode" => ["api_direct", "cli_process"]
+                .into_iter()
+                .map(|v| Choice::new(v, v, settings.composition_override_mode.as_ref() == v))
+                .collect(),
+            "composition-override-backend" => BACKENDS
+                .iter()
+                .map(|b| {
+                    Choice::new(
+                        b.as_str(),
+                        b.label(),
+                        settings.composition_override_backend.as_ref() == b.as_str(),
+                    )
+                })
+                .collect(),
+            "composition-override-thinking" => ["default", "low", "medium", "high"]
+                .into_iter()
+                .map(|v| Choice::new(v, v, settings.composition_override_thinking.as_ref() == v))
+                .collect(),
             "brownfield-llm-budget" => numbers(prep.brownfield_llm_budget, [0, 1, 2, 4, 8]),
             "brownfield-expansion-radius" => numbers(prep.brownfield_expansion_radius, [1, 2]),
             "settings-embedding-top-k" => numbers(config.embedding_top_k, [3, 5, 10, 20]),
@@ -580,6 +621,21 @@ impl AppModel {
             ),
             "settings-context-strategy" => self.toggle_context_strategy(cx),
             "learning-refinement-mode" => self.toggle_learning_refinement_mode(cx),
+            "composition-max-in-flight" => {
+                self.set_composition_max_in_flight(value.parse().unwrap_or(1), cx)
+            }
+            "composition-override-kind" => self.settings.update(cx, |s, _| {
+                s.composition_override_kind = value.to_owned().into()
+            }),
+            "composition-override-mode" => self.settings.update(cx, |s, _| {
+                s.composition_override_mode = value.to_owned().into()
+            }),
+            "composition-override-backend" => self.settings.update(cx, |s, _| {
+                s.composition_override_backend = value.to_owned().into()
+            }),
+            "composition-override-thinking" => self.settings.update(cx, |s, _| {
+                s.composition_override_thinking = value.to_owned().into()
+            }),
             "brownfield-expansion-radius" => self.toggle_brownfield_expansion_radius(cx),
             "brownfield-llm-budget" => self.set_brownfield_budget(value.parse().unwrap(), cx),
             "settings-embedding-top-k" => self.update_runtime_config(

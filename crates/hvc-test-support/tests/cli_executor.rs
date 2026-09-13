@@ -151,6 +151,7 @@ fn request(project_id: &str, deadline: Instant) -> LlmRequest {
         stream: true,
         legacy_provider: "fixture".into(),
         legacy_model: "fixture".into(),
+        dispatch: hvc_core::llm::DispatchPolicy::default(),
     }
 }
 

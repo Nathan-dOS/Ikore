@@ -1,0 +1,124 @@
+{
+  "id": "separable-01-expiry-and-session",
+  "family": "separable_multi_task",
+  "heldOut": false,
+  "sources": {
+    "src/auth.rs": "pub fn validate_token(expires_at: u64, now: u64) -> bool {\n    let _ = (expires_at, now);\n    true\n}\n",
+    "src/session.rs": "pub fn open_session(expires_at: u64, now: u64) -> bool {\n    let _ = (expires_at, now);\n    true\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Reject expired tokens",
+      "kind": "bug",
+      "description": "validate_token in src/auth.rs accepts every token; add the expiry check and tests/auth_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "An expired token is rejected by validate_token"
+        }
+      ]
+    },
+    {
+      "title": "Sessions reject expired tokens",
+      "kind": "bug",
+      "description": "open_session in src/session.rs must compare the expiry; add tests/session_test.rs",
+      "criteria": [
+        {
+          "id": "ac-2",
+          "description": "open_session returns false for an expired token"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_first",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/auth.rs"
+      ],
+      "destinationPath": "src/auth.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "implement_second",
+      "kind": "code",
+      "task": 1,
+      "criterionIds": [
+        "ac-2"
+      ],
+      "inputPaths": [
+        "src/session.rs"
+      ],
+      "destinationPath": "src/session.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_first",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/auth.rs"
+      ],
+      "destinationPath": "tests/auth_test.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_second",
+      "kind": "test",
+      "task": 1,
+      "criterionIds": [
+        "ac-2"
+      ],
+      "inputPaths": [
+        "src/session.rs"
+      ],
+      "destinationPath": "tests/session_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/auth.rs": "pub fn validate_token(expires_at: u64, now: u64) -> bool {\n    expires_at > now\n}\n",
+    "src/session.rs": "pub fn open_session(expires_at: u64, now: u64) -> bool {\n    expires_at > now\n}\n",
+    "tests/auth_test.rs": "#[test]\nfn expired_token_is_rejected() {\n    assert!(!auth::validate_token(1, 2));\n}\n",
+    "tests/session_test.rs": "#[test]\nfn session_rejects_expired() {\n    assert!(!session::open_session(1, 2));\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/auth.rs",
+      "mustContain": [
+        "expires_at > now"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "src/session.rs",
+      "mustContain": [
+        "expires_at > now"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/auth_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/session_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": null
+}

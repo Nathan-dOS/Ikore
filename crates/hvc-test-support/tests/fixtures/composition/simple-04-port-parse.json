@@ -1,0 +1,73 @@
+{
+  "id": "simple-04-port-parse",
+  "family": "simple_maintenance",
+  "heldOut": false,
+  "sources": {
+    "src/config.rs": "pub fn parse_port(raw: &str) -> u16 {\n    raw.parse().unwrap()\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Port parsing must not panic",
+      "kind": "bug",
+      "description": "parse_port in src/config.rs panics on invalid input; return Option<u16> and add tests/config_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "parse_port returns None for a non-numeric port"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_change",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/config.rs"
+      ],
+      "destinationPath": "src/config.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_change",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/config.rs"
+      ],
+      "destinationPath": "tests/config_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/config.rs": "pub fn parse_port(raw: &str) -> Option<u16> {\n    raw.trim().parse::<u16>().ok()\n}\n",
+    "tests/config_test.rs": "#[test]\nfn invalid_port_is_none() {\n    assert_eq!(config::parse_port(\"abc\"), None);\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/config.rs",
+      "mustContain": [
+        "Option<u16>",
+        ".ok()"
+      ],
+      "mustNotContain": [
+        "pub fn parse_port(raw: &str) -> u16 {\n    raw.parse().unwrap()\n}"
+      ]
+    },
+    {
+      "path": "tests/config_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": null
+}

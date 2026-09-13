@@ -17,8 +17,9 @@ use super::adapter::{AdapterCall, LlmAdapter, ProtocolAdapter, TokenDeltaSink};
 use super::catalog::estimate_cost_usd;
 use super::credentials::CredentialStore;
 use super::domain::{
-    Clock, GatewayFuture, JitterSource, LlmEventEnvelope, LlmEventSink, LlmGateway, LlmRequest,
-    LlmResponse, LlmStreamEvent, ProviderProtocol, ProviderRoute, ResponseFormat, RoutingMode,
+    Clock, DispatchPolicy, GatewayFuture, JitterSource, LlmEventEnvelope, LlmEventSink, LlmGateway,
+    LlmRequest, LlmResponse, LlmStreamEvent, ProviderProtocol, ProviderRoute, ResponseFormat,
+    RoutingMode, effective_response_format,
 };
 use super::error::{LlmError, LlmErrorKind};
 use super::profiles::profile_by_id;
@@ -49,6 +50,7 @@ fn connection_test_request(provider_id: &str, model: &str) -> LlmRequest {
         stream: false,
         legacy_provider: provider_id.to_string(),
         legacy_model: model.to_string(),
+        dispatch: DispatchPolicy::default(),
     }
 }
 
@@ -365,11 +367,16 @@ impl ProviderRouter {
             .deadline
             .min(Instant::now() + Duration::from_millis(execution_route.route_timeout_ms));
         let is_learning = request.agent_role == super::AgentRole::LearningAgent;
-        let max_attempts = if mode == RoutingMode::On && !is_learning {
+        let mut max_attempts = if mode == RoutingMode::On && !is_learning {
             execution_route.max_attempts.min(3) as usize
         } else {
             1
         };
+        // Composition holds one durable permit per real invocation: the
+        // router may not multiply attempts behind that boundary.
+        if let Some(limit) = request.dispatch.attempt_limit {
+            max_attempts = max_attempts.min(usize::from(limit)).max(1);
+        }
         let mut attempted = HashSet::new();
         let mut causes = Vec::new();
         let mut schema_failovers = 0_u8;
@@ -557,9 +564,15 @@ impl ProviderRouter {
             }
             match result {
                 Ok(output) => {
-                    if let Err(mut error) =
-                        validate_output(&effective_request.response_format, &output.content)
-                    {
+                    let gate = if request.dispatch.host_validated {
+                        Ok(())
+                    } else {
+                        validate_output(
+                            &effective_response_format(&effective_request, &profile),
+                            &output.content,
+                        )
+                    };
+                    if let Err(mut error) = gate {
                         error.visible_partial = visible_partial.clone();
                         self.repository.finish_attempt(
                             &attempt_id,
@@ -706,7 +719,11 @@ impl ProviderRouter {
                         &mut next_eligible_at,
                         &emitter,
                     )?;
-                    if is_learning {
+                    // A single-attempt dispatch (Learning, or a composed unit
+                    // holding one permit) gets the attempt's own error back:
+                    // the caller classifies it, and "all targets exhausted"
+                    // would only hide the cause.
+                    if is_learning || request.dispatch.attempt_limit == Some(1) {
                         self.repository.finish_execution(
                             request.execution_id.as_str(),
                             "failed",
@@ -1309,6 +1326,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".into(),
             legacy_model: "m".into(),
+            dispatch: DispatchPolicy::default(),
         };
         assert_eq!(affinity_hash(&request), affinity_hash(&request));
         let mut changed = request.clone();

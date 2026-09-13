@@ -3,9 +3,9 @@ use std::collections::HashSet;
 use crate::persistence_service::{JobStatus, PulsationStage};
 
 use super::{
-    ArtifactAcceptance, CancellationReason, ContentSha256, ContractError, ExecutionFence,
-    ExpectedFileContent, PublicationState, SpecificationQuestionSet, StageHandoffV1, StageOutcome,
-    SubmitSpecificationAnswersRequest,
+    ArtifactAcceptance, ArtifactLanguageGuard, CancellationReason, ContentSha256, ContractError,
+    ExecutionFence, ExpectedFileContent, PublicationState, SpecificationQuestionSet,
+    StageHandoffV1, StageOutcome, SubmitSpecificationAnswersRequest,
 };
 
 /// M1 must perform this check within the same transaction that accepts a result.
@@ -40,7 +40,17 @@ pub fn stage_disposition(
     stage: PulsationStage,
     outcome: &StageOutcome,
 ) -> Result<StageDisposition, ContractError> {
-    outcome.validate_for(stage)?;
+    stage_disposition_with(stage, outcome, ArtifactLanguageGuard::ModelAuthored)
+}
+
+/// Same disposition with an explicit English guard (see
+/// [`ArtifactLanguageGuard`]); the composed stage passes `HostRendered`.
+pub fn stage_disposition_with(
+    stage: PulsationStage,
+    outcome: &StageOutcome,
+    guard: ArtifactLanguageGuard,
+) -> Result<StageDisposition, ContractError> {
+    outcome.validate_with(stage, guard)?;
     Ok(match outcome {
         StageOutcome::Failed { .. } => StageDisposition::Fail,
         StageOutcome::NeedsClarification { .. } => StageDisposition::AwaitClarification,

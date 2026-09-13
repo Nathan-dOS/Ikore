@@ -157,6 +157,70 @@ impl ResponseFormat {
     }
 }
 
+/// The response format a transport actually sends and validates: the strict
+/// lowering carried by `dispatch.strict_schema` when the profile enforces
+/// OpenAI structured outputs natively (`strict: true`), the request's own
+/// format otherwise. A provider that only offers `json_object` never sees
+/// the strict grammar, so its model answers the canonical shape and is
+/// validated against it.
+pub fn effective_response_format(
+    request: &LlmRequest,
+    profile: &super::profiles::ProviderProfile,
+) -> ResponseFormat {
+    match (&request.response_format, &request.dispatch.strict_schema) {
+        (ResponseFormat::JsonSchema { name, .. }, Some(strict))
+            if enforces_strict_schema(profile) =>
+        {
+            ResponseFormat::JsonSchema {
+                name: name.clone(),
+                schema: strict.clone(),
+            }
+        }
+        (format, _) => format.clone(),
+    }
+}
+
+/// Whether a provider profile applies OpenAI structured-output rules to the
+/// schema it receives.
+pub fn enforces_strict_schema(profile: &super::profiles::ProviderProfile) -> bool {
+    matches!(
+        profile.protocol,
+        ProviderProtocol::OpenaiResponses | ProviderProtocol::OpenaiChat
+    ) && profile.capabilities.json_schema
+}
+
+/// Composition identity of a work-unit attempt (ADR-022), carried by the
+/// request so usage attribution and specialty configuration can see it.
+/// Absent for every v1-v3 request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnitDispatch {
+    pub stage_execution_id: String,
+    pub unit_id: String,
+    pub attempt_id: String,
+    pub executor_kind: String,
+}
+
+/// Per-request dispatch controls that the router and transports must honour.
+#[derive(Debug, Clone, Default)]
+pub struct DispatchPolicy {
+    /// Caps the router's own target attempts. `None` keeps the route's limit;
+    /// composition sends `Some(1)` so that every real invocation holds a
+    /// durable permit and no hidden application-level retry bypasses it.
+    pub attempt_limit: Option<u8>,
+    pub unit: Option<UnitDispatch>,
+    /// Strict (OpenAI structured-output) lowering of the schema carried by
+    /// `response_format`. Transports that enforce `strict: true` send and
+    /// validate this variant instead; every other transport ignores it.
+    pub strict_schema: Option<Value>,
+    /// The caller parses and validates the answer itself and needs the raw
+    /// bytes back even when they violate the schema: the router returns the
+    /// output without its own schema gate. Composition sets it so a malformed
+    /// reply becomes a bounded correction with a diagnostic instead of a
+    /// blind resample.
+    pub host_validated: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct LlmRequest {
     pub execution_id: ExecutionId,
@@ -177,6 +241,7 @@ pub struct LlmRequest {
     pub stream: bool,
     pub legacy_provider: String,
     pub legacy_model: String,
+    pub dispatch: DispatchPolicy,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

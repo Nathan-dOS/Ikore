@@ -189,7 +189,14 @@ impl Render for AppModel {
                     .min_h_0()
                     .child(content_panel(self, active, cx)),
             )
-            .child(status_bar(status, event_count, needs_resync, badges, indexing, cx))
+            .child(status_bar(
+                status,
+                event_count,
+                needs_resync,
+                badges,
+                indexing,
+                cx,
+            ))
             .child(self.notification_overlay(window, cx))
             .when_some(self.choice_menu.clone(), |d, menu| {
                 d.child(gpui::deferred(menu).with_priority(20))
@@ -734,7 +741,11 @@ mod tests {
         cx.read(|cx| {
             assert!(matches!(
                 model.read(cx).model_pull_status(),
-                Some(ModelPullEvent::Progress { completed: 50, total: 100, .. })
+                Some(ModelPullEvent::Progress {
+                    completed: 50,
+                    total: 100,
+                    ..
+                })
             ));
         });
 
