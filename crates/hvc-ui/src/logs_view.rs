@@ -1,6 +1,7 @@
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
 
 use crate::app_model::AppModel;
+use crate::sizing::StyledExt;
 use crate::theme;
 
 pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
@@ -150,6 +151,7 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         .child(
             div()
                 .id("logs-detail-scroll")
+                .debug_selector(|| "logs-detail-scroll".into())
                 .flex_1()
                 .min_w_0()
                 .min_h_0()
@@ -405,6 +407,9 @@ fn button(
 ) -> impl IntoElement {
     div()
         .id(id)
+        .debug_selector(move || id.into())
+        .self_start()
+        .flex_shrink_0()
         .px_3()
         .py_2()
         .rounded_md()

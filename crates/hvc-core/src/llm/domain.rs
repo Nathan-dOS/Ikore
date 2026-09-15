@@ -117,6 +117,46 @@ impl AgentRole {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentExecutionTarget {
+    Canonical { agent_role: AgentRole },
+    FreeForm { slot_id: String },
+}
+
+impl AgentExecutionTarget {
+    pub fn canonical(agent_role: AgentRole) -> Self {
+        Self::Canonical { agent_role }
+    }
+
+    pub fn free_form(slot_id: impl Into<String>) -> Self {
+        Self::FreeForm {
+            slot_id: slot_id.into(),
+        }
+    }
+
+    pub fn agent_role(&self) -> Option<AgentRole> {
+        match self {
+            Self::Canonical { agent_role } => Some(*agent_role),
+            Self::FreeForm { .. } => None,
+        }
+    }
+
+    pub fn free_form_slot_id(&self) -> Option<&str> {
+        match self {
+            Self::Canonical { .. } => None,
+            Self::FreeForm { slot_id } => Some(slot_id),
+        }
+    }
+
+    pub fn stable_key(&self) -> String {
+        match self {
+            Self::Canonical { agent_role } => format!("canonical:{}", agent_role.as_str()),
+            Self::FreeForm { slot_id } => format!("free_form:{slot_id}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoutingMode {
@@ -204,6 +244,10 @@ pub struct UnitDispatch {
 /// Per-request dispatch controls that the router and transports must honour.
 #[derive(Debug, Clone, Default)]
 pub struct DispatchPolicy {
+    /// Explicit CLI initial/progressive/absolute budget. Absent callers retain
+    /// `LlmRequest::deadline` as their hard ceiling, including shorter test budgets.
+    /// API routing deliberately ignores this transport-specific override.
+    pub cli_timeout: Option<crate::agent_timeout::CliTimeoutBudget>,
     /// Caps the router's own target attempts. `None` keeps the route's limit;
     /// composition sends `Some(1)` so that every real invocation holds a
     /// durable permit and no hidden application-level retry bypasses it.
@@ -230,7 +274,7 @@ pub struct LlmRequest {
     pub job_id: Option<String>,
     pub agent_run_id: Option<String>,
     pub job_chain: String,
-    pub agent_role: AgentRole,
+    pub target: AgentExecutionTarget,
     pub stage: String,
     pub system_prompt: String,
     pub user_prompt: String,
@@ -341,6 +385,18 @@ pub struct ProviderRouteBinding {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FreeFormProviderRouteBinding {
+    pub project_id: String,
+    pub slot_id: String,
+    pub route_id: String,
+    pub enabled: bool,
+    pub version: u64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CandidateDecision {
     pub position: u32,
     pub connection_id: String,
@@ -425,8 +481,23 @@ pub struct AgentExecutionContext {
     pub project_id: String,
     pub pulsation_id: Option<String>,
     pub job_id: Option<String>,
-    pub agent_role: AgentRole,
+    pub target: AgentExecutionTarget,
     pub stage: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmExecutionListItem {
+    pub execution_id: String,
+    pub generation_id: String,
+    pub target: AgentExecutionTarget,
+    pub route_id: String,
+    pub stage: String,
+    pub status: String,
+    pub visible_output: Option<String>,
+    pub visible_output_complete: bool,
+    pub started_at: String,
+    pub finished_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -176,6 +176,13 @@ fn main() {
             std::io::stdout().flush().unwrap();
             eprintln!("fixture stderr zero");
         }
+        "paced" => {
+            for _ in 0..10 {
+                eprintln!("fixture progress");
+                thread::sleep(Duration::from_millis(100));
+            }
+            println!("fixture completed after initial budget");
+        }
         "hang" => loop {
             thread::sleep(Duration::from_secs(1));
         },

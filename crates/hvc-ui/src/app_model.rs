@@ -12,16 +12,17 @@ use hvc_core::agent_runtime::{AdaptiveContextMode, ContextStrategy, DynamicConte
 use hvc_core::chat_service::{ChatEventEnvelope, ChatExecutionTargetRequest, ChatTransportKind};
 use hvc_core::llm::{
     DeleteProviderConnectionRequest, DeleteProviderRouteRequest, ResetLlmResilienceStateRequest,
-    RouteTarget, RoutingMode, TestProviderConnectionRequest, UpsertProviderConnectionRequest,
+    RouteTarget, RoutingMode, TestProviderConnectionRequest,
+    UpsertFreeFormProviderRouteBindingRequest, UpsertProviderConnectionRequest,
     UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
 };
-use hvc_core::orchestration::IndexingEvent;
 use hvc_core::orchestration::brownfield::BrownfieldOnboardingStatus;
+use hvc_core::orchestration::{CleanupFailedPulsationFilesRequest, IndexingEvent};
 use hvc_core::persistence_service::{
     ClearExecutionOverrideRequest, CliFallbackDecision, EnsureProjectForWorkspaceRequest,
     HitlDecision, LoadUiSessionRequest, PulsationRuntimeSnapshot, PulsationStatus,
-    ResolveCliFallbackRequest, SaveUiSessionRequest, StageFailureDecision, UiSessionState,
-    UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
+    ResolveCliFallbackRequest, SaveUiSessionRequest, StageFailureDecision,
+    StartFreeFormApiRunRequest, UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
 };
 use hvc_core::terminals::{
     CliAgentConfig, CliBackend, CliModelSelectionSource, CreateFreeFormSlotRequest,
@@ -37,8 +38,8 @@ use hvc_editor::{EditorSelection, EditorSnapshot, TextPosition};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::agents::{
-    AgentsBackend, AgentsDashboardSnapshot, AgentsModel, AgentsTab, CliModelPickerState,
-    CliModelPickerTarget, CoreAgentsBackend,
+    AgentIdentifier, AgentsBackend, AgentsDashboardSnapshot, AgentsModel, ApiActivityFilter,
+    CliModelPickerState, CliModelPickerTarget, CoreAgentsBackend,
 };
 use crate::chat::{ChatBackend, ChatEventOutcome, ChatModel, CoreChatBackend};
 use crate::lifecycle::LifecycleState;
@@ -263,6 +264,7 @@ pub struct AppModel {
     pub navigation: Entity<NavigationModel>,
     pub workspace: Entity<WorkspaceEditorModel>,
     pub pulsations: Entity<PulsationsModel>,
+    pub(crate) agents_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) pulsations_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) workspace_tree_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) workspace_preview_split: Entity<crate::split_pane::SplitPaneState>,
@@ -342,10 +344,21 @@ pub struct AppModel {
     preparation_action_task: Option<Task<()>>,
     artifact_preview_task: Option<Task<()>>,
     pulsation_artifacts_task: Option<Task<()>>,
+    pulsation_snapshot_task: Option<Task<()>>,
+    snapshot_in_flight: bool,
+    snapshot_pending: Option<Option<String>>,
+    snapshot_revision: u64,
     hitl_documents_task: Option<Task<()>>,
     failure_task: Option<Task<()>>,
     failure_detail_task: Option<Task<()>>,
     backend_override_task: Option<Task<()>>,
+    backend_override_mutation_task: Option<Task<()>>,
+    cleanup_preview_task: Option<Task<()>>,
+    cleanup_mutation_task: Option<Task<()>>,
+    artifact_read: crate::lifecycle::RevisionRead,
+    backend_read: crate::lifecycle::RevisionRead,
+    cleanup_read: crate::lifecycle::RevisionRead,
+    event_resync_pending: bool,
     vault_refresh_task: Option<Task<()>>,
     vault_search_task: Option<Task<()>>,
     vault_rename_task: Option<Task<()>>,
@@ -562,6 +575,8 @@ impl AppModel {
                 )
             })
             .collect::<HashMap<_, _>>();
+        let agents_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::new(220.0, 180.0, 400.0, 420.0));
         let pulsations_split =
             cx.new(|_| crate::split_pane::SplitPaneState::new(292.0, 220.0, 480.0, 420.0));
         let workspace_tree_split =
@@ -577,6 +592,7 @@ impl AppModel {
         let forge_triage_split =
             cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.58, 300.0, 260.0));
         let mut subscriptions = vec![
+            cx.observe(&agents_split, |_, _, cx| cx.notify()),
             cx.observe(&pulsations_split, |_, _, cx| cx.notify()),
             cx.observe(&workspace_tree_split, |_, _, cx| cx.notify()),
             cx.observe(&workspace_preview_split, |_, _, cx| cx.notify()),
@@ -638,6 +654,7 @@ impl AppModel {
             navigation,
             workspace,
             pulsations: cx.new(|_| PulsationsModel::default()),
+            agents_split,
             pulsations_split,
             workspace_tree_split,
             workspace_preview_split,
@@ -710,10 +727,21 @@ impl AppModel {
             preparation_action_task: None,
             artifact_preview_task: None,
             pulsation_artifacts_task: None,
+            pulsation_snapshot_task: None,
+            snapshot_in_flight: false,
+            snapshot_pending: None,
+            snapshot_revision: 0,
             hitl_documents_task: None,
             failure_task: None,
             failure_detail_task: None,
             backend_override_task: None,
+            backend_override_mutation_task: None,
+            cleanup_preview_task: None,
+            cleanup_mutation_task: None,
+            artifact_read: Default::default(),
+            backend_read: Default::default(),
+            cleanup_read: Default::default(),
+            event_resync_pending: false,
             vault_refresh_task: None,
             vault_search_task: None,
             vault_rename_task: None,
@@ -926,7 +954,15 @@ impl AppModel {
             }
         }
         match view {
-            AppView::Pulsations => self.refresh_pulsation_usage(cx),
+            AppView::Pulsations => {
+                self.refresh_pulsation_usage(cx);
+                self.refresh_hitl_documents(cx);
+                self.refresh_failure_detail(cx);
+                if let Some(id) = self.pulsations.read(cx).active_id() {
+                    self.refresh_pulsation_artifacts(id.clone(), cx);
+                    self.refresh_backend_override(id, cx);
+                }
+            }
             AppView::Forge => self.refresh_forge(cx),
             AppView::Agents => self.refresh_agents(cx),
             AppView::Settings => self.refresh_settings(cx),
@@ -1465,32 +1501,69 @@ impl AppModel {
         else {
             return;
         };
-        self.pulsations.update(cx, |pulsations, _| {
-            pulsations.runtime_loading = true;
-            pulsations.error = None;
+        if self.snapshot_in_flight {
+            self.snapshot_pending = Some(preferred_id);
+            return;
+        }
+        self.snapshot_in_flight = true;
+        let revision = self.snapshot_revision;
+        let selected = self.pulsations.read(cx).active_id();
+        self.pulsations.update(cx, |state, _| {
+            state.runtime_loading = state.pulsations.is_empty();
+            state.error = None;
         });
-        self.pulsations_task = Some(cx.spawn(async move |this, cx| {
+        self.pulsation_snapshot_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.runtime_snapshot(project_id.clone()).await;
-            let _ = this.update(cx, |model, cx| match result {
-                Ok(snapshot) => {
-                    let active_id = model.apply_pulsation_snapshot(
-                        project_id,
-                        snapshot,
-                        preferred_id.as_deref(),
-                        cx,
-                    );
-                    if let Some(active_id) = active_id {
-                        model.refresh_pulsation_artifacts(active_id, cx);
+            let _ = this.update(cx, |model, cx| {
+                model.snapshot_in_flight = false;
+                model.lifecycle.finish_poll();
+                if model.is_disposed() {
+                    return;
+                }
+                let mut pending = model.snapshot_pending.take();
+                let current_selection = model.pulsations.read(cx).active_id();
+                if current_selection != selected && pending.is_some() {
+                    pending = Some(current_selection.clone());
+                }
+                let current_project = model
+                    .workspace
+                    .read(cx)
+                    .project_id
+                    .as_ref()
+                    .map(ToString::to_string);
+                if current_project.as_deref() != Some(&project_id)
+                    || model.snapshot_revision != revision
+                {
+                    pending = Some(current_selection.clone());
+                } else {
+                    match result {
+                        Ok(snapshot) => {
+                            let preference = if model.pulsations.read(cx).active_id() == selected {
+                                preferred_id.as_deref()
+                            } else {
+                                None
+                            };
+                            if let Some(id) =
+                                model.apply_pulsation_snapshot(project_id, snapshot, preference, cx)
+                            {
+                                model.refresh_pulsation_artifacts(id, cx);
+                            }
+                            model.refresh_logs(cx);
+                            model.finish_event_resync(cx);
+                        }
+                        Err(error) => {
+                            model.pulsations.update(cx, |state, _| {
+                                state.runtime_loading = false;
+                                state.error = Some(error.clone());
+                            });
+                            model.push_header_notice(HeaderNoticeKind::Warning, error, cx);
+                        }
                     }
                 }
-                Err(error) => {
-                    model.pulsations.update(cx, |pulsations, _| {
-                        pulsations.runtime_loading = false;
-                        pulsations.error = Some(error.clone());
-                    });
-                    model.push_header_notice(HeaderNoticeKind::Warning, error, cx);
-                    cx.notify();
+                if let Some(preferred) = pending {
+                    model.refresh_pulsations_with_preferred(preferred, cx);
                 }
+                cx.notify();
             });
         }));
         cx.notify();
@@ -1513,6 +1586,8 @@ impl AppModel {
         {
             return None;
         }
+        self.snapshot_revision = self.snapshot_revision.saturating_add(1);
+        let previous_revision = self.pulsation_read_key(cx);
         let forge_changed = crate::forge::task_runtime_changed(
             &self.pulsations.read(cx).pulsations,
             &snapshot.pulsations,
@@ -1535,10 +1610,13 @@ impl AppModel {
         }
         self.refresh_hitl_documents(cx);
         self.refresh_failure_detail(cx);
-        self.refresh_pulsation_usage(cx);
+        if previous_revision != self.pulsation_read_key(cx) {
+            self.refresh_pulsation_usage(cx);
+        }
         self.sync_preparation_inputs(cx);
         if let Some(active_id) = active_id.clone() {
-            self.refresh_backend_override(active_id, cx);
+            self.refresh_backend_override(active_id.clone(), cx);
+            self.refresh_cleanup_preview(active_id, cx);
         }
         if forge_changed && self.active_view() == AppView::Forge {
             self.refresh_forge(cx);
@@ -1654,19 +1732,42 @@ impl AppModel {
                 && !self.chat_draft_input.read(cx).value().trim().is_empty())
     }
 
+    fn pulsation_read_key(&self, cx: &gpui::App) -> String {
+        let state = self.pulsations.read(cx);
+        format!(
+            "{:?}",
+            (
+                self.workspace.read(cx).project_id.as_ref(),
+                state.active().map(|pulse| (&pulse.id, &pulse.updated_at))
+            )
+        )
+    }
+
     fn refresh_pulsation_artifacts(&mut self, pulsation_id: String, cx: &mut Context<Self>) {
+        self.artifact_read.want(self.pulsation_read_key(cx));
+        if self.active_view != AppView::Pulsations {
+            return;
+        }
         let Some(backend) = self.pulsations_backend.clone() else {
             return;
         };
-        self.pulsations.update(cx, |pulsations, _| {
-            pulsations.artifacts_loading = true;
-        });
+        let Some(key) = self.artifact_read.begin() else {
+            return;
+        };
+        self.pulsations
+            .update(cx, |state, _| state.artifacts_loading = true);
         self.pulsation_artifacts_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.artifacts(pulsation_id.clone()).await;
             let _ = this.update(cx, |model, cx| {
-                model.pulsations.update(cx, |pulsations, _| {
-                    pulsations.finish_artifacts(&pulsation_id, result);
-                });
+                model.artifact_read.want(model.pulsation_read_key(cx));
+                let current = model.artifact_read.finish(&key, result.is_ok());
+                if current {
+                    model
+                        .pulsations
+                        .update(cx, |state, _| state.finish_artifacts(&pulsation_id, result));
+                } else if let Some(id) = model.pulsations.read(cx).active_id() {
+                    model.refresh_pulsation_artifacts(id, cx);
+                }
                 cx.notify();
             });
         }));
@@ -1678,11 +1779,17 @@ impl AppModel {
     /// configured default. Never applied to a pulsation the user has since
     /// navigated away from.
     fn refresh_backend_override(&mut self, pulsation_id: String, cx: &mut Context<Self>) {
+        self.backend_read.want(self.pulsation_read_key(cx));
+        if self.active_view != AppView::Pulsations {
+            return;
+        }
         let Some(core) = self.core.clone() else {
             return;
         };
+        let Some(key) = self.backend_read.begin() else {
+            return;
+        };
         let runtime = core.runtime_handle().clone();
-        let scope = pulsation_id.clone();
         self.backend_override_task = Some(cx.spawn(async move |this, cx| {
             let result = runtime
                 .spawn_blocking(move || {
@@ -1691,16 +1798,19 @@ impl AppModel {
                         .backend_override_status(&pulsation_id)
                 })
                 .await;
-            let status = match result {
-                Ok(Ok(status)) => status,
-                _ => None,
-            };
             let _ = this.update(cx, |model, cx| {
-                model.pulsations.update(cx, |pulsations, _| {
-                    if pulsations.active_id().as_deref() == Some(scope.as_str()) {
-                        pulsations.backend_override = status;
+                model.backend_read.want(model.pulsation_read_key(cx));
+                let success = matches!(result, Ok(Ok(_)));
+                let current = model.backend_read.finish(&key, success);
+                if current {
+                    if let Ok(Ok(status)) = result {
+                        model
+                            .pulsations
+                            .update(cx, |state, _| state.backend_override = status);
                     }
-                });
+                } else if let Some(id) = model.pulsations.read(cx).active_id() {
+                    model.refresh_backend_override(id, cx);
+                }
                 cx.notify();
             });
         }));
@@ -1732,7 +1842,7 @@ impl AppModel {
         });
         cx.notify();
         let runtime = core.runtime_handle().clone();
-        self.backend_override_task = Some(cx.spawn(async move |this, cx| {
+        self.backend_override_mutation_task = Some(cx.spawn(async move |this, cx| {
             let result = runtime
                 .spawn_blocking(move || {
                     core.persistence()
@@ -1751,6 +1861,7 @@ impl AppModel {
                 });
                 match result {
                     Ok(response) => {
+                        model.backend_read.invalidate();
                         model.pulsations.update(cx, |pulsations, _| {
                             pulsations.backend_override = None;
                             pulsations.notice = Some(if response.retried {
@@ -1771,7 +1882,145 @@ impl AppModel {
         }));
     }
 
+    /// Loads the "Leftover files" preview for a failed pulsation: what the
+    /// cleanup would remove and what it keeps. A dry run on the workspace, so
+    /// it is fetched once per selection (`cleanup_read`) and again only on an
+    /// explicit refresh or after the cleanup itself; never for a live pulsation.
+    fn refresh_cleanup_preview(&mut self, pulsation_id: String, cx: &mut Context<Self>) {
+        let failed = self.pulsations.read(cx).active().is_some_and(|pulse| {
+            pulse.id == pulsation_id && pulse.status == PulsationStatus::Failed
+        });
+        if !failed {
+            return;
+        }
+        self.cleanup_read.want(self.pulsation_read_key(cx));
+        if self.active_view != AppView::Pulsations {
+            return;
+        }
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let Some(key) = self.cleanup_read.begin() else {
+            return;
+        };
+        self.pulsations.update(cx, |state, _| {
+            state.cleanup.loading = true;
+            state.cleanup.error = None;
+        });
+        self.cleanup_preview_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.cleanup_preview(pulsation_id.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                model.cleanup_read.want(model.pulsation_read_key(cx));
+                let current = model.cleanup_read.finish(&key, result.is_ok());
+                if current {
+                    model.pulsations.update(cx, |state, _| {
+                        state.cleanup.loading = false;
+                        state.cleanup.armed = false;
+                        match result {
+                            Ok(plan) => {
+                                state.cleanup.plan = Some(plan);
+                                state.cleanup.error = None;
+                            }
+                            Err(error) => state.cleanup.error = Some(error),
+                        }
+                    });
+                } else if let Some(id) = model.pulsations.read(cx).active_id() {
+                    model
+                        .pulsations
+                        .update(cx, |state, _| state.cleanup.loading = false);
+                    model.refresh_cleanup_preview(id, cx);
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// The "Refresh" control of the Leftover files card: the preview is
+    /// optimistic (external editors do not share the host lock), so the
+    /// operator can re-read the workspace before confirming.
+    pub(crate) fn reload_cleanup_preview(&mut self, cx: &mut Context<Self>) {
+        let Some(pulsation_id) = self.pulsations.read(cx).active_id() else {
+            return;
+        };
+        self.cleanup_read.invalidate();
+        self.pulsations
+            .update(cx, |state, _| state.cleanup.armed = false);
+        self.refresh_cleanup_preview(pulsation_id, cx);
+        cx.notify();
+    }
+
+    /// Two clicks remove the files a failed pulsation created: the first arms
+    /// the control, the second sends the confirmed preview (bound by its
+    /// `plan_token`) to the host. Kept files stay in the base review; adopting
+    /// the base remains the operator's explicit step.
+    pub(crate) fn request_cleanup_failed_files(&mut self, cx: &mut Context<Self>) {
+        let Some(pulsation_id) = self.pulsations.read(cx).active_id() else {
+            return;
+        };
+        let request = self.pulsations.update(cx, |state, _| {
+            if !state.cleanup.can_remove() {
+                return None;
+            }
+            if !state.cleanup.armed {
+                state.cleanup.armed = true;
+                state.notice =
+                    Some("Confirm again to remove the files this pulsation created.".to_string());
+                return None;
+            }
+            let plan = state.cleanup.plan.as_ref()?;
+            state.cleanup.armed = false;
+            state.cleanup.busy = true;
+            state.cleanup.error = None;
+            Some(CleanupFailedPulsationFilesRequest {
+                pulsation_id: pulsation_id.clone(),
+                expected_plan_token: plan.plan_token.clone(),
+            })
+        });
+        cx.notify();
+        let Some(request) = request else {
+            return;
+        };
+        let Some(backend) = self.pulsations_backend.clone() else {
+            self.pulsations
+                .update(cx, |state, _| state.cleanup.busy = false);
+            return;
+        };
+        self.cleanup_mutation_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.cleanup_files(request).await;
+            let _ = this.update(cx, |model, cx| {
+                model.pulsations.update(cx, |state, _| state.cleanup.busy = false);
+                match result {
+                    Ok(report) => {
+                        let notice = format!(
+                            "{} file(s) removed, {} kept, {} staging dir(s) cleared. Kept files stay in the base review.",
+                            report.removed_files.len(),
+                            report.kept_files,
+                            report.removed_candidate_dirs
+                        );
+                        model.pulsations.update(cx, |state, _| {
+                            state.notice = Some(notice);
+                        });
+                        model.cleanup_read.invalidate();
+                        model.refresh_pulsations(cx);
+                        model.refresh_cleanup_preview(pulsation_id, cx);
+                        model.schedule_vault_refresh(cx);
+                    }
+                    Err(error) => {
+                        model.pulsations.update(cx, |state, _| {
+                            state.cleanup.error = Some(error.clone());
+                        });
+                        model.push_header_notice(HeaderNoticeKind::Error, error, cx);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn refresh_hitl_documents(&mut self, cx: &mut Context<Self>) {
+        if self.active_view != AppView::Pulsations {
+            return;
+        }
         let Some(backend) = self.pulsations_backend.clone() else {
             return;
         };
@@ -1797,6 +2046,9 @@ impl AppModel {
     }
 
     pub(crate) fn refresh_failure_detail(&mut self, cx: &mut Context<Self>) {
+        if self.active_view != AppView::Pulsations {
+            return;
+        }
         let Some(backend) = self.pulsations_backend.clone() else {
             return;
         };
@@ -1921,6 +2173,9 @@ impl AppModel {
         if !selected {
             return;
         }
+        self.artifact_read.invalidate();
+        self.backend_read.invalidate();
+        self.cleanup_read.invalidate();
         self.confirm_failure_abort = false;
         self.refresh_hitl_documents(cx);
         self.refresh_failure_detail(cx);
@@ -1930,7 +2185,8 @@ impl AppModel {
             pulsations.diff_expanded = false;
         });
         self.refresh_pulsation_artifacts(pulsation_id.clone(), cx);
-        self.refresh_backend_override(pulsation_id, cx);
+        self.refresh_backend_override(pulsation_id.clone(), cx);
+        self.refresh_cleanup_preview(pulsation_id, cx);
         self.refresh_logs(cx);
         self.schedule_session_persistence(cx);
         cx.notify();
@@ -3073,36 +3329,75 @@ impl AppModel {
         self.chat_resync_tasks.insert(task_key, task);
     }
 
-    pub(crate) fn set_agents_tab(&mut self, tab: AgentsTab, cx: &mut Context<Self>) {
-        self.agents.update(cx, |agents, _| {
-            agents.tab = tab;
-            if tab == AgentsTab::Api
-                && !matches!(
-                    agents.selected_agent,
-                    Some(crate::agents::AgentIdentifier::Canonical(_))
-                )
-            {
-                agents.selected_agent = agents
-                    .snapshot
-                    .as_ref()
-                    .and_then(|snapshot| snapshot.agents.first())
-                    .map(|agent| {
-                        crate::agents::AgentIdentifier::Canonical(agent.config.agent_role)
-                    });
-            }
-            agents.active_model_picker = None;
-        });
-        if tab == AgentsTab::Api && self.settings.read(cx).snapshot.is_none() {
-            self.refresh_settings(cx);
-        }
-        cx.notify();
-    }
-
     pub(crate) fn toggle_agents_viewer(&mut self, cx: &mut Context<Self>) {
         self.agents.update(cx, |agents, _| {
             agents.viewer_enabled = !agents.viewer_enabled
         });
         cx.notify();
+    }
+
+    pub(crate) fn toggle_agents_terminal_expanded(&mut self, cx: &mut Context<Self>) {
+        self.agents.update(cx, |agents, _| {
+            agents.terminal_expanded = !agents.terminal_expanded;
+            agents.active_model_picker = None;
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn cycle_agent_api_filter(&mut self, key: String, cx: &mut Context<Self>) {
+        self.agents.update(cx, |agents, _| {
+            let filter = agents.api_filters.entry(key).or_insert(ApiActivityFilter::All);
+            *filter = filter.next();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn clear_agent_api_activity(
+        &mut self,
+        target: AgentIdentifier,
+        cx: &mut Context<Self>,
+    ) {
+        self.agents.update(cx, |agents, _| {
+            agents.api_activity.remove(&target);
+            agents.notice = Some("Local API viewer cleared; persisted history was retained.".into());
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn export_agent_api_execution(
+        &mut self,
+        target: AgentIdentifier,
+        execution_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.agents_backend.clone() else { return; };
+        let Some(project_id) = self.workspace.read(cx).project_id.clone() else { return; };
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .export_api_execution(project_id.to_string(), target.target(), execution_id)
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(path) => {
+                        model.agents.update(cx, |agents, _| {
+                            if agents.generation == generation {
+                                agents.busy = false;
+                                agents.notice = Some(format!("Redacted API execution exported to {path}"));
+                            }
+                        });
+                        model.schedule_agents_notice_dismiss(cx);
+                    }
+                    Err(error) => {
+                        model.agents.update(cx, |agents, _| {
+                            agents.fail(generation, error);
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        }));
     }
 
     pub(crate) fn configure_agent_api(
@@ -3154,7 +3449,7 @@ impl AppModel {
             (route.map(|route| route.id.clone()), connection_id)
         };
         self.agents.update(cx, |agents, _| {
-            agents.selected_api_role = Some(role);
+            agents.selected_api_target = Some(AgentIdentifier::Canonical(role));
         });
         self.settings.update(cx, |settings, _| {
             settings.binding_agent_role = role.as_str().into();
@@ -3178,6 +3473,121 @@ impl AppModel {
         self.save_settings_binding(cx);
     }
 
+    pub(crate) fn configure_free_form_api(&mut self, slot_id: String, cx: &mut Context<Self>) {
+        let (route_id, connection_id) = {
+            let agents = self.agents.read(cx);
+            let settings = self.settings.read(cx);
+            let route = settings.snapshot.as_ref().and_then(|snapshot| {
+                agents
+                    .free_form_bindings
+                    .iter()
+                    .find(|binding| binding.slot_id == slot_id)
+                    .and_then(|binding| {
+                        snapshot
+                            .routes
+                            .iter()
+                            .find(|route| route.id == binding.route_id)
+                    })
+                    .or_else(|| snapshot.routes.first())
+            });
+            let connection_id = route
+                .and_then(|route| {
+                    route
+                        .targets
+                        .iter()
+                        .filter(|target| target.enabled)
+                        .min_by_key(|target| target.position)
+                })
+                .map(|target| target.connection_id.clone())
+                .or_else(|| {
+                    settings
+                        .snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.connections.first())
+                        .map(|connection| connection.id.clone())
+                });
+            (route.map(|route| route.id.clone()), connection_id)
+        };
+        self.agents.update(cx, |agents, _| {
+            agents.selected_api_target = Some(AgentIdentifier::FreeForm(slot_id));
+        });
+        if let Some(route_id) = route_id {
+            self.select_settings_route(route_id, cx);
+        }
+        if let Some(connection_id) = connection_id {
+            self.select_settings_connection(connection_id, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn save_free_form_api_binding(
+        &mut self,
+        slot_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let Some(route_id) = self.settings.read(cx).route().map(|route| route.id.clone()) else {
+            return;
+        };
+        let version = self
+            .agents
+            .read(cx)
+            .free_form_bindings
+            .iter()
+            .find(|binding| binding.project_id == project_id && binding.slot_id == slot_id)
+            .map(|binding| binding.version);
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .upsert_free_form_binding(UpsertFreeFormProviderRouteBindingRequest {
+                    project_id,
+                    slot_id,
+                    route_id,
+                    enabled: Some(true),
+                    version,
+                })
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(binding) => {
+                        model.agents.update(cx, |agents, _| {
+                            if generation == agents.generation {
+                                agents.busy = false;
+                                if let Some(current) = agents
+                                    .free_form_bindings
+                                    .iter_mut()
+                                    .find(|current| current.slot_id == binding.slot_id)
+                                {
+                                    *current = binding;
+                                } else {
+                                    agents.free_form_bindings.push(binding);
+                                }
+                                agents.notice = Some("FreeForm API route updated.".into());
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        model.agents.update(cx, |agents, _| {
+                            agents.fail(generation, error);
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn open_advanced_api_settings(
         &mut self,
         role: hvc_core::llm::AgentRole,
@@ -3199,6 +3609,17 @@ impl AppModel {
         self.agents.update(cx, |agents, _| {
             let enabled = agents.follow_tail.get(&key).copied().unwrap_or(true);
             agents.follow_tail.insert(key, !enabled);
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn cycle_agent_event_filter(&mut self, key: String, cx: &mut Context<Self>) {
+        self.agents.update(cx, |agents, _| {
+            let filter = agents
+                .event_filters
+                .entry(key)
+                .or_insert(crate::agents::TerminalEventFilter::All);
+            *filter = filter.next();
         });
         cx.notify();
     }
@@ -4018,6 +4439,104 @@ impl AppModel {
                             model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn start_free_form_api_agent(
+        &mut self,
+        slot_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let Some(input) = self.free_form_prompt_inputs.get(&slot_id).cloned() else {
+            return;
+        };
+        let prompt = input.read(cx).value().to_string();
+        if prompt.trim().is_empty() {
+            return;
+        }
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        let slot_for_result = slot_id.clone();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .start_free_form_api(StartFreeFormApiRunRequest {
+                    project_id,
+                    slot_id,
+                    prompt,
+                })
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(run) => {
+                        input.update(cx, |input, cx| input.set_value("", cx));
+                        model.agents.update(cx, |agents, _| {
+                            agents.apply_started_api_run(
+                                generation,
+                                slot_for_result,
+                                run.execution_id,
+                            );
+                        });
+                    }
+                    Err(error) => {
+                        let message = error.presentable();
+                        if model
+                            .agents
+                            .update(cx, |agents, _| agents.fail(generation, error))
+                        {
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn cancel_free_form_api_agent(
+        &mut self,
+        slot_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(execution_id) = self
+            .agents
+            .read(cx)
+            .active_api_execution_by_slot
+            .get(&slot_id)
+            .cloned()
+        else {
+            return;
+        };
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.cancel_api_execution(execution_id).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(true) => model.agents.update(cx, |agents, _| {
+                        agents.notice = Some("API cancellation requested.".into());
+                    }),
+                    Ok(false) => model.agents.update(cx, |agents, _| {
+                        agents.notice = Some("API execution is no longer active.".into());
+                        agents.active_api_execution_by_slot.remove(&slot_id);
+                    }),
+                    Err(error) => model.agents.update(cx, |agents, _| {
+                        agents.error = Some(error);
+                    }),
                 }
                 cx.notify();
             });
@@ -4895,9 +5414,32 @@ impl AppModel {
     }
 
     pub(crate) fn select_settings_provider(&mut self, provider_id: String, cx: &mut Context<Self>) {
-        self.settings.update(cx, |settings, _| {
+        let model_is_empty = self
+            .settings_connection_model_input
+            .read(cx)
+            .value()
+            .trim()
+            .is_empty();
+        let default_model = self.settings.update(cx, |settings, _| {
+            let changed = settings.connection_provider_id.as_ref() != provider_id;
+            let default_model = (changed || model_is_empty)
+                .then(|| {
+                    settings
+                        .snapshot
+                        .as_ref()?
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == provider_id)
+                        .map(|profile| profile.default_model.clone())
+                })
+                .flatten();
             settings.connection_provider_id = provider_id.into();
+            default_model
         });
+        if let Some(default_model) = default_model {
+            self.settings_connection_model_input
+                .update(cx, |input, cx| input.set_value(default_model, cx));
+        }
         self.close_dropdown(cx);
         cx.notify();
     }
@@ -4944,6 +5486,8 @@ impl AppModel {
         ] {
             input.update(cx, |input, cx| input.clear(cx));
         }
+        let provider_id = self.settings.read(cx).connection_provider_id.to_string();
+        self.select_settings_provider(provider_id, cx);
         cx.notify();
     }
 
@@ -5344,6 +5888,9 @@ impl AppModel {
     }
 
     pub(crate) fn refresh_logs(&mut self, cx: &mut Context<Self>) {
+        if self.active_view != AppView::Logs {
+            return;
+        }
         let Some(backend) = self.logs_backend.clone() else {
             return;
         };
@@ -5357,9 +5904,19 @@ impl AppModel {
             .active_pulsation_id
             .as_ref()
             .map(ToString::to_string);
+        let project_id = self.workspace.read(cx).project_id.clone();
         self.logs_task = Some(cx.spawn(async move |this, cx| {
-            let result = backend.observability(pulsation_id).await;
+            let result = backend.observability(pulsation_id.clone()).await;
             let _ = this.update(cx, |model, cx| {
+                if model.workspace.read(cx).project_id != project_id
+                    || model.pulsations.read(cx).active_id() != pulsation_id
+                {
+                    model.logs.update(cx, |logs, _| {
+                        logs.discard_poll(generation);
+                    });
+                    model.refresh_logs(cx);
+                    return;
+                }
                 match result {
                     Ok(snapshot) => {
                         model.logs.update(cx, |logs, _| {
@@ -5413,6 +5970,53 @@ impl AppModel {
         self.logs_resync_tasks.insert(task_key, task);
     }
 
+    fn request_event_resync(&mut self, cx: &mut Context<Self>) {
+        if self.event_resync_pending {
+            return;
+        }
+        self.event_resync_pending = true;
+        self.needs_resync = true;
+        self.artifact_read.invalidate();
+        self.backend_read.invalidate();
+        self.cleanup_read.invalidate();
+        self.status = "Event history delayed; refreshing runtime snapshots".into();
+        // Workspace changes may also have been lost; refresh its index without
+        // replacing open buffers, the current project, or navigation state.
+        self.schedule_vault_refresh(cx);
+    }
+
+    fn finish_event_resync(&mut self, cx: &mut Context<Self>) {
+        if !self.event_resync_pending {
+            return;
+        }
+        self.event_resync_pending = false;
+        self.needs_resync = false;
+        match self.active_view {
+            AppView::Agents => self.refresh_agents(cx),
+            AppView::Forge => self.refresh_forge(cx),
+            AppView::Settings => self.refresh_settings(cx),
+            AppView::Pulsations => self.refresh_pulsation_usage(cx),
+            AppView::Chat => {
+                let project = self
+                    .workspace
+                    .read(cx)
+                    .project_id
+                    .as_ref()
+                    .map(ToString::to_string);
+                let conversation = self
+                    .chat
+                    .read(cx)
+                    .active_conversation
+                    .as_ref()
+                    .map(ToString::to_string);
+                if let Some(project) = project {
+                    self.hydrate_chat_project(project, conversation, cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn start_lifecycle(&mut self, cx: &mut Context<Self>) {
         let Some(core) = self.core.clone() else {
             return;
@@ -5434,16 +6038,7 @@ impl AppModel {
                     Err(RecvError::Lagged(_)) => {
                         if this
                             .update(cx, |model, cx| {
-                                model.needs_resync = true;
-                                model.status =
-                                    "Eventos atrasados; recarregando snapshot persistido".into();
-                                model.restore_last_session(cx);
-                                model.refresh_settings(cx);
-                                model.refresh_logs(cx);
-                                model.refresh_forge(cx);
-                                if model.active_view == AppView::Agents {
-                                    model.refresh_agents(cx);
-                                }
+                                model.request_event_resync(cx);
                             })
                             .is_err()
                         {
@@ -5455,63 +6050,23 @@ impl AppModel {
             }
         }));
 
-        let Some(pulsations_backend) = self.pulsations_backend.clone() else {
-            return;
-        };
         let timer = cx.background_executor().clone();
         self.polling_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 timer.timer(std::time::Duration::from_millis(1_200)).await;
                 let state = this.update(cx, |model, cx| {
                     if model.lifecycle.is_disposed() {
-                        return (true, None);
+                        return false;
                     }
-                    let project_id = model
-                        .workspace
-                        .read(cx)
-                        .project_id
-                        .as_ref()
-                        .map(ToString::to_string);
-                    if project_id.is_none() || !model.lifecycle.try_begin_poll() {
-                        return (false, None);
+                    if model.workspace.read(cx).project_id.is_some()
+                        && !model.snapshot_in_flight
+                        && model.lifecycle.try_begin_poll()
+                    {
+                        model.refresh_pulsations(cx);
                     }
-                    (false, project_id)
+                    true
                 });
-                let Ok((disposed, project_id)) = state else {
-                    break;
-                };
-                if disposed {
-                    break;
-                }
-                let Some(project_id) = project_id else {
-                    continue;
-                };
-
-                let snapshot = pulsations_backend
-                    .runtime_snapshot(project_id.clone())
-                    .await;
-                if this
-                    .update(cx, |model, cx| {
-                        model.lifecycle.finish_poll();
-                        match snapshot {
-                            Ok(snapshot) => {
-                                let active_id =
-                                    model.apply_pulsation_snapshot(project_id, snapshot, None, cx);
-                                if let Some(active_id) = active_id {
-                                    model.refresh_pulsation_artifacts(active_id, cx);
-                                }
-                                model.refresh_logs(cx);
-                            }
-                            Err(error) => model.push_header_notice(
-                                HeaderNoticeKind::Warning,
-                                format!("Failed to update runtime: {error}"),
-                                cx,
-                            ),
-                        }
-                        cx.notify();
-                    })
-                    .is_err()
-                {
+                if !matches!(state, Ok(true)) {
                     break;
                 }
             }
@@ -5848,6 +6403,9 @@ impl AppModel {
         let preparation_action = self.preparation_action_task.take();
         self.artifact_preview_task.take();
         self.pulsation_artifacts_task.take();
+        self.pulsation_snapshot_task.take();
+        self.backend_override_task.take();
+        let backend_override_mutation = self.backend_override_mutation_task.take();
         self.hitl_documents_task.take();
         self.vault_refresh_task.take();
         self.vault_search_task.take();
@@ -5885,6 +6443,9 @@ impl AppModel {
                 task.await;
             }
             if let Some(task) = settings {
+                task.await;
+            }
+            if let Some(task) = backend_override_mutation {
                 task.await;
             }
             let result = match (persistence, request) {
@@ -5960,16 +6521,28 @@ impl AppModel {
             }
             AppEvent::Llm(envelope) => {
                 let execution_id = envelope.execution_id.clone();
-                self.agents
+                let terminal = matches!(
+                    envelope.event,
+                    hvc_core::llm::LlmStreamEvent::RouteCompleted { .. }
+                        | hvc_core::llm::LlmStreamEvent::RouteFailed { .. }
+                );
+                let agents_gap = self
+                    .agents
                     .update(cx, |agents, _| agents.record_llm(&envelope));
                 let classification = self.logs.update(cx, |logs, _| logs.record_llm(envelope));
-                if classification == SequenceClassification::Gap {
+                if classification == SequenceClassification::Gap || agents_gap {
                     self.needs_resync = true;
                     self.status = "LLM gap detected; reloading persisted execution".into();
                     self.resync_llm_execution(execution_id, cx);
                 }
+                if (terminal || agents_gap) && self.active_view == AppView::Agents {
+                    self.refresh_agents(cx);
+                }
             }
             AppEvent::Terminal(envelope) => {
+                if envelope.run.status.is_terminal() {
+                    self.backend_read.invalidate();
+                }
                 let terminal = envelope.run.status.is_terminal()
                     || envelope.run.status == TerminalRunStatus::AwaitingFallback;
                 let gap = self
@@ -6357,9 +6930,13 @@ mod tests {
     struct RecordingPulsationsBackend {
         actions: Arc<Mutex<Vec<crate::pulsations::PulsationAction>>>,
         snapshot_calls: Arc<Mutex<usize>>,
+        snapshot_barrier: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
         artifact_calls: Arc<Mutex<Vec<String>>>,
         create_calls: Arc<Mutex<Vec<(String, String)>>>,
         cancel_calls: Arc<Mutex<Vec<String>>>,
+        cleanup_preview_calls: Arc<Mutex<Vec<String>>>,
+        cleanup_calls: Arc<Mutex<Vec<hvc_core::orchestration::CleanupFailedPulsationFilesRequest>>>,
+        cleanup_plan: Arc<Mutex<Option<hvc_core::orchestration::FailedPulsationCleanupPlan>>>,
         snapshot: Arc<Mutex<PulsationRuntimeSnapshot>>,
         artifacts: Arc<Mutex<Vec<Artifact>>>,
     }
@@ -6369,9 +6946,13 @@ mod tests {
             Self {
                 actions: Arc::new(Mutex::new(Vec::new())),
                 snapshot_calls: Arc::new(Mutex::new(0)),
+                snapshot_barrier: Default::default(),
                 artifact_calls: Arc::new(Mutex::new(Vec::new())),
                 create_calls: Arc::new(Mutex::new(Vec::new())),
                 cancel_calls: Arc::new(Mutex::new(Vec::new())),
+                cleanup_preview_calls: Arc::new(Mutex::new(Vec::new())),
+                cleanup_calls: Arc::new(Mutex::new(Vec::new())),
+                cleanup_plan: Arc::new(Mutex::new(None)),
                 snapshot: Arc::new(Mutex::new(PulsationRuntimeSnapshot {
                     details: Vec::new(),
                     coordination: None,
@@ -6434,7 +7015,13 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            Box::pin(async move { Ok(snapshot) })
+            let barrier = self.snapshot_barrier.lock().unwrap().take();
+            Box::pin(async move {
+                if let Some(barrier) = barrier {
+                    let _ = barrier.await;
+                }
+                Ok(snapshot)
+            })
         }
 
         fn artifacts(&self, pulsation_id: String) -> PulsationsFuture<Vec<Artifact>> {
@@ -6464,6 +7051,44 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(pulsation_id);
             Box::pin(async { Ok(1) })
+        }
+
+        fn cleanup_preview(
+            &self,
+            pulsation_id: String,
+        ) -> PulsationsFuture<hvc_core::orchestration::FailedPulsationCleanupPlan> {
+            self.cleanup_preview_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(pulsation_id.clone());
+            let plan = self
+                .cleanup_plan
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            Box::pin(async move {
+                plan.ok_or_else(|| "no cleanup preview scripted for this test".to_string())
+            })
+        }
+
+        fn cleanup_files(
+            &self,
+            request: hvc_core::orchestration::CleanupFailedPulsationFilesRequest,
+        ) -> PulsationsFuture<hvc_core::orchestration::FailedPulsationCleanupReport> {
+            let pulsation_id = request.pulsation_id.clone();
+            self.cleanup_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(request);
+            Box::pin(async move {
+                Ok(hvc_core::orchestration::FailedPulsationCleanupReport {
+                    pulsation_id,
+                    removed_files: vec!["src/generated.rs".into()],
+                    removed_directories: 1,
+                    removed_candidate_dirs: 0,
+                    kept_files: 1,
+                })
+            })
         }
     }
 
@@ -7230,6 +7855,218 @@ mod tests {
     }
 
     #[gpui::test]
+    fn real_pulsation_completes_under_every_view_with_the_same_four_checkpoints(
+        cx: &mut TestAppContext,
+    ) {
+        use hvc_core::persistence_service::{
+            CreatePulsationRequest, EnsureProjectForWorkspaceRequest,
+            GetPulsationRuntimeSnapshotRequest, PulsationStatus,
+        };
+        use hvc_test_support::pulsation_benchmark::{
+            configure_loopback, force_api_direct, stage_response,
+        };
+        use hvc_test_support::{CoreTestHarness, ScriptedHttpServer};
+        let harness = CoreTestHarness::new();
+        let core = harness.core();
+        let server = ScriptedHttpServer::respond_with(stage_response);
+        configure_loopback(core.persistence(), &server);
+        let project = core
+            .persistence()
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: harness.workspace_dir().to_string_lossy().into_owned(),
+                preferred_name: Some("View independence fixture".into()),
+            })
+            .unwrap()
+            .project;
+        force_api_direct(core.persistence(), &project.id);
+        let handle = core.runtime_handle().clone();
+        let _entered = handle.enter();
+        let model = cx.new(|cx| AppModel::new(core.clone(), cx));
+        let restore_deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            cx.run_until_parked();
+            if cx.read(|cx| !model.read(cx).hydrating) { break; }
+            assert!(std::time::Instant::now() < restore_deadline, "fixture session restore timed out");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        model.update(cx, |model, cx| {
+            model.workspace.update(cx, |workspace, _| {
+                workspace.project_id = Some(project.id.clone().into());
+            });
+        });
+        for view in [
+            AppView::Agents,
+            AppView::Pulsations,
+            AppView::Forge,
+            AppView::Workspace,
+            AppView::Chat,
+            AppView::Vault,
+            AppView::Logs,
+            AppView::Settings,
+        ] {
+            model.update(cx, |model, cx| model.select_view(view, cx));
+            let pulse = core
+                .persistence()
+                .create_pulsation(CreatePulsationRequest {
+                    project_id: project.id.clone(),
+                    feature_name:
+                        "Describe expired-token validation returning status 401. Fixture only."
+                            .into(),
+                })
+                .unwrap()
+                .pulsation;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let mut approvals = 0;
+            loop {
+                cx.run_until_parked();
+                model.update(cx, |model, cx| {
+                    assert_eq!(model.active_view(), view);
+                    model.refresh_pulsations(cx);
+                });
+                let snapshot = core
+                    .persistence()
+                    .get_pulsation_runtime_snapshot(GetPulsationRuntimeSnapshotRequest {
+                        project_id: project.id.clone(),
+                    })
+                    .unwrap();
+                let current = snapshot
+                    .snapshot
+                    .pulsations
+                    .iter()
+                    .find(|item| item.id == pulse.id)
+                    .unwrap();
+                assert_ne!(current.status, PulsationStatus::Failed, "view={view:?}");
+                if current.status == PulsationStatus::Done {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "view={view:?} stage={:?} status={:?}",
+                    current.stage,
+                    current.status
+                );
+                if let Ok(checkpoint) = core.persistence().get_hitl_checkpoint(&pulse.id) {
+                    core.persistence()
+                        .apply_hitl_decision(
+                            hvc_core::persistence_service::ApplyHitlDecisionRequest {
+                                pulsation_id: pulse.id.clone(),
+                                checkpoint_id: checkpoint.checkpoint_id,
+                                expected_state_version: checkpoint.state_version,
+                                feedback: None,
+                                decision: hvc_core::persistence_service::HitlDecision::Approve,
+                            },
+                        )
+                        .unwrap();
+                    approvals += 1;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert_eq!(approvals, 4, "view={view:?}");
+        }
+        model.update(cx, |model, _| {
+            model.lifecycle.dispose();
+        });
+    }
+
+    #[gpui::test]
+    fn overlapping_snapshot_requests_do_not_restore_an_earlier_selection(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingPulsationsBackend::new());
+        let mut other = test_pulsation();
+        other.id = "pulse-2".into();
+        backend.snapshot.lock().unwrap().pulsations.push(other);
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                backend.clone(),
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |model, cx| {
+            configure_domain_workspace(model, cx);
+            model.apply_pulsation_snapshot(
+                "project-1".into(),
+                backend.snapshot.lock().unwrap().clone(),
+                Some("pulse-1"),
+                cx,
+            );
+        });
+        let (release, barrier) = tokio::sync::oneshot::channel();
+        *backend.snapshot_barrier.lock().unwrap() = Some(barrier);
+        model.update(cx, AppModel::refresh_pulsations);
+        cx.run_until_parked();
+        model.update(cx, |model, cx| {
+            for _ in 0..10 {
+                model.refresh_pulsations(cx);
+            }
+            model.select_pulsation("pulse-2", cx);
+        });
+        assert_eq!(*backend.snapshot_calls.lock().unwrap(), 1);
+        release.send(()).unwrap();
+        cx.run_until_parked();
+        assert_eq!(*backend.snapshot_calls.lock().unwrap(), 2);
+        cx.read(|cx| {
+            assert_eq!(
+                model.read(cx).pulsations.read(cx).active_id().as_deref(),
+                Some("pulse-2")
+            )
+        });
+    }
+
+    #[gpui::test]
+    fn runtime_observation_and_lag_recovery_preserve_all_views_and_dirty_buffers(
+        cx: &mut TestAppContext,
+    ) {
+        let backend = Arc::new(RecordingPulsationsBackend::new());
+        let vault = Arc::new(RecordingVaultBackend::new());
+        let model =
+            cx.new(|cx| AppModel::new_for_test_with_domain_backends(backend.clone(), vault, cx));
+        model.update(cx, |model, cx| {
+            configure_domain_workspace(model, cx);
+            configure_editable_tab(model, cx);
+        });
+        let views = [
+            AppView::Agents,
+            AppView::Pulsations,
+            AppView::Forge,
+            AppView::Workspace,
+            AppView::Chat,
+            AppView::Vault,
+            AppView::Logs,
+            AppView::Settings,
+        ];
+        for view in views.into_iter().cycle().take(16) {
+            model.update(cx, |model, cx| {
+                model.select_view(view, cx);
+                let revision = model
+                    .workspace
+                    .read(cx)
+                    .active_tab()
+                    .map(|tab| tab.content.clone());
+                model.request_event_resync(cx);
+                model.request_event_resync(cx);
+                let mut snapshot = backend.snapshot.lock().unwrap().clone();
+                snapshot.main_agents_count = 1;
+                model.apply_pulsation_snapshot("project-1".into(), snapshot, None, cx);
+                assert_eq!(model.active_view(), view);
+                assert_eq!(
+                    model
+                        .workspace
+                        .read(cx)
+                        .active_tab()
+                        .map(|tab| tab.content.clone()),
+                    revision
+                );
+                assert_eq!(model.pulsations.read(cx).running_jobs, 2);
+                assert!(model.event_resync_pending);
+                model.refresh_pulsation_artifacts("pulse-1".into(), cx);
+            });
+            cx.run_until_parked();
+        }
+        // Only opening Pulsations reads artifacts. Other views still receive runtime state.
+        assert!(backend.artifact_calls.lock().unwrap().len() <= 2);
+    }
+
+    #[gpui::test]
     fn refreshes_pulsation_artifacts_through_the_typed_backend(cx: &mut TestAppContext) {
         let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
         let vault_backend = Arc::new(RecordingVaultBackend::new());
@@ -7246,6 +8083,7 @@ mod tests {
 
         model.update(cx, |model, cx| {
             configure_domain_workspace(model, cx);
+            model.select_view(AppView::Pulsations, cx);
             model.refresh_pulsations(cx);
         });
         cx.run_until_parked();
@@ -7266,6 +8104,15 @@ mod tests {
             assert_eq!(model.read(cx).pulsations.read(cx).artifacts[0].name, "Plan");
         });
 
+        model.update(cx, AppModel::refresh_pulsations);
+        cx.run_until_parked();
+        assert_eq!(
+            artifact_calls.lock().unwrap().len(),
+            1,
+            "unchanged snapshots reuse persisted artifacts"
+        );
+        pulsations_backend.snapshot.lock().unwrap().pulsations[0].updated_at =
+            "next-revision".into();
         *artifacts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -7633,6 +8480,170 @@ mod tests {
                 model.read(cx).pulsations.read(cx).notice.as_deref(),
                 Some("1 job(s) marked for cancellation.")
             );
+        });
+    }
+
+    fn scripted_cleanup_plan() -> hvc_core::orchestration::FailedPulsationCleanupPlan {
+        use hvc_core::orchestration::{CleanupDisposition, FailedPulsationCleanupEntry};
+        hvc_core::orchestration::FailedPulsationCleanupPlan {
+            pulsation_id: "pulse-1".into(),
+            project_id: "project-1".into(),
+            entries: vec![
+                FailedPulsationCleanupEntry {
+                    relative_path: "src/generated.rs".into(),
+                    disposition: CleanupDisposition::Remove,
+                    detail: None,
+                },
+                FailedPulsationCleanupEntry {
+                    relative_path: "src/lib.rs".into(),
+                    disposition: CleanupDisposition::KeepPreexisting,
+                    detail: None,
+                },
+            ],
+            candidate_dirs: vec![],
+            plan_token: "token-1".into(),
+        }
+    }
+
+    #[gpui::test]
+    fn failed_pulsation_cleanup_previews_once_and_removes_only_after_a_second_click(
+        cx: &mut TestAppContext,
+    ) {
+        let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
+        *pulsations_backend
+            .cleanup_plan
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(scripted_cleanup_plan());
+        pulsations_backend
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pulsations[0]
+            .status = PulsationStatus::Failed;
+        let preview_calls = Arc::clone(&pulsations_backend.cleanup_preview_calls);
+        let cleanup_calls = Arc::clone(&pulsations_backend.cleanup_calls);
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                pulsations_backend,
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |model, cx| {
+            configure_domain_workspace(model, cx);
+            model.select_view(AppView::Pulsations, cx);
+            model.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        // Two refreshes of the same failed pulsation read the workspace once.
+        model.update(cx, |model, cx| model.refresh_pulsations(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            *preview_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec!["pulse-1"]
+        );
+        cx.read(|cx| {
+            let state = model.read(cx).pulsations.read(cx);
+            let plan = state.cleanup.plan.as_ref().expect("preview loaded");
+            assert_eq!(plan.removable_files(), 1);
+            assert_eq!(plan.kept_files(), 1);
+            assert!(state.cleanup.can_remove());
+            assert!(!state.cleanup.armed);
+        });
+
+        // First click arms; nothing reaches the host.
+        model.update(cx, |model, cx| model.request_cleanup_failed_files(cx));
+        cx.run_until_parked();
+        assert!(
+            cleanup_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+        cx.read(|cx| {
+            let state = model.read(cx).pulsations.read(cx);
+            assert!(state.cleanup.armed);
+            assert_eq!(
+                state.notice.as_deref(),
+                Some("Confirm again to remove the files this pulsation created.")
+            );
+        });
+
+        // Second click sends the previewed plan token.
+        model.update(cx, |model, cx| model.request_cleanup_failed_files(cx));
+        cx.run_until_parked();
+        let calls = cleanup_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].pulsation_id, "pulse-1");
+        assert_eq!(calls[0].expected_plan_token, "token-1");
+        cx.read(|cx| {
+            let state = model.read(cx).pulsations.read(cx);
+            assert!(!state.cleanup.armed);
+            assert!(!state.cleanup.busy);
+            assert_eq!(
+                state.notice.as_deref(),
+                Some("1 file(s) removed, 1 kept, 0 staging dir(s) cleared. Kept files stay in the base review.")
+            );
+        });
+        // The cleanup re-reads the preview so the card reflects the new disk state.
+        assert_eq!(
+            preview_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            2
+        );
+    }
+
+    #[gpui::test]
+    fn cleanup_preview_is_never_requested_for_a_live_pulsation(cx: &mut TestAppContext) {
+        let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
+        *pulsations_backend
+            .cleanup_plan
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(scripted_cleanup_plan());
+        let preview_calls = Arc::clone(&pulsations_backend.cleanup_preview_calls);
+        let cleanup_calls = Arc::clone(&pulsations_backend.cleanup_calls);
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                pulsations_backend,
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |model, cx| {
+            configure_domain_workspace(model, cx);
+            model.select_view(AppView::Pulsations, cx);
+            model.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        model.update(cx, |model, cx| {
+            model.request_cleanup_failed_files(cx);
+            model.request_cleanup_failed_files(cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            preview_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
+            "a running pulsation has no leftover files to preview"
+        );
+        assert!(
+            cleanup_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+        cx.read(|cx| {
+            let state = model.read(cx).pulsations.read(cx);
+            assert!(state.cleanup.plan.is_none());
+            assert!(!state.cleanup.armed);
         });
     }
 

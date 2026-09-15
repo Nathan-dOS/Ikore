@@ -89,4 +89,36 @@ mod tests {
         assert!(entry.streaming);
         assert!(entry.tool_calling);
     }
+
+    #[test]
+    fn openrouter_catalog_contains_curated_free_and_paid_models() {
+        for model in [
+            "openrouter/free",
+            "nex-agi/nex-n2.5-mini:free",
+            "nex-agi/nex-n2.5-pro:free",
+            "cohere/north-mini-code:free",
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+        ] {
+            let entry = model_entry("openrouter", model).unwrap();
+            assert_eq!(entry.input_usd_per_million, Some(0.0), "{model}");
+            assert_eq!(entry.output_usd_per_million, Some(0.0), "{model}");
+            assert!(entry.streaming, "{model}");
+            assert!(entry.tool_calling, "{model}");
+        }
+
+        assert!(
+            model_entry("openrouter", "cohere/north-mini-code:free")
+                .is_some_and(|entry| !entry.structured_output)
+        );
+        assert!(
+            model_entry("openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free")
+                .is_some_and(|entry| !entry.structured_output)
+        );
+        for model in ["deepseek/deepseek-v4.1-flash", "qwen/qwen3.8-max-0902"] {
+            let entry = model_entry("openrouter", model).unwrap();
+            assert_eq!(entry.input_usd_per_million, None, "{model}");
+            assert_eq!(entry.output_usd_per_million, None, "{model}");
+            assert!(entry.structured_output, "{model}");
+        }
+    }
 }

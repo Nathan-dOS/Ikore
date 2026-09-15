@@ -7,6 +7,7 @@ use hvc_core::persistence_service::EmbeddingReadinessReport;
 
 use crate::app_model::AppModel;
 use crate::settings::SettingsSection;
+use crate::sizing::{INPUT_LONG, INPUT_MEDIUM, INPUT_SHORT, StyledExt, sized_input};
 use crate::theme;
 
 pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
@@ -272,13 +273,14 @@ fn settings_connections(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElem
                 .child(
                     div()
                         .flex()
+                        .flex_wrap()
                         .gap_2()
                         .child(provider_div)
-                        .child(div().flex_1().child(connection_name)),
+                        .child(sized_input(connection_name, INPUT_MEDIUM)),
                 )
-                .child(connection_model)
+                .child(sized_input(connection_model, INPUT_MEDIUM))
                 .when(endpoint_allowed, |section| {
-                    section.child(connection_endpoint)
+                    section.child(sized_input(connection_endpoint, INPUT_LONG))
                 })
                 .when(!endpoint_allowed, |section| {
                     section.child(
@@ -288,7 +290,7 @@ fn settings_connections(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElem
                             .child("Fixed endpoint for selected profile."),
                     )
                 })
-                .child(connection_secret)
+                .child(sized_input(connection_secret, INPUT_LONG))
                 .child(
                     div()
                         .flex()
@@ -350,7 +352,7 @@ fn settings_routes(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         .when(show_form, |panel| panel
                 .child(
                     card("Selected / new route")
-                        .child(route_name)
+                        .child(sized_input(route_name, INPUT_MEDIUM))
                         .child(strategy_div)
                         .child(div().text_sm().text_color(theme::text_muted()).child(format!(
                             "Limits: {} attempt(s) · {} ms/attempt · {} ms/route · {} target(s)",
@@ -425,10 +427,10 @@ fn settings_runtime(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement 
                     card("Pulsation preparation · local and optional")
                         .child(toggle("preparation-enabled", "TASKREFINE / PRESPEC", if snapshot.preparation.preparation_enabled {"on"}else{"off"}, !busy,cx,|model,cx|model.save_preparation_settings(true,cx)))
                         .child(div().text_sm().child(format!("Current threshold: {}. Changes apply to the next evaluation. Disabling does not confirm a pending review.",snapshot.preparation.vagueness_threshold.get())))
-                        .child(model.preparation_threshold_input.clone())
+                        .child(sized_input(model.preparation_threshold_input.clone(), INPUT_SHORT))
                         .child(action("preparation-save", "Save threshold (0–100)",!busy,cx,|model,cx|model.save_preparation_settings(false,cx)))
                         .child(div().text_sm().child(format!("Current handoff budget: {} characters. Increase here if mandatory artifacts/responses do not fit.",snapshot.config.context_chars_limit)))
-                        .child(model.context_limit_input.clone())
+                        .child(sized_input(model.context_limit_input.clone(), INPUT_SHORT))
                         .child(action("context-budget-save","Save context budget",!busy,cx,|model,cx|model.save_context_limit(cx)))
                         .child(toggle("learning-enabled", "ADVISORY LEARNING", if snapshot.preparation.learning_enabled {"on"}else{"off"}, !busy,cx,|model,cx|model.toggle_learning(cx)))
                         .child(crate::select_menu::control(("learning-refinement-mode").to_string(),"GRAPH REFINEMENT",snapshot.preparation.learning_refinement_mode.as_str(),!busy && snapshot.preparation.learning_enabled,cx))
@@ -449,7 +451,7 @@ fn settings_runtime(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement 
                             snapshot.config.embedding_provider.as_str(), snapshot.config.embedding_top_k,
                             snapshot.key_statuses.iter().filter(|status| status.has_api_key).count()
                         )))
-                        .child(embedding_model)
+                        .child(sized_input(embedding_model, INPUT_MEDIUM))
                         .child(div().flex().gap_2()
                             .child(crate::select_menu::control(("settings-embedding-top-k").to_string(),"Embedding Top K",snapshot.config.embedding_top_k.to_string(),!busy,cx))
                             .child(action("settings-reindex", "Reindex workspace", !busy, cx, |model, cx| model.reindex_embeddings(cx))))
@@ -920,6 +922,8 @@ pub(crate) fn action(
     div()
         .id(id)
         .debug_selector(move || id.into())
+        .self_start()
+        .flex_shrink_0()
         .px_3()
         .py_2()
         .rounded_md()
@@ -953,6 +957,9 @@ pub(crate) fn toggle(
     div()
         .id(id)
         .debug_selector(move || id.into())
+        .self_start()
+        .min_w(px(220.0))
+        .max_w(px(360.0))
         .p_3()
         .rounded_md()
         .border_1()

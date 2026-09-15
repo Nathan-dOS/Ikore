@@ -353,6 +353,107 @@ pub struct ConfirmBaseReconciliationRequest {
     pub expected_review_token: String,
 }
 
+/// What the cleanup of a failed pulsation does with one workspace path it
+/// published. Only a file the pulsation itself created, still holding bytes
+/// the pulsation wrote, is ever removed; everything else is kept and reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupDisposition {
+    /// Created by the pulsation and unchanged since: removed.
+    Remove,
+    /// The file is already gone; the record is closed without touching disk.
+    AlreadyAbsent,
+    /// The pulsation overwrote a file that existed before it. The previous
+    /// content is not stored, so the file is left for a human decision.
+    KeepPreexisting,
+    /// Created by the pulsation but edited afterwards: kept.
+    KeepEdited,
+    /// The path could not be observed (protected or unreadable): kept.
+    KeepUnreadable,
+}
+
+impl CleanupDisposition {
+    pub fn removes(self) -> bool {
+        matches!(self, Self::Remove)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedPulsationCleanupEntry {
+    pub relative_path: String,
+    pub disposition: CleanupDisposition,
+    /// Operator-facing reason for a kept path (e.g. the observation error).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Dry run of [`CleanupFailedPulsationFilesRequest`]: what would be removed and
+/// what is deliberately kept. `plan_token` binds the confirmation to exactly
+/// this list and the observed file hashes behind it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedPulsationCleanupPlan {
+    pub pulsation_id: String,
+    pub project_id: String,
+    pub entries: Vec<FailedPulsationCleanupEntry>,
+    /// Disposable staging directories under the app data dir
+    /// (`stage_candidates/<execution>`), shown by directory name.
+    pub candidate_dirs: Vec<String>,
+    pub plan_token: String,
+}
+
+impl FailedPulsationCleanupPlan {
+    pub fn removable_files(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.disposition.removes())
+            .count()
+    }
+
+    pub fn kept_files(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                !matches!(
+                    entry.disposition,
+                    CleanupDisposition::Remove | CleanupDisposition::AlreadyAbsent
+                )
+            })
+            .count()
+    }
+
+    /// True when confirming would change nothing on disk or in the database.
+    pub fn is_noop(&self) -> bool {
+        self.candidate_dirs.is_empty()
+            && !self.entries.iter().any(|entry| {
+                matches!(
+                    entry.disposition,
+                    CleanupDisposition::Remove | CleanupDisposition::AlreadyAbsent
+                )
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CleanupFailedPulsationFilesRequest {
+    pub pulsation_id: String,
+    /// The `plan_token` of the preview the operator confirmed.
+    pub expected_plan_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedPulsationCleanupReport {
+    pub pulsation_id: String,
+    pub removed_files: Vec<String>,
+    /// Parent directories that became empty and were pruned up to the workspace root.
+    pub removed_directories: usize,
+    pub removed_candidate_dirs: usize,
+    pub kept_files: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuePosition {

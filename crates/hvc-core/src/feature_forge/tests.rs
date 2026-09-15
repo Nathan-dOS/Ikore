@@ -700,7 +700,7 @@ impl crate::llm::LlmGateway for PlanningGateway {
                 model: "fixture".into(),
                 request_payload: json!({}),
                 response_payload: json!({}),
-                content: if request.agent_role == AgentRole::IntakeRouter {
+                content: if request.target.agent_role() == Some(AgentRole::IntakeRouter) {
                     r#"{"summary":"Observed export behavior","risks":[],"existingComponents":["Export function"]}"#.into()
                 } else {
                     self.response.clone()

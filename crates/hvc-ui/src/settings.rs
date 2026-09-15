@@ -677,6 +677,196 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_connection_uses_keyring_metadata_and_fixed_endpoint() {
+        let harness = CoreTestHarness::new();
+        let core = harness.core();
+        let backend = CoreSettingsBackend::new(Arc::clone(&core));
+        let connection = core
+            .runtime_handle()
+            .block_on(backend.upsert_connection(UpsertProviderConnectionRequest {
+                id: Some("openrouter-connection".into()),
+                provider_id: "openrouter".into(),
+                display_name: "OpenRouter fixture".into(),
+                endpoint_url: Some("https://attacker.invalid/custom".into()),
+                default_model: "openrouter/free".into(),
+                enabled: Some(true),
+                max_concurrency: Some(1),
+                api_key: Some("sk-or-v1-secret".into()),
+                version: None,
+            }))
+            .expect("OpenRouter connection should save");
+
+        assert_eq!(connection.provider_id, "openrouter");
+        assert_eq!(connection.endpoint_url, None);
+        assert_eq!(connection.default_model, "openrouter/free");
+        assert!(connection.has_api_key);
+        assert!(connection.chat_eligible);
+        assert!(
+            harness
+                .credentials()
+                .contains("connection:openrouter-connection")
+        );
+        let serialized = serde_json::to_string(&connection).unwrap();
+        assert!(!serialized.contains("sk-or-v1-secret"));
+        assert!(!serialized.contains("credential_ref"));
+        let snapshot = core.runtime_handle().block_on(backend.snapshot()).unwrap();
+        assert!(
+            snapshot
+                .connections
+                .iter()
+                .any(|item| item.id == connection.id && item.has_api_key)
+        );
+        assert!(
+            !serde_json::to_string(&snapshot.connections)
+                .unwrap()
+                .contains("sk-or-v1-secret")
+        );
+        for entry in std::fs::read_dir(harness.data_dir()).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file()
+                && path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("hard-vibe-code.db")
+            {
+                let bytes = std::fs::read(path).unwrap();
+                assert!(
+                    !bytes
+                        .windows(b"sk-or-v1-secret".len())
+                        .any(|window| window == b"sk-or-v1-secret")
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn openrouter_selector_populates_default_and_saves_a_secret_free_connection(
+        cx: &mut TestAppContext,
+    ) {
+        let harness = CoreTestHarness::new();
+        let core = harness.core();
+        let backend = Arc::new(CoreSettingsBackend::new(Arc::clone(&core)));
+        let snapshot = core.runtime_handle().block_on(backend.snapshot()).unwrap();
+        let profile = snapshot
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "openrouter")
+            .unwrap();
+        assert_eq!(profile.default_model, "openrouter/free");
+        assert!(!profile.endpoint_configurable);
+        let app = cx.new(|cx| AppModel::new_for_test_with_settings_backend(backend.clone(), cx));
+        app.update(cx, |model, cx| {
+            model
+                .settings
+                .update(cx, |settings, _| settings.snapshot = Some(snapshot));
+            model.new_settings_connection(cx);
+            assert_eq!(
+                model.settings_connection_model_input.read(cx).value(),
+                "gpt-4.1-mini"
+            );
+            assert!(
+                model
+                    .choice_options("settings-provider", cx)
+                    .iter()
+                    .any(|choice| choice.value == "openrouter")
+            );
+            model.select_settings_provider("openrouter".into(), cx);
+            assert_eq!(
+                model.settings_connection_model_input.read(cx).value(),
+                "openrouter/free"
+            );
+            model
+                .settings_connection_model_input
+                .update(cx, |input, cx| {
+                    input.set_value("nex-agi/nex-n2.5-mini:free", cx)
+                });
+            model.select_settings_provider("openrouter".into(), cx);
+            assert_eq!(
+                model.settings_connection_model_input.read(cx).value(),
+                "nex-agi/nex-n2.5-mini:free"
+            );
+            model.new_settings_connection(cx);
+            assert_eq!(
+                model.settings_connection_model_input.read(cx).value(),
+                "openrouter/free"
+            );
+            model
+                .settings_connection_name_input
+                .update(cx, |input, cx| input.set_value("OpenRouter UI fixture", cx));
+            model
+                .settings_connection_endpoint_input
+                .update(cx, |input, cx| {
+                    input.set_value("https://attacker.invalid", cx)
+                });
+            model
+                .settings_connection_secret_input
+                .update(cx, |input, cx| input.set_value("sk-or-v1-ui-fixture", cx));
+            model.save_settings_connection(cx);
+            assert!(
+                model
+                    .settings_connection_secret_input
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            );
+        });
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if app.read_with(cx, |model, cx| {
+                !model.settings.read(cx).busy && !model.settings.read(cx).loading
+            }) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let snapshot = core.runtime_handle().block_on(backend.snapshot()).unwrap();
+        let saved = snapshot
+            .connections
+            .iter()
+            .find(|item| item.display_name == "OpenRouter UI fixture")
+            .expect("connection should save from the UI");
+        assert_eq!(saved.provider_id, "openrouter");
+        assert_eq!(saved.default_model, "openrouter/free");
+        assert_eq!(saved.endpoint_url, None);
+        assert!(saved.has_api_key && saved.chat_eligible);
+        assert!(
+            !serde_json::to_string(saved)
+                .unwrap()
+                .contains("sk-or-v1-ui-fixture")
+        );
+    }
+
+    #[test]
+    fn openrouter_rejects_uncatalogued_model_before_writing_credentials() {
+        let harness = CoreTestHarness::new();
+        let core = harness.core();
+        let backend = CoreSettingsBackend::new(Arc::clone(&core));
+        let before = harness.credentials().set_call_count();
+        let error = core
+            .runtime_handle()
+            .block_on(backend.upsert_connection(UpsertProviderConnectionRequest {
+                id: Some("invalid-openrouter-model".into()),
+                provider_id: "openrouter".into(),
+                display_name: "Invalid model".into(),
+                endpoint_url: None,
+                default_model: "unknown/model".into(),
+                enabled: Some(true),
+                max_concurrency: Some(1),
+                api_key: Some("sk-or-v1-must-not-save".into()),
+                version: None,
+            }))
+            .unwrap_err();
+        assert!(error.presentable().contains("curated catalog"));
+        assert_eq!(harness.credentials().set_call_count(), before);
+        assert!(
+            !harness
+                .credentials()
+                .contains("connection:invalid-openrouter-model")
+        );
+    }
+
+    #[test]
     fn updates_routing_mode_through_core() {
         let harness = CoreTestHarness::new();
         let core = harness.core();

@@ -477,7 +477,7 @@ pub(crate) fn composition_settings_card(
                     cx,
                 )),
         )
-        .child(div().mt_2().child(model_input))
+        .child(crate::sizing::sized_input(model_input, crate::sizing::INPUT_MEDIUM).mt_2())
         .child(crate::settings_view::action(
             "composition-override-save",
             "Save specialty override",

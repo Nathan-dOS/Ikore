@@ -24,8 +24,8 @@ use crate::orchestration::{
 };
 
 use crate::llm::{
-    AgentRole, ExecutionId, GenerationId, LlmError, LlmGateway, LlmRequest, ResponseFormat,
-    RoutingMode,
+    AgentExecutionTarget, AgentRole, ExecutionId, GenerationId, LlmError, LlmGateway, LlmRequest,
+    ResponseFormat, RoutingMode,
 };
 use crate::terminals::TerminalService;
 
@@ -893,7 +893,7 @@ async fn execute_stage_inner(
             job_id: Some(input.job_id.clone()),
             agent_run_id: input.agent_run_id.clone(),
             job_chain: input.pulsation_id.clone(),
-            agent_role: AgentRole::for_stage(&input.stage_name),
+            target: AgentExecutionTarget::canonical(AgentRole::for_stage(&input.stage_name)),
             stage: input.stage_name.clone(),
             system_prompt,
             user_prompt: prompt,
@@ -912,7 +912,13 @@ async fn execute_stage_inner(
             stream: true,
             legacy_provider: config.provider.as_str().to_string(),
             legacy_model: config.model.clone(),
-            dispatch: crate::llm::DispatchPolicy::default(),
+            dispatch: crate::llm::DispatchPolicy {
+                cli_timeout: Some(crate::agent_timeout::CliTimeoutBudget::for_role(
+                    AgentRole::for_stage(&input.stage_name),
+                    config.timeout_ms,
+                )),
+                ..Default::default()
+            },
         };
         dispatch_llm(gateway, terminals, &request, cancellation).await?
     };

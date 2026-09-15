@@ -1,12 +1,12 @@
 use gpui::{
-    Context, Entity, IntoElement, Modifiers, Render, TestAppContext, VisualTestContext, Window,
-    div, prelude::*, px, size,
+    Context, Entity, IntoElement, Modifiers, Render, ScrollDelta, ScrollWheelEvent, TestAppContext,
+    VisualTestContext, Window, div, point, prelude::*, px, size,
 };
 use hvc_core::llm::{AgentRole, LlmResilienceSnapshot};
 use hvc_core::persistence_service::{Pulsation, PulsationStage, PulsationStatus};
 use hvc_core::terminals::{
     AgentExecutionMode, AgentTerminalSnapshot, CliAgentConfig, CliBackend, CliModelSelectionSource,
-    TerminalsSnapshot, ThinkingLevel,
+    FreeFormTerminalSnapshot, SessionPolicy, TerminalSlot, TerminalsSnapshot, ThinkingLevel,
 };
 
 use crate::agents::{
@@ -51,11 +51,38 @@ pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
                             recent_events: vec![],
                         })
                         .collect(),
-                    free_form_slots: vec![],
+                    free_form_slots: vec![FreeFormTerminalSnapshot {
+                        slot: TerminalSlot {
+                            id: "slot-free".into(),
+                            project_id: "layout-project".into(),
+                            kind: "free_form".into(),
+                            agent_role: None,
+                            label: "FreeForm fixture".into(),
+                            execution_mode: AgentExecutionMode::CliProcess,
+                            backend: CliBackend::Codex,
+                            model: None,
+                            model_profile: None,
+                            model_source: CliModelSelectionSource::Default,
+                            thinking_level: ThinkingLevel::Default,
+                            session_policy: SessionPolicy::FreshPerRun,
+                            custom_executable: None,
+                            custom_args: vec![],
+                            custom_risk_ack: false,
+                            position: 0,
+                            archived: false,
+                            version: 1,
+                            created_at: "now".into(),
+                            updated_at: "now".into(),
+                        },
+                        recent_runs: vec![],
+                        recent_events: vec![],
+                    }],
                     archived_free_form_slots: vec![],
                     discovery: vec![],
                 },
                 fallbacks: vec![],
+                free_form_bindings: vec![],
+                api_executions: Default::default(),
             },
         );
     });
@@ -392,6 +419,96 @@ fn aborting_a_failure_takes_two_clicks_and_never_moves_the_button(cx: &mut TestA
             && cursor.y <= after.bottom(),
         "arming abort slid the control out from under the cursor: {cursor:?} not in {after:?}"
     );
+}
+
+/// A failed pulsation whose cleanup preview already arrived, in a window of its own.
+fn failed_with_leftovers_window(
+    cx: &mut TestAppContext,
+    window: (f32, f32),
+) -> (Entity<AppModel>, &mut VisualTestContext) {
+    use hvc_core::orchestration::{
+        CleanupDisposition, FailedPulsationCleanupEntry, FailedPulsationCleanupPlan,
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            state.pulsations[0].status = PulsationStatus::Failed;
+            state.pulsations[0].terminal_reason = Some("user_cancel".into());
+            state.detail_section = PulsationDetailSection::Overview;
+            state.cleanup.plan = Some(FailedPulsationCleanupPlan {
+                pulsation_id: "pulse-a".into(),
+                project_id: "layout-project".into(),
+                entries: vec![
+                    FailedPulsationCleanupEntry {
+                        relative_path: "src/generated/feature.rs".into(),
+                        disposition: CleanupDisposition::Remove,
+                        detail: None,
+                    },
+                    FailedPulsationCleanupEntry {
+                        relative_path: "src/lib.rs".into(),
+                        disposition: CleanupDisposition::KeepEdited,
+                        detail: None,
+                    },
+                ],
+                candidate_dirs: vec!["exec-1".into()],
+                plan_token: "layout-token".into(),
+            });
+        });
+        m.select_view(AppView::Pulsations, cx);
+    });
+    visual.simulate_resize(size(px(window.0), px(window.1)));
+    visual.run_until_parked();
+    (model, visual)
+}
+
+#[gpui::test]
+fn leftover_files_card_shows_only_for_failed_pulsations(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |m, cx| m.select_view(AppView::Pulsations, cx));
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("pulsation-cleanup").is_none(),
+        "a planning pulsation has nothing to clean"
+    );
+    let (_, visual) = failed_with_leftovers_window(cx, (1280.0, 820.0));
+    let card = visual.debug_bounds("pulsation-cleanup").unwrap();
+    let remove = visual.debug_bounds("pulsation-cleanup-remove").unwrap();
+    let refresh = visual.debug_bounds("pulsation-cleanup-refresh").unwrap();
+    assert!(
+        remove.size.width < card.size.width / 2.0,
+        "the removal button sizes to its label"
+    );
+    assert!(refresh.left() > remove.right(), "controls sit side by side");
+}
+
+#[gpui::test]
+fn removing_leftover_files_takes_two_clicks_and_never_moves_the_button(cx: &mut TestAppContext) {
+    let (model, visual) = failed_with_leftovers_window(cx, (1280.0, 820.0));
+    let before = visual.debug_bounds("pulsation-cleanup-remove").unwrap();
+    click(visual, "pulsation-cleanup-remove");
+    model.update(visual, |m, cx| {
+        assert!(
+            m.pulsations.read(cx).cleanup.armed,
+            "the first click only arms"
+        );
+    });
+    let after = visual.debug_bounds("pulsation-cleanup-remove").unwrap();
+    let cursor = before.center();
+    assert_eq!(after.origin, before.origin, "arming moved the button");
+    assert!(
+        cursor.x >= after.left()
+            && cursor.x <= after.right()
+            && cursor.y >= after.top()
+            && cursor.y <= after.bottom(),
+        "arming slid the control out from under the cursor: {cursor:?} not in {after:?}"
+    );
+    // Leaving the pulsation disarms and drops the preview of the other one.
+    model.update(visual, |m, cx| {
+        m.select_pulsation("pulse-b", cx);
+        let state = m.pulsations.read(cx);
+        assert!(!state.cleanup.armed);
+        assert!(state.cleanup.plan.is_none());
+    });
 }
 
 #[gpui::test]
@@ -732,23 +849,64 @@ fn header_tabs_and_settings_navigate_at_minimum_window_size(cx: &mut TestAppCont
         model.read_with(visual, |model, _| model.active_tab()),
         AppTab::Agent
     );
+    let new_work = visual.debug_bounds("new-work").unwrap();
     let settings = visual.debug_bounds("settings").unwrap();
+    let notifications = visual.debug_bounds("notifications").unwrap();
     assert!(settings.right() <= px(960.0));
+    assert!(new_work.left() < px(80.0));
+    assert!(notifications.left() < settings.left());
     assert!(visual.debug_bounds("toggle-sidebar").is_none());
     for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
         visual.simulate_resize(size(px(width), px(height)));
         visual.run_until_parked();
         let agent = visual.debug_bounds("agent").unwrap();
-        assert!(
-            agent.left() < px(50.0),
-            "branding must not reserve header space"
-        );
-        for selector in ["agent", "engine", "companion", "settings"] {
+        let companion = visual.debug_bounds("companion").unwrap();
+        let new_work = visual.debug_bounds("new-work").unwrap();
+        let notifications = visual.debug_bounds("notifications").unwrap();
+        let settings = visual.debug_bounds("settings").unwrap();
+        assert!(new_work.right() < agent.left());
+        assert!(agent.left() < px(width / 2.0));
+        assert!(companion.right() > px(width / 2.0));
+        assert!(notifications.left() > companion.right());
+        assert!(settings.left() > notifications.left());
+        for selector in ["agent", "engine", "companion", "notifications", "settings"] {
             let control = visual.debug_bounds(selector).unwrap();
             assert!(control.left() >= px(0.0) && control.right() <= px(width));
             assert!(control.top() >= px(0.0) && control.bottom() <= px(58.0));
         }
+        let flow_tabs = visual.debug_bounds("flow-bar-tabs").unwrap();
+        assert!(flow_tabs.left() < px(width / 2.0) && flow_tabs.right() > px(width / 2.0));
     }
+}
+
+#[gpui::test]
+fn agents_header_shows_the_active_pulsation_pipeline(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Agents);
+
+    let agents_header = visual.debug_bounds("agents-header").unwrap();
+    let pipeline = visual.debug_bounds("agents-pipeline").unwrap();
+    assert!(
+        pipeline.top() >= agents_header.top() && pipeline.bottom() <= agents_header.bottom(),
+        "pipeline escaped header: {pipeline:?} vs {agents_header:?}"
+    );
+    for selector in [
+        "agents-pipeline-stage-intake",
+        "agents-pipeline-stage-specification",
+        "agents-pipeline-stage-contract",
+        "agents-pipeline-stage-code",
+        "agents-pipeline-stage-test",
+        "agents-pipeline-stage-integrator",
+    ] {
+        let stage_bounds = visual.debug_bounds(selector).unwrap();
+        assert!(stage_bounds.left() >= pipeline.left());
+        assert!(stage_bounds.right() <= pipeline.right());
+    }
+    assert!(visual.debug_bounds("agents-pipeline-current").is_some());
+    assert!(model.read_with(visual, |model, cx| {
+        model.pulsations.read(cx).active_id().as_deref() == Some("pulse-a")
+    }));
 }
 
 #[gpui::test]
@@ -759,7 +917,7 @@ fn agent_selection_and_modal_preserve_detail_geometry(cx: &mut TestAppContext) {
     assert!(visual.debug_bounds("agent-card:task_specifier").is_some());
     assert!(visual.debug_bounds("agent-card:backend_agent").is_none());
     click(visual, "agent-select:backend_agent");
-    assert_absent(&model, visual, "agent-card:task_specifier");
+    assert!(visual.debug_bounds("agent-card:backend_agent").is_some());
     let before = visual.debug_bounds("agents-cli-scroll").unwrap();
     model.update(visual, |model, cx| {
         model.agents.update(cx, |agents, _| {
@@ -793,13 +951,179 @@ fn agent_selection_and_modal_preserve_detail_geometry(cx: &mut TestAppContext) {
     }));
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
-    assert_absent(&model, visual, "cli-model-picker-overlay");
+    assert!(visual.debug_bounds("cli-model-picker-content").is_none());
     model.update(visual, |model, cx| {
-        model.set_agents_tab(crate::agents::AgentsTab::Api, cx)
+        model.toggle_agents_terminal_expanded(cx)
     });
     visual.run_until_parked();
-    assert!(visual.debug_bounds("api-agent:backend_agent").is_some());
-    assert_absent(&model, visual, "api-agent:task_specifier");
+    assert!(visual.debug_bounds("agents-terminal-expanded").is_some());
+    assert!(visual.debug_bounds("agents-list").is_some());
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            agents.selected_agent = Some(AgentIdentifier::Canonical(AgentRole::TaskSpecifier));
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("agents-terminal-expanded").is_some());
+    assert_eq!(
+        model.read_with(visual, |model, cx| model.agents.read(cx).selected_agent.clone()),
+        Some(AgentIdentifier::Canonical(AgentRole::TaskSpecifier))
+    );
+    // The visual harness does not consistently route synthetic Escape events
+    // through a newly mounted expanded panel. The production root handler is
+    // covered by the explicit focus/keyboard behavior; keep this geometry
+    // test deterministic by exercising the same collapse action directly.
+    model.update(visual, |model, cx| {
+        model.toggle_agents_terminal_expanded(cx)
+    });
+    visual.run_until_parked();
+    assert!(!model.read_with(visual, |model, cx| model.agents.read(cx).terminal_expanded));
+    click(visual, "agent-select:backend_agent");
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            let snapshot = agents.snapshot.as_mut().unwrap();
+            snapshot
+                .agents
+                .iter_mut()
+                .find(|agent| agent.config.agent_role == AgentRole::BackendAgent)
+                .unwrap()
+                .config
+                .execution_mode = AgentExecutionMode::ApiDirect;
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("agents-api-scroll").is_some());
+    assert!(visual.debug_bounds("agent-mode:backend_agent").is_some());
+    assert!(visual.debug_bounds("agent-select:slot-free").is_some());
+    // The detail has the per-target selector; global mode controls are absent by construction.
+}
+
+#[gpui::test]
+fn agents_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Agents);
+
+    let scroll = visual.debug_bounds("agents-cli-scroll").unwrap();
+    let before = visual
+        .debug_bounds("agent-start:task_specifier")
+        .expect("start action should be present below the agent configuration");
+    visual.simulate_event(ScrollWheelEvent {
+        position: point(scroll.left() + px(12.0), scroll.top() + px(24.0)),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-240.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let after = visual.debug_bounds("agent-start:task_specifier").unwrap();
+    let panel = visual.debug_bounds("agents-panel");
+    let header = visual.debug_bounds("agents-header");
+    let content = visual.debug_bounds("agents-content");
+    let columns = visual.debug_bounds("agents-columns");
+
+    assert!(
+        after.top() < before.top(),
+        "Agents detail did not move after a downward wheel event: {before:?} -> {after:?}; \
+         panel={panel:?}; header={header:?}; content={content:?}; columns={columns:?}; \
+         scroll={scroll:?}"
+    );
+}
+
+#[gpui::test]
+fn agents_api_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            let snapshot = agents.snapshot.as_mut().unwrap();
+            snapshot.agents[0].config.execution_mode = AgentExecutionMode::ApiDirect;
+        });
+        cx.notify();
+    });
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Agents);
+
+    let scroll = visual.debug_bounds("agents-api-scroll").unwrap();
+    let before = visual
+        .debug_bounds("api-activity:canonical:task_specifier")
+        .expect("API activity viewer should be present below the route configuration");
+    visual.simulate_event(ScrollWheelEvent {
+        position: point(scroll.left() + px(12.0), scroll.top() + px(24.0)),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-240.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let after = visual
+        .debug_bounds("api-activity:canonical:task_specifier")
+        .unwrap();
+
+    assert!(
+        after.top() < before.top(),
+        "API detail did not move after a downward wheel event: {before:?} -> {after:?}"
+    );
+}
+
+#[gpui::test]
+fn agent_logs_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Logs);
+
+    let scroll = visual.debug_bounds("logs-detail-scroll").unwrap();
+    let before = visual
+        .debug_bounds("logs-toggle-events")
+        .expect("events control should be present near the end of the Logs detail");
+    visual.simulate_event(ScrollWheelEvent {
+        position: point(scroll.left() + px(12.0), scroll.top() + px(24.0)),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-240.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let after = visual.debug_bounds("logs-toggle-events").unwrap();
+
+    assert!(
+        after.top() < before.top(),
+        "Logs detail did not move after a downward wheel event: {before:?} -> {after:?}"
+    );
+}
+
+#[gpui::test]
+fn agents_list_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            let snapshot = agents.snapshot.as_mut().unwrap();
+            let template = snapshot.agents[0].clone();
+            snapshot.agents = AgentRole::ALL
+                .into_iter()
+                .map(|role| {
+                    let mut agent = template.clone();
+                    agent.config.agent_role = role;
+                    agent
+                })
+                .collect();
+        });
+        cx.notify();
+    });
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Agents);
+
+    let scroll = visual.debug_bounds("agents-list").unwrap();
+    let before = visual
+        .debug_bounds("agent-select:slot-free")
+        .expect("FreeForm item should be present at the end of the agent list");
+    visual.simulate_event(ScrollWheelEvent {
+        position: point(scroll.left() + px(12.0), scroll.top() + px(24.0)),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-240.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let after = visual.debug_bounds("agent-select:slot-free").unwrap();
+
+    assert!(
+        after.top() < before.top(),
+        "Agent list did not move after a downward wheel event: {before:?} -> {after:?}"
+    );
 }
 
 #[gpui::test]
@@ -829,11 +1153,26 @@ fn pulsation_sections_keep_header_fixed_and_reset_on_selection(cx: &mut TestAppC
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.simulate_resize(size(px(960.0), px(640.0)));
     select(&model, visual, AppView::Pulsations);
+    let section_tabs = visual.debug_bounds("pulsation-section-tabs").unwrap();
     let header = visual.debug_bounds("pulsation-cancel").unwrap();
-    click(visual, "pulsation-artifacts");
+    for selector in [
+        "pulsation-review",
+        "pulsation-overview",
+        "pulsation-preparation",
+        "pulsation-artifacts",
+    ] {
+        click(visual, selector);
+        assert_eq!(
+            visual.debug_bounds("pulsation-section-tabs").unwrap(),
+            section_tabs,
+            "section strip moved after selecting {selector}"
+        );
+    }
+    click(visual, "pulsation-overview");
     assert_eq!(visual.debug_bounds("pulsation-cancel").unwrap(), header);
     let section = visual.debug_bounds("pulsation-section-scroll").unwrap();
     assert!(section.top() >= header.bottom() && section.bottom() <= px(640.0));
+    click(visual, "pulsation-artifacts");
     model.update(visual, |model, cx| {
         model.pulsations.update(cx, |state, _| {
             assert_eq!(state.detail_section, PulsationDetailSection::Artifacts);
@@ -1342,4 +1681,139 @@ fn forge_feature_list_groups_by_state_and_collapses_finished_work(cx: &mut TestA
             .group_expanded(FeatureState::Incubating)),
         "clicking an expanded header should collapse it"
     );
+}
+
+/// Buttons, pickers and single-line inputs are as wide as what they hold, not
+/// as wide as the panel (see `crate::sizing`). Checked on the three views the
+/// complaint named — Agents, Settings, Forge/Pulsations — at both supported
+/// window extremes.
+#[gpui::test]
+fn controls_size_to_content_instead_of_the_panel(cx: &mut TestAppContext) {
+    use hvc_core::terminals::{ExecutionOrigin, SessionSlot, TerminalRun, TerminalRunStatus};
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    // The activity toolbar (with its filter) only renders for an agent with a run.
+    model.update(visual, |m, cx| {
+        m.agents.update(cx, |agents, _| {
+            let generation = agents.begin(true);
+            let mut terminals = agents.snapshot.clone().expect("fixture snapshot");
+            let agent = terminals
+                .agents
+                .iter_mut()
+                .find(|agent| agent.config.agent_role == AgentRole::TaskSpecifier)
+                .expect("fixture agent");
+            agent.recent_runs.push(TerminalRun {
+                id: "run-layout".into(),
+                project_id: "layout-project".into(),
+                slot: SessionSlot::Canonical {
+                    agent_role: AgentRole::TaskSpecifier,
+                },
+                slot_id: "canonical:layout-project:task_specifier".into(),
+                agent_role: Some(AgentRole::TaskSpecifier),
+                origin: ExecutionOrigin::Manual,
+                execution_mode: AgentExecutionMode::CliProcess,
+                backend: Some(CliBackend::Codex),
+                model: None,
+                requested_model_profile: None,
+                model_source: CliModelSelectionSource::Default,
+                observed_model: None,
+                native_session_id: None,
+                pulsation_id: None,
+                job_id: None,
+                agent_run_id: None,
+                llm_execution_id: None,
+                status: TerminalRunStatus::Completed,
+                exit_code: Some(0),
+                error_code: None,
+                error_message: None,
+                created_at: "2026-01-01T00:00:00Z".into(),
+                started_at: None,
+                finished_at: None,
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                deadline_at: None,
+                termination_reason: None,
+                output_bytes: 0,
+                event_count: 0,
+                workspace_snapshot_hash: None,
+                launch_identity_sha256: None,
+                detected_cli_version: None,
+                adapter_contract_version: 1,
+                parent_run_id: None,
+                continuation_reason: None,
+                session_fingerprint: None,
+            });
+            agents.apply_snapshot(
+                generation,
+                AgentsDashboardSnapshot {
+                    terminals,
+                    fallbacks: vec![],
+                    free_form_bindings: vec![],
+                    api_executions: Default::default(),
+                },
+            );
+        });
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+
+        // Agents: the stdin/event filter of a CLI agent card no longer spans the row.
+        select(&model, visual, AppView::Agents);
+        let column = visual.debug_bounds("agents-cli-scroll").unwrap();
+        let filter = visual.debug_bounds("agent-filter:task_specifier").unwrap();
+        assert!(
+            filter.size.width <= px(360.0) && filter.size.width < column.size.width / 2.0,
+            "filter spans {:?} of a {:?} column at {width}x{height}",
+            filter.size.width,
+            column.size.width
+        );
+        let backend = visual.debug_bounds("agent-backend:task_specifier").unwrap();
+        assert!(backend.size.width <= px(360.0));
+
+        // Settings · Runtime: numeric inputs are short, actions and toggles size to their label.
+        model.update(visual, |m, cx| {
+            m.settings.update(cx, |settings, _| {
+                settings.settings_section = SettingsSection::Runtime;
+            });
+            m.select_view(AppView::Settings, cx);
+        });
+        visual.run_until_parked();
+        let threshold = visual.debug_bounds("sized-input:160").unwrap();
+        assert_eq!(threshold.size.width, px(160.0));
+        let save = visual.debug_bounds("preparation-save").unwrap();
+        let toggle = visual.debug_bounds("preparation-enabled").unwrap();
+        assert!(save.size.width < px(320.0), "{:?}", save.size.width);
+        assert!(
+            toggle.size.width >= px(220.0) && toggle.size.width <= px(360.0),
+            "{:?}",
+            toggle.size.width
+        );
+        assert!(save.right() <= px(width) && toggle.right() <= px(width));
+
+        // Settings · Connections: names are medium, secrets long, and nothing exceeds the panel.
+        model.update(visual, |m, cx| {
+            m.settings.update(cx, |settings, _| {
+                settings.settings_section = SettingsSection::Connections;
+                settings.creating_connection = true;
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let name = visual.debug_bounds("sized-input:320").unwrap();
+        let secret = visual.debug_bounds("sized-input:560").unwrap();
+        assert!(name.size.width <= px(320.0) && name.size.width > px(0.0));
+        assert!(secret.size.width <= px(560.0) && secret.size.width > name.size.width);
+        assert!(secret.right() <= px(width));
+        let save_connection = visual.debug_bounds("settings-save-connection").unwrap();
+        assert!(save_connection.size.width < px(240.0));
+
+        // Pulsations: a Forge button placed in a column keeps its label width.
+        select(&model, visual, AppView::Pulsations);
+        let list = visual.debug_bounds("pulsations-columns-left").unwrap();
+        let compose = visual.debug_bounds("compose-task-batch").unwrap();
+        assert!(
+            compose.size.width < list.size.width * 0.95,
+            "compose button stretched to {:?} of {:?}",
+            compose.size.width,
+            list.size.width
+        );
+    }
 }

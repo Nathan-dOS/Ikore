@@ -8,7 +8,8 @@ use gpui::SharedString;
 use hvc_core::AppCore;
 use hvc_core::orchestration::brownfield::BrownfieldCoverageMetrics;
 use hvc_core::orchestration::{
-    BaseState, ConfirmBaseReconciliationRequest, ProjectCoordinationSnapshot,
+    BaseState, CleanupFailedPulsationFilesRequest, ConfirmBaseReconciliationRequest,
+    FailedPulsationCleanupPlan, FailedPulsationCleanupReport, ProjectCoordinationSnapshot,
 };
 use hvc_core::persistence_service::{
     Artifact, CancelPulsationJobsRequest, GetPulsationRuntimeSnapshotRequest,
@@ -43,6 +44,14 @@ pub(crate) trait PulsationsBackend: Send + Sync {
     fn create(&self, project_id: String, feature_name: String) -> PulsationsFuture<Pulsation>;
     fn cancel_jobs(&self, pulsation_id: String) -> PulsationsFuture<usize>;
     fn reconcile(&self, request: ConfirmBaseReconciliationRequest) -> PulsationsFuture<()>;
+    /// Dry run of the failed-pulsation cleanup; reads the workspace, writes nothing.
+    fn cleanup_preview(&self, pulsation_id: String)
+    -> PulsationsFuture<FailedPulsationCleanupPlan>;
+    /// Removes the files of a confirmed preview (bound by its `plan_token`).
+    fn cleanup_files(
+        &self,
+        request: CleanupFailedPulsationFilesRequest,
+    ) -> PulsationsFuture<FailedPulsationCleanupReport>;
 }
 
 #[derive(Debug, Clone)]
@@ -228,6 +237,60 @@ impl PulsationsBackend for CorePulsationsBackend {
                 .map_err(|error| Self::worker_error("cancelamento", error))?
         })
     }
+
+    fn cleanup_preview(
+        &self,
+        pulsation_id: String,
+    ) -> PulsationsFuture<FailedPulsationCleanupPlan> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .preview_failed_pulsation_cleanup(&pulsation_id)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| Self::worker_error("cleanup preview", error))?
+        })
+    }
+
+    fn cleanup_files(
+        &self,
+        request: CleanupFailedPulsationFilesRequest,
+    ) -> PulsationsFuture<FailedPulsationCleanupReport> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .cleanup_failed_pulsation_files(request)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| Self::worker_error("cleanup", error))?
+        })
+    }
+}
+
+/// The "Leftover files" card of a failed pulsation: the preview the operator
+/// confirms, and the two-click arming of the removal itself.
+#[derive(Debug, Default)]
+pub(crate) struct CleanupState {
+    pub plan: Option<FailedPulsationCleanupPlan>,
+    pub loading: bool,
+    pub busy: bool,
+    /// The first click arms; the second removes. Leaving the pulsation disarms.
+    pub armed: bool,
+    pub error: Option<String>,
+}
+
+impl CleanupState {
+    pub(crate) fn can_remove(&self) -> bool {
+        !self.busy && !self.loading && self.plan.as_ref().is_some_and(|plan| !plan.is_noop())
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -281,6 +344,7 @@ pub struct PulsationsModel {
     /// default backend.
     pub backend_override: Option<hvc_core::terminals::BackendOverrideStatus>,
     pub backend_override_busy: bool,
+    pub(crate) cleanup: CleanupState,
 }
 
 impl PulsationsModel {
@@ -366,6 +430,7 @@ impl PulsationsModel {
             self.artifacts.clear();
             self.artifact_preview = None;
             self.backend_override = None;
+            self.cleanup = CleanupState::default();
         }
         let had_checkpoint = self.hitl.pulsation_id.is_some() || self.failure.checkpoint.is_some();
         self.project_id = Some(project_id.into());
@@ -425,6 +490,7 @@ impl PulsationsModel {
         if pulse_changed {
             self.validation_error = None;
             self.detail_section = PulsationDetailSection::Overview;
+            self.cleanup = CleanupState::default();
         }
         self.active_pulsation_id = Some(pulsation_id.to_owned().into());
         self.artifacts.clear();

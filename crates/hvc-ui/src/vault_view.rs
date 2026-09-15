@@ -120,7 +120,10 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                             .overflow_hidden()
                             .child(root),
                     )
-                    .child(search_input)
+                    .child(crate::sizing::sized_input(
+                        search_input,
+                        crate::sizing::INPUT_MEDIUM,
+                    ))
                     .child(
                         div()
                             .flex()
@@ -694,7 +697,10 @@ fn inspector(
                                 .text_color(theme::text_muted())
                                 .child("RENAME NOTE"),
                         )
-                        .child(rename_input)
+                        .child(crate::sizing::sized_input(
+                            rename_input,
+                            crate::sizing::INPUT_MEDIUM,
+                        ))
                         .child(
                             div()
                                 .id("rename-vault-note")

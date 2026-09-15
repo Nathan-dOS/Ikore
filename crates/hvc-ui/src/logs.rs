@@ -183,6 +183,13 @@ impl LogsModel {
         true
     }
 
+    pub(crate) fn discard_poll(&mut self, generation: u64) {
+        if generation == self.poll_generation {
+            self.poll_in_flight = false;
+            self.loading = false;
+        }
+    }
+
     pub(crate) fn record_workspace(&mut self, event: WorkspaceChangedEvent) {
         self.push_event(RuntimeEventRecord {
             category: "watcher".into(),

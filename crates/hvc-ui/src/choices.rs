@@ -14,8 +14,10 @@ use hvc_core::{
 };
 
 pub(crate) fn segments(id: &str) -> Option<Vec<(&'static str, &'static str)>> {
-    if id.starts_with("agent-mode:") || id.starts_with("free-form-mode:") || id == "chat-transport"
-    {
+    if id.starts_with("agent-mode:") || id.starts_with("free-form-mode:") {
+        return Some(vec![("api", "API Key Mode"), ("cli", "CLI Mode")]);
+    }
+    if id == "chat-transport" {
         return Some(vec![("api", "API"), ("cli", "CLI")]);
     }
     match id {
@@ -699,7 +701,14 @@ mod tests {
     use super::*;
     use crate::agents::*;
     use gpui::AppContext;
-    use hvc_core::persistence_service::{ResolveCliFallbackRequest, ResolveCliFallbackResponse};
+    use hvc_core::llm::{
+        AgentExecutionTarget, FreeFormProviderRouteBinding,
+        UpsertFreeFormProviderRouteBindingRequest,
+    };
+    use hvc_core::persistence_service::{
+        ResolveCliFallbackRequest, ResolveCliFallbackResponse, StartFreeFormApiRunRequest,
+        StartFreeFormApiRunResponse,
+    };
     use hvc_core::terminals::*;
     use std::sync::{
         Arc, Mutex,
@@ -730,6 +739,21 @@ mod tests {
             panic!("Unexpected backend operation")
         }
         fn start_free_form(&self, request: StartFreeFormRunRequest) -> AgentsFuture<TerminalRun> {
+            panic!("Unexpected backend operation")
+        }
+        fn start_free_form_api(
+            &self,
+            request: StartFreeFormApiRunRequest,
+        ) -> AgentsFuture<StartFreeFormApiRunResponse> {
+            panic!("Unexpected backend operation")
+        }
+        fn cancel_api_execution(&self, execution_id: String) -> AgentsFuture<bool> {
+            panic!("Unexpected backend operation")
+        }
+        fn upsert_free_form_binding(
+            &self,
+            request: UpsertFreeFormProviderRouteBindingRequest,
+        ) -> AgentsFuture<FreeFormProviderRouteBinding> {
             panic!("Unexpected backend operation")
         }
         fn resume_manual(&self, request: ResumeManualRunRequest) -> AgentsFuture<TerminalRun> {
@@ -780,6 +804,14 @@ mod tests {
             panic!("Unexpected backend operation")
         }
         fn export_history(&self, project_id: String, run_id: String) -> AgentsFuture<String> {
+            panic!("Unexpected backend operation")
+        }
+        fn export_api_execution(
+            &self,
+            project_id: String,
+            target: AgentExecutionTarget,
+            execution_id: String,
+        ) -> AgentsFuture<String> {
             panic!("Unexpected backend operation")
         }
         fn resolve_fallback(

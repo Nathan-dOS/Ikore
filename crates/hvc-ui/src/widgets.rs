@@ -1,4 +1,5 @@
 use crate::app_model::AppModel;
+use crate::sizing::StyledExt;
 use crate::theme;
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
 use std::sync::Arc;
@@ -42,6 +43,8 @@ pub fn btn(
     div()
         .id(id)
         .debug_selector(move || debug_id.to_string())
+        .self_start()
+        .flex_shrink_0()
         .px_3()
         .py_2()
         .rounded_md()

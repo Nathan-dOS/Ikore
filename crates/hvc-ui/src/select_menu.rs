@@ -261,20 +261,29 @@ pub(crate) fn mode_control(
     cli_reason: Option<&'static str>,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
-    let options = ["API", "CLI"]
+    let api_selected = value.eq_ignore_ascii_case("api")
+        || value.eq_ignore_ascii_case("api key mode");
+    let cli_selected = value.eq_ignore_ascii_case("cli")
+        || value.eq_ignore_ascii_case("cli mode");
+    let options = [("api", "API Key Mode", api_selected), ("cli", "CLI Mode", cli_selected)]
         .into_iter()
-        .map(|label| {
-            let mut choice = Choice::new(label.to_lowercase(), label, label == value);
-            if label == "CLI" {
+        .map(|(value, label, selected)| {
+            let mut choice = Choice::new(value, label, selected);
+            if value == "cli" {
                 choice.reason = cli_reason.map(str::to_string);
             }
             choice
         })
         .collect();
+    let display_value = if api_selected {
+        "API Key Mode"
+    } else {
+        "CLI Mode"
+    };
     control_options(
         id,
         "MODE".into(),
-        value.to_string().into(),
+        display_value.into(),
         enabled,
         Some(options),
         cx,
@@ -327,8 +336,11 @@ fn control_options(
         .debug_selector(move || debug.clone())
         .tab_index(0)
         .relative()
-        .flex_1()
-        .min_w(px(100.0))
+        // A picker is as wide as its label and value: it neither fills a row
+        // (`flex_1`) nor stretches across a column. Grids still size it to the cell.
+        .flex_shrink_0()
+        .min_w(px(160.0))
+        .max_w(px(360.0))
         .p_2()
         .rounded_md()
         .border_1()

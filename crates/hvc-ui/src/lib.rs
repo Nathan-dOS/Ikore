@@ -31,6 +31,7 @@ mod session;
 mod settings;
 mod settings_view;
 mod shell;
+mod sizing;
 mod split_pane;
 #[cfg(test)]
 mod test_support;

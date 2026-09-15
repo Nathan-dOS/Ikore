@@ -14,15 +14,17 @@ use crate::embedding_service::{
     EmbeddingGateway, ModelPullEvent, ModelPullEventSink, OllamaEmbeddingGateway,
 };
 use crate::llm::{
-    AgentRole, Clock, CompressionPreview, CompressionPreviewRequest, CredentialStore,
-    DeleteProviderConnectionRequest, DeleteProviderRouteRequest, JitterSource,
-    KeyringCredentialStore, LlmError, LlmErrorKind, LlmEventSink, LlmExecutionSnapshot,
-    LlmResilienceSnapshot, LlmRoutingMetric, NoopEventSink, ProviderConnection, ProviderProfile,
-    ProviderRoute, ProviderRouteBinding, ProviderRouter, ResetLlmResilienceStateRequest,
-    RoutingMode, SqliteLlmRepository, StableJitter, SystemClock, TestProviderConnectionRequest,
-    TestProviderConnectionResponse, UpsertProviderConnectionRequest,
-    UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest, preview_compression,
-    provider_profiles,
+    AgentExecutionTarget, AgentRole, Clock, CompressionPreview, CompressionPreviewRequest,
+    CredentialStore, DeleteProviderConnectionRequest, DeleteProviderRouteRequest, DispatchPolicy,
+    ExecutionId, FreeFormProviderRouteBinding, GenerationId, JitterSource,
+    KeyringCredentialStore, LlmError, LlmErrorKind, LlmEventSink, LlmExecutionListItem,
+    LlmExecutionSnapshot, LlmGateway, LlmRequest, LlmResilienceSnapshot, LlmRoutingMetric,
+    NoopEventSink, ProviderConnection, ProviderProfile, ProviderRoute, ProviderRouteBinding,
+    ProviderRouter, ResetLlmResilienceStateRequest, ResponseFormat, RoutingMode,
+    SqliteLlmRepository, StableJitter, SystemClock, TestProviderConnectionRequest,
+    TestProviderConnectionResponse, UpsertFreeFormProviderRouteBindingRequest,
+    UpsertProviderConnectionRequest, UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
+    preview_compression, provider_profiles,
 };
 use chrono::Utc;
 use reqwest::Client;
@@ -54,6 +56,8 @@ mod brownfield_mapping;
 mod brownfield_resolution;
 #[path = "orchestration/clarification.rs"]
 mod clarification;
+#[path = "orchestration/cleanup.rs"]
+mod cleanup;
 #[path = "orchestration/component_notes.rs"]
 mod component_notes;
 #[path = "orchestration/composition/host_coordinator.rs"]
@@ -1097,6 +1101,59 @@ pub struct UpsertProviderRouteBindingResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ListFreeFormProviderRouteBindingsResponse {
+    pub bindings: Vec<FreeFormProviderRouteBinding>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpsertFreeFormProviderRouteBindingResponse {
+    pub binding: FreeFormProviderRouteBinding,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartFreeFormApiRunRequest {
+    pub project_id: String,
+    pub slot_id: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartFreeFormApiRunResponse {
+    pub execution_id: String,
+    pub generation_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelAgentApiExecutionRequest {
+    pub execution_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelAgentApiExecutionResponse {
+    pub cancelled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAgentApiExecutionsRequest {
+    pub project_id: String,
+    pub target: AgentExecutionTarget,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAgentApiExecutionsResponse {
+    pub executions: Vec<LlmExecutionListItem>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetLlmResilienceSnapshotResponse {
     pub snapshot: LlmResilienceSnapshot,
 }
@@ -1117,6 +1174,14 @@ pub struct GetLlmExecutionSnapshotRequest {
 #[serde(rename_all = "camelCase")]
 pub struct GetLlmExecutionSnapshotResponse {
     pub snapshot: LlmExecutionSnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetAgentApiExecutionSnapshotRequest {
+    pub project_id: String,
+    pub target: AgentExecutionTarget,
+    pub execution_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1179,6 +1244,7 @@ pub struct ListAgentRunsResponse {
 #[derive(Debug, Default)]
 struct RuntimeControl {
     cancellations: Mutex<HashMap<String, CancellationToken>>,
+    manual_api_cancellations: Mutex<HashMap<String, CancellationToken>>,
     wakeup: tokio::sync::Notify,
     pending_user_cancels: Mutex<HashMap<String, usize>>,
     #[cfg(test)]
@@ -1622,7 +1688,16 @@ impl PersistenceService {
             }
             cancellation.cancel();
         }
-        cancellations.len()
+        let manual_api = self
+            .runtime_control
+            .manual_api_cancellations
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        for cancellation in manual_api.values() {
+            cancellation.cancel();
+        }
+        cancellations.len() + manual_api.len()
     }
 
     fn request_job_cancellation(&self, job_id: &str) -> bool {
@@ -3701,6 +3776,192 @@ impl PersistenceService {
         })
     }
 
+    pub fn list_free_form_provider_route_bindings(
+        &self,
+        project_id: &str,
+    ) -> Result<ListFreeFormProviderRouteBindingsResponse, PersistenceServiceError> {
+        Ok(ListFreeFormProviderRouteBindingsResponse {
+            bindings: self.llm_repository.list_free_form_bindings(project_id)?,
+        })
+    }
+
+    pub fn upsert_free_form_provider_route_binding(
+        &self,
+        request: UpsertFreeFormProviderRouteBindingRequest,
+    ) -> Result<UpsertFreeFormProviderRouteBindingResponse, PersistenceServiceError> {
+        Ok(UpsertFreeFormProviderRouteBindingResponse {
+            binding: self.llm_repository.upsert_free_form_binding(request)?,
+        })
+    }
+
+    pub fn list_agent_api_executions(
+        &self,
+        request: ListAgentApiExecutionsRequest,
+    ) -> Result<ListAgentApiExecutionsResponse, PersistenceServiceError> {
+        Ok(ListAgentApiExecutionsResponse {
+            executions: self.llm_repository.list_executions_for_target(
+                &request.project_id,
+                &request.target,
+                request.limit.unwrap_or(20),
+            )?,
+        })
+    }
+
+    pub fn get_agent_api_execution_snapshot(
+        &self,
+        request: GetAgentApiExecutionSnapshotRequest,
+    ) -> Result<GetLlmExecutionSnapshotResponse, PersistenceServiceError> {
+        if !self.llm_repository.execution_belongs_to_target(
+            &request.project_id,
+            &request.target,
+            &request.execution_id,
+        )? {
+            return Err(PersistenceServiceError::NotFound(
+                "API execution was not found for this project and agent.".into(),
+            ));
+        }
+        Ok(GetLlmExecutionSnapshotResponse {
+            snapshot: self.llm_repository.execution_snapshot(&request.execution_id)?,
+        })
+    }
+
+    pub fn export_agent_api_execution(
+        &self,
+        request: GetAgentApiExecutionSnapshotRequest,
+    ) -> Result<PathBuf, PersistenceServiceError> {
+        let snapshot = self
+            .get_agent_api_execution_snapshot(request.clone())?
+            .snapshot;
+        let workspace_path: String = self.connection()?.query_row(
+            "SELECT workspace_path FROM projects WHERE id=?1 AND is_archived=0",
+            params![request.project_id],
+            |row| row.get(0),
+        ).optional()?.ok_or_else(|| {
+            PersistenceServiceError::NotFound("Project workspace was not found.".into())
+        })?;
+        let directory = Path::new(&workspace_path)
+            .join(".hard-vibe-code")
+            .join("api-exports");
+        fs::create_dir_all(&directory)?;
+        let destination = directory.join(format!("api-{}.json", request.execution_id));
+        let payload = serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": 1,
+            "redacted": true,
+            "projectId": request.project_id,
+            "target": request.target,
+            "snapshot": snapshot,
+        })).map_err(|error| PersistenceServiceError::Runtime(
+            format!("Failed to serialize redacted API execution: {error}")
+        ))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+        std::io::Write::write_all(&mut temporary, &payload)?;
+        temporary.persist(&destination).map_err(|error| error.error)?;
+        Ok(destination)
+    }
+
+    pub fn start_free_form_api(
+        &self,
+        request: StartFreeFormApiRunRequest,
+    ) -> Result<StartFreeFormApiRunResponse, PersistenceServiceError> {
+        let project_id = request.project_id.trim();
+        let slot_id = request.slot_id.trim();
+        let prompt = request.prompt.trim();
+        if project_id.is_empty() || slot_id.is_empty() || prompt.is_empty() {
+            return Err(PersistenceServiceError::Validation(
+                "Project, FreeForm slot and prompt are required.".into(),
+            ));
+        }
+        let connection = self.connection()?;
+        let api_ready: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM terminal_slots
+                 WHERE id=?1 AND project_id=?2 AND kind='free_form' AND archived=0
+                   AND execution_mode='api_direct')",
+                params![slot_id, project_id],
+                |row| row.get(0),
+            )?;
+        if !api_ready {
+            return Err(PersistenceServiceError::Validation(
+                "FreeForm slot is missing, archived, or not in API Key Mode.".into(),
+            ));
+        }
+        // Resolve before spawning so a missing/disabled binding fails synchronously in the UI.
+        self.llm_repository.resolve_route_for_target(
+            project_id,
+            &AgentExecutionTarget::free_form(slot_id),
+            "FreeForm",
+        )?;
+        let config = self.load_runtime_config()?;
+        let execution_id = Uuid::new_v4().to_string();
+        let generation_id = Uuid::new_v4().to_string();
+        let llm_request = LlmRequest {
+            execution_id: ExecutionId::new(execution_id.clone()),
+            generation_id: GenerationId::new(generation_id.clone()),
+            project_id: project_id.to_string(),
+            pulsation_id: None,
+            job_id: None,
+            agent_run_id: None,
+            job_chain: format!("free_form:{slot_id}"),
+            target: AgentExecutionTarget::free_form(slot_id),
+            stage: "FreeForm".into(),
+            system_prompt: "You are a user-configured FreeForm agent. Return only the visible assistant response. Do not expose hidden reasoning, credentials, or internal provider payloads.".into(),
+            user_prompt: prompt.to_string(),
+            response_format: ResponseFormat::Text,
+            max_output_tokens: config.max_output_tokens,
+            temperature: config.temperature,
+            deadline: std::time::Instant::now() + Duration::from_millis(config.timeout_ms),
+            stream: true,
+            legacy_provider: config.provider.as_str().into(),
+            legacy_model: config.model,
+            dispatch: DispatchPolicy::default(),
+        };
+        let cancellation = CancellationToken::new();
+        self.runtime_control
+            .manual_api_cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(execution_id.clone(), cancellation.clone());
+        let service = self.clone();
+        let execution_for_task = execution_id.clone();
+        tokio::spawn(async move {
+            let _ = service.llm_router.execute(&llm_request, &cancellation).await;
+            service
+                .runtime_control
+                .manual_api_cancellations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&execution_for_task);
+        });
+        Ok(StartFreeFormApiRunResponse {
+            execution_id,
+            generation_id,
+        })
+    }
+
+    pub fn cancel_agent_api_execution(
+        &self,
+        request: CancelAgentApiExecutionRequest,
+    ) -> Result<CancelAgentApiExecutionResponse, PersistenceServiceError> {
+        let execution_id = request.execution_id.trim();
+        if execution_id.is_empty() {
+            return Err(PersistenceServiceError::Validation(
+                "Execution ID is required.".into(),
+            ));
+        }
+        let cancelled = self
+            .runtime_control
+            .manual_api_cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(execution_id)
+            .map(|token| {
+                token.cancel();
+                true
+            })
+            .unwrap_or(false);
+        Ok(CancelAgentApiExecutionResponse { cancelled })
+    }
+
     pub fn get_llm_resilience_snapshot(
         &self,
     ) -> Result<GetLlmResilienceSnapshotResponse, PersistenceServiceError> {
@@ -5650,6 +5911,133 @@ mod tests {
             .expect("table query should work");
 
         assert_eq!(tables, 1);
+    }
+
+    #[test]
+    fn v33_to_v34_preserves_canonical_executions_and_bindings() {
+        let root = tempfile::tempdir().expect("tempdir should be created");
+        let db_path = root.path().join("hard-vibe-code.db");
+        let mut connection = Connection::open(&db_path).expect("v33 db should open");
+        embedded::migrations::runner()
+            .set_target(refinery::Target::Version(33))
+            .run(&mut connection)
+            .expect("v1-v33 should apply");
+        let now = Utc::now().to_rfc3339();
+        connection.execute(
+            "INSERT INTO projects(id,name,workspace_path,created_at,updated_at)
+             VALUES('project-v33','Project V33',?1,?2,?2)",
+            params![root.path().to_string_lossy(), now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO provider_routes(id,name,strategy,max_attempts,attempt_timeout_ms,
+                    route_timeout_ms,enabled,version,created_at,updated_at)
+             VALUES('route-v33','Route V33','priority',3,30000,45000,1,1,?1,?1)",
+            params![now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO provider_route_bindings(project_id,agent_role,stage,route_id,
+                    enabled,version,created_at,updated_at)
+             VALUES('project-v33','backend_agent','Code','route-v33',1,4,?1,?1)",
+            params![now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO llm_route_executions(id,generation_id,project_id,route_id,
+                    agent_role,stage,strategy,mode,status,decision_json,started_at)
+             VALUES('execution-v33','generation-v33','project-v33','route-v33',
+                    'backend_agent','Code','priority','on','completed','{}',?1)",
+            params![now],
+        ).unwrap();
+        drop(connection);
+
+        let service = PersistenceService::initialize(root.path()).expect("v34 should upgrade");
+        let db = service.connection().unwrap();
+        let identity: (Option<String>, Option<String>) = db.query_row(
+            "SELECT agent_role,free_form_slot_id FROM llm_route_executions
+             WHERE id='execution-v33'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(identity, (Some("backend_agent".into()), None));
+        let binding_version: u64 = db.query_row(
+            "SELECT version FROM provider_route_bindings
+             WHERE project_id='project-v33' AND agent_role='backend_agent' AND stage='Code'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(binding_version, 4);
+        let violations: i64 = db.query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_check",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(violations, 0);
+    }
+
+    #[test]
+    fn free_form_route_bindings_are_project_scoped_versioned_and_fail_closed() {
+        let (root, service) = prepare_service();
+        let now = Utc::now().to_rfc3339();
+        let db = service.connection().unwrap();
+        for (id, path) in [
+            ("project-a", root.path().join("a")),
+            ("project-b", root.path().join("b")),
+        ] {
+            db.execute(
+                "INSERT INTO projects(id,name,workspace_path,created_at,updated_at)
+                 VALUES(?1,?1,?2,?3,?3)",
+                params![id, path.to_string_lossy(), now],
+            ).unwrap();
+        }
+        drop(db);
+        let terminals = crate::terminals::TerminalRepository::new(service.db_path.clone());
+        let slot_a = terminals.create_free_form_slot(crate::terminals::CreateFreeFormSlotRequest {
+            project_id: "project-a".into(),
+            label: "API A".into(),
+        }).unwrap();
+        let slot_b = terminals.create_free_form_slot(crate::terminals::CreateFreeFormSlotRequest {
+            project_id: "project-b".into(),
+            label: "API B".into(),
+        }).unwrap();
+        let target_a = AgentExecutionTarget::free_form(&slot_a.id);
+        assert!(service.llm_repository.resolve_route_for_target(
+            "project-a", &target_a, "FreeForm"
+        ).is_err());
+        assert!(service.llm_repository.upsert_free_form_binding(
+            UpsertFreeFormProviderRouteBindingRequest {
+                project_id: "project-a".into(),
+                slot_id: slot_b.id.clone(),
+                route_id: "legacy-default".into(),
+                enabled: Some(true),
+                version: None,
+            }
+        ).is_err());
+
+        let binding = service.llm_repository.upsert_free_form_binding(
+            UpsertFreeFormProviderRouteBindingRequest {
+                project_id: "project-a".into(),
+                slot_id: slot_a.id.clone(),
+                route_id: "legacy-default".into(),
+                enabled: Some(true),
+                version: None,
+            }
+        ).unwrap();
+        assert_eq!(binding.version, 1);
+        assert_eq!(service.llm_repository.list_free_form_bindings("project-a").unwrap().len(), 1);
+        assert!(service.llm_repository.list_free_form_bindings("project-b").unwrap().is_empty());
+        assert!(service.llm_repository.resolve_route_for_target(
+            "project-a", &target_a, "FreeForm"
+        ).is_ok());
+
+        let stale = service.llm_repository.upsert_free_form_binding(
+            UpsertFreeFormProviderRouteBindingRequest {
+                project_id: "project-a".into(),
+                slot_id: slot_a.id,
+                route_id: "legacy-default".into(),
+                enabled: Some(false),
+                version: Some(99),
+            }
+        ).unwrap_err();
+        assert_eq!(stale.kind, LlmErrorKind::RouteConflict);
     }
 
     #[test]
@@ -8071,7 +8459,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "fallback-e2e".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),
@@ -8215,7 +8603,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "stream-no-fallback".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),
@@ -8355,7 +8743,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "fallback-401".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),
@@ -8515,7 +8903,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "fallback-lockout".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),
@@ -8761,7 +9149,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "route-max-2".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),
@@ -8904,7 +9292,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "route-lkgp".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),
@@ -8971,7 +9359,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "cancel-test".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),

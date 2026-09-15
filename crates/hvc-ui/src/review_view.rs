@@ -214,7 +214,7 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                             .text_color(theme::text_muted())
                             .child("Guidance for the retried stage"),
                     )
-                    .child(model.stage_feedback_input.clone()),
+                    .child(crate::sizing::text_area(model.stage_feedback_input.clone())),
             )
         })
         .child(
@@ -682,7 +682,7 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                             .text_color(theme::text_muted())
                             .child("Revision feedback"),
                     )
-                    .child(model.stage_feedback_input.clone()),
+                    .child(crate::sizing::text_area(model.stage_feedback_input.clone())),
             )
         })
         .child(

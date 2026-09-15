@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, Rgba, SharedString, deferred, div, prelude::*,
-    px, uniform_list,
+    AnyElement, Context, FontWeight, IntoElement, Rgba, SharedString, deferred, div,
+    prelude::*, px, uniform_list,
 };
 use hvc_core::llm::AgentRole;
-use hvc_core::persistence_service::{CliFallbackCheckpoint, CliFallbackDecision};
+use hvc_core::persistence_service::{CliFallbackCheckpoint, CliFallbackDecision, PulsationStatus};
 use hvc_core::terminals::{
     AgentExecutionMode, CanonicalAgentDescriptor, CliAvailabilityState, CliBackend,
     CliModelCatalogEntry, CliModelCatalogState, CliModelSelectionSource, TerminalEventKind,
@@ -13,53 +13,196 @@ use hvc_core::terminals::{
 };
 
 use crate::agents::{
-    AgentIdentifier, AgentsTab, CliModelPickerState, CliModelPickerTarget, TerminalEventFilter,
+    AgentIdentifier, ApiActivityFilter, CliModelPickerState, CliModelPickerTarget,
+    TerminalEventFilter,
 };
 use crate::app_model::AppModel;
+use crate::pulsations::{PIPELINE_STAGES, stage_label};
 use crate::theme;
+
+fn agents_pipeline_header(
+    model: &AppModel,
+    snapshot: Option<&hvc_core::terminals::TerminalsSnapshot>,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let active = model.pulsations.read(cx).active().cloned();
+    let Some(active) = active else {
+        return div()
+            .id("agents-pipeline")
+            .debug_selector(|| "agents-pipeline".into())
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_xs()
+            .text_color(theme::text_muted())
+            .child("No active pulsation")
+            .into_any_element();
+    };
+
+    let current_stage = active.stage;
+    let current_index = PIPELINE_STAGES
+        .iter()
+        .position(|stage| *stage == current_stage)
+        .unwrap_or_default();
+    let current_role = AgentRole::for_stage(stage_label(current_stage));
+    let current_run = snapshot.and_then(|snapshot| {
+        snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.config.agent_role == current_role)
+            .and_then(|agent| {
+                agent
+                    .recent_runs
+                    .iter()
+                    .find(|run| {
+                        run.pulsation_id.as_deref() == Some(active.id.as_str())
+                            && run.status.is_active()
+                    })
+                    .or_else(|| {
+                        agent
+                            .recent_runs
+                            .iter()
+                            .find(|run| run.pulsation_id.as_deref() == Some(active.id.as_str()))
+                    })
+            })
+    });
+    let current_state = current_run
+        .map(|run| run_status(run.status))
+        .unwrap_or_else(|| pulsation_status_label(active.status));
+    let current_descriptor = hvc_core::terminals::canonical_agent(current_role);
+    let current_state = format!(
+        "{} · {} · {}",
+        compact_stage_label(current_stage),
+        current_descriptor.name,
+        current_state
+    );
+
+    div()
+        .id("agents-pipeline")
+        .debug_selector(|| "agents-pipeline".into())
+        .flex_1()
+        .min_w_0()
+        .max_w_full()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .justify_center()
+        .gap_1()
+        .children(
+            PIPELINE_STAGES
+                .into_iter()
+                .enumerate()
+                .map(|(index, stage)| {
+                    let current = index == current_index;
+                    let complete = index < current_index
+                        || (active.status == PulsationStatus::Done && current);
+                    let stage_id = SharedString::from(format!(
+                        "agents-pipeline-stage-{}",
+                        stage_label(stage).to_lowercase()
+                    ));
+                    let stage_selector = stage_id.clone();
+                    let label = compact_stage_label(stage);
+                    div()
+                        .id(stage_id)
+                        .debug_selector(move || stage_selector.to_string())
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .px_1()
+                        .py_1()
+                        .rounded_sm()
+                        .text_xs()
+                        .bg(if current {
+                            theme::accent_soft()
+                        } else if complete {
+                            theme::surface_raised()
+                        } else {
+                            theme::surface()
+                        })
+                        .text_color(if current || complete {
+                            theme::accent()
+                        } else {
+                            theme::text_muted()
+                        })
+                        .child(if complete {
+                            "✓"
+                        } else if current {
+                            "●"
+                        } else {
+                            "○"
+                        })
+                        .child(label)
+                }),
+        )
+        .child(
+            div()
+                .id("agents-pipeline-current")
+                .debug_selector(|| "agents-pipeline-current".into())
+                .min_w_0()
+                .text_xs()
+                .text_color(theme::accent())
+                .child(current_state),
+        )
+        .into_any_element()
+}
+
+fn compact_stage_label(stage: hvc_core::persistence_service::PulsationStage) -> &'static str {
+    match stage {
+        hvc_core::persistence_service::PulsationStage::Intake => "Int",
+        hvc_core::persistence_service::PulsationStage::Specification => "Spec",
+        hvc_core::persistence_service::PulsationStage::Contract => "Ctr",
+        hvc_core::persistence_service::PulsationStage::Code => "Code",
+        hvc_core::persistence_service::PulsationStage::Test => "Test",
+        hvc_core::persistence_service::PulsationStage::Integrator => "Intg",
+    }
+}
 
 pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let agents = model.agents.read(cx);
-    let tab = agents.tab;
     let loading = agents.loading;
     let busy = agents.busy;
     let snapshot = agents.snapshot.clone();
     let active_model_picker = agents.active_model_picker.clone();
+    let pipeline = agents_pipeline_header(model, snapshot.as_ref(), cx);
+    let focus = cx.focus_handle();
 
     div()
+        .id("agents-panel")
+        .debug_selector(|| "agents-panel".into())
         .relative()
         .overflow_hidden()
         .flex_1()
         .min_w_0()
         .min_h_0()
         .h_full()
+        .track_focus(&focus)
+        .tab_index(0)
+        .on_key_down(cx.listener(|model, event: &gpui::KeyDownEvent, _, cx| {
+            if event.keystroke.key == "escape" && model.agents.read(cx).terminal_expanded {
+                model.toggle_agents_terminal_expanded(cx);
+                cx.stop_propagation();
+            }
+        }))
         .flex()
         .flex_col()
         .bg(theme::canvas())
         .child(
             div()
+                .id("agents-header")
+                .debug_selector(|| "agents-header".into())
                 .px_5()
                 .py_3()
+                .flex_shrink_0()
                 .border_b_1()
                 .border_color(theme::border())
                 .flex()
                 .flex_wrap()
                 .items_center()
                 .gap_2()
-                .child(tab_button(
-                    "agents-tab-cli",
-                    "CLI Mode",
-                    tab == AgentsTab::Cli,
-                    cx,
-                    |model, cx| model.set_agents_tab(AgentsTab::Cli, cx),
-                ))
-                .child(tab_button(
-                    "agents-tab-api",
-                    "API Key Mode",
-                    tab == AgentsTab::Api,
-                    cx,
-                    |model, cx| model.set_agents_tab(AgentsTab::Api, cx),
-                ))
+                .child(pipeline)
                 .child(
                     div()
                         .ml_auto()
@@ -83,31 +226,55 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                         )),
                 ),
         )
-        .child(match snapshot {
-            None => empty_state(if loading {
-                "Checking CLIs and loading the seven agents…"
-            } else {
-                "Open a workspace to configure and monitor agents."
-            }),
-            Some(snapshot) => match tab {
-                AgentsTab::Cli => div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .child(agents_sidebar(model, &snapshot, busy, cx))
-                    .child(agent_detail_panel(model, &snapshot, busy, cx))
-                    .into_any_element(),
-                AgentsTab::Api => div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .child(agents_sidebar(model, &snapshot, busy, cx))
-                    .child(api_detail_panel(model, &snapshot, cx))
-                    .into_any_element(),
-            },
-        })
+        .child(
+            div()
+                .id("agents-content")
+                .debug_selector(|| "agents-content".into())
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .overflow_hidden()
+                .child(match snapshot {
+                    None => empty_state(if loading {
+                        "Checking CLIs and loading the seven agents…"
+                    } else {
+                        "Open a workspace to configure and monitor agents."
+                    }),
+                    Some(snapshot) => {
+                        let selected = model.agents.read(cx).selected_agent.clone();
+                        let api_mode = match selected.as_ref() {
+                            Some(AgentIdentifier::Canonical(role)) => snapshot
+                                .agents
+                                .iter()
+                                .find(|agent| agent.config.agent_role == *role)
+                                .is_some_and(|agent| {
+                                    agent.config.execution_mode == AgentExecutionMode::ApiDirect
+                                }),
+                            Some(AgentIdentifier::FreeForm(slot_id)) => snapshot
+                                .free_form_slots
+                                .iter()
+                                .chain(&snapshot.archived_free_form_slots)
+                                .find(|slot| slot.slot.id == *slot_id)
+                                .is_some_and(|slot| {
+                                    slot.slot.execution_mode == AgentExecutionMode::ApiDirect
+                                }),
+                            None => false,
+                        };
+                        let detail = if api_mode {
+                            api_detail_panel(model, &snapshot, cx)
+                        } else {
+                            agent_detail_panel(model, &snapshot, busy, cx)
+                        };
+                        crate::split_pane::split_pane(
+                            "agents-columns",
+                            &model.agents_split,
+                            agents_sidebar(model, &snapshot, busy, cx),
+                            detail,
+                            cx,
+                        )
+                    }
+                }),
+        )
         .when_some(
             active_model_picker.filter(|picker| picker.target != CliModelPickerTarget::Companion),
             |panel, picker| panel.child(cli_model_picker_panel(model, picker, cx)),
@@ -230,7 +397,11 @@ pub(crate) fn cli_model_picker_panel(
                     |model, cx| model.close_cli_model_picker(cx),
                 )),
         )
-        .child(field("SEARCH", model.cli_model_search_input.clone()))
+        .child(field(
+            "SEARCH",
+            model.cli_model_search_input.clone(),
+            crate::sizing::INPUT_LONG,
+        ))
         .when_some(diagnostic, |panel, message| {
             panel.child(div().text_xs().text_color(theme::warning()).child(message))
         })
@@ -522,12 +693,11 @@ fn agents_sidebar(
     let agents = model.agents.read(cx);
     let selected = agents.selected_agent.clone();
     let fallbacks = agents.fallbacks.clone();
-    let cli = agents.tab == AgentsTab::Cli;
     div()
         .id("agents-list")
         .debug_selector(|| "agents-list".into())
-        .w(px(220.0))
-        .flex_shrink_0()
+        .w_full()
+        .h_full()
         .min_h_0()
         .overflow_y_scroll()
         .p_3()
@@ -547,9 +717,9 @@ fn agents_sidebar(
             let role = agent.config.agent_role;
             let id = AgentIdentifier::Canonical(role);
             agent_list_item(
-                format!("agent-select:{}", role.as_str()),
                 hvc_core::terminals::canonical_agent(role).name.to_owned(),
                 agent.recent_runs.first().map(|run| run.status),
+                agent.config.execution_mode,
                 fallbacks
                     .iter()
                     .filter(|fallback| fallback.agent_role == role)
@@ -559,61 +729,63 @@ fn agents_sidebar(
                 cx,
             )
         }))
-        .when(cli, |list| {
-            list.child(
-                div()
-                    .mt_3()
-                    .text_xs()
-                    .text_color(theme::text_muted())
-                    .child("AGENTES LIVRES"),
-            )
-            .child(action_button(
-                "free-form-create".into(),
-                "+ Novo agente livre".into(),
-                !busy && snapshot.free_form_slots.len() < 8,
-                false,
-                cx,
-                |model, cx| model.create_free_form_agent(cx),
-            ))
-            .children(
-                snapshot
-                    .free_form_slots
-                    .iter()
-                    .chain(&snapshot.archived_free_form_slots)
-                    .map(|slot| {
-                        let id = AgentIdentifier::FreeForm(slot.slot.id.clone());
-                        let archived = snapshot
-                            .archived_free_form_slots
-                            .iter()
-                            .any(|item| item.slot.id == slot.slot.id);
-                        agent_list_item(
-                            format!("agent-select:{}", slot.slot.id),
-                            format!(
-                                "{}{}",
-                                slot.slot.label,
-                                if archived { " · arquivado" } else { "" }
-                            ),
-                            slot.recent_runs.first().map(|run| run.status),
-                            0,
-                            selected.as_ref() == Some(&id),
-                            id,
-                            cx,
-                        )
-                    }),
-            )
-        })
+        .child(
+            div()
+                .mt_3()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child("FREEFORM AGENTS"),
+        )
+        .child(action_button(
+            "free-form-create".into(),
+            "+ Novo agente livre".into(),
+            !busy && snapshot.free_form_slots.len() < 8,
+            false,
+            cx,
+            |model, cx| model.create_free_form_agent(cx),
+        ))
+        .children(
+            snapshot
+                .free_form_slots
+                .iter()
+                .chain(&snapshot.archived_free_form_slots)
+                .map(|slot| {
+                    let id = AgentIdentifier::FreeForm(slot.slot.id.clone());
+                    let archived = snapshot
+                        .archived_free_form_slots
+                        .iter()
+                        .any(|item| item.slot.id == slot.slot.id);
+                    agent_list_item(
+                        format!(
+                            "{}{}",
+                            slot.slot.label,
+                            if archived { " · arquivado" } else { "" }
+                        ),
+                        slot.recent_runs.first().map(|run| run.status),
+                        slot.slot.execution_mode,
+                        0,
+                        selected.as_ref() == Some(&id),
+                        id,
+                        cx,
+                    )
+                }),
+        )
         .into_any_element()
 }
 
 fn agent_list_item(
-    element_id: String,
     label: String,
     status: Option<TerminalRunStatus>,
+    execution_mode: AgentExecutionMode,
     fallback_count: usize,
     selected: bool,
     agent: AgentIdentifier,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
+    let element_id = match &agent {
+        AgentIdentifier::Canonical(role) => format!("agent-select:{}", role.as_str()),
+        AgentIdentifier::FreeForm(slot_id) => format!("agent-select:{slot_id}"),
+    };
     div()
         .id(SharedString::from(element_id.clone()))
         .debug_selector(move || element_id.clone())
@@ -627,11 +799,19 @@ fn agent_list_item(
         })
         .hover(|style| style.bg(theme::surface_raised()))
         .on_click(cx.listener(move |model, _, _, cx| {
+            let selected = agent.clone();
             model.agents.update(cx, |agents, _| {
                 agents.selected_agent = Some(agent.clone());
-                agents.selected_api_role = None;
+                agents.selected_api_target = None;
                 agents.active_model_picker = None;
             });
+            if model.settings.read(cx).snapshot.is_none() {
+                model.refresh_settings(cx);
+            }
+            match selected {
+                AgentIdentifier::Canonical(role) => model.configure_agent_api(role, cx),
+                AgentIdentifier::FreeForm(slot_id) => model.configure_free_form_api(slot_id, cx),
+            }
             cx.notify();
         }))
         .child(
@@ -647,6 +827,16 @@ fn agent_list_item(
                         .bg(status_color(status)),
                 )
                 .child(div().min_w_0().text_sm().child(label)),
+        )
+        .child(
+            div()
+                .mt_1()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(match execution_mode {
+                    AgentExecutionMode::CliProcess => "CLI Mode",
+                    AgentExecutionMode::ApiDirect => "API Key Mode",
+                }),
         )
         .when(fallback_count > 0, |item| {
             item.child(
@@ -670,11 +860,16 @@ fn agent_detail_panel(
     let selected = agents.selected_agent.clone();
     let fallbacks = agents.fallbacks.clone();
     let pending_cancel = agents.pending_fallback_cancel.clone();
+    let expanded = agents.terminal_expanded;
+    if expanded {
+        return expanded_cli_detail_panel(model, snapshot, busy, cx);
+    }
     div()
         .id("agents-cli-scroll")
         .debug_selector(|| "agents-cli-scroll".into())
         .min_w_0()
         .flex_1()
+        .h_full()
         .min_h_0()
         .p_4()
         .overflow_y_scroll()
@@ -864,6 +1059,259 @@ fn agent_detail_panel(
             },
         )
         .into_any_element()
+}
+
+fn expanded_cli_detail_panel(
+    model: &AppModel,
+    snapshot: &hvc_core::terminals::TerminalsSnapshot,
+    busy: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let agents = model.agents.read(cx);
+    let selected = agents.selected_agent.clone();
+    let canonical = match selected.as_ref() {
+        Some(AgentIdentifier::Canonical(role)) => snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.config.agent_role == *role)
+            .cloned(),
+        _ => None,
+    };
+    let free_form = match selected.as_ref() {
+        Some(AgentIdentifier::FreeForm(slot_id)) => snapshot
+            .free_form_slots
+            .iter()
+            .chain(&snapshot.archived_free_form_slots)
+            .find(|slot| slot.slot.id == *slot_id)
+            .cloned(),
+        _ => None,
+    };
+    let panel = div()
+        .id("agents-terminal-expanded")
+        .debug_selector(|| "agents-terminal-expanded".into())
+        .flex_1()
+        .h_full()
+        .min_h_0()
+        .min_w_0()
+        .p_4()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .bg(theme::surface());
+    if let Some(agent) = canonical {
+        let role = agent.config.agent_role;
+        let descriptor = hvc_core::terminals::canonical_agent(role);
+        let selected_run = agents
+            .selected_run_by_role
+            .get(&role)
+            .and_then(|run_id| agent.recent_runs.iter().find(|run| &run.id == run_id))
+            .or_else(|| agent.recent_runs.first())
+            .cloned();
+        let events = selected_run
+            .as_ref()
+            .and_then(|run| agents.events_by_run.get(&run.id))
+            .cloned();
+        let filter = agents
+            .event_filters
+            .get(role.as_str())
+            .copied()
+            .unwrap_or(TerminalEventFilter::All);
+        let follow = agents
+            .follow_tail
+            .get(role.as_str())
+            .copied()
+            .unwrap_or(true);
+        let running = agent.recent_runs.first().is_some_and(|run| run.status.is_active());
+        let input = model.agent_prompt_inputs.get(&role).cloned();
+        let prompt_ready = input
+            .as_ref()
+            .is_some_and(|input| !input.read(cx).value().trim().is_empty());
+        let run_id = agent.recent_runs.first().map(|run| run.id.clone());
+        return panel
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_color(theme::agent_color(role)).child(descriptor.glyph))
+                    .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(descriptor.name))
+                    .child(crate::select_menu::mode_control(
+                        format!("agent-mode:{}", role.as_str()),
+                        "CLI",
+                        !busy && !running,
+                        None,
+                        cx,
+                    ))
+                    .child(action_button(
+                        SharedString::from(format!("agent-collapse:{}", role.as_str())),
+                        "Collapse".into(),
+                        true,
+                        false,
+                        cx,
+                        |model, cx| model.toggle_agents_terminal_expanded(cx),
+                    )),
+            )
+            .when_some(selected_run.as_ref(), |panel, run| {
+                panel.child(div().text_xs().text_color(theme::text_muted()).child(run_metadata(run)))
+            })
+            .child(activity_panel(events.as_ref(), role, filter, follow, true, cx))
+            .when_some(input, |panel, input| {
+                panel.child(crate::sizing::text_area(input)).child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .when(running, |row| {
+                            row.when_some(run_id, |row, run_id| {
+                                row.child(action_button(
+                                    SharedString::from(format!("agent-expanded-stop:{}", role.as_str())),
+                                    "Stop".into(),
+                                    !busy,
+                                    true,
+                                    cx,
+                                    move |model, cx| model.request_cancel_agent_run(run_id.clone(), None, cx),
+                                ))
+                            })
+                        })
+                        .when(!running, |row| {
+                            row.child(action_button(
+                                SharedString::from(format!("agent-expanded-start:{}", role.as_str())),
+                                "Start".into(),
+                                !busy && prompt_ready,
+                                false,
+                                cx,
+                                move |model, cx| model.start_manual_agent(role, cx),
+                            ))
+                        })
+                        .child(action_button(
+                            SharedString::from(format!("agent-expanded-filter:{}", role.as_str())),
+                            format!("Filter: {}", filter.label()).into(),
+                            true,
+                            false,
+                            cx,
+                            move |model, cx| model.cycle_agent_event_filter(role.as_str().to_string(), cx),
+                        ))
+                        .child(action_button(
+                            SharedString::from(format!("agent-expanded-follow:{}", role.as_str())),
+                            if follow { "Follow active" } else { "Follow paused" }.into(),
+                            true,
+                            false,
+                            cx,
+                            move |model, cx| model.toggle_agent_follow_tail(role.as_str().to_string(), cx),
+                        )),
+                )
+            })
+            .into_any_element();
+    }
+    if let Some(free_form) = free_form {
+        let slot_id = free_form.slot.id.clone();
+        let selected_run = agents
+            .selected_run_by_slot
+            .get(&slot_id)
+            .and_then(|run_id| free_form.recent_runs.iter().find(|run| &run.id == run_id))
+            .or_else(|| free_form.recent_runs.first())
+            .cloned();
+        let events = selected_run
+            .as_ref()
+            .and_then(|run| agents.events_by_run.get(&run.id))
+            .cloned();
+        let filter_key = format!("free-form:{slot_id}");
+        let filter = agents
+            .event_filters
+            .get(&filter_key)
+            .copied()
+            .unwrap_or(TerminalEventFilter::All);
+        let follow = agents.follow_tail.get(&filter_key).copied().unwrap_or(true);
+        let running = free_form.recent_runs.first().is_some_and(|run| run.status.is_active());
+        let input = model.free_form_prompt_inputs.get(&slot_id).cloned();
+        let prompt_ready = input
+            .as_ref()
+            .is_some_and(|input| !input.read(cx).value().trim().is_empty());
+        let run_id = free_form.recent_runs.first().map(|run| run.id.clone());
+        let slot_for_start = slot_id.clone();
+        let filter_for_action = filter_key.clone();
+        let follow_for_action = filter_key.clone();
+        return panel
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(free_form.slot.label.clone()))
+                    .child(crate::select_menu::mode_control(
+                        format!("free-form-mode:{slot_id}"),
+                        "CLI",
+                        !busy && !running && !free_form.slot.archived,
+                        None,
+                        cx,
+                    ))
+                    .child(action_button(
+                        SharedString::from(format!("free-form-collapse:{slot_id}")),
+                        "Collapse".into(),
+                        true,
+                        false,
+                        cx,
+                        |model, cx| model.toggle_agents_terminal_expanded(cx),
+                    )),
+            )
+            .when_some(selected_run.as_ref(), |panel, run| {
+                panel.child(div().text_xs().text_color(theme::text_muted()).child(run_metadata(run)))
+            })
+            .child(activity_panel_for_key(
+                events.as_ref(),
+                filter_key,
+                filter,
+                follow,
+                true,
+                cx,
+            ))
+            .when_some(input, |panel, input| {
+                panel.child(crate::sizing::text_area(input)).child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .when(running, |row| {
+                            row.when_some(run_id, |row, run_id| {
+                                row.child(action_button(
+                                    SharedString::from(format!("free-form-expanded-stop:{slot_id}")),
+                                    "Stop".into(),
+                                    !busy,
+                                    true,
+                                    cx,
+                                    move |model, cx| model.request_cancel_agent_run(run_id.clone(), None, cx),
+                                ))
+                            })
+                        })
+                        .when(!running, |row| {
+                            row.child(action_button(
+                                SharedString::from(format!("free-form-expanded-start:{slot_id}")),
+                                "New session".into(),
+                                !busy && prompt_ready && !free_form.slot.archived,
+                                false,
+                                cx,
+                                move |model, cx| model.start_free_form_agent(slot_for_start.clone(), cx),
+                            ))
+                        })
+                        .child(action_button(
+                            SharedString::from(format!("free-form-expanded-filter:{slot_id}")),
+                            format!("Filter: {}", filter.label()).into(),
+                            true,
+                            false,
+                            cx,
+                            move |model, cx| model.cycle_agent_event_filter(filter_for_action.clone(), cx),
+                        ))
+                        .child(action_button(
+                            SharedString::from(format!("free-form-expanded-follow:{slot_id}")),
+                            if follow { "Follow active" } else { "Follow paused" }.into(),
+                            true,
+                            false,
+                            cx,
+                            move |model, cx| model.toggle_agent_follow_tail(follow_for_action.clone(), cx),
+                        )),
+                )
+            })
+            .into_any_element();
+    }
+    panel.child(empty_state("Select an agent.")).into_any_element()
 }
 
 fn archived_free_form_card(
@@ -1181,7 +1629,9 @@ fn free_form_card(
                     cx,
                 )),
         )
-        .when_some(label_input, |card, input| card.child(field("NAME", input)))
+        .when_some(label_input, |card, input| {
+            card.child(field("NAME", input, crate::sizing::INPUT_MEDIUM))
+        })
         .when(slot.backend != CliBackend::Custom, |card| {
             let model_value = match slot.model_source {
                 CliModelSelectionSource::Manual => format!(
@@ -1204,17 +1654,25 @@ fn free_form_card(
         })
         .when(slot.backend == CliBackend::Custom, |card| {
             card.when_some(model_input, |card, input| {
-                card.child(field("MODEL (OPTIONAL)", input))
+                card.child(field(
+                    "MODEL (OPTIONAL)",
+                    input,
+                    crate::sizing::INPUT_MEDIUM,
+                ))
             })
         })
         .when(
             slot.backend == hvc_core::terminals::CliBackend::Custom,
             |card| {
                 card.when_some(custom_executable_input, |card, input| {
-                    card.child(field("CUSTOM EXECUTABLE", input))
+                    card.child(field("CUSTOM EXECUTABLE", input, crate::sizing::INPUT_LONG))
                 })
                 .when_some(custom_args_input, |card, input| {
-                    card.child(field("EXACT ARGUMENTS (JSON)", input))
+                    card.child(field(
+                        "EXACT ARGUMENTS (JSON)",
+                        input,
+                        crate::sizing::INPUT_LONG,
+                    ))
                 })
                 .child(config_button(
                     format!("free-form-risk:{}", slot.id),
@@ -1360,11 +1818,12 @@ fn free_form_card(
             format!("free-form:{}", slot.id),
             event_filter,
             follow_tail,
+            false,
             cx,
         ))
         .when_some(input, |card, input| {
             let selected_run_id = selected_run.map(|run| run.id.clone());
-            card.child(input).child(
+            card.child(crate::sizing::text_area(input)).child(
                 div()
                     .flex()
                     .flex_wrap()
@@ -1618,17 +2077,25 @@ fn agent_card(
         })
         .when(agent.config.backend == CliBackend::Custom, |card| {
             card.when_some(model_input, |card, model_input| {
-                card.child(field("MODEL (OPTIONAL)", model_input))
+                card.child(field(
+                    "MODEL (OPTIONAL)",
+                    model_input,
+                    crate::sizing::INPUT_MEDIUM,
+                ))
             })
         })
         .when(
             agent.config.backend == hvc_core::terminals::CliBackend::Custom,
             |card| {
                 card.when_some(custom_executable_input, |card, input| {
-                    card.child(field("CUSTOM EXECUTABLE", input))
+                    card.child(field("CUSTOM EXECUTABLE", input, crate::sizing::INPUT_LONG))
                 })
                 .when_some(custom_args_input, |card, input| {
-                    card.child(field("EXACT ARGUMENTS (JSON)", input))
+                    card.child(field(
+                        "EXACT ARGUMENTS (JSON)",
+                        input,
+                        crate::sizing::INPUT_LONG,
+                    ))
                 })
                 .child(config_button(
                     format!("agent-custom-risk:{}", role.as_str()),
@@ -1829,11 +2296,12 @@ fn agent_card(
             role,
             event_filter,
             follow_tail,
+            false,
             cx,
         ))
         .when_some(input, |card, input| {
             let resume_run_id = selected_run.map(|run| run.id.clone());
-            card.child(input).child(
+            card.child(crate::sizing::text_area(input)).child(
                 div()
                     .flex()
                     .gap_2()
@@ -1914,9 +2382,11 @@ fn agent_card(
         .into_any_element()
 }
 
+/// A labelled single-line input at one of the scale widths (`crate::sizing`).
 fn field(
     label: &'static str,
     input: gpui::Entity<crate::text_input::NativeTextInput>,
+    width: gpui::Pixels,
 ) -> impl IntoElement {
     div()
         .flex()
@@ -1929,7 +2399,7 @@ fn field(
                 .text_color(theme::text_muted())
                 .child(label),
         )
-        .child(input)
+        .child(crate::sizing::sized_input(input, width))
 }
 
 fn api_detail_panel(
@@ -1937,143 +2407,96 @@ fn api_detail_panel(
     snapshot: &hvc_core::terminals::TerminalsSnapshot,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
-    let settings = model.settings.read(cx).snapshot.clone();
     let agents = model.agents.read(cx);
-    let api_activity = agents.api_activity.clone();
-    let viewer_enabled = agents.viewer_enabled;
     let selected_agent = agents.selected_agent.clone();
-    let selected_api_role = agents.selected_api_role;
-    let settings_busy = model.settings.read(cx).busy;
-    div()
+    let expanded = agents.terminal_expanded;
+    let panel = div()
         .id("agents-api-scroll")
+        .debug_selector(|| "agents-api-scroll".into())
         .flex_1()
+        .h_full()
         .min_h_0()
         .p_4()
-        .overflow_y_scroll()
-        .child(
-            div()
-                .mb_3()
-                .p_3()
-                .rounded_lg()
-                .border_1()
-                .border_color(theme::border())
-                .bg(theme::surface())
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_3()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .when(!expanded, |panel| panel.overflow_y_scroll());
+    match selected_agent {
+        Some(AgentIdentifier::Canonical(role)) => {
+            let descriptor = hvc_core::terminals::canonical_agent(role);
+            let activity = model
+                .agents
+                .read(cx)
+                .api_activity
+                .get(&AgentIdentifier::Canonical(role))
+                .cloned()
+                .unwrap_or_default();
+            let history = model
+                .agents
+                .read(cx)
+                .api_executions
+                .get(&AgentIdentifier::Canonical(role).stable_key())
+                .cloned()
+                .unwrap_or_default();
+            let panel = panel
                 .child(
                     div()
-                        .flex_1()
-                        .child("Real-time activity and output viewer")
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_muted())
-                                .child("Displays visible events and output only; internal reasoning is not captured."),
-                        ),
-                )
-                .child(action_button(
-                    "agents-api-viewer".into(),
-                    if viewer_enabled {
-                        "Viewer enabled"
-                    } else {
-                        "Viewer disabled"
-                    }
-                    .into(),
-                    true,
-                    false,
-                    cx,
-                    |model, cx| model.toggle_agents_viewer(cx),
-                ))
-                .child(action_button(
-                    "agents-api-logs".into(),
-                    "Open history in Logs".into(),
-                    true,
-                    false,
-                    cx,
-                    |model, cx| model.select_view(crate::app_model::AppView::Logs, cx),
-                )),
-        )
-        .child(
-            div()
-                .p_4()
-                .rounded_lg()
-                .border_1()
-                .border_color(theme::border())
-                .bg(theme::surface())
-                .child(
-                    div()
-                        .mb_3()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Per-agent routing"),
-                )
-                .children(snapshot.agents.iter().filter(|agent| selected_agent == Some(AgentIdentifier::Canonical(agent.config.agent_role))).map(|agent| {
-                    let role = agent.config.agent_role;
-                    let descriptor = hvc_core::terminals::canonical_agent(agent.config.agent_role);
-                    let binding = settings.as_ref().and_then(|settings| {
-                        settings.bindings.iter().find(|binding| {
-                            binding.project_id == snapshot.project_id
-                                && binding.agent_role == agent.config.agent_role.as_str()
-                                && binding.stage.eq_ignore_ascii_case(descriptor.stage)
-                        })
-                    });
-                    let route = binding.and_then(|binding| {
-                        settings.as_ref()?.routes.iter().find(|route| route.id == binding.route_id)
-                    });
-                    let primary = route.and_then(|route| route.targets.iter().filter(|target| target.enabled).min_by_key(|target| target.position));
-                    let connection = primary.and_then(|target| {
-                        settings.as_ref()?.connections.iter().find(|connection| connection.id == target.connection_id)
-                    });
-                    let fallback_count = route.map(|route| route.targets.iter().filter(|target| target.enabled).count().saturating_sub(1)).unwrap_or(0);
-                    let route_label: SharedString = route.map(|route|route.name.clone()).unwrap_or_else(||"No specific route".into()).into();
-                    let target_label: SharedString = connection.map(|connection|format!("{} · {}",connection.display_name,primary.map(|target|target.model_id.as_str()).unwrap_or(&connection.default_model))).unwrap_or_else(||"Fallback to legacy runtime".into()).into();
-                    let provider_label: SharedString = connection.map(|connection|connection.provider_id.clone()).unwrap_or_else(||"—".into()).into();
-                    let model_label: SharedString = primary.map(|target|target.model_id.clone()).or_else(||connection.map(|connection|connection.default_model.clone())).unwrap_or_else(||"—".into()).into();
-                    let activity_label: SharedString = api_activity
-                        .get(&agent.config.agent_role)
-                        .and_then(|items|items.last())
-                        .map(|line| {
-                            let mut value=line.chars().take(80).collect::<String>();
-                            if line.chars().count()>80{value.push('…');}
-                            value
-                        })
-                        .unwrap_or_else(||"No API activity in this session".into())
-                        .into();
-                    div()
-                        .id(SharedString::from(format!("api-agent:{}",agent.config.agent_role.as_str())))
-                        .debug_selector(move || format!("api-agent:{}", role.as_str()))
-                        .py_3()
-                        .border_t_1()
-                        .border_color(theme::border())
                         .flex()
-                        .flex_wrap()
                         .items_center()
                         .gap_3()
-                        .child(div().w(px(28.0)).text_color(theme::agent_color(agent.config.agent_role)).font_weight(FontWeight::BOLD).child(descriptor.glyph))
-                        .child(div().w(px(110.0)).child(descriptor.name))
-                        .child(chip(if agent.config.execution_mode==AgentExecutionMode::ApiDirect{"API"}else{"CLI"},theme::agent_color(agent.config.agent_role)))
-                        .child(div().w(px(160.0)).text_sm().text_color(theme::text_muted()).child(format!("Route: {route_label}")))
-                        .child(div().w(px(180.0)).text_sm().child(format!("Connection: {target_label}")))
-                        .child(div().w(px(100.0)).text_xs().text_color(theme::text_muted()).child(format!("Provider: {provider_label}")))
-                        .child(div().w(px(140.0)).text_xs().text_color(theme::text_muted()).child(format!("Model: {model_label}")))
-                        .child(chip(if connection.is_some_and(|connection|connection.has_api_key){"Key OK"}else{"Key pending"},if connection.is_some_and(|connection|connection.has_api_key){theme::accent()}else{theme::warning()}))
-                        .child(div().w(px(80.0)).text_xs().text_color(theme::text_muted()).child(format!("+{fallback_count} fallback")))
-                        .child(div().flex_1().min_w(px(180.0)).text_xs().text_color(theme::text_muted()).child(activity_label))
-                        .child(action_button(
-                            SharedString::from(format!("api-configure:{}",role.as_str())),
-                            "Configure".into(),
-                            !settings_busy,
-                            false,
+                        .child(div().text_color(theme::agent_color(role)).child(descriptor.glyph))
+                        .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(descriptor.name))
+                        .child(crate::select_menu::mode_control(
+                            format!("agent-mode:{}", role.as_str()),
+                            "API",
+                            !model.settings.read(cx).busy,
+                            None,
                             cx,
-                            move |model,cx| model.configure_agent_api(role,cx),
-                        ))
-                })),
-        )
-        .when_some(selected_api_role, |panel, role| {
-            panel.child(api_inline_editor(model, role, cx))
-        })
-        .into_any_element()
+                        )),
+                );
+            if expanded {
+                panel
+                    .child(api_activity_viewer(
+                        model,
+                        format!("canonical:{}", role.as_str()),
+                        activity,
+                        history,
+                        cx,
+                    ))
+                    .into_any_element()
+            } else {
+                panel.child(api_inline_editor(model, role, cx)).into_any_element()
+            }
+        }
+        Some(AgentIdentifier::FreeForm(slot_id)) => {
+            let slot = snapshot
+                .free_form_slots
+                .iter()
+                .chain(&snapshot.archived_free_form_slots)
+                .find(|slot| slot.slot.id == slot_id);
+            match slot {
+                Some(slot) => panel
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(slot.slot.label.clone()))
+                            .child(crate::select_menu::mode_control(
+                                format!("free-form-mode:{}", slot.slot.id),
+                                "API",
+                                !model.settings.read(cx).busy && !slot.slot.archived,
+                                None,
+                                cx,
+                            )),
+                    )
+                    .child(free_form_api_inline_editor(model, snapshot, slot, cx))
+                    .into_any_element(),
+                None => panel.child(empty_state("Select an agent.")).into_any_element(),
+            }
+        }
+        None => panel.child(empty_state("Select an agent.")).into_any_element(),
+    }
 }
 
 fn api_inline_editor(
@@ -2096,7 +2519,14 @@ fn api_inline_editor(
         .agents
         .read(cx)
         .api_activity
-        .get(&role)
+        .get(&AgentIdentifier::Canonical(role))
+        .cloned()
+        .unwrap_or_default();
+    let history = model
+        .agents
+        .read(cx)
+        .api_executions
+        .get(&AgentIdentifier::Canonical(role).stable_key())
         .cloned()
         .unwrap_or_default();
     div()
@@ -2162,7 +2592,11 @@ fn api_inline_editor(
                 .grid()
                 .grid_cols(2)
                 .gap_2()
-                .child(field("CONNECTION NAME", connection_name))
+                .child(field(
+                    "CONNECTION NAME",
+                    connection_name,
+                    crate::sizing::INPUT_MEDIUM,
+                ))
                 .child(crate::select_menu::control(
                     (format!("api-provider:{}", role.as_str())).to_string(),
                     "PROVIDER",
@@ -2170,10 +2604,22 @@ fn api_inline_editor(
                     !busy,
                     cx,
                 ))
-                .child(field("MODEL", connection_model))
-                .child(field("ENDPOINT (WHEN ALLOWED)", connection_endpoint))
-                .child(field("API KEY · KEYRING", connection_secret))
-                .child(field("ROUTE NAME", route_name)),
+                .child(field(
+                    "MODEL",
+                    connection_model,
+                    crate::sizing::INPUT_MEDIUM,
+                ))
+                .child(field(
+                    "ENDPOINT (WHEN ALLOWED)",
+                    connection_endpoint,
+                    crate::sizing::INPUT_LONG,
+                ))
+                .child(field(
+                    "API KEY · KEYRING",
+                    connection_secret,
+                    crate::sizing::INPUT_LONG,
+                ))
+                .child(field("ROUTE NAME", route_name, crate::sizing::INPUT_MEDIUM)),
         )
         .child(
             div()
@@ -2234,30 +2680,401 @@ fn api_inline_editor(
                 "Displays visible events and output only; internal reasoning is not captured.",
             ),
         )
+        .child(api_activity_viewer(
+            model,
+            format!("canonical:{}", role.as_str()),
+            activity,
+            history,
+            cx,
+        ))
+}
+
+fn free_form_api_inline_editor(
+    model: &AppModel,
+    snapshot: &hvc_core::terminals::TerminalsSnapshot,
+    free_form: &hvc_core::terminals::FreeFormTerminalSnapshot,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let slot_id = free_form.slot.id.clone();
+    let agents = model.agents.read(cx);
+    let binding = agents
+        .free_form_bindings
+        .iter()
+        .find(|binding| binding.project_id == snapshot.project_id && binding.slot_id == slot_id)
+        .cloned();
+    let activity = agents
+        .api_activity
+        .get(&AgentIdentifier::FreeForm(slot_id.clone()))
+        .cloned()
+        .unwrap_or_default();
+    let history = agents
+        .api_executions
+        .get(&AgentIdentifier::FreeForm(slot_id.clone()).stable_key())
+        .cloned()
+        .unwrap_or_default();
+    let running = agents.active_api_execution_by_slot.contains_key(&slot_id);
+    let expanded = agents.terminal_expanded;
+    let settings = model.settings.read(cx);
+    let selected_route = settings.route().cloned();
+    let bound_route = binding.as_ref().and_then(|binding| {
+        settings
+            .snapshot
+            .as_ref()?
+            .routes
+            .iter()
+            .find(|route| route.id == binding.route_id)
+            .cloned()
+    });
+    let primary = bound_route.as_ref().and_then(|route| {
+        route
+            .targets
+            .iter()
+            .filter(|target| target.enabled)
+            .min_by_key(|target| target.position)
+    });
+    let connection = primary.and_then(|target| {
+        settings
+            .snapshot
+            .as_ref()?
+            .connections
+            .iter()
+            .find(|connection| connection.id == target.connection_id)
+    });
+    let provider_label = connection
+        .map(|connection| connection.provider_id.clone())
+        .unwrap_or_else(|| "—".into());
+    let model_label = primary
+        .map(|target| target.model_id.clone())
+        .filter(|model| !model.is_empty())
+        .or_else(|| connection.map(|connection| connection.default_model.clone()))
+        .unwrap_or_else(|| "—".into());
+    let key_ready = connection.is_some_and(|connection| connection.has_api_key);
+    let prompt = model.free_form_prompt_inputs.get(&slot_id).cloned();
+    let prompt_ready = prompt
+        .as_ref()
+        .is_some_and(|input| !input.read(cx).value().trim().is_empty());
+    let busy = settings.busy || model.agents.read(cx).busy;
+    let slot_for_configure = slot_id.clone();
+    let slot_for_binding = slot_id.clone();
+    let slot_for_start = slot_id.clone();
+    let slot_for_cancel = slot_id.clone();
+    div()
+        .id(SharedString::from(format!("api-free-form:{slot_id}")))
+        .flex_1()
+        .min_h_0()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(theme::accent())
+        .bg(theme::surface())
+        .flex()
+        .flex_col()
+        .gap_3()
+        .when(!expanded, |panel| {
+            panel
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(chip(
+                            binding
+                                .as_ref()
+                                .map(|_| "Route bound")
+                                .unwrap_or("Route required"),
+                            if binding.is_some() {
+                                theme::accent()
+                            } else {
+                                theme::warning()
+                            },
+                        ))
+                        .child(div().text_sm().child(format!(
+                            "Route: {}",
+                            bound_route
+                                .as_ref()
+                                .map(|route| route.name.as_str())
+                                .unwrap_or("not configured")
+                        )))
+                        .child(div().text_xs().text_color(theme::text_muted()).child(format!(
+                            "Provider: {} · Model: {} · Key: {}",
+                            provider_label,
+                            model_label,
+                            if key_ready {
+                                "ready"
+                            } else {
+                                "pending"
+                            }
+                        )))
+                        .child(crate::select_menu::control(
+                            format!("api-cycle-route:free-form:{slot_id}"),
+                            "Route",
+                            format!(
+                                "Route: {}",
+                                selected_route
+                                    .as_ref()
+                                    .map(|route| route.name.as_str())
+                                    .unwrap_or("none")
+                            ),
+                            !busy,
+                            cx,
+                        ))
+                        .child(action_button(
+                            SharedString::from(format!("api-configure-free-form:{slot_id}")),
+                            "Use current binding".into(),
+                            !busy,
+                            false,
+                            cx,
+                            move |model, cx| {
+                                model.configure_free_form_api(slot_for_configure.clone(), cx)
+                            },
+                        ))
+                        .child(action_button(
+                            SharedString::from(format!("api-bind-free-form:{slot_id}")),
+                            "Bind selected route".into(),
+                            !busy && selected_route.is_some(),
+                            false,
+                            cx,
+                            move |model, cx| {
+                                model.save_free_form_api_binding(slot_for_binding.clone(), cx)
+                            },
+                        ))
+                        .child(action_button(
+                            SharedString::from(format!("api-advanced-free-form:{slot_id}")),
+                            "Advanced settings".into(),
+                            true,
+                            false,
+                            cx,
+                            |model, cx| model.select_view(crate::app_model::AppView::Settings, cx),
+                        )),
+                )
+        })
+        .child(api_activity_viewer(
+            model,
+            format!("free_form:{slot_id}"),
+            activity,
+            history,
+            cx,
+        ))
+        .when_some(prompt, |panel, prompt| {
+            panel.child(prompt).child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .when(!running, |row| {
+                        row.child(action_button(
+                            SharedString::from(format!("api-send-free-form:{slot_id}")),
+                            "Send".into(),
+                            !busy && prompt_ready && binding.is_some() && !free_form.slot.archived,
+                            false,
+                            cx,
+                            move |model, cx| {
+                                model.start_free_form_api_agent(slot_for_start.clone(), cx)
+                            },
+                        ))
+                    })
+                    .when(running, |row| {
+                        row.child(action_button(
+                            SharedString::from(format!("api-stop-free-form:{slot_id}")),
+                            "Stop".into(),
+                            !busy,
+                            true,
+                            cx,
+                            move |model, cx| {
+                                model.cancel_free_form_api_agent(slot_for_cancel.clone(), cx)
+                            },
+                        ))
+                    })
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_muted())
+                            .child("One stateless API round; no CLI session or resume."),
+                    ),
+            )
+        })
+        .into_any_element()
+}
+
+fn api_activity_viewer(
+    model: &AppModel,
+    key: String,
+    activity: Vec<String>,
+    history: Vec<hvc_core::llm::LlmExecutionListItem>,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let agents = model.agents.read(cx);
+    let expanded = agents.terminal_expanded;
+    let viewer_enabled = agents.viewer_enabled;
+    let filter_key = format!("api:{key}");
+    let filter = agents
+        .api_filters
+        .get(&filter_key)
+        .copied()
+        .unwrap_or(ApiActivityFilter::All);
+    let follow_tail = agents.follow_tail.get(&filter_key).copied().unwrap_or(true);
+    let target = if let Some(role) = key.strip_prefix("canonical:").and_then(AgentRole::parse) {
+        AgentIdentifier::Canonical(role)
+    } else {
+        AgentIdentifier::FreeForm(key.trim_start_matches("free_form:").to_string())
+    };
+    let mut visible = activity
+        .into_iter()
+        .filter(|line| filter.accepts(line))
+        .collect::<Vec<_>>();
+    if follow_tail {
+        visible.reverse();
+    }
+    let copy_text = visible.iter().rev().cloned().collect::<Vec<_>>().join("\n");
+    let key_for_filter = filter_key.clone();
+    let key_for_follow = filter_key.clone();
+    let target_for_clear = target.clone();
+    let target_for_export = target.clone();
+    let latest_execution_id = history.first().map(|execution| execution.execution_id.clone());
+    let viewer_id = key.clone();
+    div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .gap_2()
         .child(
             div()
-                .id(SharedString::from(format!(
-                    "api-activity:{}",
-                    role.as_str()
-                )))
-                .max_h(px(180.0))
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("ACTIVITY AND OUTPUT"))
+                .child(action_button(
+                    SharedString::from(format!("api-viewer-toggle:{key}")),
+                    if viewer_enabled { "Viewer enabled" } else { "Viewer disabled" }.into(),
+                    true,
+                    false,
+                    cx,
+                    |model, cx| model.toggle_agents_viewer(cx),
+                ))
+                .child(action_button(
+                    SharedString::from(format!("api-filter:{key}")),
+                    format!("Filter: {}", filter.label()).into(),
+                    true,
+                    false,
+                    cx,
+                    move |model, cx| model.cycle_agent_api_filter(key_for_filter.clone(), cx),
+                ))
+                .child(action_button(
+                    SharedString::from(format!("api-follow:{key}")),
+                    if follow_tail { "Follow active" } else { "Follow paused" }.into(),
+                    true,
+                    false,
+                    cx,
+                    move |model, cx| model.toggle_agent_follow_tail(key_for_follow.clone(), cx),
+                ))
+                .child(action_button(
+                    SharedString::from(format!("api-copy:{key}")),
+                    "Copy".into(),
+                    !copy_text.is_empty(),
+                    false,
+                    cx,
+                    move |_, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_text.clone()));
+                    },
+                ))
+                .child(action_button(
+                    SharedString::from(format!("api-export:{key}")),
+                    "Export".into(),
+                    latest_execution_id.is_some(),
+                    false,
+                    cx,
+                    move |model, cx| {
+                        if let Some(execution_id) = latest_execution_id.clone() {
+                            model.export_agent_api_execution(
+                                target_for_export.clone(),
+                                execution_id,
+                                cx,
+                            );
+                        }
+                    },
+                ))
+                .child(action_button(
+                    SharedString::from(format!("api-clear:{key}")),
+                    "Clear local".into(),
+                    true,
+                    false,
+                    cx,
+                    move |model, cx| {
+                        model.clear_agent_api_activity(target_for_clear.clone(), cx)
+                    },
+                ))
+                .child(action_button(
+                    SharedString::from(format!("api-expand:{key}")),
+                    if expanded { "Collapse" } else { "Expand" }.into(),
+                    true,
+                    false,
+                    cx,
+                    |model, cx| model.toggle_agents_terminal_expanded(cx),
+                )),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!("api-activity:{key}")))
+                .debug_selector(move || format!("api-activity:{viewer_id}"))
+                .min_h_0()
+                .when(expanded, |viewer| viewer.flex_1())
+                .when(!expanded, |viewer| viewer.h(px(250.0)))
                 .overflow_y_scroll()
                 .p_2()
                 .rounded_md()
                 .bg(theme::canvas())
-                .when(activity.is_empty(), |viewer| {
+                .border_1()
+                .border_color(theme::border())
+                .cursor_pointer()
+                .on_click(cx.listener(move |model, _, window, cx| {
+                    cx.focus_handle().focus(window);
+                    if !expanded {
+                        model.toggle_agents_terminal_expanded(cx);
+                    }
+                }))
+                .when(!viewer_enabled, |viewer| {
                     viewer.child(div().text_xs().text_color(theme::text_muted()).child(
-                        "No API activity in this session. Persisted history remains in Logs.",
+                        "Live viewer is paused. Execution and persisted history continue.",
                     ))
                 })
-                .children(activity.into_iter().map(|line| {
-                    div()
-                        .py_1()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child(line)
-                })),
+                .when(viewer_enabled && visible.is_empty() && history.is_empty(), |viewer| {
+                    viewer.child(div().text_xs().text_color(theme::text_muted()).child(
+                        "No API activity or persisted execution for this agent.",
+                    ))
+                })
+                .when(viewer_enabled, |viewer| {
+                    viewer
+                        .children(visible.into_iter().take(200).map(|line| {
+                            div().py_1().text_xs().text_color(theme::text_muted()).child(line)
+                        }))
+                        .when(!history.is_empty(), |viewer| {
+                            viewer
+                                .child(div().mt_2().pt_2().border_t_1().border_color(theme::border()).text_xs().font_weight(FontWeight::SEMIBOLD).child("PERSISTED HISTORY"))
+                                .children(history.into_iter().take(20).map(|execution| {
+                                    let preview = execution
+                                        .visible_output
+                                        .as_deref()
+                                        .unwrap_or("No visible output")
+                                        .chars()
+                                        .take(240)
+                                        .collect::<String>();
+                                    div()
+                                        .py_2()
+                                        .border_b_1()
+                                        .border_color(theme::border())
+                                        .child(div().text_xs().child(format!(
+                                            "{} · {} · {}",
+                                            execution.status, execution.route_id, execution.started_at
+                                        )))
+                                        .child(div().text_xs().text_color(theme::text_muted()).child(preview))
+                                }))
+                        })
+                }),
         )
+        .into_any_element()
 }
 
 fn activity_panel(
@@ -2265,9 +3082,17 @@ fn activity_panel(
     role: AgentRole,
     filter: TerminalEventFilter,
     follow_tail: bool,
+    expanded: bool,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
-    activity_panel_for_key(events, role.as_str().to_string(), filter, follow_tail, cx)
+    activity_panel_for_key(
+        events,
+        role.as_str().to_string(),
+        filter,
+        follow_tail,
+        expanded,
+        cx,
+    )
 }
 
 fn activity_panel_for_key(
@@ -2275,8 +3100,10 @@ fn activity_panel_for_key(
     key: String,
     filter: TerminalEventFilter,
     follow_tail: bool,
+    expanded: bool,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
+    let expand_id = format!("agent-expand:{key}");
     let mut events = events
         .cloned()
         .unwrap_or_default()
@@ -2289,27 +3116,51 @@ fn activity_panel_for_key(
     let visible_count = events.len().min(100);
     div()
         .id(SharedString::from(format!("agent-activity:{}", key)))
-        .h(px(250.0))
+        .min_h_0()
+        .when(expanded, |panel| panel.flex_1())
+        .when(!expanded, |panel| panel.h(px(250.0)))
         .p_2()
         .rounded_md()
         .bg(theme::canvas())
         .border_1()
         .border_color(theme::border())
         .overflow_y_scroll()
+        .cursor_pointer()
+        .on_click(cx.listener(move |model, _, window, cx| {
+            cx.focus_handle().focus(window);
+            if !expanded {
+                model.toggle_agents_terminal_expanded(cx);
+            }
+        }))
         .child(
             div()
+                .flex()
+                .items_center()
+                .gap_2()
                 .pb_1()
                 .text_xs()
                 .text_color(theme::text_muted())
-                .child(format!(
-                    "{} · {visible_count} visible event(s){}",
-                    filter.label(),
-                    if follow_tail {
-                        " · new events on top"
-                    } else {
-                        " · position preserved"
-                    }
-                )),
+                .child(
+                    div().flex_1().child(format!(
+                        "{} · {visible_count} visible event(s){}",
+                        filter.label(),
+                        if follow_tail {
+                            " · new events on top"
+                        } else {
+                            " · position preserved"
+                        }
+                    )),
+                )
+                .when(!expanded, |header| {
+                    header.child(action_button(
+                        SharedString::from(expand_id),
+                        "Expand".into(),
+                        true,
+                        false,
+                        cx,
+                        |model, cx| model.toggle_agents_terminal_expanded(cx),
+                    ))
+                }),
         )
         .when(events.is_empty(), |panel| {
             panel.child(
@@ -2390,33 +3241,6 @@ fn run_metadata(run: &hvc_core::terminals::TerminalRun) -> String {
     )
 }
 
-fn tab_button(
-    id: &'static str,
-    label: &'static str,
-    selected: bool,
-    cx: &mut Context<AppModel>,
-    handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(id)
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .cursor_pointer()
-        .bg(if selected {
-            theme::accent_soft()
-        } else {
-            theme::surface()
-        })
-        .text_color(if selected {
-            theme::accent()
-        } else {
-            theme::text_muted()
-        })
-        .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
-        .child(label)
-}
-
 fn config_button(
     id: String,
     label: &'static str,
@@ -2428,7 +3252,10 @@ fn config_button(
     let value = value.into();
     div()
         .id(SharedString::from(id))
-        .flex_1()
+        // Label-over-value toggles read at a fixed width; they no longer fill the row.
+        .flex_shrink_0()
+        .min_w(px(160.0))
+        .max_w(px(360.0))
         .p_2()
         .rounded_md()
         .border_1()
@@ -2460,7 +3287,8 @@ fn action_button(
     let is_copy = id.starts_with("agent-copy:") || id.starts_with("free-form-copy:");
     div()
         .id(id.clone())
-        .when(is_copy, |d| d.w(px(84.0)).flex_shrink_0())
+        .flex_shrink_0()
+        .when(is_copy, |d| d.w(px(84.0)))
         .debug_selector(move || id.to_string())
         .px_3()
         .py_2()
@@ -2531,6 +3359,17 @@ fn run_status(status: TerminalRunStatus) -> &'static str {
         TerminalRunStatus::Failed => "Failed",
         TerminalRunStatus::Cancelled => "Cancelled",
         TerminalRunStatus::Interrupted => "Interrupted",
+    }
+}
+
+fn pulsation_status_label(status: PulsationStatus) -> &'static str {
+    match status {
+        PulsationStatus::Idle => "Idle",
+        PulsationStatus::Planning => "Planning",
+        PulsationStatus::Running => "Running",
+        PulsationStatus::Checkpoint => "Checkpoint",
+        PulsationStatus::Done => "Done",
+        PulsationStatus::Failed => "Failed",
     }
 }
 

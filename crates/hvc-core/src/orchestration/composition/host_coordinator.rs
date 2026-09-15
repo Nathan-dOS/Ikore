@@ -13,7 +13,7 @@
 use super::composition_persistence::check_status_of;
 use super::*;
 use crate::agent_runtime::{LlmCallOutput, dispatch_llm};
-use crate::llm::LlmRequest;
+use crate::llm::{AgentExecutionTarget, LlmRequest};
 use crate::orchestration::composition::aggregate::{self, LegacyAcceptance};
 use crate::orchestration::composition::budget::{Pool, derive_budget};
 use crate::orchestration::composition::plan::{PlanInputs, freeze_plan, repair_kind};
@@ -2125,7 +2125,7 @@ impl PersistenceService {
             job_id: Some(job.id.clone()),
             agent_run_id: Some(attempt.agent_run_id.clone()),
             job_chain: execution.pulsation_id.clone(),
-            agent_role: role,
+            target: AgentExecutionTarget::canonical(role),
             stage: execution.stage.as_db_value().to_string(),
             system_prompt: prompt.system.clone(),
             user_prompt: prompt.user.clone(),
@@ -2143,6 +2143,10 @@ impl PersistenceService {
             legacy_provider: runtime_config.provider.as_str().to_string(),
             legacy_model: runtime_config.model.clone(),
             dispatch: crate::llm::DispatchPolicy {
+                cli_timeout: Some(crate::agent_timeout::CliTimeoutBudget::for_role(
+                    role,
+                    runtime_config.timeout_ms,
+                )),
                 attempt_limit: Some(1),
                 unit: Some(crate::llm::UnitDispatch {
                     stage_execution_id: execution.id.clone(),

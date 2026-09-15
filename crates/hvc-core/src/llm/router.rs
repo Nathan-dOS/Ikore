@@ -14,12 +14,13 @@ use tokio_util::sync::CancellationToken;
 
 use super::adapter::AccountingSink;
 use super::adapter::{AdapterCall, LlmAdapter, ProtocolAdapter, TokenDeltaSink};
-use super::catalog::estimate_cost_usd;
+use super::catalog::{estimate_cost_usd, model_entry};
+use super::compression::redact;
 use super::credentials::CredentialStore;
 use super::domain::{
-    Clock, DispatchPolicy, GatewayFuture, JitterSource, LlmEventEnvelope, LlmEventSink, LlmGateway,
-    LlmRequest, LlmResponse, LlmStreamEvent, ProviderProtocol, ProviderRoute, ResponseFormat,
-    RoutingMode, effective_response_format,
+    AgentExecutionTarget, Clock, DispatchPolicy, GatewayFuture, JitterSource, LlmEventEnvelope,
+    LlmEventSink, LlmGateway, LlmRequest, LlmResponse, LlmStreamEvent, ProviderProtocol,
+    ProviderRoute, ResponseFormat, RoutingMode, effective_response_format,
 };
 use super::error::{LlmError, LlmErrorKind};
 use super::profiles::profile_by_id;
@@ -39,7 +40,7 @@ fn connection_test_request(provider_id: &str, model: &str) -> LlmRequest {
         job_id: None,
         agent_run_id: None,
         job_chain: "connection-test".to_string(),
-        agent_role: super::domain::AgentRole::IntakeRouter,
+        target: AgentExecutionTarget::canonical(super::domain::AgentRole::IntakeRouter),
         stage: "connection_test".to_string(),
         system_prompt: "Responda de forma concisa.".to_string(),
         user_prompt: "Responda apenas OK.".to_string(),
@@ -196,10 +197,16 @@ impl ProviderRouter {
                 "Execução LLM cancelada.",
             ));
         }
-        let mode = RoutingMode::parse(&self.repository.routing_mode()?);
-        let bound_route = self.repository.resolve_route(
+        let mode = if matches!(&request.target, AgentExecutionTarget::FreeForm { .. }) {
+            // FreeForm API execution is explicitly bound per slot. It must never
+            // fall through to the global legacy provider/model configuration.
+            RoutingMode::On
+        } else {
+            RoutingMode::parse(&self.repository.routing_mode()?)
+        };
+        let bound_route = self.repository.resolve_route_for_target(
             &request.project_id,
-            request.agent_role,
+            &request.target,
             &request.stage,
         )?;
         let bound_targets = self.repository.resolved_targets(&bound_route.id)?;
@@ -268,7 +275,7 @@ impl ProviderRouter {
         };
         let missing_credential_error = attempt_targets.iter().find_map(|target| {
             (execution_gates
-                .get(target.connection.id.as_str())
+                .get(&runtime_target_key(target))
                 .is_some_and(|reason| reason == "missing_api_key"))
             .then(|| {
                 LlmError::new(LlmErrorKind::MissingApiKey, "Conexão sem API key.").with_target(
@@ -282,8 +289,7 @@ impl ProviderRouter {
                 )
             })
         });
-        attempt_targets
-            .retain(|target| !execution_gates.contains_key(target.connection.id.as_str()));
+        attempt_targets.retain(|target| !execution_gates.contains_key(&runtime_target_key(target)));
         apply_runtime_gates_to_decision(&mut decision, &decision_gates);
 
         self.repository.create_execution(
@@ -293,7 +299,7 @@ impl ProviderRouter {
             request.pulsation_id.as_deref(),
             request.job_id.as_deref(),
             &execution_route,
-            request.agent_role,
+            &request.target,
             &request.stage,
             mode.as_str(),
             &decision,
@@ -306,7 +312,7 @@ impl ProviderRouter {
                 project_id: request.project_id.clone(),
                 pulsation_id: request.pulsation_id.clone(),
                 job_id: request.job_id.clone(),
-                agent_role: request.agent_role,
+                target: request.target.clone(),
                 stage: request.stage.clone(),
             },
         );
@@ -366,7 +372,7 @@ impl ProviderRouter {
         let route_deadline = request
             .deadline
             .min(Instant::now() + Duration::from_millis(execution_route.route_timeout_ms));
-        let is_learning = request.agent_role == super::AgentRole::LearningAgent;
+        let is_learning = request.target.agent_role() == Some(super::AgentRole::LearningAgent);
         let mut max_attempts = if mode == RoutingMode::On && !is_learning {
             execution_route.max_attempts.min(3) as usize
         } else {
@@ -871,12 +877,12 @@ impl ProviderRouter {
         targets: &[ResolvedRouteTarget],
         request: &LlmRequest,
         enforce_capabilities: bool,
-    ) -> Result<HashMap<String, String>, LlmError> {
+    ) -> Result<RuntimeGates, LlmError> {
         let mut gates = HashMap::new();
         for target in targets {
             let Some(profile) = profile_by_id(target.connection.provider_id.as_str()) else {
                 gates.insert(
-                    target.connection.id.0.clone(),
+                    runtime_target_key(target),
                     "provider_profile_missing".to_string(),
                 );
                 continue;
@@ -887,32 +893,23 @@ impl ProviderRouter {
                     .get(&target.connection.credential_ref)?
                     .is_none()
             {
-                gates.insert(
-                    target.connection.id.0.clone(),
-                    "missing_api_key".to_string(),
-                );
+                gates.insert(runtime_target_key(target), "missing_api_key".to_string());
                 continue;
             }
             if enforce_capabilities {
-                let capability_gate = if request.stream && !profile.capabilities.streaming {
-                    Some("capability_streaming")
+                let model = if target.target.model_id.trim().is_empty() {
+                    target.connection.default_model.as_str()
                 } else {
-                    match &request.response_format {
-                        ResponseFormat::Text => None,
-                        ResponseFormat::JsonObject
-                            if !profile.capabilities.json_object
-                                && !profile.capabilities.json_schema =>
-                        {
-                            Some("capability_json_object")
-                        }
-                        ResponseFormat::JsonSchema { .. } if !profile.capabilities.json_schema => {
-                            Some("capability_json_schema")
-                        }
-                        _ => None,
-                    }
+                    target.target.model_id.as_str()
                 };
+                let capability_gate = capability_gate_reason(
+                    &profile,
+                    target.connection.provider_id.as_str(),
+                    model,
+                    request,
+                );
                 if let Some(reason) = capability_gate {
-                    gates.insert(target.connection.id.0.clone(), reason.to_string());
+                    gates.insert(runtime_target_key(target), reason.to_string());
                 }
             }
         }
@@ -1031,6 +1028,46 @@ impl ProviderRouter {
     }
 }
 
+fn capability_gate_reason(
+    profile: &super::profiles::ProviderProfile,
+    provider_id: &str,
+    model_id: &str,
+    request: &LlmRequest,
+) -> Option<&'static str> {
+    if request.stream && !profile.capabilities.streaming {
+        return Some("capability_streaming");
+    }
+
+    let response_format = effective_response_format(request, profile);
+    let profile_gate = match &response_format {
+        ResponseFormat::Text => None,
+        ResponseFormat::JsonObject
+            if !profile.capabilities.json_object && !profile.capabilities.json_schema =>
+        {
+            Some("capability_json_object")
+        }
+        ResponseFormat::JsonSchema { .. } if !profile.capabilities.json_schema => {
+            Some("capability_json_schema")
+        }
+        _ => None,
+    };
+    if profile_gate.is_some() {
+        return profile_gate;
+    }
+
+    // OpenRouter capabilities vary by model. Unknown models cannot opt into
+    // structured routes without a reviewed catalog entry. Other providers keep
+    // their existing profile-level JSON-object behavior.
+    if provider_id == "openrouter" && response_format.requires_structured_output() {
+        match model_entry(provider_id, model_id) {
+            None => return Some("model_not_in_catalog"),
+            Some(model) if !model.structured_output => return Some("capability_structured_output"),
+            _ => {}
+        }
+    }
+    None
+}
+
 struct NoopDeltaSink;
 
 impl TokenDeltaSink for NoopDeltaSink {
@@ -1067,21 +1104,41 @@ fn ordered_targets(
     Ok(ordered)
 }
 
+type RuntimeGates = HashMap<(String, String), String>;
+
+fn runtime_target_key(target: &ResolvedRouteTarget) -> (String, String) {
+    (
+        target.connection.id.0.clone(),
+        if target.target.model_id.trim().is_empty() {
+            target.connection.default_model.clone()
+        } else {
+            target.target.model_id.clone()
+        },
+    )
+}
+
 fn apply_runtime_gates_to_decision(
     decision: &mut super::domain::RouteDecision,
-    gates: &HashMap<String, String>,
+    gates: &RuntimeGates,
 ) {
     for candidate in &mut decision.candidates {
         if candidate.eligible
-            && let Some(reason) = gates.get(&candidate.connection_id)
+            && let Some(reason) =
+                gates.get(&(candidate.connection_id.clone(), candidate.model_id.clone()))
         {
             candidate.eligible = false;
             candidate.gate_reason = Some(reason.clone());
         }
     }
-    decision
-        .ordered_targets
-        .retain(|target| !gates.contains_key(&target.connection_id));
+    decision.ordered_targets.retain(|target| {
+        // Candidate models have already resolved any default-model fallback.
+        !decision.candidates.iter().any(|candidate| {
+            candidate.position == target.position
+                && candidate.connection_id == target.connection_id
+                && gates
+                    .contains_key(&(candidate.connection_id.clone(), candidate.model_id.clone()))
+        })
+    });
     decision.selected_connection_id = decision
         .ordered_targets
         .first()
@@ -1098,7 +1155,7 @@ fn affinity_hash(request: &LlmRequest) -> String {
     hasher.update(b"\0");
     hasher.update(request.pulsation_id.as_deref().unwrap_or("").as_bytes());
     hasher.update(b"\0");
-    hasher.update(request.agent_role.as_str().as_bytes());
+    hasher.update(request.target.stable_key().as_bytes());
     hasher.update(b"\0");
     hasher.update(request.job_chain.as_bytes());
     format!("{:x}", hasher.finalize())
@@ -1234,7 +1291,7 @@ impl BatchingDeltaSink {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        (!state.visible.is_empty()).then(|| state.visible.clone())
+        (!state.visible.is_empty()).then(|| redact(&state.visible))
     }
 }
 
@@ -1285,8 +1342,10 @@ fn flush_delta_state(
         (std::mem::take(&mut state.pending), state.visible.clone())
     };
     if !delta.is_empty() {
-        let _ = repository.update_visible_output(execution_id, &visible);
-        emitter.emit(LlmStreamEvent::TokenDelta { text: delta });
+        let _ = repository.update_visible_output(execution_id, &redact(&visible));
+        emitter.emit(LlmStreamEvent::TokenDelta {
+            text: redact(&delta),
+        });
     }
 }
 
@@ -1315,7 +1374,7 @@ mod tests {
             job_id: Some("j".into()),
             agent_run_id: None,
             job_chain: "chain".into(),
-            agent_role: AgentRole::Integrator,
+            target: AgentExecutionTarget::canonical(AgentRole::Integrator),
             stage: "Integrator".into(),
             system_prompt: String::new(),
             user_prompt: String::new(),
@@ -1332,5 +1391,159 @@ mod tests {
         let mut changed = request.clone();
         changed.project_id = "other".into();
         assert_ne!(affinity_hash(&request), affinity_hash(&changed));
+    }
+
+    #[test]
+    fn model_capability_gate_rejects_structured_output_for_incompatible_openrouter_models() {
+        let profile = profile_by_id("openrouter").unwrap();
+        let mut request = LlmRequest {
+            execution_id: ExecutionId::new("e"),
+            generation_id: GenerationId::new("g"),
+            project_id: "p".into(),
+            pulsation_id: None,
+            job_id: None,
+            agent_run_id: None,
+            job_chain: "chain".into(),
+            target: AgentExecutionTarget::canonical(AgentRole::BackendAgent),
+            stage: "Code".into(),
+            system_prompt: String::new(),
+            user_prompt: String::new(),
+            response_format: ResponseFormat::JsonSchema {
+                name: "fixture".into(),
+                schema: serde_json::json!({"type":"object"}),
+            },
+            max_output_tokens: 10,
+            temperature: 0.0,
+            deadline: Instant::now() + Duration::from_secs(1),
+            stream: false,
+            legacy_provider: "openrouter".into(),
+            legacy_model: "openrouter/free".into(),
+            dispatch: DispatchPolicy::default(),
+        };
+        assert_eq!(
+            capability_gate_reason(
+                &profile,
+                "openrouter",
+                "cohere/north-mini-code:free",
+                &request,
+            ),
+            Some("capability_structured_output")
+        );
+        assert_eq!(
+            capability_gate_reason(&profile, "openrouter", "openrouter/free", &request),
+            None
+        );
+        assert_eq!(
+            capability_gate_reason(&profile, "openrouter", "unknown/model", &request),
+            Some("model_not_in_catalog")
+        );
+        for model in [
+            "cohere/north-mini-code:free",
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+        ] {
+            assert_eq!(
+                capability_gate_reason(&profile, "openrouter", model, &request),
+                Some("capability_structured_output")
+            );
+        }
+
+        request.response_format = ResponseFormat::JsonObject;
+        assert_eq!(
+            capability_gate_reason(
+                &profile,
+                "openrouter",
+                "cohere/north-mini-code:free",
+                &request
+            ),
+            Some("capability_structured_output")
+        );
+        for provider in ["ollama", "deepseek", "groq"] {
+            let existing = profile_by_id(provider).unwrap();
+            assert_eq!(
+                capability_gate_reason(&existing, provider, &existing.default_model, &request),
+                None,
+                "{provider} must retain JSON-object support"
+            );
+        }
+
+        request.response_format = ResponseFormat::Text;
+        assert_eq!(
+            capability_gate_reason(
+                &profile,
+                "openrouter",
+                "cohere/north-mini-code:free",
+                &request,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn openrouter_model_gate_preserves_other_models_on_the_same_connection() {
+        use super::super::domain::{
+            CandidateDecision, ResolvedConnection, RouteDecision, RouteTarget,
+        };
+        let targets = ["cohere/north-mini-code:free", "openrouter/free"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, model)| RouteTarget {
+                position: index as u32,
+                connection_id: "shared-openrouter".into(),
+                model_id: model.into(),
+                enabled: true,
+            })
+            .collect::<Vec<_>>();
+        let mut decision = RouteDecision {
+            route_id: "structured-route".into(),
+            strategy: "priority".into(),
+            affinity_hash: "fixture".into(),
+            candidates: targets
+                .iter()
+                .map(|target| CandidateDecision {
+                    position: target.position,
+                    connection_id: target.connection_id.clone(),
+                    provider_id: "openrouter".into(),
+                    model_id: target.model_id.clone(),
+                    eligible: true,
+                    gate_reason: None,
+                    score: None,
+                    score_factors: None,
+                })
+                .collect(),
+            ordered_targets: targets.clone(),
+            selected_connection_id: Some(targets[0].connection_id.clone()),
+            selected_model_id: Some(targets[0].model_id.clone()),
+        };
+        let resolved = ResolvedRouteTarget {
+            provider_local: false,
+            target: targets[0].clone(),
+            connection: ResolvedConnection {
+                id: "shared-openrouter".into(),
+                provider_id: "openrouter".into(),
+                credential_ref: "fixture".into(),
+                endpoint_url: profile_by_id("openrouter").unwrap().endpoint,
+                default_model: "openrouter/free".into(),
+                enabled: true,
+                state: "active".into(),
+                cooldown_until: None,
+                backoff_level: 0,
+                max_concurrency: 1,
+            },
+        };
+        let gates = HashMap::from([(
+            runtime_target_key(&resolved),
+            "capability_structured_output".into(),
+        )]);
+        apply_runtime_gates_to_decision(&mut decision, &gates);
+        assert!(!decision.candidates[0].eligible);
+        assert!(decision.candidates[1].eligible);
+        assert_eq!(decision.ordered_targets.len(), 1);
+        assert_eq!(
+            decision.selected_model_id.as_deref(),
+            Some("openrouter/free")
+        );
+        let mut default_target = resolved;
+        default_target.target.model_id.clear();
+        assert!(!gates.contains_key(&runtime_target_key(&default_target)));
     }
 }

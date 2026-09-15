@@ -8,6 +8,7 @@ use crate::pulsations::{
     PIPELINE_STAGES, PulsationDetailSection, STATUS_GROUPS, stage_label, status_group_id,
     status_label,
 };
+use crate::sizing::StyledExt;
 use crate::theme;
 
 pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
@@ -220,6 +221,77 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
             let backend_override = model.pulsations.read(cx).backend_override.clone();
             let backend_override_busy = model.pulsations.read(cx).backend_override_busy;
             panel
+                .child(
+                    div()
+                        .id("pulsation-section-tabs")
+                        .debug_selector(|| "pulsation-section-tabs".into())
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .flex_wrap()
+                        .gap_2()
+                        .children(
+                            [
+                                (
+                                    PulsationDetailSection::Review,
+                                    "pulsation-review",
+                                    if review_pending {
+                                        "Review · pending"
+                                    } else {
+                                        "Review"
+                                    },
+                                ),
+                                (
+                                    PulsationDetailSection::Overview,
+                                    "pulsation-overview",
+                                    "Overview",
+                                ),
+                                (
+                                    PulsationDetailSection::Preparation,
+                                    "pulsation-preparation",
+                                    if preparation_pending {
+                                        "Preparation · pending"
+                                    } else {
+                                        "Preparation"
+                                    },
+                                ),
+                                (
+                                    PulsationDetailSection::Artifacts,
+                                    "pulsation-artifacts",
+                                    "Artifacts",
+                                ),
+                            ]
+                            .into_iter()
+                            .map(|(target, id, label)| {
+                                div()
+                                    .id(id)
+                                    .debug_selector(move || id.into())
+                                    .px_3()
+                                    .py_2()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_sm()
+                                    .bg(if section == target {
+                                        theme::accent_soft()
+                                    } else {
+                                        theme::surface_raised()
+                                    })
+                                    .text_color(if section == target {
+                                        theme::accent()
+                                    } else {
+                                        theme::text_muted()
+                                    })
+                                    .on_click(cx.listener(move |model, _, _, cx| {
+                                        model
+                                            .pulsations
+                                            .update(cx, |state, _| state.detail_section = target);
+                                        cx.notify();
+                                    }))
+                                    .child(label)
+                            }),
+                        ),
+                )
                 .when(section != PulsationDetailSection::Review, |panel| {
                     panel.child(
                         div()
@@ -234,68 +306,6 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                             .child(pipeline(active.stage)),
                     )
                 })
-                .child(
-                    div().flex().flex_wrap().flex_shrink_0().gap_2().children(
-                        [
-                            (
-                                PulsationDetailSection::Review,
-                                "pulsation-review",
-                                if review_pending {
-                                    "Review · pending"
-                                } else {
-                                    "Review"
-                                },
-                            ),
-                            (
-                                PulsationDetailSection::Overview,
-                                "pulsation-overview",
-                                "Overview",
-                            ),
-                            (
-                                PulsationDetailSection::Preparation,
-                                "pulsation-preparation",
-                                if preparation_pending {
-                                    "Preparation · pending"
-                                } else {
-                                    "Preparation"
-                                },
-                            ),
-                            (
-                                PulsationDetailSection::Artifacts,
-                                "pulsation-artifacts",
-                                "Artifacts",
-                            ),
-                        ]
-                        .into_iter()
-                        .map(|(target, id, label)| {
-                            div()
-                                .id(id)
-                                .debug_selector(move || id.into())
-                                .px_3()
-                                .py_2()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .text_sm()
-                                .bg(if section == target {
-                                    theme::accent_soft()
-                                } else {
-                                    theme::surface_raised()
-                                })
-                                .text_color(if section == target {
-                                    theme::accent()
-                                } else {
-                                    theme::text_muted()
-                                })
-                                .on_click(cx.listener(move |model, _, _, cx| {
-                                    model
-                                        .pulsations
-                                        .update(cx, |state, _| state.detail_section = target);
-                                    cx.notify();
-                                }))
-                                .child(label)
-                        }),
-                    ),
-                )
                 .child(
                     div()
                         .id("pulsation-section-scroll")
@@ -366,6 +376,10 @@ fn detail_overview(
     div()
         .when_some(coverage, |panel, coverage| {
             panel.child(brownfield_progress_panel(coverage))
+        })
+        // Undoing a failed pulsation's files comes before adopting the base.
+        .when(active.status == PulsationStatus::Failed, |panel| {
+            panel.child(cleanup_panel(model, cx))
         })
         .child(coordination_panel(model, cx))
         .child(composition_panel(model, cx))
@@ -988,6 +1002,8 @@ fn preparation_button(
     div()
         .id(id)
         .debug_selector(move || id.into())
+        .self_start()
+        .flex_shrink_0()
         .p_2()
         .rounded_md()
         .tab_index(0)
@@ -1013,6 +1029,8 @@ fn learning_decision_button(
 ) -> impl IntoElement {
     div()
         .id(gpui::SharedString::from(id))
+        .self_start()
+        .flex_shrink_0()
         .px_3()
         .py_2()
         .rounded_md()
@@ -1261,13 +1279,133 @@ fn coordination_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElemen
                     .when_some(p.diagnostic,|row,error|row.child(div().text_xs().text_color(theme::danger()).child(error)))
                     .when_some(p.observation_error,|row,error|row.child(div().text_xs().text_color(theme::danger()).child(error)))
             }))
-            .child(div().mt_2().child(input))
+            .child(crate::sizing::text_area(input).mt_2())
             .child(div().mt_2().flex().gap_2()
                 .child(div().id("refresh-base-review").p_2().cursor_pointer().bg(theme::surface_raised())
                     .on_click(cx.listener(|m,_,_,cx|m.refresh_pulsations(cx))).child("Refresh review"))
                 .child(div().id("confirm-base-review").p_2().bg(if can_confirm {theme::accent_soft()} else {theme::surface_raised()})
                     .when(can_confirm,|b|b.cursor_pointer().on_click(cx.listener(|m,_,_,cx|m.reconcile_project_base(cx))))
                     .child("Reviewed: adopt current base"))))
+        .into_any_element()
+}
+
+/// "Leftover files" of a failed pulsation: the host's dry run of what the
+/// cleanup would remove (files the pulsation itself created and never edited
+/// since) and what it deliberately keeps. Removal takes two clicks and never
+/// touches kept files; the base review stays the explicit step afterwards.
+fn cleanup_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    use hvc_core::orchestration::CleanupDisposition;
+    let state = model.pulsations.read(cx);
+    let cleanup = &state.cleanup;
+    let plan = cleanup.plan.clone();
+    let loading = cleanup.loading;
+    let busy = cleanup.busy;
+    let armed = cleanup.armed;
+    let can_remove = cleanup.can_remove();
+    let error = cleanup.error.clone();
+    let removable = plan.as_ref().map_or(0, |plan| plan.removable_files());
+    let kept = plan.as_ref().map_or(0, |plan| plan.kept_files());
+    let summary = match &plan {
+        _ if loading && plan.is_none() => "Reading the workspace…".to_string(),
+        Some(plan) if plan.is_noop() && plan.entries.is_empty() => {
+            "Nothing left on disk from this pulsation.".to_string()
+        }
+        Some(plan) => format!(
+            "This pulsation published {} file(s): {} can be removed, {} kept.",
+            plan.entries.len(),
+            removable,
+            kept
+        ),
+        None => "Preview unavailable.".to_string(),
+    };
+    let remove_label = if busy {
+        "Removing…".to_string()
+    } else if armed {
+        "Confirm removal".to_string()
+    } else {
+        format!("Remove {removable} file(s)")
+    };
+    div()
+        .id("pulsation-cleanup")
+        .debug_selector(|| "pulsation-cleanup".into())
+        .mb_3()
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(theme::border())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child("Leftover files"),
+        )
+        .child(div().text_sm().child(summary))
+        .when_some(plan.clone(), |card, plan| {
+            card.children(plan.entries.into_iter().map(|entry| {
+                let (label, color) = match entry.disposition {
+                    CleanupDisposition::Remove => ("will be removed", theme::danger()),
+                    CleanupDisposition::AlreadyAbsent => ("already gone", theme::text_muted()),
+                    CleanupDisposition::KeepPreexisting => {
+                        ("kept: existed before this pulsation", theme::warning())
+                    }
+                    CleanupDisposition::KeepEdited => {
+                        ("kept: edited after publication", theme::warning())
+                    }
+                    CleanupDisposition::KeepUnreadable => ("kept: unreadable", theme::warning()),
+                };
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(theme::surface_raised())
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_x_2()
+                    .child(div().text_sm().child(entry.relative_path))
+                    .child(div().text_xs().text_color(color).child(label))
+                    .when_some(entry.detail, |row, detail| {
+                        row.child(div().text_xs().text_color(theme::text_muted()).child(detail))
+                    })
+            }))
+            .when(!plan.candidate_dirs.is_empty(), |card| {
+                card.child(div().text_xs().text_color(theme::text_muted()).child(format!(
+                    "+ {} disposable staging dir(s) in app data",
+                    plan.candidate_dirs.len()
+                )))
+            })
+        })
+        .when_some(error, |card, error| {
+            card.child(div().text_xs().text_color(theme::danger()).child(error))
+        })
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(crate::widgets::btn(
+                    "pulsation-cleanup-remove",
+                    remove_label,
+                    crate::widgets::ButtonVariant::Danger,
+                    can_remove,
+                    cx,
+                    |model, cx| model.request_cleanup_failed_files(cx),
+                ))
+                .child(crate::widgets::btn(
+                    "pulsation-cleanup-refresh",
+                    if loading { "Refreshing…" } else { "Refresh" },
+                    crate::widgets::ButtonVariant::Secondary,
+                    !loading && !busy,
+                    cx,
+                    |model, cx| model.reload_cleanup_preview(cx),
+                )),
+        )
+        .child(div().text_xs().text_color(theme::text_muted()).child(
+            "Only files this pulsation created and never edited since are removed. Kept files stay in the base review; adopting the base remains an explicit step.",
+        ))
         .into_any_element()
 }
 

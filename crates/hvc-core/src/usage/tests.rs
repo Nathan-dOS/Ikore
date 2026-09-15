@@ -110,6 +110,54 @@ fn absent_usage_is_distinct_from_supplier_reported_zero() {
 }
 
 #[test]
+fn api_usage_is_attributed_to_the_persisted_canonical_or_free_form_target() {
+    let (_root, db) = database();
+    let connection_id: String = db.query_row(
+        "SELECT id FROM provider_connections ORDER BY id LIMIT 1",
+        [],
+        |row| row.get(0),
+    ).unwrap();
+    let route_id: String = db.query_row(
+        "SELECT id FROM provider_routes ORDER BY id LIMIT 1",
+        [],
+        |row| row.get(0),
+    ).unwrap();
+    db.execute(
+        "INSERT INTO llm_route_executions(
+            id,generation_id,project_id,route_id,agent_role,free_form_slot_id,
+            stage,strategy,mode,status,decision_json,started_at)
+         VALUES('execution-canonical','generation-canonical','project-a',?1,
+                'backend_agent',NULL,'Code','priority','on','completed','{}',?2),
+               ('execution-free-form','generation-free-form','project-a',?1,
+                NULL,'slot-api','FreeForm','priority','on','completed','{}',?2)",
+        params![route_id, "2026-09-09T10:00:00Z"],
+    ).unwrap();
+    for (attempt, execution, cost) in [
+        ("attempt-canonical", "execution-canonical", 0.001),
+        ("attempt-free-form", "execution-free-form", 0.0025),
+    ] {
+        db.execute(
+            "INSERT INTO llm_attempts(id,execution_id,ordinal,connection_id,provider_id,
+                    model_id,outcome,estimated_cost_usd,started_at)
+             VALUES(?1,?2,1,?3,'openai','fixture-model','success',?4,?5)",
+            params![attempt, execution, connection_id, cost, "2026-09-09T10:00:00Z"],
+        ).unwrap();
+        record_usage_on(&db, &context(attempt), "response", &measurement(10, 5)).unwrap();
+    }
+
+    let result = summary(&db);
+    assert_eq!(result.agent_targets.len(), 2);
+    let free_form = result.agent_targets.iter()
+        .find(|entry| entry.target_key == "free_form:slot-api")
+        .unwrap();
+    assert_eq!(free_form.attempts, 1);
+    assert_eq!(free_form.totals.total_tokens, Some(15));
+    assert_eq!(free_form.estimated_cost_usd_micros, Some(2_500));
+    assert!(result.agent_targets.iter()
+        .any(|entry| entry.target_key == "canonical:backend_agent"));
+}
+
+#[test]
 fn normalized_breakdowns_do_not_inflate_totals_and_invalid_counts_are_partial() {
     let (_root, db) = database();
     let normalized = UsageMeasurement {

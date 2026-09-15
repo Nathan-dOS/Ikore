@@ -286,6 +286,10 @@ pub struct UsageSummary {
     /// rows the totals count - a breakdown, never an addition.
     #[serde(default)]
     pub executors: Vec<ExecutorUsage>,
+    /// API attempts attributed to their persisted canonical or FreeForm target.
+    /// This is a breakdown of the same ledger rows included in `totals`.
+    #[serde(default)]
+    pub agent_targets: Vec<AgentTargetUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,6 +297,15 @@ pub struct UsageSummary {
 pub struct ExecutorUsage {
     pub executor_kind: String,
     pub attempts: i64,
+    pub totals: UsageTotals,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTargetUsage {
+    pub target_key: String,
+    pub attempts: i64,
+    pub estimated_cost_usd_micros: Option<i64>,
     pub totals: UsageTotals,
 }
 
@@ -509,6 +522,32 @@ fn query_usage_at(
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let agent_targets = transaction
+        .prepare(&format!(
+            "SELECT target_key,COUNT(DISTINCT source_id),{TOTALS_SQL},
+                    CAST(ROUND(SUM(estimated_cost_usd) * 1000000.0) AS INTEGER)
+             FROM (
+               SELECT r.*,
+                 CASE WHEN e.free_form_slot_id IS NOT NULL
+                   THEN 'free_form:' || e.free_form_slot_id
+                   ELSE 'canonical:' || e.agent_role END AS target_key,
+                 a.estimated_cost_usd
+               FROM token_usage_records r
+               JOIN llm_attempts a ON r.source_kind='llm_attempt' AND r.source_id=a.id
+               JOIN llm_route_executions e ON e.id=a.execution_id
+             )
+             WHERE {FILTER_SQL} AND target_key IS NOT NULL
+             GROUP BY target_key ORDER BY SUM(total_tokens) DESC,target_key"
+        ))?
+        .query_map(args, |row| {
+            Ok(AgentTargetUsage {
+                target_key: row.get(0)?,
+                attempts: row.get(1)?,
+                totals: read_totals(row, 2)?,
+                estimated_cost_usd_micros: row.get(11)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     transaction.commit()?;
     Ok(UsageSummary {
         pulsations,
@@ -518,6 +557,7 @@ fn query_usage_at(
         series,
         projects,
         executors,
+        agent_targets,
     })
 }
 

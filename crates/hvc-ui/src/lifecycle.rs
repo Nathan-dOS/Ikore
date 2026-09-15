@@ -1,3 +1,45 @@
+/// Coalesces immutable revision reads without cancelling a worker already in flight.
+#[derive(Debug, Default)]
+pub(crate) struct RevisionRead {
+    desired: Option<String>,
+    running: Option<String>,
+    loaded: Option<String>,
+    invalidated: bool,
+}
+
+impl RevisionRead {
+    pub fn want(&mut self, key: String) {
+        self.desired = Some(key);
+    }
+
+    pub fn invalidate(&mut self) {
+        self.loaded = None;
+        self.invalidated = true;
+    }
+
+    pub fn begin(&mut self) -> Option<String> {
+        if self.running.is_some() || self.loaded == self.desired {
+            return None;
+        }
+        let key = self.desired.clone()?;
+        self.invalidated = false;
+        self.running = Some(key.clone());
+        Some(key)
+    }
+
+    pub fn finish(&mut self, key: &str, success: bool) -> bool {
+        if self.running.as_deref() != Some(key) {
+            return false;
+        }
+        self.running = None;
+        let current = self.desired.as_deref() == Some(key) && !self.invalidated;
+        if success && current {
+            self.loaded = Some(key.to_owned());
+        }
+        current
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct LifecycleState {
     disposed: bool,
@@ -54,6 +96,24 @@ impl LifecycleState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revision_reads_coalesce_navigation_and_discard_outdated_results() {
+        let mut read = RevisionRead::default();
+        read.want("project-a/pulse-1/r1".into());
+        let old = read.begin().unwrap();
+        read.want("project-b/pulse-2/r2".into());
+        assert!(read.begin().is_none());
+        assert!(!read.finish(&old, true));
+        let current = read.begin().unwrap();
+        assert!(read.finish(&current, true));
+        assert!(read.begin().is_none());
+        read.invalidate();
+        let stale = read.begin().unwrap();
+        read.invalidate();
+        assert!(!read.finish(&stale, true));
+        assert!(read.begin().is_some());
+    }
 
     #[test]
     fn polls_without_overlap_and_disposes_resources() {

@@ -10,7 +10,8 @@ use super::catalog::{model_entry, model_price_basis};
 use super::compression::CompressionPreview;
 use super::credentials::CredentialStore;
 use super::domain::{
-    AgentRole, CandidateDecision, ProviderConnection, ProviderRoute, ProviderRouteBinding,
+    AgentExecutionTarget, AgentRole, CandidateDecision, FreeFormProviderRouteBinding,
+    LlmExecutionListItem, ProviderConnection, ProviderRoute, ProviderRouteBinding,
     ResolvedConnection, RouteDecision, RouteTarget,
 };
 use super::error::{LlmError, LlmErrorKind};
@@ -99,6 +100,16 @@ pub struct UpsertProviderRouteBindingRequest {
     pub project_id: String,
     pub agent_role: String,
     pub stage: String,
+    pub route_id: String,
+    pub enabled: Option<bool>,
+    pub version: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpsertFreeFormProviderRouteBindingRequest {
+    pub project_id: String,
+    pub slot_id: String,
     pub route_id: String,
     pub enabled: Option<bool>,
     pub version: Option<u64>,
@@ -422,6 +433,12 @@ impl SqliteLlmRepository {
         }
         let display_name = non_empty(&request.display_name, "displayName")?;
         let default_model = non_empty(&request.default_model, "defaultModel")?;
+        if profile.id == "openrouter" && model_entry(&profile.id, default_model).is_none() {
+            return Err(LlmError::new(
+                LlmErrorKind::InvalidRequest,
+                "OpenRouter model ID is not in the curated catalog.",
+            ));
+        }
         let endpoint_url = if profile.endpoint_configurable {
             let resolved = profile.resolved_endpoint(request.endpoint_url.as_deref())?;
             Some(
@@ -856,6 +873,131 @@ impl SqliteLlmRepository {
             })
     }
 
+    pub fn list_free_form_bindings(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<FreeFormProviderRouteBinding>, LlmError> {
+        let project_id = non_empty(project_id, "projectId")?;
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT project_id,slot_id,route_id,enabled,version,created_at,updated_at
+                 FROM free_form_provider_route_bindings
+                 WHERE project_id=?1 ORDER BY slot_id",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(FreeFormProviderRouteBinding {
+                    project_id: row.get(0)?,
+                    slot_id: row.get(1)?,
+                    route_id: row.get(2)?,
+                    enabled: row.get(3)?,
+                    version: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })
+            .map_err(db_error)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_error)
+    }
+
+    pub fn upsert_free_form_binding(
+        &self,
+        request: UpsertFreeFormProviderRouteBindingRequest,
+    ) -> Result<FreeFormProviderRouteBinding, LlmError> {
+        let project_id = non_empty(&request.project_id, "projectId")?;
+        let slot_id = non_empty(&request.slot_id, "slotId")?;
+        let route_id = non_empty(&request.route_id, "routeId")?;
+        let mut db = self.connection()?;
+        let connection = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        let valid_slot: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM terminal_slots
+                 WHERE id=?1 AND project_id=?2 AND kind='free_form')",
+                params![slot_id, project_id],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        if !valid_slot {
+            return Err(LlmError::new(
+                LlmErrorKind::InvalidRequest,
+                "FreeForm slot does not belong to this project.",
+            ));
+        }
+        let valid_route: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM provider_routes WHERE id=?1)",
+                params![route_id],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        if !valid_route {
+            return Err(LlmError::new(
+                LlmErrorKind::InvalidRequest,
+                "FreeForm binding references an unknown route.",
+            ));
+        }
+        let actual = connection
+            .query_row(
+                "SELECT version FROM free_form_provider_route_bindings
+                 WHERE project_id=?1 AND slot_id=?2",
+                params![project_id, slot_id],
+                |row| row.get::<_, u64>(0),
+            )
+            .optional()
+            .map_err(db_error)?;
+        let now = Utc::now().to_rfc3339();
+        if let Some(actual) = actual {
+            let expected = request.version.ok_or_else(|| version_conflict(0, actual))?;
+            if expected != actual {
+                return Err(version_conflict(expected, actual));
+            }
+            connection
+                .execute(
+                    "UPDATE free_form_provider_route_bindings
+                     SET route_id=?1,enabled=?2,version=version+1,updated_at=?3
+                     WHERE project_id=?4 AND slot_id=?5 AND version=?6",
+                    params![
+                        route_id,
+                        request.enabled.unwrap_or(true),
+                        now,
+                        project_id,
+                        slot_id,
+                        expected
+                    ],
+                )
+                .map_err(db_error)?;
+        } else {
+            connection
+                .execute(
+                    "INSERT INTO free_form_provider_route_bindings
+                     (project_id,slot_id,route_id,enabled,version,created_at,updated_at)
+                     VALUES (?1,?2,?3,?4,1,?5,?5)",
+                    params![
+                        project_id,
+                        slot_id,
+                        route_id,
+                        request.enabled.unwrap_or(true),
+                        now
+                    ],
+                )
+                .map_err(db_error)?;
+        }
+        connection.commit().map_err(db_error)?;
+        self.list_free_form_bindings(project_id)?
+            .into_iter()
+            .find(|binding| binding.slot_id == slot_id)
+            .ok_or_else(|| {
+                LlmError::new(
+                    LlmErrorKind::Persistence,
+                    "Saved FreeForm binding was not found.",
+                )
+            })
+    }
+
     fn find_raw_connection(&self, id: &str) -> Result<Option<(u64, String, String)>, LlmError> {
         self.connection()?
             .query_row(
@@ -888,15 +1030,15 @@ impl SqliteLlmRepository {
         pulsation_id: Option<&str>,
         job_id: Option<&str>,
         route: &ProviderRoute,
-        role: AgentRole,
+        target: &AgentExecutionTarget,
         stage: &str,
         mode: &str,
         decision: &RouteDecision,
     ) -> Result<(), LlmError> {
         self.connection()?.execute(
-            "INSERT INTO llm_route_executions (id,generation_id,project_id,pulsation_id,job_id,route_id,agent_role,stage,strategy,mode,status,decision_json,started_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'running',?11,?12)",
-            params![execution_id,generation_id,project_id,pulsation_id,job_id,route.id,role.as_str(),stage,route.strategy,mode,serde_json::to_string(decision).unwrap_or_else(|_|"{}".to_string()),Utc::now().to_rfc3339()]
+            "INSERT INTO llm_route_executions (id,generation_id,project_id,pulsation_id,job_id,route_id,agent_role,free_form_slot_id,stage,strategy,mode,status,decision_json,started_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'running',?12,?13)",
+            params![execution_id,generation_id,project_id,pulsation_id,job_id,route.id,target.agent_role().map(AgentRole::as_str),target.free_form_slot_id(),stage,route.strategy,mode,serde_json::to_string(decision).unwrap_or_else(|_|"{}".to_string()),Utc::now().to_rfc3339()]
         ).map_err(db_error)?;
         Ok(())
     }
@@ -1335,6 +1477,140 @@ impl SqliteLlmRepository {
             )
             .map_err(db_error)?;
         Ok(())
+    }
+
+    pub fn resolve_route_for_target(
+        &self,
+        project_id: &str,
+        target: &AgentExecutionTarget,
+        stage: &str,
+    ) -> Result<ProviderRoute, LlmError> {
+        match target {
+            AgentExecutionTarget::Canonical { agent_role } => {
+                <Self as LlmRepository>::resolve_route(self, project_id, *agent_role, stage)
+            }
+            AgentExecutionTarget::FreeForm { slot_id } => {
+                let connection = self.connection()?;
+                let valid_slot: bool = connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM terminal_slots
+                         WHERE id=?1 AND project_id=?2 AND kind='free_form' AND archived=0)",
+                        params![slot_id, project_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(db_error)?;
+                if !valid_slot {
+                    return Err(LlmError::new(
+                        LlmErrorKind::InvalidRequest,
+                        "FreeForm slot does not belong to this project or is archived.",
+                    ));
+                }
+                let route_id = connection
+                    .query_row(
+                        "SELECT route_id FROM free_form_provider_route_bindings
+                         WHERE project_id=?1 AND slot_id=?2 AND enabled=1",
+                        params![project_id, slot_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(db_error)?
+                    .ok_or_else(|| {
+                        LlmError::new(
+                            LlmErrorKind::InvalidRequest,
+                            "Configure an API route for this FreeForm agent before sending.",
+                        )
+                    })?;
+                self.list_routes()?
+                    .into_iter()
+                    .find(|route| route.id == route_id && route.enabled)
+                    .ok_or_else(|| {
+                        LlmError::new(
+                            LlmErrorKind::InvalidRequest,
+                            "The FreeForm agent route is missing or disabled.",
+                        )
+                    })
+            }
+        }
+    }
+
+    pub fn list_executions_for_target(
+        &self,
+        project_id: &str,
+        target: &AgentExecutionTarget,
+        limit: usize,
+    ) -> Result<Vec<LlmExecutionListItem>, LlmError> {
+        let project_id = non_empty(project_id, "projectId")?;
+        let limit = limit.clamp(1, 50) as i64;
+        let connection = self.connection()?;
+        let (predicate, target_value) = match target {
+            AgentExecutionTarget::Canonical { agent_role } => {
+                ("agent_role=?2 AND free_form_slot_id IS NULL", agent_role.as_str())
+            }
+            AgentExecutionTarget::FreeForm { slot_id } => {
+                ("agent_role IS NULL AND free_form_slot_id=?2", slot_id.as_str())
+            }
+        };
+        let sql = format!(
+            "SELECT id,generation_id,agent_role,free_form_slot_id,route_id,stage,status,
+                    visible_output,visible_output_complete,started_at,finished_at
+             FROM llm_route_executions
+             WHERE project_id=?1 AND {predicate}
+             ORDER BY started_at DESC LIMIT ?3"
+        );
+        let mut statement = connection.prepare(&sql).map_err(db_error)?;
+        let rows = statement
+            .query_map(params![project_id, target_value, limit], |row| {
+                let role: Option<String> = row.get(2)?;
+                let slot_id: Option<String> = row.get(3)?;
+                let target = match (role.as_deref().and_then(AgentRole::parse), slot_id) {
+                    (Some(agent_role), None) => AgentExecutionTarget::canonical(agent_role),
+                    (None, Some(slot_id)) => AgentExecutionTarget::free_form(slot_id),
+                    _ => return Err(rusqlite::Error::InvalidQuery),
+                };
+                Ok(LlmExecutionListItem {
+                    execution_id: row.get(0)?,
+                    generation_id: row.get(1)?,
+                    target,
+                    route_id: row.get(4)?,
+                    stage: row.get(5)?,
+                    status: row.get(6)?,
+                    visible_output: row.get(7)?,
+                    visible_output_complete: row.get(8)?,
+                    started_at: row.get(9)?,
+                    finished_at: row.get(10)?,
+                })
+            })
+            .map_err(db_error)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_error)
+    }
+
+    pub fn execution_belongs_to_target(
+        &self,
+        project_id: &str,
+        target: &AgentExecutionTarget,
+        execution_id: &str,
+    ) -> Result<bool, LlmError> {
+        let project_id = non_empty(project_id, "projectId")?;
+        let execution_id = non_empty(execution_id, "executionId")?;
+        let connection = self.connection()?;
+        let found = match target {
+            AgentExecutionTarget::Canonical { agent_role } => connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM llm_route_executions
+                 WHERE id=?1 AND project_id=?2 AND agent_role=?3
+                   AND free_form_slot_id IS NULL)",
+                params![execution_id, project_id, agent_role.as_str()],
+                |row| row.get(0),
+            ),
+            AgentExecutionTarget::FreeForm { slot_id } => connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM llm_route_executions
+                 WHERE id=?1 AND project_id=?2 AND agent_role IS NULL
+                   AND free_form_slot_id=?3)",
+                params![execution_id, project_id, slot_id],
+                |row| row.get(0),
+            ),
+        }
+        .map_err(db_error)?;
+        Ok(found)
     }
 }
 

@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, Context, Focusable, IntoElement, KeyBinding, Render,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
+    AnyElement, App, Bounds, Context, Focusable, IntoElement, KeyBinding, Render, TitlebarOptions,
+    Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
 };
 use hvc_core::AppCore;
 use hvc_core::orchestration::IndexingEvent;
@@ -226,139 +226,169 @@ fn header(
                 .h(px(58.0))
                 .flex()
                 .items_center()
-                .gap_4()
                 .px_5()
-                .children(AppTab::ALL.into_iter().map(|tab| {
-                    let selected = active != AppView::Settings && tab == active_tab;
-                    // Engine can show two counters side by side (reviews waiting take priority
-                    // visually via the warning color); Agent and Companion each get one.
-                    let pills: &[BadgePill] = match tab {
-                        AppTab::Engine => &[
-                            (
-                                badges.engine_awaiting_hitl,
-                                theme::warning_soft,
-                                theme::warning,
-                            ),
-                            (
-                                badges.engine_running_jobs,
-                                theme::accent_soft,
-                                theme::accent,
-                            ),
-                        ],
-                        AppTab::Agent => {
-                            &[(badges.agent_failed_runs, theme::danger_soft, theme::danger)]
-                        }
-                        AppTab::Companion => &[(
-                            badges.companion_streaming,
-                            theme::accent_soft,
-                            theme::accent,
-                        )],
-                    };
-                    div()
-                        .id(tab.id())
-                        .debug_selector(move || tab.id().into())
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_3()
-                        .py_2()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .bg(if selected {
-                            theme::accent_soft()
-                        } else {
-                            theme::surface()
-                        })
-                        .text_color(if selected {
-                            theme::accent()
-                        } else {
-                            theme::text_muted()
-                        })
-                        .hover(|style| style.bg(theme::surface_raised()))
-                        .on_click(cx.listener(move |model, _, _, cx| model.select_tab(tab, cx)))
-                        .child(tab.label())
-                        .children(pills.iter().filter(|(count, _, _)| *count > 0).map(
-                            |&(count, bg, fg)| {
-                                div()
-                                    .min_w(px(20.0))
-                                    .px_1()
-                                    .rounded_full()
-                                    .text_xs()
-                                    .bg(bg())
-                                    .text_color(fg())
-                                    .child(count.to_string())
-                            },
-                        ))
-                }))
-                .when(active_tab == AppTab::Engine, |header| {
-                    header.child(crate::forge_view::button(
+                .child(div().flex_1().min_w_0().flex().items_center().child(
+                    crate::forge_view::button(
                         "new-work",
                         "New",
                         crate::forge::ForgeAction::New(false),
                         cx,
-                    ))
-                })
+                    ),
+                ))
                 .child(
                     div()
-                        .id("notifications")
-                        .debug_selector(|| "notifications".into())
-                        .ml_auto()
-                        .w(px(150.0))
-                        .flex_shrink_0()
-                        .px_2()
-                        .py_2()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .tab_index(0)
-                        .hover(|s| s.bg(theme::surface_raised()))
-                        .on_click(
-                            cx.listener(|m, _, window, cx| {
-                                m.toggle_notification_history(window, cx)
-                            }),
-                        )
-                        .on_key_down(cx.listener(|m, e: &gpui::KeyDownEvent, window, cx| {
-                            if matches!(e.keystroke.key.as_str(), "enter" | "space") {
-                                m.toggle_notification_history(window, cx);
-                                cx.stop_propagation();
-                            }
-                        }))
-                        .child(format!("Notifications {:>3}", unread)),
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap_4()
+                        .children(AppTab::ALL.into_iter().map(|tab| {
+                            let selected = active != AppView::Settings && tab == active_tab;
+                            // Engine can show two counters side by side (reviews waiting take priority
+                            // visually via the warning color); Agent and Companion each get one.
+                            let pills: &[BadgePill] =
+                                match tab {
+                                    AppTab::Engine => &[
+                                        (
+                                            badges.engine_awaiting_hitl,
+                                            theme::warning_soft,
+                                            theme::warning,
+                                        ),
+                                        (
+                                            badges.engine_running_jobs,
+                                            theme::accent_soft,
+                                            theme::accent,
+                                        ),
+                                    ],
+                                    AppTab::Agent => &[(
+                                        badges.agent_failed_runs,
+                                        theme::danger_soft,
+                                        theme::danger,
+                                    )],
+                                    AppTab::Companion => &[(
+                                        badges.companion_streaming,
+                                        theme::accent_soft,
+                                        theme::accent,
+                                    )],
+                                };
+                            div()
+                                .id(tab.id())
+                                .debug_selector(move || tab.id().into())
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .bg(if selected {
+                                    theme::accent_soft()
+                                } else {
+                                    theme::surface()
+                                })
+                                .text_color(if selected {
+                                    theme::accent()
+                                } else {
+                                    theme::text_muted()
+                                })
+                                .hover(|style| style.bg(theme::surface_raised()))
+                                .on_click(
+                                    cx.listener(move |model, _, _, cx| model.select_tab(tab, cx)),
+                                )
+                                .child(tab.label())
+                                .children(pills.iter().filter(|(count, _, _)| *count > 0).map(
+                                    |&(count, bg, fg)| {
+                                        div()
+                                            .min_w(px(20.0))
+                                            .px_1()
+                                            .rounded_full()
+                                            .text_xs()
+                                            .bg(bg())
+                                            .text_color(fg())
+                                            .child(count.to_string())
+                                    },
+                                ))
+                        })),
                 )
                 .child(
                     div()
-                        .id("settings")
-                        .debug_selector(|| "settings".into())
-                        .px_3()
-                        .py_2()
-                        .rounded_md()
-                        .cursor_pointer()
+                        .flex_1()
+                        .min_w_0()
                         .flex()
                         .items_center()
+                        .justify_end()
                         .gap_2()
-                        .bg(if active == AppView::Settings {
-                            theme::accent_soft()
-                        } else {
-                            theme::surface()
-                        })
-                        .text_color(if active == AppView::Settings {
-                            theme::accent()
-                        } else {
-                            theme::text_muted()
-                        })
-                        .hover(|style| style.bg(theme::surface_raised()))
-                        .on_click(
-                            cx.listener(|model, _, _, cx| model.select_view(AppView::Settings, cx)),
+                        .child(
+                            div()
+                                .id("notifications")
+                                .debug_selector(|| "notifications".into())
+                                .px_2()
+                                .py_2()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .tab_index(0)
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .text_lg()
+                                .text_color(theme::accent())
+                                .hover(|s| s.bg(theme::surface_raised()))
+                                .on_click(cx.listener(|m, _, window, cx| {
+                                    m.toggle_notification_history(window, cx)
+                                }))
+                                .on_key_down(cx.listener(
+                                    |m, e: &gpui::KeyDownEvent, window, cx| {
+                                        if matches!(e.keystroke.key.as_str(), "enter" | "space") {
+                                            m.toggle_notification_history(window, cx);
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                ))
+                                .child("🔔︎")
+                                .when(unread > 0, |button| {
+                                    button.child(
+                                        div()
+                                            .min_w(px(16.0))
+                                            .px_1()
+                                            .rounded_full()
+                                            .text_xs()
+                                            .text_color(theme::canvas())
+                                            .bg(theme::accent())
+                                            .child(unread.to_string()),
+                                    )
+                                }),
                         )
-                        .child("⚙")
-                        .child("Settings"),
+                        .child(
+                            div()
+                                .id("settings")
+                                .debug_selector(|| "settings".into())
+                                .px_2()
+                                .py_2()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_lg()
+                                .bg(if active == AppView::Settings {
+                                    theme::accent_soft()
+                                } else {
+                                    theme::surface()
+                                })
+                                .text_color(theme::accent())
+                                .hover(|style| style.bg(theme::surface_raised()))
+                                .on_click(cx.listener(|model, _, _, cx| {
+                                    model.select_view(AppView::Settings, cx)
+                                }))
+                                .child("⚙︎"),
+                        ),
                 ),
         )
 }
 
-/// The flow bar: sub-view pills for the active tab (or Settings' own Connections/Routes/Runtime
-/// pills) on the left, and the flow engine's suggested next step(s) on the right. Rendered in every
-/// view — including Settings, which previously hid this row entirely — so the layout never jumps
-/// and the next action is always in the same place. See the UI flow plan Parts 2-3.
+/// The flow bar: centered sub-view pills for the active tab (or Settings' own
+/// Connections/Routes/Runtime pills), with the flow engine's suggested next steps on the right.
+/// Rendered in every view so the layout never jumps and the next action is always in the same place.
 fn flow_bar(
     model: &AppModel,
     tab: AppTab,
@@ -466,46 +496,66 @@ fn flow_bar(
         .flex()
         .flex_shrink_0()
         .items_center()
-        .justify_between()
         .gap_2()
         .px_5()
         .py_2()
         .border_b_1()
         .border_color(theme::border())
         .bg(theme::surface())
-        .child(div().flex().items_center().gap_2().children(left_pills))
-        .when(!steps.is_empty(), |bar| {
-            bar.child(div().flex().items_center().gap_2().children(
-                steps.into_iter().enumerate().map(|(index, step)| {
-                    let primary = index == 0;
-                    let id = step.id;
-                    let target = step.target;
-                    div()
-                        .id(id)
-                        .debug_selector(move || id.into())
-                        .px_3()
-                        .py_1()
-                        .rounded_full()
-                        .cursor_pointer()
-                        .text_sm()
-                        .bg(if primary {
-                            theme::accent()
-                        } else {
-                            theme::surface_raised()
-                        })
-                        .text_color(if primary {
-                            theme::canvas()
-                        } else {
-                            theme::text()
-                        })
-                        .hover(|style| style.opacity(theme::HOVER_OPACITY))
-                        .on_click(cx.listener(move |model, _, window, cx| {
-                            model.run_next_step(target.clone(), window, cx);
-                        }))
-                        .child(step.label)
+        .child(div().flex_1().min_w_0())
+        .child(
+            div()
+                .id("flow-bar-tabs")
+                .debug_selector(|| "flow-bar-tabs".into())
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .children(left_pills),
+        )
+        .child(
+            div()
+                .id("flow-bar-actions")
+                .debug_selector(|| "flow-bar-actions".into())
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap_2()
+                .when(!steps.is_empty(), |bar| {
+                    bar.children(steps.into_iter().enumerate().map(|(index, step)| {
+                        let primary = index == 0;
+                        let id = step.id;
+                        let target = step.target;
+                        div()
+                            .id(id)
+                            .debug_selector(move || id.into())
+                            .px_3()
+                            .py_1()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .text_sm()
+                            .bg(if primary {
+                                theme::accent()
+                            } else {
+                                theme::surface_raised()
+                            })
+                            .text_color(if primary {
+                                theme::canvas()
+                            } else {
+                                theme::text()
+                            })
+                            .hover(|style| style.opacity(theme::HOVER_OPACITY))
+                            .on_click(cx.listener(move |model, _, window, cx| {
+                                model.run_next_step(target.clone(), window, cx);
+                            }))
+                            .child(step.label)
+                    }))
                 }),
-            ))
-        })
+        )
 }
 
 fn content_panel(model: &AppModel, active: AppView, cx: &mut Context<AppModel>) -> AnyElement {

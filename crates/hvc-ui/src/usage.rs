@@ -13,9 +13,25 @@ pub(crate) struct UsageState {
     generation: u64,
     expanded_pulsations: std::collections::HashSet<String>,
     refresh_pending: bool,
+    read_in_flight: bool,
+    read_requested: bool,
 }
 
 impl UsageState {
+    fn start_read(&mut self) -> bool {
+        if self.read_in_flight {
+            self.read_requested = true;
+            return false;
+        }
+        self.read_in_flight = true;
+        self.read_requested = false;
+        true
+    }
+    fn finish_read(&mut self) -> bool {
+        self.read_in_flight = false;
+        std::mem::take(&mut self.read_requested)
+    }
+
     fn begin_query(&mut self, query: UsageQuery) -> u64 {
         if self.query.project_id != query.project_id
             || self.query.pulsation_id != query.pulsation_id
@@ -29,6 +45,8 @@ impl UsageState {
     pub(crate) fn invalidated(self) -> Self {
         Self {
             generation: self.generation.saturating_add(1),
+            read_in_flight: self.read_in_flight,
+            read_requested: self.read_in_flight,
             ..Default::default()
         }
     }
@@ -71,26 +89,38 @@ impl AppModel {
             pulsation_id,
             ..Default::default()
         };
+        self.pulsations.update(cx, |state, _| {
+            if state.usage.query.project_id != query.project_id
+                || state.usage.query.pulsation_id != query.pulsation_id
+            {
+                state.usage.summary = None;
+                state.usage.query = query.clone();
+                state.usage.generation = state.usage.generation.saturating_add(1);
+            }
+        });
+        if self.active_view() != AppView::Pulsations {
+            return;
+        }
+        let Some(core) = self.core.clone() else {
+            return;
+        };
+        if !self
+            .pulsations
+            .update(cx, |state, _| state.usage.start_read())
+        {
+            return;
+        }
         let generation = self
             .pulsations
             .update(cx, |state, _| state.usage.begin_query(query.clone()));
         if query.project_id.is_none() || query.pulsation_id.is_none() {
             self.pulsations.update(cx, |state, _| {
+                state.usage.finish_read();
                 state.usage.loading = false;
                 state.usage.summary = None;
             });
             return;
         }
-        if self.active_view() != AppView::Pulsations {
-            self.pulsations
-                .update(cx, |state, _| state.usage.loading = false);
-            return;
-        }
-        let Some(core) = self.core.clone() else {
-            self.pulsations
-                .update(cx, |state, _| state.usage.loading = false);
-            return;
-        };
         let runtime = core.runtime_handle().clone();
         cx.spawn(async move |this, cx| {
             let expected = query.clone();
@@ -105,6 +135,9 @@ impl AppModel {
                 if model.is_disposed() {
                     return;
                 }
+                let pending = model
+                    .pulsations
+                    .update(cx, |state, _| state.usage.finish_read());
                 let current_project = model
                     .workspace
                     .read(cx)
@@ -114,11 +147,15 @@ impl AppModel {
                 if current_project != expected.project_id
                     || model.pulsations.read(cx).active_id() != expected.pulsation_id
                 {
+                    model.refresh_pulsation_usage(cx);
                     return;
                 }
                 model
                     .pulsations
                     .update(cx, |state, _| state.usage.apply(generation, result));
+                if pending {
+                    model.refresh_pulsation_usage(cx);
+                }
                 cx.notify();
             });
         })
@@ -156,11 +193,18 @@ impl AppModel {
         let Some(core) = self.core.clone() else {
             return;
         };
+        if !self
+            .settings
+            .update(cx, |state, _| state.usage.start_read())
+        {
+            return;
+        }
         let (generation, query) = self.settings.update(cx, |settings, _| {
             (settings.usage.begin(), settings.usage.query.clone())
         });
         let runtime = core.runtime_handle().clone();
         cx.spawn(async move |this, cx| {
+            let expected = query.clone();
             let result = runtime
                 .spawn_blocking(move || {
                     hvc_core::usage::query_usage(core.persistence().database_path(), &query)
@@ -172,9 +216,16 @@ impl AppModel {
                 if model.is_disposed() {
                     return;
                 }
-                model
-                    .settings
-                    .update(cx, |settings, _| settings.usage.apply(generation, result));
+                let pending = model.settings.update(cx, |settings, _| {
+                    let pending = settings.usage.finish_read();
+                    if settings.usage.query == expected {
+                        settings.usage.apply(generation, result);
+                    }
+                    pending
+                });
+                if pending {
+                    model.refresh_usage(cx);
+                }
                 cx.notify();
             });
         })
@@ -401,6 +452,8 @@ pub(crate) fn usage_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                 summary.totals.records,summary.totals.partial_records,summary.totals.unavailable_records)))
             .child(usage_chart(&summary,period))
             .child(model_table(&summary))
+            .when(!summary.agent_targets.is_empty(),|panel|panel
+                .child(agent_target_rows(&summary.agent_targets)))
             .when(!summary.executors.is_empty(),|panel|panel
                 .child(executor_rows(&summary.executors,"usage-executor-table".into())))
             .child(pulsation_table(&summary, &state, cx)))
@@ -700,6 +753,45 @@ fn executor_rows(executors: &[hvc_core::usage::ExecutorUsage], id: SharedString)
         .into_any_element()
 }
 
+fn agent_target_rows(targets: &[hvc_core::usage::AgentTargetUsage]) -> AnyElement {
+    div()
+        .id("usage-agent-target-table")
+        .debug_selector(|| "usage-agent-target-table".into())
+        .min_w_0()
+        .overflow_x_scroll()
+        .flex_shrink_0()
+        .child(
+            div()
+                .min_w(px(640.0))
+                .p_4()
+                .rounded_lg()
+                .bg(theme::surface())
+                .border_1()
+                .border_color(theme::border())
+                .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child("Usage by agent target"))
+                .child(div().mt_1().text_xs().text_color(theme::text_muted()).child(
+                    "Canonical and FreeForm API calls are attributed to their persisted execution target. These rows are already included in the totals above.",
+                ))
+                .children(targets.iter().map(|entry| {
+                    let label = entry.target_key
+                        .strip_prefix("canonical:")
+                        .or_else(|| entry.target_key.strip_prefix("free_form:"))
+                        .unwrap_or(&entry.target_key);
+                    div().mt_3().pt_3().border_t_1().border_color(theme::border())
+                        .child(div().flex().gap_3().items_center()
+                            .child(div().flex_1().min_w_0().text_sm().child(label.to_string()))
+                            .child(cell(entry.attempts.to_string(), 80.0))
+                            .child(cell(count(entry.totals.input_tokens), 105.0))
+                            .child(cell(count(entry.totals.output_tokens), 105.0))
+                            .child(cell(count(entry.totals.total_tokens), 105.0))
+                            .child(cell(entry.estimated_cost_usd_micros
+                                .map(|cost| format!("${:.6}", cost as f64 / 1_000_000.0))
+                                .unwrap_or_else(|| "Unavailable".into()), 115.0)))
+                })),
+        )
+        .into_any_element()
+}
+
 fn pulsation_table(
     summary: &UsageSummary,
     state: &UsageState,
@@ -818,6 +910,25 @@ pub(crate) fn pulsation_usage_panel(model: &AppModel, cx: &mut Context<AppModel>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn usage_refreshes_retain_only_one_worker_and_one_pending_read() {
+        let mut state = UsageState::default();
+        assert!(state.start_read());
+        for _ in 0..100 {
+            assert!(!state.start_read());
+        }
+        assert!(state.finish_read());
+        assert!(state.start_read());
+        state = state.invalidated();
+        assert!(
+            !state.start_read(),
+            "a project reset does not detach a running database read"
+        );
+        assert!(state.finish_read());
+        assert!(state.start_read());
+        assert!(!state.finish_read());
+    }
+
     #[test]
     fn stale_queries_cannot_replace_new_filters_and_unknown_usage_is_not_zero() {
         let mut state = UsageState::default();
@@ -982,6 +1093,7 @@ mod tests {
                         name: "Project A".into(),
                     }],
                     executors: Vec::new(),
+                    agent_targets: Vec::new(),
                 };
                 let generation = settings.usage.begin();
                 settings.usage.apply(generation, Ok(summary));
