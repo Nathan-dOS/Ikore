@@ -14,6 +14,7 @@ use crate::chat_view::chat_panel;
 use crate::hitl::register_hitl_keybindings;
 use crate::logs_view::logs_panel;
 use crate::native_editor::register_editor_keybindings;
+use crate::pipeline_status::PipelineStatus;
 use crate::pulsations_view::pulsations_panel;
 #[cfg(test)]
 use crate::session::HeaderNoticeKind;
@@ -204,6 +205,10 @@ impl Render for AppModel {
             .when(self.forge.new_open, |panel| {
                 panel.child(crate::forge_view::capture_overlay(self, cx))
             })
+            .child(crate::resolution_view::chip_stack(self, cx))
+            .when(self.resolution.read(cx).expanded.is_some(), |panel| {
+                panel.child(crate::resolution_view::expanded_conversation(self, cx))
+            })
     }
 }
 
@@ -386,9 +391,10 @@ fn header(
         )
 }
 
-/// The flow bar: centered sub-view pills for the active tab (or Settings' own
-/// Connections/Routes/Runtime pills), with the flow engine's suggested next steps on the right.
-/// Rendered in every view so the layout never jumps and the next action is always in the same place.
+/// The flow bar: the active pulsation's status pill on the left, centered sub-view pills for the
+/// active tab (or Settings' own Connections/Routes/Runtime pills), and the flow engine's suggested
+/// next steps on the right. Rendered in every view so the layout never jumps, the pipeline status
+/// follows the user everywhere, and the next action is always in the same place.
 fn flow_bar(
     model: &AppModel,
     tab: AppTab,
@@ -502,7 +508,14 @@ fn flow_bar(
         .border_b_1()
         .border_color(theme::border())
         .bg(theme::surface())
-        .child(div().flex_1().min_w_0())
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .child(pipeline_status_pill(model, cx)),
+        )
         .child(
             div()
                 .id("flow-bar-tabs")
@@ -592,6 +605,51 @@ fn status_segment(
         .hover(|style| style.opacity(theme::HOVER_OPACITY))
         .on_click(cx.listener(move |model, _, _, cx| model.select_view(view, cx)))
         .child(content)
+        .into_any_element()
+}
+
+/// The flow bar's left slot: stage · agent · state of the active pulsation, shown in every view so
+/// the developer never has to open Agents to know where the pipeline is. Clicking jumps to
+/// Pulsations, where the run detail and any pending checkpoint live.
+fn pipeline_status_pill(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    let status = {
+        let pulsations = model.pulsations.read(cx);
+        let agents = model.agents.read(cx);
+        pulsations
+            .active()
+            .map(|active| PipelineStatus::derive(active, agents.snapshot.as_ref()))
+    };
+    let (dot, ink, text) = match status {
+        Some(status) => (status.tone.color(), theme::text(), status.summary()),
+        None => (
+            theme::text_muted(),
+            theme::text_muted(),
+            "No active pulsation".to_string(),
+        ),
+    };
+    div()
+        .id("pipeline-status")
+        .debug_selector(|| "pipeline-status".into())
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_3()
+        .py_1()
+        .rounded_full()
+        .bg(theme::surface_raised())
+        .cursor_pointer()
+        .hover(|style| style.opacity(theme::HOVER_OPACITY))
+        .on_click(cx.listener(|model, _, _, cx| model.select_view(AppView::Pulsations, cx)))
+        .child(div().flex_shrink_0().size_2().rounded_full().bg(dot))
+        .child(
+            div()
+                .min_w_0()
+                .text_xs()
+                .text_color(ink)
+                .text_ellipsis()
+                .child(text),
+        )
         .into_any_element()
 }
 

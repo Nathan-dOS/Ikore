@@ -224,7 +224,7 @@ pub fn render_unit_prompt(
         }
     }
 
-    user.push_str("## References\n\nYou may cite only the handles in this table.\n\n| ref | role | path | availability |\n|---|---|---|---|\n");
+    user.push_str("## References\n\nYou may cite only the handles in this table. For `usedRefs`, list ONLY handles whose availability column shows \"readable\" or \"delivered\". If the table is empty or has no readable rows, set `usedRefs` to `[]`.\n\n| ref | role | path | availability |\n|---|---|---|---|\n");
     let mut listed: Vec<&Handle> = unit.input_refs.iter().collect();
     for owned in &unit.owned_destination_refs {
         if !listed.contains(&owned) {

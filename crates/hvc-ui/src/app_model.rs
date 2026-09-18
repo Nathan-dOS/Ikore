@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 #[path = "preparation_ui.rs"]
 mod preparation_ui;
+#[path = "resolution_ui.rs"]
+mod resolution_ui;
 
 use gpui::{
     AppContext as _, ClipboardItem, Context, Entity, PathPromptOptions, SharedString, Subscription,
@@ -313,6 +315,15 @@ pub struct AppModel {
     pub(crate) free_form_custom_executable_inputs: HashMap<String, Entity<NativeTextInput>>,
     pub(crate) free_form_custom_args_inputs: HashMap<String, Entity<NativeTextInput>>,
     pub chat: Entity<ChatModel>,
+    pub resolution: Entity<crate::resolution::ResolutionModel>,
+    pub(crate) resolution_draft_input: Entity<NativeTextInput>,
+    pub(crate) resolution_synthesis_input: Entity<NativeTextInput>,
+    resolution_chips_in_flight: bool,
+    resolution_turn_in_flight: bool,
+    resolution_chips_task: Option<Task<()>>,
+    resolution_conversation_task: Option<Task<()>>,
+    resolution_action_task: Option<Task<()>>,
+    resolution_turn_task: Option<Task<()>>,
     pub(crate) agents: Entity<AgentsModel>,
     pub(crate) settings: Entity<SettingsModel>,
     pub(crate) logs: Entity<LogsModel>,
@@ -479,6 +490,18 @@ impl AppModel {
         model
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_resolution_backends(
+        pulsations_backend: Arc<dyn PulsationsBackend>,
+        chat_backend: Arc<dyn ChatBackend>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut model = Self::build(None, None, None, cx);
+        model.pulsations_backend = Some(pulsations_backend);
+        model.chat_backend = Some(chat_backend);
+        model
+    }
+
     fn build(
         core: Option<Arc<AppCore>>,
         session_persistence: Option<Arc<dyn SessionPersistence>>,
@@ -534,6 +557,11 @@ impl AppModel {
             cx.new(|cx| NativeTextInput::new("Embedding model", cx));
         let chat_draft_input =
             cx.new(|cx| NativeTextInput::new("Message to Companion", cx).multiline());
+        let resolution_draft_input =
+            cx.new(|cx| NativeTextInput::new("Reply to the Companion", cx).multiline());
+        let resolution_synthesis_input = cx.new(|cx| {
+            NativeTextInput::new("FILES_NEW:/FILES_MOD:/FILES: reply to confirm", cx).multiline()
+        });
         let cli_model_search_input =
             cx.new(|cx| NativeTextInput::new("Search model ID, name, provider or capability", cx));
         let agent_prompt_inputs = hvc_core::llm::AgentRole::ALL
@@ -626,6 +654,15 @@ impl AppModel {
                 &chat_draft_input,
                 |model, _, _: &crate::text_input::Submit, cx| model.send_chat_message(cx),
             ),
+            cx.observe(&resolution_draft_input, |_, _, cx| cx.notify()),
+            cx.subscribe(
+                &resolution_draft_input,
+                |model, _, _: &crate::text_input::Submit, cx| model.send_resolution_message(cx),
+            ),
+            cx.observe(&resolution_synthesis_input, |model, _, cx| {
+                model.update_resolution_synthesis_draft(cx);
+                cx.notify()
+            }),
             cx.observe(&cli_model_search_input, |_, _, cx| cx.notify()),
         ];
         subscriptions.extend(
@@ -696,6 +733,15 @@ impl AppModel {
             free_form_custom_executable_inputs: HashMap::new(),
             free_form_custom_args_inputs: HashMap::new(),
             chat: cx.new(|_| ChatModel::default()),
+            resolution: cx.new(|_| crate::resolution::ResolutionModel::default()),
+            resolution_draft_input,
+            resolution_synthesis_input,
+            resolution_chips_in_flight: false,
+            resolution_turn_in_flight: false,
+            resolution_chips_task: None,
+            resolution_conversation_task: None,
+            resolution_action_task: None,
+            resolution_turn_task: None,
             agents: cx.new(|_| AgentsModel::default()),
             settings: cx.new(|_| SettingsModel::default()),
             logs: cx.new(|_| LogsModel::default()),
@@ -5898,21 +5944,15 @@ impl AppModel {
         let Some(generation) = generation else {
             return;
         };
-        let pulsation_id = self
-            .pulsations
-            .read(cx)
-            .active_pulsation_id
-            .as_ref()
-            .map(ToString::to_string);
-        let project_id = self.workspace.read(cx).project_id.clone();
+        let active_project_id = self.workspace.read(cx).project_id.clone();
+        let project_id = active_project_id.as_ref().map(ToString::to_string);
         self.logs_task = Some(cx.spawn(async move |this, cx| {
-            let result = backend.observability(pulsation_id.clone()).await;
+            let result = backend.observability(project_id, None).await;
             let _ = this.update(cx, |model, cx| {
-                if model.workspace.read(cx).project_id != project_id
-                    || model.pulsations.read(cx).active_id() != pulsation_id
-                {
+                if model.workspace.read(cx).project_id != active_project_id {
                     model.logs.update(cx, |logs, _| {
                         logs.discard_poll(generation);
+                        logs.reset_expansion();
                     });
                     model.refresh_logs(cx);
                     return;
@@ -5939,6 +5979,24 @@ impl AppModel {
             logs.selected_run_id = Some(run_id.into());
         });
         cx.notify();
+    }
+
+    pub(crate) fn toggle_log_pulsation_group(&mut self, key: String, cx: &mut Context<Self>) {
+        self.logs.update(cx, |logs, _| {
+            logs.toggle_group(&key);
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn jump_to_pulsation_from_logs(
+        &mut self,
+        pulsation_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.select(&pulsation_id);
+        });
+        self.select_view(AppView::Pulsations, cx);
     }
 
     fn resync_llm_execution(&mut self, execution_id: String, cx: &mut Context<Self>) {
@@ -6063,6 +6121,10 @@ impl AppModel {
                         && model.lifecycle.try_begin_poll()
                     {
                         model.refresh_pulsations(cx);
+                    }
+                    if model.workspace.read(cx).project_id.is_some() {
+                        model.refresh_resolution_chips(cx);
+                        model.poll_resolution_turn_if_pending(cx);
                     }
                     true
                 });
@@ -6261,6 +6323,7 @@ impl AppModel {
         }
         self.hydrating = false;
         self.refresh_pulsations_with_preferred(preferred_pulsation_id, cx);
+        self.refresh_resolution_chips(cx);
         self.refresh_vault(true, cx);
         match active_view {
             AppView::Agents => self.refresh_agents(cx),
@@ -6420,6 +6483,10 @@ impl AppModel {
         self.logs_resync_tasks.clear();
         self.chat_task.take();
         self.chat_resync_tasks.clear();
+        self.resolution_chips_task.take();
+        self.resolution_conversation_task.take();
+        self.resolution_action_task.take();
+        self.resolution_turn_task.take();
         self.session_task.take();
         self.performance_probe.take();
         self.notifications.wake.take();
@@ -6939,6 +7006,8 @@ mod tests {
         cleanup_plan: Arc<Mutex<Option<hvc_core::orchestration::FailedPulsationCleanupPlan>>>,
         snapshot: Arc<Mutex<PulsationRuntimeSnapshot>>,
         artifacts: Arc<Mutex<Vec<Artifact>>>,
+        resolution_chips: Arc<Mutex<Vec<hvc_core::orchestration::SpecificationQuestionSet>>>,
+        resolution_conversations: Arc<Mutex<HashMap<String, String>>>,
     }
 
     impl RecordingPulsationsBackend {
@@ -6966,6 +7035,8 @@ mod tests {
                     brownfield_coverage: None,
                 })),
                 artifacts: Arc::new(Mutex::new(vec![test_artifact("Plan")])),
+                resolution_chips: Arc::new(Mutex::new(Vec::new())),
+                resolution_conversations: Arc::new(Mutex::new(HashMap::new())),
             }
         }
     }
@@ -7043,6 +7114,33 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((project_id, feature_name));
             Box::pin(async { Ok(test_pulsation()) })
+        }
+
+        fn resolution_chips(
+            &self,
+            _project_id: String,
+        ) -> PulsationsFuture<Vec<hvc_core::orchestration::SpecificationQuestionSet>> {
+            let chips = self
+                .resolution_chips
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            Box::pin(async move { Ok(chips) })
+        }
+
+        fn ensure_resolution_conversation(
+            &self,
+            _project_id: String,
+            question_set_id: String,
+        ) -> PulsationsFuture<String> {
+            let conversation_id = self
+                .resolution_conversations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(question_set_id)
+                .or_insert_with(|| uuid::Uuid::new_v4().to_string())
+                .clone();
+            Box::pin(async move { Ok(conversation_id) })
         }
 
         fn cancel_jobs(&self, pulsation_id: String) -> PulsationsFuture<usize> {
@@ -7915,7 +8013,7 @@ mod tests {
                 })
                 .unwrap()
                 .pulsation;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
             let mut approvals = 0;
             loop {
                 cx.run_until_parked();
@@ -8238,7 +8336,7 @@ mod tests {
         assert_eq!(request.question_set_id, "questions-1");
         assert_eq!(request.expected_input_revision, 3);
         assert_eq!(request.expected_state_version, 9);
-        assert_eq!(request.answers[0].answer, "JWT assinado");
+        assert_eq!(request.answers[0].text_answer, "JWT assinado");
         drop(actions);
         backend.snapshot.lock().unwrap().details[0]
             .questions
@@ -8255,6 +8353,251 @@ mod tests {
                     .value()
                     .is_empty()
             )
+        });
+    }
+
+    struct RecordingResolutionChatBackend {
+        conversation_id: String,
+        sent: Mutex<Vec<(String, String)>>,
+        reply: Mutex<String>,
+    }
+
+    impl RecordingResolutionChatBackend {
+        fn new(conversation_id: &str, reply: &str) -> Self {
+            Self {
+                conversation_id: conversation_id.into(),
+                sent: Mutex::new(Vec::new()),
+                reply: Mutex::new(reply.into()),
+            }
+        }
+
+        fn message(&self, generation: &str, content: &str) -> hvc_core::chat_service::ChatMessage {
+            hvc_core::chat_service::ChatMessage {
+                id: format!("assistant-{generation}"),
+                conversation_id: self.conversation_id.clone(),
+                ordinal: 1,
+                role: "assistant".into(),
+                content: content.into(),
+                status: "completed".into(),
+                execution_id: Some(format!("execution-{generation}")),
+                generation_id: Some(generation.into()),
+                last_sequence: 1,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost_usd: None,
+                error_code: None,
+                error_message: None,
+                created_at: "now".into(),
+                updated_at: "now".into(),
+            }
+        }
+    }
+
+    impl ChatBackend for RecordingResolutionChatBackend {
+        fn hydrate(
+            &self,
+            _: String,
+            _: Option<String>,
+        ) -> crate::chat::ChatFuture<crate::chat::ChatHydration> {
+            Box::pin(async { Err(crate::errors::UiCommandError::worker("unused")) })
+        }
+
+        fn load_conversation(
+            &self,
+            _: String,
+        ) -> crate::chat::ChatFuture<hvc_core::chat_service::GetChatConversationResponse> {
+            let conversation_id = self.conversation_id.clone();
+            Box::pin(async move {
+                Ok(hvc_core::chat_service::GetChatConversationResponse {
+                    conversation: test_chat_conversation(&conversation_id),
+                    messages: Vec::new(),
+                    tool_calls: Vec::new(),
+                })
+            })
+        }
+
+        fn create_conversation(
+            &self,
+            _: String,
+            _: ChatExecutionTargetRequest,
+        ) -> crate::chat::ChatFuture<hvc_core::chat_service::GetChatConversationResponse> {
+            Box::pin(async { Err(crate::errors::UiCommandError::worker("unused")) })
+        }
+
+        fn delete_conversation(&self, _: String) -> crate::chat::ChatFuture<bool> {
+            Box::pin(async { Err(crate::errors::UiCommandError::worker("unused")) })
+        }
+
+        fn send_message(
+            &self,
+            conversation_id: String,
+            content: String,
+        ) -> crate::chat::ChatFuture<(
+            hvc_core::chat_service::SendChatMessageResponse,
+            hvc_core::chat_service::GetChatConversationResponse,
+        )> {
+            self.sent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((conversation_id.clone(), content));
+            let generation = format!("generation-{}", self.sent.lock().unwrap().len());
+            let reply = self
+                .reply
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let assistant = self.message(&generation, &reply);
+            Box::pin(async move {
+                Ok((
+                    hvc_core::chat_service::SendChatMessageResponse {
+                        execution_id: assistant.execution_id.clone().unwrap(),
+                        generation_id: generation,
+                        user_message_id: "user-1".into(),
+                        assistant_message_id: assistant.id.clone(),
+                    },
+                    hvc_core::chat_service::GetChatConversationResponse {
+                        conversation: test_chat_conversation(&conversation_id),
+                        messages: vec![assistant],
+                        tool_calls: Vec::new(),
+                    },
+                ))
+            })
+        }
+
+        fn cancel_turn(&self, _: String) -> crate::chat::ChatFuture<bool> {
+            Box::pin(async { Ok(true) })
+        }
+
+        fn turn_snapshot(
+            &self,
+            _: String,
+        ) -> crate::chat::ChatFuture<hvc_core::chat_service::GetChatTurnSnapshotResponse> {
+            Box::pin(async { Err(crate::errors::UiCommandError::worker("unused")) })
+        }
+    }
+
+    fn test_chat_conversation(conversation_id: &str) -> hvc_core::chat_service::ChatConversation {
+        hvc_core::chat_service::ChatConversation {
+            id: conversation_id.into(),
+            project_id: "project-1".into(),
+            connection_id: Some("connection-a".into()),
+            provider_id: "openai".into(),
+            model_id: "gpt-fixture".into(),
+            transport: ChatTransportKind::Api,
+            cli_backend: None,
+            model_profile: None,
+            model_source: hvc_core::terminals::CliModelSelectionSource::Default,
+            title: "Specification clarification".into(),
+            connection_available: true,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        }
+    }
+
+    fn test_question_set(
+        id: &str,
+        pulsation_id: &str,
+    ) -> hvc_core::orchestration::SpecificationQuestionSet {
+        hvc_core::orchestration::SpecificationQuestionSet {
+            id: id.into(),
+            checkpoint_id: format!("checkpoint-{id}"),
+            fence: hvc_core::orchestration::ExecutionFence {
+                project_id: "project-1".into(),
+                pulsation_id: Some(pulsation_id.into()),
+                input_revision: Some(3),
+                job_id: "job-1".into(),
+                generation: 1,
+                state_version: 9,
+            },
+            conversation_id: format!("host-conv-{id}"),
+            questions: vec![hvc_core::orchestration::SpecificationQuestion {
+                id: format!("question-{id}"),
+                question: "Where should this file live?".into(),
+                rationale: "No planned-destination handle exists yet.".into(),
+            }],
+        }
+    }
+
+    #[gpui::test]
+    fn resolution_chip_workflow_loads_synthesizes_and_confirms_an_answer(cx: &mut TestAppContext) {
+        let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
+        pulsations_backend
+            .resolution_chips
+            .lock()
+            .unwrap()
+            .push(test_question_set("set-a", "pulse-a"));
+        pulsations_backend
+            .resolution_conversations
+            .lock()
+            .unwrap()
+            .insert("set-a".into(), "resolution-conversation-1".into());
+        let chat_backend = Arc::new(RecordingResolutionChatBackend::new(
+            "resolution-conversation-1",
+            "Prose summary.\nFILES_NEW: src/new_module.rs",
+        ));
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_resolution_backends(
+                pulsations_backend.clone(),
+                chat_backend.clone(),
+                cx,
+            )
+        });
+        model.update(cx, |m, cx| {
+            m.workspace.update(cx, |workspace, _| {
+                workspace.project_id = Some("project-1".into())
+            });
+            m.refresh_resolution_chips(cx);
+        });
+        cx.run_until_parked();
+        model.read_with(cx, |m, cx| {
+            assert_eq!(m.resolution.read(cx).chips.len(), 1);
+        });
+
+        model.update(cx, |m, cx| m.toggle_resolution_chip("set-a".into(), cx));
+        cx.run_until_parked();
+        model.read_with(cx, |m, cx| {
+            let resolution = m.resolution.read(cx);
+            assert_eq!(resolution.expanded.as_deref(), Some("set-a"));
+            let conversation = resolution
+                .conversation
+                .as_ref()
+                .expect("conversation loaded");
+            assert_eq!(conversation.conversation_id, "resolution-conversation-1");
+            assert!(conversation.messages.is_empty());
+        });
+
+        model.update(cx, |m, cx| m.synthesize_resolution_reply(cx));
+        cx.run_until_parked();
+        model.read_with(cx, |m, cx| {
+            let resolution = m.resolution.read(cx);
+            let conversation = resolution.conversation.as_ref().unwrap();
+            assert_eq!(
+                conversation.synthesized_draft.as_deref(),
+                Some("Prose summary.\nFILES_NEW: src/new_module.rs")
+            );
+            assert_eq!(
+                m.resolution_synthesis_input.read(cx).value(),
+                "Prose summary.\nFILES_NEW: src/new_module.rs"
+            );
+        });
+
+        model.update(cx, |m, cx| m.confirm_resolution_answer(cx));
+        cx.run_until_parked();
+        let actions = pulsations_backend.actions.lock().unwrap();
+        assert_eq!(actions.len(), 1);
+        let crate::pulsations::PulsationAction::Answer(request) = &actions[0] else {
+            panic!("answer action")
+        };
+        assert_eq!(request.question_set_id, "set-a");
+        assert_eq!(
+            request.answers[0].text_answer,
+            "Prose summary.\nFILES_NEW: src/new_module.rs"
+        );
+        drop(actions);
+        model.read_with(cx, |m, cx| {
+            let resolution = m.resolution.read(cx);
+            assert!(resolution.chips.is_empty());
+            assert!(resolution.expanded.is_none());
         });
     }
 

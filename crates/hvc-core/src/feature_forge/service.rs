@@ -265,6 +265,16 @@ impl TaskService {
     ) -> Result<crate::persistence_service::Pulsation, Error> {
         self.persistence.create_pulsation_from_tasks(request)
     }
+    /// Read-only preview of the dispatch-time file-path anchoring gate
+    /// (ADR-022 clarification loop, P1/A1.3), for the UI to check before
+    /// attempting a dispatch.
+    pub fn preview_dispatch_gate(
+        &self,
+        project: &str,
+        tasks: &[TaskSelection],
+    ) -> Result<DispatchGateStatus, Error> {
+        self.persistence.preview_dispatch_gate(project, tasks)
+    }
 }
 
 impl FeatureForgeService {
@@ -579,6 +589,31 @@ impl FeatureForgeService {
             return Err(invalid("Only archived features can be reopened"));
         }
         db.execute("UPDATE forge_features SET state=CASE WHEN approved_revision=revision THEN 'approved' ELSE 'incubating' END,archive_reason=NULL,updated_at=?2 WHERE id=?1",params![feature_id,now()])?;
+        Ok(())
+    }
+    /// The "ask the Feature Agent" escape hatch from the dispatch-time
+    /// file-path anchoring gate (ADR-022 clarification loop, P1/A1.3): adds a
+    /// pending decision naming the task and reopens Incubation, which blocks
+    /// reapproval (`validate_ready_brief`) and re-analysis
+    /// (`validate_analysis_gate`) until it is answered. Only feature-owned
+    /// tasks need this -- `TaskService::revise` already lets a developer add a
+    /// path directly to a task with no `feature_id`.
+    pub fn request_path_clarification(
+        &self,
+        project: &str,
+        feature_id: &str,
+        task_title: &str,
+    ) -> Result<(), Error> {
+        let mut db = self.persistence.connection()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let f = feature(&tx, project, feature_id)?;
+        editable_feature(&tx, &f, f.revision)?;
+        let mut brief = f.brief;
+        brief.pending_decisions.push(format!(
+            "Define the explicit file path(s) for task \"{task_title}\"."
+        ));
+        save_brief(&tx, feature_id, f.revision, &brief)?;
+        tx.commit()?;
         Ok(())
     }
     pub fn complete(&self, project: &str, feature_id: &str, expected: u64) -> Result<(), Error> {

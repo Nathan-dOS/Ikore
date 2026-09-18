@@ -309,6 +309,29 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// Filters `usedRefs` to only readable inputs, returning the clean list
+    /// and a (currently unused) diagnostic list for every stripped handle.
+    /// This prevents SC-004 `reference_conflict` rejections caused by models
+    /// placing task, criterion, anchor, check or planned-destination handles
+    /// — or handles they invented — into `usedRefs`. Invalid handles are
+    /// silently dropped; the strip is implicitly visible in the attempt's
+    /// persisted payload.
+    fn sanitize_used_refs(&self, refs: &[Handle]) -> (Vec<Handle>, Vec<String>) {
+        let mut clean = Vec::with_capacity(refs.len());
+        let mut warnings = Vec::new();
+        for handle in refs {
+            if self.unit_inputs.contains(handle) && self.index.is_readable(handle) {
+                clean.push(handle.clone());
+            } else {
+                warnings.push(format!(
+                    "usedRefs: stripped `{handle}` — not a readable input in this unit \
+                     (task, criterion, anchor, check and planned-destination handles are not valid here)."
+                ));
+            }
+        }
+        (clean, warnings)
+    }
+
     fn require_checks(&self, field: &str, refs: &[Handle]) -> Result<(), CompositionError> {
         for handle in refs {
             if !self.index.has_check(handle) {
@@ -836,7 +859,8 @@ impl<'a> Checker<'a> {
                 "Unit bindings form a dependency cycle.",
             ));
         }
-        self.require_inputs("usedRefs", &payload.used_refs)
+        let (clean_refs, _ref_warnings) = self.sanitize_used_refs(&payload.used_refs);
+        self.require_inputs("usedRefs", &clean_refs)
     }
 
     fn check_tests(
@@ -934,7 +958,8 @@ impl<'a> Checker<'a> {
         let require_full = !self.policy.repair;
         self.check_evidence(&payload.evidence, &artifact_keys, require_full)?;
         self.check_authored_contents(&groups)?;
-        self.require_inputs("usedRefs", &payload.used_refs)?;
+        let (clean_refs, _ref_warnings) = self.sanitize_used_refs(&payload.used_refs);
+        self.require_inputs("usedRefs", &clean_refs)?;
         Ok(groups)
     }
 
@@ -960,7 +985,8 @@ impl<'a> Checker<'a> {
             .try_for_each(|t| english("blocker", t))?;
         let groups = self.check_edits(&payload.documentation_edits)?;
         self.check_authored_contents(&groups)?;
-        self.require_inputs("usedRefs", &payload.used_refs)?;
+        let (clean_refs, _ref_warnings) = self.sanitize_used_refs(&payload.used_refs);
+        self.require_inputs("usedRefs", &clean_refs)?;
         Ok(groups)
     }
 
@@ -1010,7 +1036,8 @@ impl<'a> Checker<'a> {
                     .with_related([missing.clone()]));
                 }
                 intake.issues.iter().try_for_each(|t| english("issue", t))?;
-                self.require_inputs("usedRefs", &intake.used_refs)?;
+                let (clean_refs, _ref_warnings) = self.sanitize_used_refs(&intake.used_refs);
+                self.require_inputs("usedRefs", &clean_refs)?;
                 Ok(Vec::new())
             }
             CompletedPayloadV1::Specification(spec) => {
@@ -1030,7 +1057,8 @@ impl<'a> Checker<'a> {
                     .collect::<HashSet<_>>();
                 self.check_evidence(&edits.evidence, &artifact_keys, !self.policy.repair)?;
                 self.check_authored_contents(&groups)?;
-                self.require_inputs("usedRefs", &edits.used_refs)?;
+                let (clean_refs, _ref_warnings) = self.sanitize_used_refs(&edits.used_refs);
+                self.require_inputs("usedRefs", &clean_refs)?;
                 Ok(groups)
             }
             CompletedPayloadV1::Tests(tests) => self.check_tests(tests),
@@ -1468,13 +1496,10 @@ mod tests {
                 used_refs: vec![h("unav_1")],
             }),
         };
-        // `unav_1` is delivered but not readable.
-        assert_eq!(
-            run(ExecutorKind::ContractAuthor, &response)
-                .unwrap_err()
-                .code,
-            ErrorCode::ReferenceConflict
-        );
+        // `unav_1` is delivered but not readable. Since sanitize_used_refs
+        // silently strips invalid handles from usedRefs instead of rejecting
+        // with SC-004, the call now succeeds with an empty effective usedRefs.
+        run(ExecutorKind::ContractAuthor, &response).unwrap();
     }
 
     #[test]
@@ -1744,6 +1769,31 @@ mod tests {
             related_refs: vec![h("nope")],
         };
         assert!(run(ExecutorKind::CodeImplementer, &failed).is_err());
+    }
+
+    // ADR-022 clarification loop (P3/A3.2): the Specification Author's brief
+    // now permits suggesting a candidate path in prose inside `question` when
+    // `needs_input` is the only viable outcome for lack of a planned
+    // destination. This proves the safeguard needs no schema change: `english`
+    // is the only check `question`/`rationale` text ever goes through here
+    // (validate.rs:1143-1144), so a path-shaped suggestion in prose can never
+    // trip SC-004 -- that invariant only ever inspects handle-typed fields
+    // (`missingRefs`, `usedRefs`, `existingFileRefs`, ...), never free text.
+    #[test]
+    fn a_path_suggestion_in_the_question_text_is_prose_not_a_handle_citation() {
+        let ask = UnitModelResponseV1::NeedsInput {
+            missing_refs: vec![],
+            questions: vec![QuestionV1 {
+                key: h("q1"),
+                task_refs: vec![h("task_1")],
+                question: "No planned destination is available for this decision. Suggested path based on the project's conventions: src/domain/session.rs (test: tests/session_test.rs). Confirm or adjust?".into(),
+                rationale: "The approved intent names no existing or planned file for this task.".into(),
+            }],
+        };
+        assert!(
+            run(ExecutorKind::SpecificationAuthor, &ask).is_ok(),
+            "a path suggested in prose must never be treated as a handle citation"
+        );
     }
 
     #[test]

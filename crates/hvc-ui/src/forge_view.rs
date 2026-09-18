@@ -375,7 +375,33 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         .iter()
         .filter(|t| model.forge.selected_tasks.contains(&t.id))
     {
-        selected = selected.child(label(format!("• {}", task.draft.title)));
+        let has_explicit_path = !hvc_core::orchestration::composition::recipes::explicit_paths(
+            &format!("{} {}", task.draft.title, task.draft.description),
+        )
+        .is_empty();
+        let mut item = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(label(format!("• {}", task.draft.title)));
+        if !has_explicit_path {
+            item = item.child(label(
+                "No explicit file path detected; the dispatch gate may block this batch \
+                 unless another selected task has one.",
+            ));
+            if let Some(input) = model.forge.path_hint_inputs.get(&task.id) {
+                item = item.child(sized_input(input.clone(), INPUT_LONG));
+            }
+            if task.draft.feature_id.is_some() {
+                item = item.child(button(
+                    format!("request-path-{}", task.id),
+                    "Ask Feature Agent for a path",
+                    ForgeAction::RequestPathClarification(task.id.clone()),
+                    cx,
+                ));
+            }
+        }
+        selected = selected.child(item);
     }
     selected = selected
         .child(label(format!(

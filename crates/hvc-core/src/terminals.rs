@@ -4802,6 +4802,10 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
 
 /// Classify before the bounded queue. Stderr and unrecognized bookkeeping
 /// frames cannot turn a reasoning phase into an ordinary silence window.
+/// Exception: Gemini CLI prints 503/backoff messages to stderr while it
+/// sleeps between retries. Treating those as a reasoning signal widens the
+/// silence window from 90 s to 270 s, preventing a premature
+/// `cli_inactivity_timeout` during the backoff sleep.
 fn observe_received_frame(
     watchdog: &ProgressWatchdog,
     backend: CliBackend,
@@ -4809,6 +4813,18 @@ fn observe_received_frame(
     bytes: &[u8],
 ) {
     if stream != "stdout" {
+        if backend == CliBackend::Gemini {
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                let lower = text.to_ascii_lowercase();
+                if lower.contains("503")
+                    || lower.contains("service unavailable")
+                    || lower.contains("overloaded")
+                    || lower.contains("retrying")
+                {
+                    watchdog.set_reasoning(true);
+                }
+            }
+        }
         return;
     }
     let frame = adapters::normalize_frame(backend, stream, bytes);

@@ -40,6 +40,20 @@ pub(crate) trait PulsationsBackend: Send + Sync {
     fn artifact_content(&self, pulse: String, artifact: String) -> PulsationsFuture<String>;
     fn runtime_snapshot(&self, project_id: String) -> PulsationsFuture<PulsationRuntimeSnapshot>;
     fn artifacts(&self, pulsation_id: String) -> PulsationsFuture<Vec<Artifact>>;
+    /// Every open clarification checkpoint across the project (ADR-022
+    /// clarification loop, P4/A4.1) -- the resolution modal's chip list.
+    fn resolution_chips(
+        &self,
+        project_id: String,
+    ) -> PulsationsFuture<Vec<hvc_core::orchestration::SpecificationQuestionSet>>;
+    /// Returns the resolution conversation's id for `question_set_id`,
+    /// creating it (with a real Companion provider/model snapshot) the first
+    /// time a chip is expanded.
+    fn ensure_resolution_conversation(
+        &self,
+        project_id: String,
+        question_set_id: String,
+    ) -> PulsationsFuture<String>;
     #[cfg(test)]
     fn create(&self, project_id: String, feature_name: String) -> PulsationsFuture<Pulsation>;
     fn cancel_jobs(&self, pulsation_id: String) -> PulsationsFuture<usize>;
@@ -199,6 +213,43 @@ impl PulsationsBackend for CorePulsationsBackend {
                 })
                 .await
                 .map_err(|error| Self::worker_error("artifacts", error))?
+        })
+    }
+
+    fn resolution_chips(
+        &self,
+        project_id: String,
+    ) -> PulsationsFuture<Vec<hvc_core::orchestration::SpecificationQuestionSet>> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .list_open_specification_checkpoints(&project_id)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| Self::worker_error("resolution chips", error))?
+        })
+    }
+
+    fn ensure_resolution_conversation(
+        &self,
+        project_id: String,
+        question_set_id: String,
+    ) -> PulsationsFuture<String> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .ensure_resolution_conversation(&project_id, &question_set_id)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| Self::worker_error("resolution conversation", error))?
         })
     }
 

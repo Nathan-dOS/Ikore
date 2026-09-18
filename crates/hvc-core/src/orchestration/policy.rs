@@ -121,8 +121,8 @@ pub fn validate_specification_answers(
     let mut received = HashSet::new();
     if request.answers.len() != expected.len()
         || request.answers.iter().any(|answer| {
-            answer.answer.trim().is_empty()
-                || answer.answer.chars().count() > 16_000
+            answer.text_answer.trim().is_empty()
+                || answer.text_answer.chars().count() > 16_000
                 || !expected.contains(answer.question_id.as_str())
                 || !received.insert(answer.question_id.as_str())
         })
@@ -156,7 +156,7 @@ impl StageHandoffV1 {
             + self
                 .answers
                 .iter()
-                .map(|a| a.answer.chars().count())
+                .map(|a| a.text_answer.chars().count())
                 .sum::<usize>()
     }
     /// Validates the envelope, not the external filesystem. M3 still revalidates
@@ -212,7 +212,7 @@ impl StageHandoffV1 {
         used_chars += self
             .answers
             .iter()
-            .map(|a| a.answer.chars().count())
+            .map(|a| a.text_answer.chars().count())
             .sum::<usize>();
         used_chars += self
             .revision_feedback

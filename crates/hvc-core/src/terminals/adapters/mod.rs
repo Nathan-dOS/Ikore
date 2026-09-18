@@ -421,9 +421,17 @@ fn classify_failure_text(stderr: &str) -> CliFailureKind {
     .any(|needle| stderr.contains(needle))
     {
         CliFailureKind::VersionUnsupported
-    } else if ["rate limit", "too many requests", "resource exhausted"]
-        .iter()
-        .any(|needle| stderr.contains(needle))
+    } else if [
+        "rate limit",
+        "too many requests",
+        "resource exhausted",
+        "503",
+        "service unavailable",
+        "overloaded",
+        "model is overloaded",
+    ]
+    .iter()
+    .any(|needle| stderr.contains(needle))
     {
         CliFailureKind::RateLimited
     } else {

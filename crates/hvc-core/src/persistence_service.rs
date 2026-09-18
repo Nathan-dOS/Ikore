@@ -78,6 +78,8 @@ mod learning;
 mod preparation;
 #[path = "orchestration/reconciliation.rs"]
 mod reconciliation;
+#[path = "orchestration/resolution.rs"]
+mod resolution;
 #[path = "orchestration/serial.rs"]
 mod serial;
 #[path = "orchestration/supervisor.rs"]
@@ -1208,10 +1210,13 @@ pub struct CancelPulsationJobsResponse {
     pub cancelled_jobs: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListAgentRunsRequest {
-    pub pulsation_id: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub pulsation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1233,6 +1238,14 @@ pub struct AgentRunListItem {
     pub structured_output: Option<Value>,
     pub created_at: String,
     pub updated_at: String,
+    pub pulsation_id: Option<String>,
+    pub pulsation_name: Option<String>,
+    pub pulsation_status: Option<String>,
+    pub job_kind: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub cancellation_reason: Option<String>,
+    pub validation_error: Option<String>,
+    pub tool_trace: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -4060,7 +4073,16 @@ impl PersistenceService {
         &self,
         request: ListAgentRunsRequest,
     ) -> Result<ListAgentRunsResponse, PersistenceServiceError> {
-        let pulsation_id = Self::normalize_pulsation_id(&request.pulsation_id)?;
+        let pulsation_id = request
+            .pulsation_id
+            .as_deref()
+            .map(Self::normalize_pulsation_id)
+            .transpose()?;
+        let project_id = request
+            .project_id
+            .as_deref()
+            .map(Self::normalize_project_id)
+            .transpose()?;
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             "SELECT
@@ -4078,16 +4100,26 @@ impl PersistenceService {
                j.last_error AS last_error,
                j.started_at AS started_at,
                j.finished_at AS finished_at,
+               j.kind AS job_kind,
+               j.cancellation_reason AS cancellation_reason,
+               j.pulsation_id AS pulsation_id,
+               p.feature_name AS pulsation_name,
+               p.status AS pulsation_status,
+               CAST(MAX(0, (julianday(COALESCE(j.finished_at, ar.updated_at)) - julianday(COALESCE(j.started_at, ar.created_at))) * 86400000) AS INTEGER) AS duration_ms,
                aro.raw_output AS raw_output,
-               aro.structured_output AS structured_output
+               aro.structured_output AS structured_output,
+               aro.validation_error AS validation_error,
+               aro.tool_trace AS tool_trace
              FROM agent_runs ar
              INNER JOIN jobs j ON j.id = ar.job_id
+             LEFT JOIN pulsations p ON p.id = j.pulsation_id
              LEFT JOIN agent_run_outputs aro ON aro.agent_run_id = ar.id
-             WHERE j.pulsation_id = ?1
+             WHERE (?1 IS NULL OR j.pulsation_id = ?1)
+               AND (?2 IS NULL OR p.project_id = ?2 OR j.project_id = ?2)
              ORDER BY ar.created_at DESC",
         )?;
 
-        let rows = statement.query_map(params![pulsation_id.as_str()], |row| {
+        let rows = statement.query_map(params![pulsation_id.as_deref(), project_id.as_deref()], |row| {
             let provider = row.get::<_, Option<String>>("provider")?;
             let structured_output_raw: Option<String> = row.get("structured_output")?;
             let structured_output = structured_output_raw
@@ -4111,6 +4143,14 @@ impl PersistenceService {
                 structured_output,
                 created_at: row.get("created_at")?,
                 updated_at: row.get("updated_at")?,
+                pulsation_id: row.get("pulsation_id")?,
+                pulsation_name: row.get("pulsation_name")?,
+                pulsation_status: row.get("pulsation_status")?,
+                job_kind: row.get("job_kind")?,
+                duration_ms: row.get("duration_ms")?,
+                cancellation_reason: row.get("cancellation_reason")?,
+                validation_error: row.get("validation_error")?,
+                tool_trace: row.get("tool_trace")?,
             })
         })?;
 
@@ -7152,7 +7192,8 @@ mod tests {
 
         let runs = service
             .list_agent_runs(ListAgentRunsRequest {
-                pulsation_id: created.id.clone(),
+                project_id: Some(project.id.clone()),
+                pulsation_id: Some(created.id.clone()),
             })
             .expect("agent runs should load")
             .runs;
@@ -7160,6 +7201,9 @@ mod tests {
         assert!(runs.len() >= 2);
         assert!(runs.iter().any(|run| run.structured_output.is_some()));
         assert!(runs.iter().any(|run| run.raw_output.is_some()));
+        assert!(runs.iter().all(|run| run.pulsation_id.as_deref() == Some(&created.id)));
+        assert!(runs.iter().all(|run| run.pulsation_name.as_deref() == Some("Feat: Runtime Output")));
+        assert!(runs.iter().all(|run| run.job_kind.is_some()));
         let trace_count: i64 = service
             .connection()
             .unwrap()
@@ -7246,7 +7290,8 @@ mod tests {
 
         let runs = service
             .list_agent_runs(ListAgentRunsRequest {
-                pulsation_id: created.id,
+                pulsation_id: Some(created.id),
+                project_id: None,
             })
             .expect("agent runs should load")
             .runs;

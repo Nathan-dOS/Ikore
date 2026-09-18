@@ -655,6 +655,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
     }
 
     if let Some(questions) = detail.questions.filter(|_| main_actionable) {
+        let question_set_id = questions.id.clone();
         let mut questions_card = prep_card("SPECIFICATION · PENDING QUESTIONS")
             .child(div().text_sm().child(
                 "Questions produced by Specification and presented in Companion without additional LLM calls. No complete specification to approve yet.",
@@ -691,10 +692,17 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             ))
             .child(preparation_button(
                 "specification-conversation",
-                "View Companion conversation",
+                "Companion questions",
                 true,
                 cx,
                 |m, cx| m.open_specification_conversation(cx),
+            ))
+            .child(preparation_button(
+                "resolution-conversation",
+                "Resolution conversation",
+                true,
+                cx,
+                move |m, cx| m.toggle_resolution_chip(question_set_id.clone(), cx),
             ));
         panel = panel.child(questions_card);
     } else if artifact_review && main_actionable {

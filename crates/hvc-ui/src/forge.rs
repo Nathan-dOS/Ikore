@@ -194,6 +194,11 @@ pub(crate) struct ForgeUi {
     pub snapshot: ForgeSnapshot,
     pub selected_feature: Option<String>,
     pub selected_tasks: HashSet<String>,
+    /// One optional path-hint input per selected task, keyed by task id
+    /// (ADR-022 clarification loop, P1/A1.3): satisfies the dispatch-time
+    /// anchoring gate for a task without persisting the hint to its stored
+    /// draft. Created lazily as tasks are selected.
+    pub path_hint_inputs: HashMap<String, Entity<NativeTextInput>>,
     pub history: Vec<FeatureTurn>,
     pub drafts: Vec<DraftInputs>,
     pub feature_title: Entity<NativeTextInput>,
@@ -250,6 +255,7 @@ impl ForgeUi {
             snapshot: ForgeSnapshot::default(),
             selected_feature: None,
             selected_tasks: HashSet::new(),
+            path_hint_inputs: HashMap::new(),
             history: Vec::new(),
             drafts: vec![DraftInputs::new(cx)],
             feature_title: cx.new(|cx| NativeTextInput::new("Feature title", cx)),
@@ -466,6 +472,10 @@ pub(crate) enum ForgeAction {
     Evaluate,
     SelectFeatureTasks(String),
     SuggestFeature(String),
+    /// "Ask the Feature Agent for a path" (ADR-022 clarification loop,
+    /// P1/A1.3): the task id, resolved to its feature at dispatch time since
+    /// only feature-owned tasks can reach this action.
+    RequestPathClarification(String),
     /// Ask the Feature Agent for the triage judgement. Prompts first if the
     /// on-screen answers would be overwritten; `ConfirmAnalyzeTriage` is the
     /// same request past that prompt.
@@ -501,6 +511,8 @@ enum Operation {
     /// the snapshot on the UI side so this reuses `set_dependency` rather than
     /// needing a bulk-delete of its own.
     ClearAgentDependencies(String, Vec<String>),
+    /// Feature id, task title.
+    RequestPathClarification(String, String),
 }
 impl AppModel {
     pub(crate) fn refresh_forge(&mut self, cx: &mut Context<Self>) {
@@ -681,7 +693,17 @@ impl AppModel {
             }
             ForgeAction::ToggleTask(id) => {
                 if !self.forge.selected_tasks.remove(&id) {
+                    self.forge
+                        .path_hint_inputs
+                        .entry(id.clone())
+                        .or_insert_with(|| {
+                            cx.new(|cx| {
+                                NativeTextInput::new("Optional: path this task touches", cx)
+                            })
+                        });
                     self.forge.selected_tasks.insert(id);
+                } else {
+                    self.forge.path_hint_inputs.remove(&id);
                 }
                 cx.notify();
                 return;
@@ -848,6 +870,15 @@ impl AppModel {
                     )
                 }
             }
+            ForgeAction::RequestPathClarification(id) => {
+                let Some(task) = self.forge.snapshot.tasks.iter().find(|t| t.id == id) else {
+                    return;
+                };
+                let Some(feature_id) = task.draft.feature_id.clone() else {
+                    return;
+                };
+                Operation::RequestPathClarification(feature_id, task.draft.title.clone())
+            }
             ForgeAction::Dispatch => Operation::Dispatch(
                 self.forge.batch_title.read(cx).value().into(),
                 self.forge
@@ -858,6 +889,12 @@ impl AppModel {
                     .map(|t| TaskSelection {
                         task_id: t.id.clone(),
                         expected_revision: t.revision,
+                        manual_path_hint: self
+                            .forge
+                            .path_hint_inputs
+                            .get(&t.id)
+                            .map(|input| input.read(cx).value().to_string())
+                            .filter(|value| !value.trim().is_empty()),
                     })
                     .collect(),
             ),
@@ -1074,6 +1111,15 @@ impl AppModel {
                                 forge.archive(&project, &id, &reason)?
                             }
                             Operation::Reopen(id) => forge.reopen(&project, &id)?,
+                            Operation::RequestPathClarification(feature_id, title) => {
+                                forge.request_path_clarification(&project, &feature_id, &title)?;
+                                notice = Some(
+                                    "Incubation reopened; the Feature Agent will ask for a file path."
+                                        .into(),
+                                );
+                                selected = Some(feature_id);
+                                navigate = Some(AppView::Forge);
+                            }
                             Operation::Complete(id, revision) => {
                                 forge.complete(&project, &id, revision)?
                             }

@@ -278,7 +278,7 @@ pub struct PreparationSnapshot {
 pub struct ClarificationExchange {
     pub question_set_id: String,
     pub questions: Vec<SpecificationQuestion>,
-    pub answers: Vec<SpecificationAnswer>,
+    pub answers: Vec<ClarificationAnswerV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,11 +302,22 @@ pub struct SpecificationQuestion {
     pub rationale: String,
 }
 
+/// A developer's answer to a clarification question (ADR-022 clarification
+/// loop). `text_answer` keeps the full prose reply, including any `FILES_*:`
+/// tag lines the Companion or the developer wrote; `planned_paths`/
+/// `modified_paths` are the host-parsed anchors extracted from those tags
+/// (see `orchestration::clarification::parse_clarification_tags`), populated
+/// once at submission time rather than recomputed on every read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SpecificationAnswer {
+pub struct ClarificationAnswerV1 {
     pub question_id: String,
-    pub answer: String,
+    #[serde(alias = "answer")]
+    pub text_answer: String,
+    #[serde(default)]
+    pub planned_paths: Vec<String>,
+    #[serde(default)]
+    pub modified_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -327,7 +338,27 @@ pub struct SubmitSpecificationAnswersRequest {
     pub checkpoint_id: String,
     pub expected_input_revision: u64,
     pub expected_state_version: u64,
-    pub answers: Vec<SpecificationAnswer>,
+    pub answers: Vec<ClarificationAnswerV1>,
+}
+
+/// One task's manual path correction, resolving a preventive path-confirmation
+/// checkpoint (ADR-022 clarification loop, P5/A5.2) -- the same semantics as
+/// `feature_forge::TaskSelection::manual_path_hint` at dispatch time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManualPathHint {
+    pub task_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolvePathConfirmationRequest {
+    pub pulsation_id: String,
+    pub checkpoint_id: String,
+    pub expected_state_version: u64,
+    #[serde(default)]
+    pub manual_path_hints: Vec<ManualPathHint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -768,7 +799,7 @@ pub struct StageHandoffV1 {
     pub stage: PulsationStage,
     pub assessment: Option<VaguenessAssessment>,
     pub context: Option<ContextPackageV1>,
-    pub answers: Vec<SpecificationAnswer>,
+    pub answers: Vec<ClarificationAnswerV1>,
     #[serde(default)]
     pub clarifications: Vec<ClarificationExchange>,
     pub artifacts: Vec<ArtifactHandoff>,

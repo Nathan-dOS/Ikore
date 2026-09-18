@@ -594,7 +594,7 @@ fn should_show_tool_activity(
     conversation.is_none_or(|conversation| conversation.transport != ChatTransportKind::Cli)
 }
 
-fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -> AnyElement {
+pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -> AnyElement {
     let assistant = message.role == "assistant";
     div()
         .p_3()

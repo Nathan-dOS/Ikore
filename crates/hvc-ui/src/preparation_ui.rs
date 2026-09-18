@@ -93,9 +93,11 @@ impl AppModel {
             answers: self
                 .specification_answer_inputs
                 .iter()
-                .map(|(id, input)| SpecificationAnswer {
+                .map(|(id, input)| ClarificationAnswerV1 {
                     question_id: id.clone(),
-                    answer: input.read(cx).value().into(),
+                    text_answer: input.read(cx).value().into(),
+                    planned_paths: Vec::new(),
+                    modified_paths: Vec::new(),
                 })
                 .collect(),
         };

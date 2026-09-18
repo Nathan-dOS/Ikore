@@ -882,31 +882,98 @@ fn header_tabs_and_settings_navigate_at_minimum_window_size(cx: &mut TestAppCont
 #[gpui::test]
 fn agents_header_shows_the_active_pulsation_pipeline(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
-    visual.simulate_resize(size(px(960.0), px(640.0)));
     select(&model, visual, AppView::Agents);
-
-    let agents_header = visual.debug_bounds("agents-header").unwrap();
-    let pipeline = visual.debug_bounds("agents-pipeline").unwrap();
-    assert!(
-        pipeline.top() >= agents_header.top() && pipeline.bottom() <= agents_header.bottom(),
-        "pipeline escaped header: {pipeline:?} vs {agents_header:?}"
-    );
-    for selector in [
-        "agents-pipeline-stage-intake",
-        "agents-pipeline-stage-specification",
-        "agents-pipeline-stage-contract",
-        "agents-pipeline-stage-code",
-        "agents-pipeline-stage-test",
-        "agents-pipeline-stage-integrator",
-    ] {
-        let stage_bounds = visual.debug_bounds(selector).unwrap();
-        assert!(stage_bounds.left() >= pipeline.left());
-        assert!(stage_bounds.right() <= pipeline.right());
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        visual.run_until_parked();
+        let agents_header = visual.debug_bounds("agents-header").unwrap();
+        let pipeline = visual.debug_bounds("agents-pipeline").unwrap();
+        let refresh = visual.debug_bounds("agents-refresh").unwrap();
+        assert!(
+            pipeline.top() >= agents_header.top() && pipeline.bottom() <= agents_header.bottom(),
+            "pipeline escaped header: {pipeline:?} vs {agents_header:?}"
+        );
+        // The stepper is centred on the window, not on whatever is left of the Refresh group.
+        assert!(
+            (pipeline.center().x - agents_header.center().x).abs() <= px(2.0),
+            "pipeline off-centre at {width}: {pipeline:?} vs {agents_header:?}"
+        );
+        assert!(pipeline.right() <= refresh.left());
+        assert!(refresh.right() <= px(width));
+        let mut previous_right = pipeline.left();
+        for selector in [
+            "agents-pipeline-stage-intake",
+            "agents-pipeline-stage-specification",
+            "agents-pipeline-stage-contract",
+            "agents-pipeline-stage-code",
+            "agents-pipeline-stage-test",
+            "agents-pipeline-stage-integrator",
+        ] {
+            let stage_bounds = visual.debug_bounds(selector).unwrap();
+            assert!(
+                stage_bounds.left() >= previous_right && stage_bounds.right() <= pipeline.right(),
+                "{selector} out of order or bounds: {stage_bounds:?} vs {pipeline:?}"
+            );
+            previous_right = stage_bounds.right();
+        }
     }
-    assert!(visual.debug_bounds("agents-pipeline-current").is_some());
+    // The stage · agent · state readout moved to the flow bar. This selector was never drawn in
+    // this window, so a direct lookup is enough (no fresh-window dance needed).
+    assert!(visual.debug_bounds("agents-pipeline-current").is_none());
     assert!(model.read_with(visual, |model, cx| {
         model.pulsations.read(cx).active_id().as_deref() == Some("pulse-a")
     }));
+}
+
+#[gpui::test]
+fn flow_bar_shows_the_pipeline_status_in_every_view(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        for view in [
+            AppView::Agents,
+            AppView::Logs,
+            AppView::Pulsations,
+            AppView::Chat,
+            AppView::Settings,
+        ] {
+            select(&model, visual, view);
+            let bar = visual.debug_bounds("flow-bar").unwrap();
+            let pill = visual.debug_bounds("pipeline-status").unwrap();
+            let tabs = visual.debug_bounds("flow-bar-tabs").unwrap();
+            assert!(
+                pill.size.width > px(0.0) && pill.size.height > px(0.0),
+                "empty pill in {view:?}"
+            );
+            assert!(
+                pill.left() >= bar.left() && pill.right() <= tabs.left(),
+                "pill not left of the tabs in {view:?} at {width}: {pill:?} vs {tabs:?}"
+            );
+            assert!(pill.top() >= bar.top() && pill.bottom() <= bar.bottom());
+            assert!(tabs.left() < px(width / 2.0) && tabs.right() > px(width / 2.0));
+        }
+    }
+    select(&model, visual, AppView::Settings);
+    click(visual, "pipeline-status");
+    assert_eq!(
+        model.read_with(visual, |model, _| model.active_view()),
+        AppView::Pulsations
+    );
+    assert_eq!(
+        model.read_with(visual, |model, _| model.active_tab()),
+        AppTab::Engine
+    );
+    // Without a pulsation the slot keeps a muted placeholder instead of collapsing.
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |pulsations, _| {
+            pulsations.pulsations.clear();
+            pulsations.active_pulsation_id = None;
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let pill = visual.debug_bounds("pipeline-status").unwrap();
+    assert!(pill.size.width > px(0.0));
 }
 
 #[gpui::test]

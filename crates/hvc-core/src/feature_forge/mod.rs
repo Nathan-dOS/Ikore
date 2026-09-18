@@ -43,6 +43,22 @@ pub enum Wave {
     Horizon,
 }
 
+/// How a batch satisfied the dispatch-time file-path anchoring gate (ADR-022
+/// clarification loop). Read downstream by the preventive HITL gate (P5),
+/// which skips its own check when the forge gate already confirmed paths.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathConfirmationSource {
+    /// The dispatch gate found an explicit path on at least one task.
+    ForgeGate,
+    /// The developer confirmed paths through a preventive HITL checkpoint.
+    ManualHitl,
+    /// No path was confirmed; the batch qualified for the greenfield
+    /// exception (feature coverage `unavailable`, or an empty workspace).
+    #[default]
+    None,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcceptanceCriterion {
@@ -213,6 +229,14 @@ pub struct CreateFeatureRequest {
 pub struct TaskSelection {
     pub task_id: String,
     pub expected_revision: u64,
+    /// A developer-supplied path that satisfies the dispatch-time anchoring
+    /// gate (ADR-022 clarification loop, P1/A1.3) for this task without
+    /// persisting it to the task's stored draft. This is the mechanism for
+    /// correcting a feature-owned task at dispatch time: `WorkTaskService::revise`
+    /// refuses tasks with a `feature_id`, so a transient hint on the selection
+    /// is the only way to satisfy the gate short of reopening Incubation.
+    #[serde(default)]
+    pub manual_path_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,6 +248,20 @@ pub struct CreatePulsationFromTasksRequest {
     pub tasks: Vec<TaskSelection>,
 }
 
+/// Preview of the dispatch-time file-path anchoring gate (ADR-022
+/// clarification loop, P1/A1.3) for a candidate task selection, computed by
+/// the same check `create_pulsation_from_tasks` runs so the two can never
+/// diverge.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatchGateStatus {
+    pub blocked: bool,
+    /// Whether the batch qualified for the greenfield exception (a task's
+    /// feature has no observed sources, or its workspace has no code files).
+    pub greenfield: bool,
+    pub tasks_missing_paths: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchManifest {
@@ -233,6 +271,8 @@ pub struct BatchManifest {
     pub features: Vec<Feature>,
     #[serde(default)]
     pub feature_dependencies: Vec<FeatureDependency>,
+    #[serde(default)]
+    pub path_confirmation_source: PathConfirmationSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

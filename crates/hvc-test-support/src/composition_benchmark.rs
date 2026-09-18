@@ -853,6 +853,7 @@ pub fn run_observation(arm: Arm, fixture: &Fixture, mode: &Mode) -> Observation 
                 .map(|task| TaskSelection {
                     task_id: task.id.clone(),
                     expected_revision: task.revision,
+                    manual_path_hint: None,
                 })
                 .collect(),
         })

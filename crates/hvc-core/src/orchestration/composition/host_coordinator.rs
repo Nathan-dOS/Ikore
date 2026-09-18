@@ -1330,6 +1330,37 @@ impl PersistenceService {
                 }
             }
         }
+        // Clarification answers (ADR-022 loop, P2/A2.2) already carry
+        // host-anchored paths (`submit_specification_answers` parses
+        // `FILES_*:` tags and resolves a bare `FILES:` against the workspace
+        // before persisting), so they feed the exact same `sources`/
+        // `missing_paths` a task's own text would -- no separate field or
+        // consumption path in `prepare()` is needed; the Specification recipe
+        // (and Code/Test's ownership of missing paths) already reads these.
+        for exchange in &handoff.clarifications {
+            for answer in &exchange.answers {
+                for raw in &answer.planned_paths {
+                    if let Ok(path) = comp::RelPath::new(raw.as_str())
+                        && !missing.contains(&path)
+                    {
+                        missing.push(path);
+                    }
+                }
+                for raw in &answer.modified_paths {
+                    let Ok(path) = comp::RelPath::new(raw.as_str()) else {
+                        continue;
+                    };
+                    match read(path.as_str()) {
+                        Some(content) => push(path, content),
+                        None => {
+                            if !missing.contains(&path) {
+                                missing.push(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for artifact in &handoff.artifacts {
             let Some(relative) = artifact_paths.get(&artifact.artifact_id) else {
                 continue;
@@ -1349,7 +1380,7 @@ impl PersistenceService {
                     .iter()
                     .find(|question| question.id == answer.question_id)
                 {
-                    answers.push((question.question.clone(), answer.answer.clone()));
+                    answers.push((question.question.clone(), answer.text_answer.clone()));
                 }
             }
         }
@@ -2248,10 +2279,23 @@ impl PersistenceService {
                     repairable: false,
                     correction: None,
                 });
+                // Release the budget reservation for provider-configuration
+                // errors (MissingApiKey, Authentication, Billing, Permission,
+                // ModelNotFound, RouteConflict). These classes never reach the
+                // provider, so no tokens were consumed and the invocation slot
+                // should be returned to the pool for a corrected attempt.
+                // ProviderTransport and RetryBudgetExhausted keep the settled
+                // state because a real request may have left the host.
+                let attempt_state = if failure.class == FailureClass::ProviderConfiguration {
+                    Self::release_reservation(&db, &attempt.reservation_id)?;
+                    AttemptState::Cancelled
+                } else {
+                    AttemptState::Rejected
+                };
                 Self::finish_attempt(
                     &db,
                     &attempt,
-                    AttemptState::Rejected,
+                    attempt_state,
                     Some(&failure.code),
                     Some(&failure.diagnostic),
                     None,

@@ -50,9 +50,11 @@ fn answers() -> SubmitSpecificationAnswersRequest {
         checkpoint_id: "checkpoint-a".into(),
         expected_input_revision: 1,
         expected_state_version: 3,
-        answers: vec![SpecificationAnswer {
+        answers: vec![ClarificationAnswerV1 {
             question_id: "question-a".into(),
-            answer: "Exibir o total.".into(),
+            text_answer: "Exibir o total.".into(),
+            planned_paths: Vec::new(),
+            modified_paths: Vec::new(),
         }],
     }
 }
@@ -352,13 +354,17 @@ fn missing_unknown_duplicate_or_blank_answers_do_not_resume_specification() {
     let pending = questions();
     for invalid in [
         vec![],
-        vec![SpecificationAnswer {
+        vec![ClarificationAnswerV1 {
             question_id: "unknown".into(),
-            answer: "x".into(),
+            text_answer: "x".into(),
+            planned_paths: Vec::new(),
+            modified_paths: Vec::new(),
         }],
-        vec![SpecificationAnswer {
+        vec![ClarificationAnswerV1 {
             question_id: "question-a".into(),
-            answer: " ".into(),
+            text_answer: " ".into(),
+            planned_paths: Vec::new(),
+            modified_paths: Vec::new(),
         }],
         vec![answers().answers[0].clone(), answers().answers[0].clone()],
     ] {
@@ -760,6 +766,7 @@ fn prompt_handoff_drops_backlog_drafts_but_keeps_the_dispatched_tasks() {
     value.batch_manifest = Some(BatchManifest {
         schema_version: 1,
         title: "Batch".into(),
+        path_confirmation_source: crate::feature_forge::PathConfirmationSource::default(),
         tasks: vec![WorkTask {
             id: "task-0001".into(),
             project_id: "project-a".into(),
@@ -838,4 +845,48 @@ fn prompt_handoff_without_a_manifest_does_not_invent_a_batch_field() {
         !prompt_json.contains("batchManifest"),
         "compacting the manifest must not resurrect a field that `skip_serializing_if` omits"
     );
+}
+
+// ADR-022 clarification loop (P2/A2.2): `ClarificationAnswerV1` replaces the
+// old `SpecificationAnswer`, keeping `text_answer` round-trippable through
+// history rows persisted before the rename (`{"questionId":..,"answer":..}`,
+// no `plannedPaths`/`modifiedPaths`) via `#[serde(alias = "answer")]` and
+// `#[serde(default)]` on the new vectors.
+#[test]
+fn clarification_answer_round_trips_with_and_without_path_vectors() {
+    let full = ClarificationAnswerV1 {
+        question_id: "question-a".into(),
+        text_answer: "FILES_NEW: src/foo.rs\n\nProsa livre.".into(),
+        planned_paths: vec!["src/foo.rs".into()],
+        modified_paths: vec!["src/bar.rs".into()],
+    };
+    let encoded = serde_json::to_value(&full).unwrap();
+    assert_eq!(
+        encoded["textAnswer"],
+        "FILES_NEW: src/foo.rs\n\nProsa livre."
+    );
+    assert_eq!(encoded["plannedPaths"], json!(["src/foo.rs"]));
+    assert_eq!(encoded["modifiedPaths"], json!(["src/bar.rs"]));
+    let decoded: ClarificationAnswerV1 = serde_json::from_value(encoded).unwrap();
+    assert_eq!(decoded, full);
+
+    let minimal: ClarificationAnswerV1 = serde_json::from_value(json!({
+        "questionId": "question-b",
+        "textAnswer": "Sem caminhos.",
+    }))
+    .unwrap();
+    assert_eq!(minimal.planned_paths, Vec::<String>::new());
+    assert_eq!(minimal.modified_paths, Vec::<String>::new());
+}
+
+#[test]
+fn clarification_answer_deserializes_the_pre_rename_answer_field() {
+    // Exactly the shape `specification_question_sets.answers_json` held before
+    // ClarificationAnswerV1 existed - no path vectors, field named `answer`.
+    let legacy = json!({"questionId": "q_1", "answer": "texto"});
+    let decoded: ClarificationAnswerV1 = serde_json::from_value(legacy).unwrap();
+    assert_eq!(decoded.question_id, "q_1");
+    assert_eq!(decoded.text_answer, "texto");
+    assert_eq!(decoded.planned_paths, Vec::<String>::new());
+    assert_eq!(decoded.modified_paths, Vec::<String>::new());
 }

@@ -3041,6 +3041,7 @@ mod prompt_tests {
         BatchManifest {
             schema_version: 1,
             title: "Batch".into(),
+            path_confirmation_source: crate::feature_forge::PathConfirmationSource::default(),
             tasks: vec![WorkTask {
                 id: "task-selected-0001".into(),
                 project_id: "project-1".into(),

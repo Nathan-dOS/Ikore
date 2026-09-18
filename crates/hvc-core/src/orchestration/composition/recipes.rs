@@ -1640,6 +1640,44 @@ pub fn explicit_paths(text: &str) -> Vec<RelPath> {
     paths.into_iter().collect()
 }
 
+/// Parses the `FILES_NEW:`/`FILES_MOD:`/`FILES:` tag lines a developer (or,
+/// from M5 onward, the Companion's synthesis prompt) may write at the start
+/// of a clarification answer (ADR-022 clarification loop, P2/A2.2). Only the
+/// leading block of tag lines is read -- scanning stops at the first line
+/// that does not start with one of the three prefixes, so the prose that
+/// follows is never touched. Values are comma-separated; a value that does
+/// not parse as a `RelPath` is dropped rather than failing the whole answer,
+/// since a malformed tag should mean "no extra anchor", never "reject the
+/// developer's answer". `FILES:` (no suffix) is returned unresolved -- the
+/// host decides new-vs-existing by checking the workspace, which this pure
+/// function has no access to (see `submit_specification_answers`).
+pub fn parse_clarification_tags(text: &str) -> (Vec<RelPath>, Vec<RelPath>, Vec<RelPath>) {
+    let mut planned = Vec::new();
+    let mut modified = Vec::new();
+    let mut unresolved = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let (target, rest) = if let Some(rest) = line.strip_prefix("FILES_NEW:") {
+            (&mut planned, rest)
+        } else if let Some(rest) = line.strip_prefix("FILES_MOD:") {
+            (&mut modified, rest)
+        } else if let Some(rest) = line.strip_prefix("FILES:") {
+            (&mut unresolved, rest)
+        } else {
+            break;
+        };
+        for value in rest.split(',') {
+            let value = value.trim();
+            if !value.is_empty()
+                && let Ok(path) = RelPath::new(value)
+            {
+                target.push(path);
+            }
+        }
+    }
+    (planned, modified, unresolved)
+}
+
 pub fn contract_of(record: &StagePayloadRecord) -> Option<&InterfaceContractV1> {
     match record.primary()? {
         UnitModelResponseV1::Completed {
@@ -1716,6 +1754,7 @@ mod tests {
         BatchManifest {
             schema_version: 1,
             title: "Login".into(),
+            path_confirmation_source: crate::feature_forge::PathConfirmationSource::default(),
             tasks: vec![
                 task(
                     "t-1",
@@ -1806,6 +1845,57 @@ mod tests {
             "tests/user_login_test.rs"
         );
         assert!(default_test_destination("x", &[]).is_none());
+    }
+
+    // ADR-022 clarification loop (P2/A2.2): `parse_clarification_tags` reads
+    // only the leading `FILES_*:` block of a clarification answer, leaving
+    // the prose (including the raw tag lines) untouched for `batch_guidance`.
+    #[test]
+    fn clarification_tags_are_parsed_from_the_leading_lines_only() {
+        let (planned, modified, unresolved) = parse_clarification_tags(
+            "FILES_NEW: src/foo.rs, src/bar.rs\nFILES_MOD: src/existing.rs\n\nProsa livre que menciona src/never.rs mas não é uma tag.",
+        );
+        assert_eq!(
+            planned,
+            vec![
+                RelPath::new("src/foo.rs").unwrap(),
+                RelPath::new("src/bar.rs").unwrap()
+            ]
+        );
+        assert_eq!(modified, vec![RelPath::new("src/existing.rs").unwrap()]);
+        assert!(unresolved.is_empty());
+    }
+
+    #[test]
+    fn a_bare_files_tag_is_returned_unresolved_for_the_host_to_check_the_disk() {
+        let (planned, modified, unresolved) =
+            parse_clarification_tags("FILES: src/auth.rs, src/new_module.rs");
+        assert!(planned.is_empty());
+        assert!(modified.is_empty());
+        assert_eq!(
+            unresolved,
+            vec![
+                RelPath::new("src/auth.rs").unwrap(),
+                RelPath::new("src/new_module.rs").unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn text_with_no_tag_lines_parses_to_nothing_same_as_before_this_milestone() {
+        let (planned, modified, unresolved) =
+            parse_clarification_tags("JWT assinado, sem nenhuma tag de arquivo.");
+        assert!(planned.is_empty());
+        assert!(modified.is_empty());
+        assert!(unresolved.is_empty());
+    }
+
+    #[test]
+    fn an_invalid_path_value_is_dropped_not_fatal() {
+        // A backslash is a forbidden RelPath character; the malformed value
+        // is silently dropped, the well-formed one beside it still lands.
+        let (planned, _, _) = parse_clarification_tags("FILES_NEW: src\\bad.rs, src/good.rs");
+        assert_eq!(planned, vec![RelPath::new("src/good.rs").unwrap()]);
     }
 
     #[test]

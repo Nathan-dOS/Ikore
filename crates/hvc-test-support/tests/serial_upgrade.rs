@@ -127,7 +127,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        34
+        36
     );
     assert_eq!(
         db.query_row(
@@ -258,7 +258,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        34
+        36
     );
     assert_eq!(
         db.query_row(
@@ -799,7 +799,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        34
+        36
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -902,5 +902,122 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
     }
     assert!(
         db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('stage_acceptances') WHERE name='stage_execution_id')", [], |r| r.get::<_, bool>(0)).unwrap()
+    );
+}
+
+/// V35 widens `checkpoints.kind`/`purpose` to admit `path_confirmation` (the
+/// ADR-022 clarification-loop preventive HITL gate, P5) via the same
+/// legacy_alter_table rebuild V27 used; V36 adds
+/// `specification_resolution_conversations` (P4). A populated V34 database
+/// with one checkpoint of every pre-existing purpose, plus a clarification
+/// question set, must migrate without losing rows, indexes or foreign keys,
+/// and the widened CHECKs must admit exactly the new value.
+#[test]
+fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question_sets() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(34))
+        .run(&mut db)
+        .unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V34 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,queue_sequence,pipeline_version,state_version) VALUES('parked','p','Legacy','Specification','checkpoint',?1,?1,1,3,3)",[&now]).unwrap();
+    for (id, purpose) in [
+        ("review", "artifact_review"),
+        ("clarify", "clarification"),
+        ("fallback", "cli_fallback"),
+        ("failure", "stage_failure"),
+    ] {
+        db.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,generation,purpose) VALUES(?1,'parked','Specification','waiting',?2,?2,?3,1,3,1,?3)",params![id,now,purpose]).unwrap();
+    }
+    db.execute("INSERT INTO chat_conversations(id,project_id,provider_id_snapshot,model_id_snapshot,title,created_at,updated_at) VALUES('conv-legacy','p','specification','host-presented','Specification','now','now')",[]).unwrap();
+    db.execute("INSERT INTO specification_question_sets(id,checkpoint_id,pulsation_id,input_revision,generation,state_version,conversation_id,questions_json) VALUES('set-legacy','clarify','parked',1,1,3,'conv-legacy','[]')",[]).unwrap();
+    let legacy_indexes: Vec<String> = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='checkpoints' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        36
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    let purposes: Vec<String> = db
+        .prepare("SELECT purpose FROM checkpoints ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        purposes,
+        vec![
+            "clarification".to_string(),
+            "stage_failure".to_string(),
+            "cli_fallback".to_string(),
+            "artifact_review".to_string(),
+        ]
+    );
+    let migrated_indexes: Vec<String> = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='checkpoints' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    for index in &legacy_indexes {
+        assert!(
+            migrated_indexes.contains(index),
+            "{index} did not survive the V35 rebuild"
+        );
+    }
+    // The widened CHECK admits exactly the new value, and only that one.
+    db.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,generation,purpose) VALUES('advisory','parked','Intake','waiting',?1,?1,'path_confirmation',1,3,2,'path_confirmation')",[&now]).expect("path_confirmation is admitted");
+    db.execute(
+        "UPDATE checkpoints SET purpose='made_up' WHERE id='advisory'",
+        [],
+    )
+    .expect_err("unknown purposes stay refused");
+    // The pre-existing question set survived and can now anchor a resolution conversation (P4/M5).
+    db.execute("INSERT INTO chat_conversations(id,project_id,provider_id_snapshot,model_id_snapshot,title,created_at,updated_at) VALUES('conv-resolution','p','openai','gpt-fixture','Resolution','now','now')",[]).unwrap();
+    db.execute("INSERT INTO specification_resolution_conversations(question_set_id,conversation_id,created_at) VALUES('set-legacy','conv-resolution','now')",[]).expect("resolution conversation links to the surviving question set");
+    db.execute("INSERT INTO specification_resolution_conversations(question_set_id,conversation_id,created_at) VALUES('set-legacy','conv-resolution','now')",[]).expect_err("question_set_id is unique per resolution conversation");
+    db.execute(
+        "DELETE FROM specification_question_sets WHERE id='set-legacy'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM specification_resolution_conversations WHERE question_set_id='set-legacy'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "ON DELETE CASCADE must remove the resolution conversation link with its question set"
     );
 }

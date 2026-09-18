@@ -133,9 +133,11 @@ fn first_task_clarifies_through_companion_and_resumes_after_restart_without_extr
         checkpoint_id: pending.checkpoint_id,
         expected_input_revision: 1,
         expected_state_version: pending.fence.state_version,
-        answers: vec![SpecificationAnswer {
+        answers: vec![ClarificationAnswerV1 {
             question_id: "token_format".into(),
-            answer: "JWT assinado".into(),
+            text_answer: "JWT assinado".into(),
+            planned_paths: Vec::new(),
+            modified_paths: Vec::new(),
         }],
     };
     let requests = server.wait_for_requests(2, Duration::from_secs(1));
@@ -198,5 +200,105 @@ fn first_task_clarifies_through_companion_and_resumes_after_restart_without_extr
         )
         .unwrap(),
         2
+    );
+}
+
+// ADR-022 clarification loop (P2/A2.2): `submit_specification_answers` now
+// parses `FILES_*:` tag lines out of `text_answer` and persists the derived
+// paths in `planned_paths`/`modified_paths` -- `FILES_NEW:` is unambiguous,
+// and a bare `FILES:` is resolved against the workspace (existing file here
+// -> modified, absent -> planned). The full prose, including the raw tag
+// lines, is still stored verbatim in `text_answer` for `batch_guidance` to
+// inject unchanged.
+#[test]
+fn clarification_answer_files_tags_are_parsed_and_persisted_alongside_the_prose() {
+    let env = IsolatedTestEnvironment::new();
+    std::fs::write(
+        env.workspace_dir().join("auth.rs"),
+        "pub fn validate_token() -> bool { false } // CURRENT_CODE_EVIDENCE\n",
+    )
+    .unwrap();
+    let outputs = [
+        json!({"outputLanguage":"en","summary":"Intake completed","statusUpdate":"advance","contextUsage":[],"notes":[],"artifacts":[]}),
+        json!({"outputLanguage":"en","summary":"The token format is missing","statusUpdate":"needs_clarification","contextUsage":[],"notes":[],"artifacts":[],"componentProposals":[],"questions":[{"id":"token_format","question":"Which token format should be used?","rationale":"Defines validation in auth.rs"}]}),
+    ];
+    let server=ScriptedHttpServer::start(outputs.map(|output|ScriptedResponse::json(200,json!({"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}).to_string())));
+    let sink = Arc::new(StopEachResponse::default());
+    let credentials = Arc::new(MemoryCredentialStore::default());
+    credentials.set("openai", "fixture-only").unwrap();
+    let service = initialize(&env, sink.clone(), credentials.clone());
+    let db = Connection::open(env.data_dir().join("hard-vibe-code.db")).unwrap();
+    db.execute("UPDATE provider_connections SET provider_id='ollama',endpoint_url=?1 WHERE id='legacy-openai'",[server.url("")]).unwrap();
+    db.execute(
+        "UPDATE runtime_settings SET value='off' WHERE key='runtime.routing_v2_mode'",
+        [],
+    )
+    .unwrap();
+    let project = service
+        .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+            workspace_path: env.workspace_dir().to_string_lossy().into_owned(),
+            preferred_name: None,
+        })
+        .unwrap()
+        .project;
+    let pulse = service
+        .create_pulsation(CreatePulsationRequest {
+            project_id: project.id.clone(),
+            feature_name: "crie validação em auth.rs quando token expirado deve retornar 401"
+                .into(),
+        })
+        .unwrap()
+        .pulsation;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    phase(&runtime, &service, &sink);
+    phase(&runtime, &service, &sink);
+    let snapshot = service
+        .get_pulsation_runtime_snapshot(GetPulsationRuntimeSnapshotRequest {
+            project_id: project.id.clone(),
+        })
+        .unwrap()
+        .snapshot;
+    let pending = snapshot.details[0].questions.clone().unwrap();
+    service
+        .submit_specification_answers(SubmitSpecificationAnswersRequest {
+            pulsation_id: pulse.id.clone(),
+            question_set_id: pending.id.clone(),
+            checkpoint_id: pending.checkpoint_id,
+            expected_input_revision: 1,
+            expected_state_version: pending.fence.state_version,
+            answers: vec![ClarificationAnswerV1 {
+                question_id: "token_format".into(),
+                text_answer:
+                    "FILES_NEW: src/token_format.rs\nFILES_MOD: auth.rs\nFILES: unmentioned_elsewhere.rs\n\nJWT assinado."
+                        .into(),
+                planned_paths: Vec::new(),
+                modified_paths: Vec::new(),
+            }],
+        })
+        .unwrap();
+    let (answers_json, text_answer_preserved): (String, bool) = db
+        .query_row(
+            "SELECT answers_json,answers_json LIKE '%JWT assinado.%' FROM specification_question_sets WHERE id=?1",
+            [&pending.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(
+        text_answer_preserved,
+        "the full prose, including the raw tag lines, must survive verbatim: {answers_json}"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&answers_json).unwrap();
+    assert_eq!(
+        parsed[0]["plannedPaths"],
+        json!(["src/token_format.rs", "unmentioned_elsewhere.rs"]),
+        "FILES_NEW: is unambiguous, and a bare FILES: for a file absent from the workspace resolves to planned: {answers_json}"
+    );
+    assert_eq!(
+        parsed[0]["modifiedPaths"],
+        json!(["auth.rs"]),
+        "FILES_MOD: names an existing file directly: {answers_json}"
     );
 }

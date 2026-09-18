@@ -201,11 +201,15 @@ pub fn unit_response_with(facts: &PromptFacts, options: &ReplyOptions) -> Value 
         .or_else(|| facts.a_source().map(str::to_owned))
         .unwrap_or_else(|| facts.references.keys().next().cloned().unwrap_or_default());
     let source = source_handle.as_str();
+    // A greenfield workspace renders an empty References table for Intake
+    // (there is no source to list): `usedRefs` must then be `[]`, per the
+    // contract's own instruction, never a synthesized/empty handle.
+    let used_refs: &[&str] = if source.is_empty() { &[] } else { &[source] };
     let payload = match facts.executor.as_str() {
         "intake_classifier" => json!({
             "tasks": facts.tasks.iter().map(|task| json!({"taskRef": task, "classification": "bugfix", "risk": "low", "summary": "Correct the token expiry check."})).collect::<Vec<_>>(),
             "issues": [],
-            "usedRefs": [source]
+            "usedRefs": used_refs
         }),
         "specification_author" => {
             let existing = facts

@@ -5,7 +5,7 @@ use gpui::{
     prelude::*, px, uniform_list,
 };
 use hvc_core::llm::AgentRole;
-use hvc_core::persistence_service::{CliFallbackCheckpoint, CliFallbackDecision, PulsationStatus};
+use hvc_core::persistence_service::{CliFallbackCheckpoint, CliFallbackDecision};
 use hvc_core::terminals::{
     AgentExecutionMode, CanonicalAgentDescriptor, CliAvailabilityState, CliBackend,
     CliModelCatalogEntry, CliModelCatalogState, CliModelSelectionSource, TerminalEventKind,
@@ -17,147 +17,105 @@ use crate::agents::{
     TerminalEventFilter,
 };
 use crate::app_model::AppModel;
+use crate::pipeline_status::{PipelineStatus, step_label};
 use crate::pulsations::{PIPELINE_STAGES, stage_label};
 use crate::theme;
 
+/// The six-stage stepper for the active pulsation. Sized to its content so the header's two
+/// `flex_1` spacers keep it centred; the stage · agent · state readout lives in the flow bar.
 fn agents_pipeline_header(
     model: &AppModel,
     snapshot: Option<&hvc_core::terminals::TerminalsSnapshot>,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
-    let active = model.pulsations.read(cx).active().cloned();
-    let Some(active) = active else {
+    let status = model
+        .pulsations
+        .read(cx)
+        .active()
+        .map(|active| PipelineStatus::derive(active, snapshot));
+    let Some(status) = status else {
         return div()
             .id("agents-pipeline")
             .debug_selector(|| "agents-pipeline".into())
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .items_center()
-            .justify_center()
+            .flex_shrink_0()
             .text_xs()
             .text_color(theme::text_muted())
             .child("No active pulsation")
             .into_any_element();
     };
 
-    let current_stage = active.stage;
-    let current_index = PIPELINE_STAGES
-        .iter()
-        .position(|stage| *stage == current_stage)
-        .unwrap_or_default();
-    let current_role = AgentRole::for_stage(stage_label(current_stage));
-    let current_run = snapshot.and_then(|snapshot| {
-        snapshot
-            .agents
-            .iter()
-            .find(|agent| agent.config.agent_role == current_role)
-            .and_then(|agent| {
-                agent
-                    .recent_runs
-                    .iter()
-                    .find(|run| {
-                        run.pulsation_id.as_deref() == Some(active.id.as_str())
-                            && run.status.is_active()
-                    })
-                    .or_else(|| {
-                        agent
-                            .recent_runs
-                            .iter()
-                            .find(|run| run.pulsation_id.as_deref() == Some(active.id.as_str()))
-                    })
-            })
-    });
-    let current_state = current_run
-        .map(|run| run_status(run.status))
-        .unwrap_or_else(|| pulsation_status_label(active.status));
-    let current_descriptor = hvc_core::terminals::canonical_agent(current_role);
-    let current_state = format!(
-        "{} · {} · {}",
-        compact_stage_label(current_stage),
-        current_descriptor.name,
-        current_state
-    );
-
     div()
         .id("agents-pipeline")
         .debug_selector(|| "agents-pipeline".into())
-        .flex_1()
-        .min_w_0()
-        .max_w_full()
+        .flex_shrink_0()
         .flex()
-        .flex_wrap()
         .items_center()
-        .justify_center()
         .gap_1()
+        .text_xs()
         .children(
             PIPELINE_STAGES
                 .into_iter()
                 .enumerate()
-                .map(|(index, stage)| {
-                    let current = index == current_index;
-                    let complete = index < current_index
-                        || (active.status == PulsationStatus::Done && current);
+                .flat_map(move |(index, stage)| {
+                    let current = index == status.stage_index;
+                    let complete = status.stage_complete(index);
                     let stage_id = SharedString::from(format!(
                         "agents-pipeline-stage-{}",
                         stage_label(stage).to_lowercase()
                     ));
                     let stage_selector = stage_id.clone();
-                    let label = compact_stage_label(stage);
-                    div()
+                    let (fill, ink) = if current {
+                        (status.current_fill(), theme::canvas())
+                    } else if complete {
+                        (theme::accent_soft(), theme::accent())
+                    } else {
+                        (theme::surface_raised(), theme::text_muted())
+                    };
+                    let step = div()
                         .id(stage_id)
                         .debug_selector(move || stage_selector.to_string())
                         .flex_shrink_0()
                         .flex()
                         .items_center()
                         .gap_1()
-                        .px_1()
-                        .py_1()
-                        .rounded_sm()
-                        .text_xs()
-                        .bg(if current {
-                            theme::accent_soft()
-                        } else if complete {
-                            theme::surface_raised()
-                        } else {
-                            theme::surface()
-                        })
-                        .text_color(if current || complete {
+                        .child(
+                            div()
+                                .size_5()
+                                .rounded_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .bg(fill)
+                                .text_color(ink)
+                                .when(current, |circle| circle.font_weight(FontWeight::SEMIBOLD))
+                                .child(if complete {
+                                    "✓".to_string()
+                                } else {
+                                    (index + 1).to_string()
+                                }),
+                        )
+                        .child(
+                            div()
+                                .text_color(if current {
+                                    theme::text()
+                                } else {
+                                    theme::text_muted()
+                                })
+                                .when(current, |label| label.font_weight(FontWeight::SEMIBOLD))
+                                .child(step_label(stage)),
+                        );
+                    let connector = (index + 1 < PIPELINE_STAGES.len()).then(|| {
+                        div().flex_shrink_0().w_4().h_px().bg(if complete {
                             theme::accent()
                         } else {
-                            theme::text_muted()
+                            theme::border()
                         })
-                        .child(if complete {
-                            "✓"
-                        } else if current {
-                            "●"
-                        } else {
-                            "○"
-                        })
-                        .child(label)
+                    });
+                    std::iter::once(step.into_any_element())
+                        .chain(connector.map(IntoElement::into_any_element))
                 }),
         )
-        .child(
-            div()
-                .id("agents-pipeline-current")
-                .debug_selector(|| "agents-pipeline-current".into())
-                .min_w_0()
-                .text_xs()
-                .text_color(theme::accent())
-                .child(current_state),
-        )
         .into_any_element()
-}
-
-fn compact_stage_label(stage: hvc_core::persistence_service::PulsationStage) -> &'static str {
-    match stage {
-        hvc_core::persistence_service::PulsationStage::Intake => "Int",
-        hvc_core::persistence_service::PulsationStage::Specification => "Spec",
-        hvc_core::persistence_service::PulsationStage::Contract => "Ctr",
-        hvc_core::persistence_service::PulsationStage::Code => "Code",
-        hvc_core::persistence_service::PulsationStage::Test => "Test",
-        hvc_core::persistence_service::PulsationStage::Integrator => "Intg",
-    }
 }
 
 pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
@@ -199,21 +157,24 @@ pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                 .border_b_1()
                 .border_color(theme::border())
                 .flex()
-                .flex_wrap()
                 .items_center()
                 .gap_2()
+                .child(div().flex_1().min_w_0())
                 .child(pipeline)
                 .child(
                     div()
-                        .ml_auto()
+                        .flex_1()
+                        .min_w_0()
                         .flex()
-                        .flex_wrap()
                         .items_center()
+                        .justify_end()
                         .gap_2()
                         .child(
                             div()
+                                .min_w_0()
                                 .text_xs()
                                 .text_color(theme::text_muted())
+                                .text_ellipsis()
                                 .child("Project-isolated configuration"),
                         )
                         .child(action_button(
@@ -864,7 +825,7 @@ fn agent_detail_panel(
     if expanded {
         return expanded_cli_detail_panel(model, snapshot, busy, cx);
     }
-    div()
+    let panel = div()
         .id("agents-cli-scroll")
         .debug_selector(|| "agents-cli-scroll".into())
         .min_w_0()
@@ -872,6 +833,9 @@ fn agent_detail_panel(
         .h_full()
         .min_h_0()
         .p_4()
+        .flex()
+        .flex_col()
+        .gap_3()
         .overflow_y_scroll()
         .children(
             fallbacks
@@ -887,113 +851,136 @@ fn agent_detail_panel(
                         cx,
                     )
                 }),
-        )
-        .when(selected.is_none(), |panel| {
-            panel.child(empty_state("Selecione ou crie um agente."))
-        })
-        .child(
-            div().flex().flex_wrap().gap_3().children(
-                snapshot
-                    .agents
-                    .iter()
-                    .filter(|agent| {
-                        selected == Some(AgentIdentifier::Canonical(agent.config.agent_role))
-                    })
-                    .map(|agent| {
-                        let descriptor =
-                            hvc_core::terminals::canonical_agent(agent.config.agent_role);
-                        let availability = (agent.config.backend
-                            != hvc_core::terminals::CliBackend::Custom)
-                            .then(|| {
-                                snapshot
-                                    .discovery
-                                    .iter()
-                                    .find(|item| item.backend == agent.config.backend)
-                            })
-                            .flatten();
-                        let input = model
-                            .agent_prompt_inputs
-                            .get(&agent.config.agent_role)
-                            .cloned();
-                        let model_input = model
-                            .agent_model_inputs
-                            .get(&agent.config.agent_role)
-                            .cloned();
-                        let custom_executable_input = model
-                            .agent_custom_executable_inputs
-                            .get(&agent.config.agent_role)
-                            .cloned();
-                        let custom_args_input = model
-                            .agent_custom_args_inputs
-                            .get(&agent.config.agent_role)
-                            .cloned();
-                        let prompt_ready = input
+        );
+    match selected {
+        Some(AgentIdentifier::Canonical(role)) => {
+            let agent = snapshot.agents.iter().find(|a| a.config.agent_role == role);
+            match agent {
+                Some(agent) => {
+                    let descriptor = hvc_core::terminals::canonical_agent(role);
+                    let availability = (agent.config.backend
+                        != hvc_core::terminals::CliBackend::Custom)
+                        .then(|| {
+                            snapshot
+                                .discovery
+                                .iter()
+                                .find(|item| item.backend == agent.config.backend)
+                        })
+                        .flatten();
+                    let input = model.agent_prompt_inputs.get(&role).cloned();
+                    let model_input = model.agent_model_inputs.get(&role).cloned();
+                    let custom_executable_input = model
+                        .agent_custom_executable_inputs
+                        .get(&role)
+                        .cloned();
+                    let custom_args_input = model
+                        .agent_custom_args_inputs
+                        .get(&role)
+                        .cloned();
+                    let prompt_ready = input
+                        .as_ref()
+                        .is_some_and(|input| !input.read(cx).value().trim().is_empty());
+                    let active_run = agent.recent_runs.first();
+                    let running = active_run.is_some_and(|run| {
+                        matches!(
+                            run.status,
+                            TerminalRunStatus::Queued
+                                | TerminalRunStatus::Starting
+                                | TerminalRunStatus::Running
+                        )
+                    });
+                    let agents_model = model.agents.read(cx);
+                    let selected_run = agents_model
+                        .selected_run_by_role
+                        .get(&role)
+                        .and_then(|run_id| {
+                            agent.recent_runs.iter().find(|run| &run.id == run_id)
+                        })
+                        .or(active_run);
+                    let executable_ready = if agent.config.backend
+                        == hvc_core::terminals::CliBackend::Custom
+                    {
+                        agent
+                            .config
+                            .custom_executable
                             .as_ref()
-                            .is_some_and(|input| !input.read(cx).value().trim().is_empty());
-                        let active_run = agent.recent_runs.first();
-                        let running = active_run.is_some_and(|run| {
-                            matches!(
-                                run.status,
-                                TerminalRunStatus::Queued
-                                    | TerminalRunStatus::Starting
-                                    | TerminalRunStatus::Running
-                            )
-                        });
-                        let agents_model = model.agents.read(cx);
-                        let selected_run = agents_model
-                            .selected_run_by_role
-                            .get(&agent.config.agent_role)
-                            .and_then(|run_id| {
-                                agent.recent_runs.iter().find(|run| &run.id == run_id)
-                            })
-                            .or(active_run);
-                        let executable_ready = if agent.config.backend
-                            == hvc_core::terminals::CliBackend::Custom
-                        {
-                            agent
-                                .config
-                                .custom_executable
-                                .as_ref()
-                                .is_some_and(|path| !path.trim().is_empty())
-                                && agent.config.custom_risk_ack
-                        } else {
-                            availability
-                                .is_some_and(|item| item.state == CliAvailabilityState::Available)
-                        };
-                        let thinking_available =
-                            agent.config.model.as_deref().is_some_and(|model_id| {
-                                agents_model
-                                    .model_catalogs
-                                    .get(&agent.config.backend)
-                                    .and_then(|catalog| {
-                                        catalog.models.iter().find(|entry| {
-                                            entry.model_id.as_deref() == Some(model_id)
-                                        })
+                            .is_some_and(|path| !path.trim().is_empty())
+                            && agent.config.custom_risk_ack
+                    } else {
+                        availability
+                            .is_some_and(|item| item.state == CliAvailabilityState::Available)
+                    };
+                    let thinking_available =
+                        agent.config.model.as_deref().is_some_and(|model_id| {
+                            agents_model
+                                .model_catalogs
+                                .get(&agent.config.backend)
+                                .and_then(|catalog| {
+                                    catalog.models.iter().find(|entry| {
+                                        entry.model_id.as_deref() == Some(model_id)
                                     })
-                                    .is_some_and(|entry| !entry.profiles.is_empty())
-                            });
-                        let run_events = selected_run
-                            .and_then(|run| agents_model.events_by_run.get(&run.id))
-                            .cloned();
-                        let history_clear_armed =
-                            agents_model.pending_history_clear == Some(agent.config.agent_role);
-                        let pipeline_cancel_armed = active_run
-                            .and_then(|run| run.pulsation_id.as_deref())
-                            .is_some_and(|pulsation_id| {
-                                agents_model.pending_pipeline_cancel.as_deref()
-                                    == Some(pulsation_id)
-                            });
-                        let event_filter = agents_model
-                            .event_filters
-                            .get(agent.config.agent_role.as_str())
-                            .copied()
-                            .unwrap_or(TerminalEventFilter::All);
-                        let follow_tail = agents_model
-                            .follow_tail
-                            .get(agent.config.agent_role.as_str())
-                            .copied()
-                            .unwrap_or(true);
-                        agent_card(
+                                })
+                                .is_some_and(|entry| !entry.profiles.is_empty())
+                        });
+                    let run_events = selected_run
+                        .and_then(|run| agents_model.events_by_run.get(&run.id))
+                        .cloned();
+                    let history_clear_armed =
+                        agents_model.pending_history_clear == Some(role);
+                    let pipeline_cancel_armed = active_run
+                        .and_then(|run| run.pulsation_id.as_deref())
+                        .is_some_and(|pulsation_id| {
+                            agents_model.pending_pipeline_cancel.as_deref()
+                                == Some(pulsation_id)
+                        });
+                    let event_filter = agents_model
+                        .event_filters
+                        .get(role.as_str())
+                        .copied()
+                        .unwrap_or(TerminalEventFilter::All);
+                    let follow_tail = agents_model
+                        .follow_tail
+                        .get(role.as_str())
+                        .copied()
+                        .unwrap_or(true);
+
+                    panel
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child(div().text_color(theme::agent_color(role)).child(descriptor.glyph))
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .flex_1()
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(theme::text())
+                                                .child(descriptor.name),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(theme::text_muted())
+                                                .child(descriptor.stage),
+                                        ),
+                                )
+                                .child(crate::select_menu::mode_control(
+                                    format!("agent-mode:{}", role.as_str()),
+                                    "CLI",
+                                    !model.settings.read(cx).busy && !running,
+                                    crate::choices::custom_mode_reason(
+                                        agent.config.backend,
+                                        agent.config.custom_executable.as_deref(),
+                                        agent.config.custom_risk_ack,
+                                    ),
+                                    cx,
+                                )),
+                        )
+                        .child(agent_card(
                             descriptor,
                             agent,
                             availability,
@@ -1015,50 +1002,178 @@ fn agent_detail_panel(
                             selected_run
                                 .is_some_and(|r| model.notifications.copied.contains_key(&r.id)),
                             cx,
-                        )
-                    }),
-            ),
-        )
-        .child(
-            div().flex().flex_wrap().gap_3().children(
-                snapshot
-                    .free_form_slots
-                    .iter()
-                    .filter(|slot| {
-                        selected == Some(AgentIdentifier::FreeForm(slot.slot.id.clone()))
-                    })
-                    .map(|slot| free_form_card(model, snapshot, slot, busy, cx)),
-            ),
-        )
-        .when(
-            snapshot
-                .archived_free_form_slots
+                        ))
+                        .into_any_element()
+                }
+                None => panel.child(empty_state("Selecione ou crie um agente.")).into_any_element(),
+            }
+        }
+        Some(AgentIdentifier::FreeForm(slot_id)) => {
+            let slot = snapshot
+                .free_form_slots
                 .iter()
-                .any(|slot| selected == Some(AgentIdentifier::FreeForm(slot.slot.id.clone()))),
-            |panel| {
-                panel
-                    .child(
-                        div()
-                            .mt_5()
-                            .mb_3()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Agentes livres arquivados"),
-                    )
-                    .child(
-                        div().flex().flex_wrap().gap_3().children(
+                .chain(&snapshot.archived_free_form_slots)
+                .find(|slot| slot.slot.id == slot_id);
+            match slot {
+                Some(slot) => {
+                    let active_run = slot.recent_runs.first();
+                    let running = active_run.is_some_and(|run| run.status.is_active());
+                    let slot_index = snapshot
+                        .free_form_slots
+                        .iter()
+                        .position(|item| item.slot.id == slot.slot.id)
+                        .unwrap_or(0);
+                    let delete_armed = model
+                        .agents
+                        .read(cx)
+                        .pending_free_form_delete
+                        .as_deref()
+                        == Some(slot.slot.id.as_str());
+                    let availability = (slot.slot.backend
+                        != hvc_core::terminals::CliBackend::Custom)
+                        .then(|| {
                             snapshot
-                                .archived_free_form_slots
+                                .discovery
                                 .iter()
-                                .filter(|slot| {
-                                    selected
-                                        == Some(AgentIdentifier::FreeForm(slot.slot.id.clone()))
-                                })
-                                .map(|slot| archived_free_form_card(model, slot, busy, cx)),
-                        ),
-                    )
-            },
-        )
-        .into_any_element()
+                                .find(|item| item.backend == slot.slot.backend)
+                        })
+                        .flatten();
+                    let executable_ready = if slot.slot.backend
+                        == hvc_core::terminals::CliBackend::Custom
+                    {
+                        slot.slot
+                            .custom_executable
+                            .as_ref()
+                            .is_some_and(|path| !path.trim().is_empty())
+                            && slot.slot.custom_risk_ack
+                    } else {
+                        availability
+                            .is_some_and(|item| item.state == CliAvailabilityState::Available)
+                    };
+                    let status = active_run
+                        .map(|run| run_status(run.status))
+                        .unwrap_or_else(|| {
+                            if slot.slot.backend == hvc_core::terminals::CliBackend::Custom {
+                                if executable_ready {
+                                    "Idle"
+                                } else {
+                                    "Setup required"
+                                }
+                            } else {
+                                availability_status(availability)
+                            }
+                        });
+                    let id_up = slot.slot.id.clone();
+                    let id_down = slot.slot.id.clone();
+                    let id_archive = slot.slot.id.clone();
+                    let id_delete = slot.slot.id.clone();
+                    let card = if slot.slot.archived {
+                        archived_free_form_card(model, slot, busy, cx)
+                    } else {
+                        free_form_card(model, snapshot, slot, busy, cx)
+                    };
+                    panel
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .text_color(theme::accent())
+                                        .font_weight(FontWeight::BOLD)
+                                        .child("+"),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .flex_1()
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(theme::text())
+                                                .child(slot.slot.label.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(theme::text_muted())
+                                                .child(format!("FreeForm · {}", status)),
+                                        ),
+                                )
+                                .child(action_button(
+                                    SharedString::from(format!("free-form-up:{}", slot.slot.id)),
+                                    "↑".into(),
+                                    !busy && !running && slot_index > 0,
+                                    false,
+                                    cx,
+                                    move |model, cx| {
+                                        model.move_free_form_agent(id_up.clone(), -1, cx)
+                                    },
+                                ))
+                                .child(action_button(
+                                    SharedString::from(format!("free-form-down:{}", slot.slot.id)),
+                                    "↓".into(),
+                                    !busy
+                                        && !running
+                                        && slot_index + 1 < snapshot.free_form_slots.len(),
+                                    false,
+                                    cx,
+                                    move |model, cx| {
+                                        model.move_free_form_agent(id_down.clone(), 1, cx)
+                                    },
+                                ))
+                                .child(action_button(
+                                    SharedString::from(format!(
+                                        "free-form-archive:{}",
+                                        slot.slot.id
+                                    )),
+                                    "Arquivar".into(),
+                                    !busy && !running && !slot.slot.archived,
+                                    false,
+                                    cx,
+                                    move |model, cx| {
+                                        model.archive_free_form_agent(id_archive.clone(), cx)
+                                    },
+                                ))
+                                .child(action_button(
+                                    SharedString::from(format!(
+                                        "free-form-delete:{}",
+                                        slot.slot.id
+                                    )),
+                                    if delete_armed {
+                                        "Confirm deletion"
+                                    } else {
+                                        "Delete"
+                                    }
+                                    .into(),
+                                    !busy && !running,
+                                    true,
+                                    cx,
+                                    move |model, cx| {
+                                        model.request_delete_free_form_agent(id_delete.clone(), cx)
+                                    },
+                                ))
+                                .child(crate::select_menu::mode_control(
+                                    format!("free-form-mode:{}", slot.slot.id),
+                                    "CLI",
+                                    !busy && !running && !slot.slot.archived,
+                                    crate::choices::custom_mode_reason(
+                                        slot.slot.backend,
+                                        slot.slot.custom_executable.as_deref(),
+                                        slot.slot.custom_risk_ack,
+                                    ),
+                                    cx,
+                                )),
+                        )
+                        .child(card)
+                        .into_any_element()
+                }
+                None => panel.child(empty_state("Selecione ou crie um agente.")).into_any_element(),
+            }
+        }
+        None => panel.child(empty_state("Selecione ou crie um agente.")).into_any_element(),
+    }
 }
 
 fn expanded_cli_detail_panel(
@@ -1394,11 +1509,6 @@ fn free_form_card(
 ) -> AnyElement {
     let slot = &free_form.slot;
     let slot_id = slot.id.clone();
-    let slot_index = snapshot
-        .free_form_slots
-        .iter()
-        .position(|item| item.slot.id == slot.id)
-        .unwrap_or(0);
     let availability = (slot.backend != hvc_core::terminals::CliBackend::Custom)
         .then(|| {
             snapshot
@@ -1439,7 +1549,6 @@ fn free_form_card(
         .get(&format!("free-form:{}", slot.id))
         .copied()
         .unwrap_or(true);
-    let delete_armed = agents.pending_free_form_delete.as_deref() == Some(slot.id.as_str());
     let history_clear_armed =
         agents.pending_free_form_history_clear.as_deref() == Some(slot.id.as_str());
     let executable_ready = if slot.backend == hvc_core::terminals::CliBackend::Custom {
@@ -1507,102 +1616,11 @@ fn free_form_card(
                 .gap_2()
                 .child(
                     div()
-                        .size_9()
-                        .rounded_md()
-                        .bg(theme::accent_soft())
-                        .text_color(theme::accent())
-                        .font_weight(FontWeight::BOLD)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child("+"),
-                )
-                .child(
-                    div()
-                        .min_w_0()
                         .flex_1()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(slot.label.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_muted())
-                                .child(format!("FreeForm · {status}")),
-                        ),
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("CLI Configuration · {}", slot.label)),
                 )
-                .child(action_button(
-                    SharedString::from(format!("free-form-up:{}", slot.id)),
-                    "↑".into(),
-                    !busy && !running && slot_index > 0,
-                    false,
-                    cx,
-                    {
-                        let slot_id = slot_id.clone();
-                        move |model, cx| model.move_free_form_agent(slot_id.clone(), -1, cx)
-                    },
-                ))
-                .child(action_button(
-                    SharedString::from(format!("free-form-down:{}", slot.id)),
-                    "↓".into(),
-                    !busy && !running && slot_index + 1 < snapshot.free_form_slots.len(),
-                    false,
-                    cx,
-                    {
-                        let slot_id = slot_id.clone();
-                        move |model, cx| model.move_free_form_agent(slot_id.clone(), 1, cx)
-                    },
-                ))
-                .child(action_button(
-                    SharedString::from(format!("free-form-archive:{}", slot.id)),
-                    "Arquivar".into(),
-                    !busy && !running,
-                    false,
-                    cx,
-                    {
-                        let slot_id = slot_id.clone();
-                        move |model, cx| model.archive_free_form_agent(slot_id.clone(), cx)
-                    },
-                ))
-                .child(action_button(
-                    SharedString::from(format!("free-form-delete:{}", slot.id)),
-                    if delete_armed {
-                        "Confirm deletion"
-                    } else {
-                        "Delete"
-                    }
-                    .into(),
-                    !busy && !running,
-                    true,
-                    cx,
-                    {
-                        let slot_id = slot_id.clone();
-                        move |model, cx| model.request_delete_free_form_agent(slot_id.clone(), cx)
-                    },
-                )),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_2()
-                .child(crate::select_menu::mode_control(
-                    (format!("free-form-mode:{}", slot.id)).to_string(),
-                    if slot.execution_mode == AgentExecutionMode::CliProcess {
-                        "CLI"
-                    } else {
-                        "API"
-                    },
-                    !busy && !running,
-                    crate::choices::custom_mode_reason(
-                        slot.backend,
-                        slot.custom_executable.as_deref(),
-                        slot.custom_risk_ack,
-                    ),
-                    cx,
-                ))
+                .child(chip(status, theme::accent()))
                 .child(crate::select_menu::control(
                     (format!("free-form-backend:{}", slot.id)).to_string(),
                     "BACKEND",
@@ -1907,10 +1925,6 @@ fn agent_card(
 ) -> AnyElement {
     let role = agent.config.agent_role;
     let color = theme::agent_color(role);
-    let mode = match agent.config.execution_mode {
-        AgentExecutionMode::ApiDirect => "API",
-        AgentExecutionMode::CliProcess => "CLI",
-    };
     let status = agent
         .recent_runs
         .first()
@@ -1979,56 +1993,16 @@ fn agent_card(
                 .flex()
                 .flex_wrap()
                 .items_center()
-                .gap_3()
+                .gap_2()
                 .child(
                     div()
-                        .size_9()
-                        .rounded_md()
-                        .bg(theme::agent_soft_color(role))
-                        .text_color(color)
-                        .font_weight(FontWeight::BOLD)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(descriptor.glyph),
-                )
-                .child(
-                    div()
-                        .min_w_0()
                         .flex_1()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme::text())
-                                .child(descriptor.name),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_muted())
-                                .child(descriptor.stage),
-                        ),
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("CLI Configuration · {}", descriptor.name)),
                 )
-                .child(chip(mode, color))
                 .child(chip(
                     status,
                     status_color(agent.recent_runs.first().map(|run| run.status)),
-                )),
-        )
-        .child(
-            div()
-                .flex()
-                .gap_2()
-                .child(crate::select_menu::mode_control(
-                    (format!("agent-mode:{}", role.as_str())).to_string(),
-                    mode,
-                    !busy && !running,
-                    crate::choices::custom_mode_reason(
-                        agent.config.backend,
-                        agent.config.custom_executable.as_deref(),
-                        agent.config.custom_risk_ack,
-                    ),
-                    cx,
                 ))
                 .child(crate::select_menu::control(
                     (format!("agent-backend:{}", role.as_str())).to_string(),
@@ -2445,7 +2419,23 @@ fn api_detail_panel(
                         .items_center()
                         .gap_3()
                         .child(div().text_color(theme::agent_color(role)).child(descriptor.glyph))
-                        .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(descriptor.name))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme::text())
+                                        .child(descriptor.name),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme::text_muted())
+                                        .child(descriptor.stage),
+                                ),
+                        )
                         .child(crate::select_menu::mode_control(
                             format!("agent-mode:{}", role.as_str()),
                             "API",
@@ -2475,23 +2465,120 @@ fn api_detail_panel(
                 .chain(&snapshot.archived_free_form_slots)
                 .find(|slot| slot.slot.id == slot_id);
             match slot {
-                Some(slot) => panel
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(slot.slot.label.clone()))
-                            .child(crate::select_menu::mode_control(
-                                format!("free-form-mode:{}", slot.slot.id),
-                                "API",
-                                !model.settings.read(cx).busy && !slot.slot.archived,
-                                None,
-                                cx,
-                            )),
-                    )
-                    .child(free_form_api_inline_editor(model, snapshot, slot, cx))
-                    .into_any_element(),
+                Some(slot) => {
+                    let inner_slot = &slot.slot;
+                    let inner_slot_id = inner_slot.id.clone();
+                    let busy = model.settings.read(cx).busy || agents.busy;
+                    let api_running = agents
+                        .active_api_execution_by_slot
+                        .contains_key(&inner_slot_id);
+                    let delete_armed = agents.pending_free_form_delete.as_deref()
+                        == Some(inner_slot_id.as_str());
+                    let slot_index = snapshot
+                        .free_form_slots
+                        .iter()
+                        .position(|item| item.slot.id == inner_slot_id)
+                        .unwrap_or(0);
+                    let id_up = inner_slot_id.clone();
+                    let id_down = inner_slot_id.clone();
+                    let id_archive = inner_slot_id.clone();
+                    let id_delete = inner_slot_id.clone();
+                    panel
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .text_color(theme::accent())
+                                        .font_weight(FontWeight::BOLD)
+                                        .child("+"),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .flex_1()
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(theme::text())
+                                                .child(inner_slot.label.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(theme::text_muted())
+                                                .child(format!(
+                                                    "FreeForm · {}",
+                                                    if inner_slot.archived {
+                                                        "archived"
+                                                    } else {
+                                                        "active"
+                                                    }
+                                                )),
+                                        ),
+                                )
+                                .child(action_button(
+                                    SharedString::from(format!("free-form-up:{inner_slot_id}")),
+                                    "↑".into(),
+                                    !busy && !api_running && slot_index > 0,
+                                    false,
+                                    cx,
+                                    move |model, cx| {
+                                        model.move_free_form_agent(id_up.clone(), -1, cx)
+                                    },
+                                ))
+                                .child(action_button(
+                                    SharedString::from(format!("free-form-down:{inner_slot_id}")),
+                                    "↓".into(),
+                                    !busy
+                                        && !api_running
+                                        && slot_index + 1 < snapshot.free_form_slots.len(),
+                                    false,
+                                    cx,
+                                    move |model, cx| {
+                                        model.move_free_form_agent(id_down.clone(), 1, cx)
+                                    },
+                                ))
+                                .child(action_button(
+                                    SharedString::from(format!(
+                                        "free-form-archive:{inner_slot_id}"
+                                    )),
+                                    "Arquivar".into(),
+                                    !busy && !api_running && !inner_slot.archived,
+                                    false,
+                                    cx,
+                                    move |model, cx| {
+                                        model.archive_free_form_agent(id_archive.clone(), cx)
+                                    },
+                                ))
+                                .child(action_button(
+                                    SharedString::from(format!("free-form-delete:{inner_slot_id}")),
+                                    if delete_armed {
+                                        "Confirm deletion"
+                                    } else {
+                                        "Delete"
+                                    }
+                                    .into(),
+                                    !busy && !api_running,
+                                    true,
+                                    cx,
+                                    move |model, cx| {
+                                        model.request_delete_free_form_agent(id_delete.clone(), cx)
+                                    },
+                                ))
+                                .child(crate::select_menu::mode_control(
+                                    format!("free-form-mode:{inner_slot_id}"),
+                                    "API",
+                                    !busy && !api_running && !inner_slot.archived,
+                                    None,
+                                    cx,
+                                )),
+                        )
+                        .child(free_form_api_inline_editor(model, snapshot, slot, cx))
+                        .into_any_element()
+                }
                 None => panel.child(empty_state("Select an agent.")).into_any_element(),
             }
         }
@@ -2778,6 +2865,12 @@ fn free_form_api_inline_editor(
                         .flex_wrap()
                         .items_center()
                         .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(format!("API Configuration · {}", free_form.slot.label)),
+                        )
                         .child(chip(
                             binding
                                 .as_ref()
@@ -3349,7 +3442,7 @@ fn availability_status(
     }
 }
 
-fn run_status(status: TerminalRunStatus) -> &'static str {
+pub(crate) fn run_status(status: TerminalRunStatus) -> &'static str {
     match status {
         TerminalRunStatus::Queued => "Queued",
         TerminalRunStatus::Starting => "Starting",
@@ -3359,17 +3452,6 @@ fn run_status(status: TerminalRunStatus) -> &'static str {
         TerminalRunStatus::Failed => "Failed",
         TerminalRunStatus::Cancelled => "Cancelled",
         TerminalRunStatus::Interrupted => "Interrupted",
-    }
-}
-
-fn pulsation_status_label(status: PulsationStatus) -> &'static str {
-    match status {
-        PulsationStatus::Idle => "Idle",
-        PulsationStatus::Planning => "Planning",
-        PulsationStatus::Running => "Running",
-        PulsationStatus::Checkpoint => "Checkpoint",
-        PulsationStatus::Done => "Done",
-        PulsationStatus::Failed => "Failed",
     }
 }
 

@@ -557,15 +557,47 @@ impl PersistenceService {
                 tx.execute("UPDATE checkpoints SET state_version=(SELECT state_version FROM pulsations WHERE id=?1),input_revision=?2,producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting' AND purpose='artifact_review'",params![pulse,handoff.recipient.input_revision,job.id,handoff.recipient.generation])?;
             }
             StageDisposition::Advance(next) => {
-                let updated = Self::transition_pulsation(
-                    tx,
-                    current,
-                    PulsationStatus::Planning,
-                    next,
-                    "stage_auto_advanced",
-                    Some("Resultado aceito; aguardando publicações obrigatórias."),
-                )?;
-                Self::enqueue_stage_job(tx, &updated.id, updated.stage)?;
+                if current.stage == PulsationStage::Intake
+                    && next == PulsationStage::Specification
+                    && let StageOutcome::Completed { artifacts, .. } = outcome
+                    && let Some(manifest) = &handoff.batch_manifest
+                    && manifest.path_confirmation_source
+                        != crate::feature_forge::PathConfirmationSource::ForgeGate
+                    && Self::composed_pulsation(tx, &current.id)?
+                    && Self::intake_batch_needs_path_confirmation(artifacts, manifest)
+                {
+                    // Preventive HITL gate (ADR-022 clarification loop, P5/A5.2):
+                    // the dispatch-time gate (P1/A1.3) never confirmed a path for
+                    // this batch, and Intake just classified a task as `feature`
+                    // (or the host already knew one was `Foundation`) -- letting
+                    // Specification run risks burning its whole budget with
+                    // nowhere to anchor a PlannedDestination. Parks exactly like
+                    // `AwaitArtifactReview`: same stage, same status, a
+                    // checkpoint the developer resolves before Specification is
+                    // ever enqueued.
+                    let updated = Self::transition_pulsation(
+                        tx,
+                        current,
+                        PulsationStatus::Checkpoint,
+                        current.stage,
+                        "path_confirmation_required",
+                        Some(
+                            "This batch has no confirmed file path; confirm one before Specification runs.",
+                        ),
+                    )?;
+                    Self::open_checkpoint(tx, &updated.id, updated.stage)?;
+                    tx.execute("UPDATE checkpoints SET kind='path_confirmation',purpose='path_confirmation',state_version=(SELECT state_version FROM pulsations WHERE id=?1),input_revision=?2,producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting' AND purpose='artifact_review'",params![pulse,handoff.recipient.input_revision,job.id,handoff.recipient.generation])?;
+                } else {
+                    let updated = Self::transition_pulsation(
+                        tx,
+                        current,
+                        PulsationStatus::Planning,
+                        next,
+                        "stage_auto_advanced",
+                        Some("Resultado aceito; aguardando publicações obrigatórias."),
+                    )?;
+                    Self::enqueue_stage_job(tx, &updated.id, updated.stage)?;
+                }
             }
             StageDisposition::Fail => {
                 let (code, message) = match outcome {
@@ -619,6 +651,138 @@ impl PersistenceService {
             params![if failed { "failed" } else { "done" }, now, run_id],
         )?;
         Ok(())
+    }
+
+    /// Whether `pulsation_id` runs the composed pipeline (ADR-022, v4). A v3
+    /// batch also carries a `batch_manifest` (`PipelineVersion::uses_batch`
+    /// covers both V3 and V4), so the preventive HITL gate (P5/A5.2) -- a
+    /// v4-only concept -- cannot use the manifest's presence alone to scope
+    /// itself to composed pulsations.
+    fn composed_pulsation(
+        conn: &Connection,
+        pulsation_id: &str,
+    ) -> Result<bool, PersistenceServiceError> {
+        let pipeline_version: u8 = conn.query_row(
+            "SELECT pipeline_version FROM pulsations WHERE id=?1",
+            [pulsation_id],
+            |r| r.get(0),
+        )?;
+        Ok(PipelineVersion::from_db(pipeline_version)
+            .is_some_and(|version| version.supports_composition()))
+    }
+
+    /// Whether the just-accepted Intake outcome names a task the preventive
+    /// HITL gate (ADR-022 clarification loop, P5/A5.2) must stop for: one the
+    /// host already knows is `Foundation` (from its own manifest, no Intake
+    /// needed), or one Intake itself classified `feature`. `Foundation` is a
+    /// `feature_forge::TaskKind`, distinct from and not covered by Intake's own
+    /// `TaskClassification` vocabulary, which has no `Foundation` variant.
+    fn intake_batch_needs_path_confirmation(
+        artifacts: &[StageArtifactDraft],
+        manifest: &crate::feature_forge::BatchManifest,
+    ) -> bool {
+        let rows: Vec<(String, String)> = artifacts
+            .iter()
+            .map(|artifact| (artifact.kind.clone(), artifact.content.clone()))
+            .collect();
+        let prior =
+            crate::orchestration::composition::recipes::prior_payloads(&rows).unwrap_or_default();
+        let intake_tasks = prior
+            .get(&crate::orchestration::composition::Stage::Intake)
+            .and_then(crate::orchestration::composition::recipes::intake_of)
+            .map(|payload| payload.tasks.as_slice())
+            .unwrap_or(&[]);
+        manifest.tasks.iter().enumerate().any(|(index, task)| {
+            task.draft.kind == crate::feature_forge::TaskKind::Foundation || {
+                let handle = format!("task_{}", index + 1);
+                intake_tasks.iter().any(|intake_task| {
+                    intake_task.task_ref.as_str() == handle
+                        && intake_task.classification
+                            == crate::orchestration::composition::TaskClassification::Feature
+                })
+            }
+        })
+    }
+
+    /// Resolves a preventive path-confirmation checkpoint (ADR-022
+    /// clarification loop, P5/A5.2): re-validates the batch's tasks against
+    /// the supplied hints via the identical dispatch-time gate
+    /// (`feature_forge::PersistenceService::resolve_path_confirmation`), and
+    /// on success records the manifest's `path_confirmation_source` as
+    /// `ManualHitl` (distinct from `ForgeGate`, for the Preparation view to
+    /// tell the two apart later), closes the checkpoint and queues
+    /// Specification. The manifest is otherwise frozen at dispatch; this is
+    /// the one field the host is allowed to amend afterward.
+    pub fn resolve_path_confirmation_checkpoint(
+        &self,
+        request: ResolvePathConfirmationRequest,
+    ) -> Result<Pulsation, PersistenceServiceError> {
+        let mut db = self.connection()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = Self::find_pulsation_by_id(&tx, &request.pulsation_id)?
+            .ok_or_else(|| invalid("Pulsação ausente."))?;
+        if current.stage != PulsationStage::Intake {
+            return Err(invalid("Esclarecimento de caminho fora do Intake."));
+        }
+        let (stored_checkpoint_id, state_version, purpose): (String, u64, String) = tx
+            .query_row(
+                "SELECT id,state_version,purpose FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
+                [&request.pulsation_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|_| invalid("Checkpoint ausente ou ambíguo."))?;
+        if stored_checkpoint_id != request.checkpoint_id
+            || purpose != "path_confirmation"
+            || state_version != request.expected_state_version
+        {
+            return Err(invalid("Checkpoint obsoleto ou de outro tipo."));
+        }
+        let manifest_json: String = tx.query_row(
+            "SELECT manifest_json FROM pulsation_batches WHERE pulsation_id=?1",
+            [&request.pulsation_id],
+            |r| r.get(0),
+        )?;
+        let mut manifest: crate::feature_forge::BatchManifest =
+            serde_json::from_str(&manifest_json).map_err(|e| invalid(e.to_string()))?;
+        let hints: std::collections::HashMap<&str, Option<&str>> = request
+            .manual_path_hints
+            .iter()
+            .map(|hint| (hint.task_id.as_str(), Some(hint.path.as_str())))
+            .collect();
+        Self::resolve_path_confirmation(
+            &tx,
+            &current.project_id,
+            &hints,
+            &manifest.tasks,
+            &manifest.features,
+        )?;
+        manifest.path_confirmation_source =
+            crate::feature_forge::PathConfirmationSource::ManualHitl;
+        let encoded = serde_json::to_string(&manifest).map_err(|e| invalid(e.to_string()))?;
+        tx.execute(
+            "UPDATE pulsation_batches SET manifest_json=?2,manifest_sha256=?3 WHERE pulsation_id=?1",
+            params![
+                request.pulsation_id,
+                encoded,
+                ContentSha256::of(encoded.as_bytes()).as_str()
+            ],
+        )?;
+        tx.execute(
+            "UPDATE checkpoints SET status='approved',updated_at=?2 WHERE id=?1",
+            params![request.checkpoint_id, Self::now_iso()],
+        )?;
+        let updated = Self::transition_pulsation(
+            &tx,
+            &current,
+            PulsationStatus::Planning,
+            PulsationStage::Specification,
+            "path_confirmation_resolved",
+            Some("Path confirmed; Specification queued."),
+        )?;
+        Self::enqueue_stage_job(&tx, &updated.id, updated.stage)?;
+        tx.commit()?;
+        self.wake_scheduler();
+        Ok(updated)
     }
 
     pub(super) fn mark_effects_for_review(
