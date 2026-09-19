@@ -290,7 +290,7 @@ fn a_failed_sibling_parks_once_after_the_round_settles_and_is_reused_on_retry() 
                     let db = Connection::open(&db_path).unwrap();
                     let prior: i64 = db
                         .query_row(
-                            "SELECT COUNT(*) FROM stage_work_unit_attempts WHERE executor_kind='code_implementer' AND state='rejected'",
+                            "SELECT COUNT(*) FROM stage_work_unit_attempts WHERE executor_kind='code_implementer' AND state IN ('rejected', 'cancelled')",
                             [],
                             |r| r.get(0),
                         )

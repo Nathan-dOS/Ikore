@@ -1,0 +1,59 @@
+services:
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        RUST_IMAGE: ${RUST_IMAGE:-rust:1.98.0-bookworm}
+        RUST_TOOLCHAIN: ${RUST_TOOLCHAIN:-1.98.0}
+    image: hard-vibe-code:1.98.0
+    profiles: ["tools", "ci"]
+    working_dir: /workspace
+    command: cargo test -p hvc-core -p hvc-editor -p hvc-test-support
+    environment:
+      CI: "true"
+      RUST_BACKTRACE: "1"
+    volumes:
+      - .:/workspace
+      - cargo_registry:/usr/local/cargo/registry
+      - cargo_git:/usr/local/cargo/git
+      - cargo_target:/workspace/target
+
+  cargo-check:
+    image: hard-vibe-code:1.98.0
+    profiles: ["tools", "ci"]
+    working_dir: /workspace
+    command: cargo check -p hvc-core -p hvc-editor -p hvc-test-support
+    environment:
+      RUST_BACKTRACE: "1"
+    volumes:
+      - .:/workspace
+      - cargo_registry:/usr/local/cargo/registry
+      - cargo_git:/usr/local/cargo/git
+      - cargo_target:/workspace/target
+
+  clippy-check:
+    image: hard-vibe-code:1.98.0
+    profiles: ["tools", "ci"]
+    working_dir: /workspace
+    command: cargo clippy -p hvc-core -p hvc-editor -p hvc-test-support -- -D warnings
+    environment:
+      RUST_BACKTRACE: "1"
+    volumes:
+      - .:/workspace
+      - cargo_registry:/usr/local/cargo/registry
+      - cargo_git:/usr/local/cargo/git
+      - cargo_target:/workspace/target
+
+  fmt-check:
+    image: hard-vibe-code:1.98.0
+    profiles: ["tools", "ci"]
+    working_dir: /workspace
+    command: cargo fmt --all -- --check
+    volumes:
+      - .:/workspace
+
+volumes:
+  cargo_registry:
+  cargo_git:
+  cargo_target:

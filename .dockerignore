@@ -1,0 +1,40 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Cargo & Rust build artifacts
+target/
+**/*.rs.bk
+Cargo.lock.bk
+
+# Agent and AI Tooling state
+.agent/
+.claude/
+.gemini/
+
+# Environment files and credentials
+.env
+.env.local
+.env.*.local
+
+# Databases and local runtime states
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# OS Metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project documentation & graphical assets not required for container compilation
+*.png
+*.jpg
+*.jpeg
+*.ico
+Interfaces/
+quality/
+scripts/
