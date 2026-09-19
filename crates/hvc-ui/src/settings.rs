@@ -535,6 +535,16 @@ impl SettingsModel {
         self.generation
     }
 
+    /// Background snapshot read for the shell chrome; see `AgentsModel::begin_quiet`.
+    pub(crate) fn begin_quiet(&mut self) -> u64 {
+        self.generation = self.generation.saturating_add(1);
+        self.generation
+    }
+
+    pub(crate) fn in_flight(&self) -> bool {
+        self.loading || self.busy
+    }
+
     pub(crate) fn apply_snapshot(&mut self, generation: u64, snapshot: SettingsSnapshot) -> bool {
         if generation != self.generation {
             return false;

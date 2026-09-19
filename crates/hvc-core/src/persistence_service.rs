@@ -413,6 +413,8 @@ pub struct UiSessionState {
     pub active_tab_path: Option<String>,
     pub workspace_view_mode: String,
     pub active_view: String,
+    /// Since the shell redesign this column persists the right-hand context rail's fold; the
+    /// left sidebar it was named after no longer exists. The name is kept to avoid a migration.
     pub sidebar_collapsed: bool,
     pub context_drawer_open: bool,
     pub active_pulsation_id: Option<String>,
@@ -1769,7 +1771,8 @@ impl PersistenceService {
         let normalized = raw.trim();
         if !matches!(
             normalized,
-            "workspace"
+            "home"
+                | "workspace"
                 | "pulsations"
                 | "vault"
                 | "chat"
@@ -1781,7 +1784,7 @@ impl PersistenceService {
                 | "feature-forge"
         ) {
             return Err(PersistenceServiceError::Validation(
-                "activeView deve ser `workspace`, `pulsations`, `vault`, `chat`, `agents`, `settings` ou `logs`."
+                "activeView deve ser `home`, `workspace`, `pulsations`, `vault`, `chat`, `agents`, `settings`, `logs` ou `forge`."
                     .to_string(),
             ));
         }
@@ -6692,7 +6695,7 @@ mod tests {
 
         let loaded = service
             .load_ui_session(LoadUiSessionRequest {
-                project_id: project.id,
+                project_id: project.id.clone(),
             })
             .expect("session should load")
             .session
@@ -6701,6 +6704,55 @@ mod tests {
         assert_eq!(loaded.workspace_view_mode, "hitl");
         assert_eq!(loaded.active_view, "vault");
         assert!(loaded.sidebar_collapsed);
+
+        // The shell's Home view persists like any other; unknown ids are still rejected.
+        service
+            .save_ui_session(SaveUiSessionRequest {
+                auto_open_review: false,
+                project_id: project.id.clone(),
+                workspace_root: project.workspace_path.clone(),
+                active_tab_path: None,
+                workspace_view_mode: "editor".to_string(),
+                active_view: "home".to_string(),
+                sidebar_collapsed: false,
+                context_drawer_open: false,
+                active_pulsation_id: None,
+                selected_vault_path: None,
+                active_chat_conversation_id: None,
+                scroll_top: None,
+                tabs: vec![],
+            })
+            .expect("home is a valid active view");
+        assert_eq!(
+            service
+                .load_ui_session(LoadUiSessionRequest {
+                    project_id: project.id.clone(),
+                })
+                .unwrap()
+                .session
+                .unwrap()
+                .active_view,
+            "home"
+        );
+        let rejected = service.save_ui_session(SaveUiSessionRequest {
+            auto_open_review: false,
+            project_id: project.id.clone(),
+            workspace_root: project.workspace_path.clone(),
+            active_tab_path: None,
+            workspace_view_mode: "editor".to_string(),
+            active_view: "dashboard".to_string(),
+            sidebar_collapsed: false,
+            context_drawer_open: false,
+            active_pulsation_id: None,
+            selected_vault_path: None,
+            active_chat_conversation_id: None,
+            scroll_top: None,
+            tabs: vec![],
+        });
+        assert!(matches!(
+            rejected,
+            Err(PersistenceServiceError::Validation(_))
+        ));
         assert!(!loaded.context_drawer_open);
         assert_eq!(loaded.active_pulsation_id.as_deref(), Some("pulse-three"));
         assert_eq!(loaded.selected_vault_path.as_deref(), Some("third.md"));

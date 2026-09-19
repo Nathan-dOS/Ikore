@@ -110,7 +110,9 @@ fn main() {
     });
     let handle = core.runtime_handle().clone();
     let _entered = handle.enter();
-    gpui::Application::new().run(move |cx| hvc_ui::open_main_window(core, cx).unwrap());
+    gpui::Application::new()
+        .with_assets(hvc_ui::HvcAssets)
+        .run(move |cx| hvc_ui::open_main_window(core, cx).unwrap());
     worker.join().unwrap();
     drop(server);
     drop(harness);

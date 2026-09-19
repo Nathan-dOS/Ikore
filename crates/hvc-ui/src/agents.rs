@@ -734,6 +734,20 @@ impl AgentsModel {
         self.generation
     }
 
+    /// Starts a background snapshot read that leaves `loading`/`busy`/`error` untouched: the
+    /// shell chrome (header, context rail, footer) refreshes while another view owns the panel,
+    /// so the Agents panel must not flicker into its loading state.
+    pub(crate) fn begin_quiet(&mut self) -> u64 {
+        self.generation = self.generation.saturating_add(1);
+        self.generation
+    }
+
+    /// `true` while a loud read or an operation is in flight; a quiet refresh yields to it so a
+    /// later generation never swallows the operation's result or error.
+    pub(crate) fn in_flight(&self) -> bool {
+        self.loading || self.busy
+    }
+
     pub(crate) fn apply_snapshot(
         &mut self,
         generation: u64,

@@ -10,7 +10,94 @@ use crate::settings::SettingsSection;
 use crate::sizing::{INPUT_LONG, INPUT_MEDIUM, INPUT_SHORT, StyledExt, sized_input};
 use crate::theme;
 
+/// The Settings category strip (Connections / Routes / Runtime / Usage). Lived in the shell's
+/// context bar before the rail redesign; it now sits at the top of the Settings panel itself,
+/// keeping the same selector ids.
+pub(crate) fn settings_section_strip(
+    section: SettingsSection,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    div()
+        .id("settings-section-strip")
+        .debug_selector(|| "settings-section-strip".into())
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .border_b_1()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .children(
+            [
+                (
+                    SettingsSection::Connections,
+                    "settings-section-connections",
+                    "Connections",
+                ),
+                (SettingsSection::Routes, "settings-section-routes", "Routes"),
+                (SettingsSection::Runtime, "settings-section-runtime", "Runtime"),
+                (SettingsSection::Usage, "settings-section-usage", "Usage"),
+            ]
+            .into_iter()
+            .map(|(target, id, label)| {
+                div()
+                    .id(id)
+                    .debug_selector(move || id.into())
+                    .px_3()
+                    .py_1()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .text_sm()
+                    .bg(if section == target {
+                        theme::accent_soft()
+                    } else {
+                        theme::surface()
+                    })
+                    .text_color(if section == target {
+                        theme::accent()
+                    } else {
+                        theme::text_muted()
+                    })
+                    .hover(|style| style.bg(theme::surface_raised()))
+                    .on_click(cx.listener(move |model, _, _, cx| {
+                        model.settings.update(cx, |settings, _| {
+                            settings.settings_section = target;
+                        });
+                        if target == SettingsSection::Usage {
+                            model.refresh_usage(cx);
+                        }
+                        cx.notify();
+                    }))
+                    .child(label)
+            }),
+        )
+        .into_any_element()
+}
+
 pub(crate) fn settings_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    let section = model.settings.read(cx).settings_section;
+    div()
+        .flex_1()
+        .min_w_0()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .child(settings_section_strip(section, cx))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .flex()
+                .child(settings_body(model, cx)),
+        )
+        .into_any_element()
+}
+
+fn settings_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let settings = model.settings.read(cx);
     let snapshot = settings.snapshot.clone();
     let loading = settings.loading;

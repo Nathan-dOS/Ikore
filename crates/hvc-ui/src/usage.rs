@@ -98,9 +98,6 @@ impl AppModel {
                 state.usage.generation = state.usage.generation.saturating_add(1);
             }
         });
-        if self.active_view() != AppView::Pulsations {
-            return;
-        }
         let Some(core) = self.core.clone() else {
             return;
         };
@@ -163,10 +160,10 @@ impl AppModel {
         cx.notify();
     }
 
+    // The active pulsation's totals feed the footer and the context rail in every view, so the
+    // debounced refresh is no longer gated on Pulsations being open.
     fn schedule_pulsation_usage_refresh(&mut self, cx: &mut Context<Self>) {
-        if self.active_view() != AppView::Pulsations
-            || self.pulsations.read(cx).usage.refresh_pending
-        {
+        if self.pulsations.read(cx).usage.refresh_pending {
             return;
         }
         self.pulsations
@@ -178,9 +175,7 @@ impl AppModel {
                 model
                     .pulsations
                     .update(cx, |state, _| state.usage.refresh_pending = false);
-                if model.active_view() == AppView::Pulsations {
-                    model.refresh_pulsation_usage(cx);
-                }
+                model.refresh_pulsation_usage(cx);
             });
         })
         .detach();

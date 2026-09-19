@@ -3,7 +3,7 @@ use crate::orchestration::ContentSha256;
 use crate::persistence_service::{PersistenceService, PersistenceServiceError as Error};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::de::DeserializeOwned;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) fn invalid(error: impl std::fmt::Display) -> Error {
     Error::Validation(error.to_string())
@@ -771,6 +771,30 @@ pub(crate) fn insert_task(
     replace_task_dependencies(db, &task_id, &draft.dependencies)?;
     task(db, project, &task_id)
 }
+fn normalized_title(title: &str) -> String {
+    title.trim().to_lowercase()
+}
+/// This feature's already-delivered tasks, keyed by normalized title. The
+/// Feature Agent rewrites `brief.tasks` from scratch on every revision with no
+/// id shared with its own prior proposals, so it cannot tell a task it is
+/// re-describing from one still outstanding; this is the host-side backstop
+/// against `apply_approval` recreating (and then failing to dispatch, since
+/// the duplicate is never `done`) work that already shipped.
+fn done_tasks_by_title(
+    db: &Connection,
+    project: &str,
+    feature_id: &str,
+) -> Result<HashMap<String, WorkTask>, Error> {
+    let ids = db
+        .prepare(
+            "SELECT id FROM work_tasks WHERE project_id=?1 AND feature_id=?2 AND state='done'",
+        )?
+        .query_map(params![project, feature_id], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    ids.into_iter()
+        .map(|id| task(db, project, &id).map(|t| (normalized_title(&t.draft.title), t)))
+        .collect()
+}
 /// Everything approval does inside the transaction, up to and including
 /// queueing the plan note.
 ///
@@ -799,15 +823,30 @@ pub(crate) fn apply_approval(
         check_source(db, project, source)?;
     }
     db.execute("UPDATE work_tasks SET state='superseded',updated_at=?2 WHERE feature_id=?1 AND state='ready'",params![feature_id,now()])?;
+    let done_tasks = done_tasks_by_title(db, project, feature_id)?;
     // Allocate every identity first so proposals can depend on later proposals.
+    // A proposal whose title matches an already-done task of this feature reuses
+    // that task's real id instead of inserting a duplicate: `done_tasks` only
+    // holds delivered work, so this never touches a task still `ready`/`queued`,
+    // which the supersede statement above already replaces wholesale.
     let mut proposed = Vec::new();
-    for draft in &f.brief.tasks {
+    let mut reused = vec![false; f.brief.tasks.len()];
+    for (index, draft) in f.brief.tasks.iter().enumerate() {
+        if let Some(existing) = done_tasks.get(&normalized_title(&draft.title)) {
+            proposed.push(existing.clone());
+            reused[index] = true;
+            continue;
+        }
         let mut draft = draft.clone();
         draft.feature_id = Some(feature_id.into());
         draft.dependencies.clear();
         proposed.push(insert_task(db, project, &draft, Some(expected))?);
     }
     for (index, draft) in f.brief.tasks.iter().enumerate() {
+        if reused[index] {
+            // Already delivered under its own id; leave its record untouched.
+            continue;
+        }
         let dependencies = draft
             .dependencies
             .iter()

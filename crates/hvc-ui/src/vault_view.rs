@@ -88,290 +88,309 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         .map(|index| index.broken_file_references.clone())
         .unwrap_or_default();
 
+    let files_column = div()
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .p_3()
+        .rounded_lg()
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(section_heading(
+            if indexing { "INDEXING" } else { "WORKSPACE" },
+            "Files",
+            note_count,
+        ))
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .overflow_hidden()
+                .child(root),
+        )
+        .child(crate::sizing::sized_input(
+            search_input,
+            crate::sizing::INPUT_MEDIUM,
+        ))
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .child(search_mode_button(
+                    "vault-substring",
+                    "Substring",
+                    matches!(search_mode, SearchMode::Substring),
+                    SearchMode::Substring,
+                    cx,
+                ))
+                .child(search_mode_button(
+                    "vault-regex",
+                    "Regex",
+                    matches!(search_mode, SearchMode::Regex),
+                    SearchMode::Regex,
+                    cx,
+                )),
+        )
+        .child(
+            div()
+                .id("vault-case-sensitive")
+                .px_2()
+                .py_1()
+                .rounded_sm()
+                .cursor_pointer()
+                .bg(if case_sensitive {
+                    theme::accent_soft()
+                } else {
+                    theme::surface_raised()
+                })
+                .text_color(if case_sensitive {
+                    theme::accent()
+                } else {
+                    theme::text_muted()
+                })
+                .on_click(cx.listener(|model, _, _, cx| {
+                    model.toggle_vault_search_case(cx);
+                }))
+                .child(if case_sensitive {
+                    "✓ Match case"
+                } else {
+                    "Match case"
+                }),
+        )
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .child(
+                    div()
+                        .id("vault-search")
+                        .flex_1()
+                        .h(px(34.0))
+                        .rounded_md()
+                        .bg(if searching {
+                            theme::surface_raised()
+                        } else {
+                            theme::accent()
+                        })
+                        .text_color(if searching {
+                            theme::text_muted()
+                        } else {
+                            theme::canvas()
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(!searching, |button| {
+                            button
+                                .cursor_pointer()
+                                .on_click(cx.listener(|model, _, _, cx| model.search_vault(cx)))
+                        })
+                        .child(if searching { "Searching…" } else { "Search" }),
+                )
+                .when(search_results.is_some(), |row| {
+                    row.child(
+                        div()
+                            .id("vault-clear-search")
+                            .px_3()
+                            .h(px(34.0))
+                            .rounded_md()
+                            .bg(theme::surface_raised())
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .on_click(cx.listener(|model, _, _, cx| {
+                                model.clear_vault_search(cx);
+                            }))
+                            .child("Clear"),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .id("vault-browser-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .when_some(search_results.clone(), |browser, results| {
+                    browser.child(search_results_panel(results, cx))
+                })
+                .when(search_results.is_none(), |browser| {
+                    browser.children(
+                        tree_rows
+                            .into_iter()
+                            .map(|row| vault_tree_row(row, selected_path.as_deref(), cx)),
+                    )
+                }),
+        )
+        .into_any_element();
+    let graph_panel = div()
+        .id("vault-graph-scroll")
+        .debug_selector(|| "vault-graph-scroll".into())
+        .overflow_y_scroll()
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .p_3()
+        .rounded_lg()
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(section_heading(
+                    "KNOWLEDGE TOPOLOGY",
+                    "Wikilink graph",
+                    edge_count,
+                ))
+                .child(
+                    div()
+                        .id("vault-expand-graph")
+                        .debug_selector(|| "vault-expand-graph".into())
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .bg(theme::surface_raised())
+                        .cursor_pointer()
+                        .on_click(cx.listener(|model, _, _, cx| {
+                            model.toggle_vault_graph(cx);
+                        }))
+                        .child(if graph_expanded { "Collapse" } else { "Expand" }),
+                ),
+        )
+        .child(vault_graph(graph, selected_path.as_deref(), cx))
+        .when(broken_links.is_empty(), |panel| {
+            panel.child(
+                div()
+                    .p_2()
+                    .rounded_md()
+                    .bg(theme::accent_soft())
+                    .text_color(theme::accent())
+                    .child("No broken wikilinks detected."),
+            )
+        })
+        .when(!broken_links.is_empty(), |panel| {
+            panel.child(
+                div()
+                    .p_3()
+                    .rounded_md()
+                    .bg(theme::warning_soft())
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme::warning())
+                            .child(format!("{} broken link(s)", broken_links.len())),
+                    )
+                    .children(broken_links.into_iter().map(|link| {
+                        let source = link.source_path.clone();
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "broken-link:{}:{}",
+                                source, link.line
+                            )))
+                            .mt_1()
+                            .text_sm()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |model, _, _, cx| {
+                                model.select_vault_path(source.clone(), cx);
+                            }))
+                            .child(format!(
+                                "{}:{} → [[{}]]",
+                                link.source_path, link.line, link.target
+                            ))
+                    })),
+            )
+        })
+        .when(!broken_file_references.is_empty(), |panel| {
+            panel.child(
+                div()
+                    .p_3()
+                    .rounded_md()
+                    .bg(theme::warning_soft())
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme::warning())
+                            .child(format!(
+                                "File reference issues ({})",
+                                broken_file_references.len()
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .child("Checks referenced files, not test execution."),
+                    )
+                    .children(broken_file_references.into_iter().map(|reference| {
+                        let source = reference.source_path.clone();
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "broken-file:{}:{}:{}",
+                                source, reference.field, reference.target
+                            )))
+                            .mt_1()
+                            .text_sm()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |model, _, _, cx| {
+                                model.select_vault_path(source.clone(), cx);
+                            }))
+                            .child(format!(
+                                "{} · {} → {}",
+                                reference.source_path, reference.field, reference.target
+                            ))
+                            .child(div().text_xs().child(reference.reason))
+                    })),
+            )
+        })
+        .into_any_element();
+
+    // Files | (graph | inspector): the same resizable columns Workspace and Forge use. Expanding
+    // the graph drops both side columns and their sashes instead of squeezing them.
+    let columns = if graph_expanded {
+        graph_panel
+    } else {
+        let inspector = inspector(
+            selected_path,
+            selected_note,
+            selected_document,
+            rename_input,
+            renaming,
+            _notice,
+            error,
+            cx,
+        )
+        .into_any_element();
+        let detail = crate::split_pane::split_pane(
+            "vault-detail-columns",
+            &model.vault_detail_split,
+            graph_panel,
+            inspector,
+            cx,
+        );
+        crate::split_pane::split_pane(
+            "vault-columns",
+            &model.vault_files_split,
+            files_column,
+            detail,
+            cx,
+        )
+    };
     div()
         .flex_1()
         .min_w_0()
         .min_h_0()
         .p_3()
         .flex()
-        .gap_3()
-        .when(!graph_expanded, |layout| {
-            layout.child(
-                div()
-                    .w(px(264.0))
-                    .min_h_0()
-                    .p_3()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(theme::border())
-                    .bg(theme::surface())
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(section_heading(
-                        if indexing { "INDEXING" } else { "WORKSPACE" },
-                        "Files",
-                        note_count,
-                    ))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_muted())
-                            .overflow_hidden()
-                            .child(root),
-                    )
-                    .child(crate::sizing::sized_input(
-                        search_input,
-                        crate::sizing::INPUT_MEDIUM,
-                    ))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(search_mode_button(
-                                "vault-substring",
-                                "Substring",
-                                matches!(search_mode, SearchMode::Substring),
-                                SearchMode::Substring,
-                                cx,
-                            ))
-                            .child(search_mode_button(
-                                "vault-regex",
-                                "Regex",
-                                matches!(search_mode, SearchMode::Regex),
-                                SearchMode::Regex,
-                                cx,
-                            )),
-                    )
-                    .child(
-                        div()
-                            .id("vault-case-sensitive")
-                            .px_2()
-                            .py_1()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .bg(if case_sensitive {
-                                theme::accent_soft()
-                            } else {
-                                theme::surface_raised()
-                            })
-                            .text_color(if case_sensitive {
-                                theme::accent()
-                            } else {
-                                theme::text_muted()
-                            })
-                            .on_click(cx.listener(|model, _, _, cx| {
-                                model.toggle_vault_search_case(cx);
-                            }))
-                            .child(if case_sensitive {
-                                "✓ Match case"
-                            } else {
-                                "Match case"
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .id("vault-search")
-                                    .flex_1()
-                                    .h(px(34.0))
-                                    .rounded_md()
-                                    .bg(if searching {
-                                        theme::surface_raised()
-                                    } else {
-                                        theme::accent()
-                                    })
-                                    .text_color(if searching {
-                                        theme::text_muted()
-                                    } else {
-                                        theme::canvas()
-                                    })
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .when(!searching, |button| {
-                                        button.cursor_pointer().on_click(
-                                            cx.listener(|model, _, _, cx| model.search_vault(cx)),
-                                        )
-                                    })
-                                    .child(if searching { "Searching…" } else { "Search" }),
-                            )
-                            .when(search_results.is_some(), |row| {
-                                row.child(
-                                    div()
-                                        .id("vault-clear-search")
-                                        .px_3()
-                                        .h(px(34.0))
-                                        .rounded_md()
-                                        .bg(theme::surface_raised())
-                                        .cursor_pointer()
-                                        .flex()
-                                        .items_center()
-                                        .on_click(cx.listener(|model, _, _, cx| {
-                                            model.clear_vault_search(cx);
-                                        }))
-                                        .child("Clear"),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .id("vault-browser-scroll")
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .when_some(search_results.clone(), |browser, results| {
-                                browser.child(search_results_panel(results, cx))
-                            })
-                            .when(search_results.is_none(), |browser| {
-                                browser.children(
-                                    tree_rows.into_iter().map(|row| {
-                                        vault_tree_row(row, selected_path.as_deref(), cx)
-                                    }),
-                                )
-                            }),
-                    ),
-            )
-        })
-        .child(
-            div()
-                .id("vault-graph-scroll")
-                .overflow_y_scroll()
-                .flex_1()
-                .min_w_0()
-                .min_h_0()
-                .p_3()
-                .rounded_lg()
-                .border_1()
-                .border_color(theme::border())
-                .bg(theme::surface())
-                .flex()
-                .flex_col()
-                .gap_3()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(section_heading(
-                            "KNOWLEDGE TOPOLOGY",
-                            "Wikilink graph",
-                            edge_count,
-                        ))
-                        .child(
-                            div()
-                                .id("vault-expand-graph")
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .bg(theme::surface_raised())
-                                .cursor_pointer()
-                                .on_click(cx.listener(|model, _, _, cx| {
-                                    model.toggle_vault_graph(cx);
-                                }))
-                                .child(if graph_expanded { "Collapse" } else { "Expand" }),
-                        ),
-                )
-                .child(vault_graph(graph, selected_path.as_deref(), cx))
-                .when(broken_links.is_empty(), |panel| {
-                    panel.child(
-                        div()
-                            .p_2()
-                            .rounded_md()
-                            .bg(theme::accent_soft())
-                            .text_color(theme::accent())
-                            .child("No broken wikilinks detected."),
-                    )
-                })
-                .when(!broken_links.is_empty(), |panel| {
-                    panel.child(
-                        div()
-                            .p_3()
-                            .rounded_md()
-                            .bg(theme::warning_soft())
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(theme::warning())
-                                    .child(format!("{} broken link(s)", broken_links.len())),
-                            )
-                            .children(broken_links.into_iter().map(|link| {
-                                let source = link.source_path.clone();
-                                div()
-                                    .id(gpui::SharedString::from(format!(
-                                        "broken-link:{}:{}",
-                                        source, link.line
-                                    )))
-                                    .mt_1()
-                                    .text_sm()
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |model, _, _, cx| {
-                                        model.select_vault_path(source.clone(), cx);
-                                    }))
-                                    .child(format!(
-                                        "{}:{} → [[{}]]",
-                                        link.source_path, link.line, link.target
-                                    ))
-                            })),
-                    )
-                })
-                .when(!broken_file_references.is_empty(), |panel| {
-                    panel.child(
-                        div()
-                            .p_3()
-                            .rounded_md()
-                            .bg(theme::warning_soft())
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(theme::warning())
-                                    .child(format!(
-                                        "File reference issues ({})",
-                                        broken_file_references.len()
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .child("Checks referenced files, not test execution."),
-                            )
-                            .children(broken_file_references.into_iter().map(|reference| {
-                                let source = reference.source_path.clone();
-                                div()
-                                    .id(gpui::SharedString::from(format!(
-                                        "broken-file:{}:{}:{}",
-                                        source, reference.field, reference.target
-                                    )))
-                                    .mt_1()
-                                    .text_sm()
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |model, _, _, cx| {
-                                        model.select_vault_path(source.clone(), cx);
-                                    }))
-                                    .child(format!(
-                                        "{} · {} → {}",
-                                        reference.source_path, reference.field, reference.target
-                                    ))
-                                    .child(div().text_xs().child(reference.reason))
-                            })),
-                    )
-                }),
-        )
-        .when(!graph_expanded, |layout| {
-            layout.child(inspector(
-                selected_path,
-                selected_note,
-                selected_document,
-                rename_input,
-                renaming,
-                _notice,
-                error,
-                cx,
-            ))
-        })
+        .child(columns)
         .into_any_element()
 }
 
@@ -626,7 +645,8 @@ fn inspector(
     let has_document = document.is_some();
     div()
         .id("vault-inspector-scroll")
-        .w(px(300.0))
+        .size_full()
+        .min_w_0()
         .min_h_0()
         .p_3()
         .rounded_lg()

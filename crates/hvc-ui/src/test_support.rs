@@ -36,7 +36,7 @@ mod tests {
 
         assert!(harness.data_dir().join("hard-vibe-code.db").is_file());
         cx.read(|cx| {
-            assert_eq!(model.read(cx).active_view(), crate::AppView::Workspace);
+            assert_eq!(model.read(cx).active_view(), crate::AppView::Home);
         });
     }
 }

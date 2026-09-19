@@ -5,8 +5,8 @@ use crate::{
     theme,
 };
 use gpui::{
-    AnyElement, Bounds, Context, FocusHandle, IntoElement, Task, Window, deferred, div, point,
-    prelude::*, px, size,
+    AnyElement, Bounds, Context, FocusHandle, IntoElement, Pixels, Task, Window, deferred, div,
+    point, prelude::*, px, size,
 };
 use std::{
     collections::HashMap,
@@ -86,28 +86,16 @@ pub(crate) struct Notifications {
     pub(crate) copied: HashMap<String, Instant>,
 }
 
-/// Windows' accessibility setting, queried without changing system state.
-fn reduced_motion() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        #[link(name = "user32")]
-        unsafe extern "system" {
-            fn SystemParametersInfoW(
-                action: u32,
-                parameter: u32,
-                value: *mut std::ffi::c_void,
-                flags: u32,
-            ) -> i32;
-        }
-        let mut enabled: i32 = 1;
-        // SAFETY: SPI_GETCLIENTAREAANIMATION writes exactly one BOOL into this live stack value.
-        let ok = unsafe { SystemParametersInfoW(0x1042, 0, (&mut enabled as *mut i32).cast(), 0) };
-        ok != 0 && enabled == 0
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        true
-    }
+/// Where the toast and the history panel hang from: the bell. The header lays the bell out as
+/// the last 36 px control inside a 12 px padding, so the overlay's right edge meets the bell's
+/// left edge and its top sits a few pixels under the header line — the panel reads as a menu
+/// dropping from the bell's bottom-left corner instead of a card floating mid-screen.
+pub(crate) fn overlay_right_inset() -> Pixels {
+    px(12.0) + crate::widgets::ICON_BUTTON_SIZE
+}
+
+pub(crate) fn overlay_top() -> Pixels {
+    crate::sizing::HEADER_HEIGHT + px(4.0)
 }
 
 impl AppModel {
@@ -276,9 +264,11 @@ impl AppModel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let viewport = window.viewport_size();
-        let width = px(360.0).min(viewport.width - px(24.0));
+        let right_inset = overlay_right_inset();
+        let top = overlay_top();
+        let width = px(360.0).min(viewport.width - right_inset - px(12.0));
         let area = Bounds::new(
-            point(viewport.width - width - px(12.0), px(112.0)),
+            point(viewport.width - width - right_inset, top),
             size(width, px(224.0)),
         );
         let blocked = self.active_dropdown.is_some()
@@ -296,7 +286,7 @@ impl AppModel {
                 .debug_selector(|| "notification-history".into())
                 .track_focus(&focus)
                 .w(width)
-                .max_h((viewport.height - px(140.0)).max(px(100.0)))
+                .max_h((viewport.height - top - px(40.0)).max(px(100.0)))
                 .overflow_y_scroll()
                 .p_3()
                 .rounded_lg()
@@ -352,7 +342,7 @@ impl AppModel {
                     )
                 })
                 .children(history.iter().map(|n| notification_card(n, true, cx)));
-            return deferred(div().absolute().top(px(112.0)).right(px(12.0)).child(panel))
+            return deferred(div().absolute().top(top).right(right_inset).child(panel))
                 .with_priority(15)
                 .into_any_element();
         }
@@ -370,7 +360,7 @@ impl AppModel {
             .focus
             .as_ref()
             .is_some_and(|f| f.contains_focused(window, cx));
-        let reduced = reduced_motion();
+        let reduced = crate::motion::reduced_motion();
         let (done, opacity) = self.notifications.clock.advance(
             current.as_ref().map(|n| n.id),
             delta,
@@ -416,8 +406,8 @@ impl AppModel {
                 .debug_selector(|| "notification-toast".into())
                 .track_focus(&focus)
                 .absolute()
-                .right(px(12.0))
-                .top(px(112.0 - if reduced { 0.0 } else { 8.0 * (1.0 - opacity) }))
+                .right(right_inset)
+                .top(top - px(if reduced { 0.0 } else { 8.0 * (1.0 - opacity) }))
                 .w(width)
                 .opacity(opacity)
                 .shadow_lg()
@@ -518,7 +508,7 @@ mod tests {
             model.update(visual, |m, cx| m.select_view(crate::AppView::Agents, cx));
             visual.run_until_parked();
             let controls = visual.debug_bounds("agents-cli-scroll").unwrap();
-            let nav = visual.debug_bounds("settings").unwrap();
+            let nav = visual.debug_bounds("rail-settings").unwrap();
             model.update(visual, |m, cx| {
                 m.push_header_notice(
                     HeaderNoticeKind::Error,
@@ -532,8 +522,15 @@ mod tests {
             let toast = visual.debug_bounds("notification-toast").unwrap();
             assert!(toast.right() <= px(width) && toast.bottom() <= px(height));
             assert!(toast.size.width <= px(360.0));
+            // The toast hangs from the bell: top-right corner at the bell's bottom-left.
+            let bell = visual.debug_bounds("notifications").unwrap();
+            assert_eq!(toast.right(), bell.left(), "{toast:?} vs {bell:?}");
+            assert!(
+                toast.top() >= bell.bottom() && toast.top() - bell.bottom() <= px(12.0),
+                "{toast:?} vs {bell:?}"
+            );
             assert_eq!(visual.debug_bounds("agents-cli-scroll").unwrap(), controls);
-            assert_eq!(visual.debug_bounds("settings").unwrap(), nav);
+            assert_eq!(visual.debug_bounds("rail-settings").unwrap(), nav);
             visual.simulate_click(toast.center(), gpui::Modifiers::default());
             visual.run_until_parked();
             model.read_with(visual, |m, _| {
@@ -546,7 +543,7 @@ mod tests {
             });
             visual.run_until_parked();
             assert_eq!(visual.debug_bounds("agents-cli-scroll").unwrap(), controls);
-            assert_eq!(visual.debug_bounds("settings").unwrap(), nav);
+            assert_eq!(visual.debug_bounds("rail-settings").unwrap(), nav);
         }
     }
 

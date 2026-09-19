@@ -12,6 +12,7 @@ use hvc_core::persistence_service::{HitlDecision, PulsationStatus};
 
 use crate::app_model::{AppModel, AppView};
 use crate::forge::{ForgeAction, ForgeSection};
+use crate::icons::Icon;
 use crate::pulsations::PulsationDetailSection;
 
 #[derive(Clone)]
@@ -35,6 +36,7 @@ pub(crate) enum FlowTarget {
 pub(crate) struct NextStep {
     pub id: &'static str,
     pub label: SharedString,
+    pub icon: Icon,
     pub target: FlowTarget,
 }
 
@@ -73,6 +75,7 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
         return vec![NextStep {
             id: "flow-open-project",
             label: "Open project".into(),
+            icon: Icon::FolderOpen,
             target: FlowTarget::OpenProject,
         }];
     };
@@ -96,16 +99,19 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
                     NextStep {
                         id: "flow-hitl-approve",
                         label: "Approve (Enter)".into(),
+                        icon: Icon::Check,
                         target: FlowTarget::Hitl(HitlDecision::Approve),
                     },
                     NextStep {
                         id: "flow-hitl-revise",
                         label: "Request revision (R)".into(),
+                        icon: Icon::RotateCw,
                         target: FlowTarget::Hitl(HitlDecision::RequestRevision),
                     },
                     NextStep {
                         id: "flow-hitl-reject",
                         label: "Reject (D)".into(),
+                        icon: Icon::X,
                         target: FlowTarget::Hitl(HitlDecision::Reject),
                     },
                 ]
@@ -114,6 +120,7 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
                     NextStep {
                         id: "flow-review-now",
                         label: "Review now".into(),
+                        icon: Icon::Eye,
                         target: FlowTarget::PulsationSection(
                             active.id.clone(),
                             PulsationDetailSection::Review,
@@ -122,6 +129,7 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
                     NextStep {
                         id: "flow-open-artifacts",
                         label: "Open artifacts".into(),
+                        icon: Icon::Layers,
                         target: FlowTarget::PulsationSection(
                             active.id.clone(),
                             PulsationDetailSection::Artifacts,
@@ -148,11 +156,13 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
             NextStep {
                 id: "flow-compose-pulsation",
                 label: "Compose pulsation".into(),
+                icon: Icon::Play,
                 target: FlowTarget::ForgeSection(ForgeSection::Backlog),
             },
             NextStep {
                 id: "flow-open-backlog",
                 label: "Open backlog".into(),
+                icon: Icon::ListTodo,
                 target: FlowTarget::ForgeSection(ForgeSection::Backlog),
             },
         ];
@@ -168,6 +178,7 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
         return vec![NextStep {
             id: "flow-answer-feature-agent",
             label: "Answer Feature Agent".into(),
+            icon: Icon::MessageSquare,
             target: FlowTarget::ForgeSection(ForgeSection::Incubation),
         }];
     }
@@ -180,11 +191,13 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
             NextStep {
                 id: "flow-plan-waves",
                 label: "Plan waves".into(),
+                icon: Icon::Waves,
                 target: FlowTarget::ForgeSection(ForgeSection::Waves),
             },
             NextStep {
                 id: "flow-open-backlog-planned",
                 label: "Open backlog".into(),
+                icon: Icon::ListTodo,
                 target: FlowTarget::ForgeSection(ForgeSection::Backlog),
             },
         ];
@@ -195,11 +208,13 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
             NextStep {
                 id: "flow-new-feature",
                 label: "New feature".into(),
+                icon: Icon::Sparkles,
                 target: FlowTarget::Forge(ForgeAction::New(true)),
             },
             NextStep {
                 id: "flow-add-tasks",
                 label: "Add tasks".into(),
+                icon: Icon::ListTodo,
                 target: FlowTarget::Forge(ForgeAction::New(false)),
             },
         ];
@@ -220,11 +235,13 @@ fn active_pulsation_steps(
             NextStep {
                 id: "flow-follow-pipeline",
                 label: "Follow pipeline".into(),
+                icon: Icon::Activity,
                 target: FlowTarget::View(AppView::Pulsations),
             },
             NextStep {
                 id: "flow-open-logs",
                 label: "Open logs".into(),
+                icon: Icon::ScrollText,
                 target: FlowTarget::View(AppView::Logs),
             },
         ]),
@@ -232,11 +249,13 @@ fn active_pulsation_steps(
             NextStep {
                 id: "flow-open-logs-failed",
                 label: "Open logs".into(),
+                icon: Icon::ScrollText,
                 target: FlowTarget::View(AppView::Logs),
             },
             NextStep {
                 id: "flow-reopen-backlog",
                 label: "Reopen tasks".into(),
+                icon: Icon::ListTodo,
                 target: FlowTarget::ForgeSection(ForgeSection::Backlog),
             },
         ]),
@@ -244,6 +263,7 @@ fn active_pulsation_steps(
             NextStep {
                 id: "flow-open-artifacts-done",
                 label: "Open artifacts".into(),
+                icon: Icon::Layers,
                 target: FlowTarget::PulsationSection(
                     active.id.clone(),
                     PulsationDetailSection::Artifacts,
@@ -252,6 +272,7 @@ fn active_pulsation_steps(
             NextStep {
                 id: "flow-open-vault",
                 label: "Open in Vault".into(),
+                icon: Icon::Vault,
                 target: FlowTarget::View(AppView::Vault),
             },
         ]),

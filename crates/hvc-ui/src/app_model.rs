@@ -22,7 +22,7 @@ use hvc_core::orchestration::brownfield::BrownfieldOnboardingStatus;
 use hvc_core::orchestration::{CleanupFailedPulsationFilesRequest, IndexingEvent};
 use hvc_core::persistence_service::{
     ClearExecutionOverrideRequest, CliFallbackDecision, EnsureProjectForWorkspaceRequest,
-    HitlDecision, LoadUiSessionRequest, PulsationRuntimeSnapshot, PulsationStatus,
+    HitlDecision, LoadUiSessionRequest, PulsationRuntimeSnapshot, PulsationStage, PulsationStatus,
     ResolveCliFallbackRequest, SaveUiSessionRequest, StageFailureDecision,
     StartFreeFormApiRunRequest, UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
 };
@@ -59,6 +59,10 @@ use crate::vault::{
     CONTEXT_DOCUMENTS_DEBOUNCE, CoreVaultBackend, VAULT_REFRESH_DEBOUNCE, VaultBackend, VaultModel,
     normalize_rename_target,
 };
+use crate::icons::Icon;
+use crate::activity::{ActivityEntry, ActivityKind};
+use hvc_core::embedding_service::ModelPullEvent;
+use crate::flow::FlowTarget;
 use crate::views::NavigationModel;
 use crate::workspace::{
     AUTOSAVE_DEBOUNCE, BrownfieldOnboardingState, CoreWorkspaceBackend, WorkspaceBackend,
@@ -67,6 +71,7 @@ use crate::workspace::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppView {
+    Home,
     Forge,
     Workspace,
     Pulsations,
@@ -78,7 +83,8 @@ pub enum AppView {
 }
 
 impl AppView {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
+        Self::Home,
         Self::Forge,
         Self::Workspace,
         Self::Pulsations,
@@ -91,6 +97,7 @@ impl AppView {
 
     pub const fn id(self) -> &'static str {
         match self {
+            Self::Home => "home",
             Self::Workspace => "workspace",
             Self::Pulsations => "pulsations",
             Self::Forge => "forge",
@@ -104,6 +111,7 @@ impl AppView {
 
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Home => "Home",
             Self::Workspace => "Workspace & HITL",
             Self::Pulsations => "Pulsations & Pipeline",
             Self::Forge => "Forge — Tasks & Features",
@@ -117,6 +125,7 @@ impl AppView {
 
     pub const fn short_label(self) -> &'static str {
         match self {
+            Self::Home => "Home",
             Self::Workspace => "Workspace",
             Self::Pulsations => "Pulsations",
             Self::Forge => "Forge",
@@ -128,21 +137,24 @@ impl AppView {
         }
     }
 
-    pub const fn glyph(self) -> &'static str {
+    /// Rail / tooltip glyph for the view.
+    pub(crate) const fn icon(self) -> Icon {
         match self {
-            Self::Workspace => "W",
-            Self::Pulsations => "P",
-            Self::Forge => "F",
-            Self::Vault => "V",
-            Self::Chat => "C",
-            Self::Agents => "A",
-            Self::Settings => "S",
-            Self::Logs => "L",
+            Self::Home => Icon::House,
+            Self::Workspace => Icon::FolderOpen,
+            Self::Pulsations => Icon::Activity,
+            Self::Forge => Icon::Hammer,
+            Self::Vault => Icon::Vault,
+            Self::Chat => Icon::MessageSquare,
+            Self::Agents => Icon::Bot,
+            Self::Settings => Icon::Settings,
+            Self::Logs => Icon::ScrollText,
         }
     }
 
     pub const fn description(self) -> &'static str {
         match self {
+            Self::Home => "Active pulsation, next step, and what is waiting on you",
             Self::Workspace => "Files, tabs, editor, preview, and HITL review",
             Self::Pulsations => "Executions, checkpoints, and human decisions",
             Self::Forge => "Task backlog, discovery, and feature planning",
@@ -168,6 +180,9 @@ impl AppView {
     }
 }
 
+/// Visual grouping of the workbench views on the nav rail (a divider separates each group). It
+/// used to be the first level of a two-level tab navigation; since the rail redesign it carries no
+/// navigation state of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AppTab {
     Agent,
@@ -178,19 +193,14 @@ pub enum AppTab {
 impl AppTab {
     pub const ALL: [Self; 3] = [Self::Agent, Self::Engine, Self::Companion];
 
+    /// Rail order: the Engine group (where work is composed and runs) sits first.
+    pub const RAIL_ORDER: [Self; 3] = [Self::Engine, Self::Agent, Self::Companion];
+
     pub const fn sub_views(self) -> &'static [AppView] {
         match self {
             Self::Agent => &[AppView::Agents, AppView::Logs],
             Self::Engine => &[AppView::Forge, AppView::Pulsations, AppView::Vault],
             Self::Companion => &[AppView::Chat, AppView::Workspace],
-        }
-    }
-
-    pub const fn default_view(self) -> AppView {
-        match self {
-            Self::Agent => AppView::Agents,
-            Self::Engine => AppView::Vault,
-            Self::Companion => AppView::Chat,
         }
     }
 
@@ -242,6 +252,9 @@ struct RestoredSession {
     brownfield_status: Option<BrownfieldOnboardingStatus>,
 }
 
+/// Repeated Forge/watcher events inside this window collapse into one activity line.
+const ACTIVITY_COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Per-tab attention counters shown as header badges and, unfolded, in the status bar. See the UI
 /// flow plan Part 4.4.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -250,6 +263,10 @@ pub struct TabBadges {
     pub engine_awaiting_hitl: usize,
     pub engine_running_jobs: usize,
     pub companion_streaming: usize,
+    /// Open Specification clarification checkpoints across the project.
+    pub clarifications: usize,
+    /// CLI runs parked on a fallback decision.
+    pub agent_fallbacks: usize,
 }
 
 pub struct AppModel {
@@ -279,6 +296,9 @@ pub struct AppModel {
     /// from the incubation split because a form and a transcript want different
     /// proportions.
     pub(crate) forge_triage_split: Entity<crate::split_pane::SplitPaneState>,
+    /// Vault: files/search column | (graph | inspector).
+    pub(crate) vault_files_split: Entity<crate::split_pane::SplitPaneState>,
+    pub(crate) vault_detail_split: Entity<crate::split_pane::SplitPaneState>,
     pub vault: Entity<VaultModel>,
     #[cfg(test)]
     pub(crate) pulsation_feature_input: Entity<NativeTextInput>,
@@ -328,8 +348,10 @@ pub struct AppModel {
     pub(crate) settings: Entity<SettingsModel>,
     pub(crate) logs: Entity<LogsModel>,
     active_view: AppView,
-    active_tab: AppTab,
-    last_view_per_tab: HashMap<AppTab, AppView>,
+    /// Wall-clock `HH:MM` shown in the status bar; refreshed by the lifecycle poll.
+    footer_clock: SharedString,
+    /// Home's "recent activity": one line per milestone across every event family.
+    pub(crate) activity: crate::activity::ActivityFeed,
     status: SharedString,
     event_count: u64,
     needs_resync: bool,
@@ -376,6 +398,8 @@ pub struct AppModel {
     vault_context_task: Option<Task<()>>,
     vault_document_tasks: HashMap<String, Task<()>>,
     settings_task: Option<Task<()>>,
+    /// A quiet Settings refresh is already scheduled (see `schedule_settings_quiet_refresh`).
+    settings_quiet_refresh_pending: bool,
     embedding_readiness_task: Option<Task<()>>,
     model_pull_task: Option<Task<()>>,
     agents_task: Option<Task<()>>,
@@ -508,23 +532,10 @@ impl AppModel {
         workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let active_view = AppView::Workspace;
-        let active_tab = AppTab::from_view(active_view).unwrap_or(AppTab::Companion);
-        let last_view_per_tab = AppTab::ALL
-            .into_iter()
-            .map(|tab| {
-                let view = if tab.contains(active_view) {
-                    active_view
-                } else {
-                    tab.default_view()
-                };
-                (tab, view)
-            })
-            .collect::<HashMap<_, _>>();
+        let active_view = AppView::Home;
         let navigation = cx.new(|_| NavigationModel {
             active: active_view,
-            active_tab,
-            sidebar_collapsed: false,
+            context_rail_collapsed: false,
         });
         let workspace = cx.new(WorkspaceEditorModel::new);
         let editor = workspace.read(cx).editor.clone();
@@ -619,6 +630,12 @@ impl AppModel {
             cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.55, 300.0, 260.0));
         let forge_triage_split =
             cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.58, 300.0, 260.0));
+        // Right minimum = graph + inspector minimums plus their sash, so the files column
+        // never pushes the inspector out at the 960 px window.
+        let vault_files_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::new(264.0, 200.0, 420.0, 486.0));
+        let vault_detail_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.62, 260.0, 220.0));
         let mut subscriptions = vec![
             cx.observe(&agents_split, |_, _, cx| cx.notify()),
             cx.observe(&pulsations_split, |_, _, cx| cx.notify()),
@@ -628,6 +645,8 @@ impl AppModel {
             cx.observe(&forge_feature_split, |_, _, cx| cx.notify()),
             cx.observe(&forge_incubation_split, |_, _, cx| cx.notify()),
             cx.observe(&forge_triage_split, |_, _, cx| cx.notify()),
+            cx.observe(&vault_files_split, |_, _, cx| cx.notify()),
+            cx.observe(&vault_detail_split, |_, _, cx| cx.notify()),
             cx.observe(&editor, |model, _, cx| {
                 model.handle_editor_update(cx);
                 model.schedule_vault_context_documents(cx);
@@ -699,6 +718,8 @@ impl AppModel {
             forge_feature_split,
             forge_incubation_split,
             forge_triage_split,
+            vault_files_split,
+            vault_detail_split,
             vault: cx.new(|_| VaultModel::default()),
             #[cfg(test)]
             pulsation_feature_input,
@@ -746,8 +767,8 @@ impl AppModel {
             settings: cx.new(|_| SettingsModel::default()),
             logs: cx.new(|_| LogsModel::default()),
             active_view,
-            active_tab,
-            last_view_per_tab,
+            footer_clock: crate::time::current_clock_hhmm().into(),
+            activity: crate::activity::ActivityFeed::default(),
             status: "Ready".into(),
             event_count: 0,
             needs_resync: false,
@@ -794,6 +815,7 @@ impl AppModel {
             vault_context_task: None,
             vault_document_tasks: HashMap::new(),
             settings_task: None,
+            settings_quiet_refresh_pending: false,
             embedding_readiness_task: None,
             model_pull_task: None,
             agents_task: None,
@@ -821,24 +843,16 @@ impl AppModel {
         self.active_view
     }
 
-    pub fn active_tab(&self) -> AppTab {
-        self.active_tab
+    pub(crate) fn footer_clock(&self) -> &SharedString {
+        &self.footer_clock
     }
 
-    pub fn select_tab(&mut self, tab: AppTab, cx: &mut Context<Self>) {
-        let view = self
-            .last_view_per_tab
-            .get(&tab)
-            .copied()
-            .unwrap_or_else(|| tab.default_view());
-        self.select_view(view, cx);
-    }
-
-    /// `alt-1`/`alt-2`/`alt-3`: jump to the Nth sub-view of the active header tab (see the UI flow
-    /// plan Part 4.5). A no-op when the active tab has fewer sub-views than `index + 1`.
-    pub(crate) fn select_nth_sub_view(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(view) = self.active_tab.sub_views().get(index).copied() {
-            self.select_view(view, cx);
+    /// Re-reads the wall clock; notifies only when the displayed minute changed.
+    pub(crate) fn tick_footer_clock(&mut self, cx: &mut Context<Self>) {
+        let now = crate::time::current_clock_hhmm();
+        if self.footer_clock.as_ref() != now {
+            self.footer_clock = now.into();
+            cx.notify();
         }
     }
 
@@ -934,8 +948,8 @@ impl AppModel {
         }
     }
 
-    pub fn sidebar_collapsed(&self, cx: &gpui::App) -> bool {
-        self.navigation.read(cx).sidebar_collapsed
+    pub fn context_rail_collapsed(&self, cx: &gpui::App) -> bool {
+        self.navigation.read(cx).context_rail_collapsed
     }
 
     #[cfg(test)]
@@ -948,11 +962,14 @@ impl AppModel {
     /// own signal instead of always showing zero.
     pub fn sidebar_badges(&self, cx: &gpui::App) -> TabBadges {
         let pulsations = self.pulsations.read(cx);
+        let agents = self.agents.read(cx);
         TabBadges {
-            agent_failed_runs: self.agents.read(cx).failed_agent_count(),
+            agent_failed_runs: agents.failed_agent_count(),
             engine_awaiting_hitl: pulsations.awaiting_hitl,
             engine_running_jobs: pulsations.running_jobs,
             companion_streaming: usize::from(self.chat.read(cx).streaming),
+            clarifications: self.resolution.read(cx).chips.len(),
+            agent_fallbacks: agents.fallbacks.len(),
         }
     }
 
@@ -961,15 +978,8 @@ impl AppModel {
             self.close_cli_model_picker(cx);
         }
         self.active_view = view;
-        if let Some(tab) = AppTab::from_view(view) {
-            self.active_tab = tab;
-            self.last_view_per_tab.insert(tab, view);
-        }
         self.navigation.update(cx, |navigation, _| {
             navigation.active = view;
-            if let Some(tab) = AppTab::from_view(view) {
-                navigation.active_tab = tab;
-            }
         });
         self.pulsations.update(cx, |pulsations, _| {
             pulsations.diff_expanded = false;
@@ -1019,17 +1029,14 @@ impl AppModel {
         cx.notify();
     }
 
-    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.navigation.update(cx, |navigation, _| {
-            navigation.sidebar_collapsed = !navigation.sidebar_collapsed;
-        });
-        self.schedule_session_persistence(cx);
-        cx.notify();
+    pub fn toggle_context_rail(&mut self, cx: &mut Context<Self>) {
+        let collapsed = !self.navigation.read(cx).context_rail_collapsed;
+        self.set_context_rail_collapsed(collapsed, cx);
     }
 
-    pub fn set_sidebar_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+    pub fn set_context_rail_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
         self.navigation.update(cx, |navigation, _| {
-            navigation.sidebar_collapsed = collapsed;
+            navigation.context_rail_collapsed = collapsed;
         });
         self.schedule_session_persistence(cx);
         cx.notify();
@@ -1080,11 +1087,39 @@ impl AppModel {
             .project_id
             .as_ref()
             .map(ToString::to_string);
+        let message = message.into();
+        if matches!(kind, HeaderNoticeKind::Warning | HeaderNoticeKind::Error) {
+            let target = action.as_ref().map(|action| {
+                FlowTarget::PulsationSection(
+                    action.pulsation_id.clone(),
+                    PulsationDetailSection::Review,
+                )
+            });
+            self.record_activity(ActivityKind::Notice, message.clone(), target, true);
+        }
         self.notifications.queue.set_project(project);
         self.notifications
             .queue
             .push_actionable(kind, message, action);
         cx.notify();
+    }
+
+    /// Appends one line to Home's activity feed. Callers pass a finished milestone, never a
+    /// delta; the feed is what the developer reads after looking away for a minute.
+    pub(crate) fn record_activity(
+        &mut self,
+        kind: ActivityKind,
+        summary: impl Into<SharedString>,
+        target: Option<FlowTarget>,
+        attention: bool,
+    ) {
+        self.activity.push(ActivityEntry {
+            at: std::time::SystemTime::now(),
+            kind,
+            summary: summary.into(),
+            target,
+            attention,
+        });
     }
 
     pub fn choose_workspace(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1615,7 +1650,7 @@ impl AppModel {
         cx.notify();
     }
 
-    fn apply_pulsation_snapshot(
+    pub(crate) fn apply_pulsation_snapshot(
         &mut self,
         project_id: String,
         snapshot: PulsationRuntimeSnapshot,
@@ -1641,9 +1676,59 @@ impl AppModel {
         let previously_awaiting_hitl = self.pulsations.read(cx).awaiting_hitl;
         let previously_awaiting_failure = self.pulsations.read(cx).awaiting_failure;
         let previous_failure = self.pulsations.read(cx).failure.checkpoint.clone();
+        // Status transitions of pulsations already known to the UI become activity lines;
+        // the initial load (nothing known yet) stays silent.
+        let previous_statuses: HashMap<String, (PulsationStatus, PulsationStage)> = self
+            .pulsations
+            .read(cx)
+            .pulsations
+            .iter()
+            .map(|pulsation| (pulsation.id.clone(), (pulsation.status, pulsation.stage)))
+            .collect();
+        let transitions: Vec<(String, String, PulsationStatus, PulsationStage, Option<String>)> =
+            if previous_statuses.is_empty() {
+                Vec::new()
+            } else {
+                snapshot
+                    .pulsations
+                    .iter()
+                    .filter(|pulsation| {
+                        previous_statuses.get(&pulsation.id).is_some_and(|(status, stage)| {
+                            *status != pulsation.status || *stage != pulsation.stage
+                        })
+                    })
+                    .map(|pulsation| {
+                        (
+                            pulsation.id.clone(),
+                            pulsation.feature_name.clone(),
+                            pulsation.status,
+                            pulsation.stage,
+                            pulsation.terminal_reason.clone(),
+                        )
+                    })
+                    .collect()
+            };
         let active_id = self.pulsations.update(cx, |pulsations, _| {
             pulsations.apply_snapshot(project_id, snapshot, preferred_id)
         });
+        for (id, feature, status, stage, terminal_reason) in transitions {
+            let section = match status {
+                PulsationStatus::Checkpoint => PulsationDetailSection::Review,
+                PulsationStatus::Done => PulsationDetailSection::Artifacts,
+                _ => PulsationDetailSection::Overview,
+            };
+            self.record_activity(
+                ActivityKind::Pulsation,
+                format!(
+                    "{} · {} · {}",
+                    feature.trim(),
+                    crate::pipeline_status::step_label(stage),
+                    crate::pulsations::status_label(status, terminal_reason.as_deref())
+                ),
+                Some(FlowTarget::PulsationSection(id, section)),
+                matches!(status, PulsationStatus::Failed | PulsationStatus::Checkpoint),
+            );
+        }
         let current_failure = &self.pulsations.read(cx).failure.checkpoint;
         if previous_failure
             .as_ref()
@@ -3644,11 +3729,20 @@ impl AppModel {
     }
 
     pub(crate) fn refresh_agents(&mut self, cx: &mut Context<Self>) {
-        self.refresh_agents_inner(false, cx);
+        self.refresh_agents_inner(false, false, cx);
     }
 
     pub(crate) fn refresh_agent_diagnostics(&mut self, cx: &mut Context<Self>) {
-        self.refresh_agents_inner(true, cx);
+        self.refresh_agents_inner(true, false, cx);
+    }
+
+    /// Refreshes the agents snapshot for the shell chrome without touching the Agents panel's
+    /// loading/busy state; skipped while a loud read or an operation is in flight.
+    pub(crate) fn refresh_agents_quiet(&mut self, cx: &mut Context<Self>) {
+        if self.agents.read(cx).in_flight() {
+            return;
+        }
+        self.refresh_agents_inner(false, true, cx);
     }
 
     pub(crate) fn toggle_agent_follow_tail(&mut self, key: String, cx: &mut Context<Self>) {
@@ -3748,7 +3842,7 @@ impl AppModel {
         }));
     }
 
-    fn refresh_agents_inner(&mut self, force_discovery: bool, cx: &mut Context<Self>) {
+    fn refresh_agents_inner(&mut self, force_discovery: bool, quiet: bool, cx: &mut Context<Self>) {
         if self.lifecycle.is_disposed() {
             return;
         }
@@ -3764,7 +3858,13 @@ impl AppModel {
         let Some(backend) = self.agents_backend.clone() else {
             return;
         };
-        let generation = self.agents.update(cx, |agents, _| agents.begin(true));
+        let generation = self.agents.update(cx, |agents, _| {
+            if quiet {
+                agents.begin_quiet()
+            } else {
+                agents.begin(true)
+            }
+        });
         cx.notify();
         self.agents_task = Some(cx.spawn(async move |this, cx| {
             let result = if force_discovery {
@@ -3783,6 +3883,9 @@ impl AppModel {
                             agents.apply_snapshot(generation, snapshot);
                         });
                     }
+                    // A quiet read keeps whatever the chrome already shows; the next loud read
+                    // (opening Agents) reports the failure in its own panel.
+                    Err(_) if quiet => {}
                     Err(error) => {
                         let message = error.presentable();
                         if model
@@ -5178,13 +5281,53 @@ impl AppModel {
         if self.settings.read(cx).settings_section == crate::settings::SettingsSection::Usage {
             self.refresh_usage(cx);
         }
+        self.refresh_settings_inner(false, cx);
+    }
+
+    /// Refreshes providers, resilience and embedding readiness for the shell chrome without
+    /// flipping the Settings panel into its loading state; skipped while Settings is busy.
+    pub(crate) fn refresh_settings_quiet(&mut self, cx: &mut Context<Self>) {
+        if self.settings.read(cx).in_flight() {
+            return;
+        }
+        self.refresh_settings_inner(true, cx);
+    }
+
+    /// Debounced quiet refresh for bursts of LLM failures (each one may open a cooldown).
+    fn schedule_settings_quiet_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.settings_quiet_refresh_pending || self.lifecycle.is_disposed() {
+            return;
+        }
+        self.settings_quiet_refresh_pending = true;
+        let timer = cx
+            .background_executor()
+            .timer(std::time::Duration::from_millis(350));
+        cx.spawn(async move |this, cx| {
+            timer.await;
+            let _ = this.update(cx, |model, cx| {
+                model.settings_quiet_refresh_pending = false;
+                if model.active_view() != AppView::Settings {
+                    model.refresh_settings_quiet(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn refresh_settings_inner(&mut self, quiet: bool, cx: &mut Context<Self>) {
         if self.lifecycle.is_disposed() {
             return;
         }
         let Some(backend) = self.settings_backend.clone() else {
             return;
         };
-        let generation = self.settings.update(cx, |settings, _| settings.begin(true));
+        let generation = self.settings.update(cx, |settings, _| {
+            if quiet {
+                settings.begin_quiet()
+            } else {
+                settings.begin(true)
+            }
+        });
         cx.notify();
         self.settings_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.snapshot().await;
@@ -5233,6 +5376,7 @@ impl AppModel {
                             model.refresh_embedding_readiness(cx);
                         }
                     }
+                    Err(_) if quiet => {}
                     Err(error) => {
                         model
                             .settings
@@ -6126,6 +6270,7 @@ impl AppModel {
                         model.refresh_resolution_chips(cx);
                         model.poll_resolution_turn_if_pending(cx);
                     }
+                    model.tick_footer_clock(cx);
                     true
                 });
                 if !matches!(state, Ok(true)) {
@@ -6205,7 +6350,7 @@ impl AppModel {
         let restored_vault_selection = session.and_then(|value| value.selected_vault_path.clone());
         let active_view = session
             .map(|session| AppView::from_id(&session.active_view))
-            .unwrap_or(AppView::Workspace);
+            .unwrap_or(AppView::Home);
         let requested_active = session.and_then(|session| session.active_tab_path.as_deref());
         let active_path = requested_active
             .filter(|path| restored.tabs.iter().any(|tab| tab.relative_path == *path))
@@ -6229,26 +6374,12 @@ impl AppModel {
             })
             .collect::<Vec<_>>();
 
-        // A restored project starts a new in-memory navigation history.
-        self.active_tab = AppTab::from_view(active_view).unwrap_or(AppTab::Companion);
-        self.last_view_per_tab = AppTab::ALL
-            .into_iter()
-            .map(|tab| {
-                (
-                    tab,
-                    if tab.contains(active_view) {
-                        active_view
-                    } else {
-                        tab.default_view()
-                    },
-                )
-            })
-            .collect();
         self.navigation.update(cx, |navigation, _| {
             navigation.active = active_view;
-            navigation.active_tab = self.active_tab;
-            navigation.sidebar_collapsed = session.is_some_and(|value| value.sidebar_collapsed);
+            navigation.context_rail_collapsed =
+                session.is_some_and(|value| value.sidebar_collapsed);
         });
+        self.activity.clear();
         self.indexing_status = None;
         self.workspace.update(cx, |workspace, cx| {
             workspace.project_id = Some(restored.project_id.clone().into());
@@ -6311,10 +6442,6 @@ impl AppModel {
             session.and_then(|value| value.active_chat_conversation_id.clone());
         self.hydrate_chat_project(restored.project_id.clone(), restored_chat_conversation, cx);
         self.active_view = active_view;
-        if let Some(tab) = AppTab::from_view(active_view) {
-            self.active_tab = tab;
-            self.last_view_per_tab.insert(tab, active_view);
-        }
         self.needs_resync = false;
         self.session_dirty = false;
         self.status = format!("Session restored: {}", restored.root_path).into();
@@ -6325,11 +6452,21 @@ impl AppModel {
         self.refresh_pulsations_with_preferred(preferred_pulsation_id, cx);
         self.refresh_resolution_chips(cx);
         self.refresh_vault(true, cx);
+        // Home's next step is a function of the Forge snapshot, and the header/context rail read
+        // the agents and settings snapshots, so all three load with the project instead of
+        // waiting for their view to be opened.
+        self.refresh_forge(cx);
         match active_view {
             AppView::Agents => self.refresh_agents(cx),
             AppView::Settings => self.refresh_settings(cx),
             AppView::Logs => self.refresh_logs(cx),
             _ => {}
+        }
+        if active_view != AppView::Agents {
+            self.refresh_agents_quiet(cx);
+        }
+        if active_view != AppView::Settings {
+            self.refresh_settings_quiet(cx);
         }
         cx.notify();
     }
@@ -6438,7 +6575,7 @@ impl AppModel {
             // contract and older rows still written with "hitl".
             workspace_view_mode: "editor".to_string(),
             active_view: self.active_view.id().to_string(),
-            sidebar_collapsed: self.navigation.read(cx).sidebar_collapsed,
+            sidebar_collapsed: self.navigation.read(cx).context_rail_collapsed,
             context_drawer_open: workspace.context_drawer_open,
             active_pulsation_id: pulsations
                 .active_pulsation_id
@@ -6543,6 +6680,21 @@ impl AppModel {
             return;
         }
         if let AppEvent::ModelPull(event) = event {
+            match &event {
+                ModelPullEvent::Completed { model } => self.record_activity(
+                    ActivityKind::Indexing,
+                    format!("Embedding model {model} ready"),
+                    Some(FlowTarget::View(AppView::Settings)),
+                    false,
+                ),
+                ModelPullEvent::Failed { model, error } => self.record_activity(
+                    ActivityKind::Indexing,
+                    format!("Embedding model {model} failed: {error}"),
+                    Some(FlowTarget::View(AppView::Settings)),
+                    true,
+                ),
+                ModelPullEvent::Started { .. } | ModelPullEvent::Progress { .. } => {}
+            }
             self.model_pull_status = Some(event);
             cx.notify();
             return;
@@ -6577,10 +6729,36 @@ impl AppModel {
                     .as_ref()
                     .is_some_and(|p| p.as_ref() == event.project_id)
                 {
+                    self.activity.push_coalesced(
+                        ActivityEntry {
+                            at: std::time::SystemTime::now(),
+                            kind: ActivityKind::Forge,
+                            summary: if event.feature_id.is_some() {
+                                "Forge feature updated".into()
+                            } else {
+                                "Forge backlog updated".into()
+                            },
+                            target: Some(FlowTarget::ForgeSection(
+                                crate::forge::ForgeSection::Backlog,
+                            )),
+                            attention: false,
+                        },
+                        ACTIVITY_COALESCE_WINDOW,
+                    );
                     self.refresh_forge(cx);
                 }
             }
             AppEvent::WorkspaceChanged(event) => {
+                self.activity.push_coalesced(
+                    ActivityEntry {
+                        at: std::time::SystemTime::now(),
+                        kind: ActivityKind::Workspace,
+                        summary: format!("{} {}", event.relative_path, event.kind).into(),
+                        target: Some(FlowTarget::View(AppView::Workspace)),
+                        attention: false,
+                    },
+                    ACTIVITY_COALESCE_WINDOW,
+                );
                 self.logs.update(cx, |logs, _| {
                     logs.record_workspace(event.clone());
                 });
@@ -6593,6 +6771,37 @@ impl AppModel {
                     hvc_core::llm::LlmStreamEvent::RouteCompleted { .. }
                         | hvc_core::llm::LlmStreamEvent::RouteFailed { .. }
                 );
+                // Failures may open a provider cooldown; the rail's runtime card follows it.
+                let failed = matches!(
+                    envelope.event,
+                    hvc_core::llm::LlmStreamEvent::RouteFailed { .. }
+                        | hvc_core::llm::LlmStreamEvent::AttemptFailed { .. }
+                );
+                match &envelope.event {
+                    hvc_core::llm::LlmStreamEvent::RouteCompleted { model, .. } => {
+                        let stage = envelope
+                            .context
+                            .as_ref()
+                            .map(|context| context.stage.clone())
+                            .filter(|stage| !stage.is_empty())
+                            .unwrap_or_else(|| "LLM".to_string());
+                        self.record_activity(
+                            ActivityKind::Agent,
+                            format!("{stage} · {model} completed"),
+                            Some(FlowTarget::View(AppView::Logs)),
+                            false,
+                        );
+                    }
+                    hvc_core::llm::LlmStreamEvent::RouteFailed { error_code, .. } => {
+                        self.record_activity(
+                            ActivityKind::Agent,
+                            format!("LLM route failed ({error_code})"),
+                            Some(FlowTarget::View(AppView::Logs)),
+                            true,
+                        );
+                    }
+                    _ => {}
+                }
                 let agents_gap = self
                     .agents
                     .update(cx, |agents, _| agents.record_llm(&envelope));
@@ -6602,8 +6811,15 @@ impl AppModel {
                     self.status = "LLM gap detected; reloading persisted execution".into();
                     self.resync_llm_execution(execution_id, cx);
                 }
-                if (terminal || agents_gap) && self.active_view == AppView::Agents {
-                    self.refresh_agents(cx);
+                if terminal || agents_gap {
+                    if self.active_view == AppView::Agents {
+                        self.refresh_agents(cx);
+                    } else {
+                        self.refresh_agents_quiet(cx);
+                    }
+                }
+                if failed && self.active_view != AppView::Settings {
+                    self.schedule_settings_quiet_refresh(cx);
                 }
             }
             AppEvent::Terminal(envelope) => {
@@ -6612,6 +6828,20 @@ impl AppModel {
                 }
                 let terminal = envelope.run.status.is_terminal()
                     || envelope.run.status == TerminalRunStatus::AwaitingFallback;
+                if terminal {
+                    let agent = envelope
+                        .run
+                        .agent_role
+                        .map(|role| hvc_core::terminals::canonical_agent(role).name)
+                        .unwrap_or("Free-form agent");
+                    let status = envelope.run.status;
+                    self.record_activity(
+                        ActivityKind::Agent,
+                        format!("{agent} · {}", crate::agents_view::run_status(status)),
+                        Some(FlowTarget::View(AppView::Agents)),
+                        !matches!(status, TerminalRunStatus::Completed),
+                    );
+                }
                 let gap = self
                     .agents
                     .update(cx, |agents, _| agents.record_event(*envelope));
@@ -6619,11 +6849,38 @@ impl AppModel {
                     self.needs_resync = true;
                     self.status = "Terminal gap detected; reloading persisted history".into();
                 }
-                if (terminal || gap) && self.active_view == AppView::Agents {
-                    self.refresh_agents(cx);
+                if terminal || gap {
+                    if self.active_view == AppView::Agents {
+                        self.refresh_agents(cx);
+                    } else {
+                        self.refresh_agents_quiet(cx);
+                    }
                 }
             }
-            AppEvent::Chat(envelope) => self.handle_chat_event(envelope, cx),
+            AppEvent::Chat(envelope) => {
+                match envelope.kind {
+                    hvc_core::chat_service::ChatEventKind::TurnCompleted => self.record_activity(
+                        ActivityKind::Chat,
+                        "Companion replied",
+                        Some(FlowTarget::View(AppView::Chat)),
+                        false,
+                    ),
+                    hvc_core::chat_service::ChatEventKind::TurnFailed => self.record_activity(
+                        ActivityKind::Chat,
+                        "Companion turn failed",
+                        Some(FlowTarget::View(AppView::Chat)),
+                        true,
+                    ),
+                    hvc_core::chat_service::ChatEventKind::TurnCancelled => self.record_activity(
+                        ActivityKind::Chat,
+                        "Companion turn cancelled",
+                        Some(FlowTarget::View(AppView::Chat)),
+                        false,
+                    ),
+                    _ => {}
+                }
+                self.handle_chat_event(envelope, cx)
+            }
             // Returned early above, before the generic event-count/status preamble.
             AppEvent::Indexing(_) => unreachable!(),
             AppEvent::ModelPull(_) => unreachable!(),
@@ -6642,6 +6899,29 @@ impl AppModel {
         // readiness checklist so it points at the actual blocking step instead of a raw error.
         if matches!(event, IndexingEvent::Failed { .. }) {
             self.refresh_embedding_readiness(cx);
+        }
+        match &event {
+            IndexingEvent::Failed { error, .. } => self.record_activity(
+                ActivityKind::Indexing,
+                format!("Knowledge indexing failed: {error}"),
+                Some(FlowTarget::View(AppView::Settings)),
+                true,
+            ),
+            // Only the transition into Idle is a milestone; the supervisor keeps repeating it.
+            IndexingEvent::Idle { .. }
+                if matches!(
+                    self.indexing_status,
+                    Some(IndexingEvent::Progress { .. } | IndexingEvent::Paused { .. })
+                ) =>
+            {
+                self.record_activity(
+                    ActivityKind::Indexing,
+                    "Knowledge index up to date",
+                    Some(FlowTarget::View(AppView::Vault)),
+                    false,
+                )
+            }
+            _ => {}
         }
         self.indexing_status = Some(event);
         cx.notify();
@@ -7415,31 +7695,46 @@ mod tests {
             cx.read(|cx| {
                 let model = model.read(cx);
                 assert_eq!(model.navigation.read(cx).active, view);
-                assert_eq!(model.navigation.read(cx).active_tab, model.active_tab());
-                if let Some(tab) = AppTab::from_view(view) {
-                    assert_eq!(model.active_tab(), tab);
-                }
             });
         }
     }
 
     #[gpui::test]
-    fn alt_number_jumps_to_the_nth_sub_view_of_the_active_tab(cx: &mut TestAppContext) {
+    fn quiet_agent_refresh_never_flips_the_panel_into_loading(cx: &mut TestAppContext) {
         let model = cx.new(AppModel::new_for_test);
         model.update(cx, |model, cx| {
-            model.select_tab(AppTab::Engine, cx);
-            model.select_nth_sub_view(0, cx);
-            assert_eq!(model.active_view(), AppTab::Engine.sub_views()[0]);
-            model.select_nth_sub_view(1, cx);
-            assert_eq!(model.active_view(), AppTab::Engine.sub_views()[1]);
-            // Engine has three sub-views; Companion only has two, so index 2 is a no-op there.
-            model.select_nth_sub_view(2, cx);
-            assert_eq!(model.active_view(), AppTab::Engine.sub_views()[2]);
-            model.select_tab(AppTab::Companion, cx);
-            let before = model.active_view();
-            model.select_nth_sub_view(2, cx);
-            assert_eq!(model.active_view(), before);
+            model.workspace.update(cx, |workspace, _| {
+                workspace.project_id = Some("project-1".into());
+            });
+            model.select_view(AppView::Vault, cx);
+            model.refresh_agents_quiet(cx);
+            let agents = model.agents.read(cx);
+            assert!(!agents.loading);
+            assert!(!agents.busy);
+
+            // A loud read in flight wins: the quiet one yields instead of bumping the generation.
+            let before = model.agents.update(cx, |agents, _| agents.begin(true));
+            model.refresh_agents_quiet(cx);
+            assert_eq!(model.agents.read(cx).generation, before);
+            assert!(model.agents.read(cx).loading);
         });
+    }
+
+    #[gpui::test]
+    fn rail_groups_cover_every_workbench_view_exactly_once(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        assert_eq!(cx.read(|cx| model.read(cx).active_view()), AppView::Home);
+        let mut grouped: Vec<AppView> = AppTab::RAIL_ORDER
+            .iter()
+            .flat_map(|tab| tab.sub_views().iter().copied())
+            .collect();
+        assert_eq!(grouped.len(), AppView::ALL.len() - 2, "Home and Settings are ungrouped");
+        grouped.sort_by_key(|view| view.id());
+        grouped.dedup_by_key(|view| view.id());
+        assert_eq!(grouped.len(), AppView::ALL.len() - 2);
+        assert_eq!(AppTab::from_view(AppView::Home), None);
+        assert_eq!(AppTab::from_view(AppView::Settings), None);
+        assert_eq!(AppView::from_id("home"), AppView::Home);
     }
 
     #[gpui::test]
@@ -7481,28 +7776,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn tabs_restore_their_last_view_after_settings(cx: &mut TestAppContext) {
-        let model = cx.new(AppModel::new_for_test);
-        model.update(cx, |model, cx| {
-            for view in [AppView::Logs, AppView::Pulsations, AppView::Chat] {
-                model.select_view(view, cx);
-            }
-            model.select_view(AppView::Settings, cx);
-            assert_eq!(model.active_tab(), AppTab::Companion);
-            assert_eq!(AppTab::from_view(AppView::Settings), None);
-            for (tab, view) in [
-                (AppTab::Agent, AppView::Logs),
-                (AppTab::Engine, AppView::Pulsations),
-                (AppTab::Companion, AppView::Chat),
-            ] {
-                model.select_tab(tab, cx);
-                assert_eq!(model.active_view(), view);
-                assert_eq!(model.navigation.read(cx).active_tab, tab);
-            }
-        });
-    }
-
-    #[gpui::test]
     fn creates_specific_entities_for_every_view(cx: &mut TestAppContext) {
         let model = cx.new(AppModel::new_for_test);
         cx.read(|cx| {
@@ -7533,7 +7806,7 @@ mod tests {
         model.update(cx, |model, cx| {
             configure_restorable_state(model, cx);
             model.select_view(AppView::Settings, cx);
-            model.set_sidebar_collapsed(true, cx);
+            model.set_context_rail_collapsed(true, cx);
             model.set_context_drawer_open(false, cx);
         });
 
@@ -7649,7 +7922,7 @@ mod tests {
         cx.read(|cx| {
             let model = model.read(cx);
             assert_eq!(model.active_view, AppView::Chat);
-            assert!(model.navigation.read(cx).sidebar_collapsed);
+            assert!(model.navigation.read(cx).context_rail_collapsed);
             assert!(model.auto_open_review);
             let workspace = model.workspace.read(cx);
             assert!(!workspace.context_drawer_open);
@@ -7693,8 +7966,7 @@ mod tests {
                 Some("chat-1".into())
             );
             let round_trip = model.session_request(cx).unwrap();
-            assert_eq!(model.active_tab(), AppTab::Companion);
-            assert_eq!(model.navigation.read(cx).active_tab, AppTab::Companion);
+            assert!(round_trip.sidebar_collapsed);
             assert_eq!(round_trip.workspace_view_mode, "editor");
             assert!(round_trip.auto_open_review);
             assert_eq!(round_trip.tabs[0].cursor_line, Some(7));
@@ -7741,10 +8013,8 @@ mod tests {
         cx.read(|cx| {
             let model = model.read(cx);
             assert_eq!(model.active_view, AppView::Vault);
-            assert_eq!(model.active_tab(), AppTab::Engine);
-            assert_eq!(model.navigation.read(cx).active_tab, AppTab::Engine);
-            assert_eq!(model.last_view_per_tab[&AppTab::Engine], AppView::Vault);
-            assert!(model.navigation.read(cx).sidebar_collapsed);
+            assert_eq!(model.navigation.read(cx).active, AppView::Vault);
+            assert!(model.navigation.read(cx).context_rail_collapsed);
             assert!(!model.workspace.read(cx).context_drawer_open);
             assert!(!model.pulsations.read(cx).diff_expanded);
         });

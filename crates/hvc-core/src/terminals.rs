@@ -30,7 +30,7 @@ mod model_catalog;
 pub(crate) use model_catalog::validate_catalog_model_selection;
 pub use model_catalog::{
     CliModelCatalogEntry, CliModelCatalogService, CliModelCatalogSnapshot, CliModelCatalogSource,
-    CliModelCatalogState, CliModelSelectionSource,
+    CliModelCatalogState, CliModelSelectionSource, cli_model_catalog_version,
 };
 
 #[cfg(windows)]
@@ -2720,9 +2720,13 @@ async fn probe_cli_availability(mut availability: CliAvailability) -> CliAvailab
         }
         adapters::CliVersionCompatibility::UnknownNewer => {
             availability.state = CliAvailabilityState::CapabilityMissing;
+            let (minimum, maximum_exclusive) = adapters::compatibility_range(availability.backend);
             availability.diagnostic = Some(format!(
-                "A versão detectada do {} é mais nova que o contrato validado; atualize o adapter antes de executar.",
-                availability.backend.label()
+                "{} v{} é mais nova que a faixa validada ({}–{}). O adapter pode funcionar, mas não foi validado. Atualize o HVC ou reporte um problema.",
+                availability.backend.label(),
+                availability.version.as_deref().unwrap_or("desconhecida"),
+                minimum,
+                maximum_exclusive
             ));
             return availability;
         }
@@ -4813,16 +4817,16 @@ fn observe_received_frame(
     bytes: &[u8],
 ) {
     if stream != "stdout" {
-        if backend == CliBackend::Gemini {
-            if let Ok(text) = std::str::from_utf8(bytes) {
-                let lower = text.to_ascii_lowercase();
-                if lower.contains("503")
-                    || lower.contains("service unavailable")
-                    || lower.contains("overloaded")
-                    || lower.contains("retrying")
-                {
-                    watchdog.set_reasoning(true);
-                }
+        if backend == CliBackend::Gemini
+            && let Ok(text) = std::str::from_utf8(bytes)
+        {
+            let lower = text.to_ascii_lowercase();
+            if lower.contains("503")
+                || lower.contains("service unavailable")
+                || lower.contains("overloaded")
+                || lower.contains("retrying")
+            {
+                watchdog.set_reasoning(true);
             }
         }
         return;

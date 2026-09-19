@@ -292,20 +292,6 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                             }),
                         ),
                 )
-                .when(section != PulsationDetailSection::Review, |panel| {
-                    panel.child(
-                        div()
-                            .flex_shrink_0()
-                            .child(pulsation_detail_header(
-                                active.clone(),
-                                runtime_loading,
-                                backend_override,
-                                backend_override_busy,
-                                cx,
-                            ))
-                            .child(pipeline(active.stage)),
-                    )
-                })
                 .child(
                     div()
                         .id("pulsation-section-scroll")
@@ -318,6 +304,21 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                         })
                         .when(section != PulsationDetailSection::Review, |panel| {
                             panel.overflow_y_scroll()
+                        })
+                        .when(section != PulsationDetailSection::Review, |scroll| {
+                            scroll.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .mb_4()
+                                    .child(pulsation_detail_header(
+                                        active.clone(),
+                                        runtime_loading,
+                                        backend_override,
+                                        backend_override_busy,
+                                        cx,
+                                    ))
+                                    .child(pipeline(active.stage)),
+                            )
                         })
                         .child(match section {
                             PulsationDetailSection::Review => {

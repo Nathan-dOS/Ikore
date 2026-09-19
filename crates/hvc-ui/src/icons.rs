@@ -1,0 +1,155 @@
+//! The shell's icon vocabulary. One variant per Lucide glyph the UI uses; `path()` is the asset
+//! key served by `assets::HvcAssets`. Rendered through `widgets::icon` / `widgets::icon_button`.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Icon {
+    /// Home view.
+    House,
+    /// New work (capture overlay).
+    Plus,
+    /// Forge view.
+    Hammer,
+    /// Pulsations view; pipeline card.
+    Activity,
+    /// Vault view.
+    Vault,
+    /// Agents view.
+    Bot,
+    /// Logs view.
+    ScrollText,
+    /// Chat view; "Answer Feature Agent" step.
+    MessageSquare,
+    /// Workspace view; "Open project" step.
+    FolderOpen,
+    /// Settings view.
+    Settings,
+    /// Notifications.
+    Bell,
+    /// System health readout in the header.
+    HeartPulse,
+    /// Collapse the context rail.
+    PanelRightClose,
+    /// Expand the context rail.
+    PanelRightOpen,
+    /// Run / compose / follow the pipeline.
+    Play,
+    /// Approve; completed pipeline stage.
+    Check,
+    /// Reject; close.
+    X,
+    /// Request revision; refresh.
+    RotateCw,
+    /// Indexing paused.
+    Pause,
+    /// HITL reviews and stage failures waiting on the developer.
+    TriangleAlert,
+    /// New feature.
+    Sparkles,
+    /// Backlog / add tasks.
+    ListTodo,
+    /// Plan waves.
+    Waves,
+    /// Review now.
+    Eye,
+    /// Open artifacts.
+    Layers,
+    /// CLI backends.
+    Cpu,
+    /// Embeddings / indexing.
+    Database,
+    /// Token usage.
+    Zap,
+    /// Footer clock.
+    Clock,
+    /// Embedding model pull.
+    Download,
+}
+
+impl Icon {
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 30] = [
+        Self::House,
+        Self::Plus,
+        Self::Hammer,
+        Self::Activity,
+        Self::Vault,
+        Self::Bot,
+        Self::ScrollText,
+        Self::MessageSquare,
+        Self::FolderOpen,
+        Self::Settings,
+        Self::Bell,
+        Self::HeartPulse,
+        Self::PanelRightClose,
+        Self::PanelRightOpen,
+        Self::Play,
+        Self::Check,
+        Self::X,
+        Self::RotateCw,
+        Self::Pause,
+        Self::TriangleAlert,
+        Self::Sparkles,
+        Self::ListTodo,
+        Self::Waves,
+        Self::Eye,
+        Self::Layers,
+        Self::Cpu,
+        Self::Database,
+        Self::Zap,
+        Self::Clock,
+        Self::Download,
+    ];
+
+    /// Asset path served by `HvcAssets`; `icons/<lucide-name>.svg`.
+    pub(crate) const fn path(self) -> &'static str {
+        match self {
+            Self::House => "icons/house.svg",
+            Self::Plus => "icons/plus.svg",
+            Self::Hammer => "icons/hammer.svg",
+            Self::Activity => "icons/activity.svg",
+            Self::Vault => "icons/vault.svg",
+            Self::Bot => "icons/bot.svg",
+            Self::ScrollText => "icons/scroll-text.svg",
+            Self::MessageSquare => "icons/message-square.svg",
+            Self::FolderOpen => "icons/folder-open.svg",
+            Self::Settings => "icons/settings.svg",
+            Self::Bell => "icons/bell.svg",
+            Self::HeartPulse => "icons/heart-pulse.svg",
+            Self::PanelRightClose => "icons/panel-right-close.svg",
+            Self::PanelRightOpen => "icons/panel-right-open.svg",
+            Self::Play => "icons/play.svg",
+            Self::Check => "icons/check.svg",
+            Self::X => "icons/x.svg",
+            Self::RotateCw => "icons/rotate-cw.svg",
+            Self::Pause => "icons/pause.svg",
+            Self::TriangleAlert => "icons/triangle-alert.svg",
+            Self::Sparkles => "icons/sparkles.svg",
+            Self::ListTodo => "icons/list-todo.svg",
+            Self::Waves => "icons/waves.svg",
+            Self::Eye => "icons/eye.svg",
+            Self::Layers => "icons/layers.svg",
+            Self::Cpu => "icons/cpu.svg",
+            Self::Database => "icons/database.svg",
+            Self::Zap => "icons/zap.svg",
+            Self::Clock => "icons/clock.svg",
+            Self::Download => "icons/download.svg",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn icon_paths_are_unique_and_under_the_icons_folder() {
+        let mut paths: Vec<&str> = Icon::ALL.iter().map(|icon| icon.path()).collect();
+        assert_eq!(paths.len(), Icon::ALL.len());
+        paths.sort_unstable();
+        paths.dedup();
+        assert_eq!(paths.len(), Icon::ALL.len(), "two Icon variants share a path");
+        for path in paths {
+            assert!(path.starts_with("icons/") && path.ends_with(".svg"), "{path}");
+        }
+    }
+}

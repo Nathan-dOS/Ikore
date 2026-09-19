@@ -1624,6 +1624,97 @@ fn apply_approval_is_idempotent_on_the_approved_revision() {
     assert_eq!(f.tasks().list(&f.project).unwrap(), before);
 }
 
+#[test]
+fn apply_approval_reuses_a_done_tasks_id_instead_of_duplicating_it() {
+    let f = Fixture::new();
+    let record = f
+        .forge()
+        .create(CreateFeatureRequest {
+            project_id: f.project.clone(),
+            request_id: id(),
+            title: "Local ToDo app".into(),
+            idea: "Add a local ToDo list rendered in the browser".into(),
+        })
+        .unwrap();
+    let architecture = draft("Define lightweight local browser architecture");
+    let brief = FeatureBrief {
+        objective: "Deliver a local ToDo app".into(),
+        audience: "Project developers".into(),
+        behavior: "Render and persist ToDo items in the browser".into(),
+        scope: "Bounded validated workflow".into(),
+        criteria: vec![criterion()],
+        tasks: vec![architecture.clone()],
+        coverage: "unavailable".into(),
+        ..Default::default()
+    };
+    let record = f
+        .forge()
+        .revise(&f.project, &record.id, record.revision, brief)
+        .unwrap();
+    f.forge()
+        .approve(&f.project, &record.id, record.revision)
+        .unwrap();
+    let delivered = f.tasks().list(&f.project).unwrap();
+    assert_eq!(delivered.len(), 1);
+    let delivered_id = delivered[0].id.clone();
+    let db = f.service.connection().unwrap();
+    db.execute(
+        "UPDATE work_tasks SET state='done' WHERE id=?1",
+        [&delivered_id],
+    )
+    .unwrap();
+
+    // The Feature Agent "fixes" the brief on a later turn, re-describing the
+    // already-delivered task verbatim (it has no way to tell its own past
+    // proposal from the finished task) alongside a genuinely new one that
+    // depends on it.
+    let record = feature(&db, &f.project, &record.id).unwrap();
+    let mut wiring = draft("Wire the ToDo list to local storage");
+    wiring.dependencies = vec!["proposal:1".into()];
+    let brief = FeatureBrief {
+        tasks: vec![architecture, wiring],
+        ..record.brief.clone()
+    };
+    let record = f
+        .forge()
+        .revise(&f.project, &record.id, record.revision, brief)
+        .unwrap();
+    let record = f
+        .forge()
+        .approve(&f.project, &record.id, record.revision)
+        .unwrap();
+    f.forge()
+        .move_to_wave(&f.project, &record.id, Wave::Current, 0)
+        .unwrap();
+
+    let tasks = f.tasks().list(&f.project).unwrap();
+    let matching: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.draft.title == "Define lightweight local browser architecture")
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "must not duplicate the already-done task: {tasks:?}"
+    );
+    assert_eq!(matching[0].id, delivered_id);
+    assert_eq!(matching[0].state, "done");
+
+    let wiring_task = tasks
+        .iter()
+        .find(|t| t.draft.title == "Wire the ToDo list to local storage")
+        .unwrap();
+    assert_eq!(wiring_task.draft.dependencies, vec![delivered_id]);
+
+    // Dispatching the new task alone, without the done one in the same batch,
+    // must not raise "Task prerequisites must be completed or included in
+    // this batch": that was the observed symptom when the duplicate's fresh
+    // (non-done) id was left as the dependency target instead.
+    f.tasks()
+        .dispatch(f.dispatch(std::slice::from_ref(wiring_task)))
+        .unwrap();
+}
+
 // ADR-022 clarification loop (P1/A1.2): the Feature Agent is now instructed to
 // name explicit workspace-relative paths in a task's title/description. This
 // proves that path does not need a new field or a validation change: `text()`

@@ -17,8 +17,7 @@ use crate::agents::{
     TerminalEventFilter,
 };
 use crate::app_model::AppModel;
-use crate::pipeline_status::{PipelineStatus, step_label};
-use crate::pulsations::{PIPELINE_STAGES, stage_label};
+use crate::pipeline_status::PipelineStatus;
 use crate::theme;
 
 /// The six-stage stepper for the active pulsation. Sized to its content so the header's two
@@ -44,78 +43,7 @@ fn agents_pipeline_header(
             .into_any_element();
     };
 
-    div()
-        .id("agents-pipeline")
-        .debug_selector(|| "agents-pipeline".into())
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .gap_1()
-        .text_xs()
-        .children(
-            PIPELINE_STAGES
-                .into_iter()
-                .enumerate()
-                .flat_map(move |(index, stage)| {
-                    let current = index == status.stage_index;
-                    let complete = status.stage_complete(index);
-                    let stage_id = SharedString::from(format!(
-                        "agents-pipeline-stage-{}",
-                        stage_label(stage).to_lowercase()
-                    ));
-                    let stage_selector = stage_id.clone();
-                    let (fill, ink) = if current {
-                        (status.current_fill(), theme::canvas())
-                    } else if complete {
-                        (theme::accent_soft(), theme::accent())
-                    } else {
-                        (theme::surface_raised(), theme::text_muted())
-                    };
-                    let step = div()
-                        .id(stage_id)
-                        .debug_selector(move || stage_selector.to_string())
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .child(
-                            div()
-                                .size_5()
-                                .rounded_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .bg(fill)
-                                .text_color(ink)
-                                .when(current, |circle| circle.font_weight(FontWeight::SEMIBOLD))
-                                .child(if complete {
-                                    "✓".to_string()
-                                } else {
-                                    (index + 1).to_string()
-                                }),
-                        )
-                        .child(
-                            div()
-                                .text_color(if current {
-                                    theme::text()
-                                } else {
-                                    theme::text_muted()
-                                })
-                                .when(current, |label| label.font_weight(FontWeight::SEMIBOLD))
-                                .child(step_label(stage)),
-                        );
-                    let connector = (index + 1 < PIPELINE_STAGES.len()).then(|| {
-                        div().flex_shrink_0().w_4().h_px().bg(if complete {
-                            theme::accent()
-                        } else {
-                            theme::border()
-                        })
-                    });
-                    std::iter::once(step.into_any_element())
-                        .chain(connector.map(IntoElement::into_any_element))
-                }),
-        )
-        .into_any_element()
+    crate::widgets::pipeline_stepper(&status, "agents-pipeline", false)
 }
 
 pub(crate) fn agents_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
@@ -252,12 +180,13 @@ pub(crate) fn cli_model_picker_panel(
     let catalog = agents.model_catalogs.get(&picker.backend).cloned();
     let loading = agents.catalog_loading_backend == Some(picker.backend);
     let error = agents.catalog_error.clone();
-    let query = model
+    let raw_query = model
         .cli_model_search_input
         .read(cx)
         .value()
         .trim()
-        .to_lowercase();
+        .to_string();
+    let query = raw_query.to_lowercase();
     let entries = catalog
         .as_ref()
         .map(|catalog| {
@@ -289,7 +218,20 @@ pub(crate) fn cli_model_picker_panel(
             CliModelCatalogState::UnsupportedVersion => "unsupported CLI version",
             CliModelCatalogState::Failed => "catalog unavailable",
         };
-        format!("{state} · {} models", catalog.models.len())
+        let version_label = format!(
+            "{} v{}",
+            picker.backend.label(),
+            catalog.cli_version.as_deref().unwrap_or("—")
+        );
+        let catalog_version_label = if picker.backend == CliBackend::Opencode {
+            String::new()
+        } else {
+            format!(" · Catalog v{}", hvc_core::terminals::cli_model_catalog_version())
+        };
+        format!(
+            "{version_label}{catalog_version_label} · {state} · {} models",
+            catalog.models.len()
+        )
     } else {
         "not loaded".into()
     };
@@ -359,7 +301,7 @@ pub(crate) fn cli_model_picker_panel(
                 )),
         )
         .child(field(
-            "SEARCH",
+            "MODEL ID (SEARCH CATALOG OR TYPE/PASTE MANUALLY)",
             model.cli_model_search_input.clone(),
             crate::sizing::INPUT_LONG,
         ))
@@ -393,6 +335,8 @@ pub(crate) fn cli_model_picker_panel(
                                         .filter_map(|index| {
                                             let entry = list_entries.get(index)?.clone();
                                             let model_id = entry.model_id.clone();
+                                            let is_default_entry = model_id.is_none();
+                                            let has_profiles = !entry.profiles.is_empty();
                                             let source = if model_id.is_some() {
                                                 CliModelSelectionSource::Catalog
                                             } else {
@@ -406,10 +350,28 @@ pub(crate) fn cli_model_picker_panel(
                                                 entry.model_id.clone().unwrap_or_else(|| {
                                                     "Use the CLI configured default".into()
                                                 });
-                                            let capabilities = if entry.capabilities.is_empty() {
-                                                "capabilities not declared".to_string()
+                                            let mut details = Vec::new();
+                                            if let Some(window) = entry.context_window {
+                                                details.push(format_context_window(window));
+                                            }
+                                            if !entry.capabilities.is_empty() {
+                                                details.push(entry.capabilities.join(", "));
+                                            }
+                                            if has_profiles {
+                                                details.push(entry.profiles.join(", "));
+                                            }
+                                            if let (Some(input_cost), Some(output_cost)) = (
+                                                entry.input_cost_usd_per_million,
+                                                entry.output_cost_usd_per_million,
+                                            ) {
+                                                details.push(format!(
+                                                    "${input_cost:.2} / ${output_cost:.2} per 1M tokens"
+                                                ));
+                                            }
+                                            let detail_line = if details.is_empty() {
+                                                identifier.clone()
                                             } else {
-                                                entry.capabilities.join(", ")
+                                                format!("{identifier} · {}", details.join(" · "))
                                             };
                                             Some(
                                                 div()
@@ -454,15 +416,25 @@ pub(crate) fn cli_model_picker_panel(
                                                                         FontWeight::SEMIBOLD,
                                                                     )
                                                                     .child(entry.display_name),
-                                                            ),
+                                                            )
+                                                            .when(is_default_entry, |row| {
+                                                                row.child(chip(
+                                                                    "DEFAULT",
+                                                                    theme::accent(),
+                                                                ))
+                                                            })
+                                                            .when(has_profiles, |row| {
+                                                                row.child(chip(
+                                                                    "REASONING",
+                                                                    theme::text_muted(),
+                                                                ))
+                                                            }),
                                                     )
                                                     .child(
                                                         div()
                                                             .text_xs()
                                                             .text_color(theme::text_muted())
-                                                            .child(format!(
-                                                                "{identifier} · {capabilities}"
-                                                            )),
+                                                            .child(detail_line),
                                                     )
                                                     .into_any_element(),
                                             )
@@ -475,7 +447,13 @@ pub(crate) fn cli_model_picker_panel(
                     )
                 }),
         )
-        .child(
+        .child({
+            let no_catalog_match = manual_enabled && entries.is_empty();
+            let manual_label = if raw_query.is_empty() {
+                "Type or paste a model ID to apply it manually".to_string()
+            } else {
+                format!("Apply \"{raw_query}\" as manual model ID")
+            };
             div()
                 .flex()
                 .flex_wrap()
@@ -484,9 +462,9 @@ pub(crate) fn cli_model_picker_panel(
                 .gap_2()
                 .child(action_button(
                     "cli-model-manual".into(),
-                    "Use typed ID (unverified)".into(),
+                    manual_label.into(),
                     manual_enabled,
-                    false,
+                    no_catalog_match,
                     cx,
                     |model, cx| model.select_manual_cli_model(cx),
                 ))
@@ -494,9 +472,9 @@ pub(crate) fn cli_model_picker_panel(
                     div()
                         .text_xs()
                         .text_color(theme::text_muted())
-                        .child("Manual IDs remain available but are not adapter-verified."),
-                ),
-        )
+                        .child("Manual IDs are sent directly via --model. No profile verification."),
+                )
+        })
         .into_any_element();
     deferred(
         div()
@@ -527,6 +505,17 @@ pub(crate) fn cli_model_picker_panel(
     )
     .with_priority(10)
     .into_any_element()
+}
+
+/// Renders a token context window compactly, e.g. `200_000` -> `"200k"`, `1_000_000` -> `"1M"`.
+fn format_context_window(window: u64) -> String {
+    if window >= 1_000_000 && window.is_multiple_of(1_000_000) {
+        format!("{}M", window / 1_000_000)
+    } else if window >= 1_000 && window.is_multiple_of(1_000) {
+        format!("{}k", window / 1_000)
+    } else {
+        window.to_string()
+    }
 }
 
 fn model_entry_matches(entry: &CliModelCatalogEntry, query: &str) -> bool {
@@ -1269,7 +1258,15 @@ fn expanded_cli_detail_panel(
             .when_some(selected_run.as_ref(), |panel, run| {
                 panel.child(div().text_xs().text_color(theme::text_muted()).child(run_metadata(run)))
             })
-            .child(activity_panel(events.as_ref(), role, filter, follow, true, cx))
+            .child(activity_panel(
+                events.as_ref(),
+                role,
+                filter,
+                follow,
+                true,
+                selected_run.as_ref(),
+                cx,
+            ))
             .when_some(input, |panel, input| {
                 panel.child(crate::sizing::text_area(input)).child(
                     div()
@@ -1377,6 +1374,7 @@ fn expanded_cli_detail_panel(
                 filter,
                 follow,
                 true,
+                selected_run.as_ref(),
                 cx,
             ))
             .when_some(input, |panel, input| {
@@ -1651,13 +1649,7 @@ fn free_form_card(
             card.child(field("NAME", input, crate::sizing::INPUT_MEDIUM))
         })
         .when(slot.backend != CliBackend::Custom, |card| {
-            let model_value = match slot.model_source {
-                CliModelSelectionSource::Manual => format!(
-                    "{} · unverified",
-                    slot.model.as_deref().unwrap_or("CLI default")
-                ),
-                _ => slot.model.as_deref().unwrap_or("CLI default").to_string(),
-            };
+            let model_value = cli_model_label(slot.model_source, slot.model.as_deref());
             card.child(config_button(
                 format!("free-form-model:{}", slot.id),
                 "MODEL",
@@ -1837,6 +1829,7 @@ fn free_form_card(
             event_filter,
             follow_tail,
             false,
+            selected_run,
             cx,
         ))
         .when_some(input, |card, input| {
@@ -2028,18 +2021,8 @@ fn agent_card(
             )
         })
         .when(agent.config.backend != CliBackend::Custom, |card| {
-            let model_value = match agent.config.model_source {
-                CliModelSelectionSource::Manual => format!(
-                    "{} · unverified",
-                    agent.config.model.as_deref().unwrap_or("CLI default")
-                ),
-                _ => agent
-                    .config
-                    .model
-                    .as_deref()
-                    .unwrap_or("CLI default")
-                    .to_string(),
-            };
+            let model_value =
+                cli_model_label(agent.config.model_source, agent.config.model.as_deref());
             card.child(config_button(
                 format!("agent-model:{}", role.as_str()),
                 "MODEL",
@@ -2271,6 +2254,7 @@ fn agent_card(
             event_filter,
             follow_tail,
             false,
+            selected_run,
             cx,
         ))
         .when_some(input, |card, input| {
@@ -2354,6 +2338,17 @@ fn agent_card(
             )
         })
         .into_any_element()
+}
+
+/// Label shown for a configured CLI model, e.g. `"gpt-5.6-sol"`, `"gpt-5.6-sol [manual]"`
+/// or `"CLI default"`. Shared by every agent-card/chat-view model readout so the three
+/// previously-duplicated call sites can't drift from each other.
+pub(crate) fn cli_model_label(source: CliModelSelectionSource, model: Option<&str>) -> String {
+    let resolved = model.unwrap_or("CLI default");
+    match source {
+        CliModelSelectionSource::Manual => format!("{resolved} [manual]"),
+        _ => resolved.to_string(),
+    }
 }
 
 /// A labelled single-line input at one of the scale widths (`crate::sizing`).
@@ -3176,6 +3171,7 @@ fn activity_panel(
     filter: TerminalEventFilter,
     follow_tail: bool,
     expanded: bool,
+    selected_run: Option<&hvc_core::terminals::TerminalRun>,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
     activity_panel_for_key(
@@ -3184,6 +3180,7 @@ fn activity_panel(
         filter,
         follow_tail,
         expanded,
+        selected_run,
         cx,
     )
 }
@@ -3194,6 +3191,7 @@ fn activity_panel_for_key(
     filter: TerminalEventFilter,
     follow_tail: bool,
     expanded: bool,
+    selected_run: Option<&hvc_core::terminals::TerminalRun>,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
     let expand_id = format!("agent-expand:{key}");
@@ -3256,12 +3254,54 @@ fn activity_panel_for_key(
                 }),
         )
         .when(events.is_empty(), |panel| {
-            panel.child(
-                div()
-                    .text_xs()
-                    .text_color(theme::text_muted())
-                    .child("No activity recorded for the selected run."),
-            )
+            let failed_run =
+                selected_run.filter(|run| run.status == TerminalRunStatus::Failed);
+            match failed_run {
+                Some(run) => panel.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .text_xs()
+                        .child(
+                            div()
+                                .text_color(theme::danger())
+                                .child("Run failed before producing output."),
+                        )
+                        .when_some(run.error_message.as_deref(), |block, message| {
+                            block.child(
+                                div()
+                                    .text_color(theme::text_muted())
+                                    .child(format!("Error: {message}")),
+                            )
+                        })
+                        .when_some(
+                            run.termination_reason
+                                .as_deref()
+                                .filter(|reason| Some(*reason) != run.error_message.as_deref()),
+                            |block, reason| {
+                                block.child(
+                                    div()
+                                        .text_color(theme::text_muted())
+                                        .child(format!("Reason: {reason}")),
+                                )
+                            },
+                        )
+                        .child(
+                            div().text_color(theme::text_muted()).child(format!(
+                                "Exit code: {}",
+                                run.exit_code
+                                    .map_or_else(|| "—".to_string(), |code| code.to_string())
+                            )),
+                        ),
+                ),
+                None => panel.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child("No activity recorded for the selected run."),
+                ),
+            }
         })
         .children(events.into_iter().take(100).map(|event| {
             let prefix = match event.kind {
@@ -3316,7 +3356,7 @@ fn run_metadata(run: &hvc_core::terminals::TerminalRun) -> String {
         .as_deref()
         .map(|id| id.chars().take(8).collect::<String>())
         .unwrap_or_else(|| "no session".into());
-    format!(
+    let mut metadata = format!(
         "{} · {} · {} · exit {} · version {} · model {} · session {}",
         run_status(run.status),
         match run.origin {
@@ -3331,7 +3371,20 @@ fn run_metadata(run: &hvc_core::terminals::TerminalRun) -> String {
         run.detected_cli_version.as_deref().unwrap_or("—"),
         run.model.as_deref().unwrap_or("default"),
         session,
-    )
+    );
+    if let Some(error_message) = run.error_message.as_deref().filter(|value| !value.is_empty()) {
+        metadata.push_str(" · error: ");
+        metadata.push_str(error_message);
+    }
+    if let Some(reason) = run
+        .termination_reason
+        .as_deref()
+        .filter(|value| !value.is_empty() && Some(*value) != run.error_message.as_deref())
+    {
+        metadata.push_str(" · reason: ");
+        metadata.push_str(reason);
+    }
+    metadata
 }
 
 fn config_button(

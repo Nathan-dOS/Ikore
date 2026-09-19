@@ -8,6 +8,10 @@ use gpui::{
 use crate::theme;
 
 const SASH_WIDTH: f32 = 6.0;
+/// Painted width of the handle inside the gutter; the whole gutter stays the hit target.
+const SASH_HANDLE_WIDTH: f32 = 2.0;
+/// Keeps the handle clear of the panes' `rounded_lg` corners (8px radius).
+const SASH_HANDLE_INSET: f32 = 10.0;
 
 #[derive(Clone, Copy)]
 enum WidthPreference {
@@ -147,6 +151,7 @@ pub(crate) fn split_pane(
         0.5
     };
     let sash_id = format!("{id}-sash");
+    let handle_id = format!("{id}-sash-handle");
     let left_id = format!("{id}-left");
     let right_id = format!("{id}-right");
     let mouse_state = state.clone();
@@ -182,20 +187,34 @@ pub(crate) fn split_pane(
                 .child(left),
         )
         .child(
+            // The sash is a transparent gutter the width of the hit area; only a thin handle,
+            // inset from the panes' rounded corners, is painted — and only while the pointer is
+            // over the gutter or a drag is in progress. A solid full-height bar used to sit
+            // flush against the corner radii and read as a notch between the two cards.
             div()
                 .id(SharedString::from(sash_id.clone()))
                 .debug_selector(move || sash_id.clone())
+                .group("split-sash")
                 .w(px(SASH_WIDTH))
                 .max_w_full()
                 .h_full()
                 .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .py(px(SASH_HANDLE_INSET))
                 .cursor(CursorStyle::ResizeLeftRight)
-                .bg(if dragging {
-                    theme::accent()
-                } else {
-                    theme::border()
-                })
-                .hover(|sash| sash.bg(theme::accent()))
+                .child(
+                    div()
+                        .debug_selector(move || handle_id.clone())
+                        .w(px(SASH_HANDLE_WIDTH))
+                        .h_full()
+                        .rounded_full()
+                        .when(dragging, |handle| handle.bg(theme::accent()))
+                        .when(!dragging, |handle| {
+                            handle.group_hover("split-sash", |hovered| hovered.bg(theme::accent()))
+                        }),
+                )
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     down_state.update(cx, |state, cx| {
                         if event.click_count == 2 {
@@ -373,6 +392,26 @@ mod tests {
         visual.simulate_click(point(px(50.0), start.y), Modifiers::default());
         visual.run_until_parked();
         assert_eq!(view.read_with(visual, |view, _| view.content_clicks), 1);
+    }
+
+    #[gpui::test]
+    fn sash_paints_a_thin_handle_inset_from_the_pane_corners(cx: &mut TestAppContext) {
+        let (_, visual) = cx.add_window_view(|_, cx| Harness {
+            split: cx.new(|_| SplitPaneState::new(300.0, 180.0, 500.0, 320.0)),
+            content_clicks: 0,
+        });
+        visual.simulate_resize(size(px(1000.0), px(500.0)));
+        visual.run_until_parked();
+        let sash = visual.debug_bounds("test-split-sash").unwrap();
+        let handle = visual.debug_bounds("test-split-sash-handle").unwrap();
+        // The whole gutter stays the hit target...
+        assert_eq!(sash.size.width, px(SASH_WIDTH));
+        assert_eq!(sash.size.height, px(500.0));
+        // ...but only a centred 2px line is painted, clear of the corner radii above and below.
+        assert_eq!(handle.size.width, px(SASH_HANDLE_WIDTH));
+        assert_eq!(handle.top(), sash.top() + px(SASH_HANDLE_INSET));
+        assert_eq!(handle.bottom(), sash.bottom() - px(SASH_HANDLE_INSET));
+        assert!((handle.center().x - sash.center().x).abs() <= px(1.0));
     }
 
     #[gpui::test]

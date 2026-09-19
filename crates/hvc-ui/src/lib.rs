@@ -1,13 +1,16 @@
 // A UI consome temporariamente os DTOs de erro por valor do contrato compartilhado.
 #![allow(clippy::result_large_err)]
 
+mod activity;
 mod agents;
 mod agents_view;
 mod app_model;
+mod assets;
 mod chat;
 mod chat_view;
 mod choices;
 mod composition_ui;
+mod context_rail;
 mod errors;
 mod fading_title;
 mod failure_checkpoint;
@@ -15,11 +18,14 @@ mod flow;
 mod forge;
 mod forge_view;
 mod hitl;
+mod home_view;
+mod icons;
 #[cfg(test)]
 mod layout_tests;
 mod lifecycle;
 mod logs;
 mod logs_view;
+mod motion;
 mod native_editor;
 mod notifications;
 mod performance;
@@ -50,5 +56,6 @@ mod workspace;
 mod workspace_view;
 
 pub use app_model::{AppModel, AppTab, AppView};
+pub use assets::HvcAssets;
 pub use native_editor::NativeEditor;
 pub use shell::open_main_window;

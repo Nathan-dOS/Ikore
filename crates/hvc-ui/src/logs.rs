@@ -18,6 +18,9 @@ const MAX_VISIBLE_EVENTS: usize = 200;
 pub(crate) type LogsFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, UiCommandError>> + Send + 'static>>;
 
+/// A pulsation group being accumulated in `grouped_runs`: `(pulsation_id, title, status, runs)`.
+type PulsationGroupEntry = (Option<String>, String, Option<String>, Vec<AgentRunListItem>);
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LogsSnapshot {
     pub(crate) runs: Vec<AgentRunListItem>,
@@ -177,15 +180,15 @@ impl LogsModel {
             self.collapsed_routing = snapshot.metrics.len() > 3;
             self.routing_visibility_initialized = true;
         }
-        if !self.expanded_initialized {
-            if let Some(first_run) = snapshot.runs.first() {
-                let initial_key = first_run
-                    .pulsation_id
-                    .clone()
-                    .unwrap_or_else(|| "general".to_string());
-                self.expanded_groups.insert(initial_key);
-                self.expanded_initialized = true;
-            }
+        if !self.expanded_initialized
+            && let Some(first_run) = snapshot.runs.first()
+        {
+            let initial_key = first_run
+                .pulsation_id
+                .clone()
+                .unwrap_or_else(|| "general".to_string());
+            self.expanded_groups.insert(initial_key);
+            self.expanded_initialized = true;
         }
         self.snapshot = snapshot;
         true
@@ -211,8 +214,7 @@ impl LogsModel {
 
     pub(crate) fn grouped_runs(&self) -> Vec<PulsationLogGroup> {
         let mut group_keys = Vec::new();
-        let mut groups: HashMap<String, (Option<String>, String, Option<String>, Vec<AgentRunListItem>)> =
-            HashMap::new();
+        let mut groups: HashMap<String, PulsationGroupEntry> = HashMap::new();
 
         for run in &self.snapshot.runs {
             let key = run
