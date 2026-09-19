@@ -11,6 +11,19 @@ fn invalid(error: impl std::fmt::Display) -> PersistenceServiceError {
     PersistenceServiceError::Validation(error.to_string())
 }
 
+/// Who produced the accepted outcome and which exact bytes its publications
+/// expect. The legacy stage leaves both empty; the composed stage supplies
+/// its execution and the hashes it observed at admission (ADR-022).
+#[derive(Debug, Clone, Default)]
+pub(super) struct AcceptanceProvenance<'a> {
+    pub stage_execution_id: Option<&'a str>,
+    /// Keyed by the ASCII-lowercased relative path.
+    pub expected_overrides: Option<&'a HashMap<String, ExpectedFileContent>>,
+    /// `ModelAuthored` for the legacy stage; the composed stage validated
+    /// every model field before rendering and passes `HostRendered`.
+    pub language_guard: ArtifactLanguageGuard,
+}
+
 impl PersistenceService {
     pub fn get_hitl_checkpoint(
         &self,
@@ -91,6 +104,7 @@ impl PersistenceService {
                 tx.execute("UPDATE pulsations SET integration_checkpoint_id=NULL,integration_state_version=NULL WHERE id=?1", [pulse])?;
                 let target = revision_target(current.stage)
                     .ok_or_else(|| invalid("Este estágio não oferece revisão HITL."))?;
+                Self::supersede_stage_executions(&tx, pulse, target)?;
                 let target_index = catalog::STAGES
                     .iter()
                     .position(|(s, _, _)| *s == target)
@@ -411,15 +425,50 @@ impl PersistenceService {
         Self::update_agent_run_metrics(&tx, run_id, execution)?;
         Self::persist_agent_run_output(&tx, run_id, job, execution, None)?;
         Self::persist_context_retrieval_trace(&tx, run_id, job, &execution.context_trace)?;
+        Self::accept_stage_outcome_in_tx(
+            &tx,
+            job,
+            run_id,
+            handoff,
+            &current,
+            &outcome,
+            &AcceptanceProvenance::default(),
+            root,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The acceptance transaction body shared by the legacy single-call stage
+    /// and the composed stage (ADR-022): durable acceptance row, artifacts and
+    /// publication intents, stage disposition and job/run closure. Evidence,
+    /// run metrics and output persistence are the caller's responsibility and
+    /// must already be in the same transaction. Never commits.
+    pub(super) fn accept_stage_outcome_in_tx(
+        tx: &rusqlite::Transaction<'_>,
+        job: &Job,
+        run_id: &str,
+        handoff: &StageHandoffV1,
+        current: &Pulsation,
+        outcome: &StageOutcome,
+        provenance: &AcceptanceProvenance<'_>,
+        root: &Path,
+    ) -> Result<(), PersistenceServiceError> {
+        let pulse = handoff
+            .recipient
+            .pulsation_id
+            .as_deref()
+            .ok_or_else(|| invalid("Sem pulsação"))?;
         let now = Self::now_iso();
-        tx.execute("INSERT INTO stage_acceptances(job_id,generation,agent_run_id,fence_json,outcome_json,handoff_json,accepted_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![job.id,handoff.recipient.generation,run_id,serde_json::to_string(&handoff.recipient).map_err(invalid)?,serde_json::to_string(&outcome).map_err(invalid)?,serde_json::to_string(handoff).map_err(invalid)?,now])?;
-        let disposition = stage_disposition(current.stage, &outcome).map_err(invalid)?;
+        tx.execute("INSERT INTO stage_acceptances(job_id,generation,agent_run_id,fence_json,outcome_json,handoff_json,accepted_at,stage_execution_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![job.id,handoff.recipient.generation,run_id,serde_json::to_string(&handoff.recipient).map_err(invalid)?,serde_json::to_string(outcome).map_err(invalid)?,serde_json::to_string(handoff).map_err(invalid)?,now,provenance.stage_execution_id])?;
+        let disposition = stage_disposition_with(current.stage, outcome, provenance.language_guard)
+            .map_err(invalid)?;
         let anticipatory: bool = tx.query_row(
             "SELECT job_class='background' FROM jobs WHERE id=?1",
             [&job.id],
             |r| r.get(0),
         )?;
-        if let StageOutcome::Completed { artifacts, .. } = &outcome {
+        if let StageOutcome::Completed { artifacts, .. } = outcome {
             let mut paths = HashSet::new();
             for (position, artifact) in artifacts.iter().enumerate() {
                 if artifact.content.len() > 1024 * 1024 || artifact.content.as_bytes().contains(&0)
@@ -473,13 +522,23 @@ impl PersistenceService {
                 };
                 tx.execute("INSERT INTO artifacts(id,pulsation_id,name,kind,relative_path,content_sha256,created_at,updated_at,content,producer_job_id,producer_stage,generation,input_revision,producer_state_version,output_position,acceptance,publication_state) VALUES(?1,?2,?3,?4,?5,?6,?7,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",params![id,pulse,artifact.name,artifact.kind,path,hash.as_str(),now,artifact.content,job.id,current.stage.as_db_value(),handoff.recipient.generation,handoff.recipient.input_revision,handoff.recipient.state_version,position,acceptance,if path.is_some(){"pending"}else{"not_required"}])?;
                 if let Some(path) = path {
-                    // Only overwrite an earlier host publication observed in THIS handoff.
-                    // A newly suggested path must be absent, never blindly sampled after the LLM call.
-                    let expected = handoff
-                        .publication_bases
-                        .iter()
-                        .find(|base| base.relative_path.as_str().eq_ignore_ascii_case(path))
-                        .map(|base| base.content_sha256.as_str());
+                    // A composed stage publishes against the exact bytes it
+                    // observed at admission; the legacy stage only overwrites
+                    // an earlier host publication observed in THIS handoff. A
+                    // newly suggested path must be absent, never blindly
+                    // sampled after the LLM call.
+                    let expected: Option<String> = match provenance
+                        .expected_overrides
+                        .and_then(|overrides| overrides.get(&path.to_ascii_lowercase()))
+                    {
+                        Some(ExpectedFileContent::Present(hash)) => Some(hash.as_str().to_owned()),
+                        Some(ExpectedFileContent::Absent) => None,
+                        None => handoff
+                            .publication_bases
+                            .iter()
+                            .find(|base| base.relative_path.as_str().eq_ignore_ascii_case(path))
+                            .map(|base| base.content_sha256.as_str().to_owned()),
+                    };
                     tx.execute("INSERT INTO artifact_publications(artifact_id,project_id,pulsation_id,relative_path,expected_sha256,desired_sha256,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,current.project_id,pulse,path,expected,hash.as_str(),now])?;
                 }
             }
@@ -487,29 +546,61 @@ impl PersistenceService {
         match disposition {
             StageDisposition::AwaitArtifactReview => {
                 let updated = Self::transition_pulsation(
-                    &tx,
-                    &current,
+                    tx,
+                    current,
                     PulsationStatus::Checkpoint,
                     current.stage,
                     "checkpoint_ready",
                     Some("Checkpoint pronto para revisão HITL."),
                 )?;
-                Self::open_checkpoint(&tx, &updated.id, updated.stage)?;
+                Self::open_checkpoint(tx, &updated.id, updated.stage)?;
                 tx.execute("UPDATE checkpoints SET state_version=(SELECT state_version FROM pulsations WHERE id=?1),input_revision=?2,producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting' AND purpose='artifact_review'",params![pulse,handoff.recipient.input_revision,job.id,handoff.recipient.generation])?;
             }
             StageDisposition::Advance(next) => {
-                let updated = Self::transition_pulsation(
-                    &tx,
-                    &current,
-                    PulsationStatus::Planning,
-                    next,
-                    "stage_auto_advanced",
-                    Some("Resultado aceito; aguardando publicações obrigatórias."),
-                )?;
-                Self::enqueue_stage_job(&tx, &updated.id, updated.stage)?;
+                if current.stage == PulsationStage::Intake
+                    && next == PulsationStage::Specification
+                    && let StageOutcome::Completed { artifacts, .. } = outcome
+                    && let Some(manifest) = &handoff.batch_manifest
+                    && manifest.path_confirmation_source
+                        != crate::feature_forge::PathConfirmationSource::ForgeGate
+                    && Self::composed_pulsation(tx, &current.id)?
+                    && Self::intake_batch_needs_path_confirmation(artifacts, manifest)
+                {
+                    // Preventive HITL gate (ADR-022 clarification loop, P5/A5.2):
+                    // the dispatch-time gate (P1/A1.3) never confirmed a path for
+                    // this batch, and Intake just classified a task as `feature`
+                    // (or the host already knew one was `Foundation`) -- letting
+                    // Specification run risks burning its whole budget with
+                    // nowhere to anchor a PlannedDestination. Parks exactly like
+                    // `AwaitArtifactReview`: same stage, same status, a
+                    // checkpoint the developer resolves before Specification is
+                    // ever enqueued.
+                    let updated = Self::transition_pulsation(
+                        tx,
+                        current,
+                        PulsationStatus::Checkpoint,
+                        current.stage,
+                        "path_confirmation_required",
+                        Some(
+                            "This batch has no confirmed file path; confirm one before Specification runs.",
+                        ),
+                    )?;
+                    Self::open_checkpoint(tx, &updated.id, updated.stage)?;
+                    tx.execute("UPDATE checkpoints SET kind='path_confirmation',purpose='path_confirmation',state_version=(SELECT state_version FROM pulsations WHERE id=?1),input_revision=?2,producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting' AND purpose='artifact_review'",params![pulse,handoff.recipient.input_revision,job.id,handoff.recipient.generation])?;
+                } else {
+                    let updated = Self::transition_pulsation(
+                        tx,
+                        current,
+                        PulsationStatus::Planning,
+                        next,
+                        "stage_auto_advanced",
+                        Some("Resultado aceito; aguardando publicações obrigatórias."),
+                    )?;
+                    Self::enqueue_stage_job(tx, &updated.id, updated.stage)?;
+                }
             }
             StageDisposition::Fail => {
-                let (code, message) = match &outcome {
+                let (code, message) = match outcome {
                     StageOutcome::Failed { code, message } => (code.as_str(), message.as_str()),
                     _ => ("model_reported_failure", "O agente reportou falha."),
                 };
@@ -517,8 +608,8 @@ impl PersistenceService {
                 // it opens a checkpoint only where a revision target exists (i.e. not
                 // at Intake), and otherwise stays terminal exactly as before.
                 let parked = Self::record_stage_failure_checkpoint(
-                    &tx,
-                    &current,
+                    tx,
+                    current,
                     current.stage,
                     &job.id,
                     Some(run_id),
@@ -528,8 +619,8 @@ impl PersistenceService {
                 )?;
                 if !parked {
                     Self::transition_pulsation(
-                        &tx,
-                        &current,
+                        tx,
+                        current,
                         PulsationStatus::Failed,
                         current.stage,
                         "stage_failed",
@@ -539,15 +630,15 @@ impl PersistenceService {
                         "UPDATE pulsations SET terminal_reason='model_reported_failure' WHERE id=?1",
                         [pulse],
                     )?;
-                    Self::mark_effects_for_review(&tx, pulse, "stage_failed")?;
-                    Self::enqueue_learning(&tx, pulse)?;
+                    Self::mark_effects_for_review(tx, pulse, "stage_failed")?;
+                    Self::enqueue_learning(tx, pulse)?;
                 }
             }
             StageDisposition::AwaitClarification => {
-                let StageOutcome::NeedsClarification { questions } = &outcome else {
+                let StageOutcome::NeedsClarification { questions } = outcome else {
                     unreachable!()
                 };
-                Self::persist_questions(&tx, &current, &handoff.recipient, questions)?;
+                Self::persist_questions(tx, current, &handoff.recipient, questions)?;
             }
         }
         let failed = matches!(outcome, StageOutcome::Failed { .. });
@@ -559,8 +650,139 @@ impl PersistenceService {
             "UPDATE agent_runs SET status=?1,updated_at=?2 WHERE id=?3",
             params![if failed { "failed" } else { "done" }, now, run_id],
         )?;
-        tx.commit()?;
         Ok(())
+    }
+
+    /// Whether `pulsation_id` runs the composed pipeline (ADR-022, v4). A v3
+    /// batch also carries a `batch_manifest` (`PipelineVersion::uses_batch`
+    /// covers both V3 and V4), so the preventive HITL gate (P5/A5.2) -- a
+    /// v4-only concept -- cannot use the manifest's presence alone to scope
+    /// itself to composed pulsations.
+    fn composed_pulsation(
+        conn: &Connection,
+        pulsation_id: &str,
+    ) -> Result<bool, PersistenceServiceError> {
+        let pipeline_version: u8 = conn.query_row(
+            "SELECT pipeline_version FROM pulsations WHERE id=?1",
+            [pulsation_id],
+            |r| r.get(0),
+        )?;
+        Ok(PipelineVersion::from_db(pipeline_version)
+            .is_some_and(|version| version.supports_composition()))
+    }
+
+    /// Whether the just-accepted Intake outcome names a task the preventive
+    /// HITL gate (ADR-022 clarification loop, P5/A5.2) must stop for: one the
+    /// host already knows is `Foundation` (from its own manifest, no Intake
+    /// needed), or one Intake itself classified `feature`. `Foundation` is a
+    /// `feature_forge::TaskKind`, distinct from and not covered by Intake's own
+    /// `TaskClassification` vocabulary, which has no `Foundation` variant.
+    fn intake_batch_needs_path_confirmation(
+        artifacts: &[StageArtifactDraft],
+        manifest: &crate::feature_forge::BatchManifest,
+    ) -> bool {
+        let rows: Vec<(String, String)> = artifacts
+            .iter()
+            .map(|artifact| (artifact.kind.clone(), artifact.content.clone()))
+            .collect();
+        let prior =
+            crate::orchestration::composition::recipes::prior_payloads(&rows).unwrap_or_default();
+        let intake_tasks = prior
+            .get(&crate::orchestration::composition::Stage::Intake)
+            .and_then(crate::orchestration::composition::recipes::intake_of)
+            .map(|payload| payload.tasks.as_slice())
+            .unwrap_or(&[]);
+        manifest.tasks.iter().enumerate().any(|(index, task)| {
+            task.draft.kind == crate::feature_forge::TaskKind::Foundation || {
+                let handle = format!("task_{}", index + 1);
+                intake_tasks.iter().any(|intake_task| {
+                    intake_task.task_ref.as_str() == handle
+                        && intake_task.classification
+                            == crate::orchestration::composition::TaskClassification::Feature
+                })
+            }
+        })
+    }
+
+    /// Resolves a preventive path-confirmation checkpoint (ADR-022
+    /// clarification loop, P5/A5.2): re-validates the batch's tasks against
+    /// the supplied hints via the identical dispatch-time gate
+    /// (`feature_forge::PersistenceService::resolve_path_confirmation`), and
+    /// on success records the manifest's `path_confirmation_source` as
+    /// `ManualHitl` (distinct from `ForgeGate`, for the Preparation view to
+    /// tell the two apart later), closes the checkpoint and queues
+    /// Specification. The manifest is otherwise frozen at dispatch; this is
+    /// the one field the host is allowed to amend afterward.
+    pub fn resolve_path_confirmation_checkpoint(
+        &self,
+        request: ResolvePathConfirmationRequest,
+    ) -> Result<Pulsation, PersistenceServiceError> {
+        let mut db = self.connection()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = Self::find_pulsation_by_id(&tx, &request.pulsation_id)?
+            .ok_or_else(|| invalid("Pulsação ausente."))?;
+        if current.stage != PulsationStage::Intake {
+            return Err(invalid("Esclarecimento de caminho fora do Intake."));
+        }
+        let (stored_checkpoint_id, state_version, purpose): (String, u64, String) = tx
+            .query_row(
+                "SELECT id,state_version,purpose FROM checkpoints WHERE pulsation_id=?1 AND status='waiting'",
+                [&request.pulsation_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|_| invalid("Checkpoint ausente ou ambíguo."))?;
+        if stored_checkpoint_id != request.checkpoint_id
+            || purpose != "path_confirmation"
+            || state_version != request.expected_state_version
+        {
+            return Err(invalid("Checkpoint obsoleto ou de outro tipo."));
+        }
+        let manifest_json: String = tx.query_row(
+            "SELECT manifest_json FROM pulsation_batches WHERE pulsation_id=?1",
+            [&request.pulsation_id],
+            |r| r.get(0),
+        )?;
+        let mut manifest: crate::feature_forge::BatchManifest =
+            serde_json::from_str(&manifest_json).map_err(|e| invalid(e.to_string()))?;
+        let hints: std::collections::HashMap<&str, Option<&str>> = request
+            .manual_path_hints
+            .iter()
+            .map(|hint| (hint.task_id.as_str(), Some(hint.path.as_str())))
+            .collect();
+        Self::resolve_path_confirmation(
+            &tx,
+            &current.project_id,
+            &hints,
+            &manifest.tasks,
+            &manifest.features,
+        )?;
+        manifest.path_confirmation_source =
+            crate::feature_forge::PathConfirmationSource::ManualHitl;
+        let encoded = serde_json::to_string(&manifest).map_err(|e| invalid(e.to_string()))?;
+        tx.execute(
+            "UPDATE pulsation_batches SET manifest_json=?2,manifest_sha256=?3 WHERE pulsation_id=?1",
+            params![
+                request.pulsation_id,
+                encoded,
+                ContentSha256::of(encoded.as_bytes()).as_str()
+            ],
+        )?;
+        tx.execute(
+            "UPDATE checkpoints SET status='approved',updated_at=?2 WHERE id=?1",
+            params![request.checkpoint_id, Self::now_iso()],
+        )?;
+        let updated = Self::transition_pulsation(
+            &tx,
+            &current,
+            PulsationStatus::Planning,
+            PulsationStage::Specification,
+            "path_confirmation_resolved",
+            Some("Path confirmed; Specification queued."),
+        )?;
+        Self::enqueue_stage_job(&tx, &updated.id, updated.stage)?;
+        tx.commit()?;
+        self.wake_scheduler();
+        Ok(updated)
     }
 
     pub(super) fn mark_effects_for_review(

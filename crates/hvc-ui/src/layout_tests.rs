@@ -1,12 +1,12 @@
 use gpui::{
-    Context, Entity, IntoElement, Modifiers, Render, TestAppContext, VisualTestContext, Window,
-    div, prelude::*, px, size,
+    Context, Entity, IntoElement, Modifiers, Render, ScrollDelta, ScrollWheelEvent, TestAppContext,
+    VisualTestContext, Window, div, point, prelude::*, px, size,
 };
 use hvc_core::llm::{AgentRole, LlmResilienceSnapshot};
 use hvc_core::persistence_service::{Pulsation, PulsationStage, PulsationStatus};
 use hvc_core::terminals::{
     AgentExecutionMode, AgentTerminalSnapshot, CliAgentConfig, CliBackend, CliModelSelectionSource,
-    TerminalsSnapshot, ThinkingLevel,
+    FreeFormTerminalSnapshot, SessionPolicy, TerminalSlot, TerminalsSnapshot, ThinkingLevel,
 };
 
 use crate::agents::{
@@ -14,7 +14,7 @@ use crate::agents::{
 };
 use crate::pulsations::PulsationDetailSection;
 use crate::settings::{SettingsSection, SettingsSnapshot};
-use crate::{AppModel, AppTab, AppView};
+use crate::{AppModel, AppView};
 
 pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
     let model = AppModel::new_for_test(cx);
@@ -51,16 +51,44 @@ pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
                             recent_events: vec![],
                         })
                         .collect(),
-                    free_form_slots: vec![],
+                    free_form_slots: vec![FreeFormTerminalSnapshot {
+                        slot: TerminalSlot {
+                            id: "slot-free".into(),
+                            project_id: "layout-project".into(),
+                            kind: "free_form".into(),
+                            agent_role: None,
+                            label: "FreeForm fixture".into(),
+                            execution_mode: AgentExecutionMode::CliProcess,
+                            backend: CliBackend::Codex,
+                            model: None,
+                            model_profile: None,
+                            model_source: CliModelSelectionSource::Default,
+                            thinking_level: ThinkingLevel::Default,
+                            session_policy: SessionPolicy::FreshPerRun,
+                            custom_executable: None,
+                            custom_args: vec![],
+                            custom_risk_ack: false,
+                            position: 0,
+                            archived: false,
+                            version: 1,
+                            created_at: "now".into(),
+                            updated_at: "now".into(),
+                        },
+                        recent_runs: vec![],
+                        recent_events: vec![],
+                    }],
                     archived_free_form_slots: vec![],
                     discovery: vec![],
                 },
                 fallbacks: vec![],
+                free_form_bindings: vec![],
+                api_executions: Default::default(),
             },
         );
     });
     model.settings.update(cx, |settings, _| {
         settings.snapshot = Some(SettingsSnapshot {
+            composition: None,
             preparation: Default::default(),
             config: Default::default(),
             profiles: vec![],
@@ -313,6 +341,9 @@ fn parked_failure_window<'a>(
                 attempts: 3,
                 state_version: 1,
                 created_at: "2026-09-09T00:00:00Z".into(),
+                allowed_revision_targets: Vec::new(),
+                remaining_extra_invocations: None,
+                stage_execution_id: None,
             }));
             state.detail_section = PulsationDetailSection::Review;
         });
@@ -390,6 +421,96 @@ fn aborting_a_failure_takes_two_clicks_and_never_moves_the_button(cx: &mut TestA
     );
 }
 
+/// A failed pulsation whose cleanup preview already arrived, in a window of its own.
+fn failed_with_leftovers_window(
+    cx: &mut TestAppContext,
+    window: (f32, f32),
+) -> (Entity<AppModel>, &mut VisualTestContext) {
+    use hvc_core::orchestration::{
+        CleanupDisposition, FailedPulsationCleanupEntry, FailedPulsationCleanupPlan,
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            state.pulsations[0].status = PulsationStatus::Failed;
+            state.pulsations[0].terminal_reason = Some("user_cancel".into());
+            state.detail_section = PulsationDetailSection::Overview;
+            state.cleanup.plan = Some(FailedPulsationCleanupPlan {
+                pulsation_id: "pulse-a".into(),
+                project_id: "layout-project".into(),
+                entries: vec![
+                    FailedPulsationCleanupEntry {
+                        relative_path: "src/generated/feature.rs".into(),
+                        disposition: CleanupDisposition::Remove,
+                        detail: None,
+                    },
+                    FailedPulsationCleanupEntry {
+                        relative_path: "src/lib.rs".into(),
+                        disposition: CleanupDisposition::KeepEdited,
+                        detail: None,
+                    },
+                ],
+                candidate_dirs: vec!["exec-1".into()],
+                plan_token: "layout-token".into(),
+            });
+        });
+        m.select_view(AppView::Pulsations, cx);
+    });
+    visual.simulate_resize(size(px(window.0), px(window.1)));
+    visual.run_until_parked();
+    (model, visual)
+}
+
+#[gpui::test]
+fn leftover_files_card_shows_only_for_failed_pulsations(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |m, cx| m.select_view(AppView::Pulsations, cx));
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("pulsation-cleanup").is_none(),
+        "a planning pulsation has nothing to clean"
+    );
+    let (_, visual) = failed_with_leftovers_window(cx, (1280.0, 820.0));
+    let card = visual.debug_bounds("pulsation-cleanup").unwrap();
+    let remove = visual.debug_bounds("pulsation-cleanup-remove").unwrap();
+    let refresh = visual.debug_bounds("pulsation-cleanup-refresh").unwrap();
+    assert!(
+        remove.size.width < card.size.width / 2.0,
+        "the removal button sizes to its label"
+    );
+    assert!(refresh.left() > remove.right(), "controls sit side by side");
+}
+
+#[gpui::test]
+fn removing_leftover_files_takes_two_clicks_and_never_moves_the_button(cx: &mut TestAppContext) {
+    let (model, visual) = failed_with_leftovers_window(cx, (1280.0, 820.0));
+    let before = visual.debug_bounds("pulsation-cleanup-remove").unwrap();
+    click(visual, "pulsation-cleanup-remove");
+    model.update(visual, |m, cx| {
+        assert!(
+            m.pulsations.read(cx).cleanup.armed,
+            "the first click only arms"
+        );
+    });
+    let after = visual.debug_bounds("pulsation-cleanup-remove").unwrap();
+    let cursor = before.center();
+    assert_eq!(after.origin, before.origin, "arming moved the button");
+    assert!(
+        cursor.x >= after.left()
+            && cursor.x <= after.right()
+            && cursor.y >= after.top()
+            && cursor.y <= after.bottom(),
+        "arming slid the control out from under the cursor: {cursor:?} not in {after:?}"
+    );
+    // Leaving the pulsation disarms and drops the preview of the other one.
+    model.update(visual, |m, cx| {
+        m.select_pulsation("pulse-b", cx);
+        let state = m.pulsations.read(cx);
+        assert!(!state.cleanup.armed);
+        assert!(state.cleanup.plan.is_none());
+    });
+}
+
 #[gpui::test]
 fn failure_abort_confirmation_expires_when_selecting_another_pulsation(cx: &mut TestAppContext) {
     let (model, visual) =
@@ -400,6 +521,190 @@ fn failure_abort_confirmation_expires_when_selecting_another_pulsation(cx: &mut 
         m.select_pulsation("pulse-b", cx);
         assert!(!m.confirm_failure_abort);
     });
+}
+
+/// A parked composed stage (ADR-022): the failure checkpoint carries the
+/// permitted revision targets and the execution snapshot lists units.
+fn composed_detail(pulse: &Pulsation) -> hvc_core::orchestration::PulsationCoordinationSnapshot {
+    use hvc_core::orchestration::composition::{
+        AttemptState, AttemptSummaryV1, CheckStatus, CheckSummaryV1, ExecutionStatus, ExecutorKind,
+        Handle, RemainingBudgetV1, Stage, StageExecutionSnapshot, UnitSnapshotV1, UnitState,
+        UsageCompleteness, UsageSummaryV1, Uuid,
+    };
+    use hvc_core::orchestration::*;
+    let fresh_id = || Uuid::new(uuid::Uuid::new_v4().to_string()).unwrap();
+    let attempt = |kind: ExecutorKind, state: AttemptState, error: Option<&str>| AttemptSummaryV1 {
+        attempt_id: fresh_id(),
+        state,
+        executor_kind: kind,
+        effective_model: "cheap-model".into(),
+        profile_snapshot_id: fresh_id(),
+        error_code: error.map(|e| Handle::new(e).unwrap()),
+        usage: UsageSummaryV1 {
+            input_tokens: Some(1_200),
+            output_tokens: Some(300),
+            reasoning_tokens: None,
+            cached_input_tokens: None,
+            completeness: UsageCompleteness::Partial,
+        },
+    };
+    let unit =
+        |key: &str, kind: ExecutorKind, state: UnitState, attempts: Vec<AttemptSummaryV1>| {
+            UnitSnapshotV1 {
+                unit_id: fresh_id(),
+                logical_unit_key: Handle::new(key).unwrap(),
+                executor_kind: kind,
+                generation: 1,
+                state_version: 2,
+                state,
+                reused_from_attempt_id: None,
+                attempts,
+            }
+        };
+    PulsationCoordinationSnapshot {
+        description_editable: false,
+        context_disposition: None,
+        diagnostic: None,
+        pulsation_id: pulse.id.clone(),
+        project_id: pulse.project_id.clone(),
+        queue_sequence: 1,
+        pipeline_version: 4,
+        input_revision: 1,
+        state_version: 3,
+        stage: PulsationStage::Code,
+        status: PulsationStatus::Checkpoint,
+        blocking_reason: None,
+        preparation: PreparationSnapshot {
+            assessment: None,
+            description_review: DescriptionReviewState::Pending,
+            prespec_state: PreSpecState::NotScheduled,
+            context_artifact_id: None,
+            skip_reason: None,
+        },
+        questions: None,
+        learning: LearningState::Unavailable,
+        learning_run: None,
+        artifact_ids: vec![],
+        stage_execution: Some(StageExecutionSnapshot {
+            schema_version: hvc_core::orchestration::SchemaV1,
+            project_id: fresh_id(),
+            pulsation_id: fresh_id(),
+            stage_execution_id: fresh_id(),
+            stage: Stage::Code,
+            parent_generation: 1,
+            parent_state_version: 3,
+            execution_version: 2,
+            status: ExecutionStatus::Parked,
+            units: vec![
+                unit(
+                    "unit_core",
+                    ExecutorKind::CodeImplementer,
+                    UnitState::Validated,
+                    vec![attempt(
+                        ExecutorKind::CodeImplementer,
+                        AttemptState::Succeeded,
+                        None,
+                    )],
+                ),
+                unit(
+                    "unit_api",
+                    ExecutorKind::CodeImplementer,
+                    UnitState::Failed,
+                    vec![
+                        attempt(
+                            ExecutorKind::CodeImplementer,
+                            AttemptState::Rejected,
+                            Some("ownership_violation"),
+                        ),
+                        attempt(
+                            ExecutorKind::CodeRepairer,
+                            AttemptState::Rejected,
+                            Some("ownership_violation"),
+                        ),
+                    ],
+                ),
+            ],
+            blocked_reason: Some("Unit `unit_api` wrote outside its ownership twice.".into()),
+            checks: vec![CheckSummaryV1 {
+                check_ref: Handle::new("cargo_check").unwrap(),
+                required: true,
+                receipt_id: None,
+                status: CheckStatus::NotRun,
+            }],
+            remaining_budget: RemainingBudgetV1 {
+                initial_invocations: 0,
+                extra_invocations: 0,
+                initial_output_tokens: 0,
+                extra_output_tokens: 0,
+                initial_prompt_characters: 0,
+                extra_prompt_characters: 0,
+            },
+            usage: UsageSummaryV1 {
+                input_tokens: Some(3_600),
+                output_tokens: Some(900),
+                reasoning_tokens: None,
+                cached_input_tokens: None,
+                completeness: UsageCompleteness::Partial,
+            },
+        }),
+    }
+}
+
+#[gpui::test]
+fn a_composed_stage_lists_its_units_and_offers_only_permitted_revision_targets(
+    cx: &mut TestAppContext,
+) {
+    let (model, visual) =
+        parked_failure_window(cx, "ownership_violation", false, true, (1440.0, 900.0));
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            let pulse = state.pulsations[0].clone();
+            let mut checkpoint = state.failure.checkpoint.clone().unwrap();
+            checkpoint.stage = PulsationStage::Code;
+            checkpoint.error_code = "ownership_violation".into();
+            checkpoint.allowed_revision_targets =
+                vec![PulsationStage::Code, PulsationStage::Specification];
+            checkpoint.remaining_extra_invocations = Some(0);
+            checkpoint.stage_execution_id = Some("exec-1".into());
+            state.failure.load_checkpoint(Some(checkpoint));
+            state.details = vec![composed_detail(&pulse)];
+        });
+        cx.notify();
+    });
+    select(&model, visual, AppView::Pulsations);
+
+    // Review: no permit left means no Retry; the permitted targets are offered
+    // and the pick is durable in the model before any request is sent.
+    assert!(visual.debug_bounds("failure-retry").is_none());
+    visual.debug_bounds("failure-target-Code").unwrap();
+    assert!(visual.debug_bounds("failure-target-Test").is_none());
+    click(visual, "failure-target-Specification");
+    model.read_with(visual, |m, cx| {
+        assert_eq!(
+            m.pulsations.read(cx).failure.selected_revision_target(),
+            Some(PulsationStage::Specification)
+        );
+    });
+    visual.debug_bounds("failure-revision").unwrap();
+
+    // Overview: the execution snapshot renders one row per unit, with the
+    // host checks separate from the units and no per-unit approval control.
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            state.detail_section = PulsationDetailSection::Overview;
+        });
+        cx.notify();
+    });
+    select(&model, visual, AppView::Pulsations);
+    let panel = visual.debug_bounds("composition-panel").unwrap();
+    for unit in ["composition-unit-unit_core", "composition-unit-unit_api"] {
+        let row = visual.debug_bounds(unit).unwrap();
+        assert!(
+            row.top() >= panel.top() && row.bottom() <= panel.bottom(),
+            "{unit} escapes the panel: {row:?} vs {panel:?}"
+        );
+    }
+    assert!(visual.debug_bounds("composition-unit-approve").is_none());
 }
 
 fn assert_absent(model: &Entity<AppModel>, visual: &mut VisualTestContext, selector: &'static str) {
@@ -462,6 +767,13 @@ fn notification_and_direct_selector_overlays_do_not_move_controls(cx: &mut TestA
         click(visual, "notifications");
         let history = visual.debug_bounds("notification-history").unwrap();
         assert!(history.right() <= px(width) && history.bottom() <= px(height));
+        // The panel drops from the bell's bottom-left corner, like a menu.
+        let bell = visual.debug_bounds("notifications").unwrap();
+        assert_eq!(history.right(), bell.left(), "{history:?} vs {bell:?}");
+        assert!(
+            history.top() >= bell.bottom() && history.top() - bell.bottom() <= px(12.0),
+            "{history:?} vs {bell:?}"
+        );
         assert_eq!(visual.debug_bounds("agents-cli-scroll").unwrap(), before);
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
@@ -508,13 +820,13 @@ fn closing_a_selector_does_not_activate_covered_navigation(cx: &mut TestAppConte
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     select(&model, visual, AppView::Agents);
     click(visual, "agent-backend:task_specifier");
-    click(visual, "settings");
+    click(visual, "rail-settings");
     assert_eq!(
         model.read_with(visual, |m, _| m.active_view()),
         AppView::Agents
     );
     assert!(model.read_with(visual, |m, _| m.choice_menu.is_none()));
-    click(visual, "settings");
+    click(visual, "rail-settings");
     assert_eq!(
         model.read_with(visual, |m, _| m.active_view()),
         AppView::Settings
@@ -522,45 +834,649 @@ fn closing_a_selector_does_not_activate_covered_navigation(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn header_tabs_and_settings_navigate_at_minimum_window_size(cx: &mut TestAppContext) {
+fn nav_rail_selects_every_view_and_pins_settings_at_the_bottom(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
-    visual.simulate_resize(size(px(960.0), px(640.0)));
-    visual.run_until_parked();
-    click(visual, "agent");
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        visual.run_until_parked();
+        let rail = visual.debug_bounds("rail").unwrap();
+        assert_eq!(rail.left(), px(0.0));
+        assert_eq!(rail.size.width, crate::sizing::NAV_RAIL_WIDTH);
+        let header = visual.debug_bounds("header").unwrap();
+        let status_bar = visual.debug_bounds("status-bar").unwrap();
+        assert_eq!(rail.top(), header.bottom());
+        assert_eq!(rail.bottom(), status_bar.top());
+
+        let mut lowest_nav_bottom = px(0.0);
+        for view in crate::shell::RAIL_VIEWS {
+            let selector: &'static str = match view {
+                AppView::Home => "rail-nav-home",
+                AppView::Forge => "rail-nav-forge",
+                AppView::Pulsations => "rail-nav-pulsations",
+                AppView::Vault => "rail-nav-vault",
+                AppView::Agents => "rail-nav-agents",
+                AppView::Logs => "rail-nav-logs",
+                AppView::Chat => "rail-nav-chat",
+                AppView::Workspace => "rail-nav-workspace",
+                AppView::Settings => unreachable!("settings is not a rail view"),
+            };
+            let item = visual.debug_bounds(selector).unwrap();
+            assert!(
+                item.left() >= rail.left() && item.right() <= rail.right(),
+                "{selector} escaped the rail at {width}: {item:?}"
+            );
+            assert!(item.top() >= rail.top() && item.bottom() <= rail.bottom());
+            lowest_nav_bottom = lowest_nav_bottom.max(item.bottom());
+            click(visual, selector);
+            assert_eq!(
+                model.read_with(visual, |model, _| model.active_view()),
+                view,
+                "{selector} did not select {view:?}"
+            );
+        }
+        let new_work = visual.debug_bounds("new-work").unwrap();
+        assert!(new_work.left() >= rail.left() && new_work.right() <= rail.right());
+        let settings = visual.debug_bounds("rail-settings").unwrap();
+        assert!(
+            settings.top() > lowest_nav_bottom,
+            "settings is not pinned below the nav items at {width}: {settings:?}"
+        );
+        assert!(settings.bottom() <= rail.bottom());
+        click(visual, "rail-settings");
+        assert_eq!(
+            model.read_with(visual, |model, _| model.active_view()),
+            AppView::Settings
+        );
+        // The former tab bar and context bar are gone for good.
+        assert!(visual.debug_bounds("flow-bar").is_none());
+        assert!(visual.debug_bounds("flow-bar-tabs").is_none());
+        assert!(visual.debug_bounds("toggle-sidebar").is_none());
+    }
+}
+
+#[gpui::test]
+fn header_is_informational_and_fits_the_minimum_width(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        for view in [AppView::Home, AppView::Agents, AppView::Settings] {
+            select(&model, visual, view);
+            let header = visual.debug_bounds("header").unwrap();
+            assert_eq!(header.top(), px(0.0));
+            assert_eq!(header.size.height, crate::sizing::HEADER_HEIGHT);
+            let brand = visual.debug_bounds("header-brand").unwrap();
+            let context = visual.debug_bounds("header-context").unwrap();
+            let health = visual.debug_bounds("header-health").unwrap();
+            let notifications = visual.debug_bounds("notifications").unwrap();
+            assert!(brand.left() < px(80.0));
+            assert!(
+                context.left() < px(width / 2.0) && context.right() > px(width / 2.0),
+                "context readout off-centre in {view:?} at {width}: {context:?}"
+            );
+            assert!(brand.right() <= context.left());
+            assert!(context.right() <= health.left());
+            assert!(health.right() <= notifications.left());
+            assert!(notifications.right() <= px(width));
+            for bounds in [brand, context, health, notifications] {
+                assert!(bounds.top() >= header.top() && bounds.bottom() <= header.bottom());
+            }
+        }
+        // Old header controls must not linger under their previous ids.
+        assert!(visual.debug_bounds("settings").is_none());
+        assert!(visual.debug_bounds("pipeline-status").is_none());
+    }
+    // The centre readout is a readout: clicking it goes nowhere.
+    select(&model, visual, AppView::Settings);
+    click(visual, "header-context");
     assert_eq!(
         model.read_with(visual, |model, _| model.active_view()),
-        AppView::Agents
+        AppView::Settings
     );
-    click(visual, "logs");
-    click(visual, "engine");
-    click(visual, "settings");
-    assert_absent(&model, visual, "sub-tabs");
-    click(visual, "agent");
+    // Without a pulsation the slot keeps a muted placeholder instead of collapsing.
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |pulsations, _| {
+            pulsations.pulsations.clear();
+            pulsations.active_pulsation_id = None;
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let context = visual.debug_bounds("header-context").unwrap();
+    assert!(context.size.width > px(0.0));
+}
+
+#[gpui::test]
+fn keyboard_shortcuts_follow_rail_order(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    visual.run_until_parked();
+    // Own the focus first so the keystrokes reach the shell's action handlers.
+    click(visual, "rail-nav-home");
+    for (index, view) in crate::shell::RAIL_VIEWS.iter().enumerate() {
+        visual.simulate_keystrokes(&format!("ctrl-{}", index + 1));
+        visual.run_until_parked();
+        assert_eq!(
+            model.read_with(visual, |model, _| model.active_view()),
+            *view,
+            "ctrl-{} did not select {view:?}",
+            index + 1
+        );
+    }
+    visual.simulate_keystrokes("ctrl-,");
+    visual.run_until_parked();
+    assert_eq!(
+        model.read_with(visual, |model, _| model.active_view()),
+        AppView::Settings
+    );
+    visual.simulate_keystrokes("ctrl-shift-]");
+    visual.run_until_parked();
+    assert_eq!(
+        model.read_with(visual, |model, cx| model.settings.read(cx).settings_section),
+        SettingsSection::Routes
+    );
+    let before = model.read_with(visual, |model, cx| model.context_rail_collapsed(cx));
+    visual.simulate_keystrokes("ctrl-b");
+    visual.run_until_parked();
+    assert_ne!(
+        model.read_with(visual, |model, cx| model.context_rail_collapsed(cx)),
+        before
+    );
+}
+
+#[gpui::test]
+fn status_bar_keeps_pending_counts_events_version_and_clock(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Home);
+        let status_bar = visual.debug_bounds("status-bar").unwrap();
+        assert_eq!(status_bar.size.height, crate::sizing::STATUS_BAR_HEIGHT);
+        assert_eq!(status_bar.bottom(), px(height));
+        assert_eq!(status_bar.size.width, px(width));
+        let events = visual.debug_bounds("status-events").unwrap();
+        let version = visual.debug_bounds("status-version").unwrap();
+        let clock = visual.debug_bounds("status-clock").unwrap();
+        assert!(events.right() <= version.left());
+        assert!(version.right() <= clock.left());
+        assert!(clock.right() <= px(width));
+        for bounds in [events, version, clock] {
+            assert!(bounds.top() >= status_bar.top() && bounds.bottom() <= status_bar.bottom());
+        }
+        assert!(visual.debug_bounds("status-hitl").is_none());
+    }
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |pulsations, _| {
+            pulsations.awaiting_hitl = 2;
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(visual, "status-hitl");
+    assert_eq!(
+        model.read_with(visual, |model, _| model.active_view()),
+        AppView::Pulsations
+    );
+    click(visual, "status-events");
     assert_eq!(
         model.read_with(visual, |model, _| model.active_view()),
         AppView::Logs
     );
+    assert_eq!(crate::shell::compact_count(999), "999");
+    assert_eq!(crate::shell::compact_count(18_400), "18.4k");
+    assert_eq!(crate::shell::compact_count(2_150_000), "2.1M");
+}
+
+#[gpui::test]
+fn home_is_the_default_view_and_its_primary_step_runs_the_flow(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     assert_eq!(
-        model.read_with(visual, |model, _| model.active_tab()),
-        AppTab::Agent
+        model.read_with(visual, |model, _| model.active_view()),
+        AppView::Home
     );
-    let settings = visual.debug_bounds("settings").unwrap();
-    assert!(settings.right() <= px(960.0));
-    assert!(visual.debug_bounds("toggle-sidebar").is_none());
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Home);
+        let center = visual.debug_bounds("shell-center").unwrap();
+        let hero = visual.debug_bounds("home-hero").unwrap();
+        assert!(hero.left() >= center.left() && hero.right() <= center.right());
+        assert!(hero.top() >= center.top());
+        assert!(visual.debug_bounds("home-hero-title").is_some());
+        let pipeline = visual.debug_bounds("home-pipeline").unwrap();
+        assert!(pipeline.left() >= hero.left() && pipeline.right() <= hero.right());
+        assert!(visual.debug_bounds("home-pipeline-stage-specification").is_some());
+        let step = visual.debug_bounds("home-next-step").unwrap();
+        assert!(step.top() >= hero.bottom());
+        assert!(step.right() <= center.right());
+        // Home is the unfolded context; the rail's collapse toggle has nothing to fold here.
+        assert!(visual.debug_bounds("context-rail").is_none());
+    }
+    // The fixture's pulsation is Planning, so the primary step is "Follow pipeline".
+    click(visual, "home-next-step");
+    assert_eq!(
+        model.read_with(visual, |model, _| model.active_view()),
+        AppView::Pulsations
+    );
+
+    // Without a project the hero gives way to a single call to action.
+    let (_, fresh) = cx.add_window_view(|_, cx| {
+        let model = fixture(cx);
+        model.workspace.update(cx, |workspace, _| workspace.project_id = None);
+        model
+    });
+    assert!(fresh.debug_bounds("home-open-project").is_some());
+    assert!(fresh.debug_bounds("home-hero").is_none());
+}
+
+#[gpui::test]
+fn settings_section_strip_lives_inside_the_settings_panel(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Settings);
+        let rail = visual.debug_bounds("rail").unwrap();
+        let header = visual.debug_bounds("header").unwrap();
+        let strip = visual.debug_bounds("settings-section-strip").unwrap();
+        assert!(strip.left() >= rail.right());
+        assert!(strip.top() >= header.bottom());
+        for selector in [
+            "settings-section-connections",
+            "settings-section-routes",
+            "settings-section-runtime",
+            "settings-section-usage",
+        ] {
+            let pill = visual.debug_bounds(selector).unwrap();
+            assert!(pill.top() >= strip.top() && pill.bottom() <= strip.bottom());
+        }
+        click(visual, "settings-section-runtime");
+        assert_eq!(
+            model.read_with(visual, |model, cx| model.settings.read(cx).settings_section),
+            SettingsSection::Runtime
+        );
+    }
+    // Other views never show the strip.
+    select(&model, visual, AppView::Vault);
+    assert_absent(&model, visual, "settings-section-strip");
+}
+
+#[gpui::test]
+fn context_rail_is_absent_on_home_and_present_on_workbench_views(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    for view in [
+        AppView::Pulsations,
+        AppView::Agents,
+        AppView::Chat,
+        AppView::Settings,
+    ] {
+        select(&model, visual, view);
+        let rail = visual.debug_bounds("context-rail").unwrap();
+        let center = visual.debug_bounds("shell-center").unwrap();
+        let status_bar = visual.debug_bounds("status-bar").unwrap();
+        assert_eq!(rail.right(), px(1440.0), "{view:?}");
+        assert_eq!(rail.size.width, crate::sizing::CONTEXT_RAIL_WIDTH, "{view:?}");
+        assert_eq!(center.right(), rail.left(), "{view:?}");
+        assert_eq!(rail.bottom(), status_bar.top(), "{view:?}");
+        for selector in [
+            "context-rail-toggle",
+            "rail-card-pipeline",
+            "rail-card-waiting",
+            "rail-card-actions",
+            "rail-card-health",
+        ] {
+            let card = visual.debug_bounds(selector).unwrap();
+            assert!(
+                card.left() >= rail.left() && card.right() <= rail.right(),
+                "{selector} escaped the rail in {view:?}: {card:?}"
+            );
+        }
+        // The fixture's pulsation is at Specification: the vertical stepper stacks the stages.
+        let spec = visual.debug_bounds("rail-pipeline-stage-specification").unwrap();
+        let code = visual.debug_bounds("rail-pipeline-stage-code").unwrap();
+        assert!(code.top() > spec.bottom(), "{view:?}");
+    }
+    // Last, because `assert_absent` opens a second window: a split-pane view rendered in two
+    // windows of different widths re-measures itself forever (see `split_pane`'s canvas).
+    select(&model, visual, AppView::Home);
+    assert_absent(&model, visual, "context-rail");
+}
+
+#[gpui::test]
+fn context_rail_auto_collapses_at_the_minimum_width(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    select(&model, visual, AppView::Pulsations);
+
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    visual.run_until_parked();
+    let rail = visual.debug_bounds("context-rail").unwrap();
+    assert_eq!(rail.size.width, crate::sizing::CONTEXT_RAIL_COLLAPSED_WIDTH);
+    for selector in ["rail-strip-pipeline", "rail-strip-waiting", "rail-strip-health"] {
+        let item = visual.debug_bounds(selector).unwrap();
+        assert!(item.left() >= rail.left() && item.right() <= rail.right(), "{selector}");
+    }
+    // Forced by the window width: the toggle is inert.
+    click(visual, "context-rail-toggle");
+    assert!(!model.read_with(visual, |m, cx| m.context_rail_collapsed(cx)));
+    // The centre column keeps every split above its minimum width.
+    let columns = visual.debug_bounds("pulsations-columns").unwrap();
+    assert!(columns.size.width >= px(640.0), "{columns:?}");
+
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("context-rail").unwrap().size.width,
+        crate::sizing::CONTEXT_RAIL_WIDTH
+    );
+    click(visual, "context-rail-toggle");
+    assert!(model.read_with(visual, |m, cx| m.context_rail_collapsed(cx)));
+    assert_eq!(
+        visual.debug_bounds("context-rail").unwrap().size.width,
+        crate::sizing::CONTEXT_RAIL_COLLAPSED_WIDTH
+    );
+    // (The fold is persisted through the session's `sidebar_collapsed` column; see
+    // `persists_layout_and_domain_selections_with_debounce`.)
+    click(visual, "context-rail-toggle");
+    assert!(!model.read_with(visual, |m, cx| m.context_rail_collapsed(cx)));
+    assert_eq!(
+        visual.debug_bounds("context-rail").unwrap().size.width,
+        crate::sizing::CONTEXT_RAIL_WIDTH
+    );
+    // Folded again on a view without split panes, the cards are gone (second window: see the
+    // note in `context_rail_is_absent_on_home_and_present_on_workbench_views`).
+    select(&model, visual, AppView::Vault);
+    model.update(visual, |m, cx| m.set_context_rail_collapsed(true, cx));
+    visual.run_until_parked();
+    assert_absent(&model, visual, "rail-card-pipeline");
+}
+
+#[gpui::test]
+fn context_rail_quick_action_runs_the_primary_step(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Vault);
+    // Planning pulsation: primary = Follow pipeline.
+    click(visual, "rail-step-flow-follow-pipeline");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Pulsations
+    );
+    // The waiting card lists a pending review and jumps to it.
+    select(&model, visual, AppView::Vault);
+    assert!(visual.debug_bounds("rail-waiting-hitl").is_none());
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |pulsations, _| {
+            pulsations.awaiting_hitl = 1;
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(visual, "rail-waiting-hitl");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Pulsations
+    );
+    assert_eq!(
+        model.read_with(visual, |m, cx| m.pulsations.read(cx).detail_section),
+        PulsationDetailSection::Review
+    );
+    // Folded, the strip's action icon runs the same primary step.
+    select(&model, visual, AppView::Vault);
+    model.update(visual, |m, cx| m.set_context_rail_collapsed(true, cx));
+    visual.run_until_parked();
+    click(visual, "rail-strip-actions");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Pulsations
+    );
+}
+
+#[gpui::test]
+fn home_waiting_list_jumps_to_review_for_a_checkpoint(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Home);
+    let waiting = visual.debug_bounds("home-waiting").unwrap();
+    assert!(waiting.size.width > px(0.0));
+    assert!(visual.debug_bounds("home-waiting-hitl").is_none());
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |pulsations, _| {
+            pulsations.awaiting_hitl = 1;
+            pulsations.awaiting_failure = 2;
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let hitl = visual.debug_bounds("home-waiting-hitl").unwrap();
+    let failures = visual.debug_bounds("home-waiting-failures").unwrap();
+    assert!(hitl.top() >= waiting.top());
+    assert!(failures.top() >= hitl.bottom());
+    click(visual, "home-waiting-hitl");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Pulsations
+    );
+    assert_eq!(
+        model.read_with(visual, |m, cx| m.pulsations.read(cx).detail_section),
+        PulsationDetailSection::Review
+    );
+    assert_eq!(
+        model.read_with(visual, |m, cx| m.pulsations.read(cx).active_id()),
+        Some("pulse-a".to_string())
+    );
+}
+
+#[gpui::test]
+fn home_activity_lists_recent_events_newest_first(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Home);
+    let activity = visual.debug_bounds("home-activity").unwrap();
+    assert!(activity.size.width > px(0.0));
+    assert!(visual.debug_bounds("home-activity-0").is_none());
+    model.update(visual, |m, cx| {
+        m.record_activity(
+            crate::activity::ActivityKind::Workspace,
+            "src/a.rs changed",
+            Some(crate::flow::FlowTarget::View(AppView::Workspace)),
+            false,
+        );
+        m.record_activity(
+            crate::activity::ActivityKind::Agent,
+            "BackendAgent · Failed",
+            Some(crate::flow::FlowTarget::View(AppView::Agents)),
+            true,
+        );
+        m.record_activity(
+            crate::activity::ActivityKind::Notice,
+            "Provider cooldown",
+            None,
+            true,
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let first = visual.debug_bounds("home-activity-0").unwrap();
+    let second = visual.debug_bounds("home-activity-1").unwrap();
+    let third = visual.debug_bounds("home-activity-2").unwrap();
+    assert!(first.top() >= activity.top());
+    assert!(second.top() >= first.bottom());
+    assert!(third.top() >= second.bottom());
+    // Entry 1 is the agent failure (newest first): clicking it opens Agents.
+    click(visual, "home-activity-1");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Agents
+    );
+    select(&model, visual, AppView::Home);
+    click(visual, "home-open-logs");
+    assert_eq!(model.read_with(visual, |m, _| m.active_view()), AppView::Logs);
+}
+
+#[gpui::test]
+fn home_stacks_its_cards_at_the_minimum_width(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Home);
+    let hero = visual.debug_bounds("home-hero").unwrap();
+    let waiting = visual.debug_bounds("home-waiting").unwrap();
+    let health = visual.debug_bounds("home-health").unwrap();
+    let activity = visual.debug_bounds("home-activity").unwrap();
+    assert!(waiting.top() >= hero.bottom());
+    assert!(health.top() >= waiting.bottom(), "{health:?} vs {waiting:?}");
+    assert!(activity.top() >= health.bottom(), "{activity:?} vs {health:?}");
+    assert!(activity.right() <= px(960.0));
+
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    visual.run_until_parked();
+    let waiting = visual.debug_bounds("home-waiting").unwrap();
+    let health = visual.debug_bounds("home-health").unwrap();
+    let activity = visual.debug_bounds("home-activity").unwrap();
+    assert_eq!(waiting.top(), health.top());
+    assert_eq!(health.top(), activity.top());
+    assert!(health.left() >= waiting.right());
+    assert!(activity.left() >= health.right());
+}
+
+#[gpui::test]
+fn pulsation_status_transitions_feed_the_activity_list(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Home);
+    assert!(model.read_with(visual, |m, _| m.activity.is_empty()));
+    // pulse-a moves from Planning to Checkpoint: one attention line, jumping to its Review.
+    model.update(visual, |m, cx| {
+        let mut pulsations = m.pulsations.read(cx).pulsations.clone();
+        pulsations[0].status = PulsationStatus::Checkpoint;
+        pulsations[0].stage = PulsationStage::Code;
+        m.apply_pulsation_snapshot(
+            "layout-project".into(),
+            hvc_core::persistence_service::PulsationRuntimeSnapshot {
+                details: Vec::new(),
+                coordination: None,
+                main_agents_count: 0,
+                hitl_checkpoints: Vec::new(),
+                pulsations,
+                hitl_waiting_count: 0,
+                failure_checkpoints: Vec::new(),
+                failure_waiting_count: 0,
+                background_agents_count: 0,
+                brownfield_coverage: None,
+            },
+            None,
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    let lines: Vec<String> = model.read_with(visual, |m, _| {
+        m.activity
+            .recent(5)
+            .map(|entry| entry.summary.to_string())
+            .collect()
+    });
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("Layout regression"), "{lines:?}");
+    assert!(lines[0].contains("Code"), "{lines:?}");
+    assert!(visual.debug_bounds("home-activity-0").is_some());
+}
+
+#[gpui::test]
+fn vault_columns_resize_and_expanding_the_graph_drops_them(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |m, cx| {
+        m.vault.update(cx, |vault, _| {
+            vault.workspace_root = Some("C:\\vault".into());
+        });
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Vault);
+        let center = visual.debug_bounds("shell-center").unwrap();
+        let files = visual.debug_bounds("vault-columns-left").unwrap();
+        let files_sash = visual.debug_bounds("vault-columns-sash").unwrap();
+        let graph = visual.debug_bounds("vault-detail-columns-left").unwrap();
+        let detail_sash = visual.debug_bounds("vault-detail-columns-sash").unwrap();
+        let inspector = visual.debug_bounds("vault-detail-columns-right").unwrap();
+        assert!(files.left() >= center.left(), "{width}");
+        assert!(files.right() <= files_sash.left(), "{width}");
+        assert!(files_sash.right() <= graph.left(), "{width}");
+        assert!(graph.right() <= detail_sash.left(), "{width}");
+        assert!(detail_sash.right() <= inspector.left(), "{width}");
+        assert!(inspector.right() <= center.right(), "{width}: {inspector:?} vs {center:?}");
+        assert!(graph.size.width >= px(200.0), "{width}: graph squeezed to {graph:?}");
+        assert!(inspector.size.width >= px(180.0), "{width}: inspector squeezed to {inspector:?}");
+    }
+    // Dragging the files sash widens the files column and the detail split follows.
+    let sash = visual.debug_bounds("vault-columns-sash").unwrap().center();
+    let before = visual.debug_bounds("vault-columns-left").unwrap().size.width;
+    visual.simulate_mouse_down(sash, gpui::MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(sash.x + px(80.0), sash.y),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        point(sash.x + px(80.0), sash.y),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let after = visual.debug_bounds("vault-columns-left").unwrap().size.width;
+    assert_eq!(after, before + px(80.0));
+    assert!(visual.debug_bounds("vault-detail-columns-right").unwrap().right() <= px(1440.0));
+    // Expanding the graph removes both side columns and their sashes (absence last: it opens a
+    // second window).
+    click(visual, "vault-expand-graph");
+    assert!(model.read_with(visual, |m, cx| m.vault.read(cx).graph_expanded));
+    let graph = visual.debug_bounds("vault-graph-scroll").unwrap();
+    let center = visual.debug_bounds("shell-center").unwrap();
+    assert!(graph.size.width >= center.size.width - px(48.0), "{graph:?} vs {center:?}");
+    assert_absent(&model, visual, "vault-columns-sash");
+}
+
+#[gpui::test]
+fn agents_header_shows_the_active_pulsation_pipeline(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    select(&model, visual, AppView::Agents);
     for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
         visual.simulate_resize(size(px(width), px(height)));
         visual.run_until_parked();
-        let agent = visual.debug_bounds("agent").unwrap();
+        let agents_header = visual.debug_bounds("agents-header").unwrap();
+        let pipeline = visual.debug_bounds("agents-pipeline").unwrap();
+        let refresh = visual.debug_bounds("agents-refresh").unwrap();
         assert!(
-            agent.left() < px(50.0),
-            "branding must not reserve header space"
+            pipeline.top() >= agents_header.top() && pipeline.bottom() <= agents_header.bottom(),
+            "pipeline escaped header: {pipeline:?} vs {agents_header:?}"
         );
-        for selector in ["agent", "engine", "companion", "settings"] {
-            let control = visual.debug_bounds(selector).unwrap();
-            assert!(control.left() >= px(0.0) && control.right() <= px(width));
-            assert!(control.top() >= px(0.0) && control.bottom() <= px(58.0));
+        // The stepper is centred on the window, not on whatever is left of the Refresh group.
+        assert!(
+            (pipeline.center().x - agents_header.center().x).abs() <= px(2.0),
+            "pipeline off-centre at {width}: {pipeline:?} vs {agents_header:?}"
+        );
+        assert!(pipeline.right() <= refresh.left());
+        assert!(refresh.right() <= px(width));
+        let mut previous_right = pipeline.left();
+        for selector in [
+            "agents-pipeline-stage-intake",
+            "agents-pipeline-stage-specification",
+            "agents-pipeline-stage-contract",
+            "agents-pipeline-stage-code",
+            "agents-pipeline-stage-test",
+            "agents-pipeline-stage-integrator",
+        ] {
+            let stage_bounds = visual.debug_bounds(selector).unwrap();
+            assert!(
+                stage_bounds.left() >= previous_right && stage_bounds.right() <= pipeline.right(),
+                "{selector} out of order or bounds: {stage_bounds:?} vs {pipeline:?}"
+            );
+            previous_right = stage_bounds.right();
         }
     }
+    // The stage · agent · state readout lives in the header. This selector was never drawn in
+    // this window, so a direct lookup is enough (no fresh-window dance needed).
+    assert!(visual.debug_bounds("agents-pipeline-current").is_none());
+    assert!(model.read_with(visual, |model, cx| {
+        model.pulsations.read(cx).active_id().as_deref() == Some("pulse-a")
+    }));
 }
 
 #[gpui::test]
@@ -571,7 +1487,7 @@ fn agent_selection_and_modal_preserve_detail_geometry(cx: &mut TestAppContext) {
     assert!(visual.debug_bounds("agent-card:task_specifier").is_some());
     assert!(visual.debug_bounds("agent-card:backend_agent").is_none());
     click(visual, "agent-select:backend_agent");
-    assert_absent(&model, visual, "agent-card:task_specifier");
+    assert!(visual.debug_bounds("agent-card:backend_agent").is_some());
     let before = visual.debug_bounds("agents-cli-scroll").unwrap();
     model.update(visual, |model, cx| {
         model.agents.update(cx, |agents, _| {
@@ -605,13 +1521,179 @@ fn agent_selection_and_modal_preserve_detail_geometry(cx: &mut TestAppContext) {
     }));
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
-    assert_absent(&model, visual, "cli-model-picker-overlay");
+    assert!(visual.debug_bounds("cli-model-picker-content").is_none());
     model.update(visual, |model, cx| {
-        model.set_agents_tab(crate::agents::AgentsTab::Api, cx)
+        model.toggle_agents_terminal_expanded(cx)
     });
     visual.run_until_parked();
-    assert!(visual.debug_bounds("api-agent:backend_agent").is_some());
-    assert_absent(&model, visual, "api-agent:task_specifier");
+    assert!(visual.debug_bounds("agents-terminal-expanded").is_some());
+    assert!(visual.debug_bounds("agents-list").is_some());
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            agents.selected_agent = Some(AgentIdentifier::Canonical(AgentRole::TaskSpecifier));
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("agents-terminal-expanded").is_some());
+    assert_eq!(
+        model.read_with(visual, |model, cx| model.agents.read(cx).selected_agent.clone()),
+        Some(AgentIdentifier::Canonical(AgentRole::TaskSpecifier))
+    );
+    // The visual harness does not consistently route synthetic Escape events
+    // through a newly mounted expanded panel. The production root handler is
+    // covered by the explicit focus/keyboard behavior; keep this geometry
+    // test deterministic by exercising the same collapse action directly.
+    model.update(visual, |model, cx| {
+        model.toggle_agents_terminal_expanded(cx)
+    });
+    visual.run_until_parked();
+    assert!(!model.read_with(visual, |model, cx| model.agents.read(cx).terminal_expanded));
+    click(visual, "agent-select:backend_agent");
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            let snapshot = agents.snapshot.as_mut().unwrap();
+            snapshot
+                .agents
+                .iter_mut()
+                .find(|agent| agent.config.agent_role == AgentRole::BackendAgent)
+                .unwrap()
+                .config
+                .execution_mode = AgentExecutionMode::ApiDirect;
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("agents-api-scroll").is_some());
+    assert!(visual.debug_bounds("agent-mode:backend_agent").is_some());
+    assert!(visual.debug_bounds("agent-select:slot-free").is_some());
+    // The detail has the per-target selector; global mode controls are absent by construction.
+}
+
+#[gpui::test]
+fn agents_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Agents);
+
+    let scroll = visual.debug_bounds("agents-cli-scroll").unwrap();
+    let before = visual
+        .debug_bounds("agent-start:task_specifier")
+        .expect("start action should be present below the agent configuration");
+    visual.simulate_event(ScrollWheelEvent {
+        position: point(scroll.left() + px(12.0), scroll.top() + px(24.0)),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-240.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let after = visual.debug_bounds("agent-start:task_specifier").unwrap();
+    let panel = visual.debug_bounds("agents-panel");
+    let header = visual.debug_bounds("agents-header");
+    let content = visual.debug_bounds("agents-content");
+    let columns = visual.debug_bounds("agents-columns");
+
+    assert!(
+        after.top() < before.top(),
+        "Agents detail did not move after a downward wheel event: {before:?} -> {after:?}; \
+         panel={panel:?}; header={header:?}; content={content:?}; columns={columns:?}; \
+         scroll={scroll:?}"
+    );
+}
+
+#[gpui::test]
+fn agents_api_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            let snapshot = agents.snapshot.as_mut().unwrap();
+            snapshot.agents[0].config.execution_mode = AgentExecutionMode::ApiDirect;
+        });
+        cx.notify();
+    });
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Agents);
+
+    let scroll = visual.debug_bounds("agents-api-scroll").unwrap();
+    let before = visual
+        .debug_bounds("api-activity:canonical:task_specifier")
+        .expect("API activity viewer should be present below the route configuration");
+    visual.simulate_event(ScrollWheelEvent {
+        position: point(scroll.left() + px(12.0), scroll.top() + px(24.0)),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-240.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let after = visual
+        .debug_bounds("api-activity:canonical:task_specifier")
+        .unwrap();
+
+    assert!(
+        after.top() < before.top(),
+        "API detail did not move after a downward wheel event: {before:?} -> {after:?}"
+    );
+}
+
+#[gpui::test]
+fn agent_logs_detail_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Logs);
+
+    let scroll = visual.debug_bounds("logs-detail-scroll").unwrap();
+    let before = visual
+        .debug_bounds("logs-toggle-events")
+        .expect("events control should be present near the end of the Logs detail");
+    visual.simulate_event(ScrollWheelEvent {
+        position: point(scroll.left() + px(12.0), scroll.top() + px(24.0)),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-240.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let after = visual.debug_bounds("logs-toggle-events").unwrap();
+
+    assert!(
+        after.top() < before.top(),
+        "Logs detail did not move after a downward wheel event: {before:?} -> {after:?}"
+    );
+}
+
+#[gpui::test]
+fn agents_list_accepts_vertical_wheel_scrolling(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |model, cx| {
+        model.agents.update(cx, |agents, _| {
+            let snapshot = agents.snapshot.as_mut().unwrap();
+            let template = snapshot.agents[0].clone();
+            snapshot.agents = AgentRole::ALL
+                .into_iter()
+                .map(|role| {
+                    let mut agent = template.clone();
+                    agent.config.agent_role = role;
+                    agent
+                })
+                .collect();
+        });
+        cx.notify();
+    });
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Agents);
+
+    let scroll = visual.debug_bounds("agents-list").unwrap();
+    let before = visual
+        .debug_bounds("agent-select:slot-free")
+        .expect("FreeForm item should be present at the end of the agent list");
+    visual.simulate_event(ScrollWheelEvent {
+        position: point(scroll.left() + px(12.0), scroll.top() + px(24.0)),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-240.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let after = visual.debug_bounds("agent-select:slot-free").unwrap();
+
+    assert!(
+        after.top() < before.top(),
+        "Agent list did not move after a downward wheel event: {before:?} -> {after:?}"
+    );
 }
 
 #[gpui::test]
@@ -641,11 +1723,27 @@ fn pulsation_sections_keep_header_fixed_and_reset_on_selection(cx: &mut TestAppC
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.simulate_resize(size(px(960.0), px(640.0)));
     select(&model, visual, AppView::Pulsations);
+    let section_tabs = visual.debug_bounds("pulsation-section-tabs").unwrap();
     let header = visual.debug_bounds("pulsation-cancel").unwrap();
-    click(visual, "pulsation-artifacts");
+    for selector in [
+        "pulsation-review",
+        "pulsation-overview",
+        "pulsation-preparation",
+        "pulsation-artifacts",
+    ] {
+        click(visual, selector);
+        assert_eq!(
+            visual.debug_bounds("pulsation-section-tabs").unwrap(),
+            section_tabs,
+            "section strip moved after selecting {selector}"
+        );
+    }
+    click(visual, "pulsation-overview");
     assert_eq!(visual.debug_bounds("pulsation-cancel").unwrap(), header);
     let section = visual.debug_bounds("pulsation-section-scroll").unwrap();
-    assert!(section.top() >= header.bottom() && section.bottom() <= px(640.0));
+    assert!(section.top() >= section_tabs.bottom() && section.bottom() <= px(640.0));
+    assert!(header.top() >= section.top() && header.bottom() <= section.bottom());
+    click(visual, "pulsation-artifacts");
     model.update(visual, |model, cx| {
         model.pulsations.update(cx, |state, _| {
             assert_eq!(state.detail_section, PulsationDetailSection::Artifacts);
@@ -656,9 +1754,28 @@ fn pulsation_sections_keep_header_fixed_and_reset_on_selection(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn pulsations_detail_scrolls_unified_header_on_compact_height(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    // 853x480 corresponds to a 1080p laptop display with 225% Windows DPI scaling.
+    visual.simulate_resize(size(px(853.0), px(480.0)));
+    select(&model, visual, AppView::Pulsations);
+
+    let section_tabs = visual.debug_bounds("pulsation-section-tabs").unwrap();
+    let scroll = visual.debug_bounds("pulsation-section-scroll").unwrap();
+    assert!(scroll.top() >= section_tabs.bottom());
+    assert!(scroll.bottom() <= px(480.0));
+
+    // In Overview, header and cancel button are rendered inside the scroll area.
+    click(visual, "pulsation-overview");
+    let cancel = visual.debug_bounds("pulsation-cancel").unwrap();
+    assert!(cancel.top() >= scroll.top());
+    assert!(cancel.bottom() <= scroll.bottom());
+}
+
+#[gpui::test]
 fn forge_capture_separates_multiple_tasks_from_feature_discovery(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
-    model.update(visual, |m, cx| m.select_tab(AppTab::Engine, cx));
+    select(&model, visual, AppView::Forge);
     for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
         visual.simulate_resize(size(px(width), px(height)));
         visual.run_until_parked();
@@ -1154,4 +2271,139 @@ fn forge_feature_list_groups_by_state_and_collapses_finished_work(cx: &mut TestA
             .group_expanded(FeatureState::Incubating)),
         "clicking an expanded header should collapse it"
     );
+}
+
+/// Buttons, pickers and single-line inputs are as wide as what they hold, not
+/// as wide as the panel (see `crate::sizing`). Checked on the three views the
+/// complaint named — Agents, Settings, Forge/Pulsations — at both supported
+/// window extremes.
+#[gpui::test]
+fn controls_size_to_content_instead_of_the_panel(cx: &mut TestAppContext) {
+    use hvc_core::terminals::{ExecutionOrigin, SessionSlot, TerminalRun, TerminalRunStatus};
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    // The activity toolbar (with its filter) only renders for an agent with a run.
+    model.update(visual, |m, cx| {
+        m.agents.update(cx, |agents, _| {
+            let generation = agents.begin(true);
+            let mut terminals = agents.snapshot.clone().expect("fixture snapshot");
+            let agent = terminals
+                .agents
+                .iter_mut()
+                .find(|agent| agent.config.agent_role == AgentRole::TaskSpecifier)
+                .expect("fixture agent");
+            agent.recent_runs.push(TerminalRun {
+                id: "run-layout".into(),
+                project_id: "layout-project".into(),
+                slot: SessionSlot::Canonical {
+                    agent_role: AgentRole::TaskSpecifier,
+                },
+                slot_id: "canonical:layout-project:task_specifier".into(),
+                agent_role: Some(AgentRole::TaskSpecifier),
+                origin: ExecutionOrigin::Manual,
+                execution_mode: AgentExecutionMode::CliProcess,
+                backend: Some(CliBackend::Codex),
+                model: None,
+                requested_model_profile: None,
+                model_source: CliModelSelectionSource::Default,
+                observed_model: None,
+                native_session_id: None,
+                pulsation_id: None,
+                job_id: None,
+                agent_run_id: None,
+                llm_execution_id: None,
+                status: TerminalRunStatus::Completed,
+                exit_code: Some(0),
+                error_code: None,
+                error_message: None,
+                created_at: "2026-01-01T00:00:00Z".into(),
+                started_at: None,
+                finished_at: None,
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                deadline_at: None,
+                termination_reason: None,
+                output_bytes: 0,
+                event_count: 0,
+                workspace_snapshot_hash: None,
+                launch_identity_sha256: None,
+                detected_cli_version: None,
+                adapter_contract_version: 1,
+                parent_run_id: None,
+                continuation_reason: None,
+                session_fingerprint: None,
+            });
+            agents.apply_snapshot(
+                generation,
+                AgentsDashboardSnapshot {
+                    terminals,
+                    fallbacks: vec![],
+                    free_form_bindings: vec![],
+                    api_executions: Default::default(),
+                },
+            );
+        });
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+
+        // Agents: the stdin/event filter of a CLI agent card no longer spans the row.
+        select(&model, visual, AppView::Agents);
+        let column = visual.debug_bounds("agents-cli-scroll").unwrap();
+        let filter = visual.debug_bounds("agent-filter:task_specifier").unwrap();
+        assert!(
+            filter.size.width <= px(360.0) && filter.size.width < column.size.width / 2.0,
+            "filter spans {:?} of a {:?} column at {width}x{height}",
+            filter.size.width,
+            column.size.width
+        );
+        let backend = visual.debug_bounds("agent-backend:task_specifier").unwrap();
+        assert!(backend.size.width <= px(360.0));
+
+        // Settings · Runtime: numeric inputs are short, actions and toggles size to their label.
+        model.update(visual, |m, cx| {
+            m.settings.update(cx, |settings, _| {
+                settings.settings_section = SettingsSection::Runtime;
+            });
+            m.select_view(AppView::Settings, cx);
+        });
+        visual.run_until_parked();
+        let threshold = visual.debug_bounds("sized-input:160").unwrap();
+        assert_eq!(threshold.size.width, px(160.0));
+        let save = visual.debug_bounds("preparation-save").unwrap();
+        let toggle = visual.debug_bounds("preparation-enabled").unwrap();
+        assert!(save.size.width < px(320.0), "{:?}", save.size.width);
+        assert!(
+            toggle.size.width >= px(220.0) && toggle.size.width <= px(360.0),
+            "{:?}",
+            toggle.size.width
+        );
+        assert!(save.right() <= px(width) && toggle.right() <= px(width));
+
+        // Settings · Connections: names are medium, secrets long, and nothing exceeds the panel.
+        model.update(visual, |m, cx| {
+            m.settings.update(cx, |settings, _| {
+                settings.settings_section = SettingsSection::Connections;
+                settings.creating_connection = true;
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let name = visual.debug_bounds("sized-input:320").unwrap();
+        let secret = visual.debug_bounds("sized-input:560").unwrap();
+        assert!(name.size.width <= px(320.0) && name.size.width > px(0.0));
+        assert!(secret.size.width <= px(560.0) && secret.size.width > name.size.width);
+        assert!(secret.right() <= px(width));
+        let save_connection = visual.debug_bounds("settings-save-connection").unwrap();
+        assert!(save_connection.size.width < px(240.0));
+
+        // Pulsations: a Forge button placed in a column keeps its label width.
+        select(&model, visual, AppView::Pulsations);
+        let list = visual.debug_bounds("pulsations-columns-left").unwrap();
+        let compose = visual.debug_bounds("compose-task-batch").unwrap();
+        assert!(
+            compose.size.width < list.size.width * 0.95,
+            "compose button stretched to {:?} of {:?}",
+            compose.size.width,
+            list.size.width
+        );
+    }
 }

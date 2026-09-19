@@ -44,42 +44,92 @@ pub fn accept_evidence(
     stage: &str,
     output: &Value,
 ) -> Result<(), Error> {
+    if manifest(db, pulse)?.is_none() {
+        return Ok(());
+    }
+    let evidence: Vec<TaskEvidence> =
+        serde_json::from_value(output["taskEvidence"].clone()).map_err(model_output_invalid)?;
+    let status = match output["statusUpdate"].as_str() {
+        Some("needs_clarification") => EvidenceStatus::NeedsClarification {
+            questions: output["questions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|question| question["question"].as_str().unwrap_or("").to_owned())
+                .collect(),
+        },
+        Some("failed") => EvidenceStatus::Failed,
+        _ => EvidenceStatus::Completed {
+            artifact_count: output["artifacts"]
+                .as_array()
+                .ok_or_else(|| model_output_invalid("Missing artifacts"))?
+                .len(),
+        },
+    };
+    accept_evidence_rows(db, pulse, job, generation, stage, &status, &evidence)
+}
+
+/// How the stage ended, for the evidence rules: a completed stage must cover
+/// every task with real artifact positions; an incomplete one may claim none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvidenceStatus {
+    Completed { artifact_count: usize },
+    NeedsClarification { questions: Vec<String> },
+    Failed,
+}
+
+/// Validates host-normalized evidence rows against the frozen batch and
+/// persists them. Shared by the legacy single-call stage (which parses the
+/// model's `taskEvidence`) and the composed stage (which normalizes evidence
+/// from validated work units).
+pub fn accept_evidence_rows(
+    db: &Connection,
+    pulse: &str,
+    job: &str,
+    generation: u64,
+    stage: &str,
+    status: &EvidenceStatus,
+    evidence: &[TaskEvidence],
+) -> Result<(), Error> {
     let Some(manifest) = manifest(db, pulse)? else {
         return Ok(());
     };
-    let evidence: Vec<TaskEvidence> =
-        serde_json::from_value(output["taskEvidence"].clone()).map_err(model_output_invalid)?;
-    if matches!(
-        output["statusUpdate"].as_str(),
-        Some("needs_clarification" | "failed")
-    ) {
-        if !evidence.is_empty() {
-            return Err(model_output_invalid(
-                "Incomplete stage results cannot claim task evidence",
-            ));
-        }
-        if output["statusUpdate"] == "needs_clarification" {
-            for question in output["questions"].as_array().into_iter().flatten() {
-                let question = question["question"].as_str().unwrap_or("");
+    match status {
+        EvidenceStatus::NeedsClarification { questions } => {
+            if !evidence.is_empty() {
+                return Err(model_output_invalid(
+                    "Incomplete stage results cannot claim task evidence",
+                ));
+            }
+            for question in questions {
                 if !manifest.tasks.iter().any(|t| question.contains(&t.id)) {
                     return Err(model_output_invalid(
                         "Batch clarification must name an affected task ID",
                     ));
                 }
             }
+            return Ok(());
         }
-        return Ok(());
+        EvidenceStatus::Failed => {
+            if !evidence.is_empty() {
+                return Err(model_output_invalid(
+                    "Incomplete stage results cannot claim task evidence",
+                ));
+            }
+            return Ok(());
+        }
+        EvidenceStatus::Completed { .. } => {}
     }
+    let EvidenceStatus::Completed { artifact_count } = status else {
+        unreachable!()
+    };
     if evidence.len() != manifest.tasks.len() {
         return Err(model_output_invalid(
             "Stage must account for every task exactly once",
         ));
     }
-    let artifacts = output["artifacts"]
-        .as_array()
-        .ok_or_else(|| model_output_invalid("Missing artifacts"))?;
     let mut seen = HashSet::new();
-    for entry in &evidence {
+    for entry in evidence {
         let task = manifest
             .tasks
             .iter()
@@ -99,14 +149,14 @@ pub fn accept_evidence(
         if let Some(out_of_range) = entry
             .artifact_positions
             .iter()
-            .find(|position| **position >= artifacts.len())
+            .find(|position| **position >= *artifact_count)
         {
             return Err(model_output_invalid(format!(
                 "Task evidence for `{}` references artifactPositions {:?}, but this response returned only {} artifact{}; index {out_of_range} does not exist. artifactPositions count is independent of criterionIds count - do not pad it to match.",
                 entry.task_id,
                 entry.artifact_positions,
-                artifacts.len(),
-                if artifacts.len() == 1 { "" } else { "s" },
+                artifact_count,
+                if *artifact_count == 1 { "" } else { "s" },
             )));
         }
         let criteria = entry.criterion_ids.iter().collect::<HashSet<_>>();

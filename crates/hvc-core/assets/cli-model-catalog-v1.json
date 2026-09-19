@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "2026-09-17.1",
+  "backends": {
+    "codex": {
+      "models": [
+        { "providerId": "openai", "modelId": "gpt-5.4-mini", "displayName": "GPT-5.4 Mini", "contextWindow": null, "inputCostUsdPerMillion": null, "outputCostUsdPerMillion": null, "capabilities": [], "profiles": ["low", "medium", "high", "xhigh"] },
+        { "providerId": "openai", "modelId": "gpt-5.5", "displayName": "GPT-5.5", "contextWindow": null, "inputCostUsdPerMillion": null, "outputCostUsdPerMillion": null, "capabilities": [], "profiles": ["low", "medium", "high", "xhigh"] },
+        { "providerId": "openai", "modelId": "gpt-5.6-luna", "displayName": "GPT-5.6 Luna", "contextWindow": null, "inputCostUsdPerMillion": null, "outputCostUsdPerMillion": null, "capabilities": [], "profiles": ["low", "medium", "high", "xhigh", "max"] },
+        { "providerId": "openai", "modelId": "gpt-5.6-terra", "displayName": "GPT-5.6 Terra", "contextWindow": null, "inputCostUsdPerMillion": null, "outputCostUsdPerMillion": null, "capabilities": [], "profiles": ["low", "medium", "high", "xhigh", "max", "ultra"] },
+        { "providerId": "openai", "modelId": "gpt-5.6-sol", "displayName": "GPT-5.6 Sol", "contextWindow": null, "inputCostUsdPerMillion": null, "outputCostUsdPerMillion": null, "capabilities": [], "profiles": ["low", "medium", "high", "xhigh", "max", "ultra"] },
+        { "providerId": "openai", "modelId": "gpt-6-astra", "displayName": "GPT-6 Astra", "contextWindow": null, "inputCostUsdPerMillion": null, "outputCostUsdPerMillion": null, "capabilities": [], "profiles": ["low", "medium", "high", "xhigh", "max", "ultra"] }
+      ]
+    },
+    "claude": {
+      "models": [
+        { "providerId": "anthropic", "modelId": "opus", "displayName": "Claude Opus", "contextWindow": null, "inputCostUsdPerMillion": null, "outputCostUsdPerMillion": null, "capabilities": [], "profiles": ["low", "medium", "high"] },
+        { "providerId": "anthropic", "modelId": "sonnet", "displayName": "Claude Sonnet", "contextWindow": null, "inputCostUsdPerMillion": null, "outputCostUsdPerMillion": null, "capabilities": [], "profiles": ["low", "medium", "high"] },
+        { "providerId": "anthropic", "modelId": "haiku", "displayName": "Claude Haiku", "contextWindow": null, "inputCostUsdPerMillion": null, "outputCostUsdPerMillion": null, "capabilities": [], "profiles": [] }
+      ]
+    },
+    "gemini": {
+      "models": [
+        { "providerId": "google", "modelId": "auto", "displayName": "Gemini Auto", "contextWindow": null, "inputCostUsdPerMillion": null, "outputCostUsdPerMillion": null, "capabilities": [], "profiles": [] },
+        { "providerId": "google", "modelId": "pro", "displayName": "Gemini Pro", "contextWindow": null, "inputCostUsdPerMillion": null, "outputCostUsdPerMillion": null, "capabilities": [], "profiles": [] },
+        { "providerId": "google", "modelId": "flash", "displayName": "Gemini Flash", "contextWindow": null, "inputCostUsdPerMillion": null, "outputCostUsdPerMillion": null, "capabilities": [], "profiles": [] }
+      ]
+    }
+  }
+}

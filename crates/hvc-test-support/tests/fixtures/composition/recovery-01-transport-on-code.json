@@ -1,0 +1,75 @@
+{
+  "id": "recovery-01-transport-on-code",
+  "family": "failure_recovery",
+  "heldOut": false,
+  "sources": {
+    "src/auth.rs": "pub fn validate_token(expires_at: u64, now: u64) -> bool {\n    let _ = (expires_at, now);\n    true\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Reject expired tokens",
+      "kind": "bug",
+      "description": "validate_token in src/auth.rs accepts every token; add the expiry check and tests/auth_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "An expired token is rejected by validate_token"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_change",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/auth.rs"
+      ],
+      "destinationPath": "src/auth.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_change",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/auth.rs"
+      ],
+      "destinationPath": "tests/auth_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/auth.rs": "pub fn validate_token(expires_at: u64, now: u64) -> bool {\n    expires_at > now\n}\n",
+    "tests/auth_test.rs": "#[test]\nfn expired_token_is_rejected() {\n    assert!(!auth::validate_token(1, 2));\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/auth.rs",
+      "mustContain": [
+        "expires_at > now"
+      ],
+      "mustNotContain": [
+        "pub fn validate_token(expires_at: u64, now: u64) -> bool {\n    let _ = (expires_at, now);\n    true\n}"
+      ]
+    },
+    {
+      "path": "tests/auth_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": {
+    "kind": "transport_once",
+    "stage": "Code"
+  }
+}

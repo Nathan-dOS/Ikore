@@ -22,8 +22,29 @@ use crate::errors::UiCommandError;
 pub(crate) type SettingsFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, UiCommandError>> + Send + 'static>>;
 
+/// Per-project composition settings (ADR-022) of the last active project:
+/// the opt-in itself, the validation profiles with their enabled flag, the
+/// presets the host detects from the project's manifests, and the specialty
+/// overrides. Absent when no project is active.
+#[derive(Debug, Clone)]
+pub(crate) struct CompositionProjectSettings {
+    pub(crate) project_id: String,
+    pub(crate) project_name: String,
+    pub(crate) settings: hvc_core::orchestration::composition::settings::CompositionSettings,
+    pub(crate) profiles: Vec<(
+        hvc_core::orchestration::composition::ValidationCommandProfileV1,
+        bool,
+    )>,
+    pub(crate) presets: Vec<hvc_core::orchestration::composition::ValidationCommandProfileV1>,
+    pub(crate) overrides: Vec<(
+        hvc_core::orchestration::composition::ExecutorKind,
+        hvc_core::terminals::SpecialtyOverride,
+    )>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SettingsSnapshot {
+    pub(crate) composition: Option<CompositionProjectSettings>,
     pub(crate) preparation: hvc_core::orchestration::PreparationSettings,
     pub(crate) config: AgentRuntimeConfig,
     pub(crate) profiles: Vec<ProviderProfile>,
@@ -38,6 +59,33 @@ pub(crate) trait SettingsBackend: Send + Sync {
     fn update_preparation(
         &self,
         settings: hvc_core::orchestration::PreparationSettings,
+    ) -> SettingsFuture<()>;
+    fn update_composition(
+        &self,
+        project_id: String,
+        settings: hvc_core::orchestration::composition::settings::CompositionSettings,
+    ) -> SettingsFuture<()>;
+    fn upsert_validation_profile(
+        &self,
+        project_id: String,
+        profile: hvc_core::orchestration::composition::ValidationCommandProfileV1,
+        enabled: bool,
+    ) -> SettingsFuture<()>;
+    fn delete_validation_profile(
+        &self,
+        project_id: String,
+        check_ref: String,
+    ) -> SettingsFuture<()>;
+    fn upsert_specialty_override(
+        &self,
+        project_id: String,
+        executor_kind: hvc_core::orchestration::composition::ExecutorKind,
+        setting: hvc_core::terminals::SpecialtyOverride,
+    ) -> SettingsFuture<()>;
+    fn delete_specialty_override(
+        &self,
+        project_id: String,
+        executor_kind: hvc_core::orchestration::composition::ExecutorKind,
     ) -> SettingsFuture<()>;
     fn snapshot(&self) -> SettingsFuture<SettingsSnapshot>;
     fn update_config(
@@ -83,6 +131,28 @@ fn command_error(error: hvc_core::persistence_service::PersistenceServiceError) 
     UiCommandError::from(PersistenceCommandError::from(error))
 }
 
+impl CoreSettingsBackend {
+    fn blocking<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(
+            &hvc_core::persistence_service::PersistenceService,
+        )
+            -> Result<T, hvc_core::persistence_service::PersistenceServiceError>
+        + Send
+        + 'static,
+    ) -> SettingsFuture<T> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || operation(core.persistence()))
+                .await
+                .map_err(|e| UiCommandError::worker(e.to_string()))?
+                .map_err(command_error)
+        })
+    }
+}
+
 impl SettingsBackend for CoreSettingsBackend {
     fn update_preparation(
         &self,
@@ -99,6 +169,57 @@ impl SettingsBackend for CoreSettingsBackend {
                 .map_err(command_error)
         })
     }
+    fn update_composition(
+        &self,
+        project_id: String,
+        settings: hvc_core::orchestration::composition::settings::CompositionSettings,
+    ) -> SettingsFuture<()> {
+        self.blocking(move |persistence| {
+            persistence
+                .update_composition_settings(&project_id, settings)
+                .map(|_| ())
+        })
+    }
+    fn upsert_validation_profile(
+        &self,
+        project_id: String,
+        profile: hvc_core::orchestration::composition::ValidationCommandProfileV1,
+        enabled: bool,
+    ) -> SettingsFuture<()> {
+        self.blocking(move |persistence| {
+            persistence
+                .upsert_validation_profile(&project_id, profile, enabled)
+                .map(|_| ())
+        })
+    }
+    fn delete_validation_profile(
+        &self,
+        project_id: String,
+        check_ref: String,
+    ) -> SettingsFuture<()> {
+        self.blocking(move |persistence| {
+            persistence.delete_validation_profile(&project_id, &check_ref)
+        })
+    }
+    fn upsert_specialty_override(
+        &self,
+        project_id: String,
+        executor_kind: hvc_core::orchestration::composition::ExecutorKind,
+        setting: hvc_core::terminals::SpecialtyOverride,
+    ) -> SettingsFuture<()> {
+        self.blocking(move |persistence| {
+            persistence.upsert_specialty_override(&project_id, executor_kind, setting)
+        })
+    }
+    fn delete_specialty_override(
+        &self,
+        project_id: String,
+        executor_kind: hvc_core::orchestration::composition::ExecutorKind,
+    ) -> SettingsFuture<()> {
+        self.blocking(move |persistence| {
+            persistence.delete_specialty_override(&project_id, executor_kind)
+        })
+    }
     fn snapshot(&self) -> SettingsFuture<SettingsSnapshot> {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
@@ -106,7 +227,19 @@ impl SettingsBackend for CoreSettingsBackend {
             runtime
                 .spawn_blocking(move || {
                     let persistence = core.persistence();
+                    let composition = match persistence.get_last_active_project()?.project {
+                        Some(project) => Some(CompositionProjectSettings {
+                            settings: persistence.get_composition_settings(&project.id)?,
+                            profiles: persistence.list_validation_profiles(&project.id)?,
+                            presets: persistence.detect_validation_presets(&project.id)?,
+                            overrides: persistence.list_specialty_overrides(&project.id)?,
+                            project_id: project.id,
+                            project_name: project.name,
+                        }),
+                        None => None,
+                    };
                     Ok(SettingsSnapshot {
+                        composition,
                         preparation: persistence.get_preparation_settings()?,
                         config: persistence.get_agent_runtime_config()?.config,
                         profiles: persistence.list_provider_profiles().profiles,
@@ -312,7 +445,9 @@ impl SettingsBackend for CoreSettingsBackend {
             runtime
                 .spawn(async move { core.persistence().pull_embedding_model(model).await })
                 .await
-                .map_err(|error| UiCommandError::worker(format!("model pull task aborted: {error}")))?
+                .map_err(|error| {
+                    UiCommandError::worker(format!("model pull task aborted: {error}"))
+                })?
                 .map_err(command_error)
         })
     }
@@ -351,6 +486,11 @@ pub(crate) struct SettingsModel {
     pub(crate) route_targets: Vec<RouteTarget>,
     pub(crate) embedding_readiness: Option<EmbeddingReadinessReport>,
     pub(crate) embedding_readiness_loading: bool,
+    /// Specialty-override form (composition settings card).
+    pub(crate) composition_override_kind: SharedString,
+    pub(crate) composition_override_mode: SharedString,
+    pub(crate) composition_override_backend: SharedString,
+    pub(crate) composition_override_thinking: SharedString,
 }
 
 impl Default for SettingsModel {
@@ -378,6 +518,10 @@ impl Default for SettingsModel {
             route_targets: Vec::new(),
             embedding_readiness: None,
             embedding_readiness_loading: false,
+            composition_override_kind: "code_implementer".into(),
+            composition_override_mode: "api_direct".into(),
+            composition_override_backend: "codex".into(),
+            composition_override_thinking: "default".into(),
         }
     }
 }
@@ -389,6 +533,16 @@ impl SettingsModel {
         self.busy = !loading;
         self.error = None;
         self.generation
+    }
+
+    /// Background snapshot read for the shell chrome; see `AgentsModel::begin_quiet`.
+    pub(crate) fn begin_quiet(&mut self) -> u64 {
+        self.generation = self.generation.saturating_add(1);
+        self.generation
+    }
+
+    pub(crate) fn in_flight(&self) -> bool {
+        self.loading || self.busy
     }
 
     pub(crate) fn apply_snapshot(&mut self, generation: u64, snapshot: SettingsSnapshot) -> bool {
@@ -474,6 +628,7 @@ mod tests {
         model.apply_snapshot(
             generation,
             SettingsSnapshot {
+                composition: None,
                 preparation: Default::default(),
                 config: AgentRuntimeConfig::default(),
                 profiles: Vec::new(),
@@ -532,6 +687,196 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_connection_uses_keyring_metadata_and_fixed_endpoint() {
+        let harness = CoreTestHarness::new();
+        let core = harness.core();
+        let backend = CoreSettingsBackend::new(Arc::clone(&core));
+        let connection = core
+            .runtime_handle()
+            .block_on(backend.upsert_connection(UpsertProviderConnectionRequest {
+                id: Some("openrouter-connection".into()),
+                provider_id: "openrouter".into(),
+                display_name: "OpenRouter fixture".into(),
+                endpoint_url: Some("https://attacker.invalid/custom".into()),
+                default_model: "openrouter/free".into(),
+                enabled: Some(true),
+                max_concurrency: Some(1),
+                api_key: Some("sk-or-v1-secret".into()),
+                version: None,
+            }))
+            .expect("OpenRouter connection should save");
+
+        assert_eq!(connection.provider_id, "openrouter");
+        assert_eq!(connection.endpoint_url, None);
+        assert_eq!(connection.default_model, "openrouter/free");
+        assert!(connection.has_api_key);
+        assert!(connection.chat_eligible);
+        assert!(
+            harness
+                .credentials()
+                .contains("connection:openrouter-connection")
+        );
+        let serialized = serde_json::to_string(&connection).unwrap();
+        assert!(!serialized.contains("sk-or-v1-secret"));
+        assert!(!serialized.contains("credential_ref"));
+        let snapshot = core.runtime_handle().block_on(backend.snapshot()).unwrap();
+        assert!(
+            snapshot
+                .connections
+                .iter()
+                .any(|item| item.id == connection.id && item.has_api_key)
+        );
+        assert!(
+            !serde_json::to_string(&snapshot.connections)
+                .unwrap()
+                .contains("sk-or-v1-secret")
+        );
+        for entry in std::fs::read_dir(harness.data_dir()).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file()
+                && path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("hard-vibe-code.db")
+            {
+                let bytes = std::fs::read(path).unwrap();
+                assert!(
+                    !bytes
+                        .windows(b"sk-or-v1-secret".len())
+                        .any(|window| window == b"sk-or-v1-secret")
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn openrouter_selector_populates_default_and_saves_a_secret_free_connection(
+        cx: &mut TestAppContext,
+    ) {
+        let harness = CoreTestHarness::new();
+        let core = harness.core();
+        let backend = Arc::new(CoreSettingsBackend::new(Arc::clone(&core)));
+        let snapshot = core.runtime_handle().block_on(backend.snapshot()).unwrap();
+        let profile = snapshot
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "openrouter")
+            .unwrap();
+        assert_eq!(profile.default_model, "openrouter/free");
+        assert!(!profile.endpoint_configurable);
+        let app = cx.new(|cx| AppModel::new_for_test_with_settings_backend(backend.clone(), cx));
+        app.update(cx, |model, cx| {
+            model
+                .settings
+                .update(cx, |settings, _| settings.snapshot = Some(snapshot));
+            model.new_settings_connection(cx);
+            assert_eq!(
+                model.settings_connection_model_input.read(cx).value(),
+                "gpt-4.1-mini"
+            );
+            assert!(
+                model
+                    .choice_options("settings-provider", cx)
+                    .iter()
+                    .any(|choice| choice.value == "openrouter")
+            );
+            model.select_settings_provider("openrouter".into(), cx);
+            assert_eq!(
+                model.settings_connection_model_input.read(cx).value(),
+                "openrouter/free"
+            );
+            model
+                .settings_connection_model_input
+                .update(cx, |input, cx| {
+                    input.set_value("nex-agi/nex-n2.5-mini:free", cx)
+                });
+            model.select_settings_provider("openrouter".into(), cx);
+            assert_eq!(
+                model.settings_connection_model_input.read(cx).value(),
+                "nex-agi/nex-n2.5-mini:free"
+            );
+            model.new_settings_connection(cx);
+            assert_eq!(
+                model.settings_connection_model_input.read(cx).value(),
+                "openrouter/free"
+            );
+            model
+                .settings_connection_name_input
+                .update(cx, |input, cx| input.set_value("OpenRouter UI fixture", cx));
+            model
+                .settings_connection_endpoint_input
+                .update(cx, |input, cx| {
+                    input.set_value("https://attacker.invalid", cx)
+                });
+            model
+                .settings_connection_secret_input
+                .update(cx, |input, cx| input.set_value("sk-or-v1-ui-fixture", cx));
+            model.save_settings_connection(cx);
+            assert!(
+                model
+                    .settings_connection_secret_input
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            );
+        });
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if app.read_with(cx, |model, cx| {
+                !model.settings.read(cx).busy && !model.settings.read(cx).loading
+            }) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let snapshot = core.runtime_handle().block_on(backend.snapshot()).unwrap();
+        let saved = snapshot
+            .connections
+            .iter()
+            .find(|item| item.display_name == "OpenRouter UI fixture")
+            .expect("connection should save from the UI");
+        assert_eq!(saved.provider_id, "openrouter");
+        assert_eq!(saved.default_model, "openrouter/free");
+        assert_eq!(saved.endpoint_url, None);
+        assert!(saved.has_api_key && saved.chat_eligible);
+        assert!(
+            !serde_json::to_string(saved)
+                .unwrap()
+                .contains("sk-or-v1-ui-fixture")
+        );
+    }
+
+    #[test]
+    fn openrouter_rejects_uncatalogued_model_before_writing_credentials() {
+        let harness = CoreTestHarness::new();
+        let core = harness.core();
+        let backend = CoreSettingsBackend::new(Arc::clone(&core));
+        let before = harness.credentials().set_call_count();
+        let error = core
+            .runtime_handle()
+            .block_on(backend.upsert_connection(UpsertProviderConnectionRequest {
+                id: Some("invalid-openrouter-model".into()),
+                provider_id: "openrouter".into(),
+                display_name: "Invalid model".into(),
+                endpoint_url: None,
+                default_model: "unknown/model".into(),
+                enabled: Some(true),
+                max_concurrency: Some(1),
+                api_key: Some("sk-or-v1-must-not-save".into()),
+                version: None,
+            }))
+            .unwrap_err();
+        assert!(error.presentable().contains("curated catalog"));
+        assert_eq!(harness.credentials().set_call_count(), before);
+        assert!(
+            !harness
+                .credentials()
+                .contains("connection:invalid-openrouter-model")
+        );
+    }
+
+    #[test]
     fn updates_routing_mode_through_core() {
         let harness = CoreTestHarness::new();
         let core = harness.core();
@@ -575,7 +920,9 @@ mod tests {
         assert!(report.ollama_reachable);
         assert!(!report.model_installed);
 
-        harness.embeddings().set_installed_models(vec![report.model.clone()]);
+        harness
+            .embeddings()
+            .set_installed_models(vec![report.model.clone()]);
         let report = core
             .runtime_handle()
             .block_on(backend.check_embedding_readiness())

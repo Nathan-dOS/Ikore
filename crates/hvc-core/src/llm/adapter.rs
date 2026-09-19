@@ -5,7 +5,10 @@ use reqwest::{Client, Response};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::domain::{LlmRequest, LlmUsage, ProviderProtocol, ResolvedConnection, ResponseFormat};
+use super::domain::{
+    LlmRequest, LlmUsage, ProviderProtocol, ResolvedConnection, ResponseFormat,
+    effective_response_format,
+};
 use super::error::{LlmError, LlmErrorKind};
 use super::profiles::{AuthStyle, ProviderProfile};
 use super::resilience::parse_retry_after;
@@ -133,9 +136,10 @@ impl LlmAdapter for ProtocolAdapter {
 
 fn build_payload(call: &AdapterCall<'_>) -> Value {
     let stream = call.request.stream && call.profile.capabilities.streaming;
+    let response_format = effective_response_format(call.request, call.profile);
     match call.profile.protocol {
         ProviderProtocol::OpenaiResponses => {
-            let text_format = match &call.request.response_format {
+            let text_format = match &response_format {
                 ResponseFormat::Text => None,
                 ResponseFormat::JsonObject => Some(json!({"type":"json_object"})),
                 ResponseFormat::JsonSchema { name, schema } => Some(json!({
@@ -169,14 +173,22 @@ fn build_payload(call: &AdapterCall<'_>) -> Value {
             if stream && call.profile.capabilities.usage {
                 payload["stream_options"] = json!({"include_usage":true});
             }
-            if call.profile.capabilities.json_schema {
-                if let ResponseFormat::JsonSchema { name, schema } = &call.request.response_format {
+            match &response_format {
+                ResponseFormat::JsonSchema { name, schema }
+                    if call.profile.capabilities.json_schema =>
+                {
                     payload["response_format"] = json!({"type":"json_schema","json_schema":{"name":name,"schema":schema,"strict":true}});
                 }
-            } else if call.profile.capabilities.json_object
-                && call.request.response_format.requires_structured_output()
-            {
-                payload["response_format"] = json!({"type":"json_object"});
+                ResponseFormat::JsonObject | ResponseFormat::JsonSchema { .. }
+                    if call.profile.capabilities.json_object =>
+                {
+                    payload["response_format"] = json!({"type":"json_object"});
+                }
+                _ => {}
+            }
+            if call.profile.id == "openrouter" && payload.get("response_format").is_some() {
+                // A model may have both schema-capable and incompatible upstream endpoints.
+                payload["provider"] = json!({"require_parameters":true});
             }
             if call.profile.id == "groq" {
                 for parameter in &call.profile.forbidden_parameters {
@@ -493,7 +505,7 @@ fn stream_error(error: reqwest::Error, partial: &str) -> LlmError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::domain::{AgentRole, ExecutionId, GenerationId};
+    use crate::llm::domain::{AgentExecutionTarget, AgentRole, ExecutionId, GenerationId};
     use std::time::{Duration, Instant};
 
     fn request() -> LlmRequest {
@@ -505,7 +517,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "j".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "system".to_string(),
             user_prompt: "user".to_string(),
@@ -516,6 +528,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "model".to_string(),
+            dispatch: Default::default(),
         }
     }
 
@@ -551,6 +564,142 @@ mod tests {
             Some(req.max_output_tokens as u64)
         );
         assert!(payload.get("messages").is_none());
+    }
+
+    #[test]
+    fn openrouter_chat_payload_uses_structured_json_and_stream_usage_options() {
+        let profile = super::super::profiles::profile_by_id("openrouter").unwrap();
+        let connection = ResolvedConnection {
+            id: "openrouter-connection".to_string().into(),
+            provider_id: "openrouter".to_string().into(),
+            credential_ref: "openrouter-connection".to_string(),
+            endpoint_url: profile.endpoint.clone(),
+            default_model: profile.default_model.clone(),
+            enabled: true,
+            state: "active".to_string(),
+            cooldown_until: None,
+            backoff_level: 0,
+            max_concurrency: 1,
+        };
+        let mut req = request();
+        req.stream = true;
+        let payload = build_payload(&AdapterCall {
+            profile: &profile,
+            connection: &connection,
+            model: "openrouter/free",
+            credential: Some("sk-or-v1-fixture"),
+            request: &req,
+        });
+        assert_eq!(
+            payload
+                .pointer("/response_format/type")
+                .and_then(Value::as_str),
+            Some("json_object")
+        );
+        assert_eq!(
+            payload
+                .pointer("/stream_options/include_usage")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(payload["model"], "openrouter/free");
+        assert_eq!(payload["provider"]["require_parameters"], true);
+        assert!(payload.get("input").is_none());
+        assert!(!payload.to_string().contains("sk-or-v1-fixture"));
+    }
+
+    #[tokio::test]
+    async fn openrouter_http_auth_complete_stream_usage_and_errors() {
+        use std::sync::Mutex;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        #[derive(Default)]
+        struct Deltas(Mutex<String>);
+        impl TokenDeltaSink for Deltas {
+            fn push(&self, delta: &str) {
+                self.0.lock().unwrap().push_str(delta);
+            }
+        }
+
+        let profile = super::super::profiles::profile_by_id("openrouter").unwrap();
+        let schema = json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false});
+        for (status, stream, body, expected_error) in [
+            (200, false, json!({"choices":[{"message":{"content":"{\"ok\":true}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":4}}).to_string(), None),
+            (200, true, ": OPENROUTER PROCESSING\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"{\\\"ok\\\":\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"true}\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":4}}\n\ndata: [DONE]\n\n".into(), None),
+            (401, false, r#"{"error":{"message":"Invalid API key","code":401}}"#.into(), Some(LlmErrorKind::Authentication)),
+            (429, false, r#"{"error":{"message":"Rate limited","code":429}}"#.into(), Some(LlmErrorKind::RateLimited)),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}/api/v1/chat/completions", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(5), async move {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut bytes = Vec::new();
+                    let header_end = loop {
+                        let mut chunk = [0_u8; 4096];
+                        let count = socket.read(&mut chunk).await.unwrap();
+                        assert!(count > 0, "request must have complete headers");
+                        bytes.extend_from_slice(&chunk[..count]);
+                        if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") { break end; }
+                    };
+                    let headers = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
+                    assert!(headers.starts_with("POST /api/v1/chat/completions HTTP/1.1"));
+                    assert!(headers.lines().any(|line| line.eq_ignore_ascii_case("authorization: Bearer sk-or-v1-local-fixture")));
+                    assert!(!headers.to_ascii_lowercase().contains("x-api-key:"));
+                    let length: usize = headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+                    }).unwrap();
+                    while bytes.len() < header_end + 4 + length {
+                        let mut chunk = [0_u8; 4096];
+                        let count = socket.read(&mut chunk).await.unwrap();
+                        assert!(count > 0);
+                        bytes.extend_from_slice(&chunk[..count]);
+                    }
+                    let payload: Value = serde_json::from_slice(&bytes[header_end + 4..]).unwrap();
+                    let content_type = if stream { "text/event-stream" } else { "application/json" };
+                    socket.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
+                    for chunk in body.as_bytes().chunks(11) {
+                        socket.write_all(chunk).await.unwrap();
+                        tokio::task::yield_now().await;
+                    }
+                    payload
+                }).await.expect("loopback fixture must finish within its deadline")
+            });
+            // Only this test's resolved connection uses loopback; the production profile stays fixed.
+            let connection = ResolvedConnection {
+                id: "openrouter-http".into(), provider_id: "openrouter".into(),
+                credential_ref: "fixture".into(), endpoint_url: endpoint,
+                default_model: "openrouter/free".into(), enabled: true, state: "active".into(),
+                cooldown_until: None, backoff_level: 0, max_concurrency: 1,
+            };
+            let mut req = request();
+            req.stream = stream;
+            req.response_format = ResponseFormat::JsonSchema { name: "fixture".into(), schema: schema.clone() };
+            let sink = Deltas::default();
+            let adapter = ProtocolAdapter::new(Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap(), profile.protocol);
+            let result = adapter.execute(AdapterCall { profile: &profile, connection: &connection, model: "openrouter/free", credential: Some("sk-or-v1-local-fixture"), request: &req }, &CancellationToken::new(), &sink).await;
+            let payload = server.await.unwrap();
+            assert_eq!(payload["model"], "openrouter/free");
+            assert_eq!(payload["messages"][0]["role"], "system");
+            assert_eq!(payload["stream"], stream);
+            assert_eq!(payload["response_format"]["json_schema"]["schema"], schema);
+            assert_eq!(payload["response_format"]["json_schema"]["strict"], true);
+            assert_eq!(payload["provider"]["require_parameters"], true);
+            assert!(!payload.to_string().contains("sk-or-v1-local-fixture"));
+            if let Some(kind) = expected_error {
+                assert_eq!(result.unwrap_err().kind, kind);
+            } else {
+                let output = result.unwrap();
+                assert_eq!(output.content, "{\"ok\":true}");
+                assert_eq!(output.usage.input_tokens, Some(7));
+                assert_eq!(output.usage.output_tokens, Some(4));
+                if stream {
+                    assert_eq!(payload["stream_options"]["include_usage"], true);
+                    assert_eq!(*sink.0.lock().unwrap(), output.content);
+                }
+            }
+        }
     }
 
     #[test]
@@ -594,6 +743,16 @@ mod tests {
                 }
                 ProviderProtocol::OpenaiChat => {
                     assert!(payload.get("messages").is_some());
+                    assert_eq!(
+                        payload["response_format"]["type"],
+                        if profile.capabilities.json_schema {
+                            "json_schema"
+                        } else {
+                            "json_object"
+                        },
+                        "{} must preserve the schema or JSON-object fallback",
+                        profile.id
+                    );
                     if profile.id == "groq" {
                         for forbidden in profile.forbidden_parameters {
                             assert!(payload.get(forbidden).is_none());

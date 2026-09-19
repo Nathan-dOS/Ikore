@@ -136,6 +136,35 @@ fn main() {
 
     match mode {
         "success" => println!("fixture success"),
+        // Composed-stage transport bridge (ADR-022): the prompt the host
+        // wrote to stdin is forwarded to the test's scripted provider as a
+        // chat request, and the provider's answer is printed verbatim. The
+        // test thus scripts CLI replies with the same responder it uses for
+        // the API transport, and can inspect exactly what reached the CLI.
+        "bridge" => {
+            let url = value_after(&args, "--bridge-url").expect("bridge requires --bridge-url");
+            let system = between(&stdin, "<system>\n", "\n</system>").unwrap_or_default();
+            let user = between(&stdin, "<user>\n", "\n</user>").unwrap_or_default();
+            let body = serde_json::json!({
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user}
+                ],
+                "bridge": {
+                    "stdin_chars": stdin.chars().count(),
+                    "schema_mentions": stdin.matches("Return only valid JSON that satisfies this schema").count(),
+                    "argv": args,
+                }
+            })
+            .to_string();
+            let response = http_post(url, &body);
+            let parsed: serde_json::Value =
+                serde_json::from_str(&response).expect("bridge response JSON");
+            let content = parsed["choices"][0]["message"]["content"]
+                .as_str()
+                .expect("bridge reply content");
+            println!("{content}");
+        }
         "stream" => {
             print!("first line\nfragment ");
             std::io::stdout().flush().unwrap();
@@ -146,6 +175,13 @@ fn main() {
             std::io::stdout().write_all(&utf8[2..]).unwrap();
             std::io::stdout().flush().unwrap();
             eprintln!("fixture stderr zero");
+        }
+        "paced" => {
+            for _ in 0..10 {
+                eprintln!("fixture progress");
+                thread::sleep(Duration::from_millis(100));
+            }
+            println!("fixture completed after initial budget");
         }
         "hang" => loop {
             thread::sleep(Duration::from_secs(1));
@@ -249,6 +285,71 @@ fn emit_official_success(backend: &str, args: &[String]) {
         }
         _ => unreachable!(),
     }
+}
+
+fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let start = text.find(open)? + open.len();
+    let end = text[start..].find(close)? + start;
+    Some(&text[start..end])
+}
+
+/// Minimal HTTP/1.1 POST over a loopback socket; the fixture carries no HTTP
+/// client dependency on purpose.
+fn http_post(url: &str, body: &str) -> String {
+    let rest = url
+        .strip_prefix("http://")
+        .expect("bridge URL must be plain http");
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let mut stream = std::net::TcpStream::connect(authority).expect("bridge connect");
+    let request = format!(
+        "POST /{path} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).expect("bridge write");
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).expect("bridge read");
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let (headers, payload) = text
+        .split_once("\r\n\r\n")
+        .expect("bridge response headers");
+    let chunked = headers.lines().any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("transfer-encoding") && value.trim().contains("chunked")
+        })
+    });
+    if chunked {
+        return decode_chunked(payload);
+    }
+    let length = headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())
+            .flatten()
+    });
+    match length {
+        Some(length) if payload.len() >= length => payload[..length].to_owned(),
+        _ => payload.to_owned(),
+    }
+}
+
+fn decode_chunked(payload: &str) -> String {
+    let mut rest = payload;
+    let mut out = String::new();
+    while let Some((size_line, after)) = rest.split_once(
+        "
+",
+    ) {
+        let size = usize::from_str_radix(size_line.trim(), 16).unwrap_or(0);
+        if size == 0 {
+            break;
+        }
+        out.push_str(&after[..size]);
+        rest = after[size..].trim_start_matches(
+            "
+",
+        );
+    }
+    out
 }
 
 fn value_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {

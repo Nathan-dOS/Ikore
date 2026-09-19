@@ -11,7 +11,7 @@ mod migrations {
 #[tokio::test]
 async fn adapters_persist_native_usage_on_complete_streamed_and_failed_responses() {
     use hvc_core::llm::{
-        AgentRole, LlmRequest, ResolvedConnection, ResponseFormat,
+        AgentExecutionTarget, AgentRole, LlmRequest, ResolvedConnection, ResponseFormat,
         adapter::{AccountingSink, AdapterCall, LlmAdapter, ProtocolAdapter, TokenDeltaSink},
         profiles::profile_by_id,
     };
@@ -63,7 +63,7 @@ async fn adapters_persist_native_usage_on_complete_streamed_and_failed_responses
             job_id: None,
             agent_run_id: None,
             job_chain: id.clone(),
-            agent_role: AgentRole::BackendAgent,
+            target: AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".into(),
             system_prompt: "Fixture".into(),
             user_prompt: "Fixture".into(),
@@ -74,6 +74,7 @@ async fn adapters_persist_native_usage_on_complete_streamed_and_failed_responses
             stream: index == 1,
             legacy_provider: profile.id.clone(),
             legacy_model: "requested".into(),
+            dispatch: hvc_core::llm::DispatchPolicy::default(),
         };
         let recorder = UsageRecorder::new(
             persistence.database_path(),

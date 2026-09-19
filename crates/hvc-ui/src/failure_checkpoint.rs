@@ -47,6 +47,10 @@ pub(crate) struct FailureCheckpointState {
     pub(crate) show_feedback: bool,
     pub(crate) busy: bool,
     pub(crate) error: Option<String>,
+    /// The revision target the developer picked among the ones the host
+    /// permits for a composed stage (ADR-022); `None` resolves to the
+    /// checkpoint's primary target.
+    pub(crate) revision_target: Option<hvc_core::persistence_service::PulsationStage>,
     load_generation: u64,
 }
 
@@ -75,8 +79,39 @@ impl FailureCheckpointState {
             self.show_feedback = false;
             self.busy = false;
             self.error = None;
+            self.revision_target = None;
         }
         self.checkpoint = checkpoint;
+    }
+
+    /// The revision targets the host permits: the composed set when the
+    /// checkpoint carries one, else the legacy single target.
+    pub(crate) fn revision_targets(&self) -> Vec<hvc_core::persistence_service::PulsationStage> {
+        let Some(checkpoint) = self.checkpoint.as_ref() else {
+            return Vec::new();
+        };
+        if !checkpoint.allowed_revision_targets.is_empty() {
+            return checkpoint.allowed_revision_targets.clone();
+        }
+        checkpoint.revision_stage.into_iter().collect()
+    }
+
+    pub(crate) fn selected_revision_target(
+        &self,
+    ) -> Option<hvc_core::persistence_service::PulsationStage> {
+        self.revision_target
+            .or_else(|| self.checkpoint.as_ref().and_then(|c| c.revision_stage))
+    }
+
+    /// Selecting a target outside the permitted set is ignored; the core
+    /// would refuse it anyway.
+    pub(crate) fn select_revision_target(
+        &mut self,
+        target: hvc_core::persistence_service::PulsationStage,
+    ) {
+        if self.revision_targets().contains(&target) {
+            self.revision_target = Some(target);
+        }
     }
 
     pub(crate) fn title(&self) -> Option<String> {
@@ -104,6 +139,25 @@ impl FailureCheckpointState {
             "model_reported_failure" => {
                 "The agent assessed the work and gave up. Its answer is already durable, so only written guidance changes the outcome."
             }
+            "budget_exhausted" => {
+                "The stage's shared budget has no permit left for another call. Retry is offered only while a permit remains; otherwise revise the scope."
+            }
+            "validation_failed" => {
+                "A host check failed or the review found a production defect. A human decides where to revise; a test is never weakened to pass."
+            }
+            "validation_unavailable" => {
+                "A required check could not run (missing toolchain or profile). Install the tool or disable validation in Settings."
+            }
+            "contract_conflict" => {
+                "The worker diagnosed a conflict with an approved contract. Revise the stage that owns the conflict; the earlier approved stages are offered as targets."
+            }
+            "capacity_exceeded" => {
+                "The plan or the required output does not fit the frozen envelope. Narrow the scope or split the batch."
+            }
+            "ownership_violation" => {
+                "A worker tried to write outside its ownership and the correction did not hold. Revise the plan."
+            }
+            "stale_input" => "An input changed under the execution. Retrying re-reads it.",
             _ => "The stage failed and is waiting on a decision.",
         })
     }
@@ -206,7 +260,47 @@ mod tests {
             attempts: 3,
             state_version: 7,
             created_at: "2026-09-09T00:00:00Z".into(),
+            allowed_revision_targets: Vec::new(),
+            remaining_extra_invocations: None,
+            stage_execution_id: None,
         }
+    }
+
+    #[test]
+    fn composed_targets_are_offered_and_only_permitted_ones_can_be_selected() {
+        let mut state = FailureCheckpointState::default();
+        let mut composed = checkpoint("pulse-v4", false, true);
+        composed.failure_class = "contract_conflict".into();
+        composed.allowed_revision_targets =
+            vec![PulsationStage::Code, PulsationStage::Specification];
+        composed.remaining_extra_invocations = Some(0);
+        composed.stage_execution_id = Some("exec".into());
+        state.load_checkpoint(Some(composed));
+        assert_eq!(
+            state.revision_targets(),
+            vec![PulsationStage::Code, PulsationStage::Specification]
+        );
+        assert_eq!(state.selected_revision_target(), Some(PulsationStage::Code));
+        state.select_revision_target(PulsationStage::Test);
+        assert_eq!(
+            state.selected_revision_target(),
+            Some(PulsationStage::Code),
+            "not permitted"
+        );
+        state.select_revision_target(PulsationStage::Specification);
+        assert_eq!(
+            state.selected_revision_target(),
+            Some(PulsationStage::Specification)
+        );
+        assert!(
+            !state.allows(StageFailureDecision::RetryStage),
+            "no permit left"
+        );
+        assert!(state.rationale().unwrap().contains("approved contract"));
+        // A legacy checkpoint keeps its single target.
+        state.load_checkpoint(Some(checkpoint("legacy", true, true)));
+        assert_eq!(state.revision_targets(), vec![PulsationStage::Code]);
+        assert_eq!(state.revision_target, None);
     }
 
     fn detail() -> StageFailureDetail {

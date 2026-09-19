@@ -1,0 +1,124 @@
+{
+  "id": "separable-03-port-and-slug",
+  "family": "separable_multi_task",
+  "heldOut": false,
+  "sources": {
+    "src/config.rs": "pub fn parse_port(raw: &str) -> u16 {\n    raw.parse().unwrap()\n}\n",
+    "src/slug.rs": "pub fn slugify(title: &str) -> String {\n    title.to_string()\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Port parsing must not panic",
+      "kind": "bug",
+      "description": "parse_port in src/config.rs must return Option<u16>; add tests/config_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "parse_port returns None for a non-numeric port"
+        }
+      ]
+    },
+    {
+      "title": "Slugify titles",
+      "kind": "bug",
+      "description": "slugify in src/slug.rs must produce kebab-case; add tests/slug_test.rs",
+      "criteria": [
+        {
+          "id": "ac-2",
+          "description": "slugify renders My Note as my-note"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_first",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/config.rs"
+      ],
+      "destinationPath": "src/config.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "implement_second",
+      "kind": "code",
+      "task": 1,
+      "criterionIds": [
+        "ac-2"
+      ],
+      "inputPaths": [
+        "src/slug.rs"
+      ],
+      "destinationPath": "src/slug.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_first",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/config.rs"
+      ],
+      "destinationPath": "tests/config_test.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_second",
+      "kind": "test",
+      "task": 1,
+      "criterionIds": [
+        "ac-2"
+      ],
+      "inputPaths": [
+        "src/slug.rs"
+      ],
+      "destinationPath": "tests/slug_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/config.rs": "pub fn parse_port(raw: &str) -> Option<u16> {\n    raw.trim().parse::<u16>().ok()\n}\n",
+    "src/slug.rs": "pub fn slugify(title: &str) -> String {\n    title.trim().to_lowercase().replace(' ', \"-\")\n}\n",
+    "tests/config_test.rs": "#[test]\nfn invalid_port_is_none() {\n    assert_eq!(config::parse_port(\"abc\"), None);\n}\n",
+    "tests/slug_test.rs": "#[test]\nfn titles_become_slugs() {\n    assert_eq!(slug::slugify(\"My Note\"), \"my-note\");\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/config.rs",
+      "mustContain": [
+        "Option<u16>"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "src/slug.rs",
+      "mustContain": [
+        "replace(' ', \"-\")"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/config_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/slug_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": null
+}

@@ -34,8 +34,9 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let detail_error = failure.detail_error.clone();
     let decision_error = failure.error.clone();
     let confirm_abort = model.confirm_failure_abort;
-    let revision_label = checkpoint
-        .revision_stage
+    let revision_targets = failure.revision_targets();
+    let selected_target = failure.selected_revision_target();
+    let revision_label = selected_target
         .map(|stage| format!("Request revision to {stage:?}"))
         .unwrap_or_else(|| "Request revision".to_string());
 
@@ -103,6 +104,46 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                 .gap_3()
                 .p_3()
                 .child(failure_facts(&checkpoint))
+                .when(revision_targets.len() > 1, |panel| {
+                    panel.child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme::text_muted())
+                                    .child("Revise from"),
+                            )
+                            .children(revision_targets.iter().copied().map(|target| {
+                                let selected = selected_target == Some(target);
+                                let selector =
+                                    gpui::SharedString::from(format!("failure-target-{target:?}"));
+                                div()
+                                    .id(selector.clone())
+                                    .debug_selector(move || selector.to_string())
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .text_xs()
+                                    .cursor_pointer()
+                                    .bg(if selected {
+                                        theme::accent_soft()
+                                    } else {
+                                        theme::surface_raised()
+                                    })
+                                    .on_click(cx.listener(move |model, _, _, cx| {
+                                        model.pulsations.update(cx, |state, _| {
+                                            state.failure.select_revision_target(target);
+                                        });
+                                        cx.notify();
+                                    }))
+                                    .child(format!("{target:?}"))
+                            })),
+                    )
+                })
                 .child(match (detail_loading, detail_error, detail) {
                     (true, _, _) => div()
                         .text_sm()
@@ -173,7 +214,7 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                             .text_color(theme::text_muted())
                             .child("Guidance for the retried stage"),
                     )
-                    .child(model.stage_feedback_input.clone()),
+                    .child(crate::sizing::text_area(model.stage_feedback_input.clone())),
             )
         })
         .child(
@@ -261,17 +302,39 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
 }
 
 fn failure_facts(checkpoint: &StageFailureCheckpoint) -> AnyElement {
-    let rows = [
+    let mut rows = vec![
         ("Error", checkpoint.error_code.clone()),
         ("Stage", format!("{:?}", checkpoint.stage)),
         ("Attempts", checkpoint.attempts.max(0).to_string()),
         ("Diagnostic", checkpoint.diagnostic.clone()),
     ];
+    if checkpoint.stage_execution_id.is_some() {
+        rows.push((
+            "Extra permits left",
+            checkpoint
+                .remaining_extra_invocations
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+        ));
+        rows.push((
+            "Permitted targets",
+            if checkpoint.allowed_revision_targets.is_empty() {
+                "none".into()
+            } else {
+                checkpoint
+                    .allowed_revision_targets
+                    .iter()
+                    .map(|t| format!("{t:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+        ));
+    }
     div()
         .flex()
         .flex_col()
         .gap_2()
-        .children(rows.map(|(label, value)| {
+        .children(rows.into_iter().map(|(label, value)| {
             div()
                 .flex()
                 .flex_wrap()
@@ -619,7 +682,7 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                             .text_color(theme::text_muted())
                             .child("Revision feedback"),
                     )
-                    .child(model.stage_feedback_input.clone()),
+                    .child(crate::sizing::text_area(model.stage_feedback_input.clone())),
             )
         })
         .child(

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -18,6 +18,9 @@ const MAX_VISIBLE_EVENTS: usize = 200;
 pub(crate) type LogsFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, UiCommandError>> + Send + 'static>>;
 
+/// A pulsation group being accumulated in `grouped_runs`: `(pulsation_id, title, status, runs)`.
+type PulsationGroupEntry = (Option<String>, String, Option<String>, Vec<AgentRunListItem>);
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LogsSnapshot {
     pub(crate) runs: Vec<AgentRunListItem>,
@@ -25,7 +28,11 @@ pub(crate) struct LogsSnapshot {
 }
 
 pub(crate) trait LogsBackend: Send + Sync {
-    fn observability(&self, pulsation_id: Option<String>) -> LogsFuture<LogsSnapshot>;
+    fn observability(
+        &self,
+        project_id: Option<String>,
+        pulsation_id: Option<String>,
+    ) -> LogsFuture<LogsSnapshot>;
     fn execution_snapshot(&self, execution_id: String) -> LogsFuture<LlmExecutionSnapshot>;
 }
 
@@ -44,7 +51,11 @@ fn command_error(error: hvc_core::persistence_service::PersistenceServiceError) 
 }
 
 impl LogsBackend for CoreLogsBackend {
-    fn observability(&self, pulsation_id: Option<String>) -> LogsFuture<LogsSnapshot> {
+    fn observability(
+        &self,
+        project_id: Option<String>,
+        pulsation_id: Option<String>,
+    ) -> LogsFuture<LogsSnapshot> {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
         Box::pin(async move {
@@ -52,14 +63,12 @@ impl LogsBackend for CoreLogsBackend {
                 .spawn_blocking(move || {
                     let persistence = core.persistence();
                     let metrics = persistence.get_llm_routing_metrics()?.metrics;
-                    let runs = match pulsation_id {
-                        Some(pulsation_id) => {
-                            persistence
-                                .list_agent_runs(ListAgentRunsRequest { pulsation_id })?
-                                .runs
-                        }
-                        None => Vec::new(),
-                    };
+                    let runs = persistence
+                        .list_agent_runs(ListAgentRunsRequest {
+                            project_id,
+                            pulsation_id,
+                        })?
+                        .runs;
                     Ok(LogsSnapshot { runs, metrics })
                 })
                 .await
@@ -99,6 +108,17 @@ pub(crate) enum SequenceClassification {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct PulsationLogGroup {
+    pub(crate) key: String,
+    pub(crate) pulsation_id: Option<String>,
+    pub(crate) title: String,
+    pub(crate) order_label: Option<String>,
+    pub(crate) status: Option<String>,
+    pub(crate) is_expanded: bool,
+    pub(crate) runs: Vec<AgentRunListItem>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct RuntimeEventRecord {
     pub(crate) category: SharedString,
     pub(crate) name: SharedString,
@@ -117,6 +137,8 @@ pub(crate) struct LogsModel {
     pub(crate) loading: bool,
     pub(crate) poll_in_flight: bool,
     pub(crate) selected_run_id: Option<SharedString>,
+    pub(crate) expanded_groups: HashSet<String>,
+    expanded_initialized: bool,
     pub(crate) events: Vec<RuntimeEventRecord>,
     pub(crate) visible_output: SharedString,
     pub(crate) visible_output_complete: bool,
@@ -158,8 +180,89 @@ impl LogsModel {
             self.collapsed_routing = snapshot.metrics.len() > 3;
             self.routing_visibility_initialized = true;
         }
+        if !self.expanded_initialized
+            && let Some(first_run) = snapshot.runs.first()
+        {
+            let initial_key = first_run
+                .pulsation_id
+                .clone()
+                .unwrap_or_else(|| "general".to_string());
+            self.expanded_groups.insert(initial_key);
+            self.expanded_initialized = true;
+        }
         self.snapshot = snapshot;
         true
+    }
+
+    pub(crate) fn toggle_group(&mut self, key: &str) {
+        if self.expanded_groups.contains(key) {
+            self.expanded_groups.remove(key);
+        } else {
+            self.expanded_groups.insert(key.to_string());
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn is_group_expanded(&self, key: &str) -> bool {
+        self.expanded_groups.contains(key)
+    }
+
+    pub(crate) fn reset_expansion(&mut self) {
+        self.expanded_initialized = false;
+        self.expanded_groups.clear();
+    }
+
+    pub(crate) fn grouped_runs(&self) -> Vec<PulsationLogGroup> {
+        let mut group_keys = Vec::new();
+        let mut groups: HashMap<String, PulsationGroupEntry> = HashMap::new();
+
+        for run in &self.snapshot.runs {
+            let key = run
+                .pulsation_id
+                .clone()
+                .unwrap_or_else(|| "general".to_string());
+            if !groups.contains_key(&key) {
+                group_keys.push(key.clone());
+                let (pulsation_id, title, status) = if let Some(id) = &run.pulsation_id {
+                    let title = run
+                        .pulsation_name
+                        .clone()
+                        .unwrap_or_else(|| format!("Pulsation {}", &id[..id.len().min(8)]));
+                    (Some(id.clone()), title, run.pulsation_status.clone())
+                } else {
+                    (None, "General / Terminal Runs".to_string(), None)
+                };
+                groups.insert(key.clone(), (pulsation_id, title, status, Vec::new()));
+            }
+            groups.get_mut(&key).unwrap().3.push(run.clone());
+        }
+
+        let pulsation_keys: Vec<&String> = group_keys.iter().filter(|k| *k != "general").collect();
+        let total_pulsations = pulsation_keys.len();
+        let order_map: HashMap<String, usize> = pulsation_keys
+            .iter()
+            .enumerate()
+            .map(|(idx, key)| ((*key).clone(), total_pulsations.saturating_sub(idx)))
+            .collect();
+
+        group_keys
+            .into_iter()
+            .filter_map(|key| {
+                let (pulsation_id, title, status, mut runs) = groups.remove(&key)?;
+                runs.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+                let order_label = order_map.get(&key).map(|order| format!("#{order}"));
+                let is_expanded = self.expanded_groups.contains(&key);
+                Some(PulsationLogGroup {
+                    key,
+                    pulsation_id,
+                    title,
+                    order_label,
+                    status,
+                    is_expanded,
+                    runs,
+                })
+            })
+            .collect()
     }
 
     pub(crate) fn visible_events(&self) -> impl Iterator<Item = &RuntimeEventRecord> {
@@ -181,6 +284,13 @@ impl LogsModel {
         self.loading = false;
         self.error = Some(error);
         true
+    }
+
+    pub(crate) fn discard_poll(&mut self, generation: u64) {
+        if generation == self.poll_generation {
+            self.poll_in_flight = false;
+            self.loading = false;
+        }
     }
 
     pub(crate) fn record_workspace(&mut self, event: WorkspaceChangedEvent) {
@@ -405,5 +515,108 @@ mod tests {
         assert!(model.begin_poll().is_none());
         assert!(model.apply_poll(generation, Default::default()));
         assert!(model.begin_poll().is_some());
+    }
+
+    #[test]
+    fn groups_runs_by_pulsation_with_correct_order_and_expansion() {
+        use hvc_core::persistence_service::AgentRunListItem;
+        let mut model = LogsModel::default();
+
+        let run = |id: &str, pulse: Option<(&str, &str)>, agent: &str, status: &str, created: &str| AgentRunListItem {
+            id: id.into(),
+            job_id: format!("job-{id}"),
+            agent_name: agent.into(),
+            status: status.into(),
+            input_tokens: Some(100),
+            output_tokens: Some(50),
+            provider: Some("anthropic".into()),
+            model: Some("claude-3-5".into()),
+            estimated_cost_usd: Some(0.001),
+            last_error: if status == "failed" { Some("syntax error".into()) } else { None },
+            started_at: Some(created.into()),
+            finished_at: Some(created.into()),
+            raw_output: Some("raw output".into()),
+            structured_output: None,
+            created_at: created.into(),
+            updated_at: created.into(),
+            pulsation_id: pulse.map(|p| p.0.into()),
+            pulsation_name: pulse.map(|p| p.1.into()),
+            pulsation_status: pulse.map(|_| "done".into()),
+            job_kind: Some("pipeline_stage".into()),
+            duration_ms: Some(1200),
+            cancellation_reason: None,
+            validation_error: None,
+            tool_trace: None,
+        };
+
+        // Snapshot with 4 runs:
+        // - run-4 in pulse-2 (created at 10:30)
+        // - run-3 in pulse-1 (created at 10:20)
+        // - run-2 in pulse-1 (created at 10:10)
+        // - run-1 standalone (created at 10:00)
+        let runs = vec![
+            run("run-4", Some(("pulse-2", "Feature Two")), "Spec Agent", "completed", "2026-09-16T10:30:00Z"),
+            run("run-3", Some(("pulse-1", "Feature One")), "Task Specifier", "failed", "2026-09-16T10:20:00Z"),
+            run("run-2", Some(("pulse-1", "Feature One")), "Spec Agent", "completed", "2026-09-16T10:10:00Z"),
+            run("run-1", None, "Terminal Agent", "completed", "2026-09-16T10:00:00Z"),
+        ];
+
+        let snapshot = super::LogsSnapshot {
+            runs: runs.clone(),
+            metrics: Vec::new(),
+        };
+
+        let generation = model.begin_poll().unwrap();
+        assert!(model.apply_poll(generation, snapshot));
+
+        // The top group (pulse-2) is expanded by default (Option A)
+        assert!(model.is_group_expanded("pulse-2"));
+        assert!(!model.is_group_expanded("pulse-1"));
+
+        let groups = model.grouped_runs();
+        assert_eq!(groups.len(), 3);
+
+        // Group 1: pulse-2 (newest pulsation -> #2)
+        assert_eq!(groups[0].key, "pulse-2");
+        assert_eq!(groups[0].title, "Feature Two");
+        assert_eq!(groups[0].order_label.as_deref(), Some("#2"));
+        assert!(groups[0].is_expanded);
+        assert_eq!(groups[0].runs.len(), 1);
+
+        // Group 2: pulse-1 (older pulsation -> #1)
+        assert_eq!(groups[1].key, "pulse-1");
+        assert_eq!(groups[1].title, "Feature One");
+        assert_eq!(groups[1].order_label.as_deref(), Some("#1"));
+        assert!(!groups[1].is_expanded);
+        assert_eq!(groups[1].runs.len(), 2);
+        // Inside pulse-1, runs are ordered chronologically: run-2 (10:10) then run-3 (10:20)
+        assert_eq!(groups[1].runs[0].id, "run-2");
+        assert_eq!(groups[1].runs[1].id, "run-3");
+
+        // Group 3: standalone/general runs
+        assert_eq!(groups[2].key, "general");
+        assert_eq!(groups[2].pulsation_id, None);
+        assert_eq!(groups[2].runs.len(), 1);
+
+        // Toggle expansion of pulse-1
+        model.toggle_group("pulse-1");
+        assert!(model.is_group_expanded("pulse-1"));
+        let re_groups = model.grouped_runs();
+        assert!(re_groups[1].is_expanded);
+
+        // Collapse both pulse-1 and pulse-2 so all groups are closed
+        model.toggle_group("pulse-1");
+        model.toggle_group("pulse-2");
+        assert!(!model.is_group_expanded("pulse-1"));
+        assert!(!model.is_group_expanded("pulse-2"));
+
+        // Subsequent poll must NOT re-expand pulse-2
+        let gen2 = model.begin_poll().unwrap();
+        assert!(model.apply_poll(gen2, super::LogsSnapshot {
+            runs: runs.clone(),
+            metrics: Vec::new(),
+        }));
+        assert!(!model.is_group_expanded("pulse-1"));
+        assert!(!model.is_group_expanded("pulse-2"));
     }
 }

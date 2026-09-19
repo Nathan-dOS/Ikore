@@ -64,7 +64,15 @@ impl CliAdapter for GeminiAdapter {
         if exit_code == Some(41) {
             CliFailureKind::AuthenticationRequired
         } else {
-            classify_failure_text(stderr)
+            // Gemini CLI exits non-zero when 503 retries are exhausted; the
+            // standard phrases may appear in stderr. Check here before the
+            // generic text classifier so this is never mis-classified.
+            let lower = stderr.to_ascii_lowercase();
+            if lower.contains("503") || lower.contains("service unavailable") {
+                CliFailureKind::RateLimited
+            } else {
+                classify_failure_text(stderr)
+            }
         }
     }
 }

@@ -163,6 +163,17 @@ pub fn current_datetime() -> String {
     format_local_datetime(&Local::now())
 }
 
+/// Wall clock as `HH:MM` (24h), the status-bar readout. Deliberately locale-independent so the
+/// footer keeps one width whatever the Windows time format is.
+pub fn current_clock_hhmm() -> String {
+    Local::now().format("%H:%M").to_string()
+}
+
+/// `HH:MM` (24h) of an instant, for compact activity lists.
+pub fn clock_hhmm(time: SystemTime) -> String {
+    DateTime::<Local>::from(time).format("%H:%M").to_string()
+}
+
 /// Formats a time range (start and finish) in a readable, synchronized manner.
 pub fn format_time_range(start: Option<&str>, end: Option<&str>, fallback: &str) -> String {
     match (start, end) {

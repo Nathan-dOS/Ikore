@@ -1,6 +1,7 @@
 use crate::{
     AppModel,
     forge::{FEATURE_STATE_GROUPS, ForgeAction, ForgeSection, feature_state_group_id},
+    sizing::{INPUT_LONG, INPUT_MEDIUM, INPUT_SHORT, StyledExt, sized_input, text_area},
     theme,
 };
 use gpui::{
@@ -44,6 +45,8 @@ pub(crate) fn button(
     div()
         .id(id.clone())
         .debug_selector(move || id.to_string())
+        .self_start()
+        .flex_shrink_0()
         .px_3()
         .py_2()
         .rounded_md()
@@ -92,6 +95,8 @@ pub(crate) fn gated_button(
     div()
         .id(id.clone())
         .debug_selector(move || id.to_string())
+        .self_start()
+        .flex_shrink_0()
         .px_3()
         .py_2()
         .rounded_md()
@@ -362,7 +367,7 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         .child(label(
             "Select tasks to execute and integrate as a single batch.",
         ))
-        .child(model.forge.batch_title.clone());
+        .child(sized_input(model.forge.batch_title.clone(), INPUT_MEDIUM));
     for task in model
         .forge
         .snapshot
@@ -370,7 +375,33 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         .iter()
         .filter(|t| model.forge.selected_tasks.contains(&t.id))
     {
-        selected = selected.child(label(format!("• {}", task.draft.title)));
+        let has_explicit_path = !hvc_core::orchestration::composition::recipes::explicit_paths(
+            &format!("{} {}", task.draft.title, task.draft.description),
+        )
+        .is_empty();
+        let mut item = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(label(format!("• {}", task.draft.title)));
+        if !has_explicit_path {
+            item = item.child(label(
+                "No explicit file path detected; the dispatch gate may block this batch \
+                 unless another selected task has one.",
+            ));
+            if let Some(input) = model.forge.path_hint_inputs.get(&task.id) {
+                item = item.child(sized_input(input.clone(), INPUT_LONG));
+            }
+            if task.draft.feature_id.is_some() {
+                item = item.child(button(
+                    format!("request-path-{}", task.id),
+                    "Ask Feature Agent for a path",
+                    ForgeAction::RequestPathClarification(task.id.clone()),
+                    cx,
+                ));
+            }
+        }
+        selected = selected.child(item);
     }
     selected = selected
         .child(label(format!(
@@ -702,7 +733,7 @@ fn incubation_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) ->
             .flex_col()
             .flex_shrink_0()
             .gap_2()
-            .child(model.forge.message.clone())
+            .child(text_area(model.forge.message.clone()))
             .child(label("Enter sends · Shift+Enter inserts a newline"))
             .child(button(
                 "send-feature-message",
@@ -898,7 +929,9 @@ fn triage_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> Any
     .into_iter()
     .enumerate()
     {
-        p = p.child(label(name)).child(model.forge.filters[i].clone());
+        p = p
+            .child(label(name))
+            .child(text_area(model.forge.filters[i].clone()));
     }
     p = p
         .child(
@@ -943,7 +976,7 @@ fn triage_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> Any
             ForgeAction::Evaluate,
             cx,
         ))
-        .child(model.forge.rationale.clone());
+        .child(text_area(model.forge.rationale.clone()));
     if f.state == FeatureState::Archived {
         p = p.child(button(
             "reopen-feature",
@@ -1037,7 +1070,7 @@ fn dependency_analysis_card(model: &AppModel, f: &Feature, cx: &mut Context<AppM
 }
 
 fn dependencies(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
-    let mut p=card().child(heading("Confirmed dependencies")).child(label("Arrows point from the feature to its prerequisites. Adding a relation requires confirmation and rationale.")).child(model.forge.rationale.clone());
+    let mut p=card().child(heading("Confirmed dependencies")).child(label("Arrows point from the feature to its prerequisites. Adding a relation requires confirmation and rationale.")).child(text_area(model.forge.rationale.clone()));
     p = p.child(dependency_analysis_card(model, f, cx));
     for edge in model
         .forge
@@ -1317,7 +1350,7 @@ fn waves(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             "Current Wave capacity: {} features. Drag a feature to a wave or use the buttons.",
             model.forge.snapshot.current_wave_limit
         )))
-        .child(model.forge.wave_limit.clone())
+        .child(sized_input(model.forge.wave_limit.clone(), INPUT_SHORT))
         .child(button(
             "set-wave-limit",
             "Update capacity",
@@ -1474,8 +1507,8 @@ pub(crate) fn capture_overlay(model: &AppModel, cx: &mut Context<AppModel>) -> A
     if model.forge.capture_feature {
         body = body
             .child(label("Discuss the feature before defining its execution."))
-            .child(model.forge.feature_title.clone())
-            .child(model.forge.idea.clone())
+            .child(sized_input(model.forge.feature_title.clone(), INPUT_MEDIUM))
+            .child(sized_input(model.forge.idea.clone(), INPUT_LONG))
             .child(button(
                 "create-feature",
                 "Create feature and start conversation",
@@ -1487,9 +1520,9 @@ pub(crate) fn capture_overlay(model: &AppModel, cx: &mut Context<AppModel>) -> A
             body = body.child(
                 card()
                     .child(label(format!("Task {}", i + 1)))
-                    .child(draft.title.clone())
-                    .child(draft.description.clone())
-                    .child(draft.criteria.clone())
+                    .child(sized_input(draft.title.clone(), INPUT_MEDIUM))
+                    .child(sized_input(draft.description.clone(), INPUT_LONG))
+                    .child(sized_input(draft.criteria.clone(), INPUT_LONG))
                     .child(
                         div()
                             .flex()

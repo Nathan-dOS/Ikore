@@ -12,8 +12,8 @@ use super::{
     SourceRevision,
 };
 
-pub const LEGACY_PIPELINE_VERSION: u8 = 1;
-pub const CURRENT_PIPELINE_VERSION: u8 = 2;
+pub const LEGACY_PIPELINE_VERSION: u8 = super::PipelineVersion::V1.as_u8();
+pub const CURRENT_PIPELINE_VERSION: u8 = super::PipelineVersion::FREE_FORM.as_u8();
 pub const MAX_DESCRIPTION_CHARS: usize = 16_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,10 +162,21 @@ pub enum JobClass {
 /// passes and a fixed "X/Y" would lie mid-run.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IndexingEvent {
-    Progress { workspace_path: String, remaining: usize },
-    Paused { workspace_path: String, remaining: usize },
-    Idle { workspace_path: String },
-    Failed { workspace_path: String, error: String },
+    Progress {
+        workspace_path: String,
+        remaining: usize,
+    },
+    Paused {
+        workspace_path: String,
+        remaining: usize,
+    },
+    Idle {
+        workspace_path: String,
+    },
+    Failed {
+        workspace_path: String,
+        error: String,
+    },
 }
 
 impl IndexingEvent {
@@ -267,7 +278,7 @@ pub struct PreparationSnapshot {
 pub struct ClarificationExchange {
     pub question_set_id: String,
     pub questions: Vec<SpecificationQuestion>,
-    pub answers: Vec<SpecificationAnswer>,
+    pub answers: Vec<ClarificationAnswerV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,11 +302,22 @@ pub struct SpecificationQuestion {
     pub rationale: String,
 }
 
+/// A developer's answer to a clarification question (ADR-022 clarification
+/// loop). `text_answer` keeps the full prose reply, including any `FILES_*:`
+/// tag lines the Companion or the developer wrote; `planned_paths`/
+/// `modified_paths` are the host-parsed anchors extracted from those tags
+/// (see `orchestration::clarification::parse_clarification_tags`), populated
+/// once at submission time rather than recomputed on every read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SpecificationAnswer {
+pub struct ClarificationAnswerV1 {
     pub question_id: String,
-    pub answer: String,
+    #[serde(alias = "answer")]
+    pub text_answer: String,
+    #[serde(default)]
+    pub planned_paths: Vec<String>,
+    #[serde(default)]
+    pub modified_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,7 +338,27 @@ pub struct SubmitSpecificationAnswersRequest {
     pub checkpoint_id: String,
     pub expected_input_revision: u64,
     pub expected_state_version: u64,
-    pub answers: Vec<SpecificationAnswer>,
+    pub answers: Vec<ClarificationAnswerV1>,
+}
+
+/// One task's manual path correction, resolving a preventive path-confirmation
+/// checkpoint (ADR-022 clarification loop, P5/A5.2) -- the same semantics as
+/// `feature_forge::TaskSelection::manual_path_hint` at dispatch time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManualPathHint {
+    pub task_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolvePathConfirmationRequest {
+    pub pulsation_id: String,
+    pub checkpoint_id: String,
+    pub expected_state_version: u64,
+    #[serde(default)]
+    pub manual_path_hints: Vec<ManualPathHint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -340,6 +382,107 @@ pub struct ConfirmBaseReconciliationRequest {
     pub resume_pulsation_id: Option<String>,
     /// Binds the confirmation to the displayed artifact states and observed file hashes.
     pub expected_review_token: String,
+}
+
+/// What the cleanup of a failed pulsation does with one workspace path it
+/// published. Only a file the pulsation itself created, still holding bytes
+/// the pulsation wrote, is ever removed; everything else is kept and reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupDisposition {
+    /// Created by the pulsation and unchanged since: removed.
+    Remove,
+    /// The file is already gone; the record is closed without touching disk.
+    AlreadyAbsent,
+    /// The pulsation overwrote a file that existed before it. The previous
+    /// content is not stored, so the file is left for a human decision.
+    KeepPreexisting,
+    /// Created by the pulsation but edited afterwards: kept.
+    KeepEdited,
+    /// The path could not be observed (protected or unreadable): kept.
+    KeepUnreadable,
+}
+
+impl CleanupDisposition {
+    pub fn removes(self) -> bool {
+        matches!(self, Self::Remove)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedPulsationCleanupEntry {
+    pub relative_path: String,
+    pub disposition: CleanupDisposition,
+    /// Operator-facing reason for a kept path (e.g. the observation error).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Dry run of [`CleanupFailedPulsationFilesRequest`]: what would be removed and
+/// what is deliberately kept. `plan_token` binds the confirmation to exactly
+/// this list and the observed file hashes behind it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedPulsationCleanupPlan {
+    pub pulsation_id: String,
+    pub project_id: String,
+    pub entries: Vec<FailedPulsationCleanupEntry>,
+    /// Disposable staging directories under the app data dir
+    /// (`stage_candidates/<execution>`), shown by directory name.
+    pub candidate_dirs: Vec<String>,
+    pub plan_token: String,
+}
+
+impl FailedPulsationCleanupPlan {
+    pub fn removable_files(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.disposition.removes())
+            .count()
+    }
+
+    pub fn kept_files(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                !matches!(
+                    entry.disposition,
+                    CleanupDisposition::Remove | CleanupDisposition::AlreadyAbsent
+                )
+            })
+            .count()
+    }
+
+    /// True when confirming would change nothing on disk or in the database.
+    pub fn is_noop(&self) -> bool {
+        self.candidate_dirs.is_empty()
+            && !self.entries.iter().any(|entry| {
+                matches!(
+                    entry.disposition,
+                    CleanupDisposition::Remove | CleanupDisposition::AlreadyAbsent
+                )
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CleanupFailedPulsationFilesRequest {
+    pub pulsation_id: String,
+    /// The `plan_token` of the preview the operator confirmed.
+    pub expected_plan_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedPulsationCleanupReport {
+    pub pulsation_id: String,
+    pub removed_files: Vec<String>,
+    /// Parent directories that became empty and were pruned up to the workspace root.
+    pub removed_directories: usize,
+    pub removed_candidate_dirs: usize,
+    pub kept_files: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -506,8 +649,31 @@ pub enum StageOutcome {
     },
 }
 
+/// Which artifacts the English guard judges at acceptance.
+///
+/// A legacy stage accepts prose the model composed, so every artifact is
+/// judged whole. A composed stage (ADR-022) judges each model-authored field
+/// before rendering (SC-008) and then renders documents that quote the
+/// developer's own task titles and criteria verbatim; judging those documents
+/// again would reject a correct English report for the Portuguese scope it
+/// was required to copy. Only the composed coordinator selects `HostRendered`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArtifactLanguageGuard {
+    #[default]
+    ModelAuthored,
+    HostRendered,
+}
+
 impl StageOutcome {
     pub fn validate_for(&self, stage: PulsationStage) -> Result<(), ContractError> {
+        self.validate_with(stage, ArtifactLanguageGuard::ModelAuthored)
+    }
+
+    pub fn validate_with(
+        &self,
+        stage: PulsationStage,
+        guard: ArtifactLanguageGuard,
+    ) -> Result<(), ContractError> {
         match self {
             Self::Completed {
                 summary, artifacts, ..
@@ -540,16 +706,18 @@ impl StageOutcome {
                         return Err(ContractError::Invalid("artifact component_proposal"));
                     }
                 }
-                for artifact in artifacts {
-                    validate_agent_artifact(
-                        &artifact.name,
-                        artifact
-                            .relative_path
-                            .as_ref()
-                            .map(RelativeSourcePath::as_str),
-                        &artifact.content,
-                    )
-                    .map_err(|_| ContractError::Invalid("agent artifact must be English"))?;
+                if guard == ArtifactLanguageGuard::ModelAuthored {
+                    for artifact in artifacts {
+                        validate_agent_artifact(
+                            &artifact.name,
+                            artifact
+                                .relative_path
+                                .as_ref()
+                                .map(RelativeSourcePath::as_str),
+                            &artifact.content,
+                        )
+                        .map_err(|_| ContractError::Invalid("agent artifact must be English"))?;
+                    }
                 }
             }
             Self::NeedsClarification { questions } => {
@@ -631,7 +799,7 @@ pub struct StageHandoffV1 {
     pub stage: PulsationStage,
     pub assessment: Option<VaguenessAssessment>,
     pub context: Option<ContextPackageV1>,
-    pub answers: Vec<SpecificationAnswer>,
+    pub answers: Vec<ClarificationAnswerV1>,
     #[serde(default)]
     pub clarifications: Vec<ClarificationExchange>,
     pub artifacts: Vec<ArtifactHandoff>,
@@ -698,4 +866,9 @@ pub struct PulsationCoordinationSnapshot {
     pub learning: LearningState,
     pub learning_run: Option<super::LearningRunSnapshot>,
     pub artifact_ids: Vec<String>,
+    /// The latest composed stage execution (pipeline v4) with its units,
+    /// attempts, checks and remaining budget; `None` for v1-v3 pulsations
+    /// or before the first admission (ADR-022).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_execution: Option<super::composition::StageExecutionSnapshot>,
 }

@@ -20,7 +20,7 @@ fn main() -> anyhow::Result<()> {
         .spawn(move || AppCore::initialize(paths, runtime_handle).map_err(anyhow::Error::from))
         .context("falha ao iniciar a inicialização paralela do core")?;
 
-    let application = Application::new();
+    let application = Application::new().with_assets(hvc_ui::HvcAssets);
     let core = core_initialization.join().map_err(|_| {
         anyhow::anyhow!("worker de inicialização do core encerrou inesperadamente")
     })??;

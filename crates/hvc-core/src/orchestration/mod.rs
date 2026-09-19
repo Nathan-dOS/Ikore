@@ -8,10 +8,12 @@
 pub mod brownfield;
 pub mod catalog;
 mod code_context;
+pub mod composition;
 mod context;
 mod contracts;
 pub mod failure;
 pub mod learning_report;
+mod pipeline_version;
 mod policy;
 mod prompt_context;
 mod tree_sitter_context;
@@ -31,6 +33,7 @@ pub use code_context::{LexicalCodeContextService, RoutedCodeContextService};
 pub use context::*;
 pub use contracts::*;
 pub use failure::*;
+pub use pipeline_version::PipelineVersion;
 pub use policy::*;
 pub(crate) use prompt_context::code_context_prompt_json;
 pub use tree_sitter_context::{

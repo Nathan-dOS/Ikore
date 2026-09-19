@@ -488,9 +488,11 @@ fn clarification_checkpoint_survives_restart_and_answers_cannot_approve_artifact
         checkpoint_id: pending.checkpoint_id.clone(),
         expected_input_revision: 1,
         expected_state_version: pending.fence.state_version,
-        answers: vec![SpecificationAnswer {
+        answers: vec![ClarificationAnswerV1 {
             question_id: "auth".into(),
-            answer: "JWT assinado".into(),
+            text_answer: "JWT assinado".into(),
+            planned_paths: Vec::new(),
+            modified_paths: Vec::new(),
         }],
     };
     let mut stale = request.clone();
@@ -512,7 +514,7 @@ fn clarification_checkpoint_survives_restart_and_answers_cannot_approve_artifact
         .load_stage_handoff(&fence, PulsationStage::Specification, 16000)
         .unwrap();
     assert_eq!(handoff.clarifications[0].questions[0].id, "auth");
-    assert_eq!(handoff.answers[0].answer, "JWT assinado");
+    assert_eq!(handoff.answers[0].text_answer, "JWT assinado");
     assert_eq!(
         db.query_row(
             "SELECT COUNT(*) FROM chat_messages WHERE conversation_id=?1",

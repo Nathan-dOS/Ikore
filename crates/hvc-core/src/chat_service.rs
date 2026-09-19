@@ -722,6 +722,17 @@ impl ChatService {
                 "Esta conversa preserva perguntas/respostas de Specification. Consulte e responda pela view Pulsations.",
             ));
         }
+        let resolution_linked: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM specification_resolution_conversations WHERE conversation_id=?1)",
+            [&conversation_id],
+            |r| r.get(0),
+        )?;
+        if resolution_linked {
+            return Err(ChatCommandError::new(
+                "specification_history",
+                "Esta conversa preserva a resolução de uma clarification de Specification. Consulte pela view Pulsations.",
+            ));
+        }
         transaction.execute(
             "UPDATE ui_sessions SET active_chat_conversation_id = NULL
              WHERE active_chat_conversation_id = ?1",

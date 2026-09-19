@@ -14,15 +14,17 @@ use crate::embedding_service::{
     EmbeddingGateway, ModelPullEvent, ModelPullEventSink, OllamaEmbeddingGateway,
 };
 use crate::llm::{
-    AgentRole, Clock, CompressionPreview, CompressionPreviewRequest, CredentialStore,
-    DeleteProviderConnectionRequest, DeleteProviderRouteRequest, JitterSource,
-    KeyringCredentialStore, LlmError, LlmErrorKind, LlmEventSink, LlmExecutionSnapshot,
-    LlmResilienceSnapshot, LlmRoutingMetric, NoopEventSink, ProviderConnection, ProviderProfile,
-    ProviderRoute, ProviderRouteBinding, ProviderRouter, ResetLlmResilienceStateRequest,
-    RoutingMode, SqliteLlmRepository, StableJitter, SystemClock, TestProviderConnectionRequest,
-    TestProviderConnectionResponse, UpsertProviderConnectionRequest,
-    UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest, preview_compression,
-    provider_profiles,
+    AgentExecutionTarget, AgentRole, Clock, CompressionPreview, CompressionPreviewRequest,
+    CredentialStore, DeleteProviderConnectionRequest, DeleteProviderRouteRequest, DispatchPolicy,
+    ExecutionId, FreeFormProviderRouteBinding, GenerationId, JitterSource,
+    KeyringCredentialStore, LlmError, LlmErrorKind, LlmEventSink, LlmExecutionListItem,
+    LlmExecutionSnapshot, LlmGateway, LlmRequest, LlmResilienceSnapshot, LlmRoutingMetric,
+    NoopEventSink, ProviderConnection, ProviderProfile, ProviderRoute, ProviderRouteBinding,
+    ProviderRouter, ResetLlmResilienceStateRequest, ResponseFormat, RoutingMode,
+    SqliteLlmRepository, StableJitter, SystemClock, TestProviderConnectionRequest,
+    TestProviderConnectionResponse, UpsertFreeFormProviderRouteBindingRequest,
+    UpsertProviderConnectionRequest, UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
+    preview_compression, provider_profiles,
 };
 use chrono::Utc;
 use reqwest::Client;
@@ -54,8 +56,14 @@ mod brownfield_mapping;
 mod brownfield_resolution;
 #[path = "orchestration/clarification.rs"]
 mod clarification;
+#[path = "orchestration/cleanup.rs"]
+mod cleanup;
 #[path = "orchestration/component_notes.rs"]
 mod component_notes;
+#[path = "orchestration/composition/host_coordinator.rs"]
+mod composition_coordinator;
+#[path = "orchestration/composition/host_persistence.rs"]
+mod composition_persistence;
 #[path = "orchestration/coordination.rs"]
 mod coordination;
 #[path = "feature_forge/persistence.rs"]
@@ -70,6 +78,8 @@ mod learning;
 mod preparation;
 #[path = "orchestration/reconciliation.rs"]
 mod reconciliation;
+#[path = "orchestration/resolution.rs"]
+mod resolution;
 #[path = "orchestration/serial.rs"]
 mod serial;
 #[path = "orchestration/supervisor.rs"]
@@ -403,6 +413,8 @@ pub struct UiSessionState {
     pub active_tab_path: Option<String>,
     pub workspace_view_mode: String,
     pub active_view: String,
+    /// Since the shell redesign this column persists the right-hand context rail's fold; the
+    /// left sidebar it was named after no longer exists. The name is kept to avoid a migration.
     pub sidebar_collapsed: bool,
     pub context_drawer_open: bool,
     pub active_pulsation_id: Option<String>,
@@ -467,7 +479,7 @@ pub struct SaveUiSessionResponse {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum PulsationStage {
     #[serde(rename = "Intake")]
     Intake,
@@ -855,6 +867,15 @@ pub struct StageFailureCheckpoint {
     pub attempts: i64,
     pub state_version: u64,
     pub created_at: String,
+    /// Composed stages (ADR-022): every revision target the host permits,
+    /// the extra permits the failed unit could still take, and the
+    /// execution the checkpoint parks. Empty/`None` for legacy failures.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_revision_targets: Vec<PulsationStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_extra_invocations: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_execution_id: Option<String>,
 }
 
 /// The model output that was rejected on the last attempt, so the operator can see
@@ -1084,6 +1105,59 @@ pub struct UpsertProviderRouteBindingResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ListFreeFormProviderRouteBindingsResponse {
+    pub bindings: Vec<FreeFormProviderRouteBinding>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpsertFreeFormProviderRouteBindingResponse {
+    pub binding: FreeFormProviderRouteBinding,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartFreeFormApiRunRequest {
+    pub project_id: String,
+    pub slot_id: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartFreeFormApiRunResponse {
+    pub execution_id: String,
+    pub generation_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelAgentApiExecutionRequest {
+    pub execution_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelAgentApiExecutionResponse {
+    pub cancelled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAgentApiExecutionsRequest {
+    pub project_id: String,
+    pub target: AgentExecutionTarget,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAgentApiExecutionsResponse {
+    pub executions: Vec<LlmExecutionListItem>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetLlmResilienceSnapshotResponse {
     pub snapshot: LlmResilienceSnapshot,
 }
@@ -1104,6 +1178,14 @@ pub struct GetLlmExecutionSnapshotRequest {
 #[serde(rename_all = "camelCase")]
 pub struct GetLlmExecutionSnapshotResponse {
     pub snapshot: LlmExecutionSnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetAgentApiExecutionSnapshotRequest {
+    pub project_id: String,
+    pub target: AgentExecutionTarget,
+    pub execution_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1130,10 +1212,13 @@ pub struct CancelPulsationJobsResponse {
     pub cancelled_jobs: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListAgentRunsRequest {
-    pub pulsation_id: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub pulsation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1155,6 +1240,14 @@ pub struct AgentRunListItem {
     pub structured_output: Option<Value>,
     pub created_at: String,
     pub updated_at: String,
+    pub pulsation_id: Option<String>,
+    pub pulsation_name: Option<String>,
+    pub pulsation_status: Option<String>,
+    pub job_kind: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub cancellation_reason: Option<String>,
+    pub validation_error: Option<String>,
+    pub tool_trace: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1166,6 +1259,7 @@ pub struct ListAgentRunsResponse {
 #[derive(Debug, Default)]
 struct RuntimeControl {
     cancellations: Mutex<HashMap<String, CancellationToken>>,
+    manual_api_cancellations: Mutex<HashMap<String, CancellationToken>>,
     wakeup: tokio::sync::Notify,
     pending_user_cancels: Mutex<HashMap<String, usize>>,
     #[cfg(test)]
@@ -1609,7 +1703,16 @@ impl PersistenceService {
             }
             cancellation.cancel();
         }
-        cancellations.len()
+        let manual_api = self
+            .runtime_control
+            .manual_api_cancellations
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        for cancellation in manual_api.values() {
+            cancellation.cancel();
+        }
+        cancellations.len() + manual_api.len()
     }
 
     fn request_job_cancellation(&self, job_id: &str) -> bool {
@@ -1668,7 +1771,8 @@ impl PersistenceService {
         let normalized = raw.trim();
         if !matches!(
             normalized,
-            "workspace"
+            "home"
+                | "workspace"
                 | "pulsations"
                 | "vault"
                 | "chat"
@@ -1680,7 +1784,7 @@ impl PersistenceService {
                 | "feature-forge"
         ) {
             return Err(PersistenceServiceError::Validation(
-                "activeView deve ser `workspace`, `pulsations`, `vault`, `chat`, `agents`, `settings` ou `logs`."
+                "activeView deve ser `home`, `workspace`, `pulsations`, `vault`, `chat`, `agents`, `settings`, `logs` ou `forge`."
                     .to_string(),
             ));
         }
@@ -2536,14 +2640,15 @@ impl PersistenceService {
                created_at,
                updated_at, queue_sequence, pipeline_version
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6,
-               (SELECT COALESCE(MAX(queue_sequence),0)+1 FROM pulsations WHERE project_id=?2), 2)",
+               (SELECT COALESCE(MAX(queue_sequence),0)+1 FROM pulsations WHERE project_id=?2), ?7)",
             params![
                 pulsation_id.as_str(),
                 project_id.as_str(),
                 feature_name.as_str(),
                 PulsationStage::Intake.as_db_value(),
                 PulsationStatus::Idle.as_db_value(),
-                now
+                now,
+                crate::orchestration::PipelineVersion::FREE_FORM.as_u8()
             ],
         )?;
 
@@ -2888,7 +2993,8 @@ impl PersistenceService {
         let mut statement = connection.prepare(
             "SELECT c.id,c.pulsation_id,p.project_id,p.feature_name,f.stage,f.failure_class,
                     f.error_code,f.diagnostic,f.allow_retry,f.allow_revision,f.revision_stage,
-                    COALESCE(j.attempts,0),p.state_version,c.created_at
+                    COALESCE(j.attempts,0),p.state_version,c.created_at,
+                    f.allowed_revision_targets_json,f.remaining_budget_json,f.stage_execution_id
              FROM stage_failure_requests f
              JOIN checkpoints c ON c.id=f.checkpoint_id
              JOIN pulsations p ON p.id=f.pulsation_id
@@ -2900,6 +3006,23 @@ impl PersistenceService {
         let rows = statement.query_map([project_id], |row| {
             let stage: String = row.get(4)?;
             let revision_stage: Option<String> = row.get(10)?;
+            let targets_json: Option<String> = row.get(14)?;
+            let remaining_json: Option<String> = row.get(15)?;
+            let allowed_revision_targets = targets_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
+                .map(|targets| {
+                    targets
+                        .iter()
+                        .filter_map(|raw| PulsationStage::from_db_value(raw))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let remaining_extra_invocations = remaining_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+                .and_then(|value| value["extraInvocations"].as_u64())
+                .map(|value| value as u32);
             Ok(StageFailureCheckpoint {
                 checkpoint_id: row.get(0)?,
                 pulsation_id: row.get(1)?,
@@ -2918,6 +3041,9 @@ impl PersistenceService {
                 attempts: row.get(11)?,
                 state_version: row.get(12)?,
                 created_at: row.get(13)?,
+                allowed_revision_targets,
+                remaining_extra_invocations,
+                stage_execution_id: row.get(16)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -2971,6 +3097,18 @@ impl PersistenceService {
         &self,
         request: ResolveStageFailureRequest,
     ) -> Result<ResolveStageFailureResponse, PersistenceServiceError> {
+        self.resolve_stage_failure_with_target(request, None)
+    }
+
+    /// `revision_target` selects among the targets a composed stage failure
+    /// permits (ADR-022); `None` resolves to the checkpoint's primary target.
+    /// A target outside the permitted set is refused by the host regardless of
+    /// what the UI offered.
+    pub fn resolve_stage_failure_with_target(
+        &self,
+        request: ResolveStageFailureRequest,
+        revision_target: Option<PulsationStage>,
+    ) -> Result<ResolveStageFailureResponse, PersistenceServiceError> {
         let checkpoint_id = request.checkpoint_id.trim();
         if checkpoint_id.is_empty() {
             return Err(PersistenceServiceError::Validation(
@@ -2993,7 +3131,8 @@ impl PersistenceService {
         let found = transaction
             .query_row(
                 "SELECT c.pulsation_id,f.stage,f.job_id,f.failure_class,f.allow_retry,
-                        f.allow_revision,f.revision_stage,f.error_code
+                        f.allow_revision,f.revision_stage,f.error_code,f.stage_execution_id,
+                        f.allowed_revision_targets_json
                  FROM stage_failure_requests f
                  JOIN checkpoints c ON c.id=f.checkpoint_id
                  JOIN pulsations p ON p.id=f.pulsation_id
@@ -3013,6 +3152,8 @@ impl PersistenceService {
                         row.get::<_, i64>(5)? != 0,
                         row.get::<_, Option<String>>(6)?,
                         row.get::<_, String>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
                     ))
                 },
             )
@@ -3026,6 +3167,8 @@ impl PersistenceService {
             allow_revision,
             revision_stage_raw,
             error_code,
+            stage_execution_id,
+            allowed_targets_json,
         )) = found
         else {
             return Err(PersistenceServiceError::Validation(
@@ -3133,6 +3276,9 @@ impl PersistenceService {
                     [&pulsation_id],
                 )?;
                 Self::enqueue_learning(&transaction, &pulsation_id)?;
+                if stage_execution_id.is_some() {
+                    Self::cancel_stage_executions(&transaction, &pulsation_id)?;
+                }
                 updated
             }
             StageFailureDecision::RetryStage => {
@@ -3175,9 +3321,29 @@ impl PersistenceService {
                         "Checkpoint de falha sem alvo de revisão.".to_string(),
                     )
                 })?;
-                let target = PulsationStage::from_db_value(&target_raw).ok_or_else(|| {
+                let primary = PulsationStage::from_db_value(&target_raw).ok_or_else(|| {
                     PersistenceServiceError::Runtime("Alvo de revisão inválido.".to_string())
                 })?;
+                let permitted: Vec<PulsationStage> = match &allowed_targets_json {
+                    Some(json) => serde_json::from_str::<Vec<String>>(json)
+                        .map_err(|e| PersistenceServiceError::Runtime(e.to_string()))?
+                        .iter()
+                        .filter_map(|raw| PulsationStage::from_db_value(raw))
+                        .collect(),
+                    None => vec![primary],
+                };
+                let target = match revision_target {
+                    Some(requested) if permitted.contains(&requested) => requested,
+                    Some(_) => {
+                        return Err(PersistenceServiceError::Validation(
+                            "Este alvo de revisão não é permitido para esta falha.".to_string(),
+                        ));
+                    }
+                    None => primary,
+                };
+                if stage_execution_id.is_some() {
+                    Self::supersede_stage_executions(&transaction, &pulsation_id, target)?;
+                }
                 // The producer job is `interrupted`, not `done` as in the HITL path.
                 // `complete_integrations` refuses to finalize while any job on the
                 // pulsation is pending/running/interrupted, so leaving it behind would
@@ -3626,6 +3792,192 @@ impl PersistenceService {
         })
     }
 
+    pub fn list_free_form_provider_route_bindings(
+        &self,
+        project_id: &str,
+    ) -> Result<ListFreeFormProviderRouteBindingsResponse, PersistenceServiceError> {
+        Ok(ListFreeFormProviderRouteBindingsResponse {
+            bindings: self.llm_repository.list_free_form_bindings(project_id)?,
+        })
+    }
+
+    pub fn upsert_free_form_provider_route_binding(
+        &self,
+        request: UpsertFreeFormProviderRouteBindingRequest,
+    ) -> Result<UpsertFreeFormProviderRouteBindingResponse, PersistenceServiceError> {
+        Ok(UpsertFreeFormProviderRouteBindingResponse {
+            binding: self.llm_repository.upsert_free_form_binding(request)?,
+        })
+    }
+
+    pub fn list_agent_api_executions(
+        &self,
+        request: ListAgentApiExecutionsRequest,
+    ) -> Result<ListAgentApiExecutionsResponse, PersistenceServiceError> {
+        Ok(ListAgentApiExecutionsResponse {
+            executions: self.llm_repository.list_executions_for_target(
+                &request.project_id,
+                &request.target,
+                request.limit.unwrap_or(20),
+            )?,
+        })
+    }
+
+    pub fn get_agent_api_execution_snapshot(
+        &self,
+        request: GetAgentApiExecutionSnapshotRequest,
+    ) -> Result<GetLlmExecutionSnapshotResponse, PersistenceServiceError> {
+        if !self.llm_repository.execution_belongs_to_target(
+            &request.project_id,
+            &request.target,
+            &request.execution_id,
+        )? {
+            return Err(PersistenceServiceError::NotFound(
+                "API execution was not found for this project and agent.".into(),
+            ));
+        }
+        Ok(GetLlmExecutionSnapshotResponse {
+            snapshot: self.llm_repository.execution_snapshot(&request.execution_id)?,
+        })
+    }
+
+    pub fn export_agent_api_execution(
+        &self,
+        request: GetAgentApiExecutionSnapshotRequest,
+    ) -> Result<PathBuf, PersistenceServiceError> {
+        let snapshot = self
+            .get_agent_api_execution_snapshot(request.clone())?
+            .snapshot;
+        let workspace_path: String = self.connection()?.query_row(
+            "SELECT workspace_path FROM projects WHERE id=?1 AND is_archived=0",
+            params![request.project_id],
+            |row| row.get(0),
+        ).optional()?.ok_or_else(|| {
+            PersistenceServiceError::NotFound("Project workspace was not found.".into())
+        })?;
+        let directory = Path::new(&workspace_path)
+            .join(".hard-vibe-code")
+            .join("api-exports");
+        fs::create_dir_all(&directory)?;
+        let destination = directory.join(format!("api-{}.json", request.execution_id));
+        let payload = serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": 1,
+            "redacted": true,
+            "projectId": request.project_id,
+            "target": request.target,
+            "snapshot": snapshot,
+        })).map_err(|error| PersistenceServiceError::Runtime(
+            format!("Failed to serialize redacted API execution: {error}")
+        ))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+        std::io::Write::write_all(&mut temporary, &payload)?;
+        temporary.persist(&destination).map_err(|error| error.error)?;
+        Ok(destination)
+    }
+
+    pub fn start_free_form_api(
+        &self,
+        request: StartFreeFormApiRunRequest,
+    ) -> Result<StartFreeFormApiRunResponse, PersistenceServiceError> {
+        let project_id = request.project_id.trim();
+        let slot_id = request.slot_id.trim();
+        let prompt = request.prompt.trim();
+        if project_id.is_empty() || slot_id.is_empty() || prompt.is_empty() {
+            return Err(PersistenceServiceError::Validation(
+                "Project, FreeForm slot and prompt are required.".into(),
+            ));
+        }
+        let connection = self.connection()?;
+        let api_ready: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM terminal_slots
+                 WHERE id=?1 AND project_id=?2 AND kind='free_form' AND archived=0
+                   AND execution_mode='api_direct')",
+                params![slot_id, project_id],
+                |row| row.get(0),
+            )?;
+        if !api_ready {
+            return Err(PersistenceServiceError::Validation(
+                "FreeForm slot is missing, archived, or not in API Key Mode.".into(),
+            ));
+        }
+        // Resolve before spawning so a missing/disabled binding fails synchronously in the UI.
+        self.llm_repository.resolve_route_for_target(
+            project_id,
+            &AgentExecutionTarget::free_form(slot_id),
+            "FreeForm",
+        )?;
+        let config = self.load_runtime_config()?;
+        let execution_id = Uuid::new_v4().to_string();
+        let generation_id = Uuid::new_v4().to_string();
+        let llm_request = LlmRequest {
+            execution_id: ExecutionId::new(execution_id.clone()),
+            generation_id: GenerationId::new(generation_id.clone()),
+            project_id: project_id.to_string(),
+            pulsation_id: None,
+            job_id: None,
+            agent_run_id: None,
+            job_chain: format!("free_form:{slot_id}"),
+            target: AgentExecutionTarget::free_form(slot_id),
+            stage: "FreeForm".into(),
+            system_prompt: "You are a user-configured FreeForm agent. Return only the visible assistant response. Do not expose hidden reasoning, credentials, or internal provider payloads.".into(),
+            user_prompt: prompt.to_string(),
+            response_format: ResponseFormat::Text,
+            max_output_tokens: config.max_output_tokens,
+            temperature: config.temperature,
+            deadline: std::time::Instant::now() + Duration::from_millis(config.timeout_ms),
+            stream: true,
+            legacy_provider: config.provider.as_str().into(),
+            legacy_model: config.model,
+            dispatch: DispatchPolicy::default(),
+        };
+        let cancellation = CancellationToken::new();
+        self.runtime_control
+            .manual_api_cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(execution_id.clone(), cancellation.clone());
+        let service = self.clone();
+        let execution_for_task = execution_id.clone();
+        tokio::spawn(async move {
+            let _ = service.llm_router.execute(&llm_request, &cancellation).await;
+            service
+                .runtime_control
+                .manual_api_cancellations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&execution_for_task);
+        });
+        Ok(StartFreeFormApiRunResponse {
+            execution_id,
+            generation_id,
+        })
+    }
+
+    pub fn cancel_agent_api_execution(
+        &self,
+        request: CancelAgentApiExecutionRequest,
+    ) -> Result<CancelAgentApiExecutionResponse, PersistenceServiceError> {
+        let execution_id = request.execution_id.trim();
+        if execution_id.is_empty() {
+            return Err(PersistenceServiceError::Validation(
+                "Execution ID is required.".into(),
+            ));
+        }
+        let cancelled = self
+            .runtime_control
+            .manual_api_cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(execution_id)
+            .map(|token| {
+                token.cancel();
+                true
+            })
+            .unwrap_or(false);
+        Ok(CancelAgentApiExecutionResponse { cancelled })
+    }
+
     pub fn get_llm_resilience_snapshot(
         &self,
     ) -> Result<GetLlmResilienceSnapshotResponse, PersistenceServiceError> {
@@ -3724,7 +4076,16 @@ impl PersistenceService {
         &self,
         request: ListAgentRunsRequest,
     ) -> Result<ListAgentRunsResponse, PersistenceServiceError> {
-        let pulsation_id = Self::normalize_pulsation_id(&request.pulsation_id)?;
+        let pulsation_id = request
+            .pulsation_id
+            .as_deref()
+            .map(Self::normalize_pulsation_id)
+            .transpose()?;
+        let project_id = request
+            .project_id
+            .as_deref()
+            .map(Self::normalize_project_id)
+            .transpose()?;
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             "SELECT
@@ -3742,16 +4103,26 @@ impl PersistenceService {
                j.last_error AS last_error,
                j.started_at AS started_at,
                j.finished_at AS finished_at,
+               j.kind AS job_kind,
+               j.cancellation_reason AS cancellation_reason,
+               j.pulsation_id AS pulsation_id,
+               p.feature_name AS pulsation_name,
+               p.status AS pulsation_status,
+               CAST(MAX(0, (julianday(COALESCE(j.finished_at, ar.updated_at)) - julianday(COALESCE(j.started_at, ar.created_at))) * 86400000) AS INTEGER) AS duration_ms,
                aro.raw_output AS raw_output,
-               aro.structured_output AS structured_output
+               aro.structured_output AS structured_output,
+               aro.validation_error AS validation_error,
+               aro.tool_trace AS tool_trace
              FROM agent_runs ar
              INNER JOIN jobs j ON j.id = ar.job_id
+             LEFT JOIN pulsations p ON p.id = j.pulsation_id
              LEFT JOIN agent_run_outputs aro ON aro.agent_run_id = ar.id
-             WHERE j.pulsation_id = ?1
+             WHERE (?1 IS NULL OR j.pulsation_id = ?1)
+               AND (?2 IS NULL OR p.project_id = ?2 OR j.project_id = ?2)
              ORDER BY ar.created_at DESC",
         )?;
 
-        let rows = statement.query_map(params![pulsation_id.as_str()], |row| {
+        let rows = statement.query_map(params![pulsation_id.as_deref(), project_id.as_deref()], |row| {
             let provider = row.get::<_, Option<String>>("provider")?;
             let structured_output_raw: Option<String> = row.get("structured_output")?;
             let structured_output = structured_output_raw
@@ -3775,6 +4146,14 @@ impl PersistenceService {
                 structured_output,
                 created_at: row.get("created_at")?,
                 updated_at: row.get("updated_at")?,
+                pulsation_id: row.get("pulsation_id")?,
+                pulsation_name: row.get("pulsation_name")?,
+                pulsation_status: row.get("pulsation_status")?,
+                job_kind: row.get("job_kind")?,
+                duration_ms: row.get("duration_ms")?,
+                cancellation_reason: row.get("cancellation_reason")?,
+                validation_error: row.get("validation_error")?,
+                tool_trace: row.get("tool_trace")?,
             })
         })?;
 
@@ -3816,6 +4195,7 @@ impl PersistenceService {
         tx.execute("UPDATE jobs SET status='pending',state_version=(SELECT state_version FROM pulsations WHERE id=jobs.pulsation_id),generation=generation+1,started_at=NULL,cancel_requested_at=NULL,cancellation_reason=NULL,available_at=?1,updated_at=?1 WHERE status IN ('running','interrupted') AND (cancellation_reason IS NULL OR cancellation_reason IN ('shutdown','preempted')) AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.job_id=jobs.id) AND EXISTS(SELECT 1 FROM pulsations p WHERE p.id=jobs.pulsation_id AND p.status IN ('planning','running') AND p.input_revision=jobs.input_revision)",[&now])?;
         tx.execute("UPDATE agent_runs SET status='interrupted',updated_at=?1 WHERE status='running' AND NOT EXISTS(SELECT 1 FROM stage_acceptances a WHERE a.agent_run_id=agent_runs.id)",[&now])?;
         Self::recover_coordination(&tx)?;
+        Self::recover_stage_executions(&tx)?;
         Self::recover_knowledge_background(&tx)?;
         tx.execute("UPDATE jobs SET status='failed',cancellation_reason='superseded',last_error='Preparação interrompida no restart; usar contexto sob demanda.' WHERE kind='prepare_context' AND status IN ('pending','running','interrupted')",[])?;
         tx.execute("UPDATE pulsation_preparation SET prespec_state='cancelled',diagnostic='Preparação interrompida no restart; usar contexto sob demanda.' WHERE prespec_state IN ('pending','running')",[])?;
@@ -4504,8 +4884,10 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let transaction = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-        let current = Self::find_pulsation_by_id(&transaction, &request.pulsation_id)?
-            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação não encontrada.".to_string()))?;
+        let current =
+            Self::find_pulsation_by_id(&transaction, &request.pulsation_id)?.ok_or_else(|| {
+                PersistenceServiceError::NotFound("Pulsação não encontrada.".to_string())
+            })?;
 
         let has_override: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM pulse_execution_overrides WHERE pulsation_id=?1 AND agent_role=?2 AND execution_mode='cli_process')",
@@ -4987,6 +5369,29 @@ impl PersistenceService {
             stage.as_db_value(),
             runtime_config.provider.as_str(),
         )?;
+        // Single branch point for pipeline v4 (ADR-022): composed stages run
+        // under the host coordinator; v1-v3 keep the legacy path untouched.
+        let pipeline_version: u8 = connection.query_row(
+            "SELECT pipeline_version FROM pulsations WHERE id=?1",
+            [&current.id],
+            |row| row.get(0),
+        )?;
+        if crate::orchestration::PipelineVersion::from_db(pipeline_version)
+            .is_some_and(|version| version.supports_composition())
+        {
+            drop(connection);
+            return self
+                .execute_composed_stage(
+                    job,
+                    agent_run_id,
+                    stage,
+                    &current,
+                    &project,
+                    runtime_config,
+                    cancellation,
+                )
+                .await;
+        }
         let mut handoff = self.load_stage_handoff(
             &Self::execution_fence(&connection, &job.id)?,
             stage,
@@ -5303,7 +5708,9 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::embedding_service::{EmbeddingError, EmbeddingFuture, ModelListFuture, ModelPullFuture};
+    use crate::embedding_service::{
+        EmbeddingError, EmbeddingFuture, ModelListFuture, ModelPullFuture,
+    };
     use crate::llm::LlmRepository;
 
     fn prepare_service() -> (tempfile::TempDir, PersistenceService) {
@@ -5444,7 +5851,8 @@ mod tests {
         let (_root, mut service) = prepare_service();
         let gateway = Arc::new(FakeReadinessGateway::default());
         *gateway.models.lock().unwrap() = vec!["nomic-embed-text:latest".into()];
-        *gateway.embed_error.lock().unwrap() = Some("Ollama embedding falhou com status HTTP 500.".into());
+        *gateway.embed_error.lock().unwrap() =
+            Some("Ollama embedding falhou com status HTTP 500.".into());
         service.embedding_gateway = gateway;
         let report = service.check_embedding_readiness().await.unwrap();
         assert!(report.ollama_reachable);
@@ -5546,6 +5954,133 @@ mod tests {
             .expect("table query should work");
 
         assert_eq!(tables, 1);
+    }
+
+    #[test]
+    fn v33_to_v34_preserves_canonical_executions_and_bindings() {
+        let root = tempfile::tempdir().expect("tempdir should be created");
+        let db_path = root.path().join("hard-vibe-code.db");
+        let mut connection = Connection::open(&db_path).expect("v33 db should open");
+        embedded::migrations::runner()
+            .set_target(refinery::Target::Version(33))
+            .run(&mut connection)
+            .expect("v1-v33 should apply");
+        let now = Utc::now().to_rfc3339();
+        connection.execute(
+            "INSERT INTO projects(id,name,workspace_path,created_at,updated_at)
+             VALUES('project-v33','Project V33',?1,?2,?2)",
+            params![root.path().to_string_lossy(), now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO provider_routes(id,name,strategy,max_attempts,attempt_timeout_ms,
+                    route_timeout_ms,enabled,version,created_at,updated_at)
+             VALUES('route-v33','Route V33','priority',3,30000,45000,1,1,?1,?1)",
+            params![now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO provider_route_bindings(project_id,agent_role,stage,route_id,
+                    enabled,version,created_at,updated_at)
+             VALUES('project-v33','backend_agent','Code','route-v33',1,4,?1,?1)",
+            params![now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO llm_route_executions(id,generation_id,project_id,route_id,
+                    agent_role,stage,strategy,mode,status,decision_json,started_at)
+             VALUES('execution-v33','generation-v33','project-v33','route-v33',
+                    'backend_agent','Code','priority','on','completed','{}',?1)",
+            params![now],
+        ).unwrap();
+        drop(connection);
+
+        let service = PersistenceService::initialize(root.path()).expect("v34 should upgrade");
+        let db = service.connection().unwrap();
+        let identity: (Option<String>, Option<String>) = db.query_row(
+            "SELECT agent_role,free_form_slot_id FROM llm_route_executions
+             WHERE id='execution-v33'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(identity, (Some("backend_agent".into()), None));
+        let binding_version: u64 = db.query_row(
+            "SELECT version FROM provider_route_bindings
+             WHERE project_id='project-v33' AND agent_role='backend_agent' AND stage='Code'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(binding_version, 4);
+        let violations: i64 = db.query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_check",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(violations, 0);
+    }
+
+    #[test]
+    fn free_form_route_bindings_are_project_scoped_versioned_and_fail_closed() {
+        let (root, service) = prepare_service();
+        let now = Utc::now().to_rfc3339();
+        let db = service.connection().unwrap();
+        for (id, path) in [
+            ("project-a", root.path().join("a")),
+            ("project-b", root.path().join("b")),
+        ] {
+            db.execute(
+                "INSERT INTO projects(id,name,workspace_path,created_at,updated_at)
+                 VALUES(?1,?1,?2,?3,?3)",
+                params![id, path.to_string_lossy(), now],
+            ).unwrap();
+        }
+        drop(db);
+        let terminals = crate::terminals::TerminalRepository::new(service.db_path.clone());
+        let slot_a = terminals.create_free_form_slot(crate::terminals::CreateFreeFormSlotRequest {
+            project_id: "project-a".into(),
+            label: "API A".into(),
+        }).unwrap();
+        let slot_b = terminals.create_free_form_slot(crate::terminals::CreateFreeFormSlotRequest {
+            project_id: "project-b".into(),
+            label: "API B".into(),
+        }).unwrap();
+        let target_a = AgentExecutionTarget::free_form(&slot_a.id);
+        assert!(service.llm_repository.resolve_route_for_target(
+            "project-a", &target_a, "FreeForm"
+        ).is_err());
+        assert!(service.llm_repository.upsert_free_form_binding(
+            UpsertFreeFormProviderRouteBindingRequest {
+                project_id: "project-a".into(),
+                slot_id: slot_b.id.clone(),
+                route_id: "legacy-default".into(),
+                enabled: Some(true),
+                version: None,
+            }
+        ).is_err());
+
+        let binding = service.llm_repository.upsert_free_form_binding(
+            UpsertFreeFormProviderRouteBindingRequest {
+                project_id: "project-a".into(),
+                slot_id: slot_a.id.clone(),
+                route_id: "legacy-default".into(),
+                enabled: Some(true),
+                version: None,
+            }
+        ).unwrap();
+        assert_eq!(binding.version, 1);
+        assert_eq!(service.llm_repository.list_free_form_bindings("project-a").unwrap().len(), 1);
+        assert!(service.llm_repository.list_free_form_bindings("project-b").unwrap().is_empty());
+        assert!(service.llm_repository.resolve_route_for_target(
+            "project-a", &target_a, "FreeForm"
+        ).is_ok());
+
+        let stale = service.llm_repository.upsert_free_form_binding(
+            UpsertFreeFormProviderRouteBindingRequest {
+                project_id: "project-a".into(),
+                slot_id: slot_a.id,
+                route_id: "legacy-default".into(),
+                enabled: Some(false),
+                version: Some(99),
+            }
+        ).unwrap_err();
+        assert_eq!(stale.kind, LlmErrorKind::RouteConflict);
     }
 
     #[test]
@@ -6160,7 +6695,7 @@ mod tests {
 
         let loaded = service
             .load_ui_session(LoadUiSessionRequest {
-                project_id: project.id,
+                project_id: project.id.clone(),
             })
             .expect("session should load")
             .session
@@ -6169,6 +6704,55 @@ mod tests {
         assert_eq!(loaded.workspace_view_mode, "hitl");
         assert_eq!(loaded.active_view, "vault");
         assert!(loaded.sidebar_collapsed);
+
+        // The shell's Home view persists like any other; unknown ids are still rejected.
+        service
+            .save_ui_session(SaveUiSessionRequest {
+                auto_open_review: false,
+                project_id: project.id.clone(),
+                workspace_root: project.workspace_path.clone(),
+                active_tab_path: None,
+                workspace_view_mode: "editor".to_string(),
+                active_view: "home".to_string(),
+                sidebar_collapsed: false,
+                context_drawer_open: false,
+                active_pulsation_id: None,
+                selected_vault_path: None,
+                active_chat_conversation_id: None,
+                scroll_top: None,
+                tabs: vec![],
+            })
+            .expect("home is a valid active view");
+        assert_eq!(
+            service
+                .load_ui_session(LoadUiSessionRequest {
+                    project_id: project.id.clone(),
+                })
+                .unwrap()
+                .session
+                .unwrap()
+                .active_view,
+            "home"
+        );
+        let rejected = service.save_ui_session(SaveUiSessionRequest {
+            auto_open_review: false,
+            project_id: project.id.clone(),
+            workspace_root: project.workspace_path.clone(),
+            active_tab_path: None,
+            workspace_view_mode: "editor".to_string(),
+            active_view: "dashboard".to_string(),
+            sidebar_collapsed: false,
+            context_drawer_open: false,
+            active_pulsation_id: None,
+            selected_vault_path: None,
+            active_chat_conversation_id: None,
+            scroll_top: None,
+            tabs: vec![],
+        });
+        assert!(matches!(
+            rejected,
+            Err(PersistenceServiceError::Validation(_))
+        ));
         assert!(!loaded.context_drawer_open);
         assert_eq!(loaded.active_pulsation_id.as_deref(), Some("pulse-three"));
         assert_eq!(loaded.selected_vault_path.as_deref(), Some("third.md"));
@@ -6660,7 +7244,8 @@ mod tests {
 
         let runs = service
             .list_agent_runs(ListAgentRunsRequest {
-                pulsation_id: created.id.clone(),
+                project_id: Some(project.id.clone()),
+                pulsation_id: Some(created.id.clone()),
             })
             .expect("agent runs should load")
             .runs;
@@ -6668,6 +7253,9 @@ mod tests {
         assert!(runs.len() >= 2);
         assert!(runs.iter().any(|run| run.structured_output.is_some()));
         assert!(runs.iter().any(|run| run.raw_output.is_some()));
+        assert!(runs.iter().all(|run| run.pulsation_id.as_deref() == Some(&created.id)));
+        assert!(runs.iter().all(|run| run.pulsation_name.as_deref() == Some("Feat: Runtime Output")));
+        assert!(runs.iter().all(|run| run.job_kind.is_some()));
         let trace_count: i64 = service
             .connection()
             .unwrap()
@@ -6754,7 +7342,8 @@ mod tests {
 
         let runs = service
             .list_agent_runs(ListAgentRunsRequest {
-                pulsation_id: created.id,
+                pulsation_id: Some(created.id),
+                project_id: None,
             })
             .expect("agent runs should load")
             .runs;
@@ -6913,10 +7502,7 @@ mod tests {
         service
             .connection()
             .expect("database should open")
-            .execute(
-                "UPDATE jobs SET status='failed' WHERE id=?1",
-                [&job.id],
-            )
+            .execute("UPDATE jobs SET status='failed' WHERE id=?1", [&job.id])
             .expect("job status should update");
 
         let mut connection = service.connection().expect("database should open");
@@ -7069,7 +7655,8 @@ mod tests {
         let (root, service) = prepare_service();
         let workspace = root.path().join("workspace-clear-override-pending");
         fs::create_dir_all(&workspace).unwrap();
-        let (pulse, role) = pulsation_with_override_fixture(&service, workspace.to_string_lossy().as_ref());
+        let (pulse, role) =
+            pulsation_with_override_fixture(&service, workspace.to_string_lossy().as_ref());
 
         let response = service
             .clear_execution_override_and_retry(ClearExecutionOverrideRequest {
@@ -7093,7 +7680,8 @@ mod tests {
         let (root, service) = prepare_service();
         let workspace = root.path().join("workspace-clear-override-running");
         fs::create_dir_all(&workspace).unwrap();
-        let (pulse, role) = pulsation_with_override_fixture(&service, workspace.to_string_lossy().as_ref());
+        let (pulse, role) =
+            pulsation_with_override_fixture(&service, workspace.to_string_lossy().as_ref());
         service
             .claim_next_pending_job()
             .expect("claim should succeed")
@@ -7968,7 +8556,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "fallback-e2e".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),
@@ -7979,6 +8567,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -8111,7 +8700,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "stream-no-fallback".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),
@@ -8122,6 +8711,7 @@ mod tests {
             stream: true,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -8250,7 +8840,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "fallback-401".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),
@@ -8261,6 +8851,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
 
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -8409,7 +9000,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "fallback-lockout".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),
@@ -8420,6 +9011,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
 
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -8654,7 +9246,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "route-max-2".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),
@@ -8665,6 +9257,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
 
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -8796,7 +9389,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "route-lkgp".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),
@@ -8807,6 +9400,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
 
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -8862,7 +9456,7 @@ mod tests {
             job_id: None,
             agent_run_id: None,
             job_chain: "cancel-test".to_string(),
-            agent_role: AgentRole::BackendAgent,
+            target: crate::llm::AgentExecutionTarget::canonical(AgentRole::BackendAgent),
             stage: "Code".to_string(),
             system_prompt: "test".to_string(),
             user_prompt: "test".to_string(),
@@ -8873,6 +9467,7 @@ mod tests {
             stream: false,
             legacy_provider: "openai".to_string(),
             legacy_model: "unused".to_string(),
+            dispatch: crate::llm::DispatchPolicy::default(),
         };
 
         let runtime = tokio::runtime::Builder::new_current_thread()

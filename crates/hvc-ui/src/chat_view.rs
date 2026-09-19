@@ -1,6 +1,6 @@
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
 use hvc_core::chat_service::{ChatMessage, ChatToolArgumentValue, ChatToolCall, ChatTransportKind};
-use hvc_core::terminals::{CliAvailabilityState, CliModelSelectionSource};
+use hvc_core::terminals::CliAvailabilityState;
 use hvc_editor::{ChatContentPart, parse_chat_content, parse_markdown};
 
 use crate::agents::CliModelPickerTarget;
@@ -113,16 +113,10 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
     let tool_activity_open = model.chat.read(cx).tool_activity_open;
     let show_tool_activity = should_show_tool_activity(active_conversation.as_ref())
         && (active_conversation.is_some() || selected_transport == ChatTransportKind::Api);
-    let cli_model_label = match selected_cli_model_source {
-        CliModelSelectionSource::Manual => format!(
-            "{} · unverified",
-            selected_cli_model.as_deref().unwrap_or("CLI default")
-        ),
-        _ => selected_cli_model
-            .as_deref()
-            .unwrap_or("CLI default")
-            .to_string(),
-    };
+    let cli_model_label = crate::agents_view::cli_model_label(
+        selected_cli_model_source,
+        selected_cli_model.as_deref(),
+    );
     let cli_profile_label = selected_cli_model_profile
         .clone()
         .unwrap_or_else(|| "CLI default".into());
@@ -594,7 +588,7 @@ fn should_show_tool_activity(
     conversation.is_none_or(|conversation| conversation.transport != ChatTransportKind::Cli)
 }
 
-fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -> AnyElement {
+pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -> AnyElement {
     let assistant = message.role == "assistant";
     div()
         .p_3()
@@ -916,6 +910,7 @@ fn stable_text_id(text: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hvc_core::terminals::CliModelSelectionSource;
 
     #[test]
     fn renders_safe_markdown_with_copy_only_diff() {

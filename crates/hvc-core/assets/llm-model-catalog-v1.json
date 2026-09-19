@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "catalogVersion": "2026-08-22.1",
+  "catalogVersion": "2026-09-14.2",
   "synchronizedAutomatically": false,
   "pricingPolicy": "unknown_is_null",
   "models": [
@@ -10,6 +10,13 @@
     { "providerId": "deepseek", "modelId": "deepseek-chat", "structuredOutput": false, "streaming": true, "toolCalling": true, "inputUsdPerMillion": null, "outputUsdPerMillion": null },
     { "providerId": "groq", "modelId": "llama-3.3-70b-versatile", "structuredOutput": false, "streaming": true, "toolCalling": true, "inputUsdPerMillion": null, "outputUsdPerMillion": null },
     { "providerId": "mistral", "modelId": "mistral-small-latest", "structuredOutput": true, "streaming": true, "toolCalling": true, "inputUsdPerMillion": null, "outputUsdPerMillion": null },
+    { "providerId": "openrouter", "modelId": "openrouter/free", "structuredOutput": true, "streaming": true, "toolCalling": true, "inputUsdPerMillion": 0.0, "outputUsdPerMillion": 0.0 },
+    { "providerId": "openrouter", "modelId": "nex-agi/nex-n2.5-mini:free", "structuredOutput": true, "streaming": true, "toolCalling": true, "inputUsdPerMillion": 0.0, "outputUsdPerMillion": 0.0 },
+    { "providerId": "openrouter", "modelId": "nex-agi/nex-n2.5-pro:free", "structuredOutput": true, "streaming": true, "toolCalling": true, "inputUsdPerMillion": 0.0, "outputUsdPerMillion": 0.0 },
+    { "providerId": "openrouter", "modelId": "cohere/north-mini-code:free", "structuredOutput": false, "streaming": true, "toolCalling": true, "inputUsdPerMillion": 0.0, "outputUsdPerMillion": 0.0 },
+    { "providerId": "openrouter", "modelId": "nvidia/nemotron-3-ultra-550b-a55b:free", "structuredOutput": false, "streaming": true, "toolCalling": true, "inputUsdPerMillion": 0.0, "outputUsdPerMillion": 0.0 },
+    { "providerId": "openrouter", "modelId": "deepseek/deepseek-v4.1-flash", "structuredOutput": true, "streaming": true, "toolCalling": true, "inputUsdPerMillion": null, "outputUsdPerMillion": null },
+    { "providerId": "openrouter", "modelId": "qwen/qwen3.8-max-0902", "structuredOutput": true, "streaming": true, "toolCalling": true, "inputUsdPerMillion": null, "outputUsdPerMillion": null },
     { "providerId": "ollama", "modelId": "qwen2.5-coder:7b", "structuredOutput": false, "streaming": true, "toolCalling": true, "inputUsdPerMillion": null, "outputUsdPerMillion": null }
   ]
 }

@@ -184,11 +184,22 @@ fn version_supports_contract(backend: CliBackend, version: Option<&str>) -> bool
     version_compatibility(backend, version) == CliVersionCompatibility::Supported
 }
 
+/// The validated `[minimum, maximum_exclusive)` version range for a backend, formatted as
+/// `major.minor.patch` strings for display in diagnostics.
+pub(super) fn compatibility_range(backend: CliBackend) -> (String, String) {
+    let rule = compatibility_rule(backend);
+    (format_version(rule.minimum), format_version(rule.maximum_exclusive))
+}
+
+fn format_version(version: (u64, u64, u64)) -> String {
+    format!("{}.{}.{}", version.0, version.1, version.2)
+}
+
 fn compatibility_rule(backend: CliBackend) -> CliCompatibilityRule {
     match backend {
         CliBackend::Codex => CliCompatibilityRule {
             minimum: (0, 145, 0),
-            maximum_exclusive: (0, 154, 0),
+            maximum_exclusive: (0, 155, 0),
         },
         CliBackend::Claude => CliCompatibilityRule {
             minimum: (2, 1, 0),
@@ -421,9 +432,17 @@ fn classify_failure_text(stderr: &str) -> CliFailureKind {
     .any(|needle| stderr.contains(needle))
     {
         CliFailureKind::VersionUnsupported
-    } else if ["rate limit", "too many requests", "resource exhausted"]
-        .iter()
-        .any(|needle| stderr.contains(needle))
+    } else if [
+        "rate limit",
+        "too many requests",
+        "resource exhausted",
+        "503",
+        "service unavailable",
+        "overloaded",
+        "model is overloaded",
+    ]
+    .iter()
+    .any(|needle| stderr.contains(needle))
     {
         CliFailureKind::RateLimited
     } else {
@@ -526,7 +545,23 @@ mod tests {
             version_compatibility(CliBackend::Opencode, Some("1.19.0")),
             CliVersionCompatibility::UnknownNewer
         );
+        assert_eq!(
+            version_compatibility(CliBackend::Codex, Some("0.154.0")),
+            CliVersionCompatibility::Supported,
+            "0.154.0 is installed and working; the ceiling must cover it"
+        );
+        assert_eq!(
+            version_compatibility(CliBackend::Codex, Some("0.155.0")),
+            CliVersionCompatibility::UnknownNewer
+        );
         assert!(!capabilities(CliBackend::Claude, Some("2.2.0")).native_resume);
+    }
+
+    #[test]
+    fn unknown_newer_diagnostic_reports_the_validated_range() {
+        let (minimum, maximum_exclusive) = compatibility_range(CliBackend::Codex);
+        assert_eq!(minimum, "0.145.0");
+        assert_eq!(maximum_exclusive, "0.155.0");
     }
 
     #[test]

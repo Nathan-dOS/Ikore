@@ -87,6 +87,7 @@ impl Fixture {
                 .map(|t| TaskSelection {
                     task_id: t.id.clone(),
                     expected_revision: t.revision,
+                    manual_path_hint: None,
                 })
                 .collect(),
         }
@@ -700,7 +701,7 @@ impl crate::llm::LlmGateway for PlanningGateway {
                 model: "fixture".into(),
                 request_payload: json!({}),
                 response_payload: json!({}),
-                content: if request.agent_role == AgentRole::IntakeRouter {
+                content: if request.target.agent_role() == Some(AgentRole::IntakeRouter) {
                     r#"{"summary":"Observed export behavior","risks":[],"existingComponents":["Export function"]}"#.into()
                 } else {
                     self.response.clone()
@@ -1621,4 +1622,307 @@ fn apply_approval_is_idempotent_on_the_approved_revision() {
     apply_approval(&db, &f.project, &approved, subject.revision).unwrap();
 
     assert_eq!(f.tasks().list(&f.project).unwrap(), before);
+}
+
+#[test]
+fn apply_approval_reuses_a_done_tasks_id_instead_of_duplicating_it() {
+    let f = Fixture::new();
+    let record = f
+        .forge()
+        .create(CreateFeatureRequest {
+            project_id: f.project.clone(),
+            request_id: id(),
+            title: "Local ToDo app".into(),
+            idea: "Add a local ToDo list rendered in the browser".into(),
+        })
+        .unwrap();
+    let architecture = draft("Define lightweight local browser architecture");
+    let brief = FeatureBrief {
+        objective: "Deliver a local ToDo app".into(),
+        audience: "Project developers".into(),
+        behavior: "Render and persist ToDo items in the browser".into(),
+        scope: "Bounded validated workflow".into(),
+        criteria: vec![criterion()],
+        tasks: vec![architecture.clone()],
+        coverage: "unavailable".into(),
+        ..Default::default()
+    };
+    let record = f
+        .forge()
+        .revise(&f.project, &record.id, record.revision, brief)
+        .unwrap();
+    f.forge()
+        .approve(&f.project, &record.id, record.revision)
+        .unwrap();
+    let delivered = f.tasks().list(&f.project).unwrap();
+    assert_eq!(delivered.len(), 1);
+    let delivered_id = delivered[0].id.clone();
+    let db = f.service.connection().unwrap();
+    db.execute(
+        "UPDATE work_tasks SET state='done' WHERE id=?1",
+        [&delivered_id],
+    )
+    .unwrap();
+
+    // The Feature Agent "fixes" the brief on a later turn, re-describing the
+    // already-delivered task verbatim (it has no way to tell its own past
+    // proposal from the finished task) alongside a genuinely new one that
+    // depends on it.
+    let record = feature(&db, &f.project, &record.id).unwrap();
+    let mut wiring = draft("Wire the ToDo list to local storage");
+    wiring.dependencies = vec!["proposal:1".into()];
+    let brief = FeatureBrief {
+        tasks: vec![architecture, wiring],
+        ..record.brief.clone()
+    };
+    let record = f
+        .forge()
+        .revise(&f.project, &record.id, record.revision, brief)
+        .unwrap();
+    let record = f
+        .forge()
+        .approve(&f.project, &record.id, record.revision)
+        .unwrap();
+    f.forge()
+        .move_to_wave(&f.project, &record.id, Wave::Current, 0)
+        .unwrap();
+
+    let tasks = f.tasks().list(&f.project).unwrap();
+    let matching: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.draft.title == "Define lightweight local browser architecture")
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "must not duplicate the already-done task: {tasks:?}"
+    );
+    assert_eq!(matching[0].id, delivered_id);
+    assert_eq!(matching[0].state, "done");
+
+    let wiring_task = tasks
+        .iter()
+        .find(|t| t.draft.title == "Wire the ToDo list to local storage")
+        .unwrap();
+    assert_eq!(wiring_task.draft.dependencies, vec![delivered_id]);
+
+    // Dispatching the new task alone, without the done one in the same batch,
+    // must not raise "Task prerequisites must be completed or included in
+    // this batch": that was the observed symptom when the duplicate's fresh
+    // (non-done) id was left as the dependency target instead.
+    f.tasks()
+        .dispatch(f.dispatch(std::slice::from_ref(wiring_task)))
+        .unwrap();
+}
+
+// ADR-022 clarification loop (P1/A1.2): the Feature Agent is now instructed to
+// name explicit workspace-relative paths in a task's title/description. This
+// proves that path does not need a new field or a validation change: `text()`
+// (the only gate `validate_task` runs on `description`) has no character
+// restriction that would reject a path, and `explicit_paths()` (the function
+// the dispatch gate in M1/A1.3 and the composed pipeline both already call on
+// title+description) extracts it unchanged.
+#[test]
+fn a_task_description_naming_an_explicit_path_passes_validation_and_is_extracted() {
+    let mut task = draft("Reject expired tokens");
+    task.description =
+        "Change src/auth.rs so expired tokens fail; cover it in tests/auth_test.rs".into();
+    validate_task(&task).expect("a path in the description must not fail validation");
+    let paths = crate::orchestration::composition::recipes::explicit_paths(&format!(
+        "{} {}",
+        task.title, task.description
+    ));
+    assert_eq!(
+        paths.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+        vec!["src/auth.rs", "tests/auth_test.rs"]
+    );
+}
+
+#[test]
+fn a_task_description_with_no_path_still_passes_validation() {
+    // The greenfield/no-sources case: the prompt tells the agent to say so
+    // instead of inventing a path, which means an ordinary prose description
+    // must remain admissible.
+    let task = draft("Sketch the initial module layout");
+    validate_task(&task).expect("a description with no path is still a valid task");
+    assert!(
+        crate::orchestration::composition::recipes::explicit_paths(&format!(
+            "{} {}",
+            task.title, task.description
+        ))
+        .is_empty()
+    );
+}
+
+// ADR-022 clarification loop (P1/A1.3): the dispatch-time file-path
+// anchoring gate. It only runs for composed batches (`pipeline_version.
+// supports_composition()`, same scope as the pre-existing acceptance-criteria
+// gate right beside it), so every test here opts the fixture project in.
+fn enable_composition(f: &Fixture) {
+    f.service
+        .update_composition_settings(
+            &f.project,
+            crate::orchestration::composition::settings::CompositionSettings {
+                enabled: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn dispatch_is_blocked_when_no_task_has_a_path_and_the_workspace_is_not_greenfield() {
+    let f = Fixture::new();
+    enable_composition(&f);
+    std::fs::write(f.workspace.path().join("existing.rs"), "fn x() {}\n").unwrap();
+    let task = f.add("Fix the thing");
+    let error = f
+        .tasks()
+        .dispatch(f.dispatch(&[task]))
+        .expect_err("a non-greenfield batch with no path on any task must be blocked");
+    assert!(error.to_string().contains("explicit file path"));
+}
+
+#[test]
+fn dispatch_proceeds_and_records_no_confirmation_source_on_a_greenfield_workspace() {
+    let f = Fixture::new();
+    enable_composition(&f);
+    // Fixture::new's workspace starts empty: no code files, so this loose
+    // task qualifies for the greenfield exception without a path.
+    let task = f.add("Sketch the initial layout");
+    let pulse = f.tasks().dispatch(f.dispatch(&[task])).unwrap();
+    let manifest = pipeline::manifest(&f.service.connection().unwrap(), &pulse.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        manifest.path_confirmation_source,
+        PathConfirmationSource::None
+    );
+}
+
+#[test]
+fn dispatch_proceeds_and_records_forge_gate_when_a_task_names_an_explicit_path() {
+    let f = Fixture::new();
+    enable_composition(&f);
+    std::fs::create_dir_all(f.workspace.path().join("src")).unwrap();
+    std::fs::write(f.workspace.path().join("src/existing.rs"), "fn x() {}\n").unwrap();
+    let mut with_path = draft("Fix the thing");
+    with_path.description = "Update src/existing.rs to fix the bug".into();
+    let task = f
+        .tasks()
+        .create(CreateTasksRequest {
+            project_id: f.project.clone(),
+            request_id: id(),
+            tasks: vec![with_path],
+        })
+        .unwrap()
+        .remove(0);
+    let pulse = f.tasks().dispatch(f.dispatch(&[task])).unwrap();
+    let manifest = pipeline::manifest(&f.service.connection().unwrap(), &pulse.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        manifest.path_confirmation_source,
+        PathConfirmationSource::ForgeGate
+    );
+}
+
+#[test]
+fn dispatch_proceeds_when_a_manual_path_hint_satisfies_the_gate() {
+    let f = Fixture::new();
+    enable_composition(&f);
+    std::fs::write(f.workspace.path().join("existing.rs"), "fn x() {}\n").unwrap();
+    let task = f.add("Fix the thing");
+    let mut request = f.dispatch(&[task]);
+    request.tasks[0].manual_path_hint = Some("existing.rs".into());
+    let pulse = f.tasks().dispatch(request).unwrap();
+    let manifest = pipeline::manifest(&f.service.connection().unwrap(), &pulse.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        manifest.path_confirmation_source,
+        PathConfirmationSource::ForgeGate
+    );
+}
+
+#[test]
+fn dispatch_proceeds_for_a_feature_task_with_no_path_when_its_brief_coverage_is_unavailable() {
+    // `Fixture::feature` already stamps `coverage: "unavailable"` -- the
+    // greenfield signal `runtime.rs` records when the Feature Agent found no
+    // repository sources -- so a feature task is exempt independent of what
+    // the workspace on disk actually contains.
+    let f = Fixture::new();
+    enable_composition(&f);
+    std::fs::write(f.workspace.path().join("existing.rs"), "fn x() {}\n").unwrap();
+    let feature = f.approved("Greenfield feature");
+    let task = f
+        .tasks()
+        .list(&f.project)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.draft.feature_id.as_ref() == Some(&feature.id))
+        .unwrap();
+    let pulse = f.tasks().dispatch(f.dispatch(&[task])).unwrap();
+    let manifest = pipeline::manifest(&f.service.connection().unwrap(), &pulse.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        manifest.path_confirmation_source,
+        PathConfirmationSource::None
+    );
+}
+
+#[test]
+fn preview_dispatch_gate_matches_the_real_gate_without_dispatching() {
+    let f = Fixture::new();
+    enable_composition(&f);
+    std::fs::write(f.workspace.path().join("existing.rs"), "fn x() {}\n").unwrap();
+    let task = f.add("Fix the thing");
+    let request = f.dispatch(std::slice::from_ref(&task));
+    let status = f
+        .tasks()
+        .preview_dispatch_gate(&f.project, &request.tasks)
+        .unwrap();
+    assert!(status.blocked);
+    assert!(!status.greenfield);
+    assert_eq!(status.tasks_missing_paths, vec![task.id.clone()]);
+    assert!(
+        f.tasks().dispatch(request).is_err(),
+        "preview must not itself dispatch, and the real gate must agree it is blocked"
+    );
+
+    let mut with_hint = f.dispatch(&[task]);
+    with_hint.tasks[0].manual_path_hint = Some("existing.rs".into());
+    let status = f
+        .tasks()
+        .preview_dispatch_gate(&f.project, &with_hint.tasks)
+        .unwrap();
+    assert!(!status.blocked);
+    assert!(status.tasks_missing_paths.is_empty());
+    f.tasks().dispatch(with_hint).unwrap();
+}
+
+#[test]
+fn request_path_clarification_reopens_incubation_and_blocks_reapproval() {
+    let f = Fixture::new();
+    let feature = f.approved("Needs a path");
+    let task = f
+        .tasks()
+        .list(&f.project)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.draft.feature_id.as_ref() == Some(&feature.id))
+        .unwrap();
+    f.forge()
+        .request_path_clarification(&f.project, &feature.id, &task.draft.title)
+        .unwrap();
+    let reopened = f.forge().get(&f.project, &feature.id).unwrap();
+    assert_eq!(reopened.state, FeatureState::Incubating);
+    assert_eq!(reopened.brief.pending_decisions.len(), 1);
+    assert!(
+        f.forge()
+            .approve(&f.project, &feature.id, reopened.revision)
+            .is_err(),
+        "pending_decisions must block reapproval until answered"
+    );
 }

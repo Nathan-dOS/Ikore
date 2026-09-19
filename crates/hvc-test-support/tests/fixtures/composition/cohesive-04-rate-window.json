@@ -1,0 +1,96 @@
+{
+  "id": "cohesive-04-rate-window",
+  "family": "cohesive_multi_file",
+  "heldOut": false,
+  "sources": {
+    "src/window.rs": "pub fn in_window(ts: u64, start: u64, len: u64) -> bool {\n    let _ = (ts, start, len);\n    true\n}\n",
+    "src/limiter.rs": "pub fn allow(ts: u64, start: u64) -> bool {\n    let _ = (ts, start);\n    true\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Rate limit by window",
+      "kind": "bug",
+      "description": "in_window in src/window.rs must check the bounds and allow in src/limiter.rs must use a 60 second window; add tests/limiter_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "allow returns false for a timestamp outside the window"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_core",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/window.rs"
+      ],
+      "destinationPath": "src/window.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "implement_caller",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/window.rs",
+        "src/limiter.rs"
+      ],
+      "destinationPath": "src/limiter.rs",
+      "dependsOn": [
+        "implement_core"
+      ]
+    },
+    {
+      "unitKey": "test_change",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/window.rs",
+        "src/limiter.rs"
+      ],
+      "destinationPath": "tests/limiter_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/window.rs": "pub fn in_window(ts: u64, start: u64, len: u64) -> bool {\n    ts >= start && ts < start + len\n}\n",
+    "src/limiter.rs": "pub fn allow(ts: u64, start: u64) -> bool {\n    crate::window::in_window(ts, start, 60)\n}\n",
+    "tests/limiter_test.rs": "#[test]\nfn outside_window_is_refused() {\n    assert!(!limiter::allow(200, 0));\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/window.rs",
+      "mustContain": [
+        "ts >= start && ts < start + len"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "src/limiter.rs",
+      "mustContain": [
+        "crate::window::in_window"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/limiter_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": null
+}

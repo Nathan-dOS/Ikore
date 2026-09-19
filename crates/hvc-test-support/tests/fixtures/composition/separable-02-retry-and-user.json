@@ -1,0 +1,124 @@
+{
+  "id": "separable-02-retry-and-user",
+  "family": "separable_multi_task",
+  "heldOut": false,
+  "sources": {
+    "src/retry.rs": "pub const MAX_ATTEMPTS: u32 = 0;\n\npub fn should_retry(attempt: u32) -> bool {\n    attempt < MAX_ATTEMPTS\n}\n",
+    "src/user.rs": "pub fn normalize(name: &str) -> String {\n    name.to_string()\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Allow three retries",
+      "kind": "bug",
+      "description": "MAX_ATTEMPTS in src/retry.rs is zero; set it to 3 and add tests/retry_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "should_retry returns false for the fourth attempt"
+        }
+      ]
+    },
+    {
+      "title": "Normalize user names",
+      "kind": "bug",
+      "description": "normalize in src/user.rs must trim and lowercase; add tests/user_test.rs",
+      "criteria": [
+        {
+          "id": "ac-2",
+          "description": "normalize returns the trimmed, lowercased name"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_first",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/retry.rs"
+      ],
+      "destinationPath": "src/retry.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "implement_second",
+      "kind": "code",
+      "task": 1,
+      "criterionIds": [
+        "ac-2"
+      ],
+      "inputPaths": [
+        "src/user.rs"
+      ],
+      "destinationPath": "src/user.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_first",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/retry.rs"
+      ],
+      "destinationPath": "tests/retry_test.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_second",
+      "kind": "test",
+      "task": 1,
+      "criterionIds": [
+        "ac-2"
+      ],
+      "inputPaths": [
+        "src/user.rs"
+      ],
+      "destinationPath": "tests/user_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/retry.rs": "pub const MAX_ATTEMPTS: u32 = 3;\n\npub fn should_retry(attempt: u32) -> bool {\n    attempt < MAX_ATTEMPTS\n}\n",
+    "src/user.rs": "pub fn normalize(name: &str) -> String {\n    name.trim().to_lowercase()\n}\n",
+    "tests/retry_test.rs": "#[test]\nfn fourth_attempt_is_refused() {\n    assert!(!retry::should_retry(3));\n}\n",
+    "tests/user_test.rs": "#[test]\nfn names_are_trimmed_and_lowercased() {\n    assert_eq!(user::normalize(\"  Ada \"), \"ada\");\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/retry.rs",
+      "mustContain": [
+        "MAX_ATTEMPTS: u32 = 3"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "src/user.rs",
+      "mustContain": [
+        ".trim().to_lowercase()"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/retry_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/user_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": null
+}

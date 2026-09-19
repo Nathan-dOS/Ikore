@@ -219,7 +219,13 @@ fn indexing_events_progress_then_idle_exactly_once() {
     f.service.attach_indexing_event_sink(sink.clone());
     fs::write(f.workspace.path().join("knowledge/obsidian/note-a.md"), "a").unwrap();
     fs::write(f.workspace.path().join("knowledge/obsidian/note-b.md"), "b").unwrap();
-    let expected_workspace_path = f.workspace.path().canonicalize().unwrap().to_string_lossy().to_string();
+    let expected_workspace_path = f
+        .workspace
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     runtime().block_on(async {
         assert_eq!(enqueue(&f).await.queued_count, 2);
         f.service

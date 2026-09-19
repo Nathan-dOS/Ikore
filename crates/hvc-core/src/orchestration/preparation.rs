@@ -335,6 +335,16 @@ impl PersistenceService {
                 .query_map([&pulse], |r| r.get(0))?
                 .collect::<Result<Vec<_>, _>>()?;
             let (learning, learning_run) = Self::learning_snapshot(db, &pulse)?;
+            let stage_execution = if crate::orchestration::PipelineVersion::from_db(version)
+                .is_some_and(|v| v.supports_composition())
+            {
+                match Self::latest_execution_for_pulsation(db, &pulse, None)? {
+                    Some(execution) => Some(Self::execution_snapshot(db, &execution)?),
+                    None => None,
+                }
+            } else {
+                None
+            };
             result.push(PulsationCoordinationSnapshot {
                 description_editable: !started
                     && matches!(status, PulsationStatus::Planning | PulsationStatus::Running),
@@ -367,6 +377,7 @@ impl PersistenceService {
                 learning,
                 learning_run,
                 artifact_ids: artifacts,
+                stage_execution,
             });
         }
         Ok(result)

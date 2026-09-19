@@ -186,6 +186,18 @@ pub fn profiles() -> Vec<ProviderProfile> {
             true,
             vec![],
         ),
+        profile(
+            "openrouter",
+            "OpenRouter",
+            ProviderProtocol::OpenaiChat,
+            "https://openrouter.ai/api/v1/chat/completions",
+            AuthStyle::Bearer,
+            "openrouter/free",
+            false,
+            true,
+            true,
+            vec![],
+        ),
         ProviderProfile {
             id: "ollama".to_string(),
             display_name: "Ollama".to_string(),
@@ -265,9 +277,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exposes_eight_tool_calling_providers_and_legacy_openai_profile() {
+    fn exposes_nine_tool_calling_profiles_including_openrouter_and_legacy_openai() {
         let profiles = profiles();
-        assert_eq!(profiles.len(), 8);
+        assert_eq!(profiles.len(), 9);
         for expected in [
             "openai",
             "openai_legacy",
@@ -276,6 +288,7 @@ mod tests {
             "deepseek",
             "groq",
             "mistral",
+            "openrouter",
             "ollama",
         ] {
             assert!(profiles.iter().any(|profile| profile.id == expected));
@@ -284,6 +297,25 @@ mod tests {
             profiles
                 .iter()
                 .all(|profile| profile.capabilities.tool_calling)
+        );
+    }
+
+    #[test]
+    fn openrouter_uses_a_fixed_bearer_chat_endpoint() {
+        let openrouter = profile_by_id("openrouter").unwrap();
+        assert_eq!(openrouter.auth_style, AuthStyle::Bearer);
+        assert_eq!(openrouter.protocol, ProviderProtocol::OpenaiChat);
+        assert_eq!(
+            openrouter.endpoint,
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+        assert!(!openrouter.endpoint_configurable);
+        assert_eq!(openrouter.default_model, "openrouter/free");
+        assert_eq!(
+            openrouter
+                .resolved_endpoint(Some("https://example.invalid/custom"))
+                .unwrap(),
+            openrouter.endpoint
         );
     }
 

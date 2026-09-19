@@ -4,10 +4,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use hvc_core::AppCore;
-use hvc_core::llm::{AgentRole, LlmEventEnvelope, LlmStreamEvent};
+use hvc_core::llm::{
+    AgentExecutionTarget, AgentRole, FreeFormProviderRouteBinding, LlmEventEnvelope,
+    LlmExecutionListItem, LlmStreamEvent, UpsertFreeFormProviderRouteBindingRequest,
+};
 use hvc_core::persistence_service::{
-    CliFallbackCheckpoint, PersistenceCommandError, ResolveCliFallbackRequest,
-    ResolveCliFallbackResponse,
+    CancelAgentApiExecutionRequest, CliFallbackCheckpoint, ListAgentApiExecutionsRequest,
+    PersistenceCommandError, ResolveCliFallbackRequest, ResolveCliFallbackResponse,
+    StartFreeFormApiRunRequest, StartFreeFormApiRunResponse,
 };
 use hvc_core::terminals::{
     CliBackend, CliModelCatalogSnapshot, CreateFreeFormSlotRequest, ResumeManualRunRequest,
@@ -24,6 +28,8 @@ pub(crate) type AgentsFuture<T> =
 pub(crate) struct AgentsDashboardSnapshot {
     pub(crate) terminals: TerminalsSnapshot,
     pub(crate) fallbacks: Vec<CliFallbackCheckpoint>,
+    pub(crate) free_form_bindings: Vec<FreeFormProviderRouteBinding>,
+    pub(crate) api_executions: HashMap<String, Vec<LlmExecutionListItem>>,
 }
 
 pub(crate) trait AgentsBackend: Send + Sync {
@@ -41,6 +47,15 @@ pub(crate) trait AgentsBackend: Send + Sync {
     ) -> AgentsFuture<hvc_core::terminals::CliAgentConfig>;
     fn start_manual(&self, request: StartManualRunRequest) -> AgentsFuture<TerminalRun>;
     fn start_free_form(&self, request: StartFreeFormRunRequest) -> AgentsFuture<TerminalRun>;
+    fn start_free_form_api(
+        &self,
+        request: StartFreeFormApiRunRequest,
+    ) -> AgentsFuture<StartFreeFormApiRunResponse>;
+    fn cancel_api_execution(&self, execution_id: String) -> AgentsFuture<bool>;
+    fn upsert_free_form_binding(
+        &self,
+        request: UpsertFreeFormProviderRouteBindingRequest,
+    ) -> AgentsFuture<FreeFormProviderRouteBinding>;
     fn resume_manual(&self, request: ResumeManualRunRequest) -> AgentsFuture<TerminalRun>;
     fn create_free_form(
         &self,
@@ -67,6 +82,12 @@ pub(crate) trait AgentsBackend: Send + Sync {
     fn clear_history(&self, project_id: String, role: Option<AgentRole>) -> AgentsFuture<usize>;
     fn clear_slot_history(&self, project_id: String, slot_id: String) -> AgentsFuture<usize>;
     fn export_history(&self, project_id: String, run_id: String) -> AgentsFuture<String>;
+    fn export_api_execution(
+        &self,
+        project_id: String,
+        target: AgentExecutionTarget,
+        execution_id: String,
+    ) -> AgentsFuture<String>;
     fn resolve_fallback(
         &self,
         request: ResolveCliFallbackRequest,
@@ -93,6 +114,50 @@ fn persistence_error(
     UiCommandError::from(PersistenceCommandError::from(error))
 }
 
+fn complete_dashboard_snapshot(
+    core: &AppCore,
+    terminals: TerminalsSnapshot,
+) -> Result<AgentsDashboardSnapshot, UiCommandError> {
+    let persistence = core.persistence();
+    let fallbacks = persistence
+        .list_cli_fallbacks(&terminals.project_id)
+        .map_err(persistence_error)?;
+    let free_form_bindings = persistence
+        .list_free_form_provider_route_bindings(&terminals.project_id)
+        .map_err(persistence_error)?
+        .bindings;
+    let mut api_executions = HashMap::new();
+    let targets = terminals
+        .agents
+        .iter()
+        .map(|agent| AgentExecutionTarget::canonical(agent.config.agent_role))
+        .chain(
+            terminals
+                .free_form_slots
+                .iter()
+                .chain(&terminals.archived_free_form_slots)
+                .map(|slot| AgentExecutionTarget::free_form(slot.slot.id.clone())),
+        );
+    for target in targets {
+        let key = target.stable_key();
+        let executions = persistence
+            .list_agent_api_executions(ListAgentApiExecutionsRequest {
+                project_id: terminals.project_id.clone(),
+                target,
+                limit: Some(20),
+            })
+            .map_err(persistence_error)?
+            .executions;
+        api_executions.insert(key, executions);
+    }
+    Ok(AgentsDashboardSnapshot {
+        terminals,
+        fallbacks,
+        free_form_bindings,
+        api_executions,
+    })
+}
+
 impl AgentsBackend for CoreAgentsBackend {
     fn snapshot(&self, project_id: String) -> AgentsFuture<AgentsDashboardSnapshot> {
         let terminals = self.core.terminals();
@@ -106,14 +171,7 @@ impl AgentsBackend for CoreAgentsBackend {
                     UiCommandError::worker(format!("task de Agents interrompida: {error}"))
                 })?
                 .map_err(terminal_error)?;
-            let fallbacks = core
-                .persistence()
-                .list_cli_fallbacks(&terminals.project_id)
-                .map_err(persistence_error)?;
-            Ok(AgentsDashboardSnapshot {
-                terminals,
-                fallbacks,
-            })
+            complete_dashboard_snapshot(&core, terminals)
         })
     }
 
@@ -132,14 +190,7 @@ impl AgentsBackend for CoreAgentsBackend {
                     UiCommandError::worker(format!("task de Agents interrompida: {error}"))
                 })?
                 .map_err(terminal_error)?;
-            let fallbacks = core
-                .persistence()
-                .list_cli_fallbacks(&terminals.project_id)
-                .map_err(persistence_error)?;
-            Ok(AgentsDashboardSnapshot {
-                terminals,
-                fallbacks,
-            })
+            complete_dashboard_snapshot(&core, terminals)
         })
     }
 
@@ -195,6 +246,47 @@ impl AgentsBackend for CoreAgentsBackend {
                     UiCommandError::worker(format!("worker de agente livre interrompido: {error}"))
                 })?
                 .map_err(terminal_error)
+        })
+    }
+
+    fn start_free_form_api(
+        &self,
+        request: StartFreeFormApiRunRequest,
+    ) -> AgentsFuture<StartFreeFormApiRunResponse> {
+        let core = Arc::clone(&self.core);
+        Box::pin(async move {
+            core.persistence()
+                .start_free_form_api(request)
+                .map_err(persistence_error)
+        })
+    }
+
+    fn cancel_api_execution(&self, execution_id: String) -> AgentsFuture<bool> {
+        let core = Arc::clone(&self.core);
+        Box::pin(async move {
+            core.persistence()
+                .cancel_agent_api_execution(CancelAgentApiExecutionRequest { execution_id })
+                .map(|response| response.cancelled)
+                .map_err(persistence_error)
+        })
+    }
+
+    fn upsert_free_form_binding(
+        &self,
+        request: UpsertFreeFormProviderRouteBindingRequest,
+    ) -> AgentsFuture<FreeFormProviderRouteBinding> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .upsert_free_form_provider_route_binding(request)
+                })
+                .await
+                .map_err(|error| UiCommandError::worker(error.to_string()))?
+                .map(|response| response.binding)
+                .map_err(persistence_error)
         })
     }
 
@@ -354,6 +446,30 @@ impl AgentsBackend for CoreAgentsBackend {
         })
     }
 
+    fn export_api_execution(
+        &self,
+        project_id: String,
+        target: AgentExecutionTarget,
+        execution_id: String,
+    ) -> AgentsFuture<String> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime.spawn_blocking(move || {
+                core.persistence().export_agent_api_execution(
+                    hvc_core::persistence_service::GetAgentApiExecutionSnapshotRequest {
+                        project_id,
+                        target,
+                        execution_id,
+                    },
+                )
+            }).await
+                .map_err(|error| UiCommandError::worker(format!("export worker aborted: {error}")))?
+                .map(|path| path.to_string_lossy().into_owned())
+                .map_err(persistence_error)
+        })
+    }
+
     fn resolve_fallback(
         &self,
         request: ResolveCliFallbackRequest,
@@ -370,12 +486,6 @@ impl AgentsBackend for CoreAgentsBackend {
                 .map_err(persistence_error)
         })
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentsTab {
-    Cli,
-    Api,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -402,6 +512,48 @@ pub(crate) enum TerminalEventFilter {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApiActivityFilter {
+    All,
+    Output,
+    Lifecycle,
+    Errors,
+}
+
+impl ApiActivityFilter {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Output => "output",
+            Self::Lifecycle => "lifecycle",
+            Self::Errors => "errors",
+        }
+    }
+
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::All => Self::Output,
+            Self::Output => Self::Lifecycle,
+            Self::Lifecycle => Self::Errors,
+            Self::Errors => Self::All,
+        }
+    }
+
+    pub(crate) fn accepts(self, line: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Output => line.starts_with("output · "),
+            Self::Lifecycle => {
+                line.starts_with("route · ")
+                    || line.starts_with("attempt ")
+                    || line.starts_with("completed · ")
+                    || line.starts_with("resilience ")
+            }
+            Self::Errors => line.contains("failed") || line.contains("error"),
+        }
+    }
+}
+
 impl TerminalEventFilter {
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -412,6 +564,18 @@ impl TerminalEventFilter {
             Self::Stderr => "stderr",
             Self::Warning => "warning",
             Self::Error => "error",
+        }
+    }
+
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::All => Self::Activity,
+            Self::Activity => Self::Tool,
+            Self::Tool => Self::Stdout,
+            Self::Stdout => Self::Stderr,
+            Self::Stderr => Self::Warning,
+            Self::Warning => Self::Error,
+            Self::Error => Self::All,
         }
     }
 
@@ -437,30 +601,54 @@ impl TerminalEventFilter {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum AgentIdentifier {
     Canonical(AgentRole),
     FreeForm(String),
 }
 
+impl AgentIdentifier {
+    pub(crate) fn target(&self) -> AgentExecutionTarget {
+        match self {
+            Self::Canonical(role) => AgentExecutionTarget::canonical(*role),
+            Self::FreeForm(slot_id) => AgentExecutionTarget::free_form(slot_id.clone()),
+        }
+    }
+
+    pub(crate) fn stable_key(&self) -> String {
+        self.target().stable_key()
+    }
+
+    fn from_target(target: &AgentExecutionTarget) -> Self {
+        match target {
+            AgentExecutionTarget::Canonical { agent_role } => Self::Canonical(*agent_role),
+            AgentExecutionTarget::FreeForm { slot_id } => Self::FreeForm(slot_id.clone()),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct AgentsModel {
     pub(crate) selected_agent: Option<AgentIdentifier>,
-    pub(crate) tab: AgentsTab,
     pub(crate) snapshot: Option<TerminalsSnapshot>,
     pub(crate) fallbacks: Vec<CliFallbackCheckpoint>,
+    pub(crate) free_form_bindings: Vec<FreeFormProviderRouteBinding>,
     pub(crate) events_by_run: HashMap<String, Vec<TerminalEvent>>,
     pub(crate) selected_run_by_role: HashMap<AgentRole, String>,
     pub(crate) selected_run_by_slot: HashMap<String, String>,
     pub(crate) event_filters: HashMap<String, TerminalEventFilter>,
     pub(crate) follow_tail: HashMap<String, bool>,
-    pub(crate) api_activity: HashMap<AgentRole, Vec<String>>,
+    pub(crate) api_activity: HashMap<AgentIdentifier, Vec<String>>,
+    pub(crate) api_filters: HashMap<String, ApiActivityFilter>,
+    pub(crate) api_executions: HashMap<String, Vec<LlmExecutionListItem>>,
+    pub(crate) active_api_execution_by_slot: HashMap<String, String>,
     pub(crate) model_catalogs: HashMap<CliBackend, CliModelCatalogSnapshot>,
     pub(crate) active_model_picker: Option<CliModelPickerState>,
     pub(crate) catalog_loading_backend: Option<CliBackend>,
     pub(crate) catalog_error: Option<String>,
     pub(crate) viewer_enabled: bool,
-    pub(crate) selected_api_role: Option<AgentRole>,
+    pub(crate) selected_api_target: Option<AgentIdentifier>,
+    pub(crate) terminal_expanded: bool,
     api_sequences: HashMap<String, u64>,
     pub(crate) loading: bool,
     pub(crate) busy: bool,
@@ -478,21 +666,25 @@ impl Default for AgentsModel {
     fn default() -> Self {
         Self {
             selected_agent: None,
-            tab: AgentsTab::Cli,
             snapshot: None,
             fallbacks: Vec::new(),
+            free_form_bindings: Vec::new(),
             events_by_run: HashMap::new(),
             selected_run_by_role: HashMap::new(),
             selected_run_by_slot: HashMap::new(),
             event_filters: HashMap::new(),
             follow_tail: HashMap::new(),
             api_activity: HashMap::new(),
+            api_filters: HashMap::new(),
+            api_executions: HashMap::new(),
+            active_api_execution_by_slot: HashMap::new(),
             model_catalogs: HashMap::new(),
             active_model_picker: None,
             catalog_loading_backend: None,
             catalog_error: None,
             viewer_enabled: true,
-            selected_api_role: None,
+            selected_api_target: None,
+            terminal_expanded: false,
             api_sequences: HashMap::new(),
             loading: false,
             busy: false,
@@ -540,6 +732,20 @@ impl AgentsModel {
         self.error = None;
         self.notice = None;
         self.generation
+    }
+
+    /// Starts a background snapshot read that leaves `loading`/`busy`/`error` untouched: the
+    /// shell chrome (header, context rail, footer) refreshes while another view owns the panel,
+    /// so the Agents panel must not flicker into its loading state.
+    pub(crate) fn begin_quiet(&mut self) -> u64 {
+        self.generation = self.generation.saturating_add(1);
+        self.generation
+    }
+
+    /// `true` while a loud read or an operation is in flight; a quiet refresh yields to it so a
+    /// later generation never swallows the operation's result or error.
+    pub(crate) fn in_flight(&self) -> bool {
+        self.loading || self.busy
     }
 
     pub(crate) fn apply_snapshot(
@@ -601,6 +807,8 @@ impl AgentsModel {
             }
         }
         self.fallbacks = snapshot.fallbacks;
+        self.free_form_bindings = snapshot.free_form_bindings;
+        self.api_executions = snapshot.api_executions;
         if self
             .pending_fallback_cancel
             .as_ref()
@@ -767,28 +975,42 @@ impl AgentsModel {
         gap
     }
 
-    pub(crate) fn record_llm(&mut self, envelope: &LlmEventEnvelope) {
+    pub(crate) fn record_llm(&mut self, envelope: &LlmEventEnvelope) -> bool {
         if !self.viewer_enabled {
-            return;
+            return false;
         }
         let Some(context) = envelope.context.as_ref() else {
-            return;
+            return false;
         };
         if self
             .snapshot
             .as_ref()
             .is_none_or(|snapshot| snapshot.project_id != context.project_id)
         {
-            return;
+            return false;
         }
+        let identifier = AgentIdentifier::from_target(&context.target);
         let last = self
             .api_sequences
             .entry(envelope.execution_id.clone())
             .or_default();
         if envelope.sequence <= *last {
-            return;
+            return false;
         }
+        let gap = envelope.sequence > last.saturating_add(1);
         *last = envelope.sequence;
+        if let AgentExecutionTarget::FreeForm { slot_id } = &context.target {
+            if matches!(&envelope.event, LlmStreamEvent::RouteStarted { .. }) {
+                self.active_api_execution_by_slot
+                    .insert(slot_id.clone(), envelope.execution_id.clone());
+            }
+            if matches!(
+                &envelope.event,
+                LlmStreamEvent::RouteCompleted { .. } | LlmStreamEvent::RouteFailed { .. }
+            ) {
+                self.active_api_execution_by_slot.remove(slot_id);
+            }
+        }
         let line = match &envelope.event {
             LlmStreamEvent::RouteStarted { route_id } => format!(
                 "route · {route_id} · execution {} · pulsation {} · job {}",
@@ -819,7 +1041,7 @@ impl AgentsModel {
         let line = hvc_core::secret_redactor::redact_secrets(&line)
             .map(|result| result.text)
             .unwrap_or_else(|_| "[content unavailable after redaction]".into());
-        let activity = self.api_activity.entry(context.agent_role).or_default();
+        let activity = self.api_activity.entry(identifier).or_default();
         if matches!(&envelope.event, LlmStreamEvent::TokenDelta { .. })
             && activity.last_mut().is_some_and(|previous| {
                 if previous.starts_with("output · ") {
@@ -837,7 +1059,7 @@ impl AgentsModel {
                 }
             })
         {
-            return;
+            return gap;
         }
         activity.push(
             if matches!(&envelope.event, LlmStreamEvent::TokenDelta { .. }) {
@@ -855,6 +1077,23 @@ impl AgentsModel {
         ) {
             self.api_sequences.remove(&envelope.execution_id);
         }
+        gap
+    }
+
+    pub(crate) fn apply_started_api_run(
+        &mut self,
+        generation: u64,
+        slot_id: String,
+        execution_id: String,
+    ) -> bool {
+        if generation != self.generation {
+            return false;
+        }
+        self.busy = false;
+        self.active_api_execution_by_slot
+            .insert(slot_id, execution_id);
+        self.notice = Some("FreeForm API execution started.".into());
+        true
     }
 
     pub(crate) fn apply_config(
@@ -1052,7 +1291,9 @@ mod tests {
             generation,
             AgentsDashboardSnapshot {
                 terminals: snapshot,
-                fallbacks: vec![]
+                fallbacks: vec![],
+                free_form_bindings: vec![],
+                api_executions: HashMap::new(),
             }
         ));
         assert_eq!(
@@ -1112,7 +1353,7 @@ mod tests {
                     project_id: "project-1".into(),
                     pulsation_id: Some("pulse-1".into()),
                     job_id: Some("job-1".into()),
-                    agent_role: AgentRole::BackendAgent,
+                    target: AgentExecutionTarget::canonical(AgentRole::BackendAgent),
                     stage: "backend".into(),
                 }),
                 event: LlmStreamEvent::RouteStarted {
@@ -1121,7 +1362,8 @@ mod tests {
             });
         }
 
-        let activity = &model.api_activity[&AgentRole::BackendAgent];
+        let activity = &model.api_activity
+            [&AgentIdentifier::Canonical(AgentRole::BackendAgent)];
         assert_eq!(activity.len(), 200);
         assert!(activity.iter().all(|line| line.contains("[REDACTED]")));
         assert!(

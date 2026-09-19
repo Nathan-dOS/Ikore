@@ -8,6 +8,7 @@ use crate::pulsations::{
     PIPELINE_STAGES, PulsationDetailSection, STATUS_GROUPS, stage_label, status_group_id,
     status_label,
 };
+use crate::sizing::StyledExt;
 use crate::theme;
 
 pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
@@ -220,81 +221,76 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
             let backend_override = model.pulsations.read(cx).backend_override.clone();
             let backend_override_busy = model.pulsations.read(cx).backend_override_busy;
             panel
-                .when(section != PulsationDetailSection::Review, |panel| {
-                    panel.child(
-                        div()
-                            .flex_shrink_0()
-                            .child(pulsation_detail_header(
-                                active.clone(),
-                                runtime_loading,
-                                backend_override,
-                                backend_override_busy,
-                                cx,
-                            ))
-                            .child(pipeline(active.stage)),
-                    )
-                })
                 .child(
-                    div().flex().flex_wrap().flex_shrink_0().gap_2().children(
-                        [
-                            (
-                                PulsationDetailSection::Review,
-                                "pulsation-review",
-                                if review_pending {
-                                    "Review · pending"
-                                } else {
-                                    "Review"
-                                },
-                            ),
-                            (
-                                PulsationDetailSection::Overview,
-                                "pulsation-overview",
-                                "Overview",
-                            ),
-                            (
-                                PulsationDetailSection::Preparation,
-                                "pulsation-preparation",
-                                if preparation_pending {
-                                    "Preparation · pending"
-                                } else {
-                                    "Preparation"
-                                },
-                            ),
-                            (
-                                PulsationDetailSection::Artifacts,
-                                "pulsation-artifacts",
-                                "Artifacts",
-                            ),
-                        ]
-                        .into_iter()
-                        .map(|(target, id, label)| {
-                            div()
-                                .id(id)
-                                .debug_selector(move || id.into())
-                                .px_3()
-                                .py_2()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .text_sm()
-                                .bg(if section == target {
-                                    theme::accent_soft()
-                                } else {
-                                    theme::surface_raised()
-                                })
-                                .text_color(if section == target {
-                                    theme::accent()
-                                } else {
-                                    theme::text_muted()
-                                })
-                                .on_click(cx.listener(move |model, _, _, cx| {
-                                    model
-                                        .pulsations
-                                        .update(cx, |state, _| state.detail_section = target);
-                                    cx.notify();
-                                }))
-                                .child(label)
-                        }),
-                    ),
+                    div()
+                        .id("pulsation-section-tabs")
+                        .debug_selector(|| "pulsation-section-tabs".into())
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .flex_wrap()
+                        .gap_2()
+                        .children(
+                            [
+                                (
+                                    PulsationDetailSection::Review,
+                                    "pulsation-review",
+                                    if review_pending {
+                                        "Review · pending"
+                                    } else {
+                                        "Review"
+                                    },
+                                ),
+                                (
+                                    PulsationDetailSection::Overview,
+                                    "pulsation-overview",
+                                    "Overview",
+                                ),
+                                (
+                                    PulsationDetailSection::Preparation,
+                                    "pulsation-preparation",
+                                    if preparation_pending {
+                                        "Preparation · pending"
+                                    } else {
+                                        "Preparation"
+                                    },
+                                ),
+                                (
+                                    PulsationDetailSection::Artifacts,
+                                    "pulsation-artifacts",
+                                    "Artifacts",
+                                ),
+                            ]
+                            .into_iter()
+                            .map(|(target, id, label)| {
+                                div()
+                                    .id(id)
+                                    .debug_selector(move || id.into())
+                                    .px_3()
+                                    .py_2()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_sm()
+                                    .bg(if section == target {
+                                        theme::accent_soft()
+                                    } else {
+                                        theme::surface_raised()
+                                    })
+                                    .text_color(if section == target {
+                                        theme::accent()
+                                    } else {
+                                        theme::text_muted()
+                                    })
+                                    .on_click(cx.listener(move |model, _, _, cx| {
+                                        model
+                                            .pulsations
+                                            .update(cx, |state, _| state.detail_section = target);
+                                        cx.notify();
+                                    }))
+                                    .child(label)
+                            }),
+                        ),
                 )
                 .child(
                     div()
@@ -308,6 +304,21 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                         })
                         .when(section != PulsationDetailSection::Review, |panel| {
                             panel.overflow_y_scroll()
+                        })
+                        .when(section != PulsationDetailSection::Review, |scroll| {
+                            scroll.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .mb_4()
+                                    .child(pulsation_detail_header(
+                                        active.clone(),
+                                        runtime_loading,
+                                        backend_override,
+                                        backend_override_busy,
+                                        cx,
+                                    ))
+                                    .child(pipeline(active.stage)),
+                            )
                         })
                         .child(match section {
                             PulsationDetailSection::Review => {
@@ -367,7 +378,12 @@ fn detail_overview(
         .when_some(coverage, |panel, coverage| {
             panel.child(brownfield_progress_panel(coverage))
         })
+        // Undoing a failed pulsation's files comes before adopting the base.
+        .when(active.status == PulsationStatus::Failed, |panel| {
+            panel.child(cleanup_panel(model, cx))
+        })
         .child(coordination_panel(model, cx))
+        .child(composition_panel(model, cx))
         .child(crate::usage::pulsation_usage_panel(model, cx))
         .child(
             div()
@@ -640,6 +656,7 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
     }
 
     if let Some(questions) = detail.questions.filter(|_| main_actionable) {
+        let question_set_id = questions.id.clone();
         let mut questions_card = prep_card("SPECIFICATION · PENDING QUESTIONS")
             .child(div().text_sm().child(
                 "Questions produced by Specification and presented in Companion without additional LLM calls. No complete specification to approve yet.",
@@ -676,10 +693,17 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
             ))
             .child(preparation_button(
                 "specification-conversation",
-                "View Companion conversation",
+                "Companion questions",
                 true,
                 cx,
                 |m, cx| m.open_specification_conversation(cx),
+            ))
+            .child(preparation_button(
+                "resolution-conversation",
+                "Resolution conversation",
+                true,
+                cx,
+                move |m, cx| m.toggle_resolution_chip(question_set_id.clone(), cx),
             ));
         panel = panel.child(questions_card);
     } else if artifact_review && main_actionable {
@@ -987,6 +1011,8 @@ fn preparation_button(
     div()
         .id(id)
         .debug_selector(move || id.into())
+        .self_start()
+        .flex_shrink_0()
         .p_2()
         .rounded_md()
         .tab_index(0)
@@ -1012,6 +1038,8 @@ fn learning_decision_button(
 ) -> impl IntoElement {
     div()
         .id(gpui::SharedString::from(id))
+        .self_start()
+        .flex_shrink_0()
         .px_3()
         .py_2()
         .rounded_md()
@@ -1260,13 +1288,258 @@ fn coordination_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElemen
                     .when_some(p.diagnostic,|row,error|row.child(div().text_xs().text_color(theme::danger()).child(error)))
                     .when_some(p.observation_error,|row,error|row.child(div().text_xs().text_color(theme::danger()).child(error)))
             }))
-            .child(div().mt_2().child(input))
+            .child(crate::sizing::text_area(input).mt_2())
             .child(div().mt_2().flex().gap_2()
                 .child(div().id("refresh-base-review").p_2().cursor_pointer().bg(theme::surface_raised())
                     .on_click(cx.listener(|m,_,_,cx|m.refresh_pulsations(cx))).child("Refresh review"))
                 .child(div().id("confirm-base-review").p_2().bg(if can_confirm {theme::accent_soft()} else {theme::surface_raised()})
                     .when(can_confirm,|b|b.cursor_pointer().on_click(cx.listener(|m,_,_,cx|m.reconcile_project_base(cx))))
                     .child("Reviewed: adopt current base"))))
+        .into_any_element()
+}
+
+/// "Leftover files" of a failed pulsation: the host's dry run of what the
+/// cleanup would remove (files the pulsation itself created and never edited
+/// since) and what it deliberately keeps. Removal takes two clicks and never
+/// touches kept files; the base review stays the explicit step afterwards.
+fn cleanup_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    use hvc_core::orchestration::CleanupDisposition;
+    let state = model.pulsations.read(cx);
+    let cleanup = &state.cleanup;
+    let plan = cleanup.plan.clone();
+    let loading = cleanup.loading;
+    let busy = cleanup.busy;
+    let armed = cleanup.armed;
+    let can_remove = cleanup.can_remove();
+    let error = cleanup.error.clone();
+    let removable = plan.as_ref().map_or(0, |plan| plan.removable_files());
+    let kept = plan.as_ref().map_or(0, |plan| plan.kept_files());
+    let summary = match &plan {
+        _ if loading && plan.is_none() => "Reading the workspace…".to_string(),
+        Some(plan) if plan.is_noop() && plan.entries.is_empty() => {
+            "Nothing left on disk from this pulsation.".to_string()
+        }
+        Some(plan) => format!(
+            "This pulsation published {} file(s): {} can be removed, {} kept.",
+            plan.entries.len(),
+            removable,
+            kept
+        ),
+        None => "Preview unavailable.".to_string(),
+    };
+    let remove_label = if busy {
+        "Removing…".to_string()
+    } else if armed {
+        "Confirm removal".to_string()
+    } else {
+        format!("Remove {removable} file(s)")
+    };
+    div()
+        .id("pulsation-cleanup")
+        .debug_selector(|| "pulsation-cleanup".into())
+        .mb_3()
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(theme::border())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child("Leftover files"),
+        )
+        .child(div().text_sm().child(summary))
+        .when_some(plan.clone(), |card, plan| {
+            card.children(plan.entries.into_iter().map(|entry| {
+                let (label, color) = match entry.disposition {
+                    CleanupDisposition::Remove => ("will be removed", theme::danger()),
+                    CleanupDisposition::AlreadyAbsent => ("already gone", theme::text_muted()),
+                    CleanupDisposition::KeepPreexisting => {
+                        ("kept: existed before this pulsation", theme::warning())
+                    }
+                    CleanupDisposition::KeepEdited => {
+                        ("kept: edited after publication", theme::warning())
+                    }
+                    CleanupDisposition::KeepUnreadable => ("kept: unreadable", theme::warning()),
+                };
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(theme::surface_raised())
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_x_2()
+                    .child(div().text_sm().child(entry.relative_path))
+                    .child(div().text_xs().text_color(color).child(label))
+                    .when_some(entry.detail, |row, detail| {
+                        row.child(div().text_xs().text_color(theme::text_muted()).child(detail))
+                    })
+            }))
+            .when(!plan.candidate_dirs.is_empty(), |card| {
+                card.child(div().text_xs().text_color(theme::text_muted()).child(format!(
+                    "+ {} disposable staging dir(s) in app data",
+                    plan.candidate_dirs.len()
+                )))
+            })
+        })
+        .when_some(error, |card, error| {
+            card.child(div().text_xs().text_color(theme::danger()).child(error))
+        })
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(crate::widgets::btn(
+                    "pulsation-cleanup-remove",
+                    remove_label,
+                    crate::widgets::ButtonVariant::Danger,
+                    can_remove,
+                    cx,
+                    |model, cx| model.request_cleanup_failed_files(cx),
+                ))
+                .child(crate::widgets::btn(
+                    "pulsation-cleanup-refresh",
+                    if loading { "Refreshing…" } else { "Refresh" },
+                    crate::widgets::ButtonVariant::Secondary,
+                    !loading && !busy,
+                    cx,
+                    |model, cx| model.reload_cleanup_preview(cx),
+                )),
+        )
+        .child(div().text_xs().text_color(theme::text_muted()).child(
+            "Only files this pulsation created and never edited since are removed. Kept files stay in the base review; adopting the base remains an explicit step.",
+        ))
+        .into_any_element()
+}
+
+/// The composed execution of the active pulsation's current stage (pipeline
+/// v4, ADR-022): units with their real states, attempts, effective model and
+/// real versus reserved usage, host checks apart from authored coverage, and
+/// the remaining shared budget. Child results have no approval control here
+/// (SC-021): the human decides on the stage's Markdown review.
+fn composition_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    use hvc_core::orchestration::composition::{
+        AttemptState, CheckStatus, ExecutionStatus, UnitState, UsageCompleteness,
+    };
+    let state = model.pulsations.read(cx);
+    let Some(snapshot) = state
+        .detail()
+        .and_then(|detail| detail.stage_execution.clone())
+    else {
+        return div().into_any_element();
+    };
+    let status = match snapshot.status {
+        ExecutionStatus::Planned => "planned",
+        ExecutionStatus::Running => "running",
+        ExecutionStatus::Validating => "validating",
+        ExecutionStatus::Ready => "ready",
+        ExecutionStatus::Accepted => "accepted",
+        ExecutionStatus::Parked => "parked · awaiting a decision",
+        ExecutionStatus::Cancelled => "cancelled",
+        ExecutionStatus::Superseded => "superseded",
+        ExecutionStatus::Failed => "failed",
+    };
+    let tokens = |value: Option<u32>| {
+        value
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "unavailable".into())
+    };
+    let completeness = match snapshot.usage.completeness {
+        UsageCompleteness::Complete => "complete",
+        UsageCompleteness::Partial => "partial",
+        UsageCompleteness::Unavailable => "unavailable",
+    };
+    let budget = snapshot.remaining_budget.clone();
+    div().mb_3().p_3().rounded_md().border_1().border_color(theme::border())
+        .debug_selector(|| "composition-panel".into())
+        .child(div().text_sm().child(format!(
+            "Composed stage (v4) · {} · {status} · generation {} · execution v{}",
+            snapshot.stage.as_str(), snapshot.parent_generation, snapshot.execution_version
+        )))
+        .when_some(snapshot.blocked_reason.clone(), |panel, reason| panel
+            .child(div().mt_1().text_xs().text_color(theme::warning()).child(reason)))
+        .child(div().mt_2().text_xs().text_color(theme::text_muted()).child(format!(
+            "Usage ({completeness}): input {} · output {} · reasoning {} · cached {} — from the ledger, never an estimate.",
+            tokens(snapshot.usage.input_tokens), tokens(snapshot.usage.output_tokens),
+            tokens(snapshot.usage.reasoning_tokens), tokens(snapshot.usage.cached_input_tokens)
+        )))
+        .child(div().mt_1().text_xs().text_color(theme::text_muted()).child(format!(
+            "Remaining budget: {} initial / {} extra invocation(s) · {} / {} output tokens · {} / {} prompt characters.",
+            budget.initial_invocations, budget.extra_invocations,
+            budget.initial_output_tokens, budget.extra_output_tokens,
+            budget.initial_prompt_characters, budget.extra_prompt_characters
+        )))
+        .child(div().mt_2().text_xs().text_color(theme::text_muted()).child("UNITS"))
+        .children(snapshot.units.iter().map(|unit| {
+            let unit_state = match unit.state {
+                UnitState::Pending => "pending",
+                UnitState::Running => "running",
+                UnitState::Validated => "validated by the host",
+                UnitState::Failed => "failed",
+                UnitState::Cancelled => "cancelled",
+                UnitState::Invalidated => "invalidated",
+            };
+            let origin = if unit.reused_from_attempt_id.is_some() {
+                " · reused (no call)"
+            } else if unit.attempts.is_empty() && unit.state == UnitState::Validated {
+                " · synthesized by the host (no call)"
+            } else {
+                ""
+            };
+            let selector = format!("composition-unit-{}", unit.logical_unit_key.as_str());
+            div().mt_1().p_2().rounded_md().bg(theme::surface_raised())
+                .debug_selector(move || selector.clone())
+                .child(div().text_sm().child(format!(
+                    "`{}` · {} · gen {} · {unit_state}{origin}",
+                    unit.logical_unit_key.as_str(), unit.executor_kind.as_str(), unit.generation
+                )))
+                .children(unit.attempts.iter().enumerate().map(|(index, attempt)| {
+                    let attempt_state = match attempt.state {
+                        AttemptState::Reserved => "reserved",
+                        AttemptState::Running => "running",
+                        AttemptState::Succeeded => "succeeded",
+                        AttemptState::Rejected => "rejected",
+                        AttemptState::Interrupted => "interrupted",
+                        AttemptState::Cancelled => "cancelled",
+                    };
+                    div().text_xs().text_color(theme::text_muted()).child(format!(
+                        "attempt {} · {} · model {} · {attempt_state}{} · in {} / out {}",
+                        index + 1,
+                        attempt.executor_kind.as_str(),
+                        attempt.effective_model,
+                        attempt.error_code.as_ref().map(|c| format!(" ({})", c.as_str())).unwrap_or_default(),
+                        tokens(attempt.usage.input_tokens),
+                        tokens(attempt.usage.output_tokens)
+                    ))
+                }))
+        }))
+        .when(!snapshot.checks.is_empty(), |panel| panel
+            .child(div().mt_2().text_xs().text_color(theme::text_muted()).child("HOST CHECKS (separate from authored coverage)"))
+            .children(snapshot.checks.iter().map(|check| {
+                let (label, color) = match check.status {
+                    CheckStatus::Passed => ("passed", theme::success()),
+                    CheckStatus::Failed => ("failed", theme::danger()),
+                    CheckStatus::TimedOut => ("timed out", theme::danger()),
+                    CheckStatus::Cancelled => ("cancelled", theme::warning()),
+                    CheckStatus::Unavailable => ("unavailable", theme::warning()),
+                    CheckStatus::Error => ("runner error", theme::danger()),
+                    CheckStatus::NotRun => ("not run", theme::text_muted()),
+                    CheckStatus::Pending => ("pending", theme::text_muted()),
+                    CheckStatus::Running => ("running", theme::text_muted()),
+                };
+                div().mt_1().text_xs().text_color(color).child(format!(
+                    "`{}` · {} · {label}{}",
+                    check.check_ref.as_str(),
+                    if check.required { "required" } else { "optional" },
+                    check.receipt_id.as_ref().map(|id| format!(" · receipt {}", id.as_str().chars().take(8).collect::<String>())).unwrap_or_default()
+                ))
+            })))
         .into_any_element()
 }
 
@@ -1372,12 +1645,10 @@ fn pulsation_detail_header(
                             .flex_col()
                             .gap_1()
                             .min_w_0()
-                            .child(
-                                div().text_sm().text_color(theme::warning()).child(format!(
-                                    "Running on {} (automatic failover)",
-                                    backend_override.backend.label()
-                                )),
-                            )
+                            .child(div().text_sm().text_color(theme::warning()).child(format!(
+                                "Running on {} (automatic failover)",
+                                backend_override.backend.label()
+                            )))
                             .when_some(backend_override.reason.clone(), |col, reason| {
                                 col.child(
                                     div()
@@ -1405,9 +1676,11 @@ fn pulsation_detail_header(
                                 theme::text_muted()
                             })
                             .when(can_retry, |button| {
-                                button.cursor_pointer().on_click(cx.listener(
-                                    |model, _, _, cx| model.clear_backend_override_and_retry(cx),
-                                ))
+                                button
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|model, _, _, cx| {
+                                        model.clear_backend_override_and_retry(cx)
+                                    }))
                             })
                             .child(if backend_override_busy {
                                 "Clearing…"
@@ -1687,6 +1960,7 @@ mod tests {
                                 graph_proposals: vec![],
                             }),
                             artifact_ids: vec![],
+                            stage_execution: None,
                         }];
                     });
                 });

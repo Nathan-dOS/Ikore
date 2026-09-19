@@ -1,0 +1,72 @@
+{
+  "id": "simple-02-retry-limit",
+  "family": "simple_maintenance",
+  "heldOut": false,
+  "sources": {
+    "src/retry.rs": "pub const MAX_ATTEMPTS: u32 = 0;\n\npub fn should_retry(attempt: u32) -> bool {\n    attempt < MAX_ATTEMPTS\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Allow three retries",
+      "kind": "bug",
+      "description": "MAX_ATTEMPTS in src/retry.rs is zero so nothing is ever retried; set it to 3 and add tests/retry_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "should_retry returns false for the fourth attempt and true before it"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_change",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/retry.rs"
+      ],
+      "destinationPath": "src/retry.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "test_change",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/retry.rs"
+      ],
+      "destinationPath": "tests/retry_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/retry.rs": "pub const MAX_ATTEMPTS: u32 = 3;\n\npub fn should_retry(attempt: u32) -> bool {\n    attempt < MAX_ATTEMPTS\n}\n",
+    "tests/retry_test.rs": "#[test]\nfn fourth_attempt_is_refused() {\n    assert!(!retry::should_retry(3));\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/retry.rs",
+      "mustContain": [
+        "MAX_ATTEMPTS: u32 = 3"
+      ],
+      "mustNotContain": [
+        "pub const MAX_ATTEMPTS: u32 = 0;\n\npub fn should_retry(attempt: u32) -> bool {\n    attempt < MAX_ATTEMPTS\n}"
+      ]
+    },
+    {
+      "path": "tests/retry_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": null
+}

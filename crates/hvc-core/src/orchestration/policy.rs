@@ -3,9 +3,9 @@ use std::collections::HashSet;
 use crate::persistence_service::{JobStatus, PulsationStage};
 
 use super::{
-    ArtifactAcceptance, CancellationReason, ContentSha256, ContractError, ExecutionFence,
-    ExpectedFileContent, PublicationState, SpecificationQuestionSet, StageHandoffV1, StageOutcome,
-    SubmitSpecificationAnswersRequest,
+    ArtifactAcceptance, ArtifactLanguageGuard, CancellationReason, ContentSha256, ContractError,
+    ExecutionFence, ExpectedFileContent, PublicationState, SpecificationQuestionSet,
+    StageHandoffV1, StageOutcome, SubmitSpecificationAnswersRequest,
 };
 
 /// M1 must perform this check within the same transaction that accepts a result.
@@ -40,7 +40,17 @@ pub fn stage_disposition(
     stage: PulsationStage,
     outcome: &StageOutcome,
 ) -> Result<StageDisposition, ContractError> {
-    outcome.validate_for(stage)?;
+    stage_disposition_with(stage, outcome, ArtifactLanguageGuard::ModelAuthored)
+}
+
+/// Same disposition with an explicit English guard (see
+/// [`ArtifactLanguageGuard`]); the composed stage passes `HostRendered`.
+pub fn stage_disposition_with(
+    stage: PulsationStage,
+    outcome: &StageOutcome,
+    guard: ArtifactLanguageGuard,
+) -> Result<StageDisposition, ContractError> {
+    outcome.validate_with(stage, guard)?;
     Ok(match outcome {
         StageOutcome::Failed { .. } => StageDisposition::Fail,
         StageOutcome::NeedsClarification { .. } => StageDisposition::AwaitClarification,
@@ -111,8 +121,8 @@ pub fn validate_specification_answers(
     let mut received = HashSet::new();
     if request.answers.len() != expected.len()
         || request.answers.iter().any(|answer| {
-            answer.answer.trim().is_empty()
-                || answer.answer.chars().count() > 16_000
+            answer.text_answer.trim().is_empty()
+                || answer.text_answer.chars().count() > 16_000
                 || !expected.contains(answer.question_id.as_str())
                 || !received.insert(answer.question_id.as_str())
         })
@@ -146,7 +156,7 @@ impl StageHandoffV1 {
             + self
                 .answers
                 .iter()
-                .map(|a| a.answer.chars().count())
+                .map(|a| a.text_answer.chars().count())
                 .sum::<usize>()
     }
     /// Validates the envelope, not the external filesystem. M3 still revalidates
@@ -202,7 +212,7 @@ impl StageHandoffV1 {
         used_chars += self
             .answers
             .iter()
-            .map(|a| a.answer.chars().count())
+            .map(|a| a.text_answer.chars().count())
             .sum::<usize>();
         used_chars += self
             .revision_feedback

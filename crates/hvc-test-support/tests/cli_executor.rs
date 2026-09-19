@@ -9,7 +9,7 @@ use hvc_core::chat_service::{
 };
 use hvc_core::llm::credentials::CredentialStore;
 use hvc_core::llm::error::LlmError;
-use hvc_core::llm::{AgentRole, LlmRequest, ResponseFormat};
+use hvc_core::llm::{AgentExecutionTarget, AgentRole, LlmRequest, ResponseFormat};
 use hvc_core::persistence_service::{CreateProjectRequest, PersistenceService};
 use hvc_core::terminals::{
     AgentExecutionMode, CliAvailabilityState, CliBackend, CliModelCatalogState,
@@ -140,7 +140,7 @@ fn request(project_id: &str, deadline: Instant) -> LlmRequest {
         job_id: None,
         agent_run_id: None,
         job_chain: "fixture".into(),
-        agent_role: AgentRole::BackendAgent,
+        target: AgentExecutionTarget::canonical(AgentRole::BackendAgent),
         stage: "Code".into(),
         system_prompt: "Read-only fixture".into(),
         user_prompt: "payload-from-stdin".into(),
@@ -151,7 +151,63 @@ fn request(project_id: &str, deadline: Instant) -> LlmRequest {
         stream: true,
         legacy_provider: "fixture".into(),
         legacy_model: "fixture".into(),
+        dispatch: hvc_core::llm::DispatchPolicy::default(),
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn progressive_cli_budget_outlives_api_deadline_without_an_active_viewer() {
+    let harness = harness(vec!["--mode".into(), "paced".into()]);
+    let initial = Instant::now() + Duration::from_millis(500);
+    let mut request = request(&harness.project_id, initial);
+    request.dispatch.cli_timeout = Some(hvc_core::agent_timeout::CliTimeoutBudget {
+        policy: hvc_core::AgentTimeoutPolicy::new(500, 1_000, 5_000, 250),
+        deadline: Instant::now() + Duration::from_secs(5),
+    });
+    let result = harness
+        .terminals
+        .execute_llm_request(&request, &CancellationToken::new())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(Instant::now() > initial);
+    assert_eq!(
+        request.deadline, initial,
+        "API deadline must remain unchanged"
+    );
+    assert!(result.raw_output.contains("completed after initial budget"));
+    let run = harness
+        .terminals
+        .repository()
+        .get_run(&result.terminal_run_id)
+        .unwrap();
+    assert_eq!(run.status, TerminalRunStatus::Completed);
+    let events = harness
+        .terminals
+        .repository()
+        .list_events(&run.id, 0, 100)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.content.contains("max_queue_delay_ms="))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn explicit_short_cli_ceiling_is_not_extended_by_progress() {
+    let harness = harness(vec!["--mode".into(), "paced".into()]);
+    let mut request = request(&harness.project_id, Instant::now() + Duration::from_secs(5));
+    request.dispatch.cli_timeout = Some(hvc_core::agent_timeout::CliTimeoutBudget {
+        policy: hvc_core::AgentTimeoutPolicy::new(250, 1_000, 5_000, 250),
+        deadline: Instant::now() + Duration::from_millis(700),
+    });
+    let error = harness
+        .terminals
+        .execute_llm_request(&request, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "cli_timeout");
 }
 
 async fn wait_for_status(
@@ -662,7 +718,7 @@ async fn feature_discovery_uses_four_official_cli_adapters_with_isolated_context
             })
             .unwrap();
         let mut r = request(&h.project_id, Instant::now() + Duration::from_secs(20));
-        r.agent_role = AgentRole::FeatureAgent;
+        r.target = AgentExecutionTarget::canonical(AgentRole::FeatureAgent);
         r.stage = "Feature".into();
         r.job_chain = "feature:fixture".into();
         r.user_prompt = "feature-discovery-fixture".into();

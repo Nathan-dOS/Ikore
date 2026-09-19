@@ -1,0 +1,96 @@
+{
+  "id": "cohesive-03-slug-links",
+  "family": "cohesive_multi_file",
+  "heldOut": false,
+  "sources": {
+    "src/slug.rs": "pub fn slugify(title: &str) -> String {\n    title.to_string()\n}\n",
+    "src/links.rs": "pub fn note_link(title: &str) -> String {\n    title.to_string()\n}\n"
+  },
+  "tasks": [
+    {
+      "title": "Link notes by slug",
+      "kind": "bug",
+      "description": "slugify in src/slug.rs must produce kebab-case and note_link in src/links.rs must use it; add tests/links_test.rs",
+      "criteria": [
+        {
+          "id": "ac-1",
+          "description": "note_link renders My Note as /notes/my-note"
+        }
+      ]
+    }
+  ],
+  "units": [
+    {
+      "unitKey": "implement_core",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/slug.rs"
+      ],
+      "destinationPath": "src/slug.rs",
+      "dependsOn": []
+    },
+    {
+      "unitKey": "implement_caller",
+      "kind": "code",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/slug.rs",
+        "src/links.rs"
+      ],
+      "destinationPath": "src/links.rs",
+      "dependsOn": [
+        "implement_core"
+      ]
+    },
+    {
+      "unitKey": "test_change",
+      "kind": "test",
+      "task": 0,
+      "criterionIds": [
+        "ac-1"
+      ],
+      "inputPaths": [
+        "src/slug.rs",
+        "src/links.rs"
+      ],
+      "destinationPath": "tests/links_test.rs",
+      "dependsOn": []
+    }
+  ],
+  "outputs": {
+    "src/slug.rs": "pub fn slugify(title: &str) -> String {\n    title.trim().to_lowercase().replace(' ', \"-\")\n}\n",
+    "src/links.rs": "pub fn note_link(title: &str) -> String {\n    format!(\"/notes/{}\", crate::slug::slugify(title))\n}\n",
+    "tests/links_test.rs": "#[test]\nfn links_use_slugs() {\n    assert_eq!(links::note_link(\"My Note\"), \"/notes/my-note\");\n}\n"
+  },
+  "oracle": [
+    {
+      "path": "src/slug.rs",
+      "mustContain": [
+        "replace(' ', \"-\")"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "src/links.rs",
+      "mustContain": [
+        "crate::slug::slugify"
+      ],
+      "mustNotContain": []
+    },
+    {
+      "path": "tests/links_test.rs",
+      "mustContain": [
+        "#[test]"
+      ],
+      "mustNotContain": []
+    }
+  ],
+  "fault": null
+}

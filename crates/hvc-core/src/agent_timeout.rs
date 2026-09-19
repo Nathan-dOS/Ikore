@@ -10,6 +10,27 @@ use crate::llm::AgentRole;
 /// letting a genuinely stuck process run indefinitely.
 const REASONING_SILENCE_FACTOR: u64 = 3;
 
+/// CLI-specific budget. The API route keeps its independently configured deadline.
+#[derive(Debug, Clone, Copy)]
+pub struct CliTimeoutBudget {
+    pub policy: AgentTimeoutPolicy,
+    pub deadline: Instant,
+}
+
+impl CliTimeoutBudget {
+    pub fn for_role(role: AgentRole, initial_timeout_ms: u64) -> Self {
+        let mut policy = AgentTimeoutPolicy::for_role(role);
+        policy.base_timeout_ms = policy
+            .base_timeout_ms
+            .max(initial_timeout_ms)
+            .min(policy.max_timeout_ms);
+        Self {
+            deadline: Instant::now() + policy.max_timeout(),
+            policy,
+        }
+    }
+}
+
 /// Política de timeout configurada por papel de agente com suporte a streaming progressivo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -235,6 +256,12 @@ impl ProgressWatchdog {
     /// Estende o prazo corrente em `extension_increment`, respeitando `max_timeout`, e reinicia
     /// o relógio de inatividade.
     pub fn record_progress(&self) {
+        self.record_activity();
+        self.set_reasoning(false);
+    }
+
+    /// Only transport reads renew liveness. Auxiliary bytes do not end reasoning.
+    pub fn record_activity(&self) {
         let now = Instant::now();
         let mut state = self
             .state
@@ -242,7 +269,6 @@ impl ProgressWatchdog {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.last_activity_at = now;
         state.progress_count = state.progress_count.saturating_add(1);
-        state.reasoning = false;
         let extended = state.current_deadline + state.policy.extension_increment();
         state.current_deadline = extended.min(state.max_deadline);
         drop(state);
@@ -255,18 +281,40 @@ impl ProgressWatchdog {
     /// silêncio até a próxima entrega real, porque nada será emitido enquanto
     /// o modelo pensa.
     pub fn record_reasoning(&self) {
-        let now = Instant::now();
+        self.record_activity();
+        self.set_reasoning(true);
+    }
+
+    /// Apply a recognized provider transition at receipt, before queueing for audit.
+    /// It is not another heartbeat and must not extend the deadline twice.
+    pub fn set_reasoning(&self, reasoning: bool) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.last_activity_at = now;
-        state.progress_count = state.progress_count.saturating_add(1);
-        state.reasoning = true;
-        let extended = state.current_deadline + state.policy.extension_increment();
-        state.current_deadline = extended.min(state.max_deadline);
+        state.reasoning = reasoning;
         drop(state);
         self.activity_notify.notify_waiters();
+    }
+
+    /// Bounded timing metadata only; never includes provider output or prompts.
+    pub fn diagnostic(&self) -> String {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Instant::now();
+        format!(
+            "base_ms={} ceiling_ms={} silence_ms={} reasoning={} last_read_age_ms={} progress_reads={} elapsed_ms={}",
+            state.policy.base_timeout_ms,
+            state.policy.max_timeout_ms,
+            state.silence_window().as_millis(),
+            state.reasoning,
+            now.saturating_duration_since(state.last_activity_at)
+                .as_millis(),
+            state.progress_count,
+            now.saturating_duration_since(state._started_at).as_millis()
+        )
     }
 
     /// Retorna a contagem de eventos de progresso registrados.
@@ -350,6 +398,36 @@ impl ProgressWatchdog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_budget_separates_initial_timeout_from_absolute_ceiling() {
+        let before = Instant::now();
+        let budget = CliTimeoutBudget::for_role(AgentRole::TaskSpecifier, 180_000);
+        assert_eq!(budget.policy.base_timeout_ms, 240_000);
+        assert_eq!(budget.policy.max_timeout_ms, 900_000);
+        assert!(budget.deadline >= before + Duration::from_secs(900));
+        let bounded = CliTimeoutBudget::for_role(AgentRole::IntakeRouter, u64::MAX);
+        assert_eq!(
+            bounded.policy.base_timeout_ms,
+            bounded.policy.max_timeout_ms
+        );
+    }
+
+    #[tokio::test]
+    async fn a_progressing_cli_exceeds_base_but_still_hits_absolute_ceiling() {
+        let watchdog = ProgressWatchdog::new(AgentTimeoutPolicy::new(80, 250, 350, 80));
+        let progress = watchdog.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                progress.record_activity();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
+        let reason = watchdog.wait_for_timeout().await;
+        task.abort();
+        assert_eq!(reason, TimeoutReason::MaxCeiling);
+        assert!(watchdog.progress_count() > 1);
+    }
 
     #[test]
     fn test_role_default_policies() {

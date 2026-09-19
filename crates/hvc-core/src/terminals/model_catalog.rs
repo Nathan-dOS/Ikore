@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -16,6 +17,83 @@ use super::{
 const ADAPTER_CONTRACT_VERSION: u32 = 2;
 const MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(20);
 const CLI_DEFAULT_ID: &str = "";
+/// Read-only, single-field config inspection cap: the CLI default-model detector never
+/// reads more than this many bytes of a local config file, and never logs their contents.
+const CLI_CONFIG_READ_CAP_BYTES: u64 = 64 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CliModelCatalogAsset {
+    #[allow(dead_code)]
+    schema_version: u32,
+    catalog_version: String,
+    backends: CliModelCatalogAssetBackends,
+}
+
+#[derive(Debug, Deserialize)]
+struct CliModelCatalogAssetBackends {
+    codex: CliModelCatalogAssetBackend,
+    claude: CliModelCatalogAssetBackend,
+    gemini: CliModelCatalogAssetBackend,
+}
+
+#[derive(Debug, Deserialize)]
+struct CliModelCatalogAssetBackend {
+    models: Vec<CliModelCatalogAssetEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CliModelCatalogAssetEntry {
+    provider_id: String,
+    model_id: String,
+    display_name: String,
+    context_window: Option<u64>,
+    input_cost_usd_per_million: Option<f64>,
+    output_cost_usd_per_million: Option<f64>,
+    #[serde(default)]
+    capabilities: Vec<String>,
+    #[serde(default)]
+    profiles: Vec<String>,
+}
+
+impl From<&CliModelCatalogAssetEntry> for CliModelCatalogEntry {
+    fn from(entry: &CliModelCatalogAssetEntry) -> Self {
+        Self {
+            provider_id: Some(entry.provider_id.clone()),
+            model_id: Some(entry.model_id.clone()),
+            display_name: entry.display_name.clone(),
+            context_window: entry.context_window,
+            input_cost_usd_per_million: entry.input_cost_usd_per_million,
+            output_cost_usd_per_million: entry.output_cost_usd_per_million,
+            capabilities: entry.capabilities.clone(),
+            profiles: entry.profiles.clone(),
+            raw_metadata: Value::Object(Default::default()),
+        }
+    }
+}
+
+static CLI_MODEL_CATALOG: LazyLock<CliModelCatalogAsset> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../../assets/cli-model-catalog-v1.json"))
+        .expect("o catálogo declarativo de modelos CLI deve conter JSON válido")
+});
+
+/// Version string of the embedded declarative CLI model catalog (e.g. `"2026-09-17.1"`),
+/// for display alongside the detected CLI version in the model picker header.
+pub fn cli_model_catalog_version() -> &'static str {
+    &CLI_MODEL_CATALOG.catalog_version
+}
+
+fn declarative_models(backend: CliBackend) -> Vec<CliModelCatalogEntry> {
+    let backends = &CLI_MODEL_CATALOG.backends;
+    let entries = match backend {
+        CliBackend::Codex => &backends.codex.models,
+        CliBackend::Claude => &backends.claude.models,
+        CliBackend::Gemini => &backends.gemini.models,
+        CliBackend::Opencode | CliBackend::Custom => return Vec::new(),
+    };
+    entries.iter().map(CliModelCatalogEntry::from).collect()
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -159,7 +237,10 @@ impl CliModelCatalogService {
             ));
         }
         if backend != CliBackend::Opencode {
-            let snapshot = preset_snapshot(project_id, backend, availability);
+            let home_dir = std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .map(PathBuf::from);
+            let snapshot = preset_snapshot(project_id, backend, availability, home_dir.as_deref());
             self.save_snapshot(&snapshot)?;
             return Ok(snapshot);
         }
@@ -554,6 +635,7 @@ fn preset_snapshot(
     project_id: &str,
     backend: CliBackend,
     availability: Option<&CliAvailability>,
+    home_dir: Option<&Path>,
 ) -> CliModelCatalogSnapshot {
     let (state, diagnostic) = match availability {
         Some(item) if item.state == CliAvailabilityState::Available => {
@@ -575,68 +657,9 @@ fn preset_snapshot(
             Some(format!("{} CLI was not discovered", backend.label())),
         ),
     };
-    let mut models = vec![cli_default()];
-    models.extend(match backend {
-        CliBackend::Codex => vec![
-            preset(
-                "openai",
-                "gpt-5.4-mini",
-                "GPT-5.4 Mini",
-                &["low", "medium", "high", "xhigh"],
-            ),
-            preset(
-                "openai",
-                "gpt-5.5",
-                "GPT-5.5",
-                &["low", "medium", "high", "xhigh"],
-            ),
-            preset(
-                "openai",
-                "gpt-5.6-luna",
-                "GPT-5.6 Luna",
-                &["low", "medium", "high", "xhigh", "max"],
-            ),
-            preset(
-                "openai",
-                "gpt-5.6-terra",
-                "GPT-5.6 Terra",
-                &["low", "medium", "high", "xhigh", "max", "ultra"],
-            ),
-            preset(
-                "openai",
-                "gpt-5.6-sol",
-                "GPT-5.6 Sol",
-                &["low", "medium", "high", "xhigh", "max", "ultra"],
-            ),
-            preset(
-                "openai",
-                "gpt-6-astra",
-                "GPT-6 Astra",
-                &["low", "medium", "high", "xhigh", "max", "ultra"],
-            ),
-        ],
-        CliBackend::Claude => vec![
-            preset(
-                "anthropic",
-                "opus",
-                "Claude Opus",
-                &["low", "medium", "high"],
-            ),
-            preset(
-                "anthropic",
-                "sonnet",
-                "Claude Sonnet",
-                &["low", "medium", "high"],
-            ),
-            preset("anthropic", "haiku", "Claude Haiku", &[]),
-        ],
-        CliBackend::Gemini => vec![
-            preset("google", "auto", "Gemini Auto", &[]),
-            preset("google", "pro", "Gemini Pro", &[]),
-            preset("google", "flash", "Gemini Flash", &[]),
-        ],
-        CliBackend::Opencode | CliBackend::Custom => Vec::new(),
-    });
+    let default_hint = home_dir.and_then(|dir| detect_cli_default_model(backend, dir));
+    let mut models = vec![cli_default_with_hint(default_hint)];
+    models.extend(declarative_models(backend));
     CliModelCatalogSnapshot {
         project_id: project_id.to_string(),
         backend,
@@ -651,10 +674,18 @@ fn preset_snapshot(
 }
 
 fn cli_default() -> CliModelCatalogEntry {
+    cli_default_with_hint(None)
+}
+
+fn cli_default_with_hint(detected_model: Option<String>) -> CliModelCatalogEntry {
+    let display_name = match detected_model {
+        Some(model) => format!("CLI default (configured: {model})"),
+        None => "CLI default".into(),
+    };
     CliModelCatalogEntry {
         provider_id: None,
         model_id: None,
-        display_name: "CLI default".into(),
+        display_name,
         context_window: None,
         input_cost_usd_per_million: None,
         output_cost_usd_per_million: None,
@@ -664,6 +695,50 @@ fn cli_default() -> CliModelCatalogEntry {
     }
 }
 
+/// Reads only the `model` field from the CLI's own local config file to enrich the
+/// "CLI default" catalog entry label. Read-only, single-field, capped at
+/// [`CLI_CONFIG_READ_CAP_BYTES`], never logs or persists the file's contents, and fails
+/// closed to `None` on any error (missing file, unreadable, malformed, field absent).
+/// This is not a catalog refresh: no network access, no CLI invocation, no side effect.
+fn detect_cli_default_model(backend: CliBackend, home_dir: &Path) -> Option<String> {
+    match backend {
+        CliBackend::Codex => {
+            let contents = read_capped(&home_dir.join(".codex/config.toml"))?;
+            let value: toml::Value = toml::from_str(&contents).ok()?;
+            value.get("model")?.as_str().map(str::to_string)
+        }
+        CliBackend::Claude => {
+            for candidate in [
+                home_dir.join(".claude/settings.json"),
+                home_dir.join(".claude.json"),
+            ] {
+                if let Some(contents) = read_capped(&candidate)
+                    && let Ok(value) = serde_json::from_str::<Value>(&contents)
+                    && let Some(model) = value.get("model").and_then(Value::as_str)
+                {
+                    return Some(model.to_string());
+                }
+            }
+            None
+        }
+        CliBackend::Gemini => {
+            let contents = read_capped(&home_dir.join(".gemini/settings.json"))?;
+            let value: Value = serde_json::from_str(&contents).ok()?;
+            value.get("model")?.as_str().map(str::to_string)
+        }
+        CliBackend::Opencode | CliBackend::Custom => None,
+    }
+}
+
+fn read_capped(path: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > CLI_CONFIG_READ_CAP_BYTES {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
+#[cfg(test)]
 fn preset(
     provider: &str,
     model: &str,
@@ -867,6 +942,71 @@ mod tests {
         assert_eq!(models[0].model_id.as_deref(), Some("openai/gpt-5.4"));
         assert_eq!(models[0].profiles, vec!["deep", "fast"]);
         assert_eq!(models[2].raw_metadata["experimentalMetadata"], "preserved");
+    }
+
+    #[test]
+    fn preset_snapshot_models_are_sourced_from_the_declarative_json_catalog() {
+        for backend in [CliBackend::Codex, CliBackend::Claude, CliBackend::Gemini] {
+            let snapshot = preset_snapshot("project-under-test", backend, None, None);
+            let expected = declarative_models(backend);
+            assert!(!expected.is_empty(), "backend {backend:?} has no catalog entries");
+            assert_eq!(
+                snapshot.models.len(),
+                expected.len() + 1,
+                "backend {backend:?} should list the CLI default entry plus every catalog model"
+            );
+            assert_eq!(snapshot.models[1..], expected[..]);
+        }
+        assert!(declarative_models(CliBackend::Opencode).is_empty());
+        assert!(declarative_models(CliBackend::Custom).is_empty());
+    }
+
+    #[test]
+    fn cli_default_enrichment_parses_model_field_from_config_files() {
+        let home = tempfile::tempdir().unwrap();
+
+        // No config files yet: falls back to the plain "CLI default" label.
+        assert_eq!(detect_cli_default_model(CliBackend::Codex, home.path()), None);
+        assert_eq!(detect_cli_default_model(CliBackend::Claude, home.path()), None);
+        assert_eq!(detect_cli_default_model(CliBackend::Gemini, home.path()), None);
+
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        std::fs::write(
+            home.path().join(".codex/config.toml"),
+            "model = \"gpt-5.6-sol\"\nother_field = \"ignored\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_cli_default_model(CliBackend::Codex, home.path()),
+            Some("gpt-5.6-sol".into())
+        );
+
+        std::fs::write(home.path().join(".claude.json"), r#"{"model":"opus"}"#).unwrap();
+        assert_eq!(
+            detect_cli_default_model(CliBackend::Claude, home.path()),
+            Some("opus".into())
+        );
+
+        std::fs::create_dir_all(home.path().join(".gemini")).unwrap();
+        std::fs::write(
+            home.path().join(".gemini/settings.json"),
+            r#"{"model":"pro","apiKey":"should-never-be-read-as-model"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_cli_default_model(CliBackend::Gemini, home.path()),
+            Some("pro".into())
+        );
+
+        // Malformed config fails closed to `None` instead of surfacing a parse error.
+        std::fs::write(home.path().join(".codex/config.toml"), "not = [valid toml").unwrap();
+        assert_eq!(detect_cli_default_model(CliBackend::Codex, home.path()), None);
+
+        // OpenCode/Custom never read local config.
+        assert_eq!(
+            detect_cli_default_model(CliBackend::Opencode, home.path()),
+            None
+        );
     }
 
     #[test]

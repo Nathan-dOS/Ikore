@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 #[path = "preparation_ui.rs"]
 mod preparation_ui;
+#[path = "resolution_ui.rs"]
+mod resolution_ui;
 
 use gpui::{
     AppContext as _, ClipboardItem, Context, Entity, PathPromptOptions, SharedString, Subscription,
@@ -12,16 +14,17 @@ use hvc_core::agent_runtime::{AdaptiveContextMode, ContextStrategy, DynamicConte
 use hvc_core::chat_service::{ChatEventEnvelope, ChatExecutionTargetRequest, ChatTransportKind};
 use hvc_core::llm::{
     DeleteProviderConnectionRequest, DeleteProviderRouteRequest, ResetLlmResilienceStateRequest,
-    RouteTarget, RoutingMode, TestProviderConnectionRequest, UpsertProviderConnectionRequest,
+    RouteTarget, RoutingMode, TestProviderConnectionRequest,
+    UpsertFreeFormProviderRouteBindingRequest, UpsertProviderConnectionRequest,
     UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
 };
-use hvc_core::orchestration::IndexingEvent;
 use hvc_core::orchestration::brownfield::BrownfieldOnboardingStatus;
+use hvc_core::orchestration::{CleanupFailedPulsationFilesRequest, IndexingEvent};
 use hvc_core::persistence_service::{
     ClearExecutionOverrideRequest, CliFallbackDecision, EnsureProjectForWorkspaceRequest,
-    HitlDecision, LoadUiSessionRequest, PulsationRuntimeSnapshot, PulsationStatus,
-    ResolveCliFallbackRequest, SaveUiSessionRequest, StageFailureDecision, UiSessionState,
-    UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
+    HitlDecision, LoadUiSessionRequest, PulsationRuntimeSnapshot, PulsationStage, PulsationStatus,
+    ResolveCliFallbackRequest, SaveUiSessionRequest, StageFailureDecision,
+    StartFreeFormApiRunRequest, UiSessionState, UiTabSnapshot, UpdateAgentRuntimeConfigRequest,
 };
 use hvc_core::terminals::{
     CliAgentConfig, CliBackend, CliModelSelectionSource, CreateFreeFormSlotRequest,
@@ -37,8 +40,8 @@ use hvc_editor::{EditorSelection, EditorSnapshot, TextPosition};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::agents::{
-    AgentsBackend, AgentsDashboardSnapshot, AgentsModel, AgentsTab, CliModelPickerState,
-    CliModelPickerTarget, CoreAgentsBackend,
+    AgentIdentifier, AgentsBackend, AgentsDashboardSnapshot, AgentsModel, ApiActivityFilter,
+    CliModelPickerState, CliModelPickerTarget, CoreAgentsBackend,
 };
 use crate::chat::{ChatBackend, ChatEventOutcome, ChatModel, CoreChatBackend};
 use crate::lifecycle::LifecycleState;
@@ -56,6 +59,10 @@ use crate::vault::{
     CONTEXT_DOCUMENTS_DEBOUNCE, CoreVaultBackend, VAULT_REFRESH_DEBOUNCE, VaultBackend, VaultModel,
     normalize_rename_target,
 };
+use crate::icons::Icon;
+use crate::activity::{ActivityEntry, ActivityKind};
+use hvc_core::embedding_service::ModelPullEvent;
+use crate::flow::FlowTarget;
 use crate::views::NavigationModel;
 use crate::workspace::{
     AUTOSAVE_DEBOUNCE, BrownfieldOnboardingState, CoreWorkspaceBackend, WorkspaceBackend,
@@ -64,6 +71,7 @@ use crate::workspace::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppView {
+    Home,
     Forge,
     Workspace,
     Pulsations,
@@ -75,7 +83,8 @@ pub enum AppView {
 }
 
 impl AppView {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
+        Self::Home,
         Self::Forge,
         Self::Workspace,
         Self::Pulsations,
@@ -88,6 +97,7 @@ impl AppView {
 
     pub const fn id(self) -> &'static str {
         match self {
+            Self::Home => "home",
             Self::Workspace => "workspace",
             Self::Pulsations => "pulsations",
             Self::Forge => "forge",
@@ -101,6 +111,7 @@ impl AppView {
 
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Home => "Home",
             Self::Workspace => "Workspace & HITL",
             Self::Pulsations => "Pulsations & Pipeline",
             Self::Forge => "Forge — Tasks & Features",
@@ -114,6 +125,7 @@ impl AppView {
 
     pub const fn short_label(self) -> &'static str {
         match self {
+            Self::Home => "Home",
             Self::Workspace => "Workspace",
             Self::Pulsations => "Pulsations",
             Self::Forge => "Forge",
@@ -125,21 +137,24 @@ impl AppView {
         }
     }
 
-    pub const fn glyph(self) -> &'static str {
+    /// Rail / tooltip glyph for the view.
+    pub(crate) const fn icon(self) -> Icon {
         match self {
-            Self::Workspace => "W",
-            Self::Pulsations => "P",
-            Self::Forge => "F",
-            Self::Vault => "V",
-            Self::Chat => "C",
-            Self::Agents => "A",
-            Self::Settings => "S",
-            Self::Logs => "L",
+            Self::Home => Icon::House,
+            Self::Workspace => Icon::FolderOpen,
+            Self::Pulsations => Icon::Activity,
+            Self::Forge => Icon::Hammer,
+            Self::Vault => Icon::Vault,
+            Self::Chat => Icon::MessageSquare,
+            Self::Agents => Icon::Bot,
+            Self::Settings => Icon::Settings,
+            Self::Logs => Icon::ScrollText,
         }
     }
 
     pub const fn description(self) -> &'static str {
         match self {
+            Self::Home => "Active pulsation, next step, and what is waiting on you",
             Self::Workspace => "Files, tabs, editor, preview, and HITL review",
             Self::Pulsations => "Executions, checkpoints, and human decisions",
             Self::Forge => "Task backlog, discovery, and feature planning",
@@ -165,6 +180,9 @@ impl AppView {
     }
 }
 
+/// Visual grouping of the workbench views on the nav rail (a divider separates each group). It
+/// used to be the first level of a two-level tab navigation; since the rail redesign it carries no
+/// navigation state of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AppTab {
     Agent,
@@ -175,19 +193,14 @@ pub enum AppTab {
 impl AppTab {
     pub const ALL: [Self; 3] = [Self::Agent, Self::Engine, Self::Companion];
 
+    /// Rail order: the Engine group (where work is composed and runs) sits first.
+    pub const RAIL_ORDER: [Self; 3] = [Self::Engine, Self::Agent, Self::Companion];
+
     pub const fn sub_views(self) -> &'static [AppView] {
         match self {
             Self::Agent => &[AppView::Agents, AppView::Logs],
             Self::Engine => &[AppView::Forge, AppView::Pulsations, AppView::Vault],
             Self::Companion => &[AppView::Chat, AppView::Workspace],
-        }
-    }
-
-    pub const fn default_view(self) -> AppView {
-        match self {
-            Self::Agent => AppView::Agents,
-            Self::Engine => AppView::Vault,
-            Self::Companion => AppView::Chat,
         }
     }
 
@@ -239,6 +252,9 @@ struct RestoredSession {
     brownfield_status: Option<BrownfieldOnboardingStatus>,
 }
 
+/// Repeated Forge/watcher events inside this window collapse into one activity line.
+const ACTIVITY_COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Per-tab attention counters shown as header badges and, unfolded, in the status bar. See the UI
 /// flow plan Part 4.4.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -247,6 +263,10 @@ pub struct TabBadges {
     pub engine_awaiting_hitl: usize,
     pub engine_running_jobs: usize,
     pub companion_streaming: usize,
+    /// Open Specification clarification checkpoints across the project.
+    pub clarifications: usize,
+    /// CLI runs parked on a fallback decision.
+    pub agent_fallbacks: usize,
 }
 
 pub struct AppModel {
@@ -263,6 +283,7 @@ pub struct AppModel {
     pub navigation: Entity<NavigationModel>,
     pub workspace: Entity<WorkspaceEditorModel>,
     pub pulsations: Entity<PulsationsModel>,
+    pub(crate) agents_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) pulsations_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) workspace_tree_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) workspace_preview_split: Entity<crate::split_pane::SplitPaneState>,
@@ -275,6 +296,9 @@ pub struct AppModel {
     /// from the incubation split because a form and a transcript want different
     /// proportions.
     pub(crate) forge_triage_split: Entity<crate::split_pane::SplitPaneState>,
+    /// Vault: files/search column | (graph | inspector).
+    pub(crate) vault_files_split: Entity<crate::split_pane::SplitPaneState>,
+    pub(crate) vault_detail_split: Entity<crate::split_pane::SplitPaneState>,
     pub vault: Entity<VaultModel>,
     #[cfg(test)]
     pub(crate) pulsation_feature_input: Entity<NativeTextInput>,
@@ -283,6 +307,7 @@ pub struct AppModel {
     pub(crate) specification_answer_inputs: Vec<(String, Entity<NativeTextInput>)>,
     pub(crate) stage_feedback_input: Entity<NativeTextInput>,
     pub(crate) preparation_threshold_input: Entity<NativeTextInput>,
+    pub(crate) composition_override_model_input: Entity<NativeTextInput>,
     pub(crate) context_limit_input: Entity<NativeTextInput>,
     preparation_scope: Option<(String, u64, Option<String>)>,
     pub(crate) learning_graph_decisions:
@@ -310,12 +335,23 @@ pub struct AppModel {
     pub(crate) free_form_custom_executable_inputs: HashMap<String, Entity<NativeTextInput>>,
     pub(crate) free_form_custom_args_inputs: HashMap<String, Entity<NativeTextInput>>,
     pub chat: Entity<ChatModel>,
+    pub resolution: Entity<crate::resolution::ResolutionModel>,
+    pub(crate) resolution_draft_input: Entity<NativeTextInput>,
+    pub(crate) resolution_synthesis_input: Entity<NativeTextInput>,
+    resolution_chips_in_flight: bool,
+    resolution_turn_in_flight: bool,
+    resolution_chips_task: Option<Task<()>>,
+    resolution_conversation_task: Option<Task<()>>,
+    resolution_action_task: Option<Task<()>>,
+    resolution_turn_task: Option<Task<()>>,
     pub(crate) agents: Entity<AgentsModel>,
     pub(crate) settings: Entity<SettingsModel>,
     pub(crate) logs: Entity<LogsModel>,
     active_view: AppView,
-    active_tab: AppTab,
-    last_view_per_tab: HashMap<AppTab, AppView>,
+    /// Wall-clock `HH:MM` shown in the status bar; refreshed by the lifecycle poll.
+    footer_clock: SharedString,
+    /// Home's "recent activity": one line per milestone across every event family.
+    pub(crate) activity: crate::activity::ActivityFeed,
     status: SharedString,
     event_count: u64,
     needs_resync: bool,
@@ -341,16 +377,29 @@ pub struct AppModel {
     preparation_action_task: Option<Task<()>>,
     artifact_preview_task: Option<Task<()>>,
     pulsation_artifacts_task: Option<Task<()>>,
+    pulsation_snapshot_task: Option<Task<()>>,
+    snapshot_in_flight: bool,
+    snapshot_pending: Option<Option<String>>,
+    snapshot_revision: u64,
     hitl_documents_task: Option<Task<()>>,
     failure_task: Option<Task<()>>,
     failure_detail_task: Option<Task<()>>,
     backend_override_task: Option<Task<()>>,
+    backend_override_mutation_task: Option<Task<()>>,
+    cleanup_preview_task: Option<Task<()>>,
+    cleanup_mutation_task: Option<Task<()>>,
+    artifact_read: crate::lifecycle::RevisionRead,
+    backend_read: crate::lifecycle::RevisionRead,
+    cleanup_read: crate::lifecycle::RevisionRead,
+    event_resync_pending: bool,
     vault_refresh_task: Option<Task<()>>,
     vault_search_task: Option<Task<()>>,
     vault_rename_task: Option<Task<()>>,
     vault_context_task: Option<Task<()>>,
     vault_document_tasks: HashMap<String, Task<()>>,
     settings_task: Option<Task<()>>,
+    /// A quiet Settings refresh is already scheduled (see `schedule_settings_quiet_refresh`).
+    settings_quiet_refresh_pending: bool,
     embedding_readiness_task: Option<Task<()>>,
     model_pull_task: Option<Task<()>>,
     agents_task: Option<Task<()>>,
@@ -465,29 +514,28 @@ impl AppModel {
         model
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_resolution_backends(
+        pulsations_backend: Arc<dyn PulsationsBackend>,
+        chat_backend: Arc<dyn ChatBackend>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut model = Self::build(None, None, None, cx);
+        model.pulsations_backend = Some(pulsations_backend);
+        model.chat_backend = Some(chat_backend);
+        model
+    }
+
     fn build(
         core: Option<Arc<AppCore>>,
         session_persistence: Option<Arc<dyn SessionPersistence>>,
         workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let active_view = AppView::Workspace;
-        let active_tab = AppTab::from_view(active_view).unwrap_or(AppTab::Companion);
-        let last_view_per_tab = AppTab::ALL
-            .into_iter()
-            .map(|tab| {
-                let view = if tab.contains(active_view) {
-                    active_view
-                } else {
-                    tab.default_view()
-                };
-                (tab, view)
-            })
-            .collect::<HashMap<_, _>>();
+        let active_view = AppView::Home;
         let navigation = cx.new(|_| NavigationModel {
             active: active_view,
-            active_tab,
-            sidebar_collapsed: false,
+            context_rail_collapsed: false,
         });
         let workspace = cx.new(WorkspaceEditorModel::new);
         let editor = workspace.read(cx).editor.clone();
@@ -501,6 +549,8 @@ impl AppModel {
             cx.new(|cx| NativeTextInput::new("Feedback to request stage review", cx));
         let preparation_threshold_input =
             cx.new(|cx| NativeTextInput::new("Threshold from 0 to 100", cx));
+        let composition_override_model_input =
+            cx.new(|cx| NativeTextInput::new("Model id (empty = inherit from the stage)", cx));
         let context_limit_input =
             cx.new(|cx| NativeTextInput::new("Context budget: 2,000 to 80,000 characters", cx));
         let vault_search_input = cx.new(|cx| NativeTextInput::new("Text or regex", cx));
@@ -518,6 +568,11 @@ impl AppModel {
             cx.new(|cx| NativeTextInput::new("Embedding model", cx));
         let chat_draft_input =
             cx.new(|cx| NativeTextInput::new("Message to Companion", cx).multiline());
+        let resolution_draft_input =
+            cx.new(|cx| NativeTextInput::new("Reply to the Companion", cx).multiline());
+        let resolution_synthesis_input = cx.new(|cx| {
+            NativeTextInput::new("FILES_NEW:/FILES_MOD:/FILES: reply to confirm", cx).multiline()
+        });
         let cli_model_search_input =
             cx.new(|cx| NativeTextInput::new("Search model ID, name, provider or capability", cx));
         let agent_prompt_inputs = hvc_core::llm::AgentRole::ALL
@@ -559,6 +614,8 @@ impl AppModel {
                 )
             })
             .collect::<HashMap<_, _>>();
+        let agents_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::new(220.0, 180.0, 400.0, 420.0));
         let pulsations_split =
             cx.new(|_| crate::split_pane::SplitPaneState::new(292.0, 220.0, 480.0, 420.0));
         let workspace_tree_split =
@@ -573,7 +630,14 @@ impl AppModel {
             cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.55, 300.0, 260.0));
         let forge_triage_split =
             cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.58, 300.0, 260.0));
+        // Right minimum = graph + inspector minimums plus their sash, so the files column
+        // never pushes the inspector out at the 960 px window.
+        let vault_files_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::new(264.0, 200.0, 420.0, 486.0));
+        let vault_detail_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.62, 260.0, 220.0));
         let mut subscriptions = vec![
+            cx.observe(&agents_split, |_, _, cx| cx.notify()),
             cx.observe(&pulsations_split, |_, _, cx| cx.notify()),
             cx.observe(&workspace_tree_split, |_, _, cx| cx.notify()),
             cx.observe(&workspace_preview_split, |_, _, cx| cx.notify()),
@@ -581,6 +645,8 @@ impl AppModel {
             cx.observe(&forge_feature_split, |_, _, cx| cx.notify()),
             cx.observe(&forge_incubation_split, |_, _, cx| cx.notify()),
             cx.observe(&forge_triage_split, |_, _, cx| cx.notify()),
+            cx.observe(&vault_files_split, |_, _, cx| cx.notify()),
+            cx.observe(&vault_detail_split, |_, _, cx| cx.notify()),
             cx.observe(&editor, |model, _, cx| {
                 model.handle_editor_update(cx);
                 model.schedule_vault_context_documents(cx);
@@ -592,6 +658,7 @@ impl AppModel {
             cx.observe(&description_review_input, |_, _, cx| cx.notify()),
             cx.observe(&stage_feedback_input, |_, _, cx| cx.notify()),
             cx.observe(&preparation_threshold_input, |_, _, cx| cx.notify()),
+            cx.observe(&composition_override_model_input, |_, _, cx| cx.notify()),
             cx.observe(&context_limit_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_search_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_rename_input, |_, _, cx| cx.notify()),
@@ -606,6 +673,15 @@ impl AppModel {
                 &chat_draft_input,
                 |model, _, _: &crate::text_input::Submit, cx| model.send_chat_message(cx),
             ),
+            cx.observe(&resolution_draft_input, |_, _, cx| cx.notify()),
+            cx.subscribe(
+                &resolution_draft_input,
+                |model, _, _: &crate::text_input::Submit, cx| model.send_resolution_message(cx),
+            ),
+            cx.observe(&resolution_synthesis_input, |model, _, cx| {
+                model.update_resolution_synthesis_draft(cx);
+                cx.notify()
+            }),
             cx.observe(&cli_model_search_input, |_, _, cx| cx.notify()),
         ];
         subscriptions.extend(
@@ -634,6 +710,7 @@ impl AppModel {
             navigation,
             workspace,
             pulsations: cx.new(|_| PulsationsModel::default()),
+            agents_split,
             pulsations_split,
             workspace_tree_split,
             workspace_preview_split,
@@ -641,6 +718,8 @@ impl AppModel {
             forge_feature_split,
             forge_incubation_split,
             forge_triage_split,
+            vault_files_split,
+            vault_detail_split,
             vault: cx.new(|_| VaultModel::default()),
             #[cfg(test)]
             pulsation_feature_input,
@@ -648,6 +727,7 @@ impl AppModel {
             description_review_input,
             stage_feedback_input,
             preparation_threshold_input,
+            composition_override_model_input,
             context_limit_input,
             specification_answer_inputs: Vec::new(),
             preparation_scope: None,
@@ -674,12 +754,21 @@ impl AppModel {
             free_form_custom_executable_inputs: HashMap::new(),
             free_form_custom_args_inputs: HashMap::new(),
             chat: cx.new(|_| ChatModel::default()),
+            resolution: cx.new(|_| crate::resolution::ResolutionModel::default()),
+            resolution_draft_input,
+            resolution_synthesis_input,
+            resolution_chips_in_flight: false,
+            resolution_turn_in_flight: false,
+            resolution_chips_task: None,
+            resolution_conversation_task: None,
+            resolution_action_task: None,
+            resolution_turn_task: None,
             agents: cx.new(|_| AgentsModel::default()),
             settings: cx.new(|_| SettingsModel::default()),
             logs: cx.new(|_| LogsModel::default()),
             active_view,
-            active_tab,
-            last_view_per_tab,
+            footer_clock: crate::time::current_clock_hhmm().into(),
+            activity: crate::activity::ActivityFeed::default(),
             status: "Ready".into(),
             event_count: 0,
             needs_resync: false,
@@ -705,16 +794,28 @@ impl AppModel {
             preparation_action_task: None,
             artifact_preview_task: None,
             pulsation_artifacts_task: None,
+            pulsation_snapshot_task: None,
+            snapshot_in_flight: false,
+            snapshot_pending: None,
+            snapshot_revision: 0,
             hitl_documents_task: None,
             failure_task: None,
             failure_detail_task: None,
             backend_override_task: None,
+            backend_override_mutation_task: None,
+            cleanup_preview_task: None,
+            cleanup_mutation_task: None,
+            artifact_read: Default::default(),
+            backend_read: Default::default(),
+            cleanup_read: Default::default(),
+            event_resync_pending: false,
             vault_refresh_task: None,
             vault_search_task: None,
             vault_rename_task: None,
             vault_context_task: None,
             vault_document_tasks: HashMap::new(),
             settings_task: None,
+            settings_quiet_refresh_pending: false,
             embedding_readiness_task: None,
             model_pull_task: None,
             agents_task: None,
@@ -742,24 +843,16 @@ impl AppModel {
         self.active_view
     }
 
-    pub fn active_tab(&self) -> AppTab {
-        self.active_tab
+    pub(crate) fn footer_clock(&self) -> &SharedString {
+        &self.footer_clock
     }
 
-    pub fn select_tab(&mut self, tab: AppTab, cx: &mut Context<Self>) {
-        let view = self
-            .last_view_per_tab
-            .get(&tab)
-            .copied()
-            .unwrap_or_else(|| tab.default_view());
-        self.select_view(view, cx);
-    }
-
-    /// `alt-1`/`alt-2`/`alt-3`: jump to the Nth sub-view of the active header tab (see the UI flow
-    /// plan Part 4.5). A no-op when the active tab has fewer sub-views than `index + 1`.
-    pub(crate) fn select_nth_sub_view(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(view) = self.active_tab.sub_views().get(index).copied() {
-            self.select_view(view, cx);
+    /// Re-reads the wall clock; notifies only when the displayed minute changed.
+    pub(crate) fn tick_footer_clock(&mut self, cx: &mut Context<Self>) {
+        let now = crate::time::current_clock_hhmm();
+        if self.footer_clock.as_ref() != now {
+            self.footer_clock = now.into();
+            cx.notify();
         }
     }
 
@@ -855,8 +948,8 @@ impl AppModel {
         }
     }
 
-    pub fn sidebar_collapsed(&self, cx: &gpui::App) -> bool {
-        self.navigation.read(cx).sidebar_collapsed
+    pub fn context_rail_collapsed(&self, cx: &gpui::App) -> bool {
+        self.navigation.read(cx).context_rail_collapsed
     }
 
     #[cfg(test)]
@@ -869,11 +962,14 @@ impl AppModel {
     /// own signal instead of always showing zero.
     pub fn sidebar_badges(&self, cx: &gpui::App) -> TabBadges {
         let pulsations = self.pulsations.read(cx);
+        let agents = self.agents.read(cx);
         TabBadges {
-            agent_failed_runs: self.agents.read(cx).failed_agent_count(),
+            agent_failed_runs: agents.failed_agent_count(),
             engine_awaiting_hitl: pulsations.awaiting_hitl,
             engine_running_jobs: pulsations.running_jobs,
             companion_streaming: usize::from(self.chat.read(cx).streaming),
+            clarifications: self.resolution.read(cx).chips.len(),
+            agent_fallbacks: agents.fallbacks.len(),
         }
     }
 
@@ -882,15 +978,8 @@ impl AppModel {
             self.close_cli_model_picker(cx);
         }
         self.active_view = view;
-        if let Some(tab) = AppTab::from_view(view) {
-            self.active_tab = tab;
-            self.last_view_per_tab.insert(tab, view);
-        }
         self.navigation.update(cx, |navigation, _| {
             navigation.active = view;
-            if let Some(tab) = AppTab::from_view(view) {
-                navigation.active_tab = tab;
-            }
         });
         self.pulsations.update(cx, |pulsations, _| {
             pulsations.diff_expanded = false;
@@ -921,7 +1010,15 @@ impl AppModel {
             }
         }
         match view {
-            AppView::Pulsations => self.refresh_pulsation_usage(cx),
+            AppView::Pulsations => {
+                self.refresh_pulsation_usage(cx);
+                self.refresh_hitl_documents(cx);
+                self.refresh_failure_detail(cx);
+                if let Some(id) = self.pulsations.read(cx).active_id() {
+                    self.refresh_pulsation_artifacts(id.clone(), cx);
+                    self.refresh_backend_override(id, cx);
+                }
+            }
             AppView::Forge => self.refresh_forge(cx),
             AppView::Agents => self.refresh_agents(cx),
             AppView::Settings => self.refresh_settings(cx),
@@ -932,17 +1029,14 @@ impl AppModel {
         cx.notify();
     }
 
-    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.navigation.update(cx, |navigation, _| {
-            navigation.sidebar_collapsed = !navigation.sidebar_collapsed;
-        });
-        self.schedule_session_persistence(cx);
-        cx.notify();
+    pub fn toggle_context_rail(&mut self, cx: &mut Context<Self>) {
+        let collapsed = !self.navigation.read(cx).context_rail_collapsed;
+        self.set_context_rail_collapsed(collapsed, cx);
     }
 
-    pub fn set_sidebar_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+    pub fn set_context_rail_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
         self.navigation.update(cx, |navigation, _| {
-            navigation.sidebar_collapsed = collapsed;
+            navigation.context_rail_collapsed = collapsed;
         });
         self.schedule_session_persistence(cx);
         cx.notify();
@@ -993,11 +1087,39 @@ impl AppModel {
             .project_id
             .as_ref()
             .map(ToString::to_string);
+        let message = message.into();
+        if matches!(kind, HeaderNoticeKind::Warning | HeaderNoticeKind::Error) {
+            let target = action.as_ref().map(|action| {
+                FlowTarget::PulsationSection(
+                    action.pulsation_id.clone(),
+                    PulsationDetailSection::Review,
+                )
+            });
+            self.record_activity(ActivityKind::Notice, message.clone(), target, true);
+        }
         self.notifications.queue.set_project(project);
         self.notifications
             .queue
             .push_actionable(kind, message, action);
         cx.notify();
+    }
+
+    /// Appends one line to Home's activity feed. Callers pass a finished milestone, never a
+    /// delta; the feed is what the developer reads after looking away for a minute.
+    pub(crate) fn record_activity(
+        &mut self,
+        kind: ActivityKind,
+        summary: impl Into<SharedString>,
+        target: Option<FlowTarget>,
+        attention: bool,
+    ) {
+        self.activity.push(ActivityEntry {
+            at: std::time::SystemTime::now(),
+            kind,
+            summary: summary.into(),
+            target,
+            attention,
+        });
     }
 
     pub fn choose_workspace(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1460,38 +1582,75 @@ impl AppModel {
         else {
             return;
         };
-        self.pulsations.update(cx, |pulsations, _| {
-            pulsations.runtime_loading = true;
-            pulsations.error = None;
+        if self.snapshot_in_flight {
+            self.snapshot_pending = Some(preferred_id);
+            return;
+        }
+        self.snapshot_in_flight = true;
+        let revision = self.snapshot_revision;
+        let selected = self.pulsations.read(cx).active_id();
+        self.pulsations.update(cx, |state, _| {
+            state.runtime_loading = state.pulsations.is_empty();
+            state.error = None;
         });
-        self.pulsations_task = Some(cx.spawn(async move |this, cx| {
+        self.pulsation_snapshot_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.runtime_snapshot(project_id.clone()).await;
-            let _ = this.update(cx, |model, cx| match result {
-                Ok(snapshot) => {
-                    let active_id = model.apply_pulsation_snapshot(
-                        project_id,
-                        snapshot,
-                        preferred_id.as_deref(),
-                        cx,
-                    );
-                    if let Some(active_id) = active_id {
-                        model.refresh_pulsation_artifacts(active_id, cx);
+            let _ = this.update(cx, |model, cx| {
+                model.snapshot_in_flight = false;
+                model.lifecycle.finish_poll();
+                if model.is_disposed() {
+                    return;
+                }
+                let mut pending = model.snapshot_pending.take();
+                let current_selection = model.pulsations.read(cx).active_id();
+                if current_selection != selected && pending.is_some() {
+                    pending = Some(current_selection.clone());
+                }
+                let current_project = model
+                    .workspace
+                    .read(cx)
+                    .project_id
+                    .as_ref()
+                    .map(ToString::to_string);
+                if current_project.as_deref() != Some(&project_id)
+                    || model.snapshot_revision != revision
+                {
+                    pending = Some(current_selection.clone());
+                } else {
+                    match result {
+                        Ok(snapshot) => {
+                            let preference = if model.pulsations.read(cx).active_id() == selected {
+                                preferred_id.as_deref()
+                            } else {
+                                None
+                            };
+                            if let Some(id) =
+                                model.apply_pulsation_snapshot(project_id, snapshot, preference, cx)
+                            {
+                                model.refresh_pulsation_artifacts(id, cx);
+                            }
+                            model.refresh_logs(cx);
+                            model.finish_event_resync(cx);
+                        }
+                        Err(error) => {
+                            model.pulsations.update(cx, |state, _| {
+                                state.runtime_loading = false;
+                                state.error = Some(error.clone());
+                            });
+                            model.push_header_notice(HeaderNoticeKind::Warning, error, cx);
+                        }
                     }
                 }
-                Err(error) => {
-                    model.pulsations.update(cx, |pulsations, _| {
-                        pulsations.runtime_loading = false;
-                        pulsations.error = Some(error.clone());
-                    });
-                    model.push_header_notice(HeaderNoticeKind::Warning, error, cx);
-                    cx.notify();
+                if let Some(preferred) = pending {
+                    model.refresh_pulsations_with_preferred(preferred, cx);
                 }
+                cx.notify();
             });
         }));
         cx.notify();
     }
 
-    fn apply_pulsation_snapshot(
+    pub(crate) fn apply_pulsation_snapshot(
         &mut self,
         project_id: String,
         snapshot: PulsationRuntimeSnapshot,
@@ -1508,6 +1667,8 @@ impl AppModel {
         {
             return None;
         }
+        self.snapshot_revision = self.snapshot_revision.saturating_add(1);
+        let previous_revision = self.pulsation_read_key(cx);
         let forge_changed = crate::forge::task_runtime_changed(
             &self.pulsations.read(cx).pulsations,
             &snapshot.pulsations,
@@ -1515,9 +1676,59 @@ impl AppModel {
         let previously_awaiting_hitl = self.pulsations.read(cx).awaiting_hitl;
         let previously_awaiting_failure = self.pulsations.read(cx).awaiting_failure;
         let previous_failure = self.pulsations.read(cx).failure.checkpoint.clone();
+        // Status transitions of pulsations already known to the UI become activity lines;
+        // the initial load (nothing known yet) stays silent.
+        let previous_statuses: HashMap<String, (PulsationStatus, PulsationStage)> = self
+            .pulsations
+            .read(cx)
+            .pulsations
+            .iter()
+            .map(|pulsation| (pulsation.id.clone(), (pulsation.status, pulsation.stage)))
+            .collect();
+        let transitions: Vec<(String, String, PulsationStatus, PulsationStage, Option<String>)> =
+            if previous_statuses.is_empty() {
+                Vec::new()
+            } else {
+                snapshot
+                    .pulsations
+                    .iter()
+                    .filter(|pulsation| {
+                        previous_statuses.get(&pulsation.id).is_some_and(|(status, stage)| {
+                            *status != pulsation.status || *stage != pulsation.stage
+                        })
+                    })
+                    .map(|pulsation| {
+                        (
+                            pulsation.id.clone(),
+                            pulsation.feature_name.clone(),
+                            pulsation.status,
+                            pulsation.stage,
+                            pulsation.terminal_reason.clone(),
+                        )
+                    })
+                    .collect()
+            };
         let active_id = self.pulsations.update(cx, |pulsations, _| {
             pulsations.apply_snapshot(project_id, snapshot, preferred_id)
         });
+        for (id, feature, status, stage, terminal_reason) in transitions {
+            let section = match status {
+                PulsationStatus::Checkpoint => PulsationDetailSection::Review,
+                PulsationStatus::Done => PulsationDetailSection::Artifacts,
+                _ => PulsationDetailSection::Overview,
+            };
+            self.record_activity(
+                ActivityKind::Pulsation,
+                format!(
+                    "{} · {} · {}",
+                    feature.trim(),
+                    crate::pipeline_status::step_label(stage),
+                    crate::pulsations::status_label(status, terminal_reason.as_deref())
+                ),
+                Some(FlowTarget::PulsationSection(id, section)),
+                matches!(status, PulsationStatus::Failed | PulsationStatus::Checkpoint),
+            );
+        }
         let current_failure = &self.pulsations.read(cx).failure.checkpoint;
         if previous_failure
             .as_ref()
@@ -1530,10 +1741,13 @@ impl AppModel {
         }
         self.refresh_hitl_documents(cx);
         self.refresh_failure_detail(cx);
-        self.refresh_pulsation_usage(cx);
+        if previous_revision != self.pulsation_read_key(cx) {
+            self.refresh_pulsation_usage(cx);
+        }
         self.sync_preparation_inputs(cx);
         if let Some(active_id) = active_id.clone() {
-            self.refresh_backend_override(active_id, cx);
+            self.refresh_backend_override(active_id.clone(), cx);
+            self.refresh_cleanup_preview(active_id, cx);
         }
         if forge_changed && self.active_view() == AppView::Forge {
             self.refresh_forge(cx);
@@ -1649,19 +1863,42 @@ impl AppModel {
                 && !self.chat_draft_input.read(cx).value().trim().is_empty())
     }
 
+    fn pulsation_read_key(&self, cx: &gpui::App) -> String {
+        let state = self.pulsations.read(cx);
+        format!(
+            "{:?}",
+            (
+                self.workspace.read(cx).project_id.as_ref(),
+                state.active().map(|pulse| (&pulse.id, &pulse.updated_at))
+            )
+        )
+    }
+
     fn refresh_pulsation_artifacts(&mut self, pulsation_id: String, cx: &mut Context<Self>) {
+        self.artifact_read.want(self.pulsation_read_key(cx));
+        if self.active_view != AppView::Pulsations {
+            return;
+        }
         let Some(backend) = self.pulsations_backend.clone() else {
             return;
         };
-        self.pulsations.update(cx, |pulsations, _| {
-            pulsations.artifacts_loading = true;
-        });
+        let Some(key) = self.artifact_read.begin() else {
+            return;
+        };
+        self.pulsations
+            .update(cx, |state, _| state.artifacts_loading = true);
         self.pulsation_artifacts_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.artifacts(pulsation_id.clone()).await;
             let _ = this.update(cx, |model, cx| {
-                model.pulsations.update(cx, |pulsations, _| {
-                    pulsations.finish_artifacts(&pulsation_id, result);
-                });
+                model.artifact_read.want(model.pulsation_read_key(cx));
+                let current = model.artifact_read.finish(&key, result.is_ok());
+                if current {
+                    model
+                        .pulsations
+                        .update(cx, |state, _| state.finish_artifacts(&pulsation_id, result));
+                } else if let Some(id) = model.pulsations.read(cx).active_id() {
+                    model.refresh_pulsation_artifacts(id, cx);
+                }
                 cx.notify();
             });
         }));
@@ -1673,11 +1910,17 @@ impl AppModel {
     /// configured default. Never applied to a pulsation the user has since
     /// navigated away from.
     fn refresh_backend_override(&mut self, pulsation_id: String, cx: &mut Context<Self>) {
+        self.backend_read.want(self.pulsation_read_key(cx));
+        if self.active_view != AppView::Pulsations {
+            return;
+        }
         let Some(core) = self.core.clone() else {
             return;
         };
+        let Some(key) = self.backend_read.begin() else {
+            return;
+        };
         let runtime = core.runtime_handle().clone();
-        let scope = pulsation_id.clone();
         self.backend_override_task = Some(cx.spawn(async move |this, cx| {
             let result = runtime
                 .spawn_blocking(move || {
@@ -1686,16 +1929,19 @@ impl AppModel {
                         .backend_override_status(&pulsation_id)
                 })
                 .await;
-            let status = match result {
-                Ok(Ok(status)) => status,
-                _ => None,
-            };
             let _ = this.update(cx, |model, cx| {
-                model.pulsations.update(cx, |pulsations, _| {
-                    if pulsations.active_id().as_deref() == Some(scope.as_str()) {
-                        pulsations.backend_override = status;
+                model.backend_read.want(model.pulsation_read_key(cx));
+                let success = matches!(result, Ok(Ok(_)));
+                let current = model.backend_read.finish(&key, success);
+                if current {
+                    if let Ok(Ok(status)) = result {
+                        model
+                            .pulsations
+                            .update(cx, |state, _| state.backend_override = status);
                     }
-                });
+                } else if let Some(id) = model.pulsations.read(cx).active_id() {
+                    model.refresh_backend_override(id, cx);
+                }
                 cx.notify();
             });
         }));
@@ -1727,7 +1973,7 @@ impl AppModel {
         });
         cx.notify();
         let runtime = core.runtime_handle().clone();
-        self.backend_override_task = Some(cx.spawn(async move |this, cx| {
+        self.backend_override_mutation_task = Some(cx.spawn(async move |this, cx| {
             let result = runtime
                 .spawn_blocking(move || {
                     core.persistence()
@@ -1746,6 +1992,7 @@ impl AppModel {
                 });
                 match result {
                     Ok(response) => {
+                        model.backend_read.invalidate();
                         model.pulsations.update(cx, |pulsations, _| {
                             pulsations.backend_override = None;
                             pulsations.notice = Some(if response.retried {
@@ -1766,7 +2013,145 @@ impl AppModel {
         }));
     }
 
+    /// Loads the "Leftover files" preview for a failed pulsation: what the
+    /// cleanup would remove and what it keeps. A dry run on the workspace, so
+    /// it is fetched once per selection (`cleanup_read`) and again only on an
+    /// explicit refresh or after the cleanup itself; never for a live pulsation.
+    fn refresh_cleanup_preview(&mut self, pulsation_id: String, cx: &mut Context<Self>) {
+        let failed = self.pulsations.read(cx).active().is_some_and(|pulse| {
+            pulse.id == pulsation_id && pulse.status == PulsationStatus::Failed
+        });
+        if !failed {
+            return;
+        }
+        self.cleanup_read.want(self.pulsation_read_key(cx));
+        if self.active_view != AppView::Pulsations {
+            return;
+        }
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let Some(key) = self.cleanup_read.begin() else {
+            return;
+        };
+        self.pulsations.update(cx, |state, _| {
+            state.cleanup.loading = true;
+            state.cleanup.error = None;
+        });
+        self.cleanup_preview_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.cleanup_preview(pulsation_id.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                model.cleanup_read.want(model.pulsation_read_key(cx));
+                let current = model.cleanup_read.finish(&key, result.is_ok());
+                if current {
+                    model.pulsations.update(cx, |state, _| {
+                        state.cleanup.loading = false;
+                        state.cleanup.armed = false;
+                        match result {
+                            Ok(plan) => {
+                                state.cleanup.plan = Some(plan);
+                                state.cleanup.error = None;
+                            }
+                            Err(error) => state.cleanup.error = Some(error),
+                        }
+                    });
+                } else if let Some(id) = model.pulsations.read(cx).active_id() {
+                    model
+                        .pulsations
+                        .update(cx, |state, _| state.cleanup.loading = false);
+                    model.refresh_cleanup_preview(id, cx);
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// The "Refresh" control of the Leftover files card: the preview is
+    /// optimistic (external editors do not share the host lock), so the
+    /// operator can re-read the workspace before confirming.
+    pub(crate) fn reload_cleanup_preview(&mut self, cx: &mut Context<Self>) {
+        let Some(pulsation_id) = self.pulsations.read(cx).active_id() else {
+            return;
+        };
+        self.cleanup_read.invalidate();
+        self.pulsations
+            .update(cx, |state, _| state.cleanup.armed = false);
+        self.refresh_cleanup_preview(pulsation_id, cx);
+        cx.notify();
+    }
+
+    /// Two clicks remove the files a failed pulsation created: the first arms
+    /// the control, the second sends the confirmed preview (bound by its
+    /// `plan_token`) to the host. Kept files stay in the base review; adopting
+    /// the base remains the operator's explicit step.
+    pub(crate) fn request_cleanup_failed_files(&mut self, cx: &mut Context<Self>) {
+        let Some(pulsation_id) = self.pulsations.read(cx).active_id() else {
+            return;
+        };
+        let request = self.pulsations.update(cx, |state, _| {
+            if !state.cleanup.can_remove() {
+                return None;
+            }
+            if !state.cleanup.armed {
+                state.cleanup.armed = true;
+                state.notice =
+                    Some("Confirm again to remove the files this pulsation created.".to_string());
+                return None;
+            }
+            let plan = state.cleanup.plan.as_ref()?;
+            state.cleanup.armed = false;
+            state.cleanup.busy = true;
+            state.cleanup.error = None;
+            Some(CleanupFailedPulsationFilesRequest {
+                pulsation_id: pulsation_id.clone(),
+                expected_plan_token: plan.plan_token.clone(),
+            })
+        });
+        cx.notify();
+        let Some(request) = request else {
+            return;
+        };
+        let Some(backend) = self.pulsations_backend.clone() else {
+            self.pulsations
+                .update(cx, |state, _| state.cleanup.busy = false);
+            return;
+        };
+        self.cleanup_mutation_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.cleanup_files(request).await;
+            let _ = this.update(cx, |model, cx| {
+                model.pulsations.update(cx, |state, _| state.cleanup.busy = false);
+                match result {
+                    Ok(report) => {
+                        let notice = format!(
+                            "{} file(s) removed, {} kept, {} staging dir(s) cleared. Kept files stay in the base review.",
+                            report.removed_files.len(),
+                            report.kept_files,
+                            report.removed_candidate_dirs
+                        );
+                        model.pulsations.update(cx, |state, _| {
+                            state.notice = Some(notice);
+                        });
+                        model.cleanup_read.invalidate();
+                        model.refresh_pulsations(cx);
+                        model.refresh_cleanup_preview(pulsation_id, cx);
+                        model.schedule_vault_refresh(cx);
+                    }
+                    Err(error) => {
+                        model.pulsations.update(cx, |state, _| {
+                            state.cleanup.error = Some(error.clone());
+                        });
+                        model.push_header_notice(HeaderNoticeKind::Error, error, cx);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn refresh_hitl_documents(&mut self, cx: &mut Context<Self>) {
+        if self.active_view != AppView::Pulsations {
+            return;
+        }
         let Some(backend) = self.pulsations_backend.clone() else {
             return;
         };
@@ -1792,6 +2177,9 @@ impl AppModel {
     }
 
     pub(crate) fn refresh_failure_detail(&mut self, cx: &mut Context<Self>) {
+        if self.active_view != AppView::Pulsations {
+            return;
+        }
         let Some(backend) = self.pulsations_backend.clone() else {
             return;
         };
@@ -1824,9 +2212,15 @@ impl AppModel {
         cx: &mut Context<Self>,
     ) {
         self.confirm_failure_abort = false;
-        let request = self
-            .pulsations
-            .update(cx, |pulsations, _| pulsations.failure.begin(decision));
+        let (request, revision_target) = self.pulsations.update(cx, |pulsations, _| {
+            let target = pulsations
+                .failure
+                .checkpoint
+                .as_ref()
+                .filter(|c| !c.allowed_revision_targets.is_empty())
+                .and_then(|_| pulsations.failure.selected_revision_target());
+            (pulsations.failure.begin(decision), target)
+        });
         let request = request.map(|mut request| {
             if decision == StageFailureDecision::RequestRevision {
                 request.feedback = Some(self.stage_feedback_input.read(cx).value().to_owned());
@@ -1856,7 +2250,7 @@ impl AppModel {
             let result = runtime
                 .spawn_blocking(move || {
                     core.persistence()
-                        .resolve_stage_failure(request)
+                        .resolve_stage_failure_with_target(request, revision_target)
                         .map(|_| ())
                         .map_err(|error| error.to_string())
                 })
@@ -1910,6 +2304,9 @@ impl AppModel {
         if !selected {
             return;
         }
+        self.artifact_read.invalidate();
+        self.backend_read.invalidate();
+        self.cleanup_read.invalidate();
         self.confirm_failure_abort = false;
         self.refresh_hitl_documents(cx);
         self.refresh_failure_detail(cx);
@@ -1919,7 +2316,8 @@ impl AppModel {
             pulsations.diff_expanded = false;
         });
         self.refresh_pulsation_artifacts(pulsation_id.clone(), cx);
-        self.refresh_backend_override(pulsation_id, cx);
+        self.refresh_backend_override(pulsation_id.clone(), cx);
+        self.refresh_cleanup_preview(pulsation_id, cx);
         self.refresh_logs(cx);
         self.schedule_session_persistence(cx);
         cx.notify();
@@ -3062,36 +3460,75 @@ impl AppModel {
         self.chat_resync_tasks.insert(task_key, task);
     }
 
-    pub(crate) fn set_agents_tab(&mut self, tab: AgentsTab, cx: &mut Context<Self>) {
-        self.agents.update(cx, |agents, _| {
-            agents.tab = tab;
-            if tab == AgentsTab::Api
-                && !matches!(
-                    agents.selected_agent,
-                    Some(crate::agents::AgentIdentifier::Canonical(_))
-                )
-            {
-                agents.selected_agent = agents
-                    .snapshot
-                    .as_ref()
-                    .and_then(|snapshot| snapshot.agents.first())
-                    .map(|agent| {
-                        crate::agents::AgentIdentifier::Canonical(agent.config.agent_role)
-                    });
-            }
-            agents.active_model_picker = None;
-        });
-        if tab == AgentsTab::Api && self.settings.read(cx).snapshot.is_none() {
-            self.refresh_settings(cx);
-        }
-        cx.notify();
-    }
-
     pub(crate) fn toggle_agents_viewer(&mut self, cx: &mut Context<Self>) {
         self.agents.update(cx, |agents, _| {
             agents.viewer_enabled = !agents.viewer_enabled
         });
         cx.notify();
+    }
+
+    pub(crate) fn toggle_agents_terminal_expanded(&mut self, cx: &mut Context<Self>) {
+        self.agents.update(cx, |agents, _| {
+            agents.terminal_expanded = !agents.terminal_expanded;
+            agents.active_model_picker = None;
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn cycle_agent_api_filter(&mut self, key: String, cx: &mut Context<Self>) {
+        self.agents.update(cx, |agents, _| {
+            let filter = agents.api_filters.entry(key).or_insert(ApiActivityFilter::All);
+            *filter = filter.next();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn clear_agent_api_activity(
+        &mut self,
+        target: AgentIdentifier,
+        cx: &mut Context<Self>,
+    ) {
+        self.agents.update(cx, |agents, _| {
+            agents.api_activity.remove(&target);
+            agents.notice = Some("Local API viewer cleared; persisted history was retained.".into());
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn export_agent_api_execution(
+        &mut self,
+        target: AgentIdentifier,
+        execution_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.agents_backend.clone() else { return; };
+        let Some(project_id) = self.workspace.read(cx).project_id.clone() else { return; };
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .export_api_execution(project_id.to_string(), target.target(), execution_id)
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(path) => {
+                        model.agents.update(cx, |agents, _| {
+                            if agents.generation == generation {
+                                agents.busy = false;
+                                agents.notice = Some(format!("Redacted API execution exported to {path}"));
+                            }
+                        });
+                        model.schedule_agents_notice_dismiss(cx);
+                    }
+                    Err(error) => {
+                        model.agents.update(cx, |agents, _| {
+                            agents.fail(generation, error);
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        }));
     }
 
     pub(crate) fn configure_agent_api(
@@ -3143,7 +3580,7 @@ impl AppModel {
             (route.map(|route| route.id.clone()), connection_id)
         };
         self.agents.update(cx, |agents, _| {
-            agents.selected_api_role = Some(role);
+            agents.selected_api_target = Some(AgentIdentifier::Canonical(role));
         });
         self.settings.update(cx, |settings, _| {
             settings.binding_agent_role = role.as_str().into();
@@ -3167,6 +3604,121 @@ impl AppModel {
         self.save_settings_binding(cx);
     }
 
+    pub(crate) fn configure_free_form_api(&mut self, slot_id: String, cx: &mut Context<Self>) {
+        let (route_id, connection_id) = {
+            let agents = self.agents.read(cx);
+            let settings = self.settings.read(cx);
+            let route = settings.snapshot.as_ref().and_then(|snapshot| {
+                agents
+                    .free_form_bindings
+                    .iter()
+                    .find(|binding| binding.slot_id == slot_id)
+                    .and_then(|binding| {
+                        snapshot
+                            .routes
+                            .iter()
+                            .find(|route| route.id == binding.route_id)
+                    })
+                    .or_else(|| snapshot.routes.first())
+            });
+            let connection_id = route
+                .and_then(|route| {
+                    route
+                        .targets
+                        .iter()
+                        .filter(|target| target.enabled)
+                        .min_by_key(|target| target.position)
+                })
+                .map(|target| target.connection_id.clone())
+                .or_else(|| {
+                    settings
+                        .snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.connections.first())
+                        .map(|connection| connection.id.clone())
+                });
+            (route.map(|route| route.id.clone()), connection_id)
+        };
+        self.agents.update(cx, |agents, _| {
+            agents.selected_api_target = Some(AgentIdentifier::FreeForm(slot_id));
+        });
+        if let Some(route_id) = route_id {
+            self.select_settings_route(route_id, cx);
+        }
+        if let Some(connection_id) = connection_id {
+            self.select_settings_connection(connection_id, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn save_free_form_api_binding(
+        &mut self,
+        slot_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let Some(route_id) = self.settings.read(cx).route().map(|route| route.id.clone()) else {
+            return;
+        };
+        let version = self
+            .agents
+            .read(cx)
+            .free_form_bindings
+            .iter()
+            .find(|binding| binding.project_id == project_id && binding.slot_id == slot_id)
+            .map(|binding| binding.version);
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .upsert_free_form_binding(UpsertFreeFormProviderRouteBindingRequest {
+                    project_id,
+                    slot_id,
+                    route_id,
+                    enabled: Some(true),
+                    version,
+                })
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(binding) => {
+                        model.agents.update(cx, |agents, _| {
+                            if generation == agents.generation {
+                                agents.busy = false;
+                                if let Some(current) = agents
+                                    .free_form_bindings
+                                    .iter_mut()
+                                    .find(|current| current.slot_id == binding.slot_id)
+                                {
+                                    *current = binding;
+                                } else {
+                                    agents.free_form_bindings.push(binding);
+                                }
+                                agents.notice = Some("FreeForm API route updated.".into());
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        model.agents.update(cx, |agents, _| {
+                            agents.fail(generation, error);
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn open_advanced_api_settings(
         &mut self,
         role: hvc_core::llm::AgentRole,
@@ -3177,17 +3729,37 @@ impl AppModel {
     }
 
     pub(crate) fn refresh_agents(&mut self, cx: &mut Context<Self>) {
-        self.refresh_agents_inner(false, cx);
+        self.refresh_agents_inner(false, false, cx);
     }
 
     pub(crate) fn refresh_agent_diagnostics(&mut self, cx: &mut Context<Self>) {
-        self.refresh_agents_inner(true, cx);
+        self.refresh_agents_inner(true, false, cx);
+    }
+
+    /// Refreshes the agents snapshot for the shell chrome without touching the Agents panel's
+    /// loading/busy state; skipped while a loud read or an operation is in flight.
+    pub(crate) fn refresh_agents_quiet(&mut self, cx: &mut Context<Self>) {
+        if self.agents.read(cx).in_flight() {
+            return;
+        }
+        self.refresh_agents_inner(false, true, cx);
     }
 
     pub(crate) fn toggle_agent_follow_tail(&mut self, key: String, cx: &mut Context<Self>) {
         self.agents.update(cx, |agents, _| {
             let enabled = agents.follow_tail.get(&key).copied().unwrap_or(true);
             agents.follow_tail.insert(key, !enabled);
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn cycle_agent_event_filter(&mut self, key: String, cx: &mut Context<Self>) {
+        self.agents.update(cx, |agents, _| {
+            let filter = agents
+                .event_filters
+                .entry(key)
+                .or_insert(crate::agents::TerminalEventFilter::All);
+            *filter = filter.next();
         });
         cx.notify();
     }
@@ -3270,7 +3842,7 @@ impl AppModel {
         }));
     }
 
-    fn refresh_agents_inner(&mut self, force_discovery: bool, cx: &mut Context<Self>) {
+    fn refresh_agents_inner(&mut self, force_discovery: bool, quiet: bool, cx: &mut Context<Self>) {
         if self.lifecycle.is_disposed() {
             return;
         }
@@ -3286,7 +3858,13 @@ impl AppModel {
         let Some(backend) = self.agents_backend.clone() else {
             return;
         };
-        let generation = self.agents.update(cx, |agents, _| agents.begin(true));
+        let generation = self.agents.update(cx, |agents, _| {
+            if quiet {
+                agents.begin_quiet()
+            } else {
+                agents.begin(true)
+            }
+        });
         cx.notify();
         self.agents_task = Some(cx.spawn(async move |this, cx| {
             let result = if force_discovery {
@@ -3305,6 +3883,9 @@ impl AppModel {
                             agents.apply_snapshot(generation, snapshot);
                         });
                     }
+                    // A quiet read keeps whatever the chrome already shows; the next loud read
+                    // (opening Agents) reports the failure in its own panel.
+                    Err(_) if quiet => {}
                     Err(error) => {
                         let message = error.presentable();
                         if model
@@ -4013,6 +4594,104 @@ impl AppModel {
         }));
     }
 
+    pub(crate) fn start_free_form_api_agent(
+        &mut self,
+        slot_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
+        let Some(input) = self.free_form_prompt_inputs.get(&slot_id).cloned() else {
+            return;
+        };
+        let prompt = input.read(cx).value().to_string();
+        if prompt.trim().is_empty() {
+            return;
+        }
+        let generation = self.agents.update(cx, |agents, _| agents.begin(false));
+        let slot_for_result = slot_id.clone();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .start_free_form_api(StartFreeFormApiRunRequest {
+                    project_id,
+                    slot_id,
+                    prompt,
+                })
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(run) => {
+                        input.update(cx, |input, cx| input.set_value("", cx));
+                        model.agents.update(cx, |agents, _| {
+                            agents.apply_started_api_run(
+                                generation,
+                                slot_for_result,
+                                run.execution_id,
+                            );
+                        });
+                    }
+                    Err(error) => {
+                        let message = error.presentable();
+                        if model
+                            .agents
+                            .update(cx, |agents, _| agents.fail(generation, error))
+                        {
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(crate) fn cancel_free_form_api_agent(
+        &mut self,
+        slot_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(execution_id) = self
+            .agents
+            .read(cx)
+            .active_api_execution_by_slot
+            .get(&slot_id)
+            .cloned()
+        else {
+            return;
+        };
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.cancel_api_execution(execution_id).await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(true) => model.agents.update(cx, |agents, _| {
+                        agents.notice = Some("API cancellation requested.".into());
+                    }),
+                    Ok(false) => model.agents.update(cx, |agents, _| {
+                        agents.notice = Some("API execution is no longer active.".into());
+                        agents.active_api_execution_by_slot.remove(&slot_id);
+                    }),
+                    Err(error) => model.agents.update(cx, |agents, _| {
+                        agents.error = Some(error);
+                    }),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn resume_agent_run(
         &mut self,
         source_run_id: String,
@@ -4602,13 +5281,53 @@ impl AppModel {
         if self.settings.read(cx).settings_section == crate::settings::SettingsSection::Usage {
             self.refresh_usage(cx);
         }
+        self.refresh_settings_inner(false, cx);
+    }
+
+    /// Refreshes providers, resilience and embedding readiness for the shell chrome without
+    /// flipping the Settings panel into its loading state; skipped while Settings is busy.
+    pub(crate) fn refresh_settings_quiet(&mut self, cx: &mut Context<Self>) {
+        if self.settings.read(cx).in_flight() {
+            return;
+        }
+        self.refresh_settings_inner(true, cx);
+    }
+
+    /// Debounced quiet refresh for bursts of LLM failures (each one may open a cooldown).
+    fn schedule_settings_quiet_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.settings_quiet_refresh_pending || self.lifecycle.is_disposed() {
+            return;
+        }
+        self.settings_quiet_refresh_pending = true;
+        let timer = cx
+            .background_executor()
+            .timer(std::time::Duration::from_millis(350));
+        cx.spawn(async move |this, cx| {
+            timer.await;
+            let _ = this.update(cx, |model, cx| {
+                model.settings_quiet_refresh_pending = false;
+                if model.active_view() != AppView::Settings {
+                    model.refresh_settings_quiet(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn refresh_settings_inner(&mut self, quiet: bool, cx: &mut Context<Self>) {
         if self.lifecycle.is_disposed() {
             return;
         }
         let Some(backend) = self.settings_backend.clone() else {
             return;
         };
-        let generation = self.settings.update(cx, |settings, _| settings.begin(true));
+        let generation = self.settings.update(cx, |settings, _| {
+            if quiet {
+                settings.begin_quiet()
+            } else {
+                settings.begin(true)
+            }
+        });
         cx.notify();
         self.settings_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.snapshot().await;
@@ -4657,6 +5376,7 @@ impl AppModel {
                             model.refresh_embedding_readiness(cx);
                         }
                     }
+                    Err(_) if quiet => {}
                     Err(error) => {
                         model
                             .settings
@@ -4884,9 +5604,32 @@ impl AppModel {
     }
 
     pub(crate) fn select_settings_provider(&mut self, provider_id: String, cx: &mut Context<Self>) {
-        self.settings.update(cx, |settings, _| {
+        let model_is_empty = self
+            .settings_connection_model_input
+            .read(cx)
+            .value()
+            .trim()
+            .is_empty();
+        let default_model = self.settings.update(cx, |settings, _| {
+            let changed = settings.connection_provider_id.as_ref() != provider_id;
+            let default_model = (changed || model_is_empty)
+                .then(|| {
+                    settings
+                        .snapshot
+                        .as_ref()?
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == provider_id)
+                        .map(|profile| profile.default_model.clone())
+                })
+                .flatten();
             settings.connection_provider_id = provider_id.into();
+            default_model
         });
+        if let Some(default_model) = default_model {
+            self.settings_connection_model_input
+                .update(cx, |input, cx| input.set_value(default_model, cx));
+        }
         self.close_dropdown(cx);
         cx.notify();
     }
@@ -4933,6 +5676,8 @@ impl AppModel {
         ] {
             input.update(cx, |input, cx| input.clear(cx));
         }
+        let provider_id = self.settings.read(cx).connection_provider_id.to_string();
+        self.select_settings_provider(provider_id, cx);
         cx.notify();
     }
 
@@ -5333,6 +6078,9 @@ impl AppModel {
     }
 
     pub(crate) fn refresh_logs(&mut self, cx: &mut Context<Self>) {
+        if self.active_view != AppView::Logs {
+            return;
+        }
         let Some(backend) = self.logs_backend.clone() else {
             return;
         };
@@ -5340,15 +6088,19 @@ impl AppModel {
         let Some(generation) = generation else {
             return;
         };
-        let pulsation_id = self
-            .pulsations
-            .read(cx)
-            .active_pulsation_id
-            .as_ref()
-            .map(ToString::to_string);
+        let active_project_id = self.workspace.read(cx).project_id.clone();
+        let project_id = active_project_id.as_ref().map(ToString::to_string);
         self.logs_task = Some(cx.spawn(async move |this, cx| {
-            let result = backend.observability(pulsation_id).await;
+            let result = backend.observability(project_id, None).await;
             let _ = this.update(cx, |model, cx| {
+                if model.workspace.read(cx).project_id != active_project_id {
+                    model.logs.update(cx, |logs, _| {
+                        logs.discard_poll(generation);
+                        logs.reset_expansion();
+                    });
+                    model.refresh_logs(cx);
+                    return;
+                }
                 match result {
                     Ok(snapshot) => {
                         model.logs.update(cx, |logs, _| {
@@ -5371,6 +6123,24 @@ impl AppModel {
             logs.selected_run_id = Some(run_id.into());
         });
         cx.notify();
+    }
+
+    pub(crate) fn toggle_log_pulsation_group(&mut self, key: String, cx: &mut Context<Self>) {
+        self.logs.update(cx, |logs, _| {
+            logs.toggle_group(&key);
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn jump_to_pulsation_from_logs(
+        &mut self,
+        pulsation_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.select(&pulsation_id);
+        });
+        self.select_view(AppView::Pulsations, cx);
     }
 
     fn resync_llm_execution(&mut self, execution_id: String, cx: &mut Context<Self>) {
@@ -5402,6 +6172,53 @@ impl AppModel {
         self.logs_resync_tasks.insert(task_key, task);
     }
 
+    fn request_event_resync(&mut self, cx: &mut Context<Self>) {
+        if self.event_resync_pending {
+            return;
+        }
+        self.event_resync_pending = true;
+        self.needs_resync = true;
+        self.artifact_read.invalidate();
+        self.backend_read.invalidate();
+        self.cleanup_read.invalidate();
+        self.status = "Event history delayed; refreshing runtime snapshots".into();
+        // Workspace changes may also have been lost; refresh its index without
+        // replacing open buffers, the current project, or navigation state.
+        self.schedule_vault_refresh(cx);
+    }
+
+    fn finish_event_resync(&mut self, cx: &mut Context<Self>) {
+        if !self.event_resync_pending {
+            return;
+        }
+        self.event_resync_pending = false;
+        self.needs_resync = false;
+        match self.active_view {
+            AppView::Agents => self.refresh_agents(cx),
+            AppView::Forge => self.refresh_forge(cx),
+            AppView::Settings => self.refresh_settings(cx),
+            AppView::Pulsations => self.refresh_pulsation_usage(cx),
+            AppView::Chat => {
+                let project = self
+                    .workspace
+                    .read(cx)
+                    .project_id
+                    .as_ref()
+                    .map(ToString::to_string);
+                let conversation = self
+                    .chat
+                    .read(cx)
+                    .active_conversation
+                    .as_ref()
+                    .map(ToString::to_string);
+                if let Some(project) = project {
+                    self.hydrate_chat_project(project, conversation, cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn start_lifecycle(&mut self, cx: &mut Context<Self>) {
         let Some(core) = self.core.clone() else {
             return;
@@ -5423,16 +6240,7 @@ impl AppModel {
                     Err(RecvError::Lagged(_)) => {
                         if this
                             .update(cx, |model, cx| {
-                                model.needs_resync = true;
-                                model.status =
-                                    "Eventos atrasados; recarregando snapshot persistido".into();
-                                model.restore_last_session(cx);
-                                model.refresh_settings(cx);
-                                model.refresh_logs(cx);
-                                model.refresh_forge(cx);
-                                if model.active_view == AppView::Agents {
-                                    model.refresh_agents(cx);
-                                }
+                                model.request_event_resync(cx);
                             })
                             .is_err()
                         {
@@ -5444,63 +6252,28 @@ impl AppModel {
             }
         }));
 
-        let Some(pulsations_backend) = self.pulsations_backend.clone() else {
-            return;
-        };
         let timer = cx.background_executor().clone();
         self.polling_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 timer.timer(std::time::Duration::from_millis(1_200)).await;
                 let state = this.update(cx, |model, cx| {
                     if model.lifecycle.is_disposed() {
-                        return (true, None);
+                        return false;
                     }
-                    let project_id = model
-                        .workspace
-                        .read(cx)
-                        .project_id
-                        .as_ref()
-                        .map(ToString::to_string);
-                    if project_id.is_none() || !model.lifecycle.try_begin_poll() {
-                        return (false, None);
+                    if model.workspace.read(cx).project_id.is_some()
+                        && !model.snapshot_in_flight
+                        && model.lifecycle.try_begin_poll()
+                    {
+                        model.refresh_pulsations(cx);
                     }
-                    (false, project_id)
+                    if model.workspace.read(cx).project_id.is_some() {
+                        model.refresh_resolution_chips(cx);
+                        model.poll_resolution_turn_if_pending(cx);
+                    }
+                    model.tick_footer_clock(cx);
+                    true
                 });
-                let Ok((disposed, project_id)) = state else {
-                    break;
-                };
-                if disposed {
-                    break;
-                }
-                let Some(project_id) = project_id else {
-                    continue;
-                };
-
-                let snapshot = pulsations_backend
-                    .runtime_snapshot(project_id.clone())
-                    .await;
-                if this
-                    .update(cx, |model, cx| {
-                        model.lifecycle.finish_poll();
-                        match snapshot {
-                            Ok(snapshot) => {
-                                let active_id =
-                                    model.apply_pulsation_snapshot(project_id, snapshot, None, cx);
-                                if let Some(active_id) = active_id {
-                                    model.refresh_pulsation_artifacts(active_id, cx);
-                                }
-                                model.refresh_logs(cx);
-                            }
-                            Err(error) => model.push_header_notice(
-                                HeaderNoticeKind::Warning,
-                                format!("Failed to update runtime: {error}"),
-                                cx,
-                            ),
-                        }
-                        cx.notify();
-                    })
-                    .is_err()
-                {
+                if !matches!(state, Ok(true)) {
                     break;
                 }
             }
@@ -5577,7 +6350,7 @@ impl AppModel {
         let restored_vault_selection = session.and_then(|value| value.selected_vault_path.clone());
         let active_view = session
             .map(|session| AppView::from_id(&session.active_view))
-            .unwrap_or(AppView::Workspace);
+            .unwrap_or(AppView::Home);
         let requested_active = session.and_then(|session| session.active_tab_path.as_deref());
         let active_path = requested_active
             .filter(|path| restored.tabs.iter().any(|tab| tab.relative_path == *path))
@@ -5601,26 +6374,12 @@ impl AppModel {
             })
             .collect::<Vec<_>>();
 
-        // A restored project starts a new in-memory navigation history.
-        self.active_tab = AppTab::from_view(active_view).unwrap_or(AppTab::Companion);
-        self.last_view_per_tab = AppTab::ALL
-            .into_iter()
-            .map(|tab| {
-                (
-                    tab,
-                    if tab.contains(active_view) {
-                        active_view
-                    } else {
-                        tab.default_view()
-                    },
-                )
-            })
-            .collect();
         self.navigation.update(cx, |navigation, _| {
             navigation.active = active_view;
-            navigation.active_tab = self.active_tab;
-            navigation.sidebar_collapsed = session.is_some_and(|value| value.sidebar_collapsed);
+            navigation.context_rail_collapsed =
+                session.is_some_and(|value| value.sidebar_collapsed);
         });
+        self.activity.clear();
         self.indexing_status = None;
         self.workspace.update(cx, |workspace, cx| {
             workspace.project_id = Some(restored.project_id.clone().into());
@@ -5683,10 +6442,6 @@ impl AppModel {
             session.and_then(|value| value.active_chat_conversation_id.clone());
         self.hydrate_chat_project(restored.project_id.clone(), restored_chat_conversation, cx);
         self.active_view = active_view;
-        if let Some(tab) = AppTab::from_view(active_view) {
-            self.active_tab = tab;
-            self.last_view_per_tab.insert(tab, active_view);
-        }
         self.needs_resync = false;
         self.session_dirty = false;
         self.status = format!("Session restored: {}", restored.root_path).into();
@@ -5695,12 +6450,23 @@ impl AppModel {
         }
         self.hydrating = false;
         self.refresh_pulsations_with_preferred(preferred_pulsation_id, cx);
+        self.refresh_resolution_chips(cx);
         self.refresh_vault(true, cx);
+        // Home's next step is a function of the Forge snapshot, and the header/context rail read
+        // the agents and settings snapshots, so all three load with the project instead of
+        // waiting for their view to be opened.
+        self.refresh_forge(cx);
         match active_view {
             AppView::Agents => self.refresh_agents(cx),
             AppView::Settings => self.refresh_settings(cx),
             AppView::Logs => self.refresh_logs(cx),
             _ => {}
+        }
+        if active_view != AppView::Agents {
+            self.refresh_agents_quiet(cx);
+        }
+        if active_view != AppView::Settings {
+            self.refresh_settings_quiet(cx);
         }
         cx.notify();
     }
@@ -5809,7 +6575,7 @@ impl AppModel {
             // contract and older rows still written with "hitl".
             workspace_view_mode: "editor".to_string(),
             active_view: self.active_view.id().to_string(),
-            sidebar_collapsed: self.navigation.read(cx).sidebar_collapsed,
+            sidebar_collapsed: self.navigation.read(cx).context_rail_collapsed,
             context_drawer_open: workspace.context_drawer_open,
             active_pulsation_id: pulsations
                 .active_pulsation_id
@@ -5837,6 +6603,9 @@ impl AppModel {
         let preparation_action = self.preparation_action_task.take();
         self.artifact_preview_task.take();
         self.pulsation_artifacts_task.take();
+        self.pulsation_snapshot_task.take();
+        self.backend_override_task.take();
+        let backend_override_mutation = self.backend_override_mutation_task.take();
         self.hitl_documents_task.take();
         self.vault_refresh_task.take();
         self.vault_search_task.take();
@@ -5851,6 +6620,10 @@ impl AppModel {
         self.logs_resync_tasks.clear();
         self.chat_task.take();
         self.chat_resync_tasks.clear();
+        self.resolution_chips_task.take();
+        self.resolution_conversation_task.take();
+        self.resolution_action_task.take();
+        self.resolution_turn_task.take();
         self.session_task.take();
         self.performance_probe.take();
         self.notifications.wake.take();
@@ -5874,6 +6647,9 @@ impl AppModel {
                 task.await;
             }
             if let Some(task) = settings {
+                task.await;
+            }
+            if let Some(task) = backend_override_mutation {
                 task.await;
             }
             let result = match (persistence, request) {
@@ -5904,6 +6680,21 @@ impl AppModel {
             return;
         }
         if let AppEvent::ModelPull(event) = event {
+            match &event {
+                ModelPullEvent::Completed { model } => self.record_activity(
+                    ActivityKind::Indexing,
+                    format!("Embedding model {model} ready"),
+                    Some(FlowTarget::View(AppView::Settings)),
+                    false,
+                ),
+                ModelPullEvent::Failed { model, error } => self.record_activity(
+                    ActivityKind::Indexing,
+                    format!("Embedding model {model} failed: {error}"),
+                    Some(FlowTarget::View(AppView::Settings)),
+                    true,
+                ),
+                ModelPullEvent::Started { .. } | ModelPullEvent::Progress { .. } => {}
+            }
             self.model_pull_status = Some(event);
             cx.notify();
             return;
@@ -5938,10 +6729,36 @@ impl AppModel {
                     .as_ref()
                     .is_some_and(|p| p.as_ref() == event.project_id)
                 {
+                    self.activity.push_coalesced(
+                        ActivityEntry {
+                            at: std::time::SystemTime::now(),
+                            kind: ActivityKind::Forge,
+                            summary: if event.feature_id.is_some() {
+                                "Forge feature updated".into()
+                            } else {
+                                "Forge backlog updated".into()
+                            },
+                            target: Some(FlowTarget::ForgeSection(
+                                crate::forge::ForgeSection::Backlog,
+                            )),
+                            attention: false,
+                        },
+                        ACTIVITY_COALESCE_WINDOW,
+                    );
                     self.refresh_forge(cx);
                 }
             }
             AppEvent::WorkspaceChanged(event) => {
+                self.activity.push_coalesced(
+                    ActivityEntry {
+                        at: std::time::SystemTime::now(),
+                        kind: ActivityKind::Workspace,
+                        summary: format!("{} {}", event.relative_path, event.kind).into(),
+                        target: Some(FlowTarget::View(AppView::Workspace)),
+                        attention: false,
+                    },
+                    ACTIVITY_COALESCE_WINDOW,
+                );
                 self.logs.update(cx, |logs, _| {
                     logs.record_workspace(event.clone());
                 });
@@ -5949,18 +6766,82 @@ impl AppModel {
             }
             AppEvent::Llm(envelope) => {
                 let execution_id = envelope.execution_id.clone();
-                self.agents
+                let terminal = matches!(
+                    envelope.event,
+                    hvc_core::llm::LlmStreamEvent::RouteCompleted { .. }
+                        | hvc_core::llm::LlmStreamEvent::RouteFailed { .. }
+                );
+                // Failures may open a provider cooldown; the rail's runtime card follows it.
+                let failed = matches!(
+                    envelope.event,
+                    hvc_core::llm::LlmStreamEvent::RouteFailed { .. }
+                        | hvc_core::llm::LlmStreamEvent::AttemptFailed { .. }
+                );
+                match &envelope.event {
+                    hvc_core::llm::LlmStreamEvent::RouteCompleted { model, .. } => {
+                        let stage = envelope
+                            .context
+                            .as_ref()
+                            .map(|context| context.stage.clone())
+                            .filter(|stage| !stage.is_empty())
+                            .unwrap_or_else(|| "LLM".to_string());
+                        self.record_activity(
+                            ActivityKind::Agent,
+                            format!("{stage} · {model} completed"),
+                            Some(FlowTarget::View(AppView::Logs)),
+                            false,
+                        );
+                    }
+                    hvc_core::llm::LlmStreamEvent::RouteFailed { error_code, .. } => {
+                        self.record_activity(
+                            ActivityKind::Agent,
+                            format!("LLM route failed ({error_code})"),
+                            Some(FlowTarget::View(AppView::Logs)),
+                            true,
+                        );
+                    }
+                    _ => {}
+                }
+                let agents_gap = self
+                    .agents
                     .update(cx, |agents, _| agents.record_llm(&envelope));
                 let classification = self.logs.update(cx, |logs, _| logs.record_llm(envelope));
-                if classification == SequenceClassification::Gap {
+                if classification == SequenceClassification::Gap || agents_gap {
                     self.needs_resync = true;
                     self.status = "LLM gap detected; reloading persisted execution".into();
                     self.resync_llm_execution(execution_id, cx);
                 }
+                if terminal || agents_gap {
+                    if self.active_view == AppView::Agents {
+                        self.refresh_agents(cx);
+                    } else {
+                        self.refresh_agents_quiet(cx);
+                    }
+                }
+                if failed && self.active_view != AppView::Settings {
+                    self.schedule_settings_quiet_refresh(cx);
+                }
             }
             AppEvent::Terminal(envelope) => {
+                if envelope.run.status.is_terminal() {
+                    self.backend_read.invalidate();
+                }
                 let terminal = envelope.run.status.is_terminal()
                     || envelope.run.status == TerminalRunStatus::AwaitingFallback;
+                if terminal {
+                    let agent = envelope
+                        .run
+                        .agent_role
+                        .map(|role| hvc_core::terminals::canonical_agent(role).name)
+                        .unwrap_or("Free-form agent");
+                    let status = envelope.run.status;
+                    self.record_activity(
+                        ActivityKind::Agent,
+                        format!("{agent} · {}", crate::agents_view::run_status(status)),
+                        Some(FlowTarget::View(AppView::Agents)),
+                        !matches!(status, TerminalRunStatus::Completed),
+                    );
+                }
                 let gap = self
                     .agents
                     .update(cx, |agents, _| agents.record_event(*envelope));
@@ -5968,11 +6849,38 @@ impl AppModel {
                     self.needs_resync = true;
                     self.status = "Terminal gap detected; reloading persisted history".into();
                 }
-                if (terminal || gap) && self.active_view == AppView::Agents {
-                    self.refresh_agents(cx);
+                if terminal || gap {
+                    if self.active_view == AppView::Agents {
+                        self.refresh_agents(cx);
+                    } else {
+                        self.refresh_agents_quiet(cx);
+                    }
                 }
             }
-            AppEvent::Chat(envelope) => self.handle_chat_event(envelope, cx),
+            AppEvent::Chat(envelope) => {
+                match envelope.kind {
+                    hvc_core::chat_service::ChatEventKind::TurnCompleted => self.record_activity(
+                        ActivityKind::Chat,
+                        "Companion replied",
+                        Some(FlowTarget::View(AppView::Chat)),
+                        false,
+                    ),
+                    hvc_core::chat_service::ChatEventKind::TurnFailed => self.record_activity(
+                        ActivityKind::Chat,
+                        "Companion turn failed",
+                        Some(FlowTarget::View(AppView::Chat)),
+                        true,
+                    ),
+                    hvc_core::chat_service::ChatEventKind::TurnCancelled => self.record_activity(
+                        ActivityKind::Chat,
+                        "Companion turn cancelled",
+                        Some(FlowTarget::View(AppView::Chat)),
+                        false,
+                    ),
+                    _ => {}
+                }
+                self.handle_chat_event(envelope, cx)
+            }
             // Returned early above, before the generic event-count/status preamble.
             AppEvent::Indexing(_) => unreachable!(),
             AppEvent::ModelPull(_) => unreachable!(),
@@ -5991,6 +6899,29 @@ impl AppModel {
         // readiness checklist so it points at the actual blocking step instead of a raw error.
         if matches!(event, IndexingEvent::Failed { .. }) {
             self.refresh_embedding_readiness(cx);
+        }
+        match &event {
+            IndexingEvent::Failed { error, .. } => self.record_activity(
+                ActivityKind::Indexing,
+                format!("Knowledge indexing failed: {error}"),
+                Some(FlowTarget::View(AppView::Settings)),
+                true,
+            ),
+            // Only the transition into Idle is a milestone; the supervisor keeps repeating it.
+            IndexingEvent::Idle { .. }
+                if matches!(
+                    self.indexing_status,
+                    Some(IndexingEvent::Progress { .. } | IndexingEvent::Paused { .. })
+                ) =>
+            {
+                self.record_activity(
+                    ActivityKind::Indexing,
+                    "Knowledge index up to date",
+                    Some(FlowTarget::View(AppView::Vault)),
+                    false,
+                )
+            }
+            _ => {}
         }
         self.indexing_status = Some(event);
         cx.notify();
@@ -6346,11 +7277,17 @@ mod tests {
     struct RecordingPulsationsBackend {
         actions: Arc<Mutex<Vec<crate::pulsations::PulsationAction>>>,
         snapshot_calls: Arc<Mutex<usize>>,
+        snapshot_barrier: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
         artifact_calls: Arc<Mutex<Vec<String>>>,
         create_calls: Arc<Mutex<Vec<(String, String)>>>,
         cancel_calls: Arc<Mutex<Vec<String>>>,
+        cleanup_preview_calls: Arc<Mutex<Vec<String>>>,
+        cleanup_calls: Arc<Mutex<Vec<hvc_core::orchestration::CleanupFailedPulsationFilesRequest>>>,
+        cleanup_plan: Arc<Mutex<Option<hvc_core::orchestration::FailedPulsationCleanupPlan>>>,
         snapshot: Arc<Mutex<PulsationRuntimeSnapshot>>,
         artifacts: Arc<Mutex<Vec<Artifact>>>,
+        resolution_chips: Arc<Mutex<Vec<hvc_core::orchestration::SpecificationQuestionSet>>>,
+        resolution_conversations: Arc<Mutex<HashMap<String, String>>>,
     }
 
     impl RecordingPulsationsBackend {
@@ -6358,9 +7295,13 @@ mod tests {
             Self {
                 actions: Arc::new(Mutex::new(Vec::new())),
                 snapshot_calls: Arc::new(Mutex::new(0)),
+                snapshot_barrier: Default::default(),
                 artifact_calls: Arc::new(Mutex::new(Vec::new())),
                 create_calls: Arc::new(Mutex::new(Vec::new())),
                 cancel_calls: Arc::new(Mutex::new(Vec::new())),
+                cleanup_preview_calls: Arc::new(Mutex::new(Vec::new())),
+                cleanup_calls: Arc::new(Mutex::new(Vec::new())),
+                cleanup_plan: Arc::new(Mutex::new(None)),
                 snapshot: Arc::new(Mutex::new(PulsationRuntimeSnapshot {
                     details: Vec::new(),
                     coordination: None,
@@ -6374,6 +7315,8 @@ mod tests {
                     brownfield_coverage: None,
                 })),
                 artifacts: Arc::new(Mutex::new(vec![test_artifact("Plan")])),
+                resolution_chips: Arc::new(Mutex::new(Vec::new())),
+                resolution_conversations: Arc::new(Mutex::new(HashMap::new())),
             }
         }
     }
@@ -6423,7 +7366,13 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            Box::pin(async move { Ok(snapshot) })
+            let barrier = self.snapshot_barrier.lock().unwrap().take();
+            Box::pin(async move {
+                if let Some(barrier) = barrier {
+                    let _ = barrier.await;
+                }
+                Ok(snapshot)
+            })
         }
 
         fn artifacts(&self, pulsation_id: String) -> PulsationsFuture<Vec<Artifact>> {
@@ -6447,12 +7396,77 @@ mod tests {
             Box::pin(async { Ok(test_pulsation()) })
         }
 
+        fn resolution_chips(
+            &self,
+            _project_id: String,
+        ) -> PulsationsFuture<Vec<hvc_core::orchestration::SpecificationQuestionSet>> {
+            let chips = self
+                .resolution_chips
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            Box::pin(async move { Ok(chips) })
+        }
+
+        fn ensure_resolution_conversation(
+            &self,
+            _project_id: String,
+            question_set_id: String,
+        ) -> PulsationsFuture<String> {
+            let conversation_id = self
+                .resolution_conversations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(question_set_id)
+                .or_insert_with(|| uuid::Uuid::new_v4().to_string())
+                .clone();
+            Box::pin(async move { Ok(conversation_id) })
+        }
+
         fn cancel_jobs(&self, pulsation_id: String) -> PulsationsFuture<usize> {
             self.cancel_calls
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(pulsation_id);
             Box::pin(async { Ok(1) })
+        }
+
+        fn cleanup_preview(
+            &self,
+            pulsation_id: String,
+        ) -> PulsationsFuture<hvc_core::orchestration::FailedPulsationCleanupPlan> {
+            self.cleanup_preview_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(pulsation_id.clone());
+            let plan = self
+                .cleanup_plan
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            Box::pin(async move {
+                plan.ok_or_else(|| "no cleanup preview scripted for this test".to_string())
+            })
+        }
+
+        fn cleanup_files(
+            &self,
+            request: hvc_core::orchestration::CleanupFailedPulsationFilesRequest,
+        ) -> PulsationsFuture<hvc_core::orchestration::FailedPulsationCleanupReport> {
+            let pulsation_id = request.pulsation_id.clone();
+            self.cleanup_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(request);
+            Box::pin(async move {
+                Ok(hvc_core::orchestration::FailedPulsationCleanupReport {
+                    pulsation_id,
+                    removed_files: vec!["src/generated.rs".into()],
+                    removed_directories: 1,
+                    removed_candidate_dirs: 0,
+                    kept_files: 1,
+                })
+            })
         }
     }
 
@@ -6681,31 +7695,46 @@ mod tests {
             cx.read(|cx| {
                 let model = model.read(cx);
                 assert_eq!(model.navigation.read(cx).active, view);
-                assert_eq!(model.navigation.read(cx).active_tab, model.active_tab());
-                if let Some(tab) = AppTab::from_view(view) {
-                    assert_eq!(model.active_tab(), tab);
-                }
             });
         }
     }
 
     #[gpui::test]
-    fn alt_number_jumps_to_the_nth_sub_view_of_the_active_tab(cx: &mut TestAppContext) {
+    fn quiet_agent_refresh_never_flips_the_panel_into_loading(cx: &mut TestAppContext) {
         let model = cx.new(AppModel::new_for_test);
         model.update(cx, |model, cx| {
-            model.select_tab(AppTab::Engine, cx);
-            model.select_nth_sub_view(0, cx);
-            assert_eq!(model.active_view(), AppTab::Engine.sub_views()[0]);
-            model.select_nth_sub_view(1, cx);
-            assert_eq!(model.active_view(), AppTab::Engine.sub_views()[1]);
-            // Engine has three sub-views; Companion only has two, so index 2 is a no-op there.
-            model.select_nth_sub_view(2, cx);
-            assert_eq!(model.active_view(), AppTab::Engine.sub_views()[2]);
-            model.select_tab(AppTab::Companion, cx);
-            let before = model.active_view();
-            model.select_nth_sub_view(2, cx);
-            assert_eq!(model.active_view(), before);
+            model.workspace.update(cx, |workspace, _| {
+                workspace.project_id = Some("project-1".into());
+            });
+            model.select_view(AppView::Vault, cx);
+            model.refresh_agents_quiet(cx);
+            let agents = model.agents.read(cx);
+            assert!(!agents.loading);
+            assert!(!agents.busy);
+
+            // A loud read in flight wins: the quiet one yields instead of bumping the generation.
+            let before = model.agents.update(cx, |agents, _| agents.begin(true));
+            model.refresh_agents_quiet(cx);
+            assert_eq!(model.agents.read(cx).generation, before);
+            assert!(model.agents.read(cx).loading);
         });
+    }
+
+    #[gpui::test]
+    fn rail_groups_cover_every_workbench_view_exactly_once(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        assert_eq!(cx.read(|cx| model.read(cx).active_view()), AppView::Home);
+        let mut grouped: Vec<AppView> = AppTab::RAIL_ORDER
+            .iter()
+            .flat_map(|tab| tab.sub_views().iter().copied())
+            .collect();
+        assert_eq!(grouped.len(), AppView::ALL.len() - 2, "Home and Settings are ungrouped");
+        grouped.sort_by_key(|view| view.id());
+        grouped.dedup_by_key(|view| view.id());
+        assert_eq!(grouped.len(), AppView::ALL.len() - 2);
+        assert_eq!(AppTab::from_view(AppView::Home), None);
+        assert_eq!(AppTab::from_view(AppView::Settings), None);
+        assert_eq!(AppView::from_id("home"), AppView::Home);
     }
 
     #[gpui::test]
@@ -6747,28 +7776,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn tabs_restore_their_last_view_after_settings(cx: &mut TestAppContext) {
-        let model = cx.new(AppModel::new_for_test);
-        model.update(cx, |model, cx| {
-            for view in [AppView::Logs, AppView::Pulsations, AppView::Chat] {
-                model.select_view(view, cx);
-            }
-            model.select_view(AppView::Settings, cx);
-            assert_eq!(model.active_tab(), AppTab::Companion);
-            assert_eq!(AppTab::from_view(AppView::Settings), None);
-            for (tab, view) in [
-                (AppTab::Agent, AppView::Logs),
-                (AppTab::Engine, AppView::Pulsations),
-                (AppTab::Companion, AppView::Chat),
-            ] {
-                model.select_tab(tab, cx);
-                assert_eq!(model.active_view(), view);
-                assert_eq!(model.navigation.read(cx).active_tab, tab);
-            }
-        });
-    }
-
-    #[gpui::test]
     fn creates_specific_entities_for_every_view(cx: &mut TestAppContext) {
         let model = cx.new(AppModel::new_for_test);
         cx.read(|cx| {
@@ -6799,7 +7806,7 @@ mod tests {
         model.update(cx, |model, cx| {
             configure_restorable_state(model, cx);
             model.select_view(AppView::Settings, cx);
-            model.set_sidebar_collapsed(true, cx);
+            model.set_context_rail_collapsed(true, cx);
             model.set_context_drawer_open(false, cx);
         });
 
@@ -6915,7 +7922,7 @@ mod tests {
         cx.read(|cx| {
             let model = model.read(cx);
             assert_eq!(model.active_view, AppView::Chat);
-            assert!(model.navigation.read(cx).sidebar_collapsed);
+            assert!(model.navigation.read(cx).context_rail_collapsed);
             assert!(model.auto_open_review);
             let workspace = model.workspace.read(cx);
             assert!(!workspace.context_drawer_open);
@@ -6959,8 +7966,7 @@ mod tests {
                 Some("chat-1".into())
             );
             let round_trip = model.session_request(cx).unwrap();
-            assert_eq!(model.active_tab(), AppTab::Companion);
-            assert_eq!(model.navigation.read(cx).active_tab, AppTab::Companion);
+            assert!(round_trip.sidebar_collapsed);
             assert_eq!(round_trip.workspace_view_mode, "editor");
             assert!(round_trip.auto_open_review);
             assert_eq!(round_trip.tabs[0].cursor_line, Some(7));
@@ -7007,10 +8013,8 @@ mod tests {
         cx.read(|cx| {
             let model = model.read(cx);
             assert_eq!(model.active_view, AppView::Vault);
-            assert_eq!(model.active_tab(), AppTab::Engine);
-            assert_eq!(model.navigation.read(cx).active_tab, AppTab::Engine);
-            assert_eq!(model.last_view_per_tab[&AppTab::Engine], AppView::Vault);
-            assert!(model.navigation.read(cx).sidebar_collapsed);
+            assert_eq!(model.navigation.read(cx).active, AppView::Vault);
+            assert!(model.navigation.read(cx).context_rail_collapsed);
             assert!(!model.workspace.read(cx).context_drawer_open);
             assert!(!model.pulsations.read(cx).diff_expanded);
         });
@@ -7219,6 +8223,218 @@ mod tests {
     }
 
     #[gpui::test]
+    fn real_pulsation_completes_under_every_view_with_the_same_four_checkpoints(
+        cx: &mut TestAppContext,
+    ) {
+        use hvc_core::persistence_service::{
+            CreatePulsationRequest, EnsureProjectForWorkspaceRequest,
+            GetPulsationRuntimeSnapshotRequest, PulsationStatus,
+        };
+        use hvc_test_support::pulsation_benchmark::{
+            configure_loopback, force_api_direct, stage_response,
+        };
+        use hvc_test_support::{CoreTestHarness, ScriptedHttpServer};
+        let harness = CoreTestHarness::new();
+        let core = harness.core();
+        let server = ScriptedHttpServer::respond_with(stage_response);
+        configure_loopback(core.persistence(), &server);
+        let project = core
+            .persistence()
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: harness.workspace_dir().to_string_lossy().into_owned(),
+                preferred_name: Some("View independence fixture".into()),
+            })
+            .unwrap()
+            .project;
+        force_api_direct(core.persistence(), &project.id);
+        let handle = core.runtime_handle().clone();
+        let _entered = handle.enter();
+        let model = cx.new(|cx| AppModel::new(core.clone(), cx));
+        let restore_deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            cx.run_until_parked();
+            if cx.read(|cx| !model.read(cx).hydrating) { break; }
+            assert!(std::time::Instant::now() < restore_deadline, "fixture session restore timed out");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        model.update(cx, |model, cx| {
+            model.workspace.update(cx, |workspace, _| {
+                workspace.project_id = Some(project.id.clone().into());
+            });
+        });
+        for view in [
+            AppView::Agents,
+            AppView::Pulsations,
+            AppView::Forge,
+            AppView::Workspace,
+            AppView::Chat,
+            AppView::Vault,
+            AppView::Logs,
+            AppView::Settings,
+        ] {
+            model.update(cx, |model, cx| model.select_view(view, cx));
+            let pulse = core
+                .persistence()
+                .create_pulsation(CreatePulsationRequest {
+                    project_id: project.id.clone(),
+                    feature_name:
+                        "Describe expired-token validation returning status 401. Fixture only."
+                            .into(),
+                })
+                .unwrap()
+                .pulsation;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            let mut approvals = 0;
+            loop {
+                cx.run_until_parked();
+                model.update(cx, |model, cx| {
+                    assert_eq!(model.active_view(), view);
+                    model.refresh_pulsations(cx);
+                });
+                let snapshot = core
+                    .persistence()
+                    .get_pulsation_runtime_snapshot(GetPulsationRuntimeSnapshotRequest {
+                        project_id: project.id.clone(),
+                    })
+                    .unwrap();
+                let current = snapshot
+                    .snapshot
+                    .pulsations
+                    .iter()
+                    .find(|item| item.id == pulse.id)
+                    .unwrap();
+                assert_ne!(current.status, PulsationStatus::Failed, "view={view:?}");
+                if current.status == PulsationStatus::Done {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "view={view:?} stage={:?} status={:?}",
+                    current.stage,
+                    current.status
+                );
+                if let Ok(checkpoint) = core.persistence().get_hitl_checkpoint(&pulse.id) {
+                    core.persistence()
+                        .apply_hitl_decision(
+                            hvc_core::persistence_service::ApplyHitlDecisionRequest {
+                                pulsation_id: pulse.id.clone(),
+                                checkpoint_id: checkpoint.checkpoint_id,
+                                expected_state_version: checkpoint.state_version,
+                                feedback: None,
+                                decision: hvc_core::persistence_service::HitlDecision::Approve,
+                            },
+                        )
+                        .unwrap();
+                    approvals += 1;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert_eq!(approvals, 4, "view={view:?}");
+        }
+        model.update(cx, |model, _| {
+            model.lifecycle.dispose();
+        });
+    }
+
+    #[gpui::test]
+    fn overlapping_snapshot_requests_do_not_restore_an_earlier_selection(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingPulsationsBackend::new());
+        let mut other = test_pulsation();
+        other.id = "pulse-2".into();
+        backend.snapshot.lock().unwrap().pulsations.push(other);
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                backend.clone(),
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |model, cx| {
+            configure_domain_workspace(model, cx);
+            model.apply_pulsation_snapshot(
+                "project-1".into(),
+                backend.snapshot.lock().unwrap().clone(),
+                Some("pulse-1"),
+                cx,
+            );
+        });
+        let (release, barrier) = tokio::sync::oneshot::channel();
+        *backend.snapshot_barrier.lock().unwrap() = Some(barrier);
+        model.update(cx, AppModel::refresh_pulsations);
+        cx.run_until_parked();
+        model.update(cx, |model, cx| {
+            for _ in 0..10 {
+                model.refresh_pulsations(cx);
+            }
+            model.select_pulsation("pulse-2", cx);
+        });
+        assert_eq!(*backend.snapshot_calls.lock().unwrap(), 1);
+        release.send(()).unwrap();
+        cx.run_until_parked();
+        assert_eq!(*backend.snapshot_calls.lock().unwrap(), 2);
+        cx.read(|cx| {
+            assert_eq!(
+                model.read(cx).pulsations.read(cx).active_id().as_deref(),
+                Some("pulse-2")
+            )
+        });
+    }
+
+    #[gpui::test]
+    fn runtime_observation_and_lag_recovery_preserve_all_views_and_dirty_buffers(
+        cx: &mut TestAppContext,
+    ) {
+        let backend = Arc::new(RecordingPulsationsBackend::new());
+        let vault = Arc::new(RecordingVaultBackend::new());
+        let model =
+            cx.new(|cx| AppModel::new_for_test_with_domain_backends(backend.clone(), vault, cx));
+        model.update(cx, |model, cx| {
+            configure_domain_workspace(model, cx);
+            configure_editable_tab(model, cx);
+        });
+        let views = [
+            AppView::Agents,
+            AppView::Pulsations,
+            AppView::Forge,
+            AppView::Workspace,
+            AppView::Chat,
+            AppView::Vault,
+            AppView::Logs,
+            AppView::Settings,
+        ];
+        for view in views.into_iter().cycle().take(16) {
+            model.update(cx, |model, cx| {
+                model.select_view(view, cx);
+                let revision = model
+                    .workspace
+                    .read(cx)
+                    .active_tab()
+                    .map(|tab| tab.content.clone());
+                model.request_event_resync(cx);
+                model.request_event_resync(cx);
+                let mut snapshot = backend.snapshot.lock().unwrap().clone();
+                snapshot.main_agents_count = 1;
+                model.apply_pulsation_snapshot("project-1".into(), snapshot, None, cx);
+                assert_eq!(model.active_view(), view);
+                assert_eq!(
+                    model
+                        .workspace
+                        .read(cx)
+                        .active_tab()
+                        .map(|tab| tab.content.clone()),
+                    revision
+                );
+                assert_eq!(model.pulsations.read(cx).running_jobs, 2);
+                assert!(model.event_resync_pending);
+                model.refresh_pulsation_artifacts("pulse-1".into(), cx);
+            });
+            cx.run_until_parked();
+        }
+        // Only opening Pulsations reads artifacts. Other views still receive runtime state.
+        assert!(backend.artifact_calls.lock().unwrap().len() <= 2);
+    }
+
+    #[gpui::test]
     fn refreshes_pulsation_artifacts_through_the_typed_backend(cx: &mut TestAppContext) {
         let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
         let vault_backend = Arc::new(RecordingVaultBackend::new());
@@ -7235,6 +8451,7 @@ mod tests {
 
         model.update(cx, |model, cx| {
             configure_domain_workspace(model, cx);
+            model.select_view(AppView::Pulsations, cx);
             model.refresh_pulsations(cx);
         });
         cx.run_until_parked();
@@ -7255,6 +8472,15 @@ mod tests {
             assert_eq!(model.read(cx).pulsations.read(cx).artifacts[0].name, "Plan");
         });
 
+        model.update(cx, AppModel::refresh_pulsations);
+        cx.run_until_parked();
+        assert_eq!(
+            artifact_calls.lock().unwrap().len(),
+            1,
+            "unchanged snapshots reuse persisted artifacts"
+        );
+        pulsations_backend.snapshot.lock().unwrap().pulsations[0].updated_at =
+            "next-revision".into();
         *artifacts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -7329,6 +8555,7 @@ mod tests {
             learning: LearningState::Unavailable,
             learning_run: None,
             artifact_ids: vec![],
+            stage_execution: None,
         }
     }
 
@@ -7379,7 +8606,7 @@ mod tests {
         assert_eq!(request.question_set_id, "questions-1");
         assert_eq!(request.expected_input_revision, 3);
         assert_eq!(request.expected_state_version, 9);
-        assert_eq!(request.answers[0].answer, "JWT assinado");
+        assert_eq!(request.answers[0].text_answer, "JWT assinado");
         drop(actions);
         backend.snapshot.lock().unwrap().details[0]
             .questions
@@ -7396,6 +8623,251 @@ mod tests {
                     .value()
                     .is_empty()
             )
+        });
+    }
+
+    struct RecordingResolutionChatBackend {
+        conversation_id: String,
+        sent: Mutex<Vec<(String, String)>>,
+        reply: Mutex<String>,
+    }
+
+    impl RecordingResolutionChatBackend {
+        fn new(conversation_id: &str, reply: &str) -> Self {
+            Self {
+                conversation_id: conversation_id.into(),
+                sent: Mutex::new(Vec::new()),
+                reply: Mutex::new(reply.into()),
+            }
+        }
+
+        fn message(&self, generation: &str, content: &str) -> hvc_core::chat_service::ChatMessage {
+            hvc_core::chat_service::ChatMessage {
+                id: format!("assistant-{generation}"),
+                conversation_id: self.conversation_id.clone(),
+                ordinal: 1,
+                role: "assistant".into(),
+                content: content.into(),
+                status: "completed".into(),
+                execution_id: Some(format!("execution-{generation}")),
+                generation_id: Some(generation.into()),
+                last_sequence: 1,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost_usd: None,
+                error_code: None,
+                error_message: None,
+                created_at: "now".into(),
+                updated_at: "now".into(),
+            }
+        }
+    }
+
+    impl ChatBackend for RecordingResolutionChatBackend {
+        fn hydrate(
+            &self,
+            _: String,
+            _: Option<String>,
+        ) -> crate::chat::ChatFuture<crate::chat::ChatHydration> {
+            Box::pin(async { Err(crate::errors::UiCommandError::worker("unused")) })
+        }
+
+        fn load_conversation(
+            &self,
+            _: String,
+        ) -> crate::chat::ChatFuture<hvc_core::chat_service::GetChatConversationResponse> {
+            let conversation_id = self.conversation_id.clone();
+            Box::pin(async move {
+                Ok(hvc_core::chat_service::GetChatConversationResponse {
+                    conversation: test_chat_conversation(&conversation_id),
+                    messages: Vec::new(),
+                    tool_calls: Vec::new(),
+                })
+            })
+        }
+
+        fn create_conversation(
+            &self,
+            _: String,
+            _: ChatExecutionTargetRequest,
+        ) -> crate::chat::ChatFuture<hvc_core::chat_service::GetChatConversationResponse> {
+            Box::pin(async { Err(crate::errors::UiCommandError::worker("unused")) })
+        }
+
+        fn delete_conversation(&self, _: String) -> crate::chat::ChatFuture<bool> {
+            Box::pin(async { Err(crate::errors::UiCommandError::worker("unused")) })
+        }
+
+        fn send_message(
+            &self,
+            conversation_id: String,
+            content: String,
+        ) -> crate::chat::ChatFuture<(
+            hvc_core::chat_service::SendChatMessageResponse,
+            hvc_core::chat_service::GetChatConversationResponse,
+        )> {
+            self.sent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((conversation_id.clone(), content));
+            let generation = format!("generation-{}", self.sent.lock().unwrap().len());
+            let reply = self
+                .reply
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let assistant = self.message(&generation, &reply);
+            Box::pin(async move {
+                Ok((
+                    hvc_core::chat_service::SendChatMessageResponse {
+                        execution_id: assistant.execution_id.clone().unwrap(),
+                        generation_id: generation,
+                        user_message_id: "user-1".into(),
+                        assistant_message_id: assistant.id.clone(),
+                    },
+                    hvc_core::chat_service::GetChatConversationResponse {
+                        conversation: test_chat_conversation(&conversation_id),
+                        messages: vec![assistant],
+                        tool_calls: Vec::new(),
+                    },
+                ))
+            })
+        }
+
+        fn cancel_turn(&self, _: String) -> crate::chat::ChatFuture<bool> {
+            Box::pin(async { Ok(true) })
+        }
+
+        fn turn_snapshot(
+            &self,
+            _: String,
+        ) -> crate::chat::ChatFuture<hvc_core::chat_service::GetChatTurnSnapshotResponse> {
+            Box::pin(async { Err(crate::errors::UiCommandError::worker("unused")) })
+        }
+    }
+
+    fn test_chat_conversation(conversation_id: &str) -> hvc_core::chat_service::ChatConversation {
+        hvc_core::chat_service::ChatConversation {
+            id: conversation_id.into(),
+            project_id: "project-1".into(),
+            connection_id: Some("connection-a".into()),
+            provider_id: "openai".into(),
+            model_id: "gpt-fixture".into(),
+            transport: ChatTransportKind::Api,
+            cli_backend: None,
+            model_profile: None,
+            model_source: hvc_core::terminals::CliModelSelectionSource::Default,
+            title: "Specification clarification".into(),
+            connection_available: true,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        }
+    }
+
+    fn test_question_set(
+        id: &str,
+        pulsation_id: &str,
+    ) -> hvc_core::orchestration::SpecificationQuestionSet {
+        hvc_core::orchestration::SpecificationQuestionSet {
+            id: id.into(),
+            checkpoint_id: format!("checkpoint-{id}"),
+            fence: hvc_core::orchestration::ExecutionFence {
+                project_id: "project-1".into(),
+                pulsation_id: Some(pulsation_id.into()),
+                input_revision: Some(3),
+                job_id: "job-1".into(),
+                generation: 1,
+                state_version: 9,
+            },
+            conversation_id: format!("host-conv-{id}"),
+            questions: vec![hvc_core::orchestration::SpecificationQuestion {
+                id: format!("question-{id}"),
+                question: "Where should this file live?".into(),
+                rationale: "No planned-destination handle exists yet.".into(),
+            }],
+        }
+    }
+
+    #[gpui::test]
+    fn resolution_chip_workflow_loads_synthesizes_and_confirms_an_answer(cx: &mut TestAppContext) {
+        let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
+        pulsations_backend
+            .resolution_chips
+            .lock()
+            .unwrap()
+            .push(test_question_set("set-a", "pulse-a"));
+        pulsations_backend
+            .resolution_conversations
+            .lock()
+            .unwrap()
+            .insert("set-a".into(), "resolution-conversation-1".into());
+        let chat_backend = Arc::new(RecordingResolutionChatBackend::new(
+            "resolution-conversation-1",
+            "Prose summary.\nFILES_NEW: src/new_module.rs",
+        ));
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_resolution_backends(
+                pulsations_backend.clone(),
+                chat_backend.clone(),
+                cx,
+            )
+        });
+        model.update(cx, |m, cx| {
+            m.workspace.update(cx, |workspace, _| {
+                workspace.project_id = Some("project-1".into())
+            });
+            m.refresh_resolution_chips(cx);
+        });
+        cx.run_until_parked();
+        model.read_with(cx, |m, cx| {
+            assert_eq!(m.resolution.read(cx).chips.len(), 1);
+        });
+
+        model.update(cx, |m, cx| m.toggle_resolution_chip("set-a".into(), cx));
+        cx.run_until_parked();
+        model.read_with(cx, |m, cx| {
+            let resolution = m.resolution.read(cx);
+            assert_eq!(resolution.expanded.as_deref(), Some("set-a"));
+            let conversation = resolution
+                .conversation
+                .as_ref()
+                .expect("conversation loaded");
+            assert_eq!(conversation.conversation_id, "resolution-conversation-1");
+            assert!(conversation.messages.is_empty());
+        });
+
+        model.update(cx, |m, cx| m.synthesize_resolution_reply(cx));
+        cx.run_until_parked();
+        model.read_with(cx, |m, cx| {
+            let resolution = m.resolution.read(cx);
+            let conversation = resolution.conversation.as_ref().unwrap();
+            assert_eq!(
+                conversation.synthesized_draft.as_deref(),
+                Some("Prose summary.\nFILES_NEW: src/new_module.rs")
+            );
+            assert_eq!(
+                m.resolution_synthesis_input.read(cx).value(),
+                "Prose summary.\nFILES_NEW: src/new_module.rs"
+            );
+        });
+
+        model.update(cx, |m, cx| m.confirm_resolution_answer(cx));
+        cx.run_until_parked();
+        let actions = pulsations_backend.actions.lock().unwrap();
+        assert_eq!(actions.len(), 1);
+        let crate::pulsations::PulsationAction::Answer(request) = &actions[0] else {
+            panic!("answer action")
+        };
+        assert_eq!(request.question_set_id, "set-a");
+        assert_eq!(
+            request.answers[0].text_answer,
+            "Prose summary.\nFILES_NEW: src/new_module.rs"
+        );
+        drop(actions);
+        model.read_with(cx, |m, cx| {
+            let resolution = m.resolution.read(cx);
+            assert!(resolution.chips.is_empty());
+            assert!(resolution.expanded.is_none());
         });
     }
 
@@ -7621,6 +9093,170 @@ mod tests {
                 model.read(cx).pulsations.read(cx).notice.as_deref(),
                 Some("1 job(s) marked for cancellation.")
             );
+        });
+    }
+
+    fn scripted_cleanup_plan() -> hvc_core::orchestration::FailedPulsationCleanupPlan {
+        use hvc_core::orchestration::{CleanupDisposition, FailedPulsationCleanupEntry};
+        hvc_core::orchestration::FailedPulsationCleanupPlan {
+            pulsation_id: "pulse-1".into(),
+            project_id: "project-1".into(),
+            entries: vec![
+                FailedPulsationCleanupEntry {
+                    relative_path: "src/generated.rs".into(),
+                    disposition: CleanupDisposition::Remove,
+                    detail: None,
+                },
+                FailedPulsationCleanupEntry {
+                    relative_path: "src/lib.rs".into(),
+                    disposition: CleanupDisposition::KeepPreexisting,
+                    detail: None,
+                },
+            ],
+            candidate_dirs: vec![],
+            plan_token: "token-1".into(),
+        }
+    }
+
+    #[gpui::test]
+    fn failed_pulsation_cleanup_previews_once_and_removes_only_after_a_second_click(
+        cx: &mut TestAppContext,
+    ) {
+        let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
+        *pulsations_backend
+            .cleanup_plan
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(scripted_cleanup_plan());
+        pulsations_backend
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pulsations[0]
+            .status = PulsationStatus::Failed;
+        let preview_calls = Arc::clone(&pulsations_backend.cleanup_preview_calls);
+        let cleanup_calls = Arc::clone(&pulsations_backend.cleanup_calls);
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                pulsations_backend,
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |model, cx| {
+            configure_domain_workspace(model, cx);
+            model.select_view(AppView::Pulsations, cx);
+            model.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        // Two refreshes of the same failed pulsation read the workspace once.
+        model.update(cx, |model, cx| model.refresh_pulsations(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            *preview_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec!["pulse-1"]
+        );
+        cx.read(|cx| {
+            let state = model.read(cx).pulsations.read(cx);
+            let plan = state.cleanup.plan.as_ref().expect("preview loaded");
+            assert_eq!(plan.removable_files(), 1);
+            assert_eq!(plan.kept_files(), 1);
+            assert!(state.cleanup.can_remove());
+            assert!(!state.cleanup.armed);
+        });
+
+        // First click arms; nothing reaches the host.
+        model.update(cx, |model, cx| model.request_cleanup_failed_files(cx));
+        cx.run_until_parked();
+        assert!(
+            cleanup_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+        cx.read(|cx| {
+            let state = model.read(cx).pulsations.read(cx);
+            assert!(state.cleanup.armed);
+            assert_eq!(
+                state.notice.as_deref(),
+                Some("Confirm again to remove the files this pulsation created.")
+            );
+        });
+
+        // Second click sends the previewed plan token.
+        model.update(cx, |model, cx| model.request_cleanup_failed_files(cx));
+        cx.run_until_parked();
+        let calls = cleanup_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].pulsation_id, "pulse-1");
+        assert_eq!(calls[0].expected_plan_token, "token-1");
+        cx.read(|cx| {
+            let state = model.read(cx).pulsations.read(cx);
+            assert!(!state.cleanup.armed);
+            assert!(!state.cleanup.busy);
+            assert_eq!(
+                state.notice.as_deref(),
+                Some("1 file(s) removed, 1 kept, 0 staging dir(s) cleared. Kept files stay in the base review.")
+            );
+        });
+        // The cleanup re-reads the preview so the card reflects the new disk state.
+        assert_eq!(
+            preview_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            2
+        );
+    }
+
+    #[gpui::test]
+    fn cleanup_preview_is_never_requested_for_a_live_pulsation(cx: &mut TestAppContext) {
+        let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
+        *pulsations_backend
+            .cleanup_plan
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(scripted_cleanup_plan());
+        let preview_calls = Arc::clone(&pulsations_backend.cleanup_preview_calls);
+        let cleanup_calls = Arc::clone(&pulsations_backend.cleanup_calls);
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                pulsations_backend,
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |model, cx| {
+            configure_domain_workspace(model, cx);
+            model.select_view(AppView::Pulsations, cx);
+            model.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        model.update(cx, |model, cx| {
+            model.request_cleanup_failed_files(cx);
+            model.request_cleanup_failed_files(cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            preview_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
+            "a running pulsation has no leftover files to preview"
+        );
+        assert!(
+            cleanup_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+        cx.read(|cx| {
+            let state = model.read(cx).pulsations.read(cx);
+            assert!(state.cleanup.plan.is_none());
+            assert!(!state.cleanup.armed);
         });
     }
 

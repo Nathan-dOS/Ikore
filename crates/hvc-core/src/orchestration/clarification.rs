@@ -31,6 +31,41 @@ impl PersistenceService {
         .transpose()
     }
 
+    /// Every open clarification checkpoint across the whole project (ADR-022
+    /// clarification loop, P4/A4.1): unlike `pending_questions`, not scoped to
+    /// one pulsation, since the resolution modal needs to show one chip per
+    /// pulsation currently waiting on Specification, however many there are.
+    pub fn list_open_specification_checkpoints(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<SpecificationQuestionSet>, PersistenceServiceError> {
+        let db = self.connection()?;
+        let rows=db.prepare("SELECT q.id,q.checkpoint_id,q.input_revision,q.generation,q.state_version,q.conversation_id,q.questions_json,p.id,c.producer_job_id FROM specification_question_sets q JOIN checkpoints c ON c.id=q.checkpoint_id JOIN pulsations p ON p.id=q.pulsation_id WHERE p.project_id=?1 AND c.purpose='clarification' AND c.status='waiting' AND p.status='checkpoint' AND p.input_revision=q.input_revision AND p.state_version=q.state_version AND q.answers_json IS NULL ORDER BY q.id")?
+            .query_map([project_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u64>(2)?,r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?)))?
+            .collect::<Result<Vec<_>,_>>()?;
+        rows.into_iter()
+            .map(
+                |(id, checkpoint, revision, generation, state, conversation, json, pulse, job)| {
+                    Ok(SpecificationQuestionSet {
+                        id,
+                        checkpoint_id: checkpoint,
+                        conversation_id: conversation,
+                        fence: ExecutionFence {
+                            project_id: project_id.to_owned(),
+                            pulsation_id: Some(pulse),
+                            input_revision: Some(revision),
+                            job_id: job,
+                            generation,
+                            state_version: state,
+                        },
+                        questions: serde_json::from_str(&json)
+                            .map_err(|e| invalid(e.to_string()))?,
+                    })
+                },
+            )
+            .collect()
+    }
+
     pub(super) fn persist_questions(
         db: &rusqlite::Transaction<'_>,
         current: &Pulsation,
@@ -115,8 +150,23 @@ impl PersistenceService {
         if current.stage != PulsationStage::Specification {
             return Err(invalid("Esclarecimento fora de Specification."));
         }
-        let answers =
-            serde_json::to_string(&request.answers).map_err(|e| invalid(e.to_string()))?;
+        let workspace_root: String = tx.query_row(
+            "SELECT workspace_path FROM projects WHERE id=?1",
+            [&current.project_id],
+            |r| r.get(0),
+        )?;
+        let mut answers = request.answers.clone();
+        for answer in &mut answers {
+            // The UI/Companion may already have parsed and populated these
+            // (M5); a plain-text answer typed today (before M5's modal
+            // ships) always arrives with both empty, so the host derives
+            // them once here, before the answer is ever persisted or read
+            // back by a later stage's `collect_stage_inputs`.
+            if answer.planned_paths.is_empty() && answer.modified_paths.is_empty() {
+                Self::anchor_clarification_answer(&workspace_root, answer);
+            }
+        }
+        let answers_json = serde_json::to_string(&answers).map_err(|e| invalid(e.to_string()))?;
         // Check the entire accumulated normative history BEFORE closing the question UI.
         let config = self.load_runtime_config()?;
         let mut history =
@@ -124,7 +174,7 @@ impl PersistenceService {
         history.push(ClarificationExchange {
             question_set_id: pending.id.clone(),
             questions: pending.questions.clone(),
-            answers: request.answers.clone(),
+            answers: answers.clone(),
         });
         let history_chars = serde_json::to_string(&history)
             .map_err(|e| invalid(e.to_string()))?
@@ -133,7 +183,7 @@ impl PersistenceService {
         let answer_chars = history
             .iter()
             .flat_map(|c| &c.answers)
-            .map(|a| a.answer.chars().count())
+            .map(|a| a.text_answer.chars().count())
             .sum::<usize>();
         let feedback_chars: usize = tx.query_row(
             "SELECT COALESCE(length(revision_feedback),0) FROM pulsations WHERE id=?1",
@@ -148,7 +198,7 @@ impl PersistenceService {
                 "Respostas/histórico excedem o orçamento de contexto. Resuma as respostas ou aumente o limite antes de enviar.",
             ));
         }
-        tx.execute("UPDATE specification_question_sets SET answers_json=?2 WHERE id=?1 AND answers_json IS NULL",params![pending.id,answers])?;
+        tx.execute("UPDATE specification_question_sets SET answers_json=?2 WHERE id=?1 AND answers_json IS NULL",params![pending.id,answers_json])?;
         // 'approved' resolves only the clarification checkpoint; kind remains distinct forever.
         tx.execute(
             "UPDATE checkpoints SET status='approved',updated_at=?2 WHERE id=?1",
@@ -157,10 +207,9 @@ impl PersistenceService {
         let text = format!(
             "Respostas ao conjunto {}:\n\n{}",
             pending.id,
-            request
-                .answers
+            answers
                 .iter()
-                .map(|a| format!("[{}] {}", a.question_id, a.answer))
+                .map(|a| format!("[{}] {}", a.question_id, a.text_answer))
                 .collect::<Vec<_>>()
                 .join("\n\n")
         );
@@ -177,6 +226,38 @@ impl PersistenceService {
         tx.commit()?;
         self.wake_scheduler();
         Ok(updated)
+    }
+
+    /// Populates `planned_paths`/`modified_paths` from the `FILES_*:` tag
+    /// lines in `answer.text_answer` (ADR-022 clarification loop, P2/A2.2).
+    /// `FILES_NEW:`/`FILES_MOD:` are unambiguous; a bare `FILES:` is resolved
+    /// against the workspace here (the parser itself has no disk access) --
+    /// present on disk means the developer is pointing at an existing file,
+    /// absent means a new one. The full prose in `text_answer`, including the
+    /// raw tag lines, is left untouched: `batch_guidance` still injects it
+    /// verbatim, unaware this parsing ever happened.
+    fn anchor_clarification_answer(workspace_root: &str, answer: &mut ClarificationAnswerV1) {
+        let (planned, modified, unresolved) =
+            crate::orchestration::composition::recipes::parse_clarification_tags(
+                &answer.text_answer,
+            );
+        let mut planned_paths: Vec<String> = planned
+            .into_iter()
+            .map(|path| path.as_str().to_owned())
+            .collect();
+        let mut modified_paths: Vec<String> = modified
+            .into_iter()
+            .map(|path| path.as_str().to_owned())
+            .collect();
+        let root = std::path::Path::new(workspace_root);
+        for path in unresolved {
+            match crate::orchestration::publication::observed_hash(root, path.as_str()) {
+                Ok(Some(_)) => modified_paths.push(path.as_str().to_owned()),
+                Ok(None) | Err(_) => planned_paths.push(path.as_str().to_owned()),
+            }
+        }
+        answer.planned_paths = planned_paths;
+        answer.modified_paths = modified_paths;
     }
 
     pub(super) fn clarification_history(

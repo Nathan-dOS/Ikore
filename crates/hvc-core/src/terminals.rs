@@ -30,11 +30,11 @@ mod model_catalog;
 pub(crate) use model_catalog::validate_catalog_model_selection;
 pub use model_catalog::{
     CliModelCatalogEntry, CliModelCatalogService, CliModelCatalogSnapshot, CliModelCatalogSource,
-    CliModelCatalogState, CliModelSelectionSource,
+    CliModelCatalogState, CliModelSelectionSource, cli_model_catalog_version,
 };
 
 #[cfg(windows)]
-struct ProcessTreeJob {
+pub(crate) struct ProcessTreeJob {
     handle: windows_sys::Win32::Foundation::HANDLE,
 }
 
@@ -43,7 +43,7 @@ unsafe impl Send for ProcessTreeJob {}
 
 #[cfg(windows)]
 impl ProcessTreeJob {
-    fn assign(child: &tokio::process::Child) -> std::io::Result<Self> {
+    pub(crate) fn assign(child: &tokio::process::Child) -> std::io::Result<Self> {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -84,7 +84,7 @@ impl ProcessTreeJob {
         }
     }
 
-    fn terminate(&self) {
+    pub(crate) fn terminate(&self) {
         // SAFETY: `handle` remains owned by this guard until Drop.
         unsafe {
             windows_sys::Win32::System::JobObjects::TerminateJobObject(self.handle, 1);
@@ -103,15 +103,15 @@ impl Drop for ProcessTreeJob {
 }
 
 #[cfg(not(windows))]
-struct ProcessTreeJob;
+pub(crate) struct ProcessTreeJob;
 
 #[cfg(not(windows))]
 impl ProcessTreeJob {
-    fn assign(_child: &tokio::process::Child) -> std::io::Result<Self> {
+    pub(crate) fn assign(_child: &tokio::process::Child) -> std::io::Result<Self> {
         Ok(Self)
     }
 
-    fn terminate(&self) {}
+    pub(crate) fn terminate(&self) {}
 }
 
 const MAX_MODEL_CHARS: usize = 200;
@@ -311,7 +311,7 @@ impl ThinkingLevel {
         }
     }
 
-    fn parse(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
             "default" => Some(Self::Default),
             "low" => Some(Self::Low),
@@ -656,6 +656,16 @@ pub struct UpdateFreeFormSlotRequest {
     pub position: u32,
     pub archived: bool,
     pub expected_version: u64,
+}
+
+/// A composed-stage specialty's optional configuration override (ADR-022).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpecialtyOverride {
+    pub execution_mode: AgentExecutionMode,
+    pub backend: Option<CliBackend>,
+    pub model: Option<String>,
+    pub thinking_level: ThinkingLevel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2124,6 +2134,42 @@ impl TerminalRepository {
         Ok(raw.as_deref().and_then(CliBackend::parse))
     }
 
+    /// Optional per-specialty configuration for composed stage workers
+    /// (ADR-022). Absent for every project that never configured one; the
+    /// stage's own role configuration then applies.
+    pub fn specialty_override(
+        &self,
+        project_id: &str,
+        executor_kind: &str,
+    ) -> Result<Option<SpecialtyOverride>, TerminalError> {
+        self.connection()?
+            .query_row(
+                "SELECT execution_mode,backend,model,thinking_level FROM composition_specialty_overrides WHERE project_id=?1 AND executor_kind=?2",
+                params![required(project_id, "projectId")?, executor_kind],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()?
+            .map(|(mode, backend, model, thinking)| {
+                Ok(SpecialtyOverride {
+                    execution_mode: match mode.as_str() {
+                        "cli_process" => AgentExecutionMode::CliProcess,
+                        _ => AgentExecutionMode::ApiDirect,
+                    },
+                    backend: backend.as_deref().and_then(CliBackend::parse),
+                    model: model.filter(|value| !value.trim().is_empty()),
+                    thinking_level: ThinkingLevel::parse(&thinking).unwrap_or(ThinkingLevel::Default),
+                })
+            })
+            .transpose()
+    }
+
     /// The backend this pulsation is silently running on for its *current*
     /// stage, when the ladder in `elect_next_backend` already switched it
     /// away from the project's configured default. `None` means no override
@@ -2674,9 +2720,13 @@ async fn probe_cli_availability(mut availability: CliAvailability) -> CliAvailab
         }
         adapters::CliVersionCompatibility::UnknownNewer => {
             availability.state = CliAvailabilityState::CapabilityMissing;
+            let (minimum, maximum_exclusive) = adapters::compatibility_range(availability.backend);
             availability.diagnostic = Some(format!(
-                "A versão detectada do {} é mais nova que o contrato validado; atualize o adapter antes de executar.",
-                availability.backend.label()
+                "{} v{} é mais nova que a faixa validada ({}–{}). O adapter pode funcionar, mas não foi validado. Atualize o HVC ou reporte um problema.",
+                availability.backend.label(),
+                availability.version.as_deref().unwrap_or("desconhecida"),
+                minimum,
+                maximum_exclusive
             ));
             return availability;
         }
@@ -3257,15 +3307,19 @@ enum ProcessStreamItem {
     Frame {
         stream: &'static str,
         bytes: Vec<u8>,
+        received_at: Instant,
     },
     ReadError {
         stream: &'static str,
         message: String,
+        received_at: Instant,
     },
 }
 
 #[derive(Debug, Default)]
 struct ProcessEventSummary {
+    max_queue_delay_ms: u128,
+    max_persist_ms: u128,
     raw_output: String,
     last_stderr: String,
     /// The stop reason the provider reported for the final turn, when it gave
@@ -3380,9 +3434,7 @@ impl TerminalService {
     }
 
     async fn discovery(&self, force: bool) -> Vec<CliAvailability> {
-        if !force
-            && let Some(items) = self.cache_if_fresh()
-        {
+        if !force && let Some(items) = self.cache_if_fresh() {
             return items;
         }
         let handle = self.runtime.clone();
@@ -4025,16 +4077,19 @@ impl TerminalService {
         request: &LlmRequest,
         cancellation: &CancellationToken,
     ) -> Result<Option<CliCompletion>, TerminalError> {
+        let Some(agent_role) = request.target.agent_role() else {
+            return Ok(None);
+        };
         if request.pulsation_id.as_deref().is_some_and(|pulsation_id| {
             self.repository
-                .has_api_override(pulsation_id, request.agent_role)
+                .has_api_override(pulsation_id, agent_role)
                 .unwrap_or(false)
         }) {
             return Ok(None);
         }
         let config = match self
             .repository
-            .get_config(&request.project_id, request.agent_role)
+            .get_config(&request.project_id, agent_role)
         {
             Ok(config) => config,
             Err(TerminalError::NotFound(_)) => {
@@ -4046,20 +4101,35 @@ impl TerminalService {
                 self.repository
                     .ensure_project_configs(&request.project_id, codex_ready)?;
                 self.repository
-                    .get_config(&request.project_id, request.agent_role)?
+                    .get_config(&request.project_id, agent_role)?
             }
             Err(error) => return Err(error),
         };
+        // A composed work unit may carry a specialty override; it replaces the
+        // role's transport/model/thinking for that specialty only.
+        let mut config = config;
+        if let Some(unit) = &request.dispatch.unit
+            && let Some(specialty) = self
+                .repository
+                .specialty_override(&request.project_id, &unit.executor_kind)?
+        {
+            config.execution_mode = specialty.execution_mode;
+            if let Some(backend) = specialty.backend {
+                config.backend = backend;
+            }
+            config.model = specialty.model.clone();
+            config.model_profile = None;
+            config.thinking_level = specialty.thinking_level;
+        }
         if config.execution_mode == AgentExecutionMode::ApiDirect {
             return Ok(None);
         }
         // A pulsation that already burned a backend on this role carries the
         // one the host elected next. Project configuration is left untouched.
-        let mut config = config;
         if let Some(pulsation_id) = request.pulsation_id.as_deref()
             && let Some(elected) = self
                 .repository
-                .backend_override(pulsation_id, request.agent_role)?
+                .backend_override(pulsation_id, agent_role)?
             && elected != config.backend
         {
             config.backend = elected;
@@ -4081,7 +4151,7 @@ impl TerminalService {
         }
         if self
             .repository
-            .has_active_manual_run(&request.project_id, request.agent_role)?
+            .has_active_manual_run(&request.project_id, agent_role)?
         {
             return Err(TerminalError::Process(
                 "o agente possui uma execução manual ativa".into(),
@@ -4121,7 +4191,13 @@ impl TerminalService {
         };
         let mut schema_guard = None;
         let schema = match &request.response_format {
-            ResponseFormat::JsonSchema { schema, .. } => Some(schema.clone()),
+            ResponseFormat::JsonSchema { schema, .. } => {
+                Some(match (&request.dispatch.strict_schema, config.backend) {
+                    // Codex enforces OpenAI structured-output strictness.
+                    (Some(strict), CliBackend::Codex) => strict.clone(),
+                    _ => schema.clone(),
+                })
+            }
             _ => None,
         };
         let schema_file = if config.backend == CliBackend::Codex {
@@ -4184,14 +4260,14 @@ impl TerminalService {
         )?;
         let origin = if feature_discovery {
             ExecutionOrigin::Feature
-        } else if request.agent_role == AgentRole::LearningAgent {
+        } else if agent_role == AgentRole::LearningAgent {
             ExecutionOrigin::Learning
         } else {
             ExecutionOrigin::Pipeline
         };
         let run = self.repository.create_run(CreateTerminalRunRequest {
             project_id: request.project_id.clone(),
-            agent_role: request.agent_role,
+            agent_role,
             origin,
             execution_mode: AgentExecutionMode::CliProcess,
             backend: Some(config.backend),
@@ -4201,9 +4277,13 @@ impl TerminalService {
             agent_run_id: request.agent_run_id.clone(),
             llm_execution_id: Some(request.execution_id.0.clone()),
         })?;
+        let deadline = request
+            .dispatch
+            .cli_timeout
+            .map_or(request.deadline, |budget| budget.deadline);
         let run = self
             .repository
-            .set_run_deadline(&run.id, &deadline_timestamp(request.deadline))?;
+            .set_run_deadline(&run.id, &deadline_timestamp(deadline))?;
         let run = self
             .repository
             .set_adapter_metadata(&run.id, detected_version.as_deref())?;
@@ -4221,7 +4301,14 @@ impl TerminalService {
             combined_child.cancel();
         });
         let outcome = self
-            .run_process_inner(&run, spec, workspace, &combined, request.deadline)
+            .run_process_inner(
+                &run,
+                spec,
+                workspace,
+                &combined,
+                deadline,
+                request.dispatch.cli_timeout.map(|budget| budget.policy),
+            )
             .await;
         cancellation_bridge.abort();
         self.active
@@ -4310,7 +4397,7 @@ impl TerminalService {
         deadline: Instant,
     ) {
         let result = self
-            .run_process_inner(&run, spec, workspace, &cancellation, deadline)
+            .run_process_inner(&run, spec, workspace, &cancellation, deadline, None)
             .await;
         if let Err(error) = result {
             self.record_process_failure(&run, &error);
@@ -4329,6 +4416,7 @@ impl TerminalService {
         workspace: PathBuf,
         cancellation: &CancellationToken,
         deadline: Instant,
+        policy_override: Option<AgentTimeoutPolicy>,
     ) -> Result<CliProcessOutcome, TerminalError> {
         if cancellation.is_cancelled() {
             return Err(TerminalError::Cancelled);
@@ -4430,38 +4518,22 @@ impl TerminalService {
         let abort_token = CancellationToken::new();
         let abort_reason = Arc::new(Mutex::new(None));
         let caller_remaining = deadline.saturating_duration_since(Instant::now());
-        let timeout_policy = match run.slot {
-            SessionSlot::Canonical { agent_role } if run.origin != ExecutionOrigin::Manual => {
-                let mut policy = AgentTimeoutPolicy::for_role(agent_role);
-                if caller_remaining > Duration::ZERO && caller_remaining < policy.max_timeout() {
-                    policy.max_timeout_ms = caller_remaining.as_millis() as u64;
-                    policy.base_timeout_ms = policy.base_timeout_ms.min(policy.max_timeout_ms);
-                    policy.inactivity_window_ms =
-                        policy.inactivity_window_ms.min(policy.max_timeout_ms);
-                }
-                policy
-            }
-            SessionSlot::FreeForm { .. } => {
-                let mut policy = AgentTimeoutPolicy::manual();
-                if caller_remaining > Duration::ZERO && caller_remaining < policy.max_timeout() {
-                    policy.max_timeout_ms = caller_remaining.as_millis() as u64;
-                    policy.base_timeout_ms = policy.base_timeout_ms.min(policy.max_timeout_ms);
-                    policy.inactivity_window_ms =
-                        policy.inactivity_window_ms.min(policy.max_timeout_ms);
-                }
-                policy
-            }
-            SessionSlot::Canonical { agent_role } => {
-                let mut policy = AgentTimeoutPolicy::for_role(agent_role);
-                if caller_remaining > Duration::ZERO && caller_remaining < policy.max_timeout() {
-                    policy.max_timeout_ms = caller_remaining.as_millis() as u64;
-                    policy.base_timeout_ms = policy.base_timeout_ms.min(policy.max_timeout_ms);
-                    policy.inactivity_window_ms =
-                        policy.inactivity_window_ms.min(policy.max_timeout_ms);
-                }
-                policy
-            }
-        };
+        let mut timeout_policy = policy_override.unwrap_or_else(|| match run.slot {
+            SessionSlot::FreeForm { .. } => AgentTimeoutPolicy::manual(),
+            SessionSlot::Canonical { agent_role } => AgentTimeoutPolicy::for_role(agent_role),
+        });
+        if caller_remaining.is_zero() {
+            process_tree.terminate();
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(TerminalError::Timeout);
+        }
+        timeout_policy.max_timeout_ms = timeout_policy
+            .max_timeout_ms
+            .min(caller_remaining.as_millis() as u64);
+        timeout_policy.base_timeout_ms = timeout_policy
+            .base_timeout_ms
+            .min(timeout_policy.max_timeout_ms);
         let watchdog = ProgressWatchdog::new(timeout_policy);
         let coordinator_task = tokio::spawn(coordinate_process_events(
             self.repository.clone(),
@@ -4478,12 +4550,14 @@ impl TerminalService {
             stdout,
             stream_sender.clone(),
             watchdog.clone(),
+            spec_backend(run),
         ));
         let stderr_task = tokio::spawn(read_process_stream(
             "stderr",
             stderr,
             stream_sender.clone(),
             watchdog.clone(),
+            spec_backend(run),
         ));
         drop(stream_sender);
         let (status, termination) = tokio::select! {
@@ -4504,6 +4578,7 @@ impl TerminalService {
                 (child.wait().await?,ProcessTermination::Exited)
             }
         };
+        let timing_at_termination = watchdog.diagnostic();
         stdout_task.await.map_err(|error| {
             TerminalError::Process(format!("leitor stdout interrompido: {error}"))
         })?;
@@ -4524,6 +4599,10 @@ impl TerminalService {
                 }
             });
         }
+        self.emit(
+            run, self.repository.next_event_sequence(&run.id)?, TerminalEventKind::System,
+            None, &format!("CLI timing: {}; max_queue_delay_ms={} max_persist_ms={}; termination={termination:?}", timing_at_termination, process_events.max_queue_delay_ms, process_events.max_persist_ms),
+        )?;
         let cancellation_code = if run.origin == ExecutionOrigin::Manual {
             "user_cancelled"
         } else {
@@ -4659,6 +4738,7 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
     mut reader: R,
     sender: mpsc::Sender<ProcessStreamItem>,
     watchdog: ProgressWatchdog,
+    backend: CliBackend,
 ) {
     let mut buffer = [0u8; 8192];
     let mut pending = Vec::new();
@@ -4670,6 +4750,7 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
                     .send(ProcessStreamItem::ReadError {
                         stream,
                         message: error.to_string(),
+                        received_at: Instant::now(),
                     })
                     .await;
                 break;
@@ -4677,23 +4758,27 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
         };
         if read == 0 {
             if !pending.is_empty() {
+                observe_received_frame(&watchdog, backend, stream, &pending);
                 let _ = sender
                     .send(ProcessStreamItem::Frame {
                         stream,
+                        received_at: Instant::now(),
                         bytes: pending,
                     })
                     .await;
             }
             break;
         }
-        watchdog.record_progress();
+        watchdog.record_activity();
         pending.extend_from_slice(&buffer[..read]);
         while let Some(index) = pending.iter().position(|byte| *byte == b'\n') {
             let frame = pending.drain(..=index).collect::<Vec<_>>();
+            observe_received_frame(&watchdog, backend, stream, &frame);
             if sender
                 .send(ProcessStreamItem::Frame {
                     stream,
                     bytes: frame,
+                    received_at: Instant::now(),
                 })
                 .await
                 .is_err()
@@ -4703,10 +4788,12 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
         }
         while pending.len() > MAX_PENDING_STREAM_BYTES {
             let frame = pending.drain(..MAX_EVENT_CHARS).collect::<Vec<_>>();
+            observe_received_frame(&watchdog, backend, stream, &frame);
             if sender
                 .send(ProcessStreamItem::Frame {
                     stream,
                     bytes: frame,
+                    received_at: Instant::now(),
                 })
                 .await
                 .is_err()
@@ -4717,7 +4804,85 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
     }
 }
 
+/// Classify before the bounded queue. Stderr and unrecognized bookkeeping
+/// frames cannot turn a reasoning phase into an ordinary silence window.
+/// Exception: Gemini CLI prints 503/backoff messages to stderr while it
+/// sleeps between retries. Treating those as a reasoning signal widens the
+/// silence window from 90 s to 270 s, preventing a premature
+/// `cli_inactivity_timeout` during the backoff sleep.
+fn observe_received_frame(
+    watchdog: &ProgressWatchdog,
+    backend: CliBackend,
+    stream: &str,
+    bytes: &[u8],
+) {
+    if stream != "stdout" {
+        if backend == CliBackend::Gemini
+            && let Ok(text) = std::str::from_utf8(bytes)
+        {
+            let lower = text.to_ascii_lowercase();
+            if lower.contains("503")
+                || lower.contains("service unavailable")
+                || lower.contains("overloaded")
+                || lower.contains("retrying")
+            {
+                watchdog.set_reasoning(true);
+            }
+        }
+        return;
+    }
+    let frame = adapters::normalize_frame(backend, stream, bytes);
+    if frame.is_reasoning {
+        watchdog.set_reasoning(true);
+    } else if frame.is_text
+        || matches!(
+            frame.kind,
+            TerminalEventKind::ToolUse
+                | TerminalEventKind::ToolResult
+                | TerminalEventKind::Completed
+        )
+    {
+        watchdog.set_reasoning(false);
+    }
+}
+
 async fn coordinate_process_events(
+    repository: TerminalRepository,
+    event_sink: Arc<dyn TerminalEventSink>,
+    run: TerminalRun,
+    backend: CliBackend,
+    receiver: mpsc::Receiver<ProcessStreamItem>,
+    abort_token: CancellationToken,
+    abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
+    _watchdog: ProgressWatchdog,
+) -> Result<ProcessEventSummary, TerminalError> {
+    let failure_token = abort_token.clone();
+    let failure_reason = abort_reason.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        coordinate_process_events_blocking(
+            repository,
+            event_sink,
+            run,
+            backend,
+            receiver,
+            abort_token,
+            abort_reason,
+        )
+    })
+    .await
+    .map_err(|error| TerminalError::Process(format!("CLI audit worker interrupted: {error}")))
+    .and_then(|result| result);
+    if result.is_err() {
+        signal_process_abort(
+            &failure_token,
+            &failure_reason,
+            ProcessAbortReason::Persistence,
+        );
+    }
+    result
+}
+
+fn coordinate_process_events_blocking(
     repository: TerminalRepository,
     event_sink: Arc<dyn TerminalEventSink>,
     run: TerminalRun,
@@ -4725,7 +4890,6 @@ async fn coordinate_process_events(
     mut receiver: mpsc::Receiver<ProcessStreamItem>,
     abort_token: CancellationToken,
     abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
-    watchdog: ProgressWatchdog,
 ) -> Result<ProcessEventSummary, TerminalError> {
     let mut sequence = repository.next_event_sequence(&run.id)?;
     let mut event_count = 0usize;
@@ -4754,10 +4918,17 @@ async fn coordinate_process_events(
         signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
         TerminalError::Database(error)
     })?;
-    while let Some(item) = receiver.recv().await {
-        watchdog.record_progress();
+    while let Some(item) = receiver.blocking_recv() {
+        let received_at = match &item {
+            ProcessStreamItem::Frame { received_at, .. }
+            | ProcessStreamItem::ReadError { received_at, .. } => *received_at,
+        };
+        summary.max_queue_delay_ms = summary
+            .max_queue_delay_ms
+            .max(received_at.elapsed().as_millis());
+        let persistence_started = Instant::now();
         let (frame, stream, input_bytes) = match item {
-            ProcessStreamItem::Frame { stream, bytes } => {
+            ProcessStreamItem::Frame { stream, bytes, .. } => {
                 let input_bytes = bytes.len();
                 if stream == "stdout"
                     && let Err(error) = usage.observe_line(&bytes)
@@ -4775,7 +4946,9 @@ async fn coordinate_process_events(
                     input_bytes,
                 )
             }
-            ProcessStreamItem::ReadError { stream, message } => {
+            ProcessStreamItem::ReadError {
+                stream, message, ..
+            } => {
                 incomplete_stream = true;
                 let input_bytes = message.len();
                 (
@@ -4802,13 +4975,8 @@ async fn coordinate_process_events(
             is_text,
             is_delta,
             finish_reason,
-            is_reasoning,
+            is_reasoning: _,
         } = frame;
-        // A thinking turn keeps the run alive but produces nothing, so the
-        // silence that follows must be measured on a wider ruler.
-        if is_reasoning {
-            watchdog.record_reasoning();
-        }
         // The last reason the provider gave wins: a turn that ends on `length`
         // has been cut off even if earlier turns ended normally.
         if let Some(reason) = finish_reason {
@@ -4868,6 +5036,9 @@ async fn coordinate_process_events(
         if stream == "stderr" {
             summary.last_stderr.clone_from(&event.content);
         }
+        summary.max_persist_ms = summary
+            .max_persist_ms
+            .max(persistence_started.elapsed().as_millis());
         sequence = sequence.saturating_add(1);
     }
     if incomplete_stream {
@@ -4881,9 +5052,10 @@ fn signal_process_abort(
     abort_reason: &Mutex<Option<ProcessAbortReason>>,
     reason: ProcessAbortReason,
 ) {
-    *abort_reason
+    abort_reason
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert(reason);
     abort_token.cancel();
 }
 
@@ -5601,7 +5773,7 @@ fn find_node_for_shim(shim_directory: &Path) -> Result<PathBuf, TerminalError> {
         .map_err(TerminalError::Io)
 }
 
-fn hash_launch_files(paths: &[&Path]) -> Result<String, TerminalError> {
+pub(crate) fn hash_launch_files(paths: &[&Path]) -> Result<String, TerminalError> {
     let mut digest = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     for path in paths {
@@ -5618,7 +5790,7 @@ fn hash_launch_files(paths: &[&Path]) -> Result<String, TerminalError> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-fn configure_hidden(command: &mut Command) {
+pub(crate) fn configure_hidden(command: &mut Command) {
     #[cfg(windows)]
     {
         command.creation_flags(0x0800_0000);
@@ -6514,7 +6686,7 @@ mod tests {
     #[test]
     fn backend_override_status_reports_the_current_stage_election_and_reason() {
         use crate::persistence_service::{
-            CreatePulsationRequest, CreateProjectRequest, PersistenceService,
+            CreateProjectRequest, CreatePulsationRequest, PersistenceService,
         };
 
         let data = tempfile::tempdir().unwrap();
@@ -6575,7 +6747,7 @@ mod tests {
     #[test]
     fn backend_override_status_is_none_once_the_stage_moved_on() {
         use crate::persistence_service::{
-            CreatePulsationRequest, CreateProjectRequest, PersistenceService,
+            CreateProjectRequest, CreatePulsationRequest, PersistenceService,
         };
 
         let data = tempfile::tempdir().unwrap();
@@ -6616,7 +6788,10 @@ mod tests {
             .unwrap();
 
         assert!(
-            repository.backend_override_status(&pulse.id).unwrap().is_none(),
+            repository
+                .backend_override_status(&pulse.id)
+                .unwrap()
+                .is_none(),
             "an override left behind by a stage the pulsation already left must not surface"
         );
     }
@@ -6964,6 +7139,165 @@ mod tests {
         );
     }
 
+    fn audit_test_run() -> (tempfile::TempDir, TerminalRepository, TerminalRun) {
+        use crate::persistence_service::{CreateProjectRequest, PersistenceService};
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Background audit fixture".into()),
+            })
+            .unwrap()
+            .project;
+        let repository = TerminalRepository::new(persistence.database_path());
+        repository
+            .ensure_project_configs(&project.id, true)
+            .unwrap();
+        let run = repository
+            .create_run(CreateTerminalRunRequest {
+                project_id: project.id,
+                agent_role: AgentRole::BackendAgent,
+                origin: ExecutionOrigin::Pipeline,
+                execution_mode: AgentExecutionMode::CliProcess,
+                backend: Some(CliBackend::Codex),
+                model: None,
+                pulsation_id: None,
+                job_id: None,
+                agent_run_id: None,
+                llm_execution_id: None,
+            })
+            .unwrap();
+        (data, repository, run)
+    }
+
+    #[tokio::test]
+    async fn audit_waits_for_sqlite_without_blocking_runtime_or_replaying_heartbeats() {
+        let (_data, repository, run) = audit_test_run();
+        let id = run.id.clone();
+        let bus = Arc::new(crate::events::AppEventBus::new(2));
+        let mut unobserved = bus.subscribe();
+        let (sender, receiver) = mpsc::channel(16);
+        for index in 0..12 {
+            sender
+                .send(ProcessStreamItem::Frame {
+                    stream: "stdout",
+                    bytes: format!("frame {index}\n").into_bytes(),
+                    received_at: Instant::now() - Duration::from_secs(1),
+                })
+                .await
+                .unwrap();
+        }
+        drop(sender);
+        let watchdog = ProgressWatchdog::new(AgentTimeoutPolicy::default());
+        let db = repository.connection().unwrap();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let task = tokio::spawn(coordinate_process_events(
+            repository.clone(),
+            bus,
+            run,
+            CliBackend::Custom,
+            receiver,
+            CancellationToken::new(),
+            Arc::new(Mutex::new(None)),
+            watchdog.clone(),
+        ));
+        // On a single-thread runtime the old synchronous coordinator blocked
+        // this release for the entire SQLite busy timeout and failed the run.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        db.execute_batch("COMMIT").unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            watchdog.progress_count(),
+            0,
+            "old queued output is not new process activity"
+        );
+        assert!(result.max_queue_delay_ms >= 1_000);
+        assert_eq!(repository.list_events(&id, 0, 100).unwrap().len(), 12);
+        assert!(matches!(
+            unobserved.recv().await,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn audit_failure_signals_process_abort_without_an_observer() {
+        let (_data, repository, run) = audit_test_run();
+        repository
+            .connection()
+            .unwrap()
+            .execute_batch("DROP TABLE terminal_events")
+            .unwrap();
+        let (sender, receiver) = mpsc::channel(1);
+        drop(sender);
+        let abort = CancellationToken::new();
+        let result = coordinate_process_events(
+            repository,
+            Arc::new(crate::events::AppEventBus::new(2)),
+            run,
+            CliBackend::Custom,
+            receiver,
+            abort.clone(),
+            Arc::new(Mutex::new(None)),
+            ProgressWatchdog::new(AgentTimeoutPolicy::default()),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(abort.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn transport_activity_and_reasoning_do_not_depend_on_audit_consumption() {
+        let watchdog = ProgressWatchdog::new(AgentTimeoutPolicy::default());
+        let (sender, mut receiver) = mpsc::channel(4);
+        read_process_stream(
+            "stdout",
+            std::io::Cursor::new(b"{\"type\":\"step_start\"}\n"),
+            sender.clone(),
+            watchdog.clone(),
+            CliBackend::Opencode,
+        )
+        .await;
+        read_process_stream(
+            "stderr",
+            std::io::Cursor::new(b"connection bookkeeping\n"),
+            sender.clone(),
+            watchdog.clone(),
+            CliBackend::Opencode,
+        )
+        .await;
+        assert_eq!(
+            watchdog.progress_count(),
+            2,
+            "one heartbeat per actual read"
+        );
+        assert!(watchdog.diagnostic().contains("reasoning=true"));
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            ProcessStreamItem::Frame {
+                stream: "stdout",
+                ..
+            }
+        ));
+        observe_received_frame(
+            &watchdog,
+            CliBackend::Opencode,
+            "stdout",
+            br#"{"type":"text","part":{"text":"answer"}}"#,
+        );
+        assert!(watchdog.diagnostic().contains("reasoning=false"));
+        assert_eq!(
+            watchdog.progress_count(),
+            2,
+            "semantic transitions are not extra reads"
+        );
+    }
+
     #[tokio::test]
     async fn probe_reader_aborts_when_output_exceeds_the_bound() {
         let abort = CancellationToken::new();
@@ -7021,6 +7355,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel(PROCESS_EVENT_CHANNEL_CAPACITY);
         sender
             .send(ProcessStreamItem::Frame {
+                received_at: Instant::now(),
                 stream: "stdout",
                 bytes: b"first\n".to_vec(),
             })
@@ -7028,6 +7363,7 @@ mod tests {
             .unwrap();
         sender
             .send(ProcessStreamItem::Frame {
+                received_at: Instant::now(),
                 stream: "stderr",
                 bytes: b"warning\n".to_vec(),
             })
@@ -7123,6 +7459,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel(PROCESS_EVENT_CHANNEL_CAPACITY);
         sender
             .send(ProcessStreamItem::Frame {
+                received_at: Instant::now(),
                 stream: "stdout",
                 bytes: br#"{"type":"item.completed","item":{"type":"message","text":"{\"outputLanguage\":\"en\",\"message\":\"ok\"}"}}"#.to_vec(),
             })
@@ -7130,6 +7467,7 @@ mod tests {
             .unwrap();
         sender
             .send(ProcessStreamItem::Frame {
+                received_at: Instant::now(),
                 stream: "stdout",
                 bytes: br#"{"type":"turn.completed","usage":{"input_tokens":100}}"#.to_vec(),
             })
@@ -7200,6 +7538,7 @@ mod tests {
         // survive into raw_output once real assistant deltas start arriving.
         sender
             .send(ProcessStreamItem::Frame {
+                received_at: Instant::now(),
                 stream: "stdout",
                 bytes: br#"{"type":"message","role":"user","content":"do the task"}"#.to_vec(),
             })
@@ -7207,6 +7546,7 @@ mod tests {
             .unwrap();
         sender
             .send(ProcessStreamItem::Frame {
+                received_at: Instant::now(),
                 stream: "stdout",
                 bytes:
                     br#"{"type":"message","role":"assistant","content":"{\"a\":1,","delta":true}"#
@@ -7216,6 +7556,7 @@ mod tests {
             .unwrap();
         sender
             .send(ProcessStreamItem::Frame {
+                received_at: Instant::now(),
                 stream: "stdout",
                 bytes:
                     br#"{"type":"message","role":"assistant","content":"\"b\":2}","delta":true}"#
@@ -7227,6 +7568,7 @@ mod tests {
         // the fragments already accumulated.
         sender
             .send(ProcessStreamItem::Frame {
+                received_at: Instant::now(),
                 stream: "stdout",
                 bytes: br#"{"type":"result","status":"success","stats":{"input_tokens":1}}"#
                     .to_vec(),
