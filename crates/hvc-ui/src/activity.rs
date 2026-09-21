@@ -66,10 +66,12 @@ impl ActivityFeed {
         self.entries.iter().take(limit)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

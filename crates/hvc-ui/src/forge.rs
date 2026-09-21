@@ -306,6 +306,48 @@ impl ForgeUi {
             group_expansion: HashMap::new(),
         }
     }
+
+    pub fn clear_batch_composer(&mut self, cx: &mut Context<AppModel>) {
+        self.selected_tasks.clear();
+        self.path_hint_inputs.clear();
+        self.batch_title
+            .update(cx, |input, cx| input.set_value(String::new(), cx));
+    }
+
+    pub fn is_task_selectable(
+        &self,
+        task: &WorkTask,
+        failed_pulsations: &HashSet<String>,
+    ) -> bool {
+        task.state == "ready"
+            || (task.state == "queued"
+                && task
+                    .active_pulsation_id
+                    .as_ref()
+                    .is_some_and(|id| failed_pulsations.contains(id)))
+    }
+
+    pub fn reconcile_selected_tasks(&mut self, failed_pulsations: &HashSet<String>) {
+        let eligible: HashSet<String> = self
+            .snapshot
+            .tasks
+            .iter()
+            .filter(|t| self.is_task_selectable(t, failed_pulsations))
+            .map(|t| t.id.clone())
+            .collect();
+        self.selected_tasks.retain(|id| eligible.contains(id));
+        self.path_hint_inputs.retain(|id, _| eligible.contains(id));
+    }
+
+    pub fn apply_snapshot(
+        &mut self,
+        snapshot: ForgeSnapshot,
+        failed_pulsations: &HashSet<String>,
+    ) {
+        self.snapshot = snapshot;
+        self.reconcile_selected_tasks(failed_pulsations);
+    }
+
     pub fn feature(&self) -> Option<&Feature> {
         self.selected_feature
             .as_ref()
@@ -455,6 +497,7 @@ pub(crate) enum ForgeAction {
     CreateFeature,
     SelectFeature(String),
     ToggleTask(String),
+    ClearSelectedTasks,
     Dispatch,
     Send,
     CancelTurn(String),
@@ -693,18 +736,43 @@ impl AppModel {
             }
             ForgeAction::ToggleTask(id) => {
                 if !self.forge.selected_tasks.remove(&id) {
-                    self.forge
-                        .path_hint_inputs
-                        .entry(id.clone())
-                        .or_insert_with(|| {
-                            cx.new(|cx| {
-                                NativeTextInput::new("Optional: path this task touches", cx)
-                            })
-                        });
-                    self.forge.selected_tasks.insert(id);
+                    let failed_pulsations: HashSet<String> = self
+                        .pulsations
+                        .read(cx)
+                        .pulsations
+                        .iter()
+                        .filter(|p| {
+                            p.status == hvc_core::persistence_service::PulsationStatus::Failed
+                        })
+                        .map(|p| p.id.clone())
+                        .collect();
+                    let can_select = self
+                        .forge
+                        .snapshot
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == id)
+                        .is_some_and(|t| self.forge.is_task_selectable(t, &failed_pulsations));
+                    if can_select {
+                        self.forge
+                            .path_hint_inputs
+                            .entry(id.clone())
+                            .or_insert_with(|| {
+                                cx.new(|cx| {
+                                    NativeTextInput::new("Optional: path this task touches", cx)
+                                })
+                            });
+                        self.forge.selected_tasks.insert(id);
+                    }
                 } else {
                     self.forge.path_hint_inputs.remove(&id);
                 }
+                cx.notify();
+                return;
+            }
+            ForgeAction::ClearSelectedTasks => {
+                self.forge.selected_tasks.clear();
+                self.forge.path_hint_inputs.clear();
                 cx.notify();
                 return;
             }
@@ -1018,6 +1086,7 @@ impl AppModel {
                     let mut navigate = None;
                     let mut clear_capture = false;
                     let mut accepted_message = None;
+                    let mut clear_batch_composer = false;
                     let outcome: Result<
                         (),
                         hvc_core::persistence_service::PersistenceServiceError,
@@ -1094,6 +1163,7 @@ impl AppModel {
                                     p.feature_name
                                 ));
                                 navigate = Some(AppView::Pulsations);
+                                clear_batch_composer = true;
                             }
                             Operation::Send(id, revision, message) => {
                                 core.feature_agent()
@@ -1179,6 +1249,7 @@ impl AppModel {
                         navigate,
                         clear_capture,
                         accepted_message,
+                        clear_batch_composer,
                         error,
                     ))
                 })
@@ -1207,8 +1278,12 @@ impl AppModel {
                         navigate,
                         clear_capture,
                         accepted_message,
+                        clear_batch_composer,
                         error,
                     )) => {
+                        if clear_batch_composer {
+                            model.forge.clear_batch_composer(cx);
+                        }
                         // Backlog is UI-only and has no core equivalent, so a background refresh
                         // must never bounce the user out of it into a persisted feature section.
                         if model.forge.selected_feature.is_none()
@@ -1217,7 +1292,17 @@ impl AppModel {
                             model.forge.section =
                                 ForgeSection::from_core_index(snapshot.navigation.section);
                         }
-                        model.forge.snapshot = snapshot;
+                        let failed_pulsations: HashSet<String> = model
+                            .pulsations
+                            .read(cx)
+                            .pulsations
+                            .iter()
+                            .filter(|p| {
+                                p.status == hvc_core::persistence_service::PulsationStatus::Failed
+                            })
+                            .map(|p| p.id.clone())
+                            .collect();
+                        model.forge.apply_snapshot(snapshot, &failed_pulsations);
                         if model.forge.selected_feature == original_selection {
                             model.forge.selected_feature = selected;
                             model.forge.history = history;
@@ -1498,5 +1583,182 @@ mod tests {
         ));
         next.status = PulsationStatus::Failed;
         assert!(task_runtime_changed(&[pulse], &[next]));
+    }
+
+    fn test_task(id: &str, state: &str, active_pulse: Option<&str>) -> WorkTask {
+        WorkTask {
+            id: id.into(),
+            project_id: "project".into(),
+            revision: 1,
+            draft: TaskDraft {
+                title: format!("Task {id}"),
+                kind: TaskKind::Feature,
+                description: "Test description".into(),
+                criteria: vec![],
+                dependencies: vec![],
+                feature_id: None,
+            },
+            feature_revision: None,
+            state: state.into(),
+            active_pulsation_id: active_pulse.map(Into::into),
+            completed_pulsation_id: None,
+        }
+    }
+
+    #[gpui::test]
+    fn reconcile_selected_tasks_evicts_done_and_ineligible_tasks(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            let forge = &mut model.forge;
+            forge.snapshot.tasks = vec![
+                test_task("task-ready", "ready", None),
+                test_task("task-done", "done", None),
+                test_task("task-queued-failed", "queued", Some("pulse-failed")),
+                test_task("task-queued-running", "queued", Some("pulse-running")),
+            ];
+            for id in [
+                "task-ready",
+                "task-done",
+                "task-queued-failed",
+                "task-queued-running",
+            ] {
+                forge.selected_tasks.insert(id.into());
+                forge
+                    .path_hint_inputs
+                    .insert(id.into(), cx.new(|cx| NativeTextInput::new("hint", cx)));
+            }
+            let mut failed_pulsations = HashSet::new();
+            failed_pulsations.insert("pulse-failed".into());
+
+            forge.reconcile_selected_tasks(&failed_pulsations);
+
+            assert!(forge.selected_tasks.contains("task-ready"));
+            assert!(forge.path_hint_inputs.contains_key("task-ready"));
+
+            assert!(forge.selected_tasks.contains("task-queued-failed"));
+            assert!(forge.path_hint_inputs.contains_key("task-queued-failed"));
+
+            assert!(!forge.selected_tasks.contains("task-done"));
+            assert!(!forge.path_hint_inputs.contains_key("task-done"));
+
+            assert!(!forge.selected_tasks.contains("task-queued-running"));
+            assert!(!forge.path_hint_inputs.contains_key("task-queued-running"));
+        });
+    }
+
+    #[gpui::test]
+    fn clear_batch_composer_resets_selection_hints_and_title(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            let forge = &mut model.forge;
+            forge.selected_tasks.insert("task-1".into());
+            forge
+                .path_hint_inputs
+                .insert("task-1".into(), cx.new(|cx| NativeTextInput::new("hint", cx)));
+            forge
+                .batch_title
+                .update(cx, |input, cx| input.set_value("Batch Title", cx));
+
+            forge.clear_batch_composer(cx);
+
+            assert!(forge.selected_tasks.is_empty());
+            assert!(forge.path_hint_inputs.is_empty());
+            assert_eq!(forge.batch_title.read(cx).value(), "");
+        });
+    }
+
+    #[gpui::test]
+    fn toggle_task_rejects_ineligible_tasks_and_allows_deselection(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            model.forge.snapshot.tasks = vec![
+                test_task("task-ready", "ready", None),
+                test_task("task-done", "done", None),
+            ];
+
+            // Toggling ready task selects it
+            model.forge_action(ForgeAction::ToggleTask("task-ready".into()), cx);
+            assert!(model.forge.selected_tasks.contains("task-ready"));
+
+            // Toggling done task does NOT select it
+            model.forge_action(ForgeAction::ToggleTask("task-done".into()), cx);
+            assert!(!model.forge.selected_tasks.contains("task-done"));
+
+            // If a done task was already selected (e.g. transient state), toggle deselects it
+            model.forge.selected_tasks.insert("task-done".into());
+            model.forge_action(ForgeAction::ToggleTask("task-done".into()), cx);
+            assert!(!model.forge.selected_tasks.contains("task-done"));
+        });
+    }
+
+    #[gpui::test]
+    fn clear_selected_tasks_action_clears_selection_and_hints(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            model.forge.selected_tasks.insert("task-1".into());
+            model
+                .forge
+                .path_hint_inputs
+                .insert("task-1".into(), cx.new(|cx| NativeTextInput::new("hint", cx)));
+            model.forge_action(ForgeAction::ClearSelectedTasks, cx);
+            assert!(model.forge.selected_tasks.is_empty());
+            assert!(model.forge.path_hint_inputs.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn selected_done_task_retains_deselection_button_and_composer_remove_button(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::text_input::register_text_input_keybindings);
+        let (model, visual) = cx.add_window_view(|_, cx| AppModel::new_for_test(cx));
+        visual.simulate_resize(size(px(1440.0), px(900.0)));
+        model.update(visual, |m, cx| {
+            m.workspace
+                .update(cx, |w, _| w.project_id = Some("test-project".into()));
+            m.forge.project_id = Some("test-project".into());
+            m.select_view(AppView::Forge, cx);
+            m.forge.section = ForgeSection::Backlog;
+            m.forge.snapshot.tasks = vec![test_task("task-done-1", "done", None)];
+            m.forge.selected_tasks.insert("task-done-1".into());
+            cx.notify();
+        });
+        visual.run_until_parked();
+
+        // The backlog card still displays "select-task-task-done-1" because selected == true
+        assert!(visual.debug_bounds("select-task-task-done-1").is_some());
+        // The composer card displays "remove-selected-task-task-done-1"
+        assert!(visual.debug_bounds("remove-selected-task-task-done-1").is_some());
+        // The composer card displays "clear-selected-tasks"
+        assert!(visual.debug_bounds("clear-selected-tasks").is_some());
+
+        // Clicking the ✕ button in composer removes it
+        let remove_btn = visual
+            .debug_bounds("remove-selected-task-task-done-1")
+            .unwrap();
+        visual.simulate_click(remove_btn.center(), Modifiers::default());
+        visual.run_until_parked();
+
+        model.read_with(visual, |m, _| {
+            assert!(m.forge.selected_tasks.is_empty());
+        });
+
+        // A non-selected done task in a fresh window renders neither the backlog select button nor composer remove button
+        let (model2, visual2) = cx.add_window_view(|_, cx| AppModel::new_for_test(cx));
+        visual2.simulate_resize(size(px(1440.0), px(900.0)));
+        model2.update(visual2, |m, cx| {
+            m.workspace
+                .update(cx, |w, _| w.project_id = Some("test-project".into()));
+            m.forge.project_id = Some("test-project".into());
+            m.select_view(AppView::Forge, cx);
+            m.forge.section = ForgeSection::Backlog;
+            m.forge.snapshot.tasks = vec![test_task("task-done-2", "done", None)];
+            cx.notify();
+        });
+        visual2.run_until_parked();
+
+        assert!(visual2.debug_bounds("select-task-task-done-2").is_none());
+        assert!(visual2.debug_bounds("remove-selected-task-task-done-2").is_none());
+        assert!(visual2.debug_bounds("clear-selected-tasks").is_none());
     }
 }

@@ -312,15 +312,15 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                     evidence.criterion_ids.join(", ")
                 )));
         }
-        if task.state == "ready"
+        let can_select = task.state == "ready"
             || (task.state == "queued"
                 && task.active_pulsation_id.as_ref().is_some_and(|id| {
                     model.pulsations.read(cx).pulsations.iter().any(|p| {
                         &p.id == id
                             && p.status == hvc_core::persistence_service::PulsationStatus::Failed
                     })
-                }))
-        {
+                }));
+        if can_select || selected {
             row = row.child(button(
                 format!("select-task-{}", task.id),
                 if selected {
@@ -383,7 +383,20 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             .flex()
             .flex_col()
             .gap_1()
-            .child(label(format!("• {}", task.draft.title)));
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(label(format!("• {}", task.draft.title)))
+                    .child(button(
+                        format!("remove-selected-task-{}", task.id),
+                        "✕",
+                        ForgeAction::ToggleTask(task.id.clone()),
+                        cx,
+                    )),
+            );
         if !has_explicit_path {
             item = item.child(label(
                 "No explicit file path detected; the dispatch gate may block this batch \
@@ -403,17 +416,24 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         }
         selected = selected.child(item);
     }
-    selected = selected
-        .child(label(format!(
-            "{} task(s) selected",
-            model.forge.selected_tasks.len()
-        )))
-        .child(button(
-            "dispatch-batch",
-            "Dispatch batch for execution",
-            ForgeAction::Dispatch,
+    selected = selected.child(label(format!(
+        "{} task(s) selected",
+        model.forge.selected_tasks.len()
+    )));
+    if !model.forge.selected_tasks.is_empty() {
+        selected = selected.child(button(
+            "clear-selected-tasks",
+            "Clear selection",
+            ForgeAction::ClearSelectedTasks,
             cx,
         ));
+    }
+    selected = selected.child(button(
+        "dispatch-batch",
+        "Dispatch batch for execution",
+        ForgeAction::Dispatch,
+        cx,
+    ));
     div()
         .flex_1()
         .min_h_0()
