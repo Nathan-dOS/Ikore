@@ -16,7 +16,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         connections,
         conversations,
         active_conversation,
-        messages,
+        (messages, hidden_messages),
         tool_calls,
         selected_connection_id,
         selected_transport,
@@ -41,7 +41,10 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
             chat.eligible_connections().cloned().collect::<Vec<_>>(),
             chat.conversations.clone(),
             chat.active_conversation_record().cloned(),
-            chat.active_messages().to_vec(),
+            {
+                let (messages, hidden) = chat.rendered_messages();
+                (messages.to_vec(), hidden)
+            },
             chat.active_tool_calls().to_vec(),
             chat.selected_connection_id.clone(),
             chat.selected_transport,
@@ -81,9 +84,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                     .max_w(px(560.0))
                     .p_6()
                     .rounded_lg()
-                    .border_1()
-                    .border_color(theme::border())
-                    .bg(theme::surface())
+                    .bg(theme::surface_raised())
                     .child(
                         div()
                             .text_xl()
@@ -111,6 +112,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
     let draft = model.chat_draft_input.clone();
     let draft_empty = draft.read(cx).value().trim().is_empty();
     let tool_activity_open = model.chat.read(cx).tool_activity_open;
+    let config_collapsed = model.chat.read(cx).config_collapsed;
     let show_tool_activity = should_show_tool_activity(active_conversation.as_ref())
         && (active_conversation.is_some() || selected_transport == ChatTransportKind::Api);
     let cli_model_label = crate::agents_view::cli_model_label(
@@ -134,15 +136,44 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .w(px(260.0)).flex_shrink_0()
                 .min_h_0()
                 .p_3()
-                .rounded_lg()
-                .border_1()
+                .border_r_1()
                 .border_color(theme::border())
-                .bg(theme::surface())
                 .flex()
                 .flex_col()
                 .gap_3()
                 .child(section_header("ACTIVE PROJECT", "Conversations", conversations.len()))
-                .child({
+                .child(action(
+                    "chat-toggle-config",
+                    if config_collapsed { "Show connection config" } else { "Hide connection config" },
+                    true,
+                    cx,
+                    |model, cx| {
+                        model.chat.update(cx, |chat, _| chat.config_collapsed = !chat.config_collapsed);
+                        cx.notify();
+                    },
+                ))
+                .when(config_collapsed, |panel| {
+                    let summary = match selected_transport {
+                        ChatTransportKind::Api => selected_connection
+                            .map(|connection| {
+                                format!("API · {} · {}", connection.display_name, connection.default_model)
+                            })
+                            .unwrap_or_else(|| "API · no connection selected".into()),
+                        ChatTransportKind::Cli => {
+                            format!("CLI · {} · {}", selected_cli_backend.label(), cli_model_label)
+                        }
+                    };
+                    panel.child(
+                        div()
+                            .p_2()
+                            .rounded_md()
+                            .bg(theme::surface_raised())
+                            .text_xs()
+                            .text_color(theme::text_muted())
+                            .child(summary),
+                    )
+                })
+                .when(!config_collapsed, |panel| panel.child({
 
                     let transport_label = match selected_transport {
                         ChatTransportKind::Api => "API",
@@ -151,8 +182,8 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                     div()
                         .child(crate::select_menu::control("chat-transport","TRANSPORT",transport_label,!busy && !streaming,cx))
 
-                })
-                .child({
+                }))
+                .when(!config_collapsed, |panel| panel.child({
                     let mut auth_card = div()
                         .p_3()
                         .rounded_md()
@@ -170,6 +201,9 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         .child(
                             div()
                                 .mt_1()
+                                .flex()
+                                .items_center()
+                                .gap_2()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child(
                                     if selected_transport == ChatTransportKind::Api {
@@ -203,7 +237,13 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                             })
                                             .unwrap_or_else(|| "CLI not detected".into())
                                     },
-                                ),
+                                )
+                                .when(selected_transport == ChatTransportKind::Cli, |row| {
+                                    row.child(crate::widgets::info_tip(
+                                        "chat-cli-login",
+                                        "Uses the CLI's existing login. HVC does not request or store its API key. Changes apply to the open conversation from its next message and are remembered for this project.",
+                                    ))
+                                }),
                         );
 
                     if selected_transport == ChatTransportKind::Api && connections.len() > 1 {
@@ -246,18 +286,11 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                         |model, cx| model.open_companion_model_picker(cx),
                                     ))
                                     .child(profile_div),
-                            )
-                            .child(
-                                div()
-                                    .mt_2()
-                                    .text_xs()
-                                    .text_color(theme::text_muted())
-                                    .child("Uses the CLI's existing login. HVC does not request or store its API key."),
                             );
                     }
 
                     auth_card
-                })
+                }))
                 .child(action(
                     "chat-new-conversation",
                     if busy { "Please wait…" } else { "New conversation" },
@@ -370,16 +403,13 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .min_h_0()
                 .p_4()
                 .rounded_lg()
-                .border_1()
-                .border_color(theme::border())
-                .bg(theme::surface())
                 .flex()
                 .flex_col()
                 .gap_3()
-                .when(show_tool_activity, |panel| panel.child(action(
+                .when(show_tool_activity, |panel| panel.child(div().flex().justify_end().child(action(
                     "chat-toggle-activity", if tool_activity_open { "Hide activity" } else { "Show activity" }, true, cx,
                     |model, cx| { model.chat.update(cx, |chat, _| chat.tool_activity_open = !chat.tool_activity_open); cx.notify(); }
-                )))
+                ))))
 
                 .when(active_conversation.is_none(), |panel| {
                     panel.child(
@@ -457,18 +487,35 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                             .p_4()
                                             .rounded_lg()
                                             .bg(theme::accent_soft())
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
                                             .child(
                                                 div()
                                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                                     .child("Chat about the real architecture of this repository."),
                                             )
-                                            .child(
-                                                div()
-                                                    .mt_2()
-                                                    .text_sm()
-                                                    .text_color(theme::text_muted())
-                                                    .child("The Companion can list, search, and read safe snippets. It cannot apply diffs or modify files."),
-                                            ),
+                                            .child(crate::widgets::info_tip(
+                                                "chat-companion-scope",
+                                                "The Companion can list, search, and read safe snippets. It cannot apply diffs or modify files.",
+                                            )),
+                                    )
+                                })
+                                .when(hidden_messages > 0, |list| {
+                                    list.child(
+                                        div().flex().justify_center().child(action(
+                                            "chat-show-earlier",
+                                            "Show earlier messages",
+                                            true,
+                                            cx,
+                                            |model, cx| {
+                                                model.chat.update(cx, |chat, _| {
+                                                    chat.history_expanded =
+                                                        chat.active_conversation.clone();
+                                                });
+                                                cx.notify();
+                                            },
+                                        )),
                                     )
                                 })
                                 .children(messages.into_iter().map(|message| {
@@ -550,10 +597,8 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .w(px(260.0)).flex_shrink_0()
                 .min_h_0()
                 .p_3()
-                .rounded_lg()
-                .border_1()
+                .border_l_1()
                 .border_color(theme::border())
-                .bg(theme::surface())
                 .flex()
                 .flex_col()
                 .gap_3()
@@ -797,61 +842,41 @@ fn tool_label(name: &str) -> String {
 }
 
 fn section_header(kicker: &'static str, title: &'static str, count: usize) -> impl IntoElement {
-    div()
-        .flex()
-        .items_end()
-        .justify_between()
-        .child(
-            div()
-                .child(div().text_xs().text_color(theme::accent()).child(kicker))
-                .child(
-                    div()
-                        .text_lg()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(title),
-                ),
-        )
-        .child(
-            div()
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .bg(theme::surface_raised())
-                .text_xs()
-                .child(count.to_string()),
-        )
+    crate::widgets::section_header(kicker, title, count)
 }
 
 fn action(
-    id: impl Into<gpui::ElementId>,
+    id: impl Into<SharedString>,
     label: &'static str,
     enabled: bool,
     cx: &mut Context<AppModel>,
     handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
 ) -> AnyElement {
-    div()
-        .id(id)
-        .mt_2()
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .border_1()
-        .border_color(if enabled {
-            theme::accent()
-        } else {
-            theme::border()
-        })
-        .text_sm()
-        .text_color(if enabled {
-            theme::text()
-        } else {
-            theme::text_muted()
-        })
+    use crate::widgets::ButtonVariant;
+    let id: SharedString = id.into();
+    // Sending leads; deleting and cancelling are danger; starting a conversation is tinted;
+    // panel toggles and copy stay secondary.
+    let variant = if id.as_ref() == "chat-send-message" {
+        ButtonVariant::Primary
+    } else if id.as_ref() == "chat-cancel-turn" || id.starts_with("chat-delete:") {
+        ButtonVariant::Danger
+    } else if id.as_ref() == "chat-new-conversation" {
+        ButtonVariant::Tinted
+    } else {
+        ButtonVariant::Secondary
+    };
+    let glyph = crate::widgets::action_icon(&id);
+    crate::widgets::button_frame(div().id(id).mt_2(), variant, enabled)
         .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.bg(theme::accent_soft()))
-                .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
+            button.on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
+        })
+        .gap_2()
+        .when_some(glyph, |button, glyph| {
+            button.child(crate::widgets::icon(
+                glyph,
+                px(14.0),
+                crate::widgets::button_ink(variant, enabled),
+            ))
         })
         .child(label)
         .into_any_element()

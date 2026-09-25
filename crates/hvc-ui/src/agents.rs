@@ -11,6 +11,7 @@ use hvc_core::llm::{
 use hvc_core::persistence_service::{
     CancelAgentApiExecutionRequest, CliFallbackCheckpoint, ListAgentApiExecutionsRequest,
     PersistenceCommandError, ResolveCliFallbackRequest, ResolveCliFallbackResponse,
+    ValidateCliFallbackRequest, ValidateCliFallbackResponse,
     StartFreeFormApiRunRequest, StartFreeFormApiRunResponse,
 };
 use hvc_core::terminals::{
@@ -92,6 +93,12 @@ pub(crate) trait AgentsBackend: Send + Sync {
         &self,
         request: ResolveCliFallbackRequest,
     ) -> AgentsFuture<ResolveCliFallbackResponse>;
+    /// Runs the CLI contract probe behind a `cli_version_unvalidated` fallback; resumes the
+    /// pulsation on success, downgrades the fallback to `cli_validation_failed` otherwise.
+    fn validate_fallback(
+        &self,
+        request: ValidateCliFallbackRequest,
+    ) -> AgentsFuture<ValidateCliFallbackResponse>;
 }
 
 pub(crate) struct CoreAgentsBackend {
@@ -243,7 +250,7 @@ impl AgentsBackend for CoreAgentsBackend {
                 .spawn_blocking(move || terminals.start_free_form(request))
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!("worker de agente livre interrompido: {error}"))
+                    UiCommandError::worker(format!("free-form agent worker interrupted: {error}"))
                 })?
                 .map_err(terminal_error)
         })
@@ -315,7 +322,7 @@ impl AgentsBackend for CoreAgentsBackend {
                 .spawn_blocking(move || terminals.repository().create_free_form_slot(request))
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!("worker de agente livre interrompido: {error}"))
+                    UiCommandError::worker(format!("free-form agent worker interrupted: {error}"))
                 })?
                 .map_err(terminal_error)
         })
@@ -332,7 +339,7 @@ impl AgentsBackend for CoreAgentsBackend {
                 .spawn_blocking(move || terminals.repository().update_free_form_slot(request))
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!("worker de agente livre interrompido: {error}"))
+                    UiCommandError::worker(format!("free-form agent worker interrupted: {error}"))
                 })?
                 .map_err(terminal_error)
         })
@@ -357,7 +364,7 @@ impl AgentsBackend for CoreAgentsBackend {
                 })
                 .await
                 .map_err(|error| {
-                    UiCommandError::worker(format!("worker de agente livre interrompido: {error}"))
+                    UiCommandError::worker(format!("free-form agent worker interrupted: {error}"))
                 })?
                 .map_err(terminal_error)
         })
@@ -482,6 +489,23 @@ impl AgentsBackend for CoreAgentsBackend {
                 .await
                 .map_err(|error| {
                     UiCommandError::worker(format!("worker de fallback interrompido: {error}"))
+                })?
+                .map_err(persistence_error)
+        })
+    }
+
+    fn validate_fallback(
+        &self,
+        request: ValidateCliFallbackRequest,
+    ) -> AgentsFuture<ValidateCliFallbackResponse> {
+        let core = Arc::clone(&self.core);
+        let runtime = self.core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn(async move { core.persistence().validate_cli_fallback(request).await })
+                .await
+                .map_err(|error| {
+                    UiCommandError::worker(format!("CLI validation worker interrupted: {error}"))
                 })?
                 .map_err(persistence_error)
         })
@@ -622,6 +646,7 @@ impl AgentIdentifier {
     fn from_target(target: &AgentExecutionTarget) -> Self {
         match target {
             AgentExecutionTarget::Canonical { agent_role } => Self::Canonical(*agent_role),
+            AgentExecutionTarget::Ephemeral { agent_role, .. } => Self::Canonical(*agent_role),
             AgentExecutionTarget::FreeForm { slot_id } => Self::FreeForm(slot_id.clone()),
         }
     }
@@ -650,6 +675,9 @@ pub(crate) struct AgentsModel {
     pub(crate) selected_api_target: Option<AgentIdentifier>,
     pub(crate) terminal_expanded: bool,
     api_sequences: HashMap<String, u64>,
+    /// A chrome-only snapshot is in flight. It must participate in the same admission gate as
+    /// visible panel work so terminal bursts cannot start overlapping SQLite snapshots.
+    quiet_snapshot_in_flight: bool,
     pub(crate) loading: bool,
     pub(crate) busy: bool,
     pub(crate) notice: Option<String>,
@@ -686,6 +714,7 @@ impl Default for AgentsModel {
             selected_api_target: None,
             terminal_expanded: false,
             api_sequences: HashMap::new(),
+            quiet_snapshot_in_flight: false,
             loading: false,
             busy: false,
             notice: None,
@@ -727,6 +756,7 @@ impl AgentsModel {
 
     pub(crate) fn begin(&mut self, loading: bool) -> u64 {
         self.generation = self.generation.saturating_add(1);
+        self.quiet_snapshot_in_flight = false;
         self.loading = loading;
         self.busy = !loading;
         self.error = None;
@@ -739,13 +769,14 @@ impl AgentsModel {
     /// so the Agents panel must not flicker into its loading state.
     pub(crate) fn begin_quiet(&mut self) -> u64 {
         self.generation = self.generation.saturating_add(1);
+        self.quiet_snapshot_in_flight = true;
         self.generation
     }
 
     /// `true` while a loud read or an operation is in flight; a quiet refresh yields to it so a
     /// later generation never swallows the operation's result or error.
     pub(crate) fn in_flight(&self) -> bool {
-        self.loading || self.busy
+        self.loading || self.busy || self.quiet_snapshot_in_flight
     }
 
     pub(crate) fn apply_snapshot(
@@ -756,6 +787,7 @@ impl AgentsModel {
         if generation != self.generation {
             return false;
         }
+        self.quiet_snapshot_in_flight = false;
         self.loading = false;
         self.busy = false;
         if self
@@ -917,6 +949,7 @@ impl AgentsModel {
         if generation != self.generation {
             return false;
         }
+        self.quiet_snapshot_in_flight = false;
         self.loading = false;
         self.busy = false;
         self.error = Some(error);
@@ -976,108 +1009,134 @@ impl AgentsModel {
     }
 
     pub(crate) fn record_llm(&mut self, envelope: &LlmEventEnvelope) -> bool {
-        if !self.viewer_enabled {
-            return false;
-        }
-        let Some(context) = envelope.context.as_ref() else {
-            return false;
-        };
-        if self
-            .snapshot
-            .as_ref()
-            .is_none_or(|snapshot| snapshot.project_id != context.project_id)
-        {
-            return false;
-        }
-        let identifier = AgentIdentifier::from_target(&context.target);
-        let last = self
-            .api_sequences
-            .entry(envelope.execution_id.clone())
-            .or_default();
-        if envelope.sequence <= *last {
-            return false;
-        }
-        let gap = envelope.sequence > last.saturating_add(1);
-        *last = envelope.sequence;
-        if let AgentExecutionTarget::FreeForm { slot_id } = &context.target {
-            if matches!(&envelope.event, LlmStreamEvent::RouteStarted { .. }) {
-                self.active_api_execution_by_slot
-                    .insert(slot_id.clone(), envelope.execution_id.clone());
+        self.record_llm_batch(std::slice::from_ref(envelope))
+    }
+
+    /// Projects a persisted LLM stream in one paint batch. Token text is retained only until the
+    /// end of this call, then redacted as a complete visible segment. This preserves redaction for
+    /// secrets split across chunks without repeatedly rebuilding accumulated output per token.
+    pub(crate) fn record_llm_batch(&mut self, envelopes: &[LlmEventEnvelope]) -> bool {
+        let mut gap = false;
+        let mut pending_output = HashMap::<AgentIdentifier, String>::new();
+
+        for envelope in envelopes {
+            if !self.viewer_enabled {
+                continue;
             }
+            let Some(context) = envelope.context.as_ref() else {
+                continue;
+            };
+            if self
+                .snapshot
+                .as_ref()
+                .is_none_or(|snapshot| snapshot.project_id != context.project_id)
+            {
+                continue;
+            }
+            let identifier = AgentIdentifier::from_target(&context.target);
+            let last = self
+                .api_sequences
+                .entry(envelope.execution_id.clone())
+                .or_default();
+            if envelope.sequence <= *last {
+                continue;
+            }
+            gap |= envelope.sequence > last.saturating_add(1);
+            *last = envelope.sequence;
+            if let AgentExecutionTarget::FreeForm { slot_id } = &context.target {
+                if matches!(&envelope.event, LlmStreamEvent::RouteStarted { .. }) {
+                    self.active_api_execution_by_slot
+                        .insert(slot_id.clone(), envelope.execution_id.clone());
+                }
+                if matches!(
+                    &envelope.event,
+                    LlmStreamEvent::RouteCompleted { .. } | LlmStreamEvent::RouteFailed { .. }
+                ) {
+                    self.active_api_execution_by_slot.remove(slot_id);
+                }
+            }
+
+            if let LlmStreamEvent::TokenDelta { text } = &envelope.event {
+                pending_output.entry(identifier).or_default().push_str(text);
+                continue;
+            }
+            self.flush_api_output(&identifier, pending_output.remove(&identifier));
+            let line = match &envelope.event {
+                LlmStreamEvent::RouteStarted { route_id } => format!(
+                    "route · {route_id} · execution {} · pulsation {} · job {}",
+                    envelope.execution_id.chars().take(8).collect::<String>(),
+                    context.pulsation_id.as_deref().unwrap_or("—"),
+                    context.job_id.as_deref().unwrap_or("—")
+                ),
+                LlmStreamEvent::AttemptStarted {
+                    provider_id,
+                    model,
+                    ordinal,
+                    ..
+                } => format!("attempt {ordinal} · {provider_id} · {model}"),
+                LlmStreamEvent::AttemptFailed { error_code, .. } => {
+                    format!("attempt failed · {error_code}")
+                }
+                LlmStreamEvent::RouteCompleted {
+                    provider_id, model, ..
+                } => format!("completed · {provider_id} · {model}"),
+                LlmStreamEvent::RouteFailed { error_code, .. } => {
+                    format!("route failed · {error_code}")
+                }
+                LlmStreamEvent::ResilienceChanged {
+                    scope, to_state, ..
+                } => format!("resilience {scope} · {to_state}"),
+                LlmStreamEvent::TokenDelta { .. } => unreachable!("token deltas are handled above"),
+            };
+            self.push_api_activity(
+                identifier,
+                hvc_core::secret_redactor::redact_secrets(&line)
+                    .map(|result| result.text)
+                    .unwrap_or_else(|_| "[content unavailable after redaction]".into()),
+            );
             if matches!(
                 &envelope.event,
                 LlmStreamEvent::RouteCompleted { .. } | LlmStreamEvent::RouteFailed { .. }
             ) {
-                self.active_api_execution_by_slot.remove(slot_id);
+                self.api_sequences.remove(&envelope.execution_id);
             }
         }
-        let line = match &envelope.event {
-            LlmStreamEvent::RouteStarted { route_id } => format!(
-                "route · {route_id} · execution {} · pulsation {} · job {}",
-                envelope.execution_id.chars().take(8).collect::<String>(),
-                context.pulsation_id.as_deref().unwrap_or("—"),
-                context.job_id.as_deref().unwrap_or("—")
-            ),
-            LlmStreamEvent::AttemptStarted {
-                provider_id,
-                model,
-                ordinal,
-                ..
-            } => format!("attempt {ordinal} · {provider_id} · {model}"),
-            LlmStreamEvent::TokenDelta { text } => text.clone(),
-            LlmStreamEvent::AttemptFailed { error_code, .. } => {
-                format!("attempt failed · {error_code}")
-            }
-            LlmStreamEvent::RouteCompleted {
-                provider_id, model, ..
-            } => format!("completed · {provider_id} · {model}"),
-            LlmStreamEvent::RouteFailed { error_code, .. } => {
-                format!("route failed · {error_code}")
-            }
-            LlmStreamEvent::ResilienceChanged {
-                scope, to_state, ..
-            } => format!("resilience {scope} · {to_state}"),
+        for (identifier, output) in pending_output {
+            self.flush_api_output(&identifier, Some(output));
+        }
+        gap
+    }
+
+    fn flush_api_output(&mut self, identifier: &AgentIdentifier, output: Option<String>) {
+        let Some(output) = output.filter(|output| !output.is_empty()) else {
+            return;
         };
-        let line = hvc_core::secret_redactor::redact_secrets(&line)
+        let activity = self.api_activity.entry(identifier.clone()).or_default();
+        let target = if activity.last().is_some_and(|line| line.starts_with("output · ")) {
+            activity.last_mut().expect("checked above")
+        } else {
+            activity.push("output · ".into());
+            activity.last_mut().expect("just pushed")
+        };
+        target.push_str(&output);
+        if target.chars().count() > 64 * 1024 {
+            *target = target.chars().take(64 * 1024).collect();
+            target.push_str("\n[visible output truncated]");
+        }
+        *target = hvc_core::secret_redactor::redact_secrets(target)
             .map(|result| result.text)
             .unwrap_or_else(|_| "[content unavailable after redaction]".into());
-        let activity = self.api_activity.entry(identifier).or_default();
-        if matches!(&envelope.event, LlmStreamEvent::TokenDelta { .. })
-            && activity.last_mut().is_some_and(|previous| {
-                if previous.starts_with("output · ") {
-                    previous.push_str(&line);
-                    if previous.chars().count() > 64 * 1024 {
-                        *previous = previous.chars().take(64 * 1024).collect();
-                        previous.push_str("\n[visible output truncated]");
-                    }
-                    if let Ok(redacted) = hvc_core::secret_redactor::redact_secrets(previous) {
-                        *previous = redacted.text;
-                    }
-                    true
-                } else {
-                    false
-                }
-            })
-        {
-            return gap;
-        }
-        activity.push(
-            if matches!(&envelope.event, LlmStreamEvent::TokenDelta { .. }) {
-                format!("output · {line}")
-            } else {
-                line
-            },
-        );
         if activity.len() > 200 {
             activity.drain(..activity.len() - 200);
         }
-        if matches!(
-            &envelope.event,
-            LlmStreamEvent::RouteCompleted { .. } | LlmStreamEvent::RouteFailed { .. }
-        ) {
-            self.api_sequences.remove(&envelope.execution_id);
+    }
+
+    fn push_api_activity(&mut self, identifier: AgentIdentifier, line: String) {
+        let activity = self.api_activity.entry(identifier).or_default();
+        activity.push(line);
+        if activity.len() > 200 {
+            activity.drain(..activity.len() - 200);
         }
-        gap
     }
 
     pub(crate) fn apply_started_api_run(
@@ -1175,6 +1234,17 @@ mod tests {
         ThinkingLevel,
     };
 
+    #[test]
+    fn ephemeral_targets_remain_attached_to_the_visible_canonical_agent() {
+        assert_eq!(
+            AgentIdentifier::from_target(&AgentExecutionTarget::ephemeral(
+                "ephemeral:execution-1:unit-1",
+                AgentRole::BackendAgent,
+            )),
+            AgentIdentifier::Canonical(AgentRole::BackendAgent)
+        );
+    }
+
     fn run(status: TerminalRunStatus) -> TerminalRun {
         TerminalRun {
             id: "run-1".into(),
@@ -1215,6 +1285,7 @@ mod tests {
             parent_run_id: None,
             continuation_reason: None,
             session_fingerprint: None,
+            observation_trial_id: None,
         }
     }
 
@@ -1307,6 +1378,24 @@ mod tests {
     }
 
     #[test]
+    fn quiet_snapshot_blocks_an_overlapping_quiet_refresh() {
+        let mut model = model();
+        assert!(!model.in_flight());
+        let generation = model.begin_quiet();
+        assert!(model.in_flight());
+        assert!(model.apply_snapshot(
+            generation,
+            AgentsDashboardSnapshot {
+                terminals: model.snapshot.clone().unwrap(),
+                fallbacks: vec![],
+                free_form_bindings: vec![],
+                api_executions: HashMap::new(),
+            }
+        ));
+        assert!(!model.in_flight());
+    }
+
+    #[test]
     fn live_terminal_events_insert_select_and_update_automatic_run() {
         let mut model = model();
         assert!(!model.record_event(event_envelope(TerminalRunStatus::Running, 1)));
@@ -1371,5 +1460,47 @@ mod tests {
                 .iter()
                 .all(|line| !line.contains("fixture-secret-token"))
         );
+    }
+
+    #[test]
+    fn batches_token_segments_and_redacts_a_secret_split_between_chunks() {
+        let mut model = model();
+        model.viewer_enabled = true;
+        let context = AgentExecutionContext {
+            project_id: "project-1".into(),
+            pulsation_id: Some("pulse-1".into()),
+            job_id: Some("job-1".into()),
+            target: AgentExecutionTarget::canonical(AgentRole::BackendAgent),
+            stage: "backend".into(),
+        };
+        let events = [
+            LlmEventEnvelope {
+                protocol_version: 1,
+                execution_id: "execution-1".into(),
+                generation_id: "generation-1".into(),
+                sequence: 1,
+                context: Some(context.clone()),
+                event: LlmStreamEvent::TokenDelta {
+                    text: "Authorization: Bearer fixture-".into(),
+                },
+            },
+            LlmEventEnvelope {
+                protocol_version: 1,
+                execution_id: "execution-1".into(),
+                generation_id: "generation-1".into(),
+                sequence: 2,
+                context: Some(context),
+                event: LlmStreamEvent::TokenDelta {
+                    text: "secret-token ✓".into(),
+                },
+            },
+        ];
+
+        assert!(!model.record_llm_batch(&events));
+        let activity = &model.api_activity[&AgentIdentifier::Canonical(AgentRole::BackendAgent)];
+        assert_eq!(activity.len(), 1);
+        assert!(activity[0].contains("[REDACTED]"));
+        assert!(!activity[0].contains("fixture-secret-token"));
+        assert_eq!(model.api_sequences["execution-1"], 2);
     }
 }

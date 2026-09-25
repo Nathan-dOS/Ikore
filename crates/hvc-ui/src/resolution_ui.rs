@@ -13,6 +13,29 @@ use hvc_core::orchestration::{ClarificationAnswerV1, SubmitSpecificationAnswersR
 /// already reads from a submitted answer's `text_answer`.
 const SYNTHESIS_PROMPT: &str = "Based on this conversation, write the final answer to the Specification clarification question. Start with a short prose summary, then list file paths using this exact tag format, one per line: `FILES_NEW:` for files that do not exist yet, `FILES_MOD:` for files that already exist and will change, `FILES:` for a path you have not determined new-vs-modified. Separate multiple paths on the same tag line with commas. Only cite paths you are reasonably confident about.";
 
+/// Host-authored first message for a brand-new resolution conversation: the
+/// chip's question/rationale text is only ever rendered in the modal's own
+/// header, never sent to the Companion on its own, so without this the
+/// Companion has nothing to go on and free-associates "References"/"Handles"
+/// as if they were Obsidian references or domain entities instead of the
+/// pipeline's own file-ownership bookkeeping.
+fn opening_briefing(chip: &hvc_core::orchestration::SpecificationQuestionSet) -> String {
+    let mut message = String::from(
+        "I'm the developer resolving a clarification an automated code-generation pipeline raised while implementing this feature. In this pipeline, \"References table\" and \"Handles\" mean its own internal bookkeeping of which file paths a stage is allowed to read or write -- not Obsidian references, domain entities, or anything else. Here is the open question:\n\n",
+    );
+    for question in &chip.questions {
+        message.push_str("Question: ");
+        message.push_str(&question.question);
+        message.push_str("\nWhy it's asking: ");
+        message.push_str(&question.rationale);
+        message.push_str("\n\n");
+    }
+    message.push_str(
+        "Help me figure out the right file path(s) to confirm. Once we agree, I'll ask you to write the final answer using FILES_NEW:/FILES_MOD:/FILES: tags.",
+    );
+    message
+}
+
 impl AppModel {
     pub(crate) fn refresh_resolution_chips(&mut self, cx: &mut Context<Self>) {
         let Some(backend) = self.pulsations_backend.clone() else {
@@ -129,20 +152,30 @@ impl AppModel {
                 if model.resolution.read(cx).expanded.as_deref() != Some(question_set_id.as_str()) {
                     return;
                 }
+                let mut needs_briefing = false;
                 match snapshot {
-                    Ok(snapshot) => model.resolution.update(cx, |resolution, _| {
-                        resolution.conversation = Some(crate::resolution::ResolutionConversation {
-                            conversation_id,
-                            messages: snapshot.messages,
-                            synthesized_draft: None,
-                            pending_synthesis_generation_id: None,
-                            busy: false,
+                    Ok(snapshot) => {
+                        needs_briefing = snapshot.messages.is_empty();
+                        model.resolution.update(cx, |resolution, _| {
+                            resolution.conversation =
+                                Some(crate::resolution::ResolutionConversation {
+                                    conversation_id,
+                                    messages: snapshot.messages,
+                                    synthesized_draft: None,
+                                    pending_synthesis_generation_id: None,
+                                    busy: false,
+                                });
+                            resolution.error = None;
                         });
-                        resolution.error = None;
-                    }),
+                    }
                     Err(error) => model.resolution.update(cx, |resolution, _| {
                         resolution.error = Some(error.presentable());
                     }),
+                }
+                if needs_briefing
+                    && let Some(chip) = model.resolution.read(cx).chip(&question_set_id).cloned()
+                {
+                    model.send_resolution_content(opening_briefing(&chip), false, cx);
                 }
                 cx.notify();
             });

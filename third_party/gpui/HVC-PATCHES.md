@@ -30,11 +30,31 @@ Source: HVC commit `afac99605d81d4fe2afa377f3be767c992d7f4c6` (2026-09-04), a lo
 
 Validation disposition: implementation verified by source review on 2026-09-09; fresh physical Windows startup/activation smoke remains deferred. See `quality/stage7-report.md` and `quality/cerebro-sync-validation-2026-09-09.md`.
 
+## HVC-GPUI-004 — ellipsis on single-line text
+
+Arquivo: `src/elements/text.rs`
+
+Local correction (2026-09-24); no upstream backport provenance is claimed.
+
+Text styled `whitespace_nowrap().text_ellipsis()` is measured first without a
+definite width (no truncation). The measurement cache compared only
+`wrap_width`, which is `None` for single-line text, so the later measurement
+with the real width returned the untruncated size: the ellipsis never appeared
+and the text overflowed or was clipped (explorer file names, Forge graph nodes,
+select values). `TextLayoutInner` now records `truncate_width` and the cache
+hit also requires it to match. Text without `text_overflow` keeps
+`truncate_width = None` and the previous behaviour.
+
+Validation: `cargo test -p hvc-ui --lib` and a physical smoke on Windows 11
+(isolated profile) where the Workspace tree shows `contract-templa…` at
+1280×800 instead of a clipped name. See the 2026-09-24 "responsiveness and
+workspace/agents/vault/forge polish" report in the Cérebro.
+
 ## Integridade
 
 - Versão-base: `gpui` 0.2.2.
 - Fonte-base: crates.io.
-- Functional patches are maintained in `src/platform/windows/directx_devices.rs` (HVC-GPUI-001) and `src/platform/windows/window.rs` (HVC-GPUI-002).
+- Functional patches are maintained in `src/platform/windows/directx_devices.rs` (HVC-GPUI-001), `src/platform/windows/window.rs` (HVC-GPUI-002) and `src/elements/text.rs` (HVC-GPUI-004).
 - Ajuste adicional em `src/taffy.rs` explicita literais `f32` exigidos pelo
   Rust 1.98; ele não altera comportamento nem desempenho.
 - Mudanças futuras devem receber um identificador `HVC-GPUI-NNN` e registrar

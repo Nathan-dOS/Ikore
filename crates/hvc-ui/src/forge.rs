@@ -238,6 +238,8 @@ pub(crate) struct ForgeUi {
     /// agent's verdict, so it opens on request and stays out of the way until
     /// there is something to read.
     pub triage_aside_open: bool,
+    /// Width of the dependency graph panel measured by its last paint; the columns follow it.
+    pub(crate) graph_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     /// Collapsed/expanded state per feature-state group in the list, keyed by
     /// [`feature_state_group_id`].
     pub group_expansion: HashMap<&'static str, bool>,
@@ -268,7 +270,7 @@ impl ForgeUi {
                     .multiline()
                     .max_rows(6)
             }),
-            wave_limit: cx.new(|cx| NativeTextInput::new("Current Wave capacity (default: 3)", cx)),
+            wave_limit: cx.new(|cx| NativeTextInput::new("3", cx)),
             filters: [
                 "Value and need",
                 "Product alignment",
@@ -303,6 +305,7 @@ impl ForgeUi {
             pending_triage_overwrite: false,
             awaiting_triage_analysis: false,
             triage_aside_open: false,
+            graph_bounds: Default::default(),
             group_expansion: HashMap::new(),
         }
     }

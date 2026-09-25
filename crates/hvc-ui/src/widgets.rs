@@ -18,6 +18,261 @@ pub enum ButtonVariant {
     Danger,
     Ghost,
     Selected,
+    /// Accent ink on an accent-tinted fill: a suggested action that is not the primary one.
+    Tinted,
+}
+
+/// Colours, radius, padding and interaction states shared by every text button. The outer
+/// geometry is identical for every variant and state — a 1px border is always there, transparent
+/// when a variant has no outline, and the padding is reduced by that pixel so the box keeps the
+/// 36px-tall `px_3`/`py_2` footprint the layout tests pin — so a state change never moves a
+/// neighbouring control. Handlers and keyboard wiring stay with the caller.
+pub(crate) fn button_frame(
+    button: gpui::Stateful<gpui::Div>,
+    variant: ButtonVariant,
+    enabled: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let clear = gpui::transparent_black();
+    let button = button
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .px(px(11.0))
+        .py(px(7.0))
+        .rounded_md()
+        .border_1()
+        .text_sm()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .focus(|style| style.border_color(theme::accent_hover()));
+    if !enabled {
+        return button
+            .bg(theme::surface_raised())
+            .border_color(clear)
+            .text_color(theme::text_subtle());
+    }
+    let button = button.cursor_pointer().active(|style| style.opacity(0.8));
+    match variant {
+        ButtonVariant::Primary => button
+            .bg(theme::accent())
+            .border_color(theme::accent())
+            .text_color(theme::canvas())
+            .hover(|style| {
+                style
+                    .bg(theme::accent_hover())
+                    .border_color(theme::accent_hover())
+            }),
+        ButtonVariant::Secondary => button
+            .bg(theme::surface_raised())
+            .border_color(theme::border_strong())
+            .text_color(theme::text())
+            .hover(|style| {
+                style
+                    .bg(theme::surface_hover())
+                    .border_color(theme::text_subtle())
+            }),
+        ButtonVariant::Ghost => button
+            .border_color(clear)
+            .text_color(theme::text_muted())
+            .hover(|style| style.bg(theme::surface_raised()).text_color(theme::text())),
+        ButtonVariant::Danger => button
+            .bg(theme::danger_soft())
+            .border_color(theme::danger_soft())
+            .text_color(theme::danger())
+            .hover(|style| style.border_color(theme::danger())),
+        ButtonVariant::Selected | ButtonVariant::Tinted => button
+            .bg(theme::accent_soft())
+            .border_color(theme::accent_soft())
+            .text_color(theme::accent())
+            .hover(|style| style.border_color(theme::accent())),
+    }
+}
+
+/// The recessed track of a segmented control (a view's section strip). Segments go inside it.
+pub(crate) fn segment_track<E: Styled>(track: E) -> E {
+    track
+        .flex()
+        .items_center()
+        .gap_1()
+        .p(px(3.0))
+        .rounded_lg()
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::canvas())
+}
+
+/// One segment: the selected one is raised out of the track; the rest are quiet until hovered.
+pub(crate) fn segment(
+    segment: gpui::Stateful<gpui::Div>,
+    selected: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let segment = segment
+        .flex_shrink_0()
+        .px_3()
+        .py(px(5.0))
+        .rounded_md()
+        .text_sm()
+        .cursor_pointer();
+    if selected {
+        segment
+            .bg(theme::surface_hover())
+            .text_color(theme::text())
+            .font_weight(gpui::FontWeight::MEDIUM)
+    } else {
+        segment
+            .text_color(theme::text_muted())
+            .hover(|style| style.text_color(theme::text()).bg(theme::surface_raised()))
+    }
+}
+
+/// Icon and single-line name of a file-tree row, shared by the Workspace and Vault explorers.
+/// `folder` is `Some(open)` for a folder (a chevron shows its state) and `None` for a file,
+/// which gets a spacer the chevron's width so names stay aligned. Long names end in an ellipsis
+/// instead of wrapping onto a second line.
+pub(crate) fn tree_row_label(
+    folder: Option<bool>,
+    name: impl Into<SharedString>,
+    ink: gpui::Rgba,
+) -> AnyElement {
+    let chevron = match folder {
+        Some(true) => Some(Icon::ChevronDown),
+        Some(false) => Some(Icon::ChevronRight),
+        None => None,
+    };
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(match chevron {
+            Some(glyph) => icon(glyph, px(12.0), theme::text_subtle()).into_any_element(),
+            None => div().flex_shrink_0().w(px(12.0)).into_any_element(),
+        })
+        .child(icon(
+            if folder.is_some() {
+                Icon::Folder
+            } else {
+                Icon::FileText
+            },
+            px(14.0),
+            if folder.is_some() {
+                theme::text_subtle()
+            } else {
+                ink
+            },
+        ))
+        .child(
+            div()
+                .ml_1()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(name.into()),
+        )
+        .into_any_element()
+}
+
+/// A filesystem path as the developer would write it: `canonicalize()` on Windows adds the
+/// `\\?\` extended-length prefix, which is noise in a header.
+pub(crate) fn display_path(path: &str) -> String {
+    if let Some(share) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{share}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
+    }
+}
+
+/// Footer shown under an explorer whose tree the core capped at `MAX_TREE_FILES`.
+pub(crate) fn tree_capped_notice() -> AnyElement {
+    div()
+        .debug_selector(|| "tree-capped-notice".into())
+        .mt_2()
+        .mx_2()
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .bg(theme::surface_raised())
+        .text_xs()
+        .text_color(theme::text_muted())
+        .child(format!(
+            "Showing the first {} files. Dependency and build folders are skipped; use search to reach the rest.",
+            hvc_core::workspace_service::MAX_TREE_FILES
+        ))
+        .into_any_element()
+}
+
+/// Label colour of a `button_frame` button, so a leading glyph matches its text.
+pub(crate) fn button_ink(variant: ButtonVariant, enabled: bool) -> gpui::Rgba {
+    if !enabled {
+        return theme::text_subtle();
+    }
+    match variant {
+        ButtonVariant::Primary => theme::canvas(),
+        ButtonVariant::Secondary => theme::text(),
+        ButtonVariant::Ghost => theme::text_muted(),
+        ButtonVariant::Danger => theme::danger(),
+        ButtonVariant::Selected | ButtonVariant::Tinted => theme::accent(),
+    }
+}
+
+/// The leading glyph for an action, decided by what its id says it does, so Start, Stop, Save,
+/// Send and friends look the same in Agents, Chat, Settings and Forge.
+pub(crate) fn action_icon(id: &str) -> Option<Icon> {
+    let has = |needle: &str| id.contains(needle);
+    Some(if has("stop") || id.ends_with("cancel-turn") {
+        Icon::Square
+    } else if has("start") || has("resume") {
+        Icon::Play
+    } else if has("send") {
+        Icon::Send
+    } else if has("save") {
+        Icon::Save
+    } else if has("delete") {
+        Icon::Trash
+    } else if has("copy") {
+        Icon::Copy
+    } else if has("refresh") || has("retry") || has("reindex") {
+        Icon::RotateCw
+    } else if has("create") || has("-new-") || id.starts_with("new-") || has("capture-feature") {
+        Icon::Plus
+    } else if has("test-connection") {
+        Icon::Activity
+    } else if has("advanced") {
+        Icon::Settings
+    } else {
+        return None;
+    })
+}
+
+/// Track-and-knob switch. Purely visual: the row that owns it handles the click, so the whole
+/// row is the hit area.
+pub(crate) fn switch(on: bool, enabled: bool) -> AnyElement {
+    div()
+        .flex_shrink_0()
+        .w(px(34.0))
+        .h(px(20.0))
+        .p(px(3.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .when(on, |track| track.justify_end().bg(theme::accent()))
+        .when(!on, |track| {
+            track
+                .justify_start()
+                .bg(theme::surface_hover())
+                .border_1()
+                .border_color(theme::border_strong())
+        })
+        .opacity(if enabled { 1.0 } else { 0.45 })
+        .child(div().size(px(14.0)).rounded_full().bg(if on {
+            theme::canvas()
+        } else {
+            theme::text_muted()
+        }))
+        .into_any_element()
 }
 
 #[allow(dead_code)]
@@ -35,44 +290,30 @@ pub fn btn(
     let handler = Arc::new(handler);
     let key_handler = Arc::clone(&handler);
 
-    let (bg, fg) = match variant {
-        ButtonVariant::Primary => (theme::accent(), theme::canvas()),
-        ButtonVariant::Secondary => (theme::surface_raised(), theme::text()),
-        ButtonVariant::Danger => (theme::danger_soft(), theme::danger()),
-        ButtonVariant::Ghost => (theme::surface(), theme::text_muted()),
-        ButtonVariant::Selected => (theme::accent_soft(), theme::accent()),
-    };
-
-    div()
-        .id(id)
-        .debug_selector(move || debug_id.to_string())
-        .self_start()
-        .flex_shrink_0()
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .text_sm()
-        .bg(bg)
-        .text_color(fg)
-        .opacity(if enabled { 1.0 } else { 0.45 })
-        .tab_index(0)
-        .when(enabled, |b| {
-            b.cursor_pointer()
-                .hover(|s| s.opacity(theme::HOVER_OPACITY))
-                .on_key_down(
-                    cx.listener(move |model, event: &gpui::KeyDownEvent, _window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            key_handler(model, cx);
-                            cx.stop_propagation();
-                        }
-                    }),
-                )
-                .on_click(cx.listener(move |model, _, _, cx| {
-                    handler(model, cx);
-                }))
-        })
-        .child(label)
-        .into_any_element()
+    button_frame(
+        div()
+            .id(id)
+            .debug_selector(move || debug_id.to_string())
+            .self_start()
+            .tab_index(0),
+        variant,
+        enabled,
+    )
+    .when(enabled, |b| {
+        b.on_key_down(
+            cx.listener(move |model, event: &gpui::KeyDownEvent, _window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    key_handler(model, cx);
+                    cx.stop_propagation();
+                }
+            }),
+        )
+        .on_click(cx.listener(move |model, _, _, cx| {
+            handler(model, cx);
+        }))
+    })
+    .child(label)
+    .into_any_element()
 }
 
 // Keep the existing view call sites explicit about both confirmation callbacks.
@@ -160,10 +401,8 @@ pub fn loading_pill(label: impl Into<SharedString>) -> AnyElement {
         .into_any_element()
 }
 
-/// Shared `(eyebrow, title, count)` section heading used by detail panels. Adopted opportunistically
-/// as each view is touched; existing per-view copies (Pulsations, Vault, Settings) are folded into
-/// this one during the same pass that converts their panel.
-#[allow(dead_code)]
+/// The one `(eyebrow, title, count)` section heading: a quiet uppercase eyebrow, a semibold
+/// title and the count in a pill. Every list panel (Pulsations, Vault, Settings, Chat) uses it.
 pub fn section_header(
     eyebrow: impl Into<SharedString>,
     title: impl Into<SharedString>,
@@ -171,16 +410,20 @@ pub fn section_header(
 ) -> AnyElement {
     div()
         .flex()
-        .items_center()
+        .items_end()
         .justify_between()
+        .gap_2()
         .child(
             div()
+                .min_w_0()
                 .flex()
                 .flex_col()
+                .gap(px(2.0))
                 .child(
                     div()
                         .text_xs()
-                        .text_color(theme::text_muted())
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme::text_subtle())
                         .child(eyebrow.into()),
                 )
                 .child(
@@ -192,8 +435,9 @@ pub fn section_header(
         )
         .child(
             div()
+                .flex_shrink_0()
                 .min_w(px(24.0))
-                .h(px(24.0))
+                .h(px(22.0))
                 .px_2()
                 .rounded_full()
                 .bg(theme::surface_raised())
@@ -201,22 +445,63 @@ pub fn section_header(
                 .items_center()
                 .justify_center()
                 .text_xs()
+                .text_color(theme::text_muted())
                 .child(count.to_string()),
         )
         .into_any_element()
 }
 
-/// Shared centered empty-state message, folded in from the near-identical copies in
-/// Chat/Settings/Agents/Pulsations/Vault as each view is converted.
-#[allow(dead_code)]
+/// Centered empty state: a quiet glyph in a soft disc above one line of guidance. Shared by
+/// every panel that can be empty so they read the same.
 pub fn empty_state(message: impl Into<SharedString>) -> AnyElement {
+    empty_block(Icon::Sparkles, None, message.into())
+}
+
+/// `empty_state` with a title, for a whole panel that has nothing to show yet.
+pub(crate) fn empty_panel(
+    glyph: Icon,
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+) -> AnyElement {
+    empty_block(glyph, Some(title.into()), description.into())
+}
+
+fn empty_block(glyph: Icon, title: Option<SharedString>, message: SharedString) -> AnyElement {
     div()
         .flex_1()
+        .size_full()
+        .p_5()
         .flex()
+        .flex_col()
         .items_center()
         .justify_center()
-        .text_color(theme::text_muted())
-        .child(message.into())
+        .gap_3()
+        .child(
+            div()
+                .size(px(44.0))
+                .rounded_full()
+                .bg(theme::surface_raised())
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(glyph, px(20.0), theme::text_subtle())),
+        )
+        .when_some(title, |block, title| {
+            block.child(
+                div()
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+        })
+        .child(
+            div()
+                .max_w(px(420.0))
+                .text_sm()
+                .text_center()
+                .text_color(theme::text_muted())
+                .child(message),
+        )
         .into_any_element()
 }
 
@@ -312,7 +597,9 @@ impl gpui::Render for Tooltip {
             .text_xs()
             .text_color(theme::text())
             .font_family(theme::FONT_UI)
-            .child(self.text.clone())
+            // Explanations wrap at a readable width instead of stretching across the window.
+            .max_w(px(320.0))
+            .child(div().min_w_0().child(self.text.clone()))
             .when_some(self.shortcut.clone(), |tip, shortcut| {
                 tip.child(
                     div()
@@ -322,6 +609,37 @@ impl gpui::Render for Tooltip {
                 )
             })
     }
+}
+
+/// A plain tooltip builder for `.tooltip(...)`, for labels that may be cut off (a tree row's
+/// full path) or icons that need a name.
+pub(crate) fn text_tooltip(
+    text: impl Into<SharedString>,
+) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyView + 'static {
+    let text = text.into();
+    move |_, cx| cx.new(|_| Tooltip::new(text.clone())).into()
+}
+
+/// The "i" that replaces a paragraph of explanation: a small info glyph beside a heading or a
+/// control, with the explanation in its tooltip. `id` only needs to be unique among siblings.
+pub(crate) fn info_tip(id: impl Into<SharedString>, text: impl Into<SharedString>) -> AnyElement {
+    let id = id.into();
+    let selector = format!("info:{id}");
+    let text = text.into();
+    div()
+        .id(SharedString::from(format!("info:{id}")))
+        .debug_selector(move || selector.clone())
+        .flex_shrink_0()
+        .size(px(18.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .opacity(0.8)
+        .hover(|style| style.opacity(1.0).bg(theme::surface_hover()))
+        .child(icon(Icon::Info, px(14.0), theme::text_subtle()))
+        .tooltip(move |_, cx| cx.new(|_| Tooltip::new(text.clone())).into())
+        .into_any_element()
 }
 
 /// Icon-only control with the same focus/keyboard/disabled discipline as `btn`. `selected`
@@ -366,7 +684,7 @@ pub(crate) fn icon_button(
         .tooltip(move |_, cx| cx.new(|_| tooltip.clone()).into())
         .when(enabled, |b| {
             b.cursor_pointer()
-                .hover(|s| s.bg(theme::surface_raised()))
+                .hover(|s| s.bg(theme::surface_raised()).text_color(theme::text()))
                 .on_key_down(
                     cx.listener(move |model, event: &gpui::KeyDownEvent, window, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
@@ -381,13 +699,11 @@ pub(crate) fn icon_button(
         })
         .child(icon(glyph, ICON_SIZE, ink))
         .when_some(badge_count.filter(|count| *count > 0), |button, count| {
-            button.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .child(badge(count, theme::accent(), theme::canvas())),
-            )
+            button.child(div().absolute().top_0().right_0().child(badge(
+                count,
+                theme::accent(),
+                theme::canvas(),
+            )))
         })
         .into_any_element()
 }
@@ -478,10 +794,12 @@ pub(crate) fn pipeline_stepper(
                         stage_label(stage).to_lowercase()
                     ));
                     let stage_selector = stage_id.clone();
-                    let (fill, ink) = if current {
+                    // Done is green everywhere: a finished stage, and the last stage of a
+                    // pulsation that reached Done.
+                    let (fill, ink) = if complete {
+                        (theme::success_soft(), theme::success())
+                    } else if current {
                         (current_fill, theme::canvas())
-                    } else if complete {
-                        (theme::accent_soft(), theme::accent())
                     } else {
                         (theme::surface_raised(), theme::text_muted())
                     };
@@ -523,7 +841,7 @@ pub(crate) fn pipeline_stepper(
                         );
                     let connector = (index + 1 < PIPELINE_STAGES.len()).then(|| {
                         let line = div().flex_shrink_0().bg(if complete {
-                            theme::accent()
+                            theme::success()
                         } else {
                             theme::border()
                         });
@@ -544,6 +862,17 @@ pub(crate) fn pipeline_stepper(
 mod tests {
     use super::*;
     use gpui::{Entity, Render, TestAppContext, Window};
+
+    #[test]
+    fn display_path_drops_the_extended_length_prefix() {
+        assert_eq!(display_path(r"\\?\C:\Dev\app"), r"C:\Dev\app");
+        assert_eq!(
+            display_path(r"\\?\UNC\server\share\app"),
+            r"\\server\share\app"
+        );
+        assert_eq!(display_path(r"C:\Dev\app"), r"C:\Dev\app");
+        assert_eq!(display_path("/home/dev/app"), "/home/dev/app");
+    }
 
     struct WidgetsHarness(Entity<AppModel>);
 
@@ -704,6 +1033,20 @@ mod tests {
         });
         let tooltip = visual.debug_bounds("tooltip").unwrap();
         assert!(tooltip.size.width > px(0.0) && tooltip.size.height > px(0.0));
+        // A paragraph wraps at the tooltip's reading width instead of running off the window.
+        let (_, visual) = cx.add_window_view(|_, cx| {
+            TooltipHarness(cx.new(|_| {
+                Tooltip::new(
+                    "Only files this pulsation created and never edited since are removed. Kept files stay in the base review; adopting the base remains an explicit step.",
+                )
+            }))
+        });
+        let paragraph = visual.debug_bounds("tooltip").unwrap();
+        assert!(paragraph.size.width <= px(320.0), "{paragraph:?}");
+        assert!(
+            paragraph.size.height > tooltip.size.height * 1.5,
+            "{paragraph:?}"
+        );
 
         let (_, visual) = cx.add_window_view(|_, _| StepperHarness);
         let horizontal = visual.debug_bounds("stepper-h").unwrap();

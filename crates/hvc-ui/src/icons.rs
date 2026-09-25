@@ -63,11 +63,55 @@ pub(crate) enum Icon {
     Clock,
     /// Embedding model pull.
     Download,
+    /// Select triggers; expanded disclosure groups.
+    ChevronDown,
+    /// Collapsed disclosure groups.
+    ChevronRight,
+    /// A file row in the Workspace and Vault trees.
+    FileText,
+    /// A directory row in the Workspace and Vault trees.
+    Folder,
+    /// Save a form or document.
+    Save,
+    /// Send a message or prompt.
+    Send,
+    /// Stop a running process.
+    Square,
+    /// Delete.
+    Trash,
+    /// Copy to the clipboard.
+    Copy,
+    /// Zoom out.
+    Minus,
+    /// Fit the graph to its panel.
+    Maximize,
+    /// Search settings.
+    Search,
+    /// Keyboard shortcuts page.
+    Keyboard,
+    /// About page.
+    Info,
+    /// Labs (experimental settings).
+    FlaskConical,
+    /// LLM provider connections.
+    Plug,
+    /// LLM routes.
+    Route,
+    /// Second Brain navigation.
+    Brain,
+    /// Token usage.
+    ChartColumn,
+    /// General settings.
+    SlidersHorizontal,
+    /// Stage composition.
+    Workflow,
+    /// Back to a list from its detail.
+    ChevronLeft,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 30] = [
+    pub(crate) const ALL: [Self; 52] = [
         Self::House,
         Self::Plus,
         Self::Hammer,
@@ -98,6 +142,28 @@ impl Icon {
         Self::Zap,
         Self::Clock,
         Self::Download,
+        Self::ChevronDown,
+        Self::ChevronRight,
+        Self::FileText,
+        Self::Folder,
+        Self::Save,
+        Self::Send,
+        Self::Square,
+        Self::Trash,
+        Self::Copy,
+        Self::Minus,
+        Self::Maximize,
+        Self::Search,
+        Self::Keyboard,
+        Self::Info,
+        Self::FlaskConical,
+        Self::Plug,
+        Self::Route,
+        Self::Brain,
+        Self::ChartColumn,
+        Self::SlidersHorizontal,
+        Self::Workflow,
+        Self::ChevronLeft,
     ];
 
     /// Asset path served by `HvcAssets`; `icons/<lucide-name>.svg`.
@@ -133,6 +199,28 @@ impl Icon {
             Self::Zap => "icons/zap.svg",
             Self::Clock => "icons/clock.svg",
             Self::Download => "icons/download.svg",
+            Self::ChevronDown => "icons/chevron-down.svg",
+            Self::ChevronRight => "icons/chevron-right.svg",
+            Self::FileText => "icons/file-text.svg",
+            Self::Folder => "icons/folder.svg",
+            Self::ChevronLeft => "icons/chevron-left.svg",
+            Self::Workflow => "icons/workflow.svg",
+            Self::SlidersHorizontal => "icons/sliders-horizontal.svg",
+            Self::ChartColumn => "icons/chart-column.svg",
+            Self::Brain => "icons/brain.svg",
+            Self::Route => "icons/route.svg",
+            Self::Plug => "icons/plug.svg",
+            Self::FlaskConical => "icons/flask-conical.svg",
+            Self::Info => "icons/info.svg",
+            Self::Keyboard => "icons/keyboard.svg",
+            Self::Search => "icons/search.svg",
+            Self::Maximize => "icons/maximize.svg",
+            Self::Minus => "icons/minus.svg",
+            Self::Copy => "icons/copy.svg",
+            Self::Trash => "icons/trash-2.svg",
+            Self::Square => "icons/square.svg",
+            Self::Send => "icons/send.svg",
+            Self::Save => "icons/save.svg",
         }
     }
 }
@@ -147,9 +235,16 @@ mod tests {
         assert_eq!(paths.len(), Icon::ALL.len());
         paths.sort_unstable();
         paths.dedup();
-        assert_eq!(paths.len(), Icon::ALL.len(), "two Icon variants share a path");
+        assert_eq!(
+            paths.len(),
+            Icon::ALL.len(),
+            "two Icon variants share a path"
+        );
         for path in paths {
-            assert!(path.starts_with("icons/") && path.ends_with(".svg"), "{path}");
+            assert!(
+                path.starts_with("icons/") && path.ends_with(".svg"),
+                "{path}"
+            );
         }
     }
 }

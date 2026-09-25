@@ -12,15 +12,15 @@ use hvc_core::orchestration::IndexingEvent;
 use crate::agents_view::agents_panel;
 use crate::app_model::{AppModel, AppTab, AppView, TabBadges};
 use crate::chat_view::chat_panel;
+use crate::flow::FlowTarget;
 use crate::hitl::register_hitl_keybindings;
 use crate::icons::Icon;
 use crate::logs_view::logs_panel;
 use crate::native_editor::register_editor_keybindings;
-use crate::pipeline_status::PipelineStatus;
 use crate::pulsations_view::pulsations_panel;
+use crate::settings::SettingsPage;
 #[cfg(test)]
 use crate::session::HeaderNoticeKind;
-use crate::settings_view::settings_panel;
 use crate::sizing::{HEADER_HEIGHT, NAV_RAIL_WIDTH, STATUS_BAR_HEIGHT};
 use crate::text_input::register_text_input_keybindings;
 use crate::theme;
@@ -117,6 +117,7 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
         )
         .context("GPUI failed to create main window")?;
     let _ = handle.update(cx, |_model, window, _cx| {
+        crate::title_bar::paint(window);
         window.activate_window();
     });
     cx.activate(true);
@@ -195,7 +196,7 @@ impl Render for AppModel {
                 model.select_view(AppView::Workspace, cx);
             }))
             .on_action(cx.listener(|model, _: &SelectSettingsView, _, cx| {
-                model.select_view(AppView::Settings, cx);
+                model.toggle_settings(cx);
             }))
             .on_action(cx.listener(|model, _: &PreviousSection, _, cx| {
                 model.cycle_current_section(-1, cx);
@@ -204,6 +205,10 @@ impl Render for AppModel {
                 model.cycle_current_section(1, cx);
             }))
             .on_action(cx.listener(|model, _: &RunPrimaryFlowStep, window, cx| {
+                // The suggested step can approve a review; never run it from behind Settings.
+                if model.settings_modal.open {
+                    return;
+                }
                 if let Some(step) = crate::flow::next_steps(model, cx).into_iter().next() {
                     model.run_next_step(step.target, window, cx);
                 }
@@ -211,25 +216,43 @@ impl Render for AppModel {
             .on_action(cx.listener(|model, _: &ToggleContextRail, _, cx| {
                 model.toggle_context_rail(cx);
             }))
-            .child(header(self, unread, cx))
+            .child(header(self, unread, window, cx))
             .child(
                 div()
                     .id("shell-body")
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .child(nav_rail(active, badges, cx))
+                    .child(nav_rail(active, badges, self.settings_modal.open, cx))
                     .child(
+                        // The one framed surface: the centre view sits in a raised container
+                        // on the canvas; the rails, header and footer around it are frameless.
                         div()
                             .id("shell-center")
                             .debug_selector(|| "shell-center".into())
-                            .relative()
                             .flex()
                             .flex_1()
                             .min_w_0()
                             .min_h_0()
-                            .child(content_panel(self, active, window, cx))
-                            .child(crate::resolution_view::chip_stack(self, cx)),
+                            .pb_2()
+                            .when(active == AppView::Home, |center| center.pr_2())
+                            .child(
+                                div()
+                                    .id("shell-frame")
+                                    .debug_selector(|| "shell-frame".into())
+                                    .relative()
+                                    .flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .min_h_0()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(theme::border())
+                                    .bg(theme::surface())
+                                    .overflow_hidden()
+                                    .child(content_panel(self, active, window, cx))
+                                    .child(crate::resolution_view::chip_stack(self, cx)),
+                            ),
                     )
                     .when_some(
                         crate::context_rail::context_rail(self, window, cx),
@@ -247,13 +270,19 @@ impl Render for AppModel {
             .when(self.resolution.read(cx).expanded.is_some(), |panel| {
                 panel.child(crate::resolution_view::expanded_conversation(self, cx))
             })
+            .children(self.settings_modal_overlay(window, cx))
     }
 }
 
 /// The informational header: brand and project on the left, the active pulsation's position in
 /// the pipeline in the centre (a readout, not a control — the rail and Home carry the jumps), and
 /// the system-level controls on the right.
-fn header(model: &AppModel, unread: usize, cx: &mut Context<AppModel>) -> impl IntoElement {
+fn header(
+    model: &AppModel,
+    unread: usize,
+    window: &Window,
+    cx: &mut Context<AppModel>,
+) -> impl IntoElement {
     let project = model
         .workspace
         .read(cx)
@@ -273,9 +302,7 @@ fn header(model: &AppModel, unread: usize, cx: &mut Context<AppModel>) -> impl I
         .items_center()
         .gap_3()
         .px_3()
-        .border_b_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
+        .bg(theme::canvas())
         .child(
             div()
                 .flex_1()
@@ -313,14 +340,17 @@ fn header(model: &AppModel, unread: usize, cx: &mut Context<AppModel>) -> impl I
                     )
                 }),
         )
+        // The readout takes its content width (up to 60% of the header) and the two flexible
+        // sides share the rest equally, so it stays centred without being squeezed into a third.
         .child(
             div()
-                .flex_1()
+                .flex_initial()
                 .min_w_0()
+                .max_w(gpui::relative(0.6))
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(header_context(model, cx)),
+                .child(header_context(model, window, cx)),
         )
         .child(
             div()
@@ -344,36 +374,26 @@ fn header(model: &AppModel, unread: usize, cx: &mut Context<AppModel>) -> impl I
         )
 }
 
-/// Centre readout: `feature · stage · agent · state` of the active pulsation. Rendered in every
-/// view so the developer never has to open Pulsations to know where the pipeline is.
-fn header_context(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
-    let status = {
+/// Centre readout: who is executing right now — the stage run or background job holding a
+/// runtime slot, with its elapsed time — and, when nothing runs, the selected pulsation's settled
+/// state. Rendered in every view so the developer never has to open Pulsations to know it.
+fn header_context(model: &AppModel, window: &Window, cx: &mut Context<AppModel>) -> AnyElement {
+    let now = {
         let pulsations = model.pulsations.read(cx);
         let agents = model.agents.read(cx);
-        pulsations.active().map(|active| {
-            (
-                active.feature_name.clone(),
-                PipelineStatus::derive(active, agents.snapshot.as_ref()),
-            )
-        })
+        crate::pipeline_status::NowRunning::derive(
+            pulsations,
+            agents.snapshot.as_ref(),
+            chrono::Local::now(),
+        )
     };
-    let (dot, ink, text) = match status {
-        Some((feature, status)) => {
-            let feature = feature.trim();
-            let summary = status.summary();
-            let text = if feature.is_empty() {
-                summary
-            } else {
-                format!("{feature} · {summary}")
-            };
-            (status.tone.color(), theme::text(), text)
-        }
-        None => (
-            theme::text_muted(),
-            theme::text_muted(),
-            "No active pulsation".to_string(),
-        ),
-    };
+    let tooltip = SharedString::from(match &now.also {
+        Some(also) => format!("{} — also running: {also}", now.text),
+        None => now.text.clone(),
+    });
+    // Below the default window width the second job collapses to "+1" (named in the tooltip)
+    // so the job that owns the pipeline keeps the room.
+    let compact_also = window.viewport_size().width < px(1280.0);
     div()
         .id("header-context")
         .debug_selector(|| "header-context".into())
@@ -384,16 +404,52 @@ fn header_context(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         .px_3()
         .py_1()
         .rounded_full()
-        .bg(theme::surface_raised())
-        .child(crate::widgets::status_dot(dot))
+        .border_1()
+        .border_color(if now.busy {
+            theme::running_soft()
+        } else {
+            theme::border()
+        })
+        .bg(if now.busy {
+            theme::running_soft()
+        } else {
+            theme::surface()
+        })
+        .tooltip(move |_, cx| {
+            cx.new(|_| crate::widgets::Tooltip::new(tooltip.clone()))
+                .into()
+        })
+        .child(crate::widgets::status_dot(now.dot))
         .child(
             div()
                 .min_w_0()
                 .text_xs()
-                .text_color(ink)
+                .text_color(if now.busy {
+                    theme::text()
+                } else {
+                    theme::text_muted()
+                })
                 .text_ellipsis()
-                .child(text),
+                .child(now.text),
         )
+        .when_some(now.also, |pill, also| {
+            pill.child(
+                div()
+                    .id("header-context-also")
+                    .debug_selector(|| "header-context-also".into())
+                    .flex_shrink_0()
+                    .px_2()
+                    .rounded_full()
+                    .bg(theme::surface_raised())
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(if compact_also {
+                        "+1".to_string()
+                    } else {
+                        format!("+ {also}")
+                    }),
+            )
+        })
         .into_any_element()
 }
 
@@ -460,7 +516,12 @@ fn header_health(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
 
 /// The icon-only nav rail: Home and New work on top, the grouped workbench views, and Settings
 /// pinned to the bottom. Each item's tooltip carries its `ctrl-N` shortcut.
-fn nav_rail(active: AppView, badges: TabBadges, cx: &mut Context<AppModel>) -> impl IntoElement {
+fn nav_rail(
+    active: AppView,
+    badges: TabBadges,
+    settings_open: bool,
+    cx: &mut Context<AppModel>,
+) -> impl IntoElement {
     let mut rail = div()
         .id("rail")
         .debug_selector(|| "rail".into())
@@ -471,9 +532,7 @@ fn nav_rail(active: AppView, badges: TabBadges, cx: &mut Context<AppModel>) -> i
         .items_center()
         .gap_1()
         .py_2()
-        .border_r_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
+        .bg(theme::canvas())
         .child(rail_item(AppView::Home, active, None, cx))
         .child(crate::widgets::icon_button(
             "new-work",
@@ -502,11 +561,11 @@ fn nav_rail(active: AppView, badges: TabBadges, cx: &mut Context<AppModel>) -> i
             "rail-settings",
             Icon::Settings,
             crate::widgets::Tooltip::new("Settings").with_shortcut("ctrl-,"),
-            active == AppView::Settings,
+            settings_open,
             None,
             true,
             cx,
-            |model, _, cx| model.select_view(AppView::Settings, cx),
+            |model, _, cx| model.open_settings(None, cx),
         ))
 }
 
@@ -539,19 +598,19 @@ fn content_panel(
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     match active {
-        AppView::Home => crate::home_view::home_panel(model, window, cx),
+        // Settings is a modal, never the active view; `select_view` guarantees it.
+        AppView::Home | AppView::Settings => crate::home_view::home_panel(model, window, cx),
         AppView::Forge => crate::forge_view::forge_panel(model, cx),
         AppView::Workspace => workspace_content_panel(model, cx).into_any_element(),
         AppView::Pulsations => pulsations_panel(model, cx),
         AppView::Vault => vault_panel(model, cx),
         AppView::Chat => chat_panel(model, cx),
         AppView::Agents => agents_panel(model, cx),
-        AppView::Settings => settings_panel(model, cx),
         AppView::Logs => logs_panel(model, cx),
     }
 }
 
-/// A status-bar segment that jumps to `view` on click. Each segment is independently clickable
+/// A status-bar segment that jumps to `target` on click. Each segment is independently clickable
 /// (see the UI flow plan Part 4.4) — the status bar is another place the next relevant view is one
 /// click away, not just a passive readout.
 fn status_segment(
@@ -559,7 +618,7 @@ fn status_segment(
     color: gpui::Rgba,
     glyph: Option<Icon>,
     content: impl IntoElement,
-    view: AppView,
+    target: FlowTarget,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     div()
@@ -571,7 +630,11 @@ fn status_segment(
         .cursor_pointer()
         .text_color(color)
         .hover(|style| style.opacity(theme::HOVER_OPACITY))
-        .on_click(cx.listener(move |model, _, _, cx| model.select_view(view, cx)))
+        .on_click(
+            cx.listener(move |model, _, window, cx| {
+                model.run_next_step(target.clone(), window, cx)
+            }),
+        )
         .when_some(glyph, |segment, glyph| {
             segment.child(crate::widgets::icon(glyph, px(12.0), color))
         })
@@ -612,7 +675,6 @@ fn status_bar(model: &AppModel, badges: TabBadges, cx: &mut Context<AppModel>) -
     let event_count = model.event_count();
     let needs_resync = model.needs_resync();
     let hitl_count = badges.engine_awaiting_hitl;
-    let active_jobs = badges.engine_running_jobs;
     // `Idle` means the backlog is caught up — nothing to show, fall back to "System ready"
     // below instead of a chip that would otherwise linger for the rest of the session.
     let indexing = model
@@ -650,9 +712,7 @@ fn status_bar(model: &AppModel, badges: TabBadges, cx: &mut Context<AppModel>) -
         .justify_between()
         .gap_3()
         .px_3()
-        .border_t_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
+        .bg(theme::canvas())
         .text_xs()
         .child(
             div()
@@ -688,17 +748,7 @@ fn status_bar(model: &AppModel, badges: TabBadges, cx: &mut Context<AppModel>) -
                         theme::warning(),
                         Some(Icon::TriangleAlert),
                         format!("{hitl_count} pending review(s)"),
-                        AppView::Pulsations,
-                        cx,
-                    ))
-                })
-                .when(active_jobs > 0, |seg| {
-                    seg.child(status_segment(
-                        "status-jobs",
-                        theme::accent(),
-                        Some(Icon::Activity),
-                        format!("{active_jobs} job(s) running"),
-                        AppView::Pulsations,
+                        FlowTarget::View(AppView::Pulsations),
                         cx,
                     ))
                 })
@@ -726,7 +776,7 @@ fn status_bar(model: &AppModel, badges: TabBadges, cx: &mut Context<AppModel>) -
                         color,
                         Some(glyph),
                         label,
-                        AppView::Settings,
+                        FlowTarget::Settings(SettingsPage::Embeddings),
                         cx,
                     ))
                 })
@@ -736,14 +786,15 @@ fn status_bar(model: &AppModel, badges: TabBadges, cx: &mut Context<AppModel>) -
                         theme::accent(),
                         Some(Icon::Download),
                         label,
-                        AppView::Settings,
+                        FlowTarget::Settings(SettingsPage::Embeddings),
                         cx,
                     ))
                 })
-                .when(
-                    hitl_count == 0 && active_jobs == 0 && indexing.is_none(),
-                    |seg| seg.child(div().text_color(theme::text_muted()).child("System ready")),
-                ),
+                // What is running lives in the header's centre readout; the footer only says
+                // when nothing else needs saying.
+                .when(hitl_count == 0 && indexing.is_none(), |seg| {
+                    seg.child(div().text_color(theme::text_subtle()).child("System ready"))
+                }),
         )
         .child(
             div()
@@ -762,7 +813,7 @@ fn status_bar(model: &AppModel, badges: TabBadges, cx: &mut Context<AppModel>) -
                     theme::text_muted(),
                     None,
                     format!("{event_count} event(s)"),
-                    AppView::Logs,
+                    FlowTarget::View(AppView::Logs),
                     cx,
                 ))
                 .child(status_readout(

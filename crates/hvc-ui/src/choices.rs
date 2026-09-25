@@ -270,7 +270,10 @@ impl AppModel {
         let policy = &config.dynamic_context_policy;
         let prep = &snapshot.preparation;
         match field {
-            "chat-cycle-connection" | "chat-connections" | "api-cycle-connection" => snapshot
+            "chat-cycle-connection"
+            | "chat-connections"
+            | "api-cycle-connection"
+            | "settings-route-target" => snapshot
                 .connections
                 .iter()
                 .map(|c| {
@@ -315,6 +318,23 @@ impl AppModel {
                     )
                 })
                 .collect(),
+            "settings-api-model" => settings
+                .api_model_catalog()
+                .map(|catalog| {
+                    catalog
+                        .models
+                        .iter()
+                        .map(|model| {
+                            Choice::new(
+                                &model.model_id,
+                                &model.display_name,
+                                self.settings_connection_model_input.read(cx).value()
+                                    == model.model_id,
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             "settings-route-strategy" => ["priority", "lkgp", "score"]
                 .into_iter()
                 .map(|v| Choice::new(v, v, settings.route_strategy.as_ref() == v))
@@ -603,8 +623,11 @@ impl AppModel {
         }
         match field {
             "api-cycle-route" => self.select_settings_route(value.into(), cx),
-            "api-cycle-connection" => self.select_settings_connection(value.into(), cx),
+            "api-cycle-connection" | "settings-route-target" => {
+                self.select_settings_connection(value.into(), cx)
+            }
             "api-provider" | "settings-provider" => self.select_settings_provider(value.into(), cx),
+            "settings-api-model" => self.select_settings_api_model(value.into(), cx),
             "settings-route-strategy" => self.set_route_strategy(value.into(), cx),
             "settings-routing-mode" => self.set_routing_mode(
                 match value {
@@ -818,6 +841,12 @@ mod tests {
             &self,
             request: ResolveCliFallbackRequest,
         ) -> AgentsFuture<ResolveCliFallbackResponse> {
+            panic!("Unexpected backend operation")
+        }
+        fn validate_fallback(
+            &self,
+            request: hvc_core::persistence_service::ValidateCliFallbackRequest,
+        ) -> AgentsFuture<hvc_core::persistence_service::ValidateCliFallbackResponse> {
             panic!("Unexpected backend operation")
         }
         fn update_config(

@@ -73,9 +73,7 @@ pub(crate) fn context_rail(
         .min_h_0()
         .flex()
         .flex_col()
-        .border_l_1()
-        .border_color(theme::border())
-        .bg(theme::surface());
+        .bg(theme::canvas());
     Some(if collapsed {
         rail.items_center()
             .gap_1()
@@ -97,7 +95,7 @@ pub(crate) fn context_rail(
                 .child(
                     div()
                         .text_xs()
-                        .text_color(theme::text_muted())
+                        .text_color(theme::text_subtle())
                         .child("CONTEXT"),
                 )
                 .child(toggle),
@@ -123,23 +121,23 @@ pub(crate) fn context_rail(
     })
 }
 
+/// A frameless rail section: the eyebrow and spacing do the grouping, so the rail reads as part
+/// of the canvas rather than a stack of boxes. Clickable sections light up on hover instead.
 fn card(id: &'static str, eyebrow: &'static str) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .debug_selector(move || id.into())
         .flex_shrink_0()
         .p_3()
-        .rounded_md()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::canvas())
+        .rounded_lg()
         .flex()
         .flex_col()
         .gap_2()
         .child(
             div()
                 .text_xs()
-                .text_color(theme::text_muted())
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::text_subtle())
                 .child(eyebrow),
         )
 }
@@ -159,7 +157,7 @@ fn active_status(model: &AppModel, cx: &App) -> Option<(SharedString, PipelineSt
 fn pipeline_card(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let card = card("rail-card-pipeline", "PIPELINE")
         .cursor_pointer()
-        .hover(|style| style.border_color(theme::text_muted()))
+        .hover(|style| style.bg(theme::surface()))
         .on_click(cx.listener(|model, _, _, cx| model.select_view(AppView::Pulsations, cx)));
     match active_status(model, cx) {
         Some((feature, status)) => card
@@ -245,7 +243,7 @@ pub(crate) fn waiting_rows(
             .py_1()
             .rounded_md()
             .cursor_pointer()
-            .hover(|style| style.bg(theme::surface_raised()))
+            .hover(|style| style.bg(theme::surface_hover()))
             .on_click(cx.listener(move |model, _, window, cx| match &target {
                 WaitingTarget::Flow(target) => model.run_next_step(target.clone(), window, cx),
                 WaitingTarget::Chip(id) => model.toggle_resolution_chip(id.clone(), cx),
@@ -336,7 +334,7 @@ fn actions_card(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         let id = SharedString::from(format!("rail-step-{}", step.id));
         let selector = id.clone();
         let ink = if primary {
-            theme::canvas()
+            theme::accent()
         } else {
             theme::text()
         };
@@ -347,12 +345,18 @@ fn actions_card(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             .items_center()
             .gap_2()
             .px_2()
-            .py_1()
+            .py(px(6.0))
             .rounded_md()
             .cursor_pointer()
-            .when(primary, |row| row.bg(theme::accent()))
-            .when(!primary, |row| row.hover(|style| style.bg(theme::surface_raised())))
-            .when(primary, |row| row.hover(|style| style.opacity(theme::HOVER_OPACITY)))
+            .when(primary, |row| {
+                row.bg(theme::accent_soft())
+                    .border_1()
+                    .border_color(theme::accent_soft())
+                    .hover(|style| style.border_color(theme::accent()))
+            })
+            .when(!primary, |row| {
+                row.hover(|style| style.bg(theme::surface_hover()))
+            })
             .text_color(ink)
             .on_click(cx.listener(move |model, _, window, cx| {
                 model.run_next_step(target.clone(), window, cx);
@@ -475,8 +479,11 @@ fn health_card(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let lines = health_lines(model, cx);
     card("rail-card-health", "RUNTIME")
         .cursor_pointer()
-        .hover(|style| style.border_color(theme::text_muted()))
-        .on_click(cx.listener(|model, _, _, cx| model.select_view(AppView::Settings, cx)))
+        .hover(|style| style.bg(theme::surface()))
+        .on_click(cx.listener(|model, _, _, cx| {
+            let page = model.settings_health_page(cx);
+            model.open_settings(Some(page), cx);
+        }))
         .children(lines.into_iter().map(|(glyph, color, text)| {
             div()
                 .min_w_0()
@@ -602,7 +609,10 @@ fn strip(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                     None,
                     true,
                     cx,
-                    |model, _, cx| model.select_view(AppView::Settings, cx),
+                    |model, _, cx| {
+                        let page = model.settings_health_page(cx);
+                        model.open_settings(Some(page), cx);
+                    },
                 ))
                 .when(runtime_attention, |slot| {
                     slot.child(

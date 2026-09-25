@@ -1,4 +1,4 @@
-use crate::{AppModel, AppView, select_menu::Choice, settings::SettingsSection, theme};
+use crate::{AppModel, select_menu::Choice, settings::SettingsPage, theme};
 use gpui::{AnyElement, App, Context, IntoElement, SharedString, div, prelude::*, px};
 use hvc_core::usage::{UsagePeriod, UsageQuery, UsageSummary, UsageTotals, UsageTransport};
 use std::time::Duration;
@@ -230,9 +230,7 @@ impl AppModel {
 
     pub(crate) fn schedule_usage_refresh(&mut self, cx: &mut Context<Self>) {
         self.schedule_pulsation_usage_refresh(cx);
-        if self.active_view() != AppView::Settings
-            || self.settings.read(cx).settings_section != SettingsSection::Usage
-        {
+        if !self.settings_page_visible(SettingsPage::Usage, cx) {
             return;
         }
         if self.settings.read(cx).usage.refresh_pending {
@@ -247,9 +245,7 @@ impl AppModel {
                 model
                     .settings
                     .update(cx, |settings, _| settings.usage.refresh_pending = false);
-                if model.active_view() == AppView::Settings
-                    && model.settings.read(cx).settings_section == SettingsSection::Usage
-                {
+                if model.settings_page_visible(SettingsPage::Usage, cx) {
                     model.refresh_usage(cx);
                 }
             });
@@ -368,9 +364,7 @@ fn card(
         .min_w_0()
         .p_4()
         .rounded_lg()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
+        .bg(theme::surface_raised())
         .child(div().text_xs().text_color(theme::text_muted()).child(label))
         .child(
             div()
@@ -422,15 +416,9 @@ pub(crate) fn usage_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         UsagePeriod::Last7Days => "Last 7 days",
         UsagePeriod::Last30Days => "Last 30 days",
     };
-    div().id("usage-panel").debug_selector(||"usage-panel".into()).flex_1().min_h_0().min_w_0()
-        .overflow_y_scroll().p_4().flex().flex_col().gap_4()
-        .child(div().flex().justify_between().items_center()
-            .child(div().child(div().text_xl().font_weight(gpui::FontWeight::SEMIBOLD).child("Token usage"))
-                .child(div().mt_1().text_sm().text_color(theme::text_muted()).child("Generation usage recorded by HVC, retained when conversations are deleted.")))
-            .child(div().id("usage-refresh").debug_selector(||"usage-refresh".into()).px_3().py_2().rounded_md()
-                .bg(theme::accent_soft()).text_color(theme::accent()).cursor_pointer()
-                .on_click(cx.listener(|model,_,_,cx|model.refresh_usage(cx)))
-                .child(if loading {"Refreshing…"}else{"Refresh"})))
+    // The Settings modal owns the title, the Refresh action and the scrolling.
+    div().id("usage-panel").debug_selector(||"usage-panel".into()).w_full().min_w_0()
+        .flex().flex_col().gap_4()
         .child(div().flex().gap_3()
             .child(div().flex_1().min_w_0().child(crate::select_menu::control("usage-project","PROJECT",project,true,cx)))
             .child(div().w(px(180.0)).child(crate::select_menu::control("usage-transport","TRANSPORT",transport,true,cx)))
@@ -442,9 +430,14 @@ pub(crate) fn usage_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                 .child(card("usage-total","TOTAL TOKENS",summary.totals.total_tokens,&summary.totals))
                 .child(card("usage-input","INPUT TOKENS",summary.totals.input_tokens,&summary.totals))
                 .child(card("usage-output","OUTPUT TOKENS",summary.totals.output_tokens,&summary.totals)))
-            .child(div().text_xs().text_color(theme::text_muted()).child(format!(
-                "{} accounting units · {} partial · {} unavailable. Cache is included in input; reasoning is included in output when reported. Historical records may be incomplete. CLI collection begins with this feature.",
-                summary.totals.records,summary.totals.partial_records,summary.totals.unavailable_records)))
+            .child(div().flex().items_center().gap_2().text_xs().text_color(theme::text_muted())
+                .child(format!(
+                    "{} accounting units · {} partial · {} unavailable",
+                    summary.totals.records,summary.totals.partial_records,summary.totals.unavailable_records))
+                .child(crate::widgets::info_tip(
+                    "usage-accounting",
+                    "Cache is included in input; reasoning is included in output when reported. Historical records may be incomplete. CLI collection begins with this feature.",
+                )))
             .child(usage_chart(&summary,period))
             .child(model_table(&summary))
             .when(!summary.agent_targets.is_empty(),|panel|panel
@@ -471,23 +464,15 @@ fn usage_chart(summary: &UsageSummary, period: UsagePeriod) -> AnyElement {
         .border_1()
         .border_color(theme::border())
         .flex_shrink_0()
-        .child(
-            div()
-                .text_sm()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(if period == UsagePeriod::AllTime {
-                    "Monthly usage · UTC"
-                } else {
-                    "Daily usage · UTC"
-                }),
-        )
-        .child(
-            div()
-                .mt_1()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child("Gray bars indicate partial coverage. Empty dates have no recorded calls."),
-        )
+        .child(title_info(
+            if period == UsagePeriod::AllTime {
+                "Monthly usage · UTC"
+            } else {
+                "Daily usage · UTC"
+            },
+            "usage-chart",
+            "Gray bars indicate partial coverage. Empty dates have no recorded calls.",
+        ))
         .when(length == 0, |chart| {
             chart.child(
                 div()
@@ -688,13 +673,9 @@ fn executor_rows(executors: &[hvc_core::usage::ExecutorUsage], id: SharedString)
                 .border_1()
                 .border_color(theme::border())
                 .flex_shrink_0()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("Usage by specialty (composed stages)"),
-                )
-                .child(div().mt_1().text_xs().text_color(theme::text_muted()).child(
+                .child(title_info(
+                    "Usage by specialty (composed stages)",
+                    "usage-specialty",
                     "Attempts dispatched by the host coordinator, attributed per work unit. Included in the totals above, never added to them.",
                 ))
                 .child(
@@ -763,8 +744,9 @@ fn agent_target_rows(targets: &[hvc_core::usage::AgentTargetUsage]) -> AnyElemen
                 .bg(theme::surface())
                 .border_1()
                 .border_color(theme::border())
-                .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child("Usage by agent target"))
-                .child(div().mt_1().text_xs().text_color(theme::text_muted()).child(
+                .child(title_info(
+                    "Usage by agent target",
+                    "usage-agent-target",
                     "Canonical and FreeForm API calls are attributed to their persisted execution target. These rows are already included in the totals above.",
                 ))
                 .children(targets.iter().map(|entry| {
@@ -794,8 +776,7 @@ fn pulsation_table(
 ) -> AnyElement {
     div().id("usage-pulsation-table").debug_selector(|| "usage-pulsation-table".into())
         .p_4().rounded_lg().bg(theme::surface()).border_1().border_color(theme::border()).flex_shrink_0()
-        .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child("Tokens per pulsation"))
-        .child(div().mt_2().text_xs().text_color(theme::text_muted()).child("Reported usage within the selected filters. Expand a pulsation to view its models."))
+        .child(title_info("Tokens per pulsation", "usage-pulsations", "Reported usage within the selected filters. Expand a pulsation to view its models."))
         .when(summary.pulsations.is_empty(), |panel| panel.child(div().mt_3().text_sm().child("No pulsation usage recorded in this period.")))
         .children(summary.pulsations.iter().map(|pulse| {
             let id = pulse.pulsation_id.clone();
@@ -808,7 +789,23 @@ fn pulsation_table(
                         });
                         cx.notify();
                     }))
-                    .child(div().text_sm().child(format!("{} {}", if expanded { "▾" } else { "▸" }, pulse.name)))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_sm()
+                            .child(crate::widgets::icon(
+                                if expanded {
+                                    crate::icons::Icon::ChevronDown
+                                } else {
+                                    crate::icons::Icon::ChevronRight
+                                },
+                                px(12.0),
+                                theme::text_subtle(),
+                            ))
+                            .child(pulse.name.clone()),
+                    )
                     .child(div().text_xs().text_color(theme::text_muted()).child(pulse.pulsation_id.clone()))
                     .child(div().mt_1().text_sm().child(format!("Input: {} · Output: {} · Total: {}", count(pulse.totals.input_tokens), count(pulse.totals.output_tokens), count(pulse.totals.total_tokens))))
                     .child(div().text_xs().text_color(theme::text_muted()).child(coverage(&pulse.totals))))
@@ -839,12 +836,11 @@ pub(crate) fn pulsation_usage_panel(model: &AppModel, cx: &mut Context<AppModel>
                 .flex()
                 .justify_between()
                 .items_center()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("Token usage"),
-                )
+                .child(title_info(
+                    "Token usage",
+                    "pulsation-token-usage",
+                    "All-time usage for this pulsation, including retries and associated Learning calls.",
+                ))
                 .child(
                     div()
                         .id("pulsation-usage-refresh")
@@ -855,9 +851,6 @@ pub(crate) fn pulsation_usage_panel(model: &AppModel, cx: &mut Context<AppModel>
                         .child("Refresh"),
                 ),
         )
-        .child(div().text_xs().text_color(theme::text_muted()).child(
-            "All-time usage for this pulsation, including retries and associated Learning calls.",
-        ))
         .when_some(
             state.error.clone().filter(|_| matches_selection),
             |panel, error| panel.child(div().text_sm().text_color(theme::danger()).child(error)),
@@ -902,9 +895,25 @@ pub(crate) fn pulsation_usage_panel(model: &AppModel, cx: &mut Context<AppModel>
         .into_any_element()
 }
 
+/// A card title with its explanation in an "i" instead of a caption under it.
+fn title_info(title: impl Into<SharedString>, id: &'static str, info: &'static str) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .text_sm()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(title.into()),
+        )
+        .child(crate::widgets::info_tip(id, info))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AppView;
     #[test]
     fn usage_refreshes_retain_only_one_worker_and_one_pending_read() {
         let mut state = UsageState::default();
@@ -1045,9 +1054,8 @@ mod tests {
     fn usage_panel_mounts_without_a_provider_connection(cx: &mut gpui::TestAppContext) {
         let (model, visual) = cx.add_window_view(|_, cx| {
             let mut model = crate::layout_tests::fixture(cx);
-            model.select_view(AppView::Settings, cx);
+            model.open_settings(Some(SettingsPage::Usage), cx);
             model.settings.update(cx, |settings, _| {
-                settings.settings_section = SettingsSection::Usage;
                 settings.usage.summary = Some(UsageSummary::default());
                 settings.snapshot = None;
             });

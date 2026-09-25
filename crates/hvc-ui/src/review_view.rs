@@ -766,34 +766,25 @@ fn hitl_button(
     danger: bool,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .tab_index(0)
-        .bg(if danger {
-            theme::danger_soft()
-        } else {
-            theme::surface_raised()
-        })
-        .text_color(if danger {
-            theme::danger()
-        } else {
-            theme::text()
-        })
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.opacity(theme::HOVER_OPACITY))
-                .on_click(cx.listener(move |model, _, _, cx| {
-                    model.set_confirm_hitl_reject(false, cx);
-                    model.apply_hitl_decision(decision, cx);
-                }))
-        })
-        .when(!enabled, |button| button.opacity(0.45))
-        .child(label)
+    let variant = if danger {
+        crate::widgets::ButtonVariant::Danger
+    } else if decision == HitlDecision::Approve {
+        crate::widgets::ButtonVariant::Primary
+    } else {
+        crate::widgets::ButtonVariant::Secondary
+    };
+    crate::widgets::button_frame(
+        div().id(id).debug_selector(move || id.into()).tab_index(0),
+        variant,
+        enabled,
+    )
+    .when(enabled, |button| {
+        button.on_click(cx.listener(move |model, _, _, cx| {
+            model.set_confirm_hitl_reject(false, cx);
+            model.apply_hitl_decision(decision, cx);
+        }))
+    })
+    .child(label)
 }
 
 fn hitl_reject_button(
@@ -803,35 +794,26 @@ fn hitl_reject_button(
     confirming: bool,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .tab_index(0)
-        .bg(if confirming {
-            theme::danger()
-        } else {
-            theme::danger_soft()
-        })
-        .text_color(if confirming {
-            theme::canvas()
-        } else {
-            theme::danger()
-        })
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.opacity(theme::HOVER_OPACITY))
-                .on_click(cx.listener(move |model, _, _, cx| {
-                    if confirming {
-                        model.apply_hitl_decision(HitlDecision::Reject, cx);
-                    } else {
-                        model.set_confirm_hitl_reject(true, cx);
-                    }
-                }))
-        })
-        .when(!enabled, |button| button.opacity(0.45))
-        .child(label)
+    crate::widgets::button_frame(
+        div().id(id).debug_selector(move || id.into()).tab_index(0),
+        crate::widgets::ButtonVariant::Danger,
+        enabled,
+    )
+    // The armed second click is a solid danger fill: it must not look like the first.
+    .when(enabled && confirming, |button| {
+        button
+            .bg(theme::danger())
+            .border_color(theme::danger())
+            .text_color(theme::canvas())
+    })
+    .when(enabled, |button| {
+        button.on_click(cx.listener(move |model, _, _, cx| {
+            if confirming {
+                model.apply_hitl_decision(HitlDecision::Reject, cx);
+            } else {
+                model.set_confirm_hitl_reject(true, cx);
+            }
+        }))
+    })
+    .child(label)
 }

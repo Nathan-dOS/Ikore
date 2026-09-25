@@ -128,14 +128,25 @@ impl AppModel {
             ("Vault", self.vault.update(cx, |m, _| m.notice.take())),
             ("Forge", self.forge.notice.take()),
         ];
+        // The Settings modal shows its own outcome in a status line; its notices still reach the
+        // history, just without a toast over the modal.
+        let settings_open = self.settings_modal.open;
         for (source, message) in notices {
             if let Some(message) = message {
-                self.notifications.queue.push_from(
-                    source.into(),
-                    HeaderNoticeKind::Notice,
-                    message,
-                    None,
-                );
+                if settings_open && source == "Settings" {
+                    self.notifications.queue.push_quiet(
+                        source.into(),
+                        HeaderNoticeKind::Notice,
+                        message,
+                    );
+                } else {
+                    self.notifications.queue.push_from(
+                        source.into(),
+                        HeaderNoticeKind::Notice,
+                        message,
+                        None,
+                    );
+                }
             }
         }
         let errors = [
@@ -178,8 +189,14 @@ impl AppModel {
         for (source, error) in errors {
             if let Some(error) = error {
                 if self.notifications.errors.get(source) != Some(&error) {
+                    if settings_open && source == "Settings" {
+                        self.notifications.queue.push_quiet(
+                            source.into(),
+                            HeaderNoticeKind::Error,
+                            error.clone(),
+                        );
                     // Some command handlers also publish this error globally. Keep a single card.
-                    if !self.notifications.queue.has_pending_global_error(&error) {
+                    } else if !self.notifications.queue.has_pending_global_error(&error) {
                         self.notifications.queue.push_from(
                             source.into(),
                             HeaderNoticeKind::Error,
@@ -273,6 +290,7 @@ impl AppModel {
         );
         let blocked = self.active_dropdown.is_some()
             || self.forge.new_open
+            || self.settings_modal.open
             || self.agents.read(cx).active_model_picker.is_some();
         if self.notifications.history_open && !blocked {
             let focus = self

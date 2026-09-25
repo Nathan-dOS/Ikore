@@ -31,6 +31,10 @@ pub(crate) enum FlowTarget {
     PulsationSection(String, PulsationDetailSection),
     /// Apply a HITL decision on the pulsation currently open in Review.
     Hitl(HitlDecision),
+    /// Open Agents with the canonical agent whose CLI fallback is waiting for a decision.
+    AgentFallback(hvc_core::llm::AgentRole),
+    /// Open the Settings modal on a page (over the current view).
+    Settings(crate::settings::SettingsPage),
 }
 
 pub(crate) struct NextStep {
@@ -64,6 +68,14 @@ impl AppModel {
                 self.select_view(AppView::Pulsations, cx);
             }
             FlowTarget::Hitl(decision) => self.apply_hitl_decision(decision, cx),
+            FlowTarget::AgentFallback(role) => {
+                self.agents.update(cx, |agents, _| {
+                    agents.selected_agent =
+                        Some(crate::agents::AgentIdentifier::Canonical(role));
+                });
+                self.select_view(AppView::Agents, cx);
+            }
+            FlowTarget::Settings(page) => self.open_settings(Some(page), cx),
         }
     }
 }
@@ -137,6 +149,43 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
                     },
                 ]
             })
+        } else if let Some(fallback) = model
+            .agents
+            .read(cx)
+            .fallbacks
+            .iter()
+            .find(|fallback| {
+                pulsations
+                    .active()
+                    .is_none_or(|active| active.id == fallback.pulsation_id)
+            })
+        {
+            // A CLI fallback (updated CLI awaiting validation, or a transport failure) parks
+            // the pulsation until the developer decides in Agents.
+            Some(vec![
+                NextStep {
+                    id: "flow-cli-fallback",
+                    label: if fallback.error_code
+                        == hvc_core::persistence_service::CLI_VERSION_UNVALIDATED
+                    {
+                        "Validate updated CLI".into()
+                    } else if fallback.error_code
+                        == hvc_core::persistence_service::CLI_VALIDATION_FAILED
+                    {
+                        "Switch provider or abort".into()
+                    } else {
+                        "Decide CLI fallback".into()
+                    },
+                    icon: Icon::TriangleAlert,
+                    target: FlowTarget::AgentFallback(fallback.agent_role),
+                },
+                NextStep {
+                    id: "flow-open-logs-fallback",
+                    label: "Open logs".into(),
+                    icon: Icon::ScrollText,
+                    target: FlowTarget::View(AppView::Logs),
+                },
+            ])
         } else {
             active_pulsation_steps(pulsations)
         }
