@@ -230,6 +230,7 @@ impl AppModel {
 
     pub(crate) fn schedule_usage_refresh(&mut self, cx: &mut Context<Self>) {
         self.schedule_pulsation_usage_refresh(cx);
+        self.schedule_home_stats_refresh(cx);
         if !self.settings_page_visible(SettingsPage::Usage, cx) {
             return;
         }

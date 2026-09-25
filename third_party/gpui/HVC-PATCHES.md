@@ -50,11 +50,46 @@ Validation: `cargo test -p hvc-ui --lib` and a physical smoke on Windows 11
 1280×800 instead of a clipped name. See the 2026-09-24 "responsiveness and
 workspace/agents/vault/forge polish" report in the Cérebro.
 
+Follow-up (2026-09-25): with truncation now recomputed per width, the measure
+closure truncated the element's captured `runs` in place, and Taffy calls it
+several times per layout. A later, wider truncation then shaped text whose runs
+still ended where the earlier cut left them; when that end fell inside the
+ellipsis, DirectWrite panicked (`end byte index 73 is not a char boundary; it is
+inside '…'`, `src/platform/windows/direct_write.rs`). `LineWrapper` gains
+`truncate_for_layout`, which truncates a copy of the runs per measurement, and
+`src/elements/text.rs` uses it; a `debug_assert` checks that the runs cover the
+shaped text. Tests: `repeated_measurements_truncate_from_the_original_runs`
+(`line_wrapper.rs`) and, in `hvc-ui`,
+`truncating_a_label_never_leaves_its_runs_cut_for_another_width`; with the old
+in-place code the assertion failed in dozens of existing `hvc-ui` layout tests.
+
+## HVC-GPUI-005 — keyboard focus visibility and focus tooltips
+
+Files: `src/window.rs`, `src/elements/div.rs`
+
+Local addition (2026-09-25); no upstream backport provenance is claimed.
+
+`Window` records whether the current focus was reached with the keyboard:
+`focus_next` / `focus_prev` set `focus_visible`; `focus` (programmatic or by
+click), `blur` and any mouse press clear it; `Window::focus_visible()` reads it.
+Elements gain a `focus_visible(|style| ...)` refinement applied only while they
+are focused in that state (`focus(...)` keeps its meaning). During an element's
+prepaint, an element with a tooltip that is focused and keyboard-visible shows
+the tooltip anchored under its bottom-left corner, kept while it stays focused
+and cleared when focus moves or the mouse is pressed. The tooltip is set in
+prepaint because `Window::refresh` is ignored while drawing.
+
+Validation: `cargo test -p hvc-ui --lib`
+(`keyboard_focus_presses_once_and_opens_tooltips_under_the_control`,
+`tab_moves_focus_through_controls_and_stays_inside_settings`) and a physical
+smoke on Windows 11 (isolated profile). See the 2026-09-25 "Home dashboard,
+keyboard navigation and icon controls" report in the Cérebro.
+
 ## Integridade
 
 - Versão-base: `gpui` 0.2.2.
 - Fonte-base: crates.io.
-- Functional patches are maintained in `src/platform/windows/directx_devices.rs` (HVC-GPUI-001), `src/platform/windows/window.rs` (HVC-GPUI-002) and `src/elements/text.rs` (HVC-GPUI-004).
+- Functional patches are maintained in `src/platform/windows/directx_devices.rs` (HVC-GPUI-001), `src/platform/windows/window.rs` (HVC-GPUI-002) and `src/elements/text.rs` (HVC-GPUI-004), plus `src/window.rs` and `src/elements/div.rs` (HVC-GPUI-005).
 - Ajuste adicional em `src/taffy.rs` explicita literais `f32` exigidos pelo
   Rust 1.98; ele não altera comportamento nem desempenho.
 - Mudanças futuras devem receber um identificador `HVC-GPUI-NNN` e registrar

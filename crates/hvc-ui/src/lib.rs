@@ -19,6 +19,8 @@ mod flow;
 mod forge;
 mod forge_view;
 mod hitl;
+mod home_charts;
+mod home_stats;
 mod home_view;
 mod icons;
 #[cfg(test)]

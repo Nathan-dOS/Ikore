@@ -163,6 +163,26 @@ impl LineWrapper {
         line
     }
 
+    /// HVC-GPUI-004 follow-up: truncates `line` for one measurement, starting from the
+    /// element's original `runs` and returning the text with its own runs. A text element is
+    /// measured several times per layout at different widths; truncating one shared run list in
+    /// place left it cut for an earlier width, so a later, wider truncation shaped text whose
+    /// runs ended inside the ellipsis (DirectWrite then panicked on a char boundary).
+    pub fn truncate_for_layout(
+        &mut self,
+        line: SharedString,
+        truncate_width: Option<Pixels>,
+        truncation_suffix: &str,
+        runs: &[TextRun],
+    ) -> (SharedString, Vec<TextRun>) {
+        let mut runs = runs.to_vec();
+        let line = match truncate_width {
+            Some(width) => self.truncate_line(line, width, truncation_suffix, &mut runs),
+            None => line,
+        };
+        (line, runs)
+    }
+
     /// Any character in this list should be treated as a word character,
     /// meaning it can be part of a word that should not be wrapped.
     pub(crate) fn is_word_char(c: char) -> bool {
@@ -523,6 +543,39 @@ mod tests {
             "aa bbb cccc dddd......",
             "......",
         );
+    }
+
+    #[test]
+    fn repeated_measurements_truncate_from_the_original_runs() {
+        // HVC-GPUI-004 follow-up: one layout measures the same text at several widths.
+        let mut wrapper = build_wrapper();
+        let text = SharedString::from("abcdefghijkl");
+        let runs = generate_test_runs(&[4, 4, 4]);
+        for width in [px(50.), px(90.), px(70.), px(500.)] {
+            let (line, line_runs) =
+                wrapper.truncate_for_layout(text.clone(), Some(width), "…", &runs);
+            assert_eq!(
+                line_runs.iter().map(|run| run.len).sum::<usize>(),
+                line.len(),
+                "{width:?}: {line}"
+            );
+        }
+        // The runs the element keeps are never touched.
+        assert_eq!(
+            runs.iter().map(|run| run.len).collect::<Vec<_>>(),
+            [4, 4, 4]
+        );
+
+        // What the element used to do: truncating one shared list narrow, then wider, leaves
+        // runs that cover the narrow text only.
+        let mut shared = runs.clone();
+        let narrow = wrapper.truncate_line(text.clone(), px(50.), "…", &mut shared);
+        let wide = wrapper.truncate_line(text.clone(), px(90.), "…", &mut shared);
+        assert_eq!(
+            shared.iter().map(|run| run.len).sum::<usize>(),
+            narrow.len()
+        );
+        assert_ne!(narrow.len(), wide.len());
     }
 
     #[test]

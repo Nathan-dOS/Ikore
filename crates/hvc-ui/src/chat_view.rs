@@ -405,8 +405,9 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .rounded_lg()
                 .flex()
                 .flex_col()
+                .items_center()
                 .gap_3()
-                .when(show_tool_activity, |panel| panel.child(div().flex().justify_end().child(action(
+                .when(show_tool_activity, |panel| panel.child(div().w_full().flex().justify_end().child(action(
                     "chat-toggle-activity", if tool_activity_open { "Hide activity" } else { "Show activity" }, true, cx,
                     |model, cx| { model.chat.update(cx, |chat, _| chat.tool_activity_open = !chat.tool_activity_open); cx.notify(); }
                 ))))
@@ -428,77 +429,99 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .when_some(active_conversation.clone(), |panel, conversation| {
                     panel
                         .child(
-                            div()
+                            chat_column()
+                                .debug_selector(|| "chat-header".into())
                                 .flex()
-                                .flex_col()
-                                .gap_2()
-                                .items_start()
+                                .items_center()
+                                .justify_between()
+                                .gap_3()
                                 .child(
                                     div()
-                                        .w_full()
+                                        .flex_1()
                                         .min_w_0()
                                         .overflow_hidden()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(theme::accent())
-                                                .child("CHAT / COMPANION"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xl()
-                                                .whitespace_normal()
-                                                .font_weight(gpui::FontWeight::BOLD)
-                                                .child(conversation.title.clone()),
-                                        ),
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .text_lg()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(conversation.title.clone()),
                                 )
                                 .child(
                                     div()
-                                        .w_full()
-                                        .min_w_0()
-                                        .overflow_hidden()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .bg(theme::surface_raised())
                                         .text_xs()
+                                        .text_color(theme::text_muted())
                                         .child(conversation.provider_id.clone())
                                         .child(
                                             div()
                                                 .font_family(theme::FONT_MONO)
-                                                .text_color(theme::text_muted())
+                                                .text_color(theme::text())
                                                 .child(conversation.model_id.clone()),
                                         ),
                                 ),
                         )
                         .when(!conversation.connection_available, |panel| {
-                            panel.child(warning(
+                            panel.child(chat_column().child(warning(
                                 if conversation.provider_id=="specification" {"Questions presented by Specification, without extra LLM. Answer in the Pulsations view; this conversation preserves history."}else{"The pinned connection was removed or blocked. History remains readable."},
-                            ))
+                            )))
                         })
                         .child(
                             div()
                                 .id("chat-messages-scroll")
+                                .debug_selector(|| "chat-messages-scroll".into())
+                                .w_full()
                                 .flex_1()
                                 .min_h_0()
                                 .overflow_y_scroll()
                                 .flex()
                                 .flex_col()
-                                .gap_3()
+                                .items_center()
+                                .child(chat_column().flex().flex_col().gap_5().py_2()
                                 .when(messages.is_empty(), |list| {
                                     list.child(
                                         div()
-                                            .p_4()
-                                            .rounded_lg()
-                                            .bg(theme::accent_soft())
+                                            .mt(px(72.0))
                                             .flex()
+                                            .flex_col()
                                             .items_center()
-                                            .gap_2()
+                                            .gap_3()
                                             .child(
                                                 div()
-                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                    .child("Chat about the real architecture of this repository."),
+                                                    .size(px(44.0))
+                                                    .rounded_full()
+                                                    .bg(theme::accent_soft())
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(crate::widgets::icon(
+                                                        crate::icons::Icon::Sparkles,
+                                                        px(20.0),
+                                                        theme::accent(),
+                                                    )),
                                             )
-                                            .child(crate::widgets::info_tip(
-                                                "chat-companion-scope",
-                                                "The Companion can list, search, and read safe snippets. It cannot apply diffs or modify files.",
-                                            )),
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .child(
+                                                        div()
+                                                            .text_xl()
+                                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                            .child("Chat about the real architecture of this repository."),
+                                                    )
+                                                    .child(crate::widgets::info_tip(
+                                                        "chat-companion-scope",
+                                                        "The Companion can list, search, and read safe snippets. It cannot apply diffs or modify files.",
+                                                    )),
+                                            ),
                                     )
                                 })
                                 .when(hidden_messages > 0, |list| {
@@ -520,11 +543,11 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 })
                                 .children(messages.into_iter().map(|message| {
                                     render_message(message, cx)
-                                })),
+                                }))),
                         )
                         .when(disclosure_required && !disclosure_accepted, |panel| {
                             panel.child(
-                                div()
+                                chat_column()
                                     .p_3()
                                     .rounded_md()
                                     .border_1()
@@ -545,14 +568,15 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                             )
                         })
                         .child(
-                            div()
+                            chat_column()
                                 .debug_selector(|| "chat-composer".into())
                                 .flex_shrink_0()
                                 .p_3()
-                                .rounded_lg()
+                                .rounded_xl()
                                 .border_1()
-                                .border_color(theme::border())
+                                .border_color(theme::border_strong())
                                 .bg(theme::surface_raised())
+                                .shadow_md()
                                 .child(draft)
                                 .child(
                                     div()
@@ -635,58 +659,26 @@ fn should_show_tool_activity(
 
 pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -> AnyElement {
     let assistant = message.role == "assistant";
-    div()
-        .p_3()
-        .rounded_lg()
-        .border_1()
-        .border_color(if assistant {
-            theme::border()
-        } else {
-            theme::accent()
-        })
-        .bg(if assistant {
-            theme::surface_raised()
-        } else {
-            theme::accent_soft()
-        })
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(if assistant { "Companion" } else { "You" })
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child(format!(
-                            "{} · {}",
-                            message.status,
-                            crate::time::format_timestamp(&message.created_at)
-                        )),
-                ),
-        )
+    let meta = format!(
+        "{} · {}",
+        message.status,
+        crate::time::format_timestamp(&message.created_at)
+    );
+    let body = div()
+        .min_w_0()
+        .flex()
+        .flex_col()
         .when(message.content.is_empty(), |card| {
-            card.child(
-                div()
-                    .mt_2()
-                    .text_sm()
-                    .text_color(theme::text_muted())
-                    .child(
-                        if matches!(message.status.as_str(), "pending" | "streaming") {
-                            "Thinking…"
-                        } else {
-                            "No content."
-                        },
-                    ),
-            )
+            card.child(div().text_sm().text_color(theme::text_muted()).child(
+                if matches!(message.status.as_str(), "pending" | "streaming") {
+                    "Thinking…"
+                } else {
+                    "No content."
+                },
+            ))
         })
         .when(!message.content.is_empty(), |card| {
-            card.child(
-                div()
-                    .mt_2()
-                    .children(render_chat_content(&message.content, cx)),
-            )
+            card.children(render_chat_content(&message.content, cx))
         })
         .when_some(message.error_message, |card, error| {
             card.child(
@@ -696,9 +688,82 @@ pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -
                     .text_color(theme::danger())
                     .child(error),
             )
-        })
-        .into_any_element()
+        });
+    if assistant {
+        div()
+            .w_full()
+            .flex()
+            .items_start()
+            .gap_3()
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .size(px(28.0))
+                    .rounded_full()
+                    .bg(theme::accent_soft())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(crate::widgets::icon(
+                        crate::icons::Icon::Sparkles,
+                        px(14.0),
+                        theme::accent(),
+                    )),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_xs()
+                            .text_color(theme::text_muted())
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(theme::text())
+                                    .child("Companion"),
+                            )
+                            .child(meta),
+                    )
+                    .child(body),
+            )
+            .into_any_element()
+    } else {
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap_1()
+            .child(
+                div()
+                    .max_w(gpui::relative(0.85))
+                    .min_w_0()
+                    .px_4()
+                    .py_3()
+                    .rounded_xl()
+                    .bg(theme::accent_soft())
+                    .child(body),
+            )
+            .child(div().text_xs().text_color(theme::text_subtle()).child(meta))
+            .into_any_element()
+    }
 }
+
+/// The conversation's reading width: header, messages and composer line up on it, centred in the
+/// pane like a chat app, however wide the window is.
+fn chat_column() -> gpui::Div {
+    div().w_full().max_w(px(CHAT_COLUMN_WIDTH)).min_w_0()
+}
+
+const CHAT_COLUMN_WIDTH: f32 = 760.0;
 
 fn render_chat_content(content: &str, cx: &mut Context<AppModel>) -> Vec<AnyElement> {
     parse_chat_content(content)

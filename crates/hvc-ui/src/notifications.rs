@@ -329,27 +329,16 @@ impl AppModel {
                         .justify_between()
                         .items_center()
                         .child("Notifications")
-                        .child(
-                            div()
-                                .id("notifications-close")
-                                .tab_index(0)
-                                .cursor_pointer()
-                                .px_2()
-                                .py_1()
-                                .child("Close")
-                                .on_key_down(cx.listener(
-                                    |m, event: &gpui::KeyDownEvent, window, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                        {
-                                            m.toggle_notification_history(window, cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                ))
-                                .on_click(cx.listener(|m, _, window, cx| {
-                                    m.toggle_notification_history(window, cx)
-                                })),
-                        ),
+                        .child(crate::widgets::icon_button(
+                            "notifications-close",
+                            crate::icons::Icon::X,
+                            crate::widgets::Tooltip::new("Close").with_shortcut("escape"),
+                            false,
+                            None,
+                            true,
+                            cx,
+                            |m, window, cx| m.toggle_notification_history(window, cx),
+                        )),
                 )
                 .when(history.is_empty(), |d| {
                     d.child(
@@ -473,13 +462,15 @@ fn notification_card(
                     }
                 )))
                 .when(!history, |d| {
-                    d.child(crate::widgets::btn(
+                    d.child(crate::widgets::icon_button(
                         format!("notice-close-{id}"),
-                        "Close",
-                        crate::widgets::ButtonVariant::Ghost,
+                        crate::icons::Icon::X,
+                        "Dismiss",
+                        false,
+                        None,
                         true,
                         cx,
-                        |m, cx| {
+                        |m, _, cx| {
                             m.notifications.clock.dismiss();
                             cx.notify();
                         },

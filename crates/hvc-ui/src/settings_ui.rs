@@ -246,9 +246,13 @@ pub(crate) fn switch(
         .id(id)
         .debug_selector(move || id.into())
         .rounded_full()
+        .border_1()
+        .border_color(gpui::transparent_black())
         .when(enabled, |switch| {
             switch
                 .cursor_pointer()
+                .tab_index(0)
+                .focus_visible(|style| style.border_color(theme::accent()))
                 .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
         })
         .child(crate::widgets::switch(on, enabled))
@@ -277,6 +281,7 @@ pub(crate) fn select(
         .id(SharedString::from(id.clone()))
         .debug_selector(move || debug.clone())
         .tab_index(0)
+        .focus_visible(|style| style.border_color(theme::accent()))
         .relative()
         .min_w(px(140.0))
         .max_w(px(280.0))

@@ -338,6 +338,7 @@ fn control_options(
         .id(SharedString::from(id.clone()))
         .debug_selector(move || debug.clone())
         .tab_index(0)
+        .focus_visible(|style| style.border_color(theme::accent()))
         .relative()
         // A picker is as wide as its label and value: it neither fills a row
         // (`flex_1`) nor stretches across a column. Grids still size it to the cell.

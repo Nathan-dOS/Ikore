@@ -1579,7 +1579,11 @@ fn forge_headings_carry_their_explanation_in_an_info_tip(cx: &mut TestAppContext
     select(&model, visual, AppView::Forge);
     let tip = visual
         .debug_bounds("info:forge-section")
-        .expect("the section description is an i beside the Forge title");
+        .expect("the section description is an i beside the section tabs");
+    // Right of the tab strip, on its line, whichever section is open.
+    let last_tab = visual.debug_bounds("forge-section-delivery").unwrap();
+    assert!(tip.left() >= last_tab.right(), "{tip:?} vs {last_tab:?}");
+    assert!((tip.center().y - last_tab.center().y).abs() <= px(2.0));
     hover(visual, "info:forge-section");
     let tooltip = visual.debug_bounds("tooltip").unwrap();
     assert!(tooltip.size.width <= px(321.0));
@@ -3068,4 +3072,348 @@ fn settings_rows_keep_to_their_section_and_align_their_controls(cx: &mut TestApp
         let right = control_right.get_or_insert(control_bounds.right());
         assert_eq!(*right, control_bounds.right(), "{control} is out of line");
     }
+}
+
+/// An RFC 3339 timestamp `minutes` before now (the dashboard reads the last seven days).
+fn minutes_ago(minutes: i64) -> String {
+    (chrono::Utc::now() - chrono::Duration::minutes(minutes)).to_rfc3339()
+}
+
+fn layout_run(
+    role: AgentRole,
+    id: &str,
+    started_minutes_ago: i64,
+    took_minutes: i64,
+    pulsation: Option<&str>,
+) -> hvc_core::terminals::TerminalRun {
+    use hvc_core::terminals::{ExecutionOrigin, SessionSlot, TerminalRun, TerminalRunStatus};
+    TerminalRun {
+        id: id.into(),
+        project_id: "layout-project".into(),
+        slot: SessionSlot::Canonical { agent_role: role },
+        slot_id: format!("canonical:layout-project:{}", role.as_str()),
+        agent_role: Some(role),
+        origin: ExecutionOrigin::Pipeline,
+        execution_mode: AgentExecutionMode::CliProcess,
+        backend: Some(CliBackend::Codex),
+        model: None,
+        requested_model_profile: None,
+        model_source: CliModelSelectionSource::Default,
+        observed_model: None,
+        native_session_id: None,
+        pulsation_id: pulsation.map(Into::into),
+        job_id: None,
+        agent_run_id: None,
+        llm_execution_id: None,
+        status: TerminalRunStatus::Completed,
+        exit_code: Some(0),
+        error_code: None,
+        error_message: None,
+        created_at: minutes_ago(started_minutes_ago),
+        started_at: Some(minutes_ago(started_minutes_ago)),
+        finished_at: Some(minutes_ago(started_minutes_ago - took_minutes)),
+        updated_at: minutes_ago(started_minutes_ago - took_minutes),
+        deadline_at: None,
+        termination_reason: None,
+        output_bytes: 0,
+        event_count: 0,
+        workspace_snapshot_hash: None,
+        launch_identity_sha256: None,
+        detected_cli_version: None,
+        adapter_contract_version: 1,
+        parent_run_id: None,
+        continuation_reason: None,
+        session_fingerprint: None,
+        observation_trial_id: None,
+    }
+}
+
+#[gpui::test]
+fn home_dashboard_shows_the_week_in_numbers_and_charts(cx: &mut TestAppContext) {
+    use hvc_core::usage::{ModelUsage, UsageBucket, UsageSummary, UsageTotals, UsageTransport};
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    let today = chrono::Utc::now().date_naive();
+    model.update(visual, |m, cx| {
+        let totals = |input: i64, output: i64| UsageTotals {
+            input_tokens: Some(input),
+            output_tokens: Some(output),
+            total_tokens: Some(input + output),
+            records: 1,
+            ..Default::default()
+        };
+        m.home_stats.usage = Some(UsageSummary {
+            series: vec![
+                UsageBucket {
+                    period: (today - chrono::Duration::days(2)).to_string(),
+                    totals: totals(4_000, 1_000),
+                },
+                UsageBucket {
+                    period: today.to_string(),
+                    totals: totals(12_000, 3_000),
+                },
+            ],
+            models: vec![ModelUsage {
+                provider_id: "openai".into(),
+                model_id: "gpt-5".into(),
+                model_source: "configured".into(),
+                transport: UsageTransport::Api,
+                totals: totals(16_000, 4_000),
+            }],
+            ..Default::default()
+        });
+        m.agents.update(cx, |agents, _| {
+            let snapshot = agents.snapshot.as_mut().expect("fixture snapshot");
+            for agent in &mut snapshot.agents {
+                let role = agent.config.agent_role;
+                agent.recent_runs = vec![
+                    layout_run(
+                        role,
+                        &format!("{}-1", role.as_str()),
+                        50,
+                        4,
+                        Some("pulse-live"),
+                    ),
+                    layout_run(role, &format!("{}-2", role.as_str()), 300, 9, None),
+                ];
+            }
+        });
+        m.pulsations.update(cx, |state, _| {
+            for (id, status, created, updated) in [
+                ("pulse-done", PulsationStatus::Done, 200, 150),
+                ("pulse-live", PulsationStatus::Running, 60, 1),
+            ] {
+                state.pulsations.push(Pulsation {
+                    id: id.into(),
+                    project_id: "layout-project".into(),
+                    feature_name: format!("Dashboard {id}"),
+                    stage: PulsationStage::Code,
+                    status,
+                    terminal_reason: None,
+                    created_at: minutes_ago(created),
+                    updated_at: minutes_ago(updated),
+                });
+            }
+            state.select("pulse-live");
+        });
+        cx.notify();
+    });
+    visual.simulate_resize(size(px(1440.0), px(1600.0)));
+    select(&model, visual, AppView::Home);
+    for id in [
+        "home-kpi-tokens",
+        "home-kpi-runs",
+        "home-kpi-pulsation",
+        "home-kpi-active",
+        "home-chart-tokens",
+        "home-chart-models",
+        "home-chart-agents",
+        "home-chart-pulsations",
+        "home-active-timeline",
+        "home-agent-0",
+        "home-agent-1",
+        "home-pulsation-0",
+        "home-pulsation-1",
+    ] {
+        assert!(visual.debug_bounds(id).is_some(), "missing {id}");
+    }
+    // Headline numbers first, then what is waiting on you, then the charts two by two.
+    let kpis = visual.debug_bounds("home-kpis").unwrap();
+    let waiting = visual.debug_bounds("home-waiting").unwrap();
+    let tokens = visual.debug_bounds("home-chart-tokens").unwrap();
+    let models = visual.debug_bounds("home-chart-models").unwrap();
+    let agents = visual.debug_bounds("home-chart-agents").unwrap();
+    assert!(kpis.bottom() <= waiting.top(), "{kpis:?} {waiting:?}");
+    assert!(waiting.bottom() <= tokens.top(), "{waiting:?} {tokens:?}");
+    assert!(models.left() >= tokens.right(), "{tokens:?} {models:?}");
+    assert_eq!(models.top(), tokens.top());
+    assert!(agents.top() >= tokens.bottom());
+    // Seven day columns, oldest on the left; every card stays inside the window.
+    let first = visual.debug_bounds("home-day-0").unwrap();
+    let last = visual.debug_bounds("home-day-6").unwrap();
+    assert!(last.left() > first.right());
+    assert!(models.right() <= px(1440.0));
+    // A pulsation bar opens that pulsation (oldest first: the finished one).
+    click(visual, "home-pulsation-0");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Pulsations
+    );
+    assert_eq!(
+        model.read_with(visual, |m, cx| m.pulsations.read(cx).active_id()),
+        Some("pulse-done".to_string())
+    );
+    // Narrow windows stack the charts one per row.
+    visual.simulate_resize(size(px(960.0), px(1800.0)));
+    select(&model, visual, AppView::Home);
+    let tokens = visual.debug_bounds("home-chart-tokens").unwrap();
+    let models = visual.debug_bounds("home-chart-models").unwrap();
+    assert!(models.top() >= tokens.bottom(), "{tokens:?} {models:?}");
+    assert!(models.right() <= px(960.0));
+}
+
+#[gpui::test]
+fn tab_moves_focus_through_controls_and_stays_inside_settings(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| {
+        let mut model = fixture(cx);
+        with_settings_items(&mut model, cx);
+        model
+    });
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Forge);
+    // A click focuses the rail item without a keyboard ring.
+    click(visual, "rail-nav-forge");
+    let clicked = visual.update(|window, cx| (window.focused(cx), window.focus_visible()));
+    assert!(clicked.0.is_some() && !clicked.1);
+    visual.simulate_keystrokes("tab");
+    let first = visual.update(|window, cx| (window.focused(cx), window.focus_visible()));
+    assert!(first.1, "Tab shows the keyboard ring");
+    assert_ne!(first.0, clicked.0, "Tab moved the focus");
+    visual.simulate_keystrokes("shift-tab");
+    let back = visual.update(|window, cx| window.focused(cx));
+    assert_eq!(back, clicked.0, "Shift-Tab walks back");
+    // With Settings open, Tab never leaves the modal, however many times it is pressed.
+    open_settings(&model, visual, Some(SettingsPage::General));
+    let mut saw_tooltip = false;
+    for press in 0..40 {
+        visual.simulate_keystrokes("tab");
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(50));
+        visual.run_until_parked();
+        let inside = visual.update(|window, cx| model.read(cx).settings_focus_contains(window, cx));
+        assert!(inside, "press {press} left the Settings modal");
+        saw_tooltip |= visual.debug_bounds("tooltip").is_some();
+    }
+    assert!(
+        saw_tooltip,
+        "an \"i\" reached with Tab opens its explanation"
+    );
+}
+
+#[gpui::test]
+fn backlog_task_actions_sit_at_the_card_top_right(cx: &mut TestAppContext) {
+    use hvc_core::feature_forge::{TaskDraft, TaskKind, WorkTask};
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |m, cx| {
+        m.forge.snapshot.tasks = vec![WorkTask {
+            id: "task-layout".into(),
+            project_id: "layout-project".into(),
+            revision: 1,
+            draft: TaskDraft {
+                title: "Export records as CSV".into(),
+                kind: TaskKind::Feature,
+                description: "Add a CSV export to the records page with the visible columns."
+                    .into(),
+                criteria: vec![],
+                dependencies: vec![],
+                feature_id: None,
+            },
+            feature_revision: None,
+            state: "ready".into(),
+            active_pulsation_id: None,
+            completed_pulsation_id: None,
+        }];
+        cx.notify();
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Forge);
+        let card = visual.debug_bounds("task-card-task-layout").unwrap();
+        let actions = visual.debug_bounds("task-actions-task-layout").unwrap();
+        let select_button = visual.debug_bounds("select-task-task-layout").unwrap();
+        assert!(actions.right() <= card.right() && card.right() - actions.right() <= px(16.0));
+        assert!(
+            actions.top() - card.top() <= px(16.0),
+            "{width}: {actions:?} vs {card:?}"
+        );
+        assert!(select_button.top() >= actions.top() && select_button.right() <= actions.right());
+    }
+}
+
+#[gpui::test]
+fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
+    use hvc_core::chat_service::{ChatConversation, ChatMessage, ChatTransportKind};
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1920.0), px(1080.0)));
+    // Opening Chat hydrates it for the project; the conversation is injected afterwards.
+    select(&model, visual, AppView::Chat);
+    model.update(visual, |m, cx| {
+        m.chat.update(cx, |chat, _| {
+            chat.project_id = Some("layout-project".into());
+            chat.conversations = vec![ChatConversation {
+                id: "conversation-1".into(),
+                project_id: "layout-project".into(),
+                connection_id: None,
+                provider_id: "openai".into(),
+                model_id: "gpt-5".into(),
+                transport: ChatTransportKind::Cli,
+                cli_backend: Some(CliBackend::Codex),
+                model_profile: None,
+                model_source: CliModelSelectionSource::Default,
+                title: "Architecture questions".into(),
+                connection_available: true,
+                created_at: "now".into(),
+                updated_at: "now".into(),
+            }];
+            chat.active_conversation = Some("conversation-1".into());
+            chat.messages_by_conversation.insert(
+                "conversation-1".into(),
+                ["user", "assistant"]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ordinal, role)| ChatMessage {
+                        id: format!("message-{ordinal}"),
+                        conversation_id: "conversation-1".into(),
+                        ordinal: ordinal as i64,
+                        role: role.into(),
+                        content: format!("A {role} message."),
+                        status: "completed".into(),
+                        execution_id: None,
+                        generation_id: None,
+                        last_sequence: 0,
+                        input_tokens: None,
+                        output_tokens: None,
+                        estimated_cost_usd: None,
+                        error_code: None,
+                        error_message: None,
+                        created_at: "now".into(),
+                        updated_at: "now".into(),
+                    })
+                    .collect(),
+            );
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let composer = visual.debug_bounds("chat-composer").unwrap();
+    let header = visual.debug_bounds("chat-header").unwrap();
+    let scroll = visual.debug_bounds("chat-messages-scroll").unwrap();
+    assert!(composer.size.width <= px(760.0), "{composer:?}");
+    assert_eq!(composer.left(), header.left());
+    assert_eq!(composer.right(), header.right());
+    // Centred in the conversation pane, which is wider than the column.
+    assert!(scroll.size.width > px(900.0), "{scroll:?}");
+    let offset = (composer.center().x - scroll.center().x).abs();
+    assert!(offset <= px(2.0), "composer off centre by {offset:?}");
+    // The composer sits under the conversation, not beside it.
+    assert!(composer.top() >= scroll.bottom());
+}
+
+#[gpui::test]
+fn a_keyboard_focus_ring_never_resizes_its_control(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Forge);
+    // A click focuses the tab without a ring; Shift-Tab then Tab bring the focus back to it
+    // from the keyboard, ring on.
+    click(visual, "forge-section-triage");
+    let tab = visual.debug_bounds("forge-section-triage").unwrap();
+    let tip = visual.debug_bounds("info:forge-section").unwrap();
+    visual.simulate_keystrokes("shift-tab");
+    visual.simulate_keystrokes("tab");
+    assert!(visual.update(|window, _| window.focus_visible()));
+    assert_eq!(visual.debug_bounds("forge-section-triage").unwrap(), tab);
+    assert_eq!(visual.debug_bounds("info:forge-section").unwrap(), tip);
 }

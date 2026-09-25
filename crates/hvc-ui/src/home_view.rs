@@ -1,6 +1,8 @@
 //! Home: the shell's centre when nothing more specific is open. It answers three questions
 //! without a click — where is the active pulsation, what should I do next, and what is waiting on
-//! me — and stays read-mostly: the only controls are the flow steps and jumps to other views.
+//! me — then shows the week at a glance (tokens, agent run times, pulsation durations; see
+//! `home_charts`). It stays read-mostly: the only controls are the flow steps and jumps to other
+//! views.
 
 use gpui::{
     AnimationExt, AnyElement, Context, FontWeight, IntoElement, SharedString, Window, div,
@@ -15,8 +17,9 @@ use crate::pipeline_status::PipelineStatus;
 use crate::theme;
 use crate::widgets::{ICON_SIZE, icon, pipeline_stepper, status_dot};
 
-/// Content width cap so the hero reads as a card rather than a banner on wide windows.
-const HOME_MAX_WIDTH: f32 = 1040.0;
+/// Content width cap so the hero reads as a card rather than a banner on wide windows, with
+/// room for two charts side by side.
+const HOME_MAX_WIDTH: f32 = 1120.0;
 /// Below this window width the three secondary cards stack instead of sharing a row.
 const HOME_STACK_BELOW: f32 = 1180.0;
 /// Activity lines shown on Home; the rest stays in Logs.
@@ -32,6 +35,7 @@ pub(crate) fn home_panel(
     let stacked = window.viewport_size().width < px(HOME_STACK_BELOW);
 
     let body = if project_open {
+        let (headline, charts) = crate::home_charts::insights(model, stacked, cx);
         div()
             .w_full()
             .max_w(px(HOME_MAX_WIDTH))
@@ -40,6 +44,7 @@ pub(crate) fn home_panel(
             .gap_4()
             .child(hero(model, cx))
             .child(next_steps(steps, cx))
+            .child(headline)
             .child(
                 div()
                     .id("home-cards")
@@ -53,6 +58,7 @@ pub(crate) fn home_panel(
                     .child(health_card(model, cx))
                     .child(activity_card(model, cx)),
             )
+            .child(charts)
     } else {
         div()
             .w_full()
@@ -132,6 +138,7 @@ fn hero(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                     .child(hero_dot(status.tone))
                     .child(div().child(format!("{} · {}", status.agent_name, status.state))),
             )
+            .children(crate::home_charts::active_timeline(model, cx))
             .into_any_element(),
         None => card
             .child(

@@ -5,7 +5,6 @@ use crate::pulsations::{PIPELINE_STAGES, stage_label};
 use crate::sizing::StyledExt;
 use crate::theme;
 use gpui::{AnyElement, Context, IntoElement, Pixels, SharedString, div, prelude::*, px};
-use std::sync::Arc;
 
 // `btn`/`btn_confirm`/`inline_banner`/`loading_pill` are adopted progressively as each view is
 // touched during the UI flow overhaul (see the navigation/flow plan); until a view is converted,
@@ -44,7 +43,7 @@ pub(crate) fn button_frame(
         .border_1()
         .text_sm()
         .font_weight(gpui::FontWeight::MEDIUM)
-        .focus(|style| style.border_color(theme::accent_hover()));
+        .focus_visible(|style| style.border_color(theme::accent()));
     if !enabled {
         return button
             .bg(theme::surface_raised())
@@ -112,7 +111,10 @@ pub(crate) fn segment(
         .py(px(5.0))
         .rounded_md()
         .text_sm()
-        .cursor_pointer();
+        .cursor_pointer()
+        // Background only: a refinement that sets the text colour replaces the whole text style in
+        // GPUI, so the label would lose its `text_sm` size while focused.
+        .focus_visible(|style| style.bg(theme::accent_soft()));
     if selected {
         segment
             .bg(theme::surface_hover())
@@ -287,8 +289,6 @@ pub fn btn(
     let id = id.into();
     let debug_id = id.clone();
     let label = label.into();
-    let handler = Arc::new(handler);
-    let key_handler = Arc::clone(&handler);
 
     button_frame(
         div()
@@ -299,16 +299,9 @@ pub fn btn(
         variant,
         enabled,
     )
+    // Enter and Space reach `on_click` through GPUI's keyboard click on the focused button.
     .when(enabled, |b| {
-        b.on_key_down(
-            cx.listener(move |model, event: &gpui::KeyDownEvent, _window, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    key_handler(model, cx);
-                    cx.stop_propagation();
-                }
-            }),
-        )
-        .on_click(cx.listener(move |model, _, _, cx| {
+        b.on_click(cx.listener(move |model, _, _, cx| {
             handler(model, cx);
         }))
     })
@@ -547,6 +540,11 @@ pub(crate) const ICON_BUTTON_SIZE: Pixels = px(36.0);
 pub(crate) struct Tooltip {
     text: SharedString,
     shortcut: Option<SharedString>,
+    /// Extra wait on top of GPUI's 500 ms before the text shows, for explanations of an action
+    /// that should not pop up while the pointer merely crosses the control.
+    rest: Option<std::time::Duration>,
+    rested: bool,
+    waiting: bool,
 }
 
 impl Tooltip {
@@ -554,6 +552,9 @@ impl Tooltip {
         Self {
             text: text.into(),
             shortcut: None,
+            rest: None,
+            rested: false,
+            waiting: false,
         }
     }
 
@@ -561,7 +562,17 @@ impl Tooltip {
         self.shortcut = Some(shortcut.into());
         self
     }
+
+    /// Shows the tooltip only once the pointer has rested `total` on the control (GPUI's own
+    /// 500 ms included).
+    pub(crate) fn after_rest(mut self, total: std::time::Duration) -> Self {
+        self.rest = Some(total.saturating_sub(std::time::Duration::from_millis(500)));
+        self
+    }
 }
+
+/// Explanations of an action wait this long, so they read as help rather than as noise.
+pub(crate) const EXPLAIN_REST: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl From<&'static str> for Tooltip {
     fn from(text: &'static str) -> Self {
@@ -582,7 +593,22 @@ impl From<SharedString> for Tooltip {
 }
 
 impl gpui::Render for Tooltip {
-    fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(rest) = self.rest.filter(|_| !self.rested) {
+            if !self.waiting {
+                self.waiting = true;
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(rest).await;
+                    this.update(cx, |tooltip, cx| {
+                        tooltip.rested = true;
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            return div().into_any_element();
+        }
         div()
             .debug_selector(|| "tooltip".into())
             .flex()
@@ -608,6 +634,7 @@ impl gpui::Render for Tooltip {
                         .child(shortcut),
                 )
             })
+            .into_any_element()
     }
 }
 
@@ -635,8 +662,17 @@ pub(crate) fn info_tip(id: impl Into<SharedString>, text: impl Into<SharedString
         .items_center()
         .justify_center()
         .rounded_full()
+        .border_1()
+        .border_color(gpui::transparent_black())
         .opacity(0.8)
+        .tab_index(0)
         .hover(|style| style.opacity(1.0).bg(theme::surface_hover()))
+        .focus_visible(|style| {
+            style
+                .opacity(1.0)
+                .border_color(theme::accent())
+                .bg(theme::surface_hover())
+        })
         .child(icon(Icon::Info, px(14.0), theme::text_subtle()))
         .tooltip(move |_, cx| cx.new(|_| Tooltip::new(text.clone())).into())
         .into_any_element()
@@ -659,8 +695,6 @@ pub(crate) fn icon_button(
     let id = id.into();
     let debug_id = id.clone();
     let tooltip = tooltip.into();
-    let handler = Arc::new(handler);
-    let key_handler = Arc::clone(&handler);
     let ink = if selected {
         theme::accent()
     } else {
@@ -677,22 +711,17 @@ pub(crate) fn icon_button(
         .items_center()
         .justify_center()
         .rounded_md()
+        .border_1()
+        .border_color(gpui::transparent_black())
         .when(selected, |b| b.bg(theme::accent_soft()))
         .text_color(ink)
         .opacity(if enabled { 1.0 } else { 0.45 })
         .tab_index(0)
+        .focus_visible(|style| style.border_color(theme::accent()))
         .tooltip(move |_, cx| cx.new(|_| tooltip.clone()).into())
         .when(enabled, |b| {
             b.cursor_pointer()
                 .hover(|s| s.bg(theme::surface_raised()).text_color(theme::text()))
-                .on_key_down(
-                    cx.listener(move |model, event: &gpui::KeyDownEvent, window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            key_handler(model, window, cx);
-                            cx.stop_propagation();
-                        }
-                    }),
-                )
                 .on_click(cx.listener(move |model, _, window, cx| {
                     handler(model, window, cx);
                 }))
@@ -967,6 +996,117 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div().child(self.0.clone())
         }
+    }
+
+    /// The crash `end byte index 73 is not a char boundary; it is inside '…'` came from text
+    /// runs truncated for one width being reused for a wider one (HVC-GPUI-004 follow-up).
+    #[gpui::test]
+    fn truncating_a_label_never_leaves_its_runs_cut_for_another_width(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let text_system = cx.text_system().clone();
+            let mut wrapper = text_system.line_wrapper(gpui::font("Segoe UI"), px(16.0));
+            let run = |len| gpui::TextRun {
+                len,
+                font: gpui::font("Segoe UI"),
+                color: gpui::black(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let text = SharedString::from("abcdefghijkl");
+            let runs = vec![run(4), run(4), run(4)];
+            // One layout measures a label at several widths, narrower and wider.
+            for width in [px(50.0), px(90.0), px(70.0), px(500.0)] {
+                let (line, line_runs) =
+                    wrapper.truncate_for_layout(text.clone(), Some(width), "…", &runs);
+                assert_eq!(
+                    line_runs.iter().map(|run| run.len).sum::<usize>(),
+                    line.len(),
+                    "{width:?}: {line}"
+                );
+            }
+            // The element's own runs still describe the whole text.
+            assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
+        });
+    }
+
+    struct KeyboardHarness(Entity<AppModel>, std::rc::Rc<std::cell::Cell<usize>>);
+
+    impl Render for KeyboardHarness {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let presses = self.1.clone();
+            self.0.update(cx, |_, cx| {
+                div()
+                    .p_4()
+                    .flex()
+                    .items_center()
+                    .gap_4()
+                    .child(btn(
+                        "keyboard-button",
+                        "Press",
+                        ButtonVariant::Secondary,
+                        true,
+                        cx,
+                        move |_, _| presses.set(presses.get() + 1),
+                    ))
+                    .child(info_tip("keyboard-first", "First explanation"))
+                    .child(info_tip("keyboard-second", "Second explanation"))
+            })
+        }
+    }
+
+    #[gpui::test]
+    fn keyboard_focus_presses_once_and_opens_tooltips_under_the_control(cx: &mut TestAppContext) {
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0));
+        let (_, visual) = cx.add_window_view(|_, cx| {
+            KeyboardHarness(cx.new(AppModel::new_for_test), presses.clone())
+        });
+        visual.update(|window, _| window.focus_next());
+        visual.run_until_parked();
+        assert!(visual.update(|window, _| window.focus_visible()));
+        // Enter: key down, then key up (where GPUI clicks the focused control) — one press.
+        visual.simulate_keystrokes("enter");
+        visual.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
+        visual.run_until_parked();
+        assert_eq!(presses.get(), 1);
+        // The next stop is an "i": its explanation opens right under it, no pointer needed.
+        visual.update(|window, _| window.focus_next());
+        visual.run_until_parked();
+        let tip = visual.debug_bounds("info:keyboard-first").unwrap();
+        let tooltip = visual
+            .debug_bounds("tooltip")
+            .expect("a focused info tip shows its tooltip");
+        assert!(tooltip.top() >= tip.bottom(), "{tooltip:?} vs {tip:?}");
+        assert!(
+            (tooltip.left() - tip.left()).abs() <= px(2.0),
+            "{tooltip:?} vs {tip:?}"
+        );
+        // Pointing again hides the keyboard state.
+        visual.simulate_mouse_down(
+            tip.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert!(!visual.update(|window, _| window.focus_visible()));
+    }
+
+    #[gpui::test]
+    fn an_explanation_tooltip_waits_for_the_pointer_to_rest(cx: &mut TestAppContext) {
+        let (_, visual) = cx.add_window_view(|_, cx| {
+            TooltipHarness(cx.new(|_| Tooltip::new("Explains an action").after_rest(EXPLAIN_REST)))
+        });
+        assert!(
+            visual.debug_bounds("tooltip").is_none(),
+            "hidden while the rest runs"
+        );
+        visual
+            .executor()
+            .advance_clock(EXPLAIN_REST - std::time::Duration::from_millis(400));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("tooltip").is_some());
     }
 
     struct StepperHarness;

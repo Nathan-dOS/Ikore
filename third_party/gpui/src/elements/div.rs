@@ -1034,6 +1034,16 @@ pub trait InteractiveElement: Sized {
         self.interactivity().in_focus_style = Some(Box::new(f(StyleRefinement::default())));
         self
     }
+
+    /// HVC-GPUI-005: styles applied when this element is focused and the focus was reached with
+    /// the keyboard (see [`Window::focus_visible`]) — the focus ring a click should not leave behind.
+    fn focus_visible(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self
+    where
+        Self: Sized,
+    {
+        self.interactivity().focus_visible_style = Some(Box::new(f(StyleRefinement::default())));
+        self
+    }
 }
 
 /// A trait for elements that want to use the standard GPUI interactivity features
@@ -1497,6 +1507,7 @@ pub struct Interactivity {
     pub base_style: Box<StyleRefinement>,
     pub(crate) focus_style: Option<Box<StyleRefinement>>,
     pub(crate) in_focus_style: Option<Box<StyleRefinement>>,
+    pub(crate) focus_visible_style: Option<Box<StyleRefinement>>,
     pub(crate) hover_style: Option<Box<StyleRefinement>>,
     pub(crate) group_hover_style: Option<GroupStyle>,
     pub(crate) active_style: Option<Box<StyleRefinement>>,
@@ -1658,6 +1669,45 @@ impl Interactivity {
                     if let Some(clicked_state) = element_state.clicked_state.as_ref() {
                         let clicked_state = clicked_state.borrow();
                         self.active = Some(clicked_state.element);
+                    }
+                    // HVC-GPUI-005: an element reached with Tab shows its tooltip under itself,
+                    // without waiting for the pointer, until focus moves or the mouse is pressed.
+                    if let Some(tooltip_builder) = self.tooltip_builder.as_ref()
+                        && window.focus_visible
+                        && let Some(focus_handle) = self.tracked_focus_handle.as_ref()
+                        && focus_handle.is_focused(window)
+                    {
+                        let active_tooltip = element_state
+                            .active_tooltip
+                            .get_or_insert_with(Default::default)
+                            .clone();
+                        let showing = matches!(
+                            active_tooltip.borrow().as_ref(),
+                            Some(
+                                ActiveTooltip::Visible { .. }
+                                    | ActiveTooltip::WaitingForHide { .. }
+                            )
+                        );
+                        if !showing {
+                            let view = (tooltip_builder.build)(window, cx);
+                            let focus_handle = focus_handle.clone();
+                            let clear_on_blur = active_tooltip.clone();
+                            *active_tooltip.borrow_mut() = Some(ActiveTooltip::Visible {
+                                tooltip: AnyTooltip {
+                                    view,
+                                    mouse_position: bounds.bottom_left() + point(px(0.), px(4.)),
+                                    check_visible_and_update: Rc::new(move |_, window, _| {
+                                        let keep =
+                                            window.focus_visible && focus_handle.is_focused(window);
+                                        if !keep {
+                                            clear_on_blur.borrow_mut().take();
+                                        }
+                                        keep
+                                    }),
+                                },
+                                is_hoverable: false,
+                            });
+                        }
                     }
                     if let Some(active_tooltip) = element_state.active_tooltip.as_ref() {
                         if self.tooltip_builder.is_some() {
@@ -2491,6 +2541,13 @@ impl Interactivity {
                 && focus_handle.is_focused(window)
             {
                 style.refine(focus_style);
+            }
+
+            if let Some(focus_visible_style) = self.focus_visible_style.as_ref()
+                && window.focus_visible
+                && focus_handle.is_focused(window)
+            {
+                style.refine(focus_visible_style);
             }
         }
 

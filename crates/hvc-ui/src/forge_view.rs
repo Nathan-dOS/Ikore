@@ -53,7 +53,6 @@ pub(crate) fn button(
 ) -> AnyElement {
     let id = id.into();
     let glyph = crate::widgets::action_icon(&id);
-    let keyboard_action = action.clone();
     crate::widgets::button_frame(
         div()
             .id(id.clone())
@@ -63,17 +62,7 @@ pub(crate) fn button(
         crate::widgets::ButtonVariant::Tinted,
         true,
     )
-    .on_key_down(
-        cx.listener(move |model, event: &gpui::KeyDownEvent, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                model.forge_action(keyboard_action.clone(), cx);
-                if matches!(keyboard_action, ForgeAction::New(_)) {
-                    focus_capture(model, window, cx);
-                }
-                cx.stop_propagation();
-            }
-        }),
-    )
+    // Enter and Space arrive here too: GPUI clicks the focused button on key up.
     .on_click(cx.listener(move |model, _, window, cx| {
         model.forge_action(action.clone(), cx);
         if matches!(action, ForgeAction::New(_)) {
@@ -106,7 +95,6 @@ pub(crate) fn gated_button(
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     let id = id.into();
-    let keyboard_action = action.clone();
     crate::widgets::button_frame(
         div()
             .id(id.clone())
@@ -118,14 +106,6 @@ pub(crate) fn gated_button(
     .when(enabled, |button| {
         button
             .tab_index(0)
-            .on_key_down(
-                cx.listener(move |model, event: &gpui::KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        model.forge_action(keyboard_action.clone(), cx);
-                        cx.stop_propagation();
-                    }
-                }),
-            )
             .on_click(cx.listener(move |model, _, _, cx| model.forge_action(action.clone(), cx)))
     })
     .child(title.into())
@@ -160,14 +140,6 @@ pub(crate) fn forge_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                     .debug_selector(move || selector.to_string())
                     .tab_index(0),
                 model.forge.section == section,
-            )
-            .on_key_down(
-                cx.listener(move |model, event: &gpui::KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        model.forge_action(ForgeAction::Section(section), cx);
-                        cx.stop_propagation();
-                    }
-                }),
             )
             .on_click(cx.listener(move |model, _, _, cx| {
                 model.forge_action(ForgeAction::Section(section), cx);
@@ -204,11 +176,7 @@ pub(crate) fn forge_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                         .gap_3()
                         .flex_1()
                         .min_w_0()
-                        .child(heading("Forge"))
-                        .child(crate::widgets::info_tip(
-                            "forge-section",
-                            model.forge.section.description(),
-                        )),
+                        .child(heading("Forge")),
                 )
                 .child(
                     div()
@@ -231,7 +199,18 @@ pub(crate) fn forge_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                         .child(button("refresh-forge", "Refresh", ForgeAction::Refresh, cx)),
                 ),
         )
-        .child(tabs)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(tabs)
+                // Explains whichever section is open, so the "i" follows the selection.
+                .child(crate::widgets::info_tip(
+                    "forge-section",
+                    model.forge.section.description(),
+                )),
+        )
         .child(body)
         .into_any_element()
 }
@@ -260,12 +239,14 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             .and_then(|id| model.forge.snapshot.features.iter().find(|f| &f.id == id))
             .map(|f| f.title.clone())
             .unwrap_or_else(|| "Standalone task".into());
-        let mut row = card()
-            .child(heading(task.draft.title.clone()))
-            .child(label(format!(
-                "{source} · {:?} · {}",
-                task.draft.kind, task.state
-            )))
+        // Actions sit at the card's top-right, beside the title: easy to reach, and they do
+        // not move down as the description and criteria grow.
+        let mut actions: Vec<AnyElement> = Vec::new();
+        let mut row = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .min_w_0()
             .child(label(task.draft.description.clone()));
         for criterion in &task.draft.criteria {
             row = row.child(label(format!("□ {}", criterion.description)));
@@ -293,9 +274,9 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             .as_ref()
             .or(task.completed_pulsation_id.as_ref())
         {
-            row = row.child(button(
+            actions.push(button(
                 format!("task-pulsation-{}", task.id),
-                "View pulsation and evidence",
+                "View pulsation",
                 ForgeAction::OpenPulsation(pulse.clone()),
                 cx,
             ));
@@ -334,7 +315,7 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                     })
                 }));
         if can_select || selected {
-            row = row.child(button(
+            actions.push(button(
                 format!("select-task-{}", task.id),
                 if selected {
                     "✓ Selected"
@@ -346,9 +327,9 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             ));
         }
         if task.draft.feature_id.is_none() && task.state == "ready" {
-            row = row.child(button(
+            actions.push(button(
                 format!("edit-task-{}", task.id),
-                "Edit task",
+                "Edit",
                 ForgeAction::EditTask(task.id.clone()),
                 cx,
             ));
@@ -357,18 +338,57 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             && task.state == "ready"
             && TaskService::suggest_feature(&task.draft)
         {
-            row = row
-                .child(label(
-                    "This request may benefit from a feature conversation.",
-                ))
-                .child(button(
-                    format!("convert-task-{}", task.id),
-                    "Convert to Feature in Forge",
-                    ForgeAction::SuggestFeature(task.id.clone()),
-                    cx,
-                ));
+            row = row.child(label(
+                "This request may benefit from a feature conversation.",
+            ));
+            actions.push(button(
+                format!("convert-task-{}", task.id),
+                "Convert to feature",
+                ForgeAction::SuggestFeature(task.id.clone()),
+                cx,
+            ));
         }
-        list = list.child(row);
+        let header = div()
+            .flex()
+            .items_start()
+            .justify_between()
+            .gap_3()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(heading(task.draft.title.clone()))
+                    .child(label(format!(
+                        "{source} · {:?} · {}",
+                        task.draft.kind, task.state
+                    ))),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("task-actions-{}", task.id)))
+                    .debug_selector({
+                        let id = task.id.clone();
+                        move || format!("task-actions-{id}")
+                    })
+                    .flex_shrink_0()
+                    .max_w(px(380.0))
+                    .flex()
+                    .flex_wrap()
+                    .justify_end()
+                    .items_center()
+                    .gap_2()
+                    .children(actions),
+            );
+        let card_id = task.id.clone();
+        list = list.child(
+            card()
+                .debug_selector(move || format!("task-card-{card_id}"))
+                .child(header)
+                .child(row),
+        );
     }
     if model.forge.snapshot.tasks.is_empty() {
         list = list.child(label(

@@ -1018,7 +1018,8 @@ impl AppModel {
             }
             ForgeAction::SetLimit => {
                 let Ok(limit) = self.forge.wave_limit.read(cx).value().parse() else {
-                    self.forge.error = Some("Informe uma capacidade inteira positiva.".into());
+                    self.forge.error =
+                        Some("Enter a positive whole number for the capacity.".into());
                     cx.notify();
                     return;
                 };

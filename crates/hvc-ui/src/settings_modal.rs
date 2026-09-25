@@ -358,6 +358,40 @@ impl AppModel {
         }
     }
 
+    /// Tab / Shift-Tab: the next or previous control in paint order. While Settings is open the
+    /// walk stays inside it (the view behind is covered, so its controls must not take focus).
+    pub(crate) fn move_keyboard_focus(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let trap = self
+            .settings_modal
+            .open
+            .then(|| self.settings_modal.focus.clone());
+        // Bounded: a frame never has more stops than this, and a trap with no stop inside must
+        // not spin.
+        for _ in 0..256 {
+            if forward {
+                window.focus_next();
+            } else {
+                window.focus_prev();
+            }
+            match &trap {
+                Some(modal) if !modal.contains_focused(window, cx) => continue,
+                _ => break,
+            }
+        }
+        cx.notify();
+    }
+
+    /// Whether keyboard focus is somewhere inside the Settings modal.
+    #[cfg(test)]
+    pub(crate) fn settings_focus_contains(&self, window: &Window, cx: &App) -> bool {
+        self.settings_modal.focus.contains_focused(window, cx)
+    }
+
     /// Mounted by the shell after its other overlays; also restores focus after a close.
     pub(crate) fn settings_modal_overlay(
         &mut self,

@@ -42,7 +42,9 @@ actions!(
         PreviousSection,
         NextSection,
         RunPrimaryFlowStep,
-        ToggleContextRail
+        ToggleContextRail,
+        FocusNextControl,
+        FocusPreviousControl
     ]
 );
 
@@ -76,6 +78,14 @@ pub(crate) fn register_navigation_keybindings(cx: &mut App) {
         // Runs the flow engine's primary suggested next step.
         KeyBinding::new("ctrl-enter", RunPrimaryFlowStep, None),
         KeyBinding::new("ctrl-b", ToggleContextRail, None),
+        // Tab walks the controls; the code editor keeps Tab for itself.
+        // A bare `!NativeEditor` never matches: GPUI needs a context on the path to test.
+        KeyBinding::new("tab", FocusNextControl, Some("Shell && !NativeEditor")),
+        KeyBinding::new(
+            "shift-tab",
+            FocusPreviousControl,
+            Some("Shell && !NativeEditor"),
+        ),
     ]);
 }
 
@@ -171,6 +181,8 @@ impl Render for AppModel {
             .bg(theme::canvas())
             .text_color(theme::text())
             .font_family(theme::FONT_UI)
+            // Named so bindings can exclude a descendant (Tab stays with the code editor).
+            .key_context("Shell")
             .on_action(cx.listener(|model, _: &SelectHomeView, _, cx| {
                 model.select_view(AppView::Home, cx);
             }))
@@ -215,6 +227,12 @@ impl Render for AppModel {
             }))
             .on_action(cx.listener(|model, _: &ToggleContextRail, _, cx| {
                 model.toggle_context_rail(cx);
+            }))
+            .on_action(cx.listener(|model, _: &FocusNextControl, window, cx| {
+                model.move_keyboard_focus(true, window, cx);
+            }))
+            .on_action(cx.listener(|model, _: &FocusPreviousControl, window, cx| {
+                model.move_keyboard_focus(false, window, cx);
             }))
             .child(header(self, unread, window, cx))
             .child(

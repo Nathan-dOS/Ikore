@@ -107,11 +107,15 @@ pub(crate) enum Icon {
     Workflow,
     /// Back to a list from its detail.
     ChevronLeft,
+    /// Expand a docked panel (terminal) upwards.
+    ChevronUp,
+    /// Durations (runs, pulsations).
+    Timer,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 52] = [
+    pub(crate) const ALL: [Self; 54] = [
         Self::House,
         Self::Plus,
         Self::Hammer,
@@ -164,6 +168,8 @@ impl Icon {
         Self::SlidersHorizontal,
         Self::Workflow,
         Self::ChevronLeft,
+        Self::ChevronUp,
+        Self::Timer,
     ];
 
     /// Asset path served by `HvcAssets`; `icons/<lucide-name>.svg`.
@@ -203,6 +209,8 @@ impl Icon {
             Self::ChevronRight => "icons/chevron-right.svg",
             Self::FileText => "icons/file-text.svg",
             Self::Folder => "icons/folder.svg",
+            Self::Timer => "icons/timer.svg",
+            Self::ChevronUp => "icons/chevron-up.svg",
             Self::ChevronLeft => "icons/chevron-left.svg",
             Self::Workflow => "icons/workflow.svg",
             Self::SlidersHorizontal => "icons/sliders-horizontal.svg",

@@ -11,7 +11,7 @@ use hvc_core::orchestration::SpecificationQuestionSet;
 pub(crate) struct ResolutionConversation {
     pub(crate) conversation_id: String,
     pub(crate) messages: Vec<ChatMessage>,
-    /// The editable "Resposta ao agente" draft, populated once the developer
+    /// The editable "Reply to the agent" draft, populated once the developer
     /// asks the Companion to synthesize a `FILES_NEW:`/`FILES_MOD:`/`FILES:`
     /// reply. `None` until the first synthesis reply lands.
     pub(crate) synthesized_draft: Option<String>,

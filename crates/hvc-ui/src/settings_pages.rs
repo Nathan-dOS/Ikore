@@ -200,6 +200,14 @@ pub(crate) fn shortcut_catalog() -> Vec<Shortcut> {
         ),
         shortcut(NAV, "ctrl-enter", "Run the suggested next step", true),
         shortcut(NAV, "ctrl-b", "Show or hide the context rail", true),
+        shortcut(NAV, "tab", "Next control; its tooltip opens under it", true),
+        shortcut(NAV, "shift-tab", "Previous control", true),
+        shortcut(
+            NAV,
+            "enter",
+            "Press the focused control (space works too)",
+            false,
+        ),
         shortcut(
             REVIEW,
             "enter",

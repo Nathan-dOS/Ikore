@@ -19,6 +19,7 @@ use crate::agents::{
     TerminalEventFilter,
 };
 use crate::app_model::AppModel;
+use crate::icons::Icon;
 use crate::pipeline_status::PipelineStatus;
 use crate::theme;
 
@@ -293,11 +294,11 @@ pub(crate) fn cli_model_picker_panel(
                     cx,
                     |model, cx| model.refresh_cli_model_catalog(cx),
                 ))
-                .child(action_button(
+                .child(icon_action(
                     "cli-model-close".into(),
-                    "Close".into(),
+                    Icon::X,
+                    "Close",
                     true,
-                    false,
                     cx,
                     |model, cx| model.close_cli_model_picker(cx),
                 )),
@@ -1316,17 +1317,22 @@ fn expanded_cli_detail_panel(
                         None,
                         cx,
                     ))
-                    .child(action_button(
+                    .child(icon_action(
                         SharedString::from(format!("agent-collapse:{}", role.as_str())),
-                        "Collapse".into(),
+                        Icon::ChevronDown,
+                        "Collapse terminal",
                         true,
-                        false,
                         cx,
                         |model, cx| model.toggle_agents_terminal_expanded(cx),
                     )),
             )
             .when_some(selected_run.as_ref(), |panel, run| {
-                panel.child(div().text_xs().text_color(theme::text_muted()).child(run_metadata(run)))
+                panel.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(run_metadata(run)),
+                )
             })
             .child(activity_panel(
                 events.as_ref(),
@@ -1370,15 +1376,17 @@ fn expanded_cli_detail_panel(
                             true,
                             false,
                             cx,
-                            move |model, cx| model.cycle_agent_event_filter(role.as_str().to_string(), cx),
+                            move |model, cx| {
+                                model.cycle_agent_event_filter(role.as_str().to_string(), cx)
+                            },
                         ))
-                        .child(action_button(
+                        .child(follow_button(
                             SharedString::from(format!("agent-expanded-follow:{}", role.as_str())),
-                            if follow { "Follow active" } else { "Follow paused" }.into(),
-                            true,
-                            false,
+                            follow,
                             cx,
-                            move |model, cx| model.toggle_agent_follow_tail(role.as_str().to_string(), cx),
+                            move |model, cx| {
+                                model.toggle_agent_follow_tail(role.as_str().to_string(), cx)
+                            },
                         )),
                 )
             })
@@ -1426,17 +1434,22 @@ fn expanded_cli_detail_panel(
                         None,
                         cx,
                     ))
-                    .child(action_button(
+                    .child(icon_action(
                         SharedString::from(format!("free-form-collapse:{slot_id}")),
-                        "Collapse".into(),
+                        Icon::ChevronDown,
+                        "Collapse terminal",
                         true,
-                        false,
                         cx,
                         |model, cx| model.toggle_agents_terminal_expanded(cx),
                     )),
             )
             .when_some(selected_run.as_ref(), |panel, run| {
-                panel.child(div().text_xs().text_color(theme::text_muted()).child(run_metadata(run)))
+                panel.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(run_metadata(run)),
+                )
             })
             .child(activity_panel_for_key(
                 events.as_ref(),
@@ -1471,7 +1484,9 @@ fn expanded_cli_detail_panel(
                                 !busy && prompt_ready && !free_form.slot.archived,
                                 false,
                                 cx,
-                                move |model, cx| model.start_free_form_agent(slot_for_start.clone(), cx),
+                                move |model, cx| {
+                                    model.start_free_form_agent(slot_for_start.clone(), cx)
+                                },
                             ))
                         })
                         .child(action_button(
@@ -1480,21 +1495,25 @@ fn expanded_cli_detail_panel(
                             true,
                             false,
                             cx,
-                            move |model, cx| model.cycle_agent_event_filter(filter_for_action.clone(), cx),
+                            move |model, cx| {
+                                model.cycle_agent_event_filter(filter_for_action.clone(), cx)
+                            },
                         ))
-                        .child(action_button(
+                        .child(follow_button(
                             SharedString::from(format!("free-form-expanded-follow:{slot_id}")),
-                            if follow { "Follow active" } else { "Follow paused" }.into(),
-                            true,
-                            false,
+                            follow,
                             cx,
-                            move |model, cx| model.toggle_agent_follow_tail(follow_for_action.clone(), cx),
+                            move |model, cx| {
+                                model.toggle_agent_follow_tail(follow_for_action.clone(), cx)
+                            },
                         )),
                 )
             })
             .into_any_element();
     }
-    panel.child(empty_state("Select an agent.")).into_any_element()
+    panel
+        .child(empty_state("Select an agent."))
+        .into_any_element()
 }
 
 fn archived_free_form_card(
@@ -1799,42 +1818,35 @@ fn free_form_card(
                             .text_color(theme::text_muted())
                             .child(run_metadata(run)),
                     )
-                    .child(action_button(
+                    .child(icon_action(
+                        SharedString::from(format!("free-form-older:{}", slot.id)),
+                        Icon::ChevronLeft,
+                        "Older run",
+                        !busy && index + 1 < free_form.recent_runs.len(),
+                        cx,
+                        {
+                            let slot_id = slot_id.clone();
+                            move |model, cx| model.select_free_form_history(slot_id.clone(), 1, cx)
+                        },
+                    ))
+                    .child(icon_action(
                         SharedString::from(format!("free-form-newer:{}", slot.id)),
-                        "Newer".into(),
+                        Icon::ChevronRight,
+                        "Newer run",
                         !busy && index > 0,
-                        false,
                         cx,
                         {
                             let slot_id = slot_id.clone();
                             move |model, cx| model.select_free_form_history(slot_id.clone(), -1, cx)
                         },
                     ))
-                    .child(action_button(
+                    .child(follow_button(
                         SharedString::from(format!("free-form-follow:{}", slot.id)),
-                        if follow_tail {
-                            "Follow ativo"
-                        } else {
-                            "Follow pausado"
-                        }
-                        .into(),
-                        true,
-                        false,
+                        follow_tail,
                         cx,
                         {
                             let key = format!("free-form:{}", slot.id);
                             move |model, cx| model.toggle_agent_follow_tail(key.clone(), cx)
-                        },
-                    ))
-                    .child(action_button(
-                        SharedString::from(format!("free-form-older:{}", slot.id)),
-                        "Older".into(),
-                        !busy && index + 1 < free_form.recent_runs.len(),
-                        false,
-                        cx,
-                        {
-                            let slot_id = slot_id.clone();
-                            move |model, cx| model.select_free_form_history(slot_id.clone(), 1, cx)
                         },
                     ))
                     .child(crate::select_menu::compact_control(
@@ -2258,21 +2270,21 @@ fn agent_card(
                                 run_metadata(selected_run)
                             )),
                     )
-                    .child(action_button(
-                        SharedString::from(format!("agent-history-newer:{}", role.as_str())),
-                        "Newer".into(),
-                        !busy && index > 0,
-                        false,
-                        cx,
-                        move |model, cx| model.select_agent_history(role, -1, cx),
-                    ))
-                    .child(action_button(
+                    .child(icon_action(
                         SharedString::from(format!("agent-history-older:{}", role.as_str())),
-                        "Older".into(),
+                        Icon::ChevronLeft,
+                        "Older run",
                         !busy && index + 1 < agent.recent_runs.len(),
-                        false,
                         cx,
                         move |model, cx| model.select_agent_history(role, 1, cx),
+                    ))
+                    .child(icon_action(
+                        SharedString::from(format!("agent-history-newer:{}", role.as_str())),
+                        Icon::ChevronRight,
+                        "Newer run",
+                        !busy && index > 0,
+                        cx,
+                        move |model, cx| model.select_agent_history(role, -1, cx),
                     ))
                     .child(action_button(
                         SharedString::from(format!("agent-history-clear:{}", role.as_str())),
@@ -2294,16 +2306,9 @@ fn agent_card(
                         true,
                         cx,
                     ))
-                    .child(action_button(
+                    .child(follow_button(
                         SharedString::from(format!("agent-follow:{}", role.as_str())),
-                        if follow_tail {
-                            "Follow ativo"
-                        } else {
-                            "Follow pausado"
-                        }
-                        .into(),
-                        true,
-                        false,
+                        follow_tail,
                         cx,
                         move |model, cx| {
                             model.toggle_agent_follow_tail(role.as_str().to_string(), cx)
@@ -3148,11 +3153,9 @@ fn api_activity_viewer(
                     cx,
                     move |model, cx| model.cycle_agent_api_filter(key_for_filter.clone(), cx),
                 ))
-                .child(action_button(
+                .child(follow_button(
                     SharedString::from(format!("api-follow:{key}")),
-                    if follow_tail { "Follow active" } else { "Follow paused" }.into(),
-                    true,
-                    false,
+                    follow_tail,
                     cx,
                     move |model, cx| model.toggle_agent_follow_tail(key_for_follow.clone(), cx),
                 ))
@@ -3192,11 +3195,19 @@ fn api_activity_viewer(
                         model.clear_agent_api_activity(target_for_clear.clone(), cx)
                     },
                 ))
-                .child(action_button(
+                .child(icon_action(
                     SharedString::from(format!("api-expand:{key}")),
-                    if expanded { "Collapse" } else { "Expand" }.into(),
+                    if expanded {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronUp
+                    },
+                    if expanded {
+                        "Collapse viewer"
+                    } else {
+                        "Expand viewer"
+                    },
                     true,
-                    false,
                     cx,
                     |model, cx| model.toggle_agents_terminal_expanded(cx),
                 )),
@@ -3347,11 +3358,11 @@ fn activity_panel_for_key(
                     )),
                 )
                 .when(!expanded, |header| {
-                    header.child(action_button(
+                    header.child(icon_action(
                         SharedString::from(expand_id),
-                        "Expand".into(),
+                        Icon::ChevronUp,
+                        "Expand terminal",
                         true,
-                        false,
                         cx,
                         |model, cx| model.toggle_agents_terminal_expanded(cx),
                     ))
@@ -3538,6 +3549,70 @@ fn config_button(
                     ))
                 }),
         )
+}
+
+/// An arrow or an X in place of a worded button; the tooltip names the action.
+fn icon_action(
+    id: SharedString,
+    glyph: Icon,
+    tooltip: &'static str,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+    handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
+) -> AnyElement {
+    crate::widgets::icon_button(
+        id,
+        glyph,
+        tooltip,
+        false,
+        None,
+        enabled,
+        cx,
+        move |model, _, cx| handler(model, cx),
+    )
+}
+
+/// Follow keeps its words — they report a state — and explains what it does once the pointer
+/// has rested on it for a moment (or Tab reaches it).
+fn follow_button(
+    id: SharedString,
+    follow: bool,
+    cx: &mut Context<AppModel>,
+    handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
+) -> AnyElement {
+    let explanation = if follow {
+        "Following: the viewer keeps scrolling to the newest output as it arrives. Click to pause and read earlier lines."
+    } else {
+        "Paused: the viewer stays where you scrolled while new output keeps arriving. Click to follow the newest output again."
+    };
+    let selector = id.clone();
+    crate::widgets::button_frame(
+        div()
+            .id(id)
+            .debug_selector(move || selector.to_string())
+            .tab_index(0),
+        crate::widgets::ButtonVariant::Secondary,
+        true,
+    )
+    .tooltip(move |_, cx| {
+        cx.new(|_| {
+            crate::widgets::Tooltip::new(explanation).after_rest(crate::widgets::EXPLAIN_REST)
+        })
+        .into()
+    })
+    .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
+    .gap_2()
+    .child(crate::widgets::status_dot(if follow {
+        theme::success()
+    } else {
+        theme::text_subtle()
+    }))
+    .child(if follow {
+        "Follow active"
+    } else {
+        "Follow paused"
+    })
+    .into_any_element()
 }
 
 fn action_button(

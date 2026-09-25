@@ -11,7 +11,7 @@ use gpui::{
     Task, Window,
 };
 use hvc_core::agent_runtime::{AdaptiveContextMode, ContextStrategy, DynamicContextPolicy};
-use hvc_core::chat_service::{ChatEventEnvelope, ChatExecutionTargetRequest, ChatTransportKind};
+use hvc_core::chat_service::{ChatEventEnvelope, ChatTransportKind};
 use hvc_core::llm::{
     DeleteProviderConnectionRequest, DeleteProviderRouteRequest, ResetLlmResilienceStateRequest,
     RouteTarget, RoutingMode, TestProviderConnectionRequest,
@@ -347,6 +347,8 @@ pub struct AppModel {
     pub(crate) settings: Entity<SettingsModel>,
     /// The Settings modal (search, focus, scroll); page and drill-in state live in `settings`.
     pub(crate) settings_modal: crate::settings_modal::SettingsModalState,
+    /// Home's seven-day usage read (the charts' other data come from existing snapshots).
+    pub(crate) home_stats: crate::home_stats::HomeStatsState,
     pub(crate) logs: Entity<LogsModel>,
     active_view: AppView,
     /// Wall-clock `HH:MM` shown in the status bar; refreshed by the lifecycle poll.
@@ -786,6 +788,7 @@ impl AppModel {
             agents: cx.new(|_| AgentsModel::default()),
             settings: cx.new(|_| SettingsModel::default()),
             settings_modal,
+            home_stats: Default::default(),
             logs: cx.new(|_| LogsModel::default()),
             active_view,
             footer_clock: crate::time::current_clock_hhmm().into(),
@@ -1050,6 +1053,7 @@ impl AppModel {
             }
             AppView::Agents => self.refresh_agents(cx),
             AppView::Logs => self.refresh_logs(cx),
+            AppView::Home => self.refresh_home_stats(false, cx),
             _ => {}
         }
         self.schedule_session_persistence(cx);
@@ -4650,9 +4654,7 @@ impl AppModel {
                     self.agents.update(cx, |agents, _| {
                         agents.error = Some(crate::errors::UiCommandError::from_chat_parts(
                             "invalid_custom_args",
-                            format!(
-                                "Argumentos Custom devem ser um array JSON de strings: {error}"
-                            ),
+                            format!("Custom arguments must be a JSON array of strings: {error}"),
                         ));
                     });
                     cx.notify();
@@ -4886,7 +4888,7 @@ impl AppModel {
                             agents.error = Some(crate::errors::UiCommandError::from_chat_parts(
                                 "invalid_custom_args",
                                 format!(
-                                    "Argumentos Custom devem ser um array JSON de strings: {error}"
+                                    "Custom arguments must be a JSON array of strings: {error}"
                                 ),
                             ));
                         });
@@ -7052,6 +7054,7 @@ impl AppModel {
         match active_view {
             AppView::Agents => self.refresh_agents(cx),
             AppView::Logs => self.refresh_logs(cx),
+            AppView::Home => self.refresh_home_stats(true, cx),
             _ => {}
         }
         if active_view != AppView::Agents {
@@ -9439,7 +9442,7 @@ mod tests {
         fn create_conversation(
             &self,
             _: String,
-            _: ChatExecutionTargetRequest,
+            _: hvc_core::chat_service::ChatExecutionTargetRequest,
         ) -> crate::chat::ChatFuture<hvc_core::chat_service::GetChatConversationResponse> {
             Box::pin(async { Err(crate::errors::UiCommandError::worker("unused")) })
         }
