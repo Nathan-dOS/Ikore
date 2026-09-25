@@ -111,7 +111,7 @@ pub(super) fn build_process_spec(
 ) -> Result<CliProcessSpec, TerminalError> {
     if !request.executable.is_absolute() {
         return Err(TerminalError::Validation(
-            "o executável CLI deve ter caminho absoluto".into(),
+            "the CLI executable needs an absolute path".into(),
         ));
     }
     validate_resume_session(request.resume_session_id.as_deref())?;
@@ -145,7 +145,7 @@ fn validate_resume_session(session_id: Option<&str>) -> Result<(), TerminalError
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.'))
     {
         return Err(TerminalError::Validation(
-            "identificador de sessão CLI inválido".into(),
+            "invalid CLI session identifier".into(),
         ));
     }
     Ok(())

@@ -29,24 +29,24 @@ impl PersistenceService {
             Self::read_runtime_setting(db, "orchestration.learning_refinement_mode")?
         {
             settings.learning_refinement_mode = LearningRefinementMode::parse(&value)
-                .ok_or_else(|| invalid("Modo de refinamento Learning inválido."))?;
+                .ok_or_else(|| invalid("Invalid Learning refinement mode."))?;
         }
         if let Some(value) = Self::read_runtime_setting(db, "orchestration.vagueness_threshold")? {
             settings.vagueness_threshold = value
                 .parse::<u8>()
-                .map_err(|_| invalid("Threshold inválido."))?
+                .map_err(|_| invalid("Invalid threshold."))?
                 .try_into()
                 .map_err(|e: ContractError| invalid(e.to_string()))?;
         }
         if let Some(value) = Self::read_runtime_setting(db, "brownfield_llm_budget")? {
             settings.brownfield_llm_budget = value
                 .parse::<u8>()
-                .map_err(|_| invalid("Orçamento LLM brownfield inválido."))?;
+                .map_err(|_| invalid("Invalid brownfield LLM budget."))?;
         }
         if let Some(value) = Self::read_runtime_setting(db, "brownfield_expansion_radius")? {
             settings.brownfield_expansion_radius = value
                 .parse::<u8>()
-                .map_err(|_| invalid("Raio de expansão brownfield inválido."))?;
+                .map_err(|_| invalid("Invalid brownfield expansion radius."))?;
         }
         Self::validate_brownfield_settings(&settings)?;
         Ok(settings)
@@ -59,7 +59,7 @@ impl PersistenceService {
             || !matches!(settings.brownfield_expansion_radius, 1 | 2)
         {
             return Err(invalid(
-                "Brownfield exige orçamento entre 0 e 8 e raio 1 ou 2.",
+                "Brownfield needs a budget between 0 and 8 and a radius of 1 or 2.",
             ));
         }
         Ok(())
@@ -115,11 +115,11 @@ impl PersistenceService {
             if !enrichment_jobs.is_empty() {
                 let now = Self::now_iso();
                 tx.execute(
-                    "UPDATE jobs SET status='failed',cancellation_reason='superseded',last_error='Orçamento LLM brownfield configurado como zero.',finished_at=?1,updated_at=?1 WHERE kind='brownfield_enrich' AND status IN ('pending','running','interrupted')",
+                    "UPDATE jobs SET status='failed',cancellation_reason='superseded',last_error='Brownfield LLM budget set to zero.',finished_at=?1,updated_at=?1 WHERE kind='brownfield_enrich' AND status IN ('pending','running','interrupted')",
                     [&now],
                 )?;
                 tx.execute(
-                    "UPDATE brownfield_enrichment_runs SET state='budget_exhausted',diagnostic='Orçamento LLM brownfield configurado como zero; nenhuma chamada realizada.',updated_at=?1 WHERE state IN ('pending','running')",
+                    "UPDATE brownfield_enrichment_runs SET state='budget_exhausted',diagnostic='Brownfield LLM budget set to zero; no call made.',updated_at=?1 WHERE state IN ('pending','running')",
                     [&now],
                 )?;
                 cancelled.extend(enrichment_jobs);
@@ -193,7 +193,7 @@ impl PersistenceService {
         let effects: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM artifacts WHERE pulsation_id=?1 AND publication_state IN ('applied','applying','conflict'))",[pulse],|r|r.get(0))?;
         if effects {
             return Err(invalid(
-                "Há efeitos publicados. Cancele/reconcilie esta pulsação e crie outro pedido.",
+                "Effects were already published. Cancel or reconcile this pulsation and create a new request.",
             ));
         }
         tx.execute("UPDATE artifact_publications SET state='cancelled' WHERE pulsation_id=?1 AND state='pending'",[pulse])?;
@@ -207,7 +207,7 @@ impl PersistenceService {
         )?;
         let updated = if current.status == PulsationStatus::Planning {
             tx.execute("UPDATE pulsations SET stage='Intake',state_version=state_version+1,updated_at=?2 WHERE id=?1",params![pulse,Self::now_iso()])?;
-            tx.execute("INSERT INTO pulse_events(id,pulsation_id,event_type,from_status,to_status,from_stage,to_stage,message,created_at) VALUES(?1,?2,'description_revised','planning','planning',?3,'Intake','Pedido editado; geração anterior superada.',?4)",params![Uuid::new_v4().to_string(),pulse,current.stage.as_db_value(),Self::now_iso()])?;
+            tx.execute("INSERT INTO pulse_events(id,pulsation_id,event_type,from_status,to_status,from_stage,to_stage,message,created_at) VALUES(?1,?2,'description_revised','planning','planning',?3,'Intake','Request edited; the previous generation was superseded.',?4)",params![Uuid::new_v4().to_string(),pulse,current.stage.as_db_value(),Self::now_iso()])?;
             Self::find_pulsation_by_id(&tx, pulse)?.ok_or_else(|| invalid("Pulsation missing."))?
         } else {
             Self::transition_pulsation(
@@ -216,7 +216,7 @@ impl PersistenceService {
                 PulsationStatus::Planning,
                 PulsationStage::Intake,
                 "description_revised",
-                Some("Pedido editado; geração anterior superada."),
+                Some("Request edited; the previous generation was superseded."),
             )?
         };
         Self::assess_description(
@@ -243,7 +243,7 @@ impl PersistenceService {
         let valid: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pulsations WHERE id=?1 AND input_revision=?2 AND specification_started=0 AND status IN ('planning','running') AND stage IN ('Intake','SPECIFICATION'))",params![pulse,revision],|r|r.get(0))?;
         if !valid {
             return Err(invalid(
-                "Revisão obsoleta ou Specification já iniciada. Atualize; mudanças no pedido após o início exigem nova pulsação.",
+                "Stale revision, or Specification already started. Refresh; changing the request after it starts needs a new pulsation.",
             ));
         }
         Ok(())
@@ -260,7 +260,7 @@ impl PersistenceService {
             &request.pulsation_id,
             request.expected_input_revision,
         )?;
-        if tx.execute("UPDATE pulsation_preparation SET review_state='confirmed',updated_at=?3 WHERE pulsation_id=?1 AND input_revision=?2 AND review_state='pending'",params![request.pulsation_id,request.expected_input_revision,Self::now_iso()])? != 1 { return Err(invalid("Revisão já confirmada ou indisponível.")); }
+        if tx.execute("UPDATE pulsation_preparation SET review_state='confirmed',updated_at=?3 WHERE pulsation_id=?1 AND input_revision=?2 AND review_state='pending'",params![request.pulsation_id,request.expected_input_revision,Self::now_iso()])? != 1 { return Err(invalid("Revision already confirmed or unavailable.")); }
         tx.execute("UPDATE pulsation_description_revisions SET review_state='confirmed',confirmed_at=?3 WHERE pulsation_id=?1 AND input_revision=?2",params![request.pulsation_id,request.expected_input_revision,Self::now_iso()])?;
         tx.commit()?;
         self.wake_scheduler();
@@ -339,9 +339,9 @@ impl PersistenceService {
                 .map(|s| serde_json::from_value(serde_json::json!(s)))
                 .transpose()
                 .map_err(|e| invalid(e.to_string()))?;
-            let stage = catalog::parse_stage(&stage).ok_or_else(|| invalid("Estágio inválido."))?;
+            let stage = catalog::parse_stage(&stage).ok_or_else(|| invalid("Invalid stage."))?;
             let status = PulsationStatus::from_db_value(&status)
-                .ok_or_else(|| invalid("Status inválido."))?;
+                .ok_or_else(|| invalid("Invalid status."))?;
             let artifacts = db
                 .prepare("SELECT id FROM artifacts WHERE pulsation_id=?1 ORDER BY created_at,id")?
                 .query_map([&pulse], |r| r.get(0))?
@@ -371,7 +371,7 @@ impl PersistenceService {
                 stage,
                 status,
                 blocking_reason: if description_review == DescriptionReviewState::Pending {
-                    Some("aguardando revisão do pedido".into())
+                    Some("awaiting review of the request".into())
                 } else {
                     None
                 },

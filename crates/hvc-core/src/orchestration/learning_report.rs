@@ -156,7 +156,7 @@ impl LearningReportV2 {
                 .iter()
                 .any(|value| value.chars().count() > 1000)
         {
-            return Err(ContractError::Invalid("limites do relatório Learning V2"));
+            return Err(ContractError::Invalid("Learning V2 report limits"));
         }
         validate_findings(
             self.observations.iter().chain(&self.recommendations),
@@ -183,7 +183,7 @@ impl LearningReportV2 {
                     .iter()
                     .any(|id| !allowed_evidence.contains(id.as_str()))
             {
-                return Err(ContractError::Invalid("avaliação de contexto inválida"));
+                return Err(ContractError::Invalid("invalid context assessment"));
             }
         }
         let candidates = input
@@ -207,7 +207,7 @@ impl LearningReportV2 {
                     .any(|id| !allowed_evidence.contains(id.as_str()) || !operational.contains(id))
             {
                 return Err(ContractError::Invalid(
-                    "seleção de grafo sem evidência operacional conhecida",
+                    "graph selection without known operational evidence",
                 ));
             }
         }
@@ -215,7 +215,7 @@ impl LearningReportV2 {
             && !self.graph_selections.is_empty()
         {
             return Err(ContractError::Invalid(
-                "modo Observe não aceita propostas de grafo",
+                "Observe mode does not accept graph proposals",
             ));
         }
         validate_learning_report_english(self, &developer_titles(input))?;
@@ -304,23 +304,23 @@ fn validate_findings<'a>(
             || finding.evidence_ids.len() > 8
         {
             return Err(ContractError::Invalid(
-                "achado Learning sem evidência ou acima do orçamento",
+                "Learning finding without evidence or over budget",
             ));
         }
         let mut pulses = HashSet::new();
         let mut ids = HashSet::new();
         for id in &finding.evidence_ids {
             let Some(pulse) = allowed.get(id.as_str()) else {
-                return Err(ContractError::Invalid("evidência Learning desconhecida"));
+                return Err(ContractError::Invalid("unknown Learning evidence"));
             };
             if !ids.insert(id) {
-                return Err(ContractError::Invalid("evidência Learning duplicada"));
+                return Err(ContractError::Invalid("duplicate Learning evidence"));
             }
             pulses.insert(pulse);
         }
         if finding.recurring && pulses.len() < 2 {
             return Err(ContractError::Invalid(
-                "recorrência exige pelo menos duas pulsações",
+                "recurrence requires at least two pulsations",
             ));
         }
     }
@@ -391,7 +391,7 @@ impl LearningReportV1 {
             || self.limitations.len() > 8
             || self.limitations.iter().any(|s| s.chars().count() > 1000)
         {
-            return Err(ContractError::Invalid("limites do relatório Learning"));
+            return Err(ContractError::Invalid("Learning report limits"));
         }
         let allowed: HashMap<_, _> = input
             .evidence
@@ -405,23 +405,23 @@ impl LearningReportV1 {
                 || finding.evidence_ids.len() > 8
             {
                 return Err(ContractError::Invalid(
-                    "achado Learning sem evidência ou acima do orçamento",
+                    "Learning finding without evidence or over budget",
                 ));
             }
             let mut pulses = HashSet::new();
             let mut ids = HashSet::new();
             for id in &finding.evidence_ids {
                 let Some(pulse) = allowed.get(id.as_str()) else {
-                    return Err(ContractError::Invalid("evidência Learning desconhecida"));
+                    return Err(ContractError::Invalid("unknown Learning evidence"));
                 };
                 if !ids.insert(id) {
-                    return Err(ContractError::Invalid("evidência Learning duplicada"));
+                    return Err(ContractError::Invalid("duplicate Learning evidence"));
                 }
                 pulses.insert(pulse);
             }
             if finding.recurring && pulses.len() < 2 {
                 return Err(ContractError::Invalid(
-                    "recorrência exige pelo menos duas pulsações",
+                    "recurrence requires at least two pulsations",
                 ));
             }
         }

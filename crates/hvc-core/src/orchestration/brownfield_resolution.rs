@@ -338,7 +338,7 @@ impl ProjectIndex {
         let Some(descriptor) = &edge.descriptor else {
             return ResolutionOutcome::Unresolved {
                 method: "no_structural_descriptor",
-                reason: "Referência lexical ou legado V14 sem descritor estrutural.".into(),
+                reason: "Lexical or legacy V14 reference without a structural descriptor.".into(),
             };
         };
         match descriptor {
@@ -446,7 +446,7 @@ impl ProjectIndex {
         }
         unresolved(
             "rust_module_tree",
-            "Módulo Rust não encontrado no índice do projeto.",
+            "Rust module not found in the project index.",
         )
     }
 
@@ -495,7 +495,7 @@ impl ProjectIndex {
         }
         unresolved(
             "typescript_module_path",
-            "Módulo TypeScript relativo não encontrado no índice do projeto.",
+            "Relative TypeScript module not found in the project index.",
         )
     }
 
@@ -531,7 +531,7 @@ impl ProjectIndex {
 
     fn resolve_symbol(&self, source: &str, path: &[String], type_only: bool) -> ResolutionOutcome {
         let Some(name) = path.last() else {
-            return unresolved("symbol_path", "Path de símbolo vazio.");
+            return unresolved("symbol_path", "Empty symbol path.");
         };
         if is_builtin(name, type_only) {
             return ResolutionOutcome::External {
@@ -681,7 +681,7 @@ impl PersistenceService {
         {
             let now = Self::now_iso();
             tx.execute(
-                "UPDATE jobs SET status='failed',last_error='Contexto de resolução superado.',cancellation_reason='superseded',finished_at=?2,updated_at=?2 WHERE project_id=?1 AND kind='brownfield_resolve' AND status IN ('pending','running','interrupted') AND cancellation_reason IS NULL",
+                "UPDATE jobs SET status='failed',last_error='Resolution context superseded.',cancellation_reason='superseded',finished_at=?2,updated_at=?2 WHERE project_id=?1 AND kind='brownfield_resolve' AND status IN ('pending','running','interrupted') AND cancellation_reason IS NULL",
                 params![project_id, now],
             )?;
         }
@@ -800,7 +800,7 @@ impl PersistenceService {
             let mut db = self.connection()?;
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute(
-                "UPDATE jobs SET status='done',finished_at=?2,updated_at=?2,last_error='Contexto de resolução avançou; novo lote agendado.' WHERE id=?1 AND generation=?3 AND status='running'",
+                "UPDATE jobs SET status='done',finished_at=?2,updated_at=?2,last_error='Resolution context advanced; a new batch was scheduled.' WHERE id=?1 AND generation=?3 AND status='running'",
                 params![job.id, Self::now_iso(), generation],
             )?;
             Self::ensure_brownfield_resolution_job_tx(&tx, &project_id, &context.sha256)?;
@@ -851,7 +851,7 @@ impl PersistenceService {
         for edge in &edges {
             if cancellation.is_cancelled() {
                 return Err(PersistenceServiceError::Cancelled(
-                    "Resolução brownfield cancelada.".into(),
+                    "Brownfield resolution cancelled.".into(),
                 ));
             }
             if !resolved.is_empty() && started.elapsed() >= MAX_RESOLUTION_DURATION {
@@ -901,7 +901,7 @@ impl PersistenceService {
         };
         tx.execute(
             "UPDATE brownfield_resolution_state SET state=?2,cursor_reference_key=?3,examined_edges=?4,resolved_edges=?5,ambiguous_edges=?6,external_edges=?7,unresolved_edges=?8,elapsed_us=?9,diagnostic=?10,updated_at=?11 WHERE project_id=?1 AND resolver_version=?12 AND resolution_context_sha256=?13",
-            params![project_id, if has_more { "partial" } else { "complete" }, cursor, all, resolved_count, ambiguous_count, external_count, unresolved_count, metrics.elapsed_us, if has_more { Some("Limite de 20.000 arestas; continuação agendada.") } else { None }, Self::now_iso(), BROWNFIELD_RESOLVER_VERSION, context.sha256],
+            params![project_id, if has_more { "partial" } else { "complete" }, cursor, all, resolved_count, ambiguous_count, external_count, unresolved_count, metrics.elapsed_us, if has_more { Some("20,000-edge limit reached; continuation scheduled.") } else { None }, Self::now_iso(), BROWNFIELD_RESOLVER_VERSION, context.sha256],
         )?;
         tx.execute(
             "UPDATE jobs SET status='done',maintenance_metrics_json=?2,finished_at=?3,updated_at=?3 WHERE id=?1 AND generation=?4 AND status='running'",
@@ -994,7 +994,7 @@ impl PersistenceService {
         )?;
         if !valid {
             return Err(PersistenceServiceError::Cancelled(
-                "Resolução brownfield superada ou sem consentimento.".into(),
+                "Brownfield resolution superseded or without consent.".into(),
             ));
         }
         Ok(())
@@ -1493,7 +1493,7 @@ fn outcome_from_candidates(
     });
     candidates.dedup();
     match candidates.len() {
-        0 => unresolved(method, "Nenhum alvo estrutural exato encontrado."),
+        0 => unresolved(method, "No exact structural target found."),
         1 => ResolutionOutcome::Resolved {
             target: candidates.remove(0),
             method,
@@ -1501,7 +1501,7 @@ fn outcome_from_candidates(
         count => ResolutionOutcome::Ambiguous {
             candidates: count.min(MAX_REFERENCE_CANDIDATES + 1),
             method,
-            reason: format!("{count} alvos estruturais exatos permanecem possíveis."),
+            reason: format!("{count} exact structural targets remain possible."),
         },
     }
 }

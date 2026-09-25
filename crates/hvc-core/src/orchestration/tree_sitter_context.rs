@@ -172,12 +172,12 @@ impl TreeSitterExtractor {
         let mut parser = Parser::new();
         parser
             .set_language(&language)
-            .map_err(|_| ContractError::Invalid("gramática Tree-sitter incompatível"))?;
+            .map_err(|_| ContractError::Invalid("incompatible Tree-sitter grammar"))?;
         let tree = parser
             .parse(source.content(), None)
             .ok_or(ContractError::Invalid("parser Tree-sitter interrompido"))?;
         let query = Query::new(&language, query_source)
-            .map_err(|_| ContractError::Invalid("query Tree-sitter inválida"))?;
+            .map_err(|_| ContractError::Invalid("invalid Tree-sitter query"))?;
         let capture_names = query.capture_names();
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&query, tree.root_node(), source.content().as_bytes());
@@ -290,8 +290,9 @@ impl TreeSitterExtractor {
                             target_revision: None,
                             resolution_evidence: None,
                             resolution: ReferenceResolution::Unresolved {
-                                reason: "Referência estrutural normalizada; resolução de projeto pendente."
-                                    .into(),
+                                reason:
+                                    "Structural reference normalized; project resolution pending."
+                                        .into(),
                             },
                         });
                     }
@@ -369,8 +370,10 @@ impl TreeSitterExtractor {
             symbols,
             references,
             diagnostics: if has_error {
-                vec!["syntax_error: árvore parcial preservada; fatos ausentes não são evidência negativa."
-                    .into()]
+                vec![
+                    "syntax_error: partial tree kept; missing facts are not negative evidence."
+                        .into(),
+                ]
             } else {
                 Vec::new()
             },
@@ -438,7 +441,7 @@ impl CodeContextExtractor for TreeSitterExtractor {
                 facts.coverage.truncated = true;
                 facts.coverage.state = CoverageState::Partial;
                 facts.coverage.diagnostics.push(
-                    "budget_exhausted: extração estrutural devolveu cobertura parcial.".into(),
+                    "budget_exhausted: structural extraction returned partial coverage.".into(),
                 );
                 break;
             }
@@ -453,7 +456,7 @@ impl CodeContextExtractor for TreeSitterExtractor {
             }
             if source_facts.status == StructuralParseStatus::Unsupported {
                 facts.coverage.diagnostics.push(format!(
-                    "lexical_fallback: `{}` não possui gramática BF2.",
+                    "lexical_fallback: `{}` has no BF2 grammar.",
                     source.revision().relative_path.as_str()
                 ));
             }
@@ -885,7 +888,7 @@ fn lexical_fallback(source: &SourceSnapshot) -> SourceStructuralFacts {
                 target_revision: None,
                 resolution_evidence: None,
                 resolution: ReferenceResolution::Unresolved {
-                    reason: "Fallback lexical; linguagem sem gramática BF2.".into(),
+                    reason: "Lexical fallback; language without a BF2 grammar.".into(),
                 },
             });
         }

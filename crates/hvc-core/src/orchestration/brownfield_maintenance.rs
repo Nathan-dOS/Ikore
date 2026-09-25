@@ -110,7 +110,7 @@ impl PersistenceService {
         let project_id = Self::normalize_project_id(project_id)?;
         let db = self.connection()?;
         Self::find_project_by_id(&db, &project_id, false)?.ok_or_else(|| {
-            PersistenceServiceError::NotFound("Projeto brownfield ativo não encontrado.".into())
+            PersistenceServiceError::NotFound("Active brownfield project not found.".into())
         })?;
         db.prepare(
             "SELECT project_id,relative_path,status,content_sha256,in_degree,priority_reason,budget_consumed,attempts,last_used_at FROM brownfield_frontier WHERE project_id=?1 ORDER BY relative_path",
@@ -121,7 +121,7 @@ impl PersistenceService {
                 rusqlite::Error::FromSqlConversionFailure(
                     2,
                     rusqlite::types::Type::Text,
-                    format!("status de fronteira inválido: {raw}").into(),
+                    format!("invalid boundary status: {raw}").into(),
                 )
             })?;
             Ok(BrownfieldFrontierEntry {
@@ -155,12 +155,12 @@ impl PersistenceService {
             != Some("true")
         {
             return Err(coordination::invalid(
-                "Ignorar módulos exige consentimento brownfield ativo.",
+                "Ignoring modules requires active brownfield consent.",
             ));
         }
         if !RepositoryContext::is_code_relative_path(relative_path.as_str()) {
             return Err(coordination::invalid(
-                "Somente fontes de código elegíveis podem ser ignoradas.",
+                "Only eligible code sources can be ignored.",
             ));
         }
         let revision = if ignored {
@@ -181,7 +181,7 @@ impl PersistenceService {
                 params![project_id, relative_path.as_str(), now],
             )?;
             tx.execute(
-                "UPDATE brownfield_refresh_queue SET state='ignored',diagnostic='Módulo ignorado pelo usuário.',updated_at=?3 WHERE project_id=?1 AND relative_path=?2 AND state IN ('pending','in_progress')",
+                "UPDATE brownfield_refresh_queue SET state='ignored',diagnostic='Module ignored by the user.',updated_at=?3 WHERE project_id=?1 AND relative_path=?2 AND state IN ('pending','in_progress')",
                 params![project_id, relative_path.as_str(), now],
             )?;
         } else {
@@ -277,9 +277,7 @@ impl PersistenceService {
                 workspace_root,
                 &event.relative_path,
             )
-            .map_err(|error| {
-                coordination::invalid(format!("Nota de componente inválida: {error:?}"))
-            })?;
+            .map_err(|error| coordination::invalid(format!("Invalid component note: {error:?}")))?;
             crate::workspace_service::component_mapping_status(&event.relative_path, &content)
         } else {
             Some("stale")

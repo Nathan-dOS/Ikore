@@ -790,7 +790,7 @@ pub fn prepare_brownfield_knowledge_root(
         let canonical = fs::canonicalize(&current).map_err(WorkspaceServiceError::Io)?;
         if !canonical.starts_with(&canonical_root) {
             return Err(WorkspaceServiceError::PathForbidden(
-                "A estrutura brownfield resolveria para fora do workspace.".to_string(),
+                "The brownfield structure would resolve outside the workspace.".to_string(),
             ));
         }
     }
@@ -997,7 +997,7 @@ fn greenfield_file_specs() -> Vec<(&'static str, &'static str)> {
     vec![
         (
             "docs/PROJECT_AGENT.md",
-            "# PROJECT_AGENT\n\nProjeto greenfield inicializado pelo Hard Vibe Code.\n",
+            "# PROJECT_AGENT\n\nGreenfield project initialized by Hard Vibe Code.\n",
         ),
         ("knowledge/indexes/.gitkeep", ""),
         (
@@ -2981,13 +2981,13 @@ fn resolve_workspace_path(
     let absolute_path = root.join(&normalized_relative_path);
 
     let parent = absolute_path.parent().ok_or_else(|| {
-        WorkspaceServiceError::PathForbidden("Caminho fora do workspace permitido.".to_string())
+        WorkspaceServiceError::PathForbidden("Path outside the allowed workspace.".to_string())
     })?;
     let canonical_parent = fs::canonicalize(parent).map_err(WorkspaceServiceError::Io)?;
 
     if !canonical_parent.starts_with(root) {
         return Err(WorkspaceServiceError::PathForbidden(
-            "Tentativa de acesso fora do workspace permitido.".to_string(),
+            "Access attempt outside the allowed workspace.".to_string(),
         ));
     }
 
@@ -2996,7 +2996,7 @@ fn resolve_workspace_path(
             fs::canonicalize(&absolute_path).map_err(WorkspaceServiceError::Io)?;
         if !canonical_file_path.starts_with(root) {
             return Err(WorkspaceServiceError::PathForbidden(
-                "Tentativa de acesso fora do workspace permitido.".to_string(),
+                "Access attempt outside the allowed workspace.".to_string(),
             ));
         }
     }
@@ -3015,7 +3015,7 @@ fn parse_relative_path(raw_relative_path: &str) -> Result<PathBuf, WorkspaceServ
     let relative_path = Path::new(trimmed);
     if relative_path.is_absolute() {
         return Err(WorkspaceServiceError::PathForbidden(
-            "Use apenas caminhos relativos ao workspace.".to_string(),
+            "Use only paths relative to the workspace.".to_string(),
         ));
     }
 

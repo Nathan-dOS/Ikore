@@ -28,6 +28,7 @@
 | HVC-APP-004 | Tornar todas as entidades e inputs secundários opcionais | Adiada | o custo observado do conjunto é pequeno e a mudança ampliaria risco em foco, IME e restauração das seis views |
 | HVC-GPUI-003 | Lazy init de DirectWrite, shaders e pipelines internos | Adiada | alteração extensa do backend gráfico, sem segurança suficiente para o corte; requer matriz própria de GPUs/drivers |
 | HVC-GPUI-004 | Chave de cache da medição de texto inclui a largura de truncamento (2026-09-24) | Aceita | corrige a reticência de texto em linha única, que nunca aparecia; texto sem `text_overflow` mantém o comportamento anterior |
+| HVC-GPUI-005 | Foco por teclado visível: `Window::focus_visible`, estilo `focus_visible` e tooltip aberto no foco por Tab (2026-09-25) | Aceita | permite navegar pelo Tab com anel de foco só pelo teclado e ler as dicas "i" sem mouse; `.focus()` mantém o comportamento anterior |
 
 O GPUI vendorizado e o patch efetivamente adotado estão documentados em
 [`../third_party/gpui/HVC-PATCHES.md`](../third_party/gpui/HVC-PATCHES.md). Não

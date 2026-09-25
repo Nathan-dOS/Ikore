@@ -319,7 +319,7 @@ impl SqliteLlmRepository {
         if !matches!(mode, "off" | "shadow" | "on") {
             return Err(LlmError::new(
                 LlmErrorKind::InvalidRequest,
-                "routingV2Mode deve ser off, shadow ou on.",
+                "routingV2Mode must be off, shadow or on.",
             ));
         }
         self.connection()?.execute(
@@ -655,13 +655,13 @@ impl SqliteLlmRepository {
         if !matches!(request.strategy.as_str(), "priority" | "lkgp" | "score") {
             return Err(LlmError::new(
                 LlmErrorKind::InvalidRequest,
-                "strategy deve ser priority, lkgp ou score.",
+                "strategy must be priority, lkgp or score.",
             ));
         }
         if request.targets.is_empty() {
             return Err(LlmError::new(
                 LlmErrorKind::InvalidRequest,
-                "A rota precisa de ao menos um alvo.",
+                "The route needs at least one target.",
             ));
         }
         let mut targets = request.targets;

@@ -361,7 +361,7 @@ impl PersistenceService {
         if cancellation.is_cancelled() {
             self.cancel_execution(&execution.id)?;
             return Err(PersistenceServiceError::Cancelled(
-                "Execução composta cancelada antes do despacho.".into(),
+                "Composed run cancelled before dispatch.".into(),
             ));
         }
 
@@ -382,7 +382,7 @@ impl PersistenceService {
                     break;
                 }
                 return Err(PersistenceServiceError::Runtime(
-                    "Execução composta sem unidade elegível para prosseguir.".into(),
+                    "Composed run has no unit eligible to proceed.".into(),
                 ));
             }
             let round = ready.into_iter().map(|unit| {
@@ -514,7 +514,7 @@ impl PersistenceService {
                 .iter()
                 .find(|u| u.id == unit.id)
                 .cloned()
-                .ok_or_else(|| PersistenceServiceError::Runtime("Unit ausente.".into()))?;
+                .ok_or_else(|| PersistenceServiceError::Runtime("Missing unit.".into()))?;
             let key = reuse_key(
                 &execution.plan,
                 &unit.spec,
@@ -745,7 +745,7 @@ impl PersistenceService {
         drop(db);
         let Some(data_dir) = self.database_path().parent().map(Path::to_path_buf) else {
             return Err(PersistenceServiceError::Runtime(
-                "Diretório de dados indisponível para materializar o candidato.".into(),
+                "Data directory unavailable to materialize the candidate.".into(),
             ));
         };
         let root = Path::new(&project.workspace_path);
@@ -756,7 +756,7 @@ impl PersistenceService {
             if cancellation.is_cancelled() {
                 self.cancel_execution(&execution.id)?;
                 return Err(PersistenceServiceError::Cancelled(
-                    "Execução composta cancelada antes da validação.".into(),
+                    "Composed run cancelled before validation.".into(),
                 ));
             }
             let staged = self.staged_outputs(execution, index, preparation)?;
@@ -800,7 +800,7 @@ impl PersistenceService {
             {
                 self.cancel_execution(&execution.id)?;
                 return Err(PersistenceServiceError::Cancelled(
-                    "Execução composta cancelada durante a validação.".into(),
+                    "Composed run cancelled during validation.".into(),
                 ));
             }
             // A missing toolchain is not a model fault and no prose fixes it.
@@ -1196,12 +1196,12 @@ impl PersistenceService {
                 .filter(|unit| unit.state == UnitState::Validated)
                 .ok_or_else(|| {
                     PersistenceServiceError::Validation(format!(
-                        "SC-004: o candidato `{handle}` cita um produtor ainda não validado."
+                        "SC-004: candidate `{handle}` cites a producer that is not validated yet."
                     ))
                 })?;
             let json = producer.validated_result_json.as_deref().ok_or_else(|| {
                 PersistenceServiceError::Validation(format!(
-                    "SC-004: o produtor de `{handle}` não tem resultado validado."
+                    "SC-004: the producer of `{handle}` has no validated result."
                 ))
             })?;
             let response: UnitModelResponseV1 = serde_json::from_str(json)
@@ -1222,7 +1222,7 @@ impl PersistenceService {
                 .map(|artifact| artifact.content)
                 .ok_or_else(|| {
                     PersistenceServiceError::Validation(format!(
-                        "SC-004: o produtor de `{handle}` não escreveu `{relative_path}`."
+                        "SC-004: the producer of `{handle}` did not write `{relative_path}`."
                     ))
                 })?;
             delivered.push((handle.clone(), content));
@@ -1305,7 +1305,7 @@ impl PersistenceService {
     ) -> Result<StageInputs, PersistenceServiceError> {
         let manifest = handoff.batch_manifest.clone().ok_or_else(|| {
             PersistenceServiceError::Validation(
-                "SC-002: uma pulsação v4 exige um lote de tarefas congelado.".into(),
+                "SC-002: a v4 pulsation requires a frozen task batch.".into(),
             )
         })?;
         let rows = handoff
@@ -1604,10 +1604,9 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::check_execution(&tx, fence)?;
-        let pulse = fence
-            .pulsation_id
-            .as_deref()
-            .ok_or_else(|| PersistenceServiceError::Validation("Estágio sem pulsação.".into()))?;
+        let pulse = fence.pulsation_id.as_deref().ok_or_else(|| {
+            PersistenceServiceError::Validation("Stage without a pulsation.".into())
+        })?;
         let input_revision = fence.input_revision.unwrap_or(1);
         if let Some(existing) = Self::find_execution_for_job(&tx, &job.id, fence.generation)? {
             if existing.status == ExecutionStatus::Accepted {
@@ -1615,7 +1614,7 @@ impl PersistenceService {
                 return Ok(None);
             }
             return Err(PersistenceServiceError::Validation(
-                "SC-015: já existe uma execução composta para esta geração do job.".into(),
+                "SC-015: a composed run already exists for this job generation.".into(),
             ));
         }
         let predecessor = Self::find_reusable_predecessor(&tx, pulse, stage, input_revision)?;
@@ -1841,7 +1840,7 @@ impl PersistenceService {
         }
         let execution =
             Self::find_execution(&tx, plan.stage_execution_id.as_str())?.ok_or_else(|| {
-                PersistenceServiceError::Runtime("Execução composta não persistida.".into())
+                PersistenceServiceError::Runtime("Composed run not persisted.".into())
             })?;
         tx.commit()?;
         Ok(Some(execution))
@@ -1856,10 +1855,9 @@ impl PersistenceService {
     ) -> Result<(), PersistenceServiceError> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let pulse = job
-            .pulsation_id
-            .as_deref()
-            .ok_or_else(|| PersistenceServiceError::Validation("Job sem pulsação.".into()))?;
+        let pulse = job.pulsation_id.as_deref().ok_or_else(|| {
+            PersistenceServiceError::Validation("Job without a pulsation.".into())
+        })?;
         let current = Self::find_pulsation_by_id(&tx, pulse)?
             .ok_or_else(|| PersistenceServiceError::NotFound("Pulsation missing.".into()))?;
         Self::park_in_tx_without_execution(&tx, job, parent_run_id, stage, &current, failure)?;
@@ -2040,7 +2038,7 @@ impl PersistenceService {
             if cancellation.is_cancelled() {
                 self.cancel_execution(&execution.id)?;
                 return Err(PersistenceServiceError::Cancelled(
-                    "Execução composta cancelada.".into(),
+                    "Composed run cancelled.".into(),
                 ));
             }
             // The first attempt of a unit draws an initial permit while the
@@ -2097,7 +2095,7 @@ impl PersistenceService {
                     let fresh = Self::load_units(&tx, &execution.id)?
                         .into_iter()
                         .find(|u| u.id == unit.id)
-                        .ok_or_else(|| PersistenceServiceError::Runtime("Unit ausente.".into()))?;
+                        .ok_or_else(|| PersistenceServiceError::Runtime("Missing unit.".into()))?;
                     let next = Self::next_unit_generation(&tx, &fresh)?;
                     tx.commit()?;
                     unit = next;
@@ -2158,7 +2156,7 @@ impl PersistenceService {
             .find(|binding| binding.unit_id.as_str() == unit.id && binding.executor_kind == kind)
             .ok_or_else(|| {
                 PersistenceServiceError::Validation(format!(
-                    "SC-014: nenhum perfil congelado para `{}` nesta execução.",
+                    "SC-014: no frozen profile for `{}` in this run.",
                     kind.as_str()
                 ))
             })?;
@@ -2237,12 +2235,12 @@ impl PersistenceService {
             let fresh = Self::load_units(&tx, &execution.id)?
                 .into_iter()
                 .find(|u| u.id == unit.id)
-                .ok_or_else(|| PersistenceServiceError::Runtime("Unit ausente.".into()))?;
+                .ok_or_else(|| PersistenceServiceError::Runtime("Missing unit.".into()))?;
             Self::transition_unit(&tx, &fresh, UnitState::Running, None)?;
             let running = Self::load_units(&tx, &execution.id)?
                 .into_iter()
                 .find(|u| u.id == unit.id)
-                .ok_or_else(|| PersistenceServiceError::Runtime("Unit ausente.".into()))?;
+                .ok_or_else(|| PersistenceServiceError::Runtime("Missing unit.".into()))?;
             tx.commit()?;
             (attempt, running)
         };
@@ -2375,7 +2373,7 @@ impl PersistenceService {
                         Some(("cancelled", "Cancelled.")),
                     );
                     return Err(PersistenceServiceError::Cancelled(
-                        "Execução composta cancelada durante a chamada.".into(),
+                        "Composed run cancelled during the call.".into(),
                     ));
                 }
                 let failure = classify_transport_error(&error).unwrap_or(UnitFailure {
@@ -2506,7 +2504,7 @@ impl PersistenceService {
                     .iter()
                     .find(|u| u.id == unit.id)
                     .cloned()
-                    .ok_or_else(|| PersistenceServiceError::Runtime("Unit ausente.".into()))?;
+                    .ok_or_else(|| PersistenceServiceError::Runtime("Missing unit.".into()))?;
                 let key = reuse_key(
                     &execution.plan,
                     &unit.spec,
@@ -2648,7 +2646,7 @@ impl PersistenceService {
             .ok_or_else(|| PersistenceServiceError::NotFound("Pulsation missing.".into()))?;
         if current.status != PulsationStatus::Running || current.stage != execution.stage {
             return Err(PersistenceServiceError::Validation(
-                "SC-015: execução obsoleta.".into(),
+                "SC-015: stale run.".into(),
             ));
         }
         crate::feature_forge::pipeline::accept_evidence_rows(
@@ -2715,7 +2713,7 @@ impl PersistenceService {
         for unit in &units {
             let json = unit.validated_result_json.as_deref().ok_or_else(|| {
                 PersistenceServiceError::Validation(format!(
-                    "SC-010: unit `{}` não tem resultado validado.",
+                    "SC-010: unit `{}` has no validated result.",
                     unit.logical_unit_key
                 ))
             })?;
@@ -2818,7 +2816,7 @@ impl PersistenceService {
             .ok_or_else(|| PersistenceServiceError::NotFound("Pulsation missing.".into()))?;
         if current.status != PulsationStatus::Running || current.stage != execution.stage {
             return Err(PersistenceServiceError::Validation(
-                "SC-015: execução obsoleta na aceitação.".into(),
+                "SC-015: stale run at acceptance.".into(),
             ));
         }
         crate::feature_forge::pipeline::accept_evidence_rows(

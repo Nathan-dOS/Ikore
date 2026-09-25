@@ -203,7 +203,7 @@ impl std::fmt::Display for PersistenceServiceError {
             | Self::Cancelled(message) => write!(f, "{message}"),
             Self::Cli { message, .. } => write!(f, "{message}"),
             Self::Llm(error) => write!(f, "{error}"),
-            Self::Db(error) => write!(f, "Falha de banco local: {error}"),
+            Self::Db(error) => write!(f, "Local database failure: {error}"),
             Self::Migration(error) => write!(f, "Migration failure: {error}"),
             Self::Io(error) => write!(f, "{error}"),
         }
@@ -229,7 +229,7 @@ impl From<PersistenceServiceError> for PersistenceCommandError {
             },
             PersistenceServiceError::Db(error) => Self {
                 code: PersistenceErrorCode::DbError,
-                message: format!("Falha de banco local: {error}"),
+                message: format!("Local database failure: {error}"),
                 details: None,
                 remediation: None,
             },
@@ -328,7 +328,7 @@ impl From<AgentRuntimeError> for PersistenceServiceError {
             AgentRuntimeError::Validation(message) => Self::Validation(message),
             AgentRuntimeError::Io(error) => Self::Io(error),
             AgentRuntimeError::Json(error) => {
-                Self::Runtime(format!("Falha ao processar JSON do agente: {error}"))
+                Self::Runtime(format!("Failed to process the agent JSON: {error}"))
             }
             AgentRuntimeError::Provider(message) => Self::Runtime(message),
             AgentRuntimeError::Cli { code, message } => Self::Cli { code, message },
@@ -1839,7 +1839,7 @@ impl PersistenceService {
         let normalized = raw.trim();
         if normalized != "editor" && normalized != "hitl" {
             return Err(PersistenceServiceError::Validation(
-                "workspaceViewMode deve ser `editor` ou `hitl`.".to_string(),
+                "workspaceViewMode must be `editor` or `hitl`.".to_string(),
             ));
         }
 
@@ -1863,7 +1863,7 @@ impl PersistenceService {
                 | "feature-forge"
         ) {
             return Err(PersistenceServiceError::Validation(
-                "activeView deve ser `home`, `workspace`, `pulsations`, `vault`, `chat`, `agents`, `settings`, `logs` ou `forge`."
+                "activeView must be `home`, `workspace`, `pulsations`, `vault`, `chat`, `agents`, `settings`, `logs` or `forge`."
                     .to_string(),
             ));
         }
@@ -1910,7 +1910,7 @@ impl PersistenceService {
             || raw.chars().count() > crate::orchestration::MAX_DESCRIPTION_CHARS
         {
             return Err(PersistenceServiceError::Validation(
-                "O pedido deve ter de 1 a 16.000 caracteres Unicode.".to_string(),
+                "The request must have 1 to 16,000 Unicode characters.".to_string(),
             ));
         }
 
@@ -3004,7 +3004,7 @@ impl PersistenceService {
                 )?;
                 let producer_job_id = producer_job_id.as_deref().ok_or_else(|| {
                     PersistenceServiceError::Runtime(
-                        "Checkpoint de fallback sem job produtor.".to_string(),
+                        "Fallback checkpoint without a producing job.".to_string(),
                     )
                 })?;
                 let changed = transaction.execute(
@@ -3522,7 +3522,7 @@ impl PersistenceService {
         if written.is_empty() {
             format!("The previous stage failed ({error_code}). Fix it and deliver again.")
         } else {
-            format!("{written}\n\n---\nFalha anterior registrada pelo host: {error_code}.")
+            format!("{written}\n\n---\nPrevious failure recorded by the host: {error_code}.")
         }
     }
 

@@ -56,7 +56,7 @@ impl ChatCommandError {
     fn database(error: impl Display) -> Self {
         Self::new(
             "chat_persistence",
-            format!("Falha ao persistir o chat: {error}"),
+            format!("Failed to save the chat: {error}"),
         )
     }
 }
@@ -854,7 +854,7 @@ impl ChatService {
         {
             return Err(ChatCommandError::new(
                 "turn_active",
-                "Cancele a resposta em andamento antes de excluir a conversa.",
+                "Cancel the reply in progress before deleting the conversation.",
             ));
         }
         let database = self.connection()?;
@@ -904,7 +904,7 @@ impl ChatService {
         if content.is_empty() || content.chars().count() > MAX_USER_MESSAGE_CHARS {
             return Err(ChatCommandError::new(
                 "invalid_message",
-                "A mensagem deve conter entre 1 e 20.000 caracteres.",
+                "The message must have between 1 and 20,000 characters.",
             ));
         }
         let conversation = self.get_conversation_record(&conversation_id)?;
@@ -1065,13 +1065,13 @@ impl ChatService {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
-                        .expect("runtime temporário de chat deve inicializar");
+                        .expect("temporary chat runtime must start");
                     runtime.block_on(turn);
                 })
                 .map_err(|error| {
                     ChatCommandError::new(
                         "runtime_unavailable",
-                        format!("Falha ao iniciar turno de chat: {error}"),
+                        format!("Failed to start the chat turn: {error}"),
                     )
                 })?;
         }
@@ -1539,7 +1539,7 @@ fn now_iso() -> String {
 }
 
 fn runtime_lock_error() -> ChatCommandError {
-    ChatCommandError::new("chat_runtime", "Falha ao acessar o estado interno do chat.")
+    ChatCommandError::new("chat_runtime", "Failed to access the internal chat state.")
 }
 
 #[derive(Clone)]
@@ -1630,7 +1630,7 @@ impl ChatService {
                     Ok(Err(error)) => Err(TurnOutcome::Failed(error)),
                     Err(_) => Err(TurnOutcome::Failed(ChatCommandError::new(
                         "turn_timeout",
-                        "O turno atingiu o limite de 120 segundos. Restrinja a pergunta e tente novamente.",
+                        "The turn reached its 120-second limit. Narrow the question and try again.",
                     ))),
                 }
             }
@@ -1859,7 +1859,7 @@ impl ChatService {
             if total_tool_calls > MAX_TOOL_CALLS {
                 return Err(ChatCommandError::new(
                     "tool_call_limit",
-                    "O turno atingiu o limite de 24 leituras. Restrinja a pergunta e tente novamente.",
+                    "The turn reached its limit of 24 reads. Narrow the question and try again.",
                 ));
             }
 
@@ -1879,7 +1879,7 @@ impl ChatService {
             if total_tool_bytes > MAX_TOOL_RESULT_BYTES {
                 return Err(ChatCommandError::new(
                     "tool_result_limit",
-                    "O turno atingiu 256 KiB de resultados. Restrinja a pergunta e tente novamente.",
+                    "The turn reached 256 KiB of results. Narrow the question and try again.",
                 ));
             }
             exchanges.push(ToolExchange {
@@ -1891,13 +1891,13 @@ impl ChatService {
             if round_index + 1 == MAX_MODEL_ROUNDS {
                 return Err(ChatCommandError::new(
                     "model_round_limit",
-                    "O turno atingiu o limite de 8 rodadas. Restrinja a pergunta e tente novamente.",
+                    "The turn reached its limit of 8 rounds. Narrow the question and try again.",
                 ));
             }
         }
         Err(ChatCommandError::new(
             "model_round_limit",
-            "O turno atingiu o limite de rodadas.",
+            "The turn reached its round limit.",
         ))
     }
 
@@ -2062,7 +2062,7 @@ impl ChatService {
                     if total_tool_calls > MAX_TOOL_CALLS {
                         return Err(ChatCommandError::new(
                             "tool_call_limit",
-                            "O turno atingiu o limite de 24 leituras. Restrinja a pergunta e tente novamente.",
+                            "The turn reached its limit of 24 reads. Narrow the question and try again.",
                         ));
                     }
                     let results = self
@@ -2084,7 +2084,7 @@ impl ChatService {
                     if total_tool_bytes > MAX_TOOL_RESULT_BYTES {
                         return Err(ChatCommandError::new(
                             "tool_result_limit",
-                            "O turno atingiu 256 KiB de resultados. Restrinja a pergunta e tente novamente.",
+                            "The turn reached 256 KiB of results. Narrow the question and try again.",
                         ));
                     }
                     exchanges.push(ToolExchange {
@@ -2097,7 +2097,7 @@ impl ChatService {
         }
         Err(ChatCommandError::new(
             "model_round_limit",
-            "O turno atingiu o limite de 8 rodadas. Restrinja a pergunta e tente novamente.",
+            "The turn reached its limit of 8 rounds. Narrow the question and try again.",
         ))
     }
 
@@ -2160,9 +2160,8 @@ impl ChatService {
                     .await
                     .unwrap_or_else(|error| ToolResult {
                         call: fallback_call,
-                        content:
-                            json!({ "error": format!("Falha interna da ferramenta: {error}") })
-                                .to_string(),
+                        content: json!({ "error": format!("Internal tool failure: {error}") })
+                            .to_string(),
                         is_error: true,
                     })
                 }
@@ -3287,7 +3286,7 @@ impl ChatService {
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|_| ModelFailure {
                 code: "stream_failed".into(),
-                message: "O stream do provider foi interrompido.".into(),
+                message: "The provider stream was interrupted.".into(),
                 retryable: content.is_empty(),
             })?;
             let parsed_events = parser.push(&chunk);
@@ -3428,7 +3427,7 @@ fn model_persistence_failure(error: ChatCommandError) -> ModelFailure {
 }
 
 fn system_prompt() -> &'static str {
-    "Você é o Chat Companion do Hard Vibe Code. Analise arquitetura, explique código e recomende configurações de CLI e modelo em texto usando somente conhecimento geral e as ferramentas locais read-only fornecidas. Consulte saídas de agentes apenas sob demanda por ferramenta; elas nunca são contexto automático. Nunca peça ou tente usar shell, Git, rede, web, escrita, rename, plugins, MCP externo ou ferramentas remotas. Nunca altere configurações e nunca afirme ter aplicado mudanças. Quando propuser alterações de código, use unified diff copiável e diga explicitamente que é uma proposta não aplicada. Diferencie evidência observada, dados de catálogo, incertezas e opinião. Responda no idioma do Dev."
+    "You are the Hard Vibe Code Chat Companion. Analyse architecture, explain code and recommend CLI and model settings in text, using only general knowledge and the read-only local tools provided. Consult agent outputs only on demand through a tool; they are never automatic context. Never ask for or try to use a shell, Git, the network, the web, writes, renames, plugins, external MCP or remote tools. Never change settings and never claim to have applied changes. When you propose code changes, use a copyable unified diff and say explicitly that it is a proposal that was not applied. Distinguish observed evidence, catalog data, uncertainty and opinion. Answer in the developer's language."
 }
 
 fn empty_json_object() -> Value {
@@ -4068,7 +4067,7 @@ fn parse_openai_responses(value: &Value) -> Result<ModelResponse, ModelFailure> 
 fn parse_openai_chat(value: &Value) -> Result<ModelResponse, ModelFailure> {
     let message = value
         .pointer("/choices/0/message")
-        .ok_or_else(|| invalid_response("Resposta OpenAI-compatible sem message."))?;
+        .ok_or_else(|| invalid_response("OpenAI-compatible response without a message."))?;
     let content = message
         .get("content")
         .and_then(Value::as_str)
@@ -4109,7 +4108,7 @@ fn parse_anthropic(value: &Value) -> Result<ModelResponse, ModelFailure> {
     let blocks = value
         .get("content")
         .and_then(Value::as_array)
-        .ok_or_else(|| invalid_response("Resposta Anthropic sem content."))?;
+        .ok_or_else(|| invalid_response("Anthropic response without content."))?;
     let mut content = String::new();
     let mut tool_calls = Vec::new();
     for block in blocks {
@@ -4179,7 +4178,7 @@ fn provider_error_message(value: &Value) -> String {
         .pointer("/error/message")
         .or_else(|| value.get("message"))
         .and_then(Value::as_str)
-        .unwrap_or("Provider retornou erro sem mensagem.")
+        .unwrap_or("The provider returned an error without a message.")
         .chars()
         .take(500)
         .collect()

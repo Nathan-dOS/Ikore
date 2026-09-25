@@ -205,7 +205,7 @@ impl PersistenceService {
             params![pending.checkpoint_id, Self::now_iso()],
         )?;
         let text = format!(
-            "Respostas ao conjunto {}:\n\n{}",
+            "Answers to set {}:\n\n{}",
             pending.id,
             answers
                 .iter()

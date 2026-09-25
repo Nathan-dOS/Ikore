@@ -257,7 +257,7 @@ async fn validate_status(
         .pointer("/error/message")
         .or_else(|| parsed.pointer("/message"))
         .and_then(Value::as_str)
-        .unwrap_or("Provider retornou erro HTTP.");
+        .unwrap_or("The provider returned an HTTP error.");
     let provider_code = parsed
         .pointer("/error/code")
         .or_else(|| parsed.pointer("/error/type"))
@@ -603,7 +603,7 @@ fn network_error(error: reqwest::Error) -> LlmError {
 fn stream_error(error: reqwest::Error, partial: &str) -> LlmError {
     let mut result = network_error(error);
     result.kind = LlmErrorKind::StreamFailed;
-    result.message = "Falha durante leitura do stream do provider.".to_string();
+    result.message = "Failure while reading the provider stream.".to_string();
     if !partial.is_empty() {
         result.visible_partial = Some(partial.to_string());
     }

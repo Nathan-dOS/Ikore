@@ -214,7 +214,7 @@ impl PersistenceService {
         )?;
         if !admitted {
             return Err(invalid(
-                "Projeto aguardando base/proprietário ou reconciliação explícita.",
+                "Project waiting for the base owner or an explicit reconciliation.",
             ));
         }
         Ok(())
@@ -234,7 +234,7 @@ impl PersistenceService {
             let pulse = job
                 .pulsation_id
                 .as_deref()
-                .ok_or_else(|| invalid("Job sem pulsação"))?;
+                .ok_or_else(|| invalid("Job without a pulsation"))?;
             let p = Self::find_pulsation_by_id(&tx, pulse)?
                 .ok_or_else(|| invalid("Pulsation missing"))?;
             // Setup can die while the pulsation is still `planning`, before

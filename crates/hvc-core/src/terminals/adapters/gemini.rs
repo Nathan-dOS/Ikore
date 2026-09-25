@@ -21,7 +21,7 @@ impl CliAdapter for GeminiAdapter {
     ) -> Result<CliProcessSpec, TerminalError> {
         if request.model_profile.is_some() || request.thinking_level != ThinkingLevel::Default {
             return Err(TerminalError::Validation(
-                "Gemini CLI não oferece um controle estável de thinking".into(),
+                "Gemini CLI offers no stable thinking control".into(),
             ));
         }
         let mut args = ["--output-format", "stream-json", "--approval-mode", "plan"]

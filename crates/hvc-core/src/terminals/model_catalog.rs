@@ -75,7 +75,7 @@ impl From<&CliModelCatalogAssetEntry> for CliModelCatalogEntry {
 
 static CLI_MODEL_CATALOG: LazyLock<CliModelCatalogAsset> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../../assets/cli-model-catalog-v1.json"))
-        .expect("o catálogo declarativo de modelos CLI deve conter JSON válido")
+        .expect("the declarative CLI model catalog must contain valid JSON")
 });
 
 /// Version string of the embedded declarative CLI model catalog (e.g. `"2026-09-17.1"`),

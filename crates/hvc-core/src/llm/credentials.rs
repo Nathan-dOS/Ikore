@@ -18,7 +18,7 @@ impl KeyringCredentialStore {
         Entry::new(KEYRING_SERVICE, credential_ref).map_err(|error| {
             LlmError::new(
                 LlmErrorKind::Persistence,
-                format!("Falha ao acessar keyring: {error}"),
+                format!("Failed to access the keyring: {error}"),
             )
         })
     }
@@ -33,7 +33,7 @@ impl CredentialStore for KeyringCredentialStore {
             Err(KeyringError::NoEntry) => Ok(None),
             Err(error) => Err(LlmError::new(
                 LlmErrorKind::Persistence,
-                format!("Falha ao ler credencial do keyring: {error}"),
+                format!("Failed to read the credential from the keyring: {error}"),
             )),
         }
     }
@@ -43,7 +43,7 @@ impl CredentialStore for KeyringCredentialStore {
         if normalized.is_empty() {
             return Err(LlmError::new(
                 LlmErrorKind::InvalidRequest,
-                "apiKey não pode ser vazia.",
+                "apiKey cannot be empty.",
             ));
         }
         Self::entry(credential_ref)?
@@ -51,7 +51,7 @@ impl CredentialStore for KeyringCredentialStore {
             .map_err(|error| {
                 LlmError::new(
                     LlmErrorKind::Persistence,
-                    format!("Falha ao salvar credencial no keyring: {error}"),
+                    format!("Failed to save the credential to the keyring: {error}"),
                 )
             })
     }
@@ -62,7 +62,7 @@ impl CredentialStore for KeyringCredentialStore {
             Err(KeyringError::NoEntry) => Ok(false),
             Err(error) => Err(LlmError::new(
                 LlmErrorKind::Persistence,
-                format!("Falha ao remover credencial do keyring: {error}"),
+                format!("Failed to remove the credential from the keyring: {error}"),
             )),
         }
     }

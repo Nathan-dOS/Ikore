@@ -201,7 +201,7 @@ impl RepositoryContext {
     ) -> Result<RepositorySearchResult, RepositoryError> {
         if args.query.is_empty() || args.query.chars().count() > MAX_QUERY_CHARS {
             return Err(RepositoryError(
-                "A busca deve conter entre 1 e 256 caracteres.".into(),
+                "The search must have between 1 and 256 characters.".into(),
             ));
         }
         let scope = self.resolve_relative(args.path.as_deref().unwrap_or(""), true)?;
@@ -215,7 +215,7 @@ impl RepositoryContext {
             ),
             _ => {
                 return Err(RepositoryError(
-                    "Modo de busca deve ser 'literal' ou 'regex'.".into(),
+                    "Search mode must be 'literal' or 'regex'.".into(),
                 ));
             }
         };
@@ -266,7 +266,7 @@ impl RepositoryContext {
         let requested_end = args.end_line.unwrap_or(start + MAX_READ_LINES - 1);
         if requested_end < start {
             return Err(RepositoryError(
-                "endLine deve ser maior ou igual a startLine.".into(),
+                "endLine must be greater than or equal to startLine.".into(),
             ));
         }
         let end = requested_end.min(start + MAX_READ_LINES - 1);
@@ -311,7 +311,7 @@ impl RepositoryContext {
             })
         {
             return Err(RepositoryError(
-                "A ferramenta aceita somente paths relativos sem '..'.".into(),
+                "The tool accepts only relative paths without '..'.".into(),
             ));
         }
         let candidate = self.root.join(requested);
@@ -636,7 +636,7 @@ impl RepositoryContext {
             let bytes = content.len() as u64;
             if files.len() >= max_files || total_bytes.saturating_add(bytes) > max_total_bytes {
                 return Err(RepositoryError(
-                    "Workspace seguro excede o limite de arquivos ou bytes.".into(),
+                    "The safe workspace exceeds the file or byte limit.".into(),
                 ));
             }
             total_bytes = total_bytes.saturating_add(bytes);

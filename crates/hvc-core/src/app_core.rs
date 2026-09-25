@@ -92,9 +92,9 @@ pub enum AppCoreError {
     Io(#[from] std::io::Error),
     #[error("failed to initialize persistence: {0}")]
     Persistence(#[from] PersistenceServiceError),
-    #[error("falha ao recuperar o Chat Companion: {0}")]
+    #[error("failed to recover the Chat Companion: {0}")]
     Chat(#[from] crate::chat_service::ChatCommandError),
-    #[error("falha ao inicializar o painel Agents: {0}")]
+    #[error("failed to initialize the Agents panel: {0}")]
     Terminal(#[from] crate::terminals::TerminalError),
 }
 
@@ -390,7 +390,7 @@ impl AppCore {
                 code: workspace_service::WorkspaceErrorCode::ValidationError,
                 message: "The project does not match the open workspace.".into(),
                 details: None,
-                remediation: Some("Reabra o projeto correto e tente novamente.".into()),
+                remediation: Some("Reopen the right project and try again.".into()),
             });
         }
 
@@ -581,7 +581,7 @@ impl AppCore {
 fn workspace_lock_error() -> WorkspaceCommandError {
     WorkspaceCommandError {
         code: workspace_service::WorkspaceErrorCode::IoError,
-        message: "Falha ao acessar o estado interno do workspace.".into(),
+        message: "Failed to access the internal workspace state.".into(),
         details: None,
         remediation: None,
     }

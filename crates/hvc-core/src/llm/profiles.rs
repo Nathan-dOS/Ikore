@@ -261,13 +261,13 @@ pub fn profile_by_id(id: &str) -> Option<ProviderProfile> {
 fn sanitize_provider_message(message: &str) -> String {
     let trimmed = message.trim();
     if trimmed.is_empty() {
-        return "Provider retornou um erro sem mensagem.".to_string();
+        return "The provider returned an error without a message.".to_string();
     }
     let without_bearer = regex::Regex::new(r"(?i)bearer\s+[A-Za-z0-9._\-]+")
-        .expect("regex bearer válida")
+        .expect("valid bearer regex")
         .replace_all(trimmed, "Bearer [REDACTED]");
     let without_keys = regex::Regex::new(r"(?i)(api[_ -]?key[=: ]+)\S+")
-        .expect("regex api key válida")
+        .expect("valid api key regex")
         .replace_all(&without_bearer, "$1[REDACTED]");
     without_keys.chars().take(500).collect()
 }

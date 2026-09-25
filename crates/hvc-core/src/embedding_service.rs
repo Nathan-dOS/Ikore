@@ -121,24 +121,24 @@ impl OllamaEmbeddingGateway {
             .json(&json!({"model": model, "prompt": prompt}))
             .send()
             .await
-            .map_err(|error| EmbeddingError(format!("Falha ao chamar Ollama: {error}")))?;
+            .map_err(|error| EmbeddingError(format!("Failed to call Ollama: {error}")))?;
         if !response.status().is_success() {
             return Err(EmbeddingError(Self::describe_failure(response).await));
         }
         let parsed = response
             .json::<Value>()
             .await
-            .map_err(|error| EmbeddingError(format!("Resposta inválida do Ollama: {error}")))?;
+            .map_err(|error| EmbeddingError(format!("Invalid response from Ollama: {error}")))?;
         let embedding = parsed
             .get("embedding")
             .and_then(Value::as_array)
-            .ok_or_else(|| EmbeddingError("Resposta do Ollama sem `embedding`.".to_string()))?
+            .ok_or_else(|| EmbeddingError("Ollama response without `embedding`.".to_string()))?
             .iter()
             .filter_map(Value::as_f64)
             .collect::<Vec<_>>();
         if embedding.is_empty() {
             return Err(EmbeddingError(
-                "Embedding vazio retornado pelo Ollama.".to_string(),
+                "Ollama returned an empty embedding.".to_string(),
             ));
         }
         Ok(embedding)
@@ -152,11 +152,11 @@ impl OllamaEmbeddingGateway {
         match response.json::<Value>().await {
             Ok(body) => match body.get("error").and_then(Value::as_str) {
                 Some(detail) => {
-                    format!("Ollama embedding falhou com status HTTP {status}: {detail}")
+                    format!("Ollama embedding failed with HTTP status {status}: {detail}")
                 }
-                None => format!("Ollama embedding falhou com status HTTP {status}."),
+                None => format!("Ollama embedding failed with HTTP status {status}."),
             },
-            Err(_) => format!("Ollama embedding falhou com status HTTP {status}."),
+            Err(_) => format!("Ollama embedding failed with HTTP status {status}."),
         }
     }
 }
@@ -170,29 +170,28 @@ impl EmbeddingGateway for OllamaEmbeddingGateway {
                 .json(&json!({"model": model, "input": prompt}))
                 .send()
                 .await
-                .map_err(|error| EmbeddingError(format!("Falha ao chamar Ollama: {error}")))?;
+                .map_err(|error| EmbeddingError(format!("Failed to call Ollama: {error}")))?;
             if response.status() == reqwest::StatusCode::NOT_FOUND {
                 return self.embed_legacy(model, prompt).await;
             }
             if !response.status().is_success() {
                 return Err(EmbeddingError(Self::describe_failure(response).await));
             }
-            let parsed = response
-                .json::<Value>()
-                .await
-                .map_err(|error| EmbeddingError(format!("Resposta inválida do Ollama: {error}")))?;
+            let parsed = response.json::<Value>().await.map_err(|error| {
+                EmbeddingError(format!("Invalid response from Ollama: {error}"))
+            })?;
             let embedding = parsed
                 .get("embeddings")
                 .and_then(Value::as_array)
                 .and_then(|rows| rows.first())
                 .and_then(Value::as_array)
-                .ok_or_else(|| EmbeddingError("Resposta do Ollama sem `embeddings`.".to_string()))?
+                .ok_or_else(|| EmbeddingError("Ollama response without `embeddings`.".to_string()))?
                 .iter()
                 .filter_map(Value::as_f64)
                 .collect::<Vec<_>>();
             if embedding.is_empty() {
                 return Err(EmbeddingError(
-                    "Embedding vazio retornado pelo Ollama.".to_string(),
+                    "Ollama returned an empty embedding.".to_string(),
                 ));
             }
             Ok(embedding)
@@ -206,17 +205,16 @@ impl EmbeddingGateway for OllamaEmbeddingGateway {
                 .get(format!("{}/api/tags", self.base_url))
                 .send()
                 .await
-                .map_err(|error| EmbeddingError(format!("Falha ao chamar Ollama: {error}")))?;
+                .map_err(|error| EmbeddingError(format!("Failed to call Ollama: {error}")))?;
             if !response.status().is_success() {
                 return Err(EmbeddingError(format!(
-                    "Ollama respondeu com status HTTP {} ao listar modelos.",
+                    "Ollama answered with HTTP status {} when listing models.",
                     response.status().as_u16()
                 )));
             }
-            let parsed = response
-                .json::<Value>()
-                .await
-                .map_err(|error| EmbeddingError(format!("Resposta inválida do Ollama: {error}")))?;
+            let parsed = response.json::<Value>().await.map_err(|error| {
+                EmbeddingError(format!("Invalid response from Ollama: {error}"))
+            })?;
             let models = parsed
                 .get("models")
                 .and_then(Value::as_array)
@@ -251,7 +249,7 @@ impl EmbeddingGateway for OllamaEmbeddingGateway {
                 Ok(response) if response.status().is_success() => response,
                 Ok(response) => {
                     let error = format!(
-                        "Ollama respondeu com status HTTP {} ao baixar o modelo.",
+                        "Ollama answered with HTTP status {} when downloading the model.",
                         response.status().as_u16()
                     );
                     on_event(ModelPullEvent::Failed {
@@ -261,7 +259,7 @@ impl EmbeddingGateway for OllamaEmbeddingGateway {
                     return Err(EmbeddingError(error));
                 }
                 Err(error) => {
-                    let error = format!("Falha ao chamar Ollama: {error}");
+                    let error = format!("Failed to call Ollama: {error}");
                     on_event(ModelPullEvent::Failed {
                         model: model.to_string(),
                         error: error.clone(),
@@ -325,7 +323,7 @@ impl EmbeddingGateway for OllamaEmbeddingGateway {
                 });
                 Ok(())
             } else {
-                let error = "O Ollama encerrou o download sem confirmar sucesso.".to_string();
+                let error = "Ollama ended the download without confirming success.".to_string();
                 on_event(ModelPullEvent::Failed {
                     model: model.to_string(),
                     error: error.clone(),

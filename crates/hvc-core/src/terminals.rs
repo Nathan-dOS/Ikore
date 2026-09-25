@@ -185,9 +185,9 @@ pub enum TerminalError {
     NotFound(String),
     #[error("the Agents configuration was changed by another operation")]
     Conflict,
-    #[error("falha no banco local de Agents: {0}")]
+    #[error("local Agents database failure: {0}")]
     Database(#[from] rusqlite::Error),
-    #[error("falha de I/O no runtime CLI: {0}")]
+    #[error("I/O failure in the CLI runtime: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid JSON in the CLI runtime: {0}")]
     Json(#[from] serde_json::Error),
@@ -988,7 +988,7 @@ impl TerminalRepository {
             |row| row.get(0),
         )?;
         if !exists {
-            return Err(TerminalError::NotFound("projeto ativo".into()));
+            return Err(TerminalError::NotFound("active project".into()));
         }
         let now = Utc::now().to_rfc3339();
         let default_mode = if codex_ready {
@@ -1540,7 +1540,7 @@ impl TerminalRepository {
             )
             .optional()?;
         path.map(PathBuf::from)
-            .ok_or_else(|| TerminalError::NotFound("workspace do projeto".into()))
+            .ok_or_else(|| TerminalError::NotFound("project workspace".into()))
     }
 
     pub fn create_run(
@@ -2257,7 +2257,7 @@ impl TerminalRepository {
     ) -> Result<TerminalEvent, TerminalError> {
         if sequence == 0 {
             return Err(TerminalError::Validation(
-                "sequence deve ser maior que zero".into(),
+                "sequence must be greater than zero".into(),
             ));
         }
         if !matches!(stream, None | Some("stdout") | Some("stderr")) {
@@ -2470,7 +2470,7 @@ impl TerminalRepository {
         )?;
         let changed = transaction.execute(
             "UPDATE terminal_runs SET status='interrupted',error_code='app_restart',
-               error_message='Execução interrompida pelo encerramento do aplicativo.',finished_at=?1,updated_at=?1
+               error_message='Run interrupted because the app closed.',finished_at=?1,updated_at=?1
              WHERE status IN ('queued','starting','running')",
             [now],
         )?;
@@ -3397,7 +3397,7 @@ async fn probe_cli_availability(mut availability: CliAvailability) -> CliAvailab
             Ok(Ok(false)) => {
                 availability.state = CliAvailabilityState::AuthRequired;
                 availability.diagnostic = Some(format!(
-                    "{} instalado, mas sem login confirmado.",
+                    "{} installed, but no confirmed login.",
                     availability.backend.label()
                 ));
             }
@@ -5470,7 +5470,7 @@ impl TerminalService {
         })
         .await
         .map_err(|error| {
-            TerminalError::Security(format!("worker do snapshot foi interrompido: {error}"))
+            TerminalError::Security(format!("the snapshot worker was interrupted: {error}"))
         })??;
         if cancellation.is_cancelled() {
             return Err(TerminalError::Cancelled);

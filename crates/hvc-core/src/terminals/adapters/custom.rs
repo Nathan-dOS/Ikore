@@ -21,12 +21,12 @@ impl CliAdapter for CustomAdapter {
     ) -> Result<CliProcessSpec, TerminalError> {
         if request.resume_session_id.is_some() {
             return Err(TerminalError::Validation(
-                "Custom não oferece retomada nativa".into(),
+                "Custom offers no native resume".into(),
             ));
         }
         if request.model_profile.is_some() || request.thinking_level != ThinkingLevel::Default {
             return Err(TerminalError::Validation(
-                "Custom não declara capacidade de thinking".into(),
+                "Custom declares no thinking capability".into(),
             ));
         }
         if request
@@ -36,7 +36,7 @@ impl CliAdapter for CustomAdapter {
             .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "cmd" | "bat" | "ps1"))
         {
             return Err(TerminalError::Validation(
-                "Custom não pode invocar um shell".into(),
+                "Custom cannot invoke a shell".into(),
             ));
         }
         if request.custom_args.len() > super::super::MAX_CUSTOM_ARGS {

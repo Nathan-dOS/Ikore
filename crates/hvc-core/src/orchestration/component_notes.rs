@@ -181,7 +181,7 @@ impl PersistenceService {
             }
             tx.execute(
                 "INSERT INTO brownfield_component_notes(id,project_id,pulsation_id,proposal_artifact_id,publication_artifact_id,component_id,title,relative_path,mapping_status,publication_state,generator,generator_version,confidence,diagnostic,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15)",
-                params![note_id,current.project_id,current.id,proposal_artifact,publication_artifact,proposal.component_id,proposal.title,relative_path,if fresh{"proposed"}else{"stale"},if fresh{"pending"}else{"not_scheduled"},generator,COMPONENT_GENERATOR_VERSION,proposal.confidence,if fresh{None}else{Some("Proposta rejeitada para publicação: revisão da fonte mudou antes da aprovação.")},now],
+                params![note_id,current.project_id,current.id,proposal_artifact,publication_artifact,proposal.component_id,proposal.title,relative_path,if fresh{"proposed"}else{"stale"},if fresh{"pending"}else{"not_scheduled"},generator,COMPONENT_GENERATOR_VERSION,proposal.confidence,if fresh{None}else{Some("Proposal rejected for publication: the source revision changed before approval.")},now],
             )?;
             Self::insert_component_sources(tx, &note_id, &current.project_id, &proposal)?;
         }

@@ -44,15 +44,15 @@ pub use tree_sitter_context::{
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ContractError {
-    #[error("Contrato inválido: {0}.")]
+    #[error("Invalid contract: {0}.")]
     Invalid(&'static str),
-    #[error("Versão de contrato não suportada: {0}.")]
+    #[error("Unsupported contract version: {0}.")]
     UnsupportedVersion(u8),
-    #[error("A execução pertence a uma revisão ou geração obsoleta.")]
+    #[error("The run belongs to a stale revision or generation.")]
     StaleExecution,
-    #[error("A execução já foi cancelada ou encerrada.")]
+    #[error("The run was already cancelled or finished.")]
     ExecutionClosed,
-    #[error("O orçamento não comporta o conteúdo obrigatório.")]
+    #[error("The budget cannot fit the required content.")]
     BudgetExceeded,
     #[error("Coleta cancelada.")]
     Cancelled,

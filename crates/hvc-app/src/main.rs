@@ -12,25 +12,25 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .thread_name("hvc-runtime")
         .build()
-        .context("falha ao inicializar o runtime assíncrono")?;
+        .context("failed to initialize the async runtime")?;
     let paths = AppPaths::resolve()?;
     let runtime_handle = runtime.handle().clone();
     let core_initialization = std::thread::Builder::new()
         .name("hvc-core-init".into())
         .spawn(move || AppCore::initialize(paths, runtime_handle).map_err(anyhow::Error::from))
-        .context("falha ao iniciar a inicialização paralela do core")?;
+        .context("failed to start the parallel core initialization")?;
 
     let application = Application::new().with_assets(hvc_ui::HvcAssets);
-    let core = core_initialization.join().map_err(|_| {
-        anyhow::anyhow!("worker de inicialização do core encerrou inesperadamente")
-    })??;
+    let core = core_initialization
+        .join()
+        .map_err(|_| anyhow::anyhow!("the core initialization worker ended unexpectedly"))??;
     let ui_core = Arc::clone(&core);
 
     let _tokio_guard = runtime.enter();
 
     application.run(move |cx: &mut App| {
         hvc_ui::open_main_window(Arc::clone(&ui_core), cx)
-            .expect("falha ao abrir a janela principal GPUI");
+            .expect("failed to open the main GPUI window");
     });
 
     runtime.block_on(core.shutdown());

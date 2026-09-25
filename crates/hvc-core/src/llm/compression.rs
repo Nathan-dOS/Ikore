@@ -151,11 +151,11 @@ fn compress_tool_output(input: &str) -> (String, String) {
         "ansi_generic"
     };
 
-    let ansi = Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("regex ANSI válida");
+    let ansi = Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ANSI regex");
     let without_ansi = ansi.replace_all(input, "");
     let progress =
         Regex::new(r"(?m)^\s*(Compiling|Checking|Downloading|Downloaded|Fresh)\s+[^\n]+\n?")
-            .expect("regex progresso válida");
+            .expect("valid progress regex");
     let without_progress = progress.replace_all(&without_ansi, "");
 
     let mut output = Vec::new();
@@ -181,15 +181,15 @@ fn compress_tool_output(input: &str) -> (String, String) {
 }
 
 fn compress_vault_prose(input: &str) -> String {
-    let whitespace = Regex::new(r"[ \t]{2,}").expect("regex whitespace válida");
-    let blank_lines = Regex::new(r"\n{3,}").expect("regex linhas válida");
+    let whitespace = Regex::new(r"[ \t]{2,}").expect("valid whitespace regex");
+    let blank_lines = Regex::new(r"\n{3,}").expect("valid line regex");
     let compact = whitespace.replace_all(input, " ");
     blank_lines.replace_all(&compact, "\n\n").trim().to_string()
 }
 
 pub fn redact(input: &str) -> String {
-    let bearer = Regex::new(r"(?i)bearer\s+[A-Za-z0-9._\-]+").expect("regex bearer válida");
-    let keys = Regex::new(r"(?i)(api[_ -]?key[=: ]+)\S+").expect("regex api key válida");
+    let bearer = Regex::new(r"(?i)bearer\s+[A-Za-z0-9._\-]+").expect("valid bearer regex");
+    let keys = Regex::new(r"(?i)(api[_ -]?key[=: ]+)\S+").expect("valid api key regex");
     let redacted = bearer.replace_all(input, "Bearer [REDACTED]");
     keys.replace_all(&redacted, "$1[REDACTED]").to_string()
 }
