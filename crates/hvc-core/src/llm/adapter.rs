@@ -30,6 +30,7 @@ pub struct AdapterOutput {
     pub content: String,
     pub usage: LlmUsage,
     pub finish_reason: Option<String>,
+    pub observed_models: Vec<String>,
 }
 
 pub trait TokenDeltaSink: Send + Sync {
@@ -96,15 +97,29 @@ impl LlmAdapter for ProtocolAdapter {
             match call.profile.auth_style {
                 AuthStyle::Bearer => {
                     let credential = call.credential.ok_or_else(|| {
-                        LlmError::new(LlmErrorKind::MissingApiKey, "Conexão sem API key.")
-                            .with_target(&call.profile.id, call.connection.id.as_str(), call.model)
+                        LlmError::new(
+                            LlmErrorKind::MissingApiKey,
+                            "The connection has no API key.",
+                        )
+                        .with_target(
+                            &call.profile.id,
+                            call.connection.id.as_str(),
+                            call.model,
+                        )
                     })?;
                     request = request.bearer_auth(credential);
                 }
                 AuthStyle::Anthropic => {
                     let credential = call.credential.ok_or_else(|| {
-                        LlmError::new(LlmErrorKind::MissingApiKey, "Conexão sem API key.")
-                            .with_target(&call.profile.id, call.connection.id.as_str(), call.model)
+                        LlmError::new(
+                            LlmErrorKind::MissingApiKey,
+                            "The connection has no API key.",
+                        )
+                        .with_target(
+                            &call.profile.id,
+                            call.connection.id.as_str(),
+                            call.model,
+                        )
                     })?;
                     request = request
                         .header("x-api-key", credential)
@@ -114,7 +129,7 @@ impl LlmAdapter for ProtocolAdapter {
             }
 
             let response = tokio::select! {
-                _ = cancellation.cancelled() => return Err(LlmError::new(LlmErrorKind::Cancelled, "Execução LLM cancelada.")),
+                _ = cancellation.cancelled() => return Err(LlmError::new(LlmErrorKind::Cancelled, "LLM execution cancelled.")),
                 result = request.send() => result.map_err(network_error)?,
             };
             let response = validate_status(
@@ -126,7 +141,16 @@ impl LlmAdapter for ProtocolAdapter {
             )
             .await?;
             if call.request.stream && call.profile.capabilities.streaming {
-                consume_stream(response, &payload, self.protocol, cancellation, delta_sink).await
+                consume_stream(
+                    response,
+                    &payload,
+                    self.protocol,
+                    &call.profile.id,
+                    call.model,
+                    cancellation,
+                    delta_sink,
+                )
+                .await
             } else {
                 consume_complete(response, &payload, self.protocol, cancellation, delta_sink).await
             }
@@ -251,23 +275,25 @@ async fn consume_complete(
     delta_sink: &dyn TokenDeltaSink,
 ) -> Result<AdapterOutput, LlmError> {
     let body = tokio::select! {
-        _ = cancellation.cancelled() => return Err(LlmError::new(LlmErrorKind::Cancelled,"Execução LLM cancelada.")),
+        _ = cancellation.cancelled() => return Err(LlmError::new(LlmErrorKind::Cancelled,"LLM execution cancelled.")),
         result = response.text() => result.map_err(network_error)?,
     };
     let parsed: Value = serde_json::from_str(&body).map_err(|_| {
         LlmError::new(
             LlmErrorKind::InvalidResponse,
-            "Provider retornou JSON inválido.",
+            "The provider returned invalid JSON.",
         )
     })?;
     delta_sink.observe_usage(&crate::usage::api::parse_usage(protocol, &parsed));
     let (content, usage, finish_reason) = parse_complete(protocol, &parsed)?;
+    let observed_models = provider_models(&parsed);
     Ok(AdapterOutput {
         request_payload: request_payload.clone(),
         response_payload: parsed,
         content,
         usage,
         finish_reason,
+        observed_models,
     })
 }
 
@@ -275,6 +301,8 @@ async fn consume_stream(
     mut response: Response,
     request_payload: &Value,
     protocol: ProviderProtocol,
+    provider: &str,
+    requested_model: &str,
     cancellation: &CancellationToken,
     delta_sink: &dyn TokenDeltaSink,
 ) -> Result<AdapterOutput, LlmError> {
@@ -296,6 +324,13 @@ async fn consume_stream(
             }
             error
         })?;
+        if let Some(error) = verify_stream_models(
+            provider,
+            requested_model,
+            parser.observed_models(),
+        ) {
+            return Err(error.with_observed_models(parser.observed_models().to_vec()));
+        }
         apply_stream_events(events, &mut content, &mut usage, &mut completed, delta_sink);
     }
     let parsed_events = parser.finish();
@@ -313,10 +348,24 @@ async fn consume_stream(
         &mut completed,
         delta_sink,
     );
+    if parser.observed_models().is_empty() {
+        return Err(LlmError::new(
+            LlmErrorKind::ModelUnverified,
+            format!("Provider `{provider}` did not report which model produced the generation."),
+        )
+        .with_target(provider, "", requested_model));
+    }
+    if let Some(error) = verify_stream_models(
+        provider,
+        requested_model,
+        parser.observed_models(),
+    ) {
+        return Err(error.with_observed_models(parser.observed_models().to_vec()));
+    }
     if !completed || content.trim().is_empty() {
         let mut error = LlmError::new(
             LlmErrorKind::StreamFailed,
-            "Stream terminou antes da conclusão válida.",
+            "The stream ended before a valid completion.",
         );
         if !content.is_empty() {
             error.visible_partial = Some(content);
@@ -329,7 +378,66 @@ async fn consume_stream(
         content,
         usage,
         finish_reason: Some("stop".to_string()),
+        observed_models: parser.observed_models().to_vec(),
     })
+}
+
+fn verify_stream_models(provider: &str, requested: &str, observed: &[String]) -> Option<LlmError> {
+    for model in observed {
+        match crate::terminals::model_identity::verify_model(
+            Some(provider),
+            Some(requested),
+            Some(model),
+        ) {
+            crate::terminals::model_identity::ModelVerification::Verified => {}
+            crate::terminals::model_identity::ModelVerification::Mismatch => {
+                return Some(
+                    LlmError::new(
+                        LlmErrorKind::ModelMismatch,
+                        format!("Provider `{provider}` reported `{model}`; expected `{requested}`."),
+                    )
+                    .with_target(provider, "", requested),
+                );
+            }
+            crate::terminals::model_identity::ModelVerification::Unverified => {
+                return Some(
+                    LlmError::new(
+                        LlmErrorKind::ModelUnverified,
+                        format!("Provider `{provider}` could not verify requested model `{requested}`."),
+                    )
+                    .with_target(provider, "", requested),
+                );
+            }
+        }
+    }
+    None
+}
+
+fn provider_models(payload: &Value) -> Vec<String> {
+    fn visit(value: &Value, found: &mut Vec<String>) {
+        match value {
+            Value::Object(object) => {
+                for key in ["model", "model_id", "modelId", "modelID", "modelVersion"] {
+                    if let Some(model) = object
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .filter(|model| !model.trim().is_empty())
+                        && !found.iter().any(|item| item == model)
+                    {
+                        found.push(model.to_owned());
+                    }
+                }
+                for value in object.values() {
+                    visit(value, found);
+                }
+            }
+            Value::Array(values) => values.iter().for_each(|value| visit(value, found)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    visit(payload, &mut found);
+    found
 }
 
 fn apply_stream_events(
@@ -485,9 +593,9 @@ fn network_error(error: reqwest::Error) -> LlmError {
     LlmError::new(
         kind,
         if kind == LlmErrorKind::Timeout {
-            "Tempo limite na chamada do provider."
+            "The provider call timed out."
         } else {
-            "Falha de rede na chamada do provider."
+            "Network error while calling the provider."
         },
     )
 }
@@ -624,8 +732,8 @@ mod tests {
         let profile = super::super::profiles::profile_by_id("openrouter").unwrap();
         let schema = json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false});
         for (status, stream, body, expected_error) in [
-            (200, false, json!({"choices":[{"message":{"content":"{\"ok\":true}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":4}}).to_string(), None),
-            (200, true, ": OPENROUTER PROCESSING\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"{\\\"ok\\\":\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"true}\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":4}}\n\ndata: [DONE]\n\n".into(), None),
+            (200, false, json!({"model":"openrouter/free","choices":[{"message":{"content":"{\"ok\":true}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":4}}).to_string(), None),
+            (200, true, ": OPENROUTER PROCESSING\n\ndata: {\"model\":\"openrouter/free\",\"choices\":[{\"delta\":{\"content\":\"{\\\"ok\\\":\"}}]}\n\ndata: {\"model\":\"openrouter/free\",\"choices\":[{\"delta\":{\"content\":\"true}\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"model\":\"openrouter/free\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":4}}\n\ndata: [DONE]\n\n".into(), None),
             (401, false, r#"{"error":{"message":"Invalid API key","code":401}}"#.into(), Some(LlmErrorKind::Authentication)),
             (429, false, r#"{"error":{"message":"Rate limited","code":429}}"#.into(), Some(LlmErrorKind::RateLimited)),
         ] {

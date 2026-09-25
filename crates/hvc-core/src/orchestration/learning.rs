@@ -1,8 +1,7 @@
 //! Learning is an optional job after Done, never a seventh stage or project owner.
 use super::*;
 use crate::llm::{
-    AgentExecutionTarget, AgentRole, LlmError, LlmErrorKind, LlmGateway, LlmRequest,
-    ResponseFormat,
+    AgentExecutionTarget, AgentRole, LlmError, LlmErrorKind, LlmGateway, LlmRequest, ResponseFormat,
 };
 use crate::orchestration::{ContentSha256, LearningState, learning_report::*};
 use coordination::{invalid, model_output_invalid};
@@ -16,6 +15,9 @@ struct ApprovedGraphProposal {
     source_expected_sha256: String,
     target_expected_sha256: String,
 }
+
+type LearningCandidate = (String, String, u64);
+type PreparedLearning = (AgentRuntimeConfig, LearningCandidate);
 
 impl PersistenceService {
     pub(super) fn reconcile_learning_publication(
@@ -964,13 +966,24 @@ impl PersistenceService {
         &self,
         shutdown: &CancellationToken,
     ) -> Result<bool, PersistenceServiceError> {
-        if !self.get_preparation_settings()?.learning_enabled {
-            return Ok(false);
-        }
-        let config = self.load_runtime_config()?;
-        let db = self.connection()?;
-        let candidate = Self::learning_candidate(&db, &self.clock.now().to_rfc3339())?;
-        let Some((id, project, generation)) = candidate else {
+        // This lane shares its supervisor task with foreground execution. All SQLite admission
+        // reads belong to the blocking pool so a busy database cannot pause the main lane.
+        let service = self.clone();
+        let now = self.clock.now().to_rfc3339();
+        let prepared = tokio::task::spawn_blocking(
+            move || -> Result<Option<PreparedLearning>, PersistenceServiceError> {
+                if !service.get_preparation_settings()?.learning_enabled {
+                    return Ok(None);
+                }
+                let config = service.load_runtime_config()?;
+                let db = service.connection()?;
+                let candidate = Self::learning_candidate(&db, &now)?;
+                Ok(candidate.map(|candidate| (config, candidate)))
+            },
+        )
+        .await
+        .map_err(|error| invalid(error.to_string()))??;
+        let Some((config, (id, project, generation))) = prepared else {
             return Ok(false);
         };
         match self
@@ -979,12 +992,20 @@ impl PersistenceService {
         {
             Ok(false) => return Ok(false),
             Err(error) => {
-                let mut db = self.connection()?;
-                let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                if tx.execute("UPDATE jobs SET status='failed',last_error=?3 WHERE id=?1 AND generation=?2 AND status='pending'",params![id,generation,error.to_string()])?==1 {
-                    tx.execute("UPDATE learning_runs SET state='failed',diagnostic=?2,updated_at=?3 WHERE job_id=?1",params![id,error.to_string(),Self::now_iso()])?;
-                }
-                tx.commit()?;
+                let service = self.clone();
+                let error_text = error.to_string();
+                let id = id.clone();
+                tokio::task::spawn_blocking(move || -> Result<(), PersistenceServiceError> {
+                    let mut db = service.connection()?;
+                    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                    if tx.execute("UPDATE jobs SET status='failed',last_error=?3 WHERE id=?1 AND generation=?2 AND status='pending'",params![&id,generation,&error_text])?==1 {
+                        tx.execute("UPDATE learning_runs SET state='failed',diagnostic=?2,updated_at=?3 WHERE job_id=?1",params![&id,&error_text,Self::now_iso()])?;
+                    }
+                    tx.commit()?;
+                    Ok(())
+                })
+                .await
+                .map_err(|error| invalid(error.to_string()))??;
                 return Ok(true);
             }
             Ok(true) => {}

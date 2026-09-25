@@ -190,9 +190,13 @@ pub fn parse_unit_response(
     if text.is_empty() {
         return Err(shape("The response is empty."));
     }
-    let value = parse_single_object(text)?;
-    if value["outcome"] == "completed"
-        && let Some(claimed) = value["executorKind"].as_str()
+    let mut value = parse_single_object(text)?;
+    let candidate = match (flavor, value.get("response")) {
+        (SchemaFlavor::Claude, Some(inner)) if inner.is_object() => inner,
+        _ => &value,
+    };
+    if candidate["outcome"] == "completed"
+        && let Some(claimed) = candidate["executorKind"].as_str()
         && claimed != kind.as_str()
     {
         return Err(CompositionError::new(
@@ -204,8 +208,22 @@ pub fn parse_unit_response(
             ),
         ));
     }
-    schema_check(kind, flavor, &value)?;
-    let response: UnitModelResponseV1 = serde_json::from_value(value).map_err(|error| {
+    let unwrapped = match (flavor, value.get("response")) {
+        (SchemaFlavor::Claude, Some(inner)) if inner.is_object() => {
+            schema_check(kind, flavor, &value)?;
+            value["response"].take()
+        }
+        (SchemaFlavor::Claude, _) => {
+            let wrapped = serde_json::json!({ "response": &value });
+            schema_check(kind, flavor, &wrapped)?;
+            value
+        }
+        _ => {
+            schema_check(kind, flavor, &value)?;
+            value
+        }
+    };
+    let response: UnitModelResponseV1 = serde_json::from_value(unwrapped).map_err(|error| {
         shape(format!(
             "The response does not match the typed contract: {error}."
         ))
@@ -325,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn every_documented_response_example_parses_through_both_flavors() {
+    fn every_documented_response_example_parses_through_all_flavors() {
         for example in fixtures::examples() {
             if example.definition != "UnitModelResponseV1" {
                 continue;
@@ -348,6 +366,23 @@ mod tests {
                 result.is_ok(),
                 example.schema_valid,
                 "strict `{}`: {result:?}",
+                example.name
+            );
+            let claude_wrapped =
+                serde_json::json!({ "response": &example.instance }).to_string();
+            let result = parse_unit_response(&claude_wrapped, kind, SchemaFlavor::Claude);
+            assert_eq!(
+                result.is_ok(),
+                example.schema_valid,
+                "claude wrapped `{}`: {result:?}",
+                example.name
+            );
+            let claude_bare = example.instance.to_string();
+            let result = parse_unit_response(&claude_bare, kind, SchemaFlavor::Claude);
+            assert_eq!(
+                result.is_ok(),
+                example.schema_valid,
+                "claude bare `{}`: {result:?}",
                 example.name
             );
         }
@@ -399,5 +434,53 @@ mod tests {
             error.message
         );
         assert!(!error.message.contains("Not A Handle"), "{}", error.message);
+    }
+
+    #[test]
+    fn claude_response_wrapper_extracts_inner_response_and_validates_strictly() {
+        let example = fixtures::examples()
+            .into_iter()
+            .find(|example| example.name == "code_anchor_response")
+            .unwrap();
+        // 1. Wrapped response succeeds
+        let wrapped = serde_json::json!({ "response": &example.instance }).to_string();
+        let parsed = parse_unit_response(
+            &wrapped,
+            ExecutorKind::CodeImplementer,
+            SchemaFlavor::Claude,
+        )
+        .expect("wrapped claude response parses");
+        assert!(matches!(parsed, UnitModelResponseV1::Completed { .. }));
+
+        // 2. Bare response succeeds under Claude flavor
+        let bare = example.instance.to_string();
+        let parsed_bare =
+            parse_unit_response(&bare, ExecutorKind::CodeImplementer, SchemaFlavor::Claude)
+                .expect("bare response parses under claude flavor");
+        assert!(matches!(parsed_bare, UnitModelResponseV1::Completed { .. }));
+
+        // 3. Unknown field outside wrapper is rejected by the schema validator
+        let extra_outer = serde_json::json!({
+            "response": &example.instance,
+            "extraProperty": 123
+        })
+        .to_string();
+        let err = parse_unit_response(
+            &extra_outer,
+            ExecutorKind::CodeImplementer,
+            SchemaFlavor::Claude,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidShape);
+
+        // 4. Mismatched executorKind inside wrapper triggers Invariant::Sc005
+        let err = parse_unit_response(
+            &wrapped,
+            ExecutorKind::CodeRepairer,
+            SchemaFlavor::Claude,
+        )
+        .unwrap_err();
+        assert_eq!(err.sc, Invariant::Sc005);
+        assert!(err.message.contains("executorKind"), "{}", err.message);
     }
 }

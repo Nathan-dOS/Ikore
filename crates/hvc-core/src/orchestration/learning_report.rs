@@ -218,7 +218,7 @@ impl LearningReportV2 {
                 "modo Observe não aceita propostas de grafo",
             ));
         }
-        validate_learning_report_english(self)?;
+        validate_learning_report_english(self, &developer_titles(input))?;
         Ok(())
     }
 
@@ -327,7 +327,34 @@ fn validate_findings<'a>(
     Ok(())
 }
 
-fn validate_learning_report_english(report: &LearningReportV2) -> Result<(), ContractError> {
+/// Pulsation titles the developer wrote reach the report as host evidence
+/// (the current request and `historical_summary` lines such as
+/// `failed: teste 3`). Quoting them verbatim is correct, but the English guard
+/// judged a title like `teste 3` as Portuguese prose and cost a whole extra
+/// Learning call (ToDoListWebView, 2026-09-22). Only these host-supplied
+/// names, short enough to be a title rather than a request body, are exempt.
+fn developer_titles(input: &LearningInputV2) -> Vec<&str> {
+    let mut titles = input
+        .evidence
+        .iter()
+        .filter_map(|evidence| match evidence.kind.as_str() {
+            "historical_summary" => evidence.text.split_once(": ").map(|(_, title)| title),
+            "completed_request" => Some(evidence.text.as_str()),
+            _ => None,
+        })
+        .map(str::trim)
+        .filter(|title| !title.is_empty() && title.chars().count() <= 80)
+        .collect::<Vec<_>>();
+    // Longest first, so a title never leaves a fragment of a longer one.
+    titles.sort_by_key(|title| std::cmp::Reverse(title.len()));
+    titles.dedup();
+    titles
+}
+
+fn validate_learning_report_english(
+    report: &LearningReportV2,
+    titles: &[&str],
+) -> Result<(), ContractError> {
     let text_fields = report
         .observations
         .iter()
@@ -347,7 +374,10 @@ fn validate_learning_report_english(report: &LearningReportV2) -> Result<(), Con
         )
         .chain(report.limitations.iter().map(String::as_str));
     for text in text_fields {
-        validate_english_prose("Learning report text", text)
+        let prose = titles
+            .iter()
+            .fold(text.to_owned(), |prose, title| prose.replace(title, " "));
+        validate_english_prose("Learning report text", &prose)
             .map_err(|_| ContractError::Invalid("Learning report must be English"))?;
     }
     Ok(())

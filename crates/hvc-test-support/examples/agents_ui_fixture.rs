@@ -355,6 +355,7 @@ fn seed_free_form_run(repository: &TerminalRepository, project_id: &str, slot_id
             llm_execution_id: None,
             parent_run_id: None,
             continuation_reason: None,
+            observation_trial_id: None,
         })
         .unwrap();
     repository

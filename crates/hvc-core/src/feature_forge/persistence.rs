@@ -16,7 +16,9 @@ impl PersistenceService {
         cancellation: &CancellationToken,
         gateway: Option<&dyn crate::llm::LlmGateway>,
     ) -> Result<String, PersistenceServiceError> {
-        use crate::llm::{AgentExecutionTarget, ExecutionId, GenerationId, LlmRequest, ResponseFormat};
+        use crate::llm::{
+            AgentExecutionTarget, ExecutionId, GenerationId, LlmRequest, ResponseFormat,
+        };
         let config = self.load_runtime_config()?;
         if prompt.chars().count() > config.context_chars_limit {
             return Err(invalid(

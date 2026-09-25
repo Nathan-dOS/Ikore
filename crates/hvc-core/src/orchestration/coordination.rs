@@ -236,7 +236,7 @@ impl PersistenceService {
                 .as_deref()
                 .ok_or_else(|| invalid("Job sem pulsação"))?;
             let p = Self::find_pulsation_by_id(&tx, pulse)?
-                .ok_or_else(|| invalid("Pulsação ausente"))?;
+                .ok_or_else(|| invalid("Pulsation missing"))?;
             // Setup can die while the pulsation is still `planning`, before
             // `execute_claimed_job` performs Planning -> Running.
             let parked = Self::record_stage_failure_checkpoint(

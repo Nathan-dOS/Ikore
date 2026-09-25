@@ -25,12 +25,18 @@ use crate::repository_context::RepositoryContext;
 use crate::secret_redactor::redact_secrets;
 
 mod adapters;
+mod codex_model_provenance;
+pub(crate) mod model_identity;
 mod model_catalog;
+mod observation_report;
 
 pub(crate) use model_catalog::validate_catalog_model_selection;
 pub use model_catalog::{
     CliModelCatalogEntry, CliModelCatalogService, CliModelCatalogSnapshot, CliModelCatalogSource,
     CliModelCatalogState, CliModelSelectionSource, cli_model_catalog_version,
+};
+pub use observation_report::{
+    CliObservationGroup, CliObservationRun, ObservationOutcome, PulsationTimeBreakdown,
 };
 
 #[cfg(windows)]
@@ -40,6 +46,9 @@ pub(crate) struct ProcessTreeJob {
 
 #[cfg(windows)]
 unsafe impl Send for ProcessTreeJob {}
+
+#[cfg(windows)]
+unsafe impl Sync for ProcessTreeJob {}
 
 #[cfg(windows)]
 impl ProcessTreeJob {
@@ -53,7 +62,7 @@ impl ProcessTreeJob {
 
         let process = child
             .raw_handle()
-            .ok_or_else(|| std::io::Error::other("handle do processo CLI indisponível"))?
+            .ok_or_else(|| std::io::Error::other("CLI process handle unavailable"))?
             as windows_sys::Win32::Foundation::HANDLE;
         // SAFETY: all pointers are either null (unnamed job/default security) or point to a
         // correctly sized initialized Windows structure for the duration of the calls.
@@ -90,6 +99,28 @@ impl ProcessTreeJob {
             windows_sys::Win32::System::JobObjects::TerminateJobObject(self.handle, 1);
         }
     }
+
+    fn observation(&self) -> std::io::Result<(u64, u64, u64, u64)> {
+        use windows_sys::Win32::System::JobObjects::{
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+            QueryInformationJobObject,
+        };
+        unsafe {
+            let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+            if QueryInformationJobObject(self.handle, JobObjectBasicAccountingInformation,
+                (&raw mut accounting).cast(), std::mem::size_of_val(&accounting) as u32, std::ptr::null_mut()) == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            if QueryInformationJobObject(self.handle, JobObjectExtendedLimitInformation,
+                (&raw mut limits).cast(), std::mem::size_of_val(&limits) as u32, std::ptr::null_mut()) == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok((accounting.TotalUserTime.max(0) as u64, accounting.TotalKernelTime.max(0) as u64,
+                limits.PeakProcessMemoryUsed as u64, limits.PeakJobMemoryUsed as u64))
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -112,6 +143,10 @@ impl ProcessTreeJob {
     }
 
     pub(crate) fn terminate(&self) {}
+
+    fn observation(&self) -> std::io::Result<(u64, u64, u64, u64)> {
+        Ok((0, 0, 0, 0))
+    }
 }
 
 const MAX_MODEL_CHARS: usize = 200;
@@ -135,59 +170,71 @@ const CLI_AUTH_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PROBE_OUTPUT_BYTES: usize = 128 * 1024;
 const MAX_MODEL_CATALOG_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_COMPANION_CLI_OUTPUT_BYTES: usize = 1024 * 1024;
+/// A contract probe launches the CLI for real (Gemini also self-updates on launch), so it gets
+/// far more time than a `--version` probe.
+const CLI_VALIDATION_TIMEOUT: Duration = Duration::from_secs(180);
+const CLI_VALIDATION_PROMPT: &str = "Reply with exactly the word OK and nothing else.";
+/// `runtime_settings` key prefix under which a contract-validated CLI version is remembered.
+const VALIDATED_CLI_VERSION_KEY_PREFIX: &str = "cli.validated_version.";
 
 #[derive(Debug, thiserror::Error)]
 pub enum TerminalError {
-    #[error("configuração inválida de Agents: {0}")]
+    #[error("invalid Agents configuration: {0}")]
     Validation(String),
-    #[error("registro de Agents não encontrado: {0}")]
+    #[error("Agents record not found: {0}")]
     NotFound(String),
-    #[error("configuração de Agents foi alterada em outra operação")]
+    #[error("the Agents configuration was changed by another operation")]
     Conflict,
     #[error("falha no banco local de Agents: {0}")]
     Database(#[from] rusqlite::Error),
     #[error("falha de I/O no runtime CLI: {0}")]
     Io(#[from] std::io::Error),
-    #[error("JSON inválido no runtime CLI: {0}")]
+    #[error("invalid JSON in the CLI runtime: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("execução CLI falhou: {0}")]
+    #[error("CLI run failed: {0}")]
     Process(String),
-    #[error("execução CLI excedeu o tempo limite")]
+    #[error("CLI run timed out")]
     Timeout,
     /// The process went quiet past its silence window rather than running out
     /// of total time. Separate because the remedy differs: the ceiling means
     /// the work is too big, silence usually means the model is reasoning and
     /// the window is too narrow for it.
-    #[error("execução CLI ficou inativa além do limite sem produzir saída")]
+    #[error("CLI run was idle past the limit without producing output")]
     InactivityTimeout,
-    #[error("execução CLI excedeu o limite de saída")]
+    #[error("CLI run exceeded the output limit")]
     OutputLimit,
+    #[error("model_mismatch: modelo esperado `{expected}`, observado `{observed}`")]
+    ModelMismatch { expected: String, observed: String },
+    #[error(
+        "model_unverified: the model that produced this generation could not be verified ({detail})"
+    )]
+    ModelUnverified { detail: String },
     /// The model itself ran out of output budget mid-answer. Distinct from
     /// `OutputLimit` (the host's own byte ceiling on a run) and from `Process`
     /// (the CLI failed): the process succeeded and the answer is simply
     /// incomplete, so retrying the same prompt against the same budget
     /// truncates again at the same place.
     #[error(
-        "{backend} interrompeu a saída por limite de tokens ({reason}) após {produced_chars} caracteres"
+        "{backend} stopped its output at the token limit ({reason}) after {produced_chars} characters"
     )]
     OutputTruncated {
         backend: String,
         reason: String,
         produced_chars: usize,
     },
-    #[error("execução CLI foi cancelada")]
+    #[error("CLI run was cancelled")]
     Cancelled,
-    #[error("{0} requer autenticação")]
+    #[error("{0} requires authentication")]
     AuthRequired(String),
-    #[error("versão do {0} incompatível com o contrato CLI")]
+    #[error("{0} version is incompatible with the CLI contract")]
     VersionUnsupported(String),
-    #[error("{0} atingiu o limite temporário de requisições")]
+    #[error("{0} hit a temporary request limit")]
     RateLimited(String),
-    #[error("transição inválida da execução CLI: {from} -> {to}")]
+    #[error("invalid CLI run transition: {from} -> {to}")]
     InvalidTransition { from: String, to: String },
-    #[error("falha ao remover segredos da saída CLI: {0}")]
+    #[error("failed to redact secrets from CLI output: {0}")]
     Redaction(String),
-    #[error("falha de segurança no runtime CLI: {0}")]
+    #[error("CLI runtime security failure: {0}")]
     Security(String),
 }
 
@@ -204,6 +251,8 @@ impl TerminalError {
             Self::Timeout => "cli_timeout",
             Self::InactivityTimeout => "cli_inactivity_timeout",
             Self::OutputLimit => "cli_output_limit",
+            Self::ModelMismatch { .. } => "model_mismatch",
+            Self::ModelUnverified { .. } => "model_unverified",
             Self::OutputTruncated { .. } => "cli_output_truncated",
             Self::Cancelled => "cli_cancelled",
             Self::AuthRequired(_) => "cli_auth_required",
@@ -252,6 +301,14 @@ pub enum CliBackend {
 }
 
 impl CliBackend {
+    /// Backends whose self-updates are gated behind an explicit validation when a pulsation
+    /// would run a version above the adapter's validated ceiling. Only Gemini so far: it
+    /// updates itself on launch, and its update cadence is what kept breaking pulsations. The
+    /// other CLIs run newer versions with an advisory only (see `apply_version_verdict`).
+    pub const fn gates_unvalidated_versions(self) -> bool {
+        matches!(self, Self::Gemini)
+    }
+
     pub const ALL: [Self; 5] = [
         Self::Codex,
         Self::Claude,
@@ -554,14 +611,25 @@ pub fn canonical_agent(role: AgentRole) -> &'static CanonicalAgentDescriptor {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionSlot {
-    Canonical { agent_role: AgentRole },
-    FreeForm { id: String },
+    Canonical {
+        agent_role: AgentRole,
+    },
+    /// A non-user-visible slot bound to one composed stage execution/work unit.
+    /// Its configuration is copied from the canonical role when it is created.
+    Ephemeral {
+        id: String,
+        agent_role: AgentRole,
+    },
+    FreeForm {
+        id: String,
+    },
 }
 
 impl SessionSlot {
     fn persisted_id(&self, project_id: &str) -> String {
         match self {
             Self::Canonical { agent_role } => canonical_slot_id(project_id, *agent_role),
+            Self::Ephemeral { id, .. } => id.clone(),
             Self::FreeForm { id } => id.clone(),
         }
     }
@@ -569,6 +637,7 @@ impl SessionSlot {
     pub fn agent_role(&self) -> Option<AgentRole> {
         match self {
             Self::Canonical { agent_role } => Some(*agent_role),
+            Self::Ephemeral { agent_role, .. } => Some(*agent_role),
             Self::FreeForm { .. } => None,
         }
     }
@@ -747,6 +816,9 @@ pub struct TerminalRun {
     pub parent_run_id: Option<String>,
     pub continuation_reason: Option<String>,
     pub session_fingerprint: Option<String>,
+    /// Set only for the bounded set of automatic Pulsation CLI attempts that
+    /// deliberately run without a wall-clock watchdog.
+    pub observation_trial_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -777,6 +849,65 @@ pub struct CreateSessionRunRequest {
     pub llm_execution_id: Option<String>,
     pub parent_run_id: Option<String>,
     pub continuation_reason: Option<String>,
+    pub observation_trial_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliObservationTrial {
+    pub id: String,
+    pub project_id: String,
+    pub state: String,
+    pub target_runs: u32,
+    pub admitted_runs: u32,
+    pub settled_runs: u32,
+    pub started_at: String,
+    pub closed_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliObservationSample {
+    pub observed_at: String,
+    pub elapsed_ms: u64,
+    pub user_cpu_100ns: Option<u64>,
+    pub kernel_cpu_100ns: Option<u64>,
+    pub peak_process_memory_bytes: Option<u64>,
+    pub peak_job_memory_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliObservationReport {
+    pub trial: CliObservationTrial,
+    /// Runs whose output the stage (or Learning) accepted; the only ones in
+    /// the duration statistics below.
+    pub successful_runs: u32,
+    /// Exited normally but the output was rejected (e.g. `outcome: failed`).
+    pub stage_rejected_runs: u32,
+    pub failed_runs: u32,
+    pub cancelled_runs: u32,
+    pub active_runs: u32,
+    pub mean_success_duration_ms: Option<u64>,
+    pub median_success_duration_ms: Option<u64>,
+    pub p95_success_duration_ms: Option<u64>,
+    pub max_success_duration_ms: Option<u64>,
+    /// Longest interval between process frames, including start-to-first-frame
+    /// and last-frame-to-termination. Active runs are censored at the last
+    /// observed frame rather than projected into duration statistics.
+    pub max_frame_silence_ms: Option<u64>,
+    /// Longest interval between two reads of the CLI's pipes - the signal the
+    /// silence watchdog acts on outside the trial.
+    pub max_transport_silence_ms: Option<u64>,
+    pub peak_process_memory_bytes: Option<u64>,
+    pub peak_job_memory_bytes: Option<u64>,
+    /// `debug` builds inflate host-side timings (hashing, snapshots).
+    pub build_profile: String,
+    pub groups: Vec<CliObservationGroup>,
+    /// Critical-path breakdown of every Pulsation that has a trial run.
+    pub pulsations: Vec<PulsationTimeBreakdown>,
+    pub runs: Vec<CliObservationRun>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -971,7 +1102,7 @@ impl TerminalRepository {
             request.custom_risk_ack = false;
             if request.execution_mode == AgentExecutionMode::CliProcess {
                 return Err(TerminalError::Validation(
-                    "alterar o executável ou argumentos Custom exige salvar em API Mode e confirmar o novo risco"
+                    "changing the Custom executable or arguments requires saving in API Mode and confirming the new risk"
                         .into(),
                 ));
             }
@@ -1021,7 +1152,7 @@ impl TerminalRepository {
             return Err(if exists {
                 TerminalError::Conflict
             } else {
-                TerminalError::NotFound("configuração do agente".into())
+                TerminalError::NotFound("agent configuration".into())
             });
         }
         transaction.execute(
@@ -1064,7 +1195,54 @@ impl TerminalRepository {
                 map_config,
             )
             .optional()?
-            .ok_or_else(|| TerminalError::NotFound("configuração do agente".into()))
+            .ok_or_else(|| TerminalError::NotFound("agent configuration".into()))
+    }
+
+    /// Materializes a hidden work-unit slot from its canonical role. The
+    /// identity is caller-supplied and deterministic, making retries and
+    /// restart recovery reuse only their own terminal history.
+    pub fn ensure_ephemeral_slot(
+        &self,
+        project_id: &str,
+        id: &str,
+        agent_role: AgentRole,
+    ) -> Result<(), TerminalError> {
+        let project_id = required(project_id, "projectId")?;
+        let id = required(id, "slotId")?;
+        let now = Utc::now().to_rfc3339();
+        let changed = self.connection()?.execute(
+            "INSERT OR IGNORE INTO terminal_slots(
+               id,project_id,kind,agent_role,label,execution_mode,backend,model,
+               thinking_level,session_policy,custom_executable,custom_args_json,
+               custom_risk_ack,position,archived,version,created_at,updated_at,
+               model_profile,model_source
+             )
+             SELECT ?1,project_id,'ephemeral',agent_role,?2,execution_mode,backend,model,
+                    thinking_level,'fresh_per_run',custom_executable,custom_args_json,
+                    custom_risk_ack,position,0,version,?3,?3,model_profile,model_source
+             FROM terminal_slots
+             WHERE id=?4 AND project_id=?5 AND kind='canonical' AND agent_role=?6",
+            params![
+                id,
+                format!("Execution {id}"),
+                now,
+                canonical_slot_id(project_id, agent_role),
+                project_id,
+                agent_role.as_str(),
+            ],
+        )?;
+        if changed == 0 {
+            let exists: bool = self.connection()?.query_row(
+                "SELECT EXISTS(SELECT 1 FROM terminal_slots
+                 WHERE id=?1 AND project_id=?2 AND kind='ephemeral' AND agent_role=?3)",
+                params![id, project_id, agent_role.as_str()],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                return Err(TerminalError::NotFound("canonical agent slot".into()));
+            }
+        }
+        Ok(())
     }
 
     pub fn list_free_form_slots(
@@ -1128,7 +1306,7 @@ impl TerminalRepository {
         )?;
         if active_count >= 8 {
             return Err(TerminalError::Validation(
-                "cada projeto aceita no máximo 8 agentes livres ativos".into(),
+                "a project accepts at most 8 active free-form agents".into(),
             ));
         }
         let position: u32 = transaction.query_row(
@@ -1189,7 +1367,7 @@ impl TerminalRepository {
             request.custom_risk_ack = false;
             if request.execution_mode == AgentExecutionMode::CliProcess {
                 return Err(TerminalError::Validation(
-                    "alterar o executável ou argumentos Custom exige salvar em API Mode e confirmar o novo risco"
+                    "changing the Custom executable or arguments requires saving in API Mode and confirming the new risk"
                         .into(),
                 ));
             }
@@ -1211,7 +1389,7 @@ impl TerminalRepository {
             )?;
             if active {
                 return Err(TerminalError::Validation(
-                    "cancele a execução ativa antes de arquivar o agente livre".into(),
+                    "cancel the active run before archiving the free-form agent".into(),
                 ));
             }
         }
@@ -1224,7 +1402,7 @@ impl TerminalRepository {
             )?;
             if active_count >= 8 {
                 return Err(TerminalError::Validation(
-                    "cada projeto aceita no máximo 8 agentes livres ativos".into(),
+                    "a project accepts at most 8 active free-form agents".into(),
                 ));
             }
         }
@@ -1290,7 +1468,7 @@ impl TerminalRepository {
         )?;
         if active {
             return Err(TerminalError::Validation(
-                "cancele a execução ativa antes de excluir o agente livre".into(),
+                "cancel the active run before deleting the free-form agent".into(),
             ));
         }
         transaction.execute(
@@ -1324,7 +1502,7 @@ impl TerminalRepository {
         let requested = slot_ids.iter().cloned().collect::<HashSet<_>>();
         if requested.len() != slot_ids.len() {
             return Err(TerminalError::Validation(
-                "a ordenação contém slots duplicados".into(),
+                "the order contains duplicate slots".into(),
             ));
         }
         let mut connection = self.connection()?;
@@ -1384,6 +1562,7 @@ impl TerminalRepository {
             llm_execution_id: request.llm_execution_id,
             parent_run_id: None,
             continuation_reason: None,
+            observation_trial_id: None,
         })
     }
 
@@ -1394,18 +1573,23 @@ impl TerminalRepository {
         required(&request.project_id, "projectId")?;
         if request.execution_mode == AgentExecutionMode::CliProcess && request.backend.is_none() {
             return Err(TerminalError::Validation(
-                "backend é obrigatório para uma execução CLI".into(),
+                "a backend is required for a CLI run".into(),
             ));
         }
         let slot = self.get_slot(&request.project_id, &request.slot)?;
         if slot.archived {
             return Err(TerminalError::Validation(
-                "o slot de terminal está arquivado".into(),
+                "the terminal slot is archived".into(),
             ));
         }
         if request.origin != ExecutionOrigin::Manual && slot.kind == "free_form" {
             return Err(TerminalError::Validation(
-                "agentes livres aceitam somente execuções manuais".into(),
+                "free-form agents accept manual runs only".into(),
+            ));
+        }
+        if request.origin == ExecutionOrigin::Manual && slot.kind == "ephemeral" {
+            return Err(TerminalError::Validation(
+                "internal run slots do not accept manual actions".into(),
             ));
         }
         let continuation_reason = request
@@ -1414,13 +1598,13 @@ impl TerminalRepository {
             .map(|value| match value {
                 "explicit_resume" | "resume_per_pulsation" | "restart_recovery" => Ok(value),
                 _ => Err(TerminalError::Validation(
-                    "razão de continuidade inválida".into(),
+                    "invalid continuation reason".into(),
                 )),
             })
             .transpose()?;
         if request.parent_run_id.is_some() != continuation_reason.is_some() {
             return Err(TerminalError::Validation(
-                "retomada exige run pai e razão de continuidade".into(),
+                "resuming requires a parent run and a continuation reason".into(),
             ));
         }
         let id = Uuid::new_v4().to_string();
@@ -1429,18 +1613,51 @@ impl TerminalRepository {
         let agent_role = request.slot.agent_role();
         let (slot_kind, free_form_slot_id, free_form_label) = match &request.slot {
             SessionSlot::Canonical { .. } => ("canonical", None, None),
+            SessionSlot::Ephemeral { .. } => ("ephemeral", None, None),
             SessionSlot::FreeForm { id } => {
                 ("free_form", Some(id.as_str()), Some(slot.label.as_str()))
             }
         };
-        self.connection()?.execute(
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let (Some(pulsation_id), Some(role)) =
+            (request.pulsation_id.as_deref(), agent_role)
+        {
+            let frozen: Option<(Option<String>, Option<String>)> = transaction
+                .query_row(
+                    "SELECT backend,model FROM terminal_runs
+                     WHERE project_id=?1 AND pulsation_id=?2 AND agent_role=?3 AND execution_mode='cli_process'
+                     ORDER BY created_at,id LIMIT 1",
+                    params![request.project_id, pulsation_id, role.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((frozen_backend, frozen_model)) = frozen
+                && (frozen_backend.as_deref() != request.backend.map(CliBackend::as_str)
+                    || frozen_model.as_deref() != request.model.as_deref())
+            {
+                return Err(TerminalError::ModelMismatch {
+                    expected: format!(
+                        "{}/{}",
+                        frozen_backend.as_deref().unwrap_or("unknown"),
+                        frozen_model.as_deref().unwrap_or("default")
+                    ),
+                    observed: format!(
+                        "{}/{}",
+                        request.backend.map(CliBackend::as_str).unwrap_or("unknown"),
+                        request.model.as_deref().unwrap_or("default")
+                    ),
+                });
+            }
+        }
+        transaction.execute(
             "INSERT INTO terminal_runs(
                id,project_id,slot_kind,agent_role,free_form_slot_id,free_form_label,
                origin,execution_mode,backend,model,
                pulsation_id,job_id,agent_run_id,llm_execution_id,status,created_at,updated_at,
-               slot_id,parent_run_id,continuation_reason,requested_model_profile,model_source
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,
-                      'queued',?15,?15,?16,?17,?18,?19,?20)",
+               slot_id,parent_run_id,continuation_reason,requested_model_profile,model_source,observation_trial_id
+              ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,
+                       'queued',?15,?15,?16,?17,?18,?19,?20,?21)",
             params![
                 id,
                 request.project_id,
@@ -1462,8 +1679,10 @@ impl TerminalRepository {
                 continuation_reason,
                 slot.model_profile,
                 slot.model_source.as_str(),
+                request.observation_trial_id,
             ],
         )?;
+        transaction.commit()?;
         self.get_run(&id)
     }
 
@@ -1475,11 +1694,11 @@ impl TerminalRepository {
                     termination_reason,output_bytes,event_count,workspace_snapshot_hash,
                     launch_identity_sha256,detected_cli_version,adapter_contract_version,
                     slot_kind,free_form_slot_id,slot_id,parent_run_id,continuation_reason,
-                    session_fingerprint,requested_model_profile,model_source,observed_model
+                    session_fingerprint,requested_model_profile,model_source,observed_model,observation_trial_id
              FROM terminal_runs WHERE id=?1",
             [required(run_id,"runId")?],
             map_run,
-        ).optional()?.ok_or_else(|| TerminalError::NotFound("execução".into()))
+        ).optional()?.ok_or_else(|| TerminalError::NotFound("run".into()))
     }
 
     pub fn list_runs(
@@ -1496,7 +1715,7 @@ impl TerminalRepository {
                     termination_reason,output_bytes,event_count,workspace_snapshot_hash,
                     launch_identity_sha256,detected_cli_version,adapter_contract_version,
                     slot_kind,free_form_slot_id,slot_id,parent_run_id,continuation_reason,
-                    session_fingerprint,requested_model_profile,model_source,observed_model
+                    session_fingerprint,requested_model_profile,model_source,observed_model,observation_trial_id
              FROM terminal_runs WHERE project_id=?1 AND agent_role=?2
              ORDER BY created_at DESC LIMIT ?3",
         )?;
@@ -1509,6 +1728,21 @@ impl TerminalRepository {
             map_run,
         )?;
         rows.collect::<Result<Vec<_>, _>>()
+            .map_err(TerminalError::from)
+    }
+
+    fn has_cli_role_run(
+        &self,
+        pulsation_id: &str,
+        role: AgentRole,
+    ) -> Result<bool, TerminalError> {
+        self.connection()?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM terminal_runs
+                 WHERE pulsation_id=?1 AND agent_role=?2 AND execution_mode='cli_process')",
+                params![pulsation_id, role.as_str()],
+                |row| row.get(0),
+            )
             .map_err(TerminalError::from)
     }
 
@@ -1526,7 +1760,7 @@ impl TerminalRepository {
                     termination_reason,output_bytes,event_count,workspace_snapshot_hash,
                     launch_identity_sha256,detected_cli_version,adapter_contract_version,
                     slot_kind,free_form_slot_id,slot_id,parent_run_id,continuation_reason,
-                    session_fingerprint,requested_model_profile,model_source,observed_model
+                    session_fingerprint,requested_model_profile,model_source,observed_model,observation_trial_id
              FROM terminal_runs WHERE project_id=?1 AND slot_id=?2
              ORDER BY created_at DESC LIMIT ?3",
         )?;
@@ -1628,6 +1862,18 @@ impl TerminalRepository {
                 params![now, run_id],
             )?;
         }
+        if changed > 0 && terminal {
+            if let Some(trial_id) = current.observation_trial_id.as_deref() {
+                transaction.execute(
+                    "UPDATE cli_observation_trials
+                     SET settled_runs=settled_runs+1,
+                         state=CASE WHEN state='closing' AND settled_runs+1 >= admitted_runs THEN 'completed' ELSE state END,
+                         completed_at=CASE WHEN state='closing' AND settled_runs+1 >= admitted_runs THEN ?1 ELSE completed_at END
+                     WHERE id=?2 AND state IN ('active','closing')",
+                    params![now, trial_id],
+                )?;
+            }
+        }
         transaction.commit()?;
         if changed == 0 {
             let latest = self.get_run(run_id)?;
@@ -1657,6 +1903,166 @@ impl TerminalRepository {
         self.get_run(run_id)
     }
 
+    /// Starts one project-scoped observation trial. Existing and historical
+    /// runs are never reclassified; only a later automatic Pulsation launch
+    /// can reserve one of its fixed twenty slots.
+    pub fn start_cli_observation_trial(
+        &self,
+        project_id: &str,
+    ) -> Result<CliObservationTrial, TerminalError> {
+        let project_id = required(project_id, "projectId")?;
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let db = self.connection()?;
+        let tx = db.unchecked_transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM cli_observation_trials WHERE project_id=?1 AND state IN ('active','closing'))",
+            [project_id], |row| row.get(0),
+        )?;
+        if exists {
+            return Err(TerminalError::Validation(
+                "a CLI observation is already open in this project".into(),
+            ));
+        }
+        tx.execute(
+            "INSERT INTO cli_observation_trials(id,project_id,state,target_runs,admitted_runs,settled_runs,started_at)
+             VALUES(?1,?2,'active',20,0,0,?3)",
+            params![id, project_id, now],
+        )?;
+        tx.commit()?;
+        self.get_cli_observation_trial(&id)
+    }
+
+    pub fn active_cli_observation_trial(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<CliObservationTrial>, TerminalError> {
+        self.connection()?
+            .query_row(
+                "SELECT id,project_id,state,target_runs,admitted_runs,settled_runs,started_at,closed_at,completed_at
+                 FROM cli_observation_trials WHERE project_id=?1 AND state IN ('active','closing') ORDER BY started_at DESC LIMIT 1",
+                [required(project_id, "projectId")?], map_cli_observation_trial,
+            )
+            .optional()
+            .map_err(TerminalError::from)
+    }
+
+    pub fn latest_cli_observation_report(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<CliObservationReport>, TerminalError> {
+        let db = self.connection()?;
+        let trial = db.query_row(
+            "SELECT id,project_id,state,target_runs,admitted_runs,settled_runs,started_at,closed_at,completed_at
+             FROM cli_observation_trials WHERE project_id=?1 ORDER BY started_at DESC LIMIT 1",
+            [required(project_id, "projectId")?], map_cli_observation_trial,
+        ).optional()?;
+        let Some(trial) = trial else {
+            return Ok(None);
+        };
+        observation_report::build(&db, trial).map(Some)
+    }
+
+    /// Longest wait between two reads of a finished run's pipes.
+    pub fn set_transport_silence(
+        &self,
+        run_id: &str,
+        max_transport_silence_ms: u64,
+    ) -> Result<(), TerminalError> {
+        self.connection()?.execute(
+            "UPDATE terminal_runs SET max_transport_silence_ms=?1 WHERE id=?2",
+            params![max_transport_silence_ms as i64, required(run_id, "runId")?],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_cli_observation_trial(
+        &self,
+        trial_id: &str,
+    ) -> Result<CliObservationTrial, TerminalError> {
+        self.connection()?
+            .query_row(
+                "SELECT id,project_id,state,target_runs,admitted_runs,settled_runs,started_at,closed_at,completed_at
+                 FROM cli_observation_trials WHERE id=?1",
+                [required(trial_id, "trialId")?], map_cli_observation_trial,
+            )
+            .optional()?
+            .ok_or_else(|| TerminalError::NotFound("CLI observation".into()))
+    }
+
+    /// Atomically consumes a trial slot. Callers must additionally enforce the
+    /// automatic-Pulsation origin and a non-empty pulsation id.
+    fn reserve_cli_observation_slot(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<CliObservationTrial>, TerminalError> {
+        let db = self.connection()?;
+        let tx = db.unchecked_transaction()?;
+        let trial: Option<CliObservationTrial> = tx.query_row(
+            "SELECT id,project_id,state,target_runs,admitted_runs,settled_runs,started_at,closed_at,completed_at
+             FROM cli_observation_trials WHERE project_id=?1 AND state='active' AND admitted_runs < target_runs
+             ORDER BY started_at DESC LIMIT 1",
+            [required(project_id, "projectId")?], map_cli_observation_trial,
+        ).optional()?;
+        let Some(trial) = trial else { return Ok(None); };
+        let now = Utc::now().to_rfc3339();
+        let changed = tx.execute(
+            "UPDATE cli_observation_trials
+             SET admitted_runs=admitted_runs+1,
+                 state=CASE WHEN admitted_runs+1 >= target_runs THEN 'closing' ELSE state END,
+                 closed_at=CASE WHEN admitted_runs+1 >= target_runs THEN ?1 ELSE closed_at END
+             WHERE id=?2 AND state='active' AND admitted_runs < target_runs",
+            params![now, trial.id],
+        )?;
+        if changed != 1 { return Err(TerminalError::Conflict); }
+        tx.commit()?;
+        self.get_cli_observation_trial(&trial.id).map(Some)
+    }
+
+    /// Returns a reservation only when the run record could not be created.
+    /// This prevents an unrelated validation/persistence error from consuming
+    /// one of the twenty observations. A linked run is never released.
+    fn release_cli_observation_reservation(&self, trial_id: &str) -> Result<(), TerminalError> {
+        let db = self.connection()?;
+        let tx = db.unchecked_transaction()?;
+        let changed = tx.execute(
+            "UPDATE cli_observation_trials
+             SET admitted_runs=admitted_runs-1,
+                 state=CASE WHEN state='closing' THEN 'active' ELSE state END,
+                 closed_at=CASE WHEN state='closing' THEN NULL ELSE closed_at END
+             WHERE id=?1 AND state IN ('active','closing') AND admitted_runs > settled_runs",
+            [trial_id],
+        )?;
+        if changed != 1 { return Err(TerminalError::Conflict); }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn reserve_cli_observation_for_pulsation(
+        &self,
+        project_id: &str,
+        pulsation_id: Option<&str>,
+        origin: ExecutionOrigin,
+    ) -> Result<Option<CliObservationTrial>, TerminalError> {
+        if pulsation_id.is_none() || !matches!(origin, ExecutionOrigin::Pipeline | ExecutionOrigin::Learning) {
+            return Ok(None);
+        }
+        self.reserve_cli_observation_slot(project_id)
+    }
+
+    pub fn record_cli_observation_sample(
+        &self,
+        run_id: &str,
+        sample: &CliObservationSample,
+    ) -> Result<(), TerminalError> {
+        self.connection()?.execute(
+            "INSERT INTO cli_observation_samples(run_id,observed_at,elapsed_ms,user_cpu_100ns,kernel_cpu_100ns,peak_process_memory_bytes,peak_job_memory_bytes)
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![run_id, sample.observed_at, sample.elapsed_ms as i64, sample.user_cpu_100ns.map(|v| v as i64), sample.kernel_cpu_100ns.map(|v| v as i64), sample.peak_process_memory_bytes.map(|v| v as i64), sample.peak_job_memory_bytes.map(|v| v as i64)],
+        )?;
+        Ok(())
+    }
+
     pub fn set_native_session_id(
         &self,
         run_id: &str,
@@ -1665,7 +2071,7 @@ impl TerminalRepository {
         let session_id = required(session_id, "sessionId")?;
         if session_id.len() > 256 {
             return Err(TerminalError::Validation(
-                "identificador de sessão CLI excede o limite".into(),
+                "the CLI session identifier exceeds the limit".into(),
             ));
         }
         let changed = self.connection()?.execute(
@@ -1705,6 +2111,54 @@ impl TerminalRepository {
             params![model, Utc::now().to_rfc3339(), required(run_id, "runId")?],
         )?;
         self.get_run(run_id)
+    }
+
+    fn record_model_observation(
+        &self,
+        run_id: &str,
+        ordinal: u64,
+        event_sequence: u64,
+        model_id: Option<&str>,
+        message_id: Option<&str>,
+        parent_invocation_id: Option<&str>,
+        agent_id: Option<&str>,
+        is_generation: bool,
+        evidence_source: &str,
+    ) -> Result<(), TerminalError> {
+        for (field, value, max_chars) in [
+            ("observedModel", model_id, MAX_MODEL_CHARS),
+            ("messageId", message_id, 256),
+            ("parentInvocationId", parent_invocation_id, 256),
+            ("agentId", agent_id, 256),
+        ] {
+            if value.is_some_and(|value| {
+                value.trim().is_empty()
+                    || value.chars().count() > max_chars
+                    || value.chars().any(char::is_control)
+            }) {
+                return Err(TerminalError::Validation(format!(
+                    "identity field {field} is invalid"
+                )));
+            }
+        }
+        self.connection()?.execute(
+            "INSERT INTO terminal_model_observations(
+               run_id,ordinal,event_sequence,model_id,message_id,parent_invocation_id,agent_id,is_generation,created_at,evidence_source
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                required(run_id, "runId")?,
+                ordinal,
+                event_sequence,
+                model_id,
+                message_id,
+                parent_invocation_id,
+                agent_id,
+                is_generation,
+                Utc::now().to_rfc3339(),
+                evidence_source,
+            ],
+        )?;
+        Ok(())
     }
 
     pub fn set_workspace_snapshot_hash(
@@ -1807,7 +2261,7 @@ impl TerminalRepository {
             ));
         }
         if !matches!(stream, None | Some("stdout") | Some("stderr")) {
-            return Err(TerminalError::Validation("stream inválido".into()));
+            return Err(TerminalError::Validation("invalid stream".into()));
         }
         let sanitized = sanitize_terminal_text(content.as_bytes());
         let redacted = redact_secrets(&sanitized).map_err(TerminalError::Redaction)?;
@@ -1910,16 +2364,17 @@ impl TerminalRepository {
         project_id: &str,
         role: Option<AgentRole>,
     ) -> Result<usize, TerminalError> {
-        let connection = self.connection()?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let active: bool = if let Some(role) = role {
-            connection.query_row(
+            transaction.query_row(
                 "SELECT EXISTS(SELECT 1 FROM terminal_runs WHERE project_id=?1 AND agent_role=?2
                  AND status IN ('queued','starting','running','awaiting_fallback'))",
                 params![required(project_id, "projectId")?, role.as_str()],
                 |row| row.get(0),
             )?
         } else {
-            connection.query_row(
+            transaction.query_row(
                 "SELECT EXISTS(SELECT 1 FROM terminal_runs WHERE project_id=?1
                  AND status IN ('queued','starting','running','awaiting_fallback'))",
                 [required(project_id, "projectId")?],
@@ -1928,20 +2383,41 @@ impl TerminalRepository {
         };
         if active {
             return Err(TerminalError::Validation(
-                "não é possível limpar o histórico enquanto há execução ou fallback ativo".into(),
+                "the history cannot be cleared while a run or fallback is active".into(),
+            ));
+        }
+        let frozen_for_open_pulsation: bool = if let Some(role) = role {
+            transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM terminal_runs r JOIN pulsations p ON p.id=r.pulsation_id
+                 WHERE r.project_id=?1 AND r.agent_role=?2 AND p.status NOT IN ('done','failed'))",
+                params![project_id, role.as_str()],
+                |row| row.get(0),
+            )?
+        } else {
+            transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM terminal_runs r JOIN pulsations p ON p.id=r.pulsation_id
+                 WHERE r.project_id=?1 AND p.status NOT IN ('done','failed'))",
+                [project_id],
+                |row| row.get(0),
+            )?
+        };
+        if frozen_for_open_pulsation {
+            return Err(TerminalError::Validation(
+                "cannot clear model audit while a Pulsation using it remains open".into(),
             ));
         }
         let affected = if let Some(role) = role {
-            connection.execute(
+            transaction.execute(
                 "DELETE FROM terminal_runs WHERE project_id=?1 AND agent_role=?2",
                 params![required(project_id, "projectId")?, role.as_str()],
             )?
         } else {
-            connection.execute(
+            transaction.execute(
                 "DELETE FROM terminal_runs WHERE project_id=?1",
                 [required(project_id, "projectId")?],
             )?
         };
+        transaction.commit()?;
         Ok(affected)
     }
 
@@ -1971,7 +2447,7 @@ impl TerminalRepository {
         )?;
         if active {
             return Err(TerminalError::Validation(
-                "não é possível limpar o histórico enquanto o agente livre está ativo".into(),
+                "the history cannot be cleared while the free-form agent is active".into(),
             ));
         }
         connection
@@ -2026,7 +2502,7 @@ impl TerminalRepository {
         let run = self.get_run(run_id)?;
         if run.project_id != project_id {
             return Err(TerminalError::Validation(
-                "a execução pertence a outro projeto".into(),
+                "the run belongs to another project".into(),
             ));
         }
         let mut events = Vec::new();
@@ -2113,6 +2589,42 @@ impl TerminalRepository {
             params![required(pulsation_id,"pulsationId")?,role.as_str()],
             |row|row.get(0),
         ).map_err(TerminalError::from)
+    }
+
+    /// The CLI version the developer last validated through the contract probe, if any.
+    /// Machine-wide (the CLI is), stored in `runtime_settings`.
+    pub fn validated_cli_version(
+        &self,
+        backend: CliBackend,
+    ) -> Result<Option<String>, TerminalError> {
+        self.connection()?
+            .query_row(
+                "SELECT value FROM runtime_settings WHERE key=?1",
+                params![format!(
+                    "{VALIDATED_CLI_VERSION_KEY_PREFIX}{}",
+                    backend.as_str()
+                )],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(TerminalError::from)
+    }
+
+    pub fn record_validated_cli_version(
+        &self,
+        backend: CliBackend,
+        version: &str,
+    ) -> Result<(), TerminalError> {
+        self.connection()?.execute(
+            "INSERT INTO runtime_settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![
+                format!("{VALIDATED_CLI_VERSION_KEY_PREFIX}{}", backend.as_str()),
+                version,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
     }
 
     /// The backend this pulsation elected for the role after an earlier one
@@ -2306,8 +2818,8 @@ fn map_terminal_slot(row: &rusqlite::Row<'_>) -> rusqlite::Result<TerminalSlot> 
     let role = role
         .map(|value| AgentRole::parse(&value).ok_or_else(|| invalid_column(3, value)))
         .transpose()?;
-    if (kind == "canonical") != role.is_some()
-        || !matches!(kind.as_str(), "canonical" | "free_form")
+    if (matches!(kind.as_str(), "canonical" | "ephemeral")) != role.is_some()
+        || !matches!(kind.as_str(), "canonical" | "free_form" | "ephemeral")
     {
         return Err(invalid_column(2, kind));
     }
@@ -2359,6 +2871,12 @@ fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<TerminalRun> {
         .transpose()?;
     let slot = match (slot_kind.as_str(), agent_role, free_form_slot_id) {
         ("canonical", Some(agent_role), None) => SessionSlot::Canonical { agent_role },
+        ("ephemeral", Some(agent_role), None) => SessionSlot::Ephemeral {
+            id: slot_id
+                .clone()
+                .ok_or_else(|| invalid_column(30, "missing ephemeral slot id".into()))?,
+            agent_role,
+        },
         ("free_form", None, Some(id)) => SessionSlot::FreeForm { id },
         _ => return Err(invalid_column(28, slot_kind)),
     };
@@ -2402,7 +2920,42 @@ fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<TerminalRun> {
         parent_run_id: row.get(31)?,
         continuation_reason: row.get(32)?,
         session_fingerprint: row.get(33)?,
+        observation_trial_id: row.get(37)?,
     })
+}
+
+fn map_cli_observation_trial(row: &rusqlite::Row<'_>) -> rusqlite::Result<CliObservationTrial> {
+    Ok(CliObservationTrial {
+        id: row.get(0)?, project_id: row.get(1)?, state: row.get(2)?, target_runs: row.get(3)?,
+        admitted_runs: row.get(4)?, settled_runs: row.get(5)?, started_at: row.get(6)?,
+        closed_at: row.get(7)?, completed_at: row.get(8)?,
+    })
+}
+
+fn observation_frame_silence_ms(
+    db: &Connection,
+    run_id: &str,
+    started_at: Option<&str>,
+    finished_at: Option<&str>,
+) -> Result<Option<u64>, TerminalError> {
+    let Some(started_at) = started_at else { return Ok(None); };
+    let Ok(mut previous) = chrono::DateTime::parse_from_rfc3339(started_at) else { return Ok(None); };
+    let mut maximum = 0_u64;
+    let mut statement = db.prepare(
+        "SELECT created_at FROM terminal_events WHERE run_id=?1 AND stream IS NOT NULL ORDER BY sequence"
+    )?;
+    let frames = statement.query_map([run_id], |row| row.get::<_, String>(0))?;
+    for frame in frames {
+        let frame = frame?;
+        if let Ok(frame_at) = chrono::DateTime::parse_from_rfc3339(&frame) {
+            maximum = maximum.max((frame_at - previous).num_milliseconds().max(0) as u64);
+            previous = frame_at;
+        }
+    }
+    if let Some(finished_at) = finished_at.and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok()) {
+        maximum = maximum.max((finished_at - previous).num_milliseconds().max(0) as u64);
+    }
+    Ok(Some(maximum))
 }
 
 fn invalid_column(index: usize, value: String) -> rusqlite::Error {
@@ -2411,7 +2964,7 @@ fn invalid_column(index: usize, value: String) -> rusqlite::Error {
         rusqlite::types::Type::Text,
         Box::new(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("valor persistido inválido: {value}"),
+            format!("invalid persisted value: {value}"),
         )),
     )
 }
@@ -2419,7 +2972,7 @@ fn invalid_column(index: usize, value: String) -> rusqlite::Error {
 fn required<'a>(value: &'a str, field: &str) -> Result<&'a str, TerminalError> {
     let value = value.trim();
     if value.is_empty() {
-        Err(TerminalError::Validation(format!("{field} é obrigatório")))
+        Err(TerminalError::Validation(format!("{field} is required")))
     } else {
         Ok(value)
     }
@@ -2433,7 +2986,7 @@ fn validate_slot_label(label: &str) -> Result<&str, TerminalError> {
     let label = required(label, "label")?;
     if label.chars().count() > 80 || label.chars().any(char::is_control) {
         return Err(TerminalError::Validation(
-            "o nome do agente livre deve ter até 80 caracteres visíveis".into(),
+            "the free-form agent name must have at most 80 visible characters".into(),
         ));
     }
     Ok(label)
@@ -2517,6 +3070,67 @@ fn validate_model_selection(
     Ok(())
 }
 
+/// Automatic agent invocations need an explicit, stable model that the host can
+/// bind to the CLI command line and later verify against generation events.
+fn require_verifiable_cli_selection(
+    backend: CliBackend,
+    model: Option<&str>,
+) -> Result<&str, TerminalError> {
+    let model = model.map(str::trim).filter(|model| !model.is_empty()).ok_or_else(|| {
+        TerminalError::ModelUnverified {
+            detail: format!("{} CLI default has no fixed model ID", backend.label()),
+        }
+    })?;
+    if model_identity::verify_model(Some(backend.as_str()), Some(model), Some(model))
+        != model_identity::ModelVerification::Verified
+    {
+        return Err(TerminalError::ModelUnverified {
+            detail: format!("{} model `{model}` resolves dynamically", backend.label()),
+        });
+    }
+    Ok(model)
+}
+
+fn validate_cli_launch_model(
+    backend: CliBackend,
+    model: Option<&str>,
+    spec: &CliProcessSpec,
+) -> Result<(), TerminalError> {
+    let expected = require_verifiable_cli_selection(backend, model)?;
+    if backend == CliBackend::Custom {
+        let mut bound = spec
+            .environment
+            .iter()
+            .filter(|(name, _)| name == "HVC_SELECTED_MODEL")
+            .map(|(_, value)| value.as_str());
+        if bound.next() != Some(expected) || bound.next().is_some() {
+            return Err(TerminalError::ModelMismatch {
+                expected: expected.to_owned(),
+                observed: "Custom CLI launch environment does not bind exactly the selected model".into(),
+            });
+        }
+        return Ok(());
+    }
+    let mut positions = spec
+        .args
+        .iter()
+        .enumerate()
+        .filter(|(_, arg)| *arg == "--model" || arg.starts_with("--model="))
+        .map(|(index, _)| index);
+    let first = positions.next();
+    if first.and_then(|index| spec.args.get(index + 1)).map(String::as_str)
+        != Some(expected)
+        || positions.next().is_some()
+        || first.is_some_and(|index| spec.args[index] != "--model")
+    {
+        return Err(TerminalError::ModelMismatch {
+            expected: expected.to_owned(),
+            observed: "CLI launch arguments do not pin exactly the selected model".into(),
+        });
+    }
+    Ok(())
+}
+
 fn validate_custom(request: &UpdateCliAgentConfigRequest) -> Result<(), TerminalError> {
     validate_custom_parts(
         request.execution_mode,
@@ -2536,7 +3150,7 @@ fn validate_custom_parts(
 ) -> Result<(), TerminalError> {
     if custom_args.len() > MAX_CUSTOM_ARGS {
         return Err(TerminalError::Validation(format!(
-            "Custom aceita no máximo {MAX_CUSTOM_ARGS} argumentos"
+            "Custom accepts at most {MAX_CUSTOM_ARGS} arguments"
         )));
     }
     if custom_args
@@ -2544,7 +3158,7 @@ fn validate_custom_parts(
         .any(|arg| arg.contains('\0') || arg.chars().count() > MAX_CUSTOM_ARG_CHARS)
     {
         return Err(TerminalError::Validation(
-            "argumento Custom inválido ou excessivamente longo".into(),
+            "invalid or overly long Custom argument".into(),
         ));
     }
     if backend != CliBackend::Custom {
@@ -2556,7 +3170,7 @@ fn validate_custom_parts(
     else {
         return if execution_mode == AgentExecutionMode::CliProcess {
             Err(TerminalError::Validation(
-                "Custom exige caminho absoluto do executável".into(),
+                "Custom requires an absolute executable path".into(),
             ))
         } else {
             Ok(())
@@ -2564,7 +3178,7 @@ fn validate_custom_parts(
     };
     if !Path::new(executable).is_absolute() {
         return Err(TerminalError::Validation(
-            "Custom exige caminho absoluto do executável".into(),
+            "Custom requires an absolute executable path".into(),
         ));
     }
     if Path::new(executable)
@@ -2573,12 +3187,12 @@ fn validate_custom_parts(
         .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "cmd" | "bat" | "ps1"))
     {
         return Err(TerminalError::Validation(
-            "Custom não aceita scripts de shell; selecione um executável direto".into(),
+            "Custom does not accept shell scripts; choose a direct executable".into(),
         ));
     }
     if execution_mode == AgentExecutionMode::CliProcess && !custom_risk_ack {
         return Err(TerminalError::Validation(
-            "confirme o risco do executável Custom antes de ativá-lo".into(),
+            "confirm the Custom executable risk before enabling it".into(),
         ));
     }
     Ok(())
@@ -2630,6 +3244,38 @@ pub struct CliAvailability {
     pub capabilities: CliCapabilities,
 }
 
+/// A gated backend installed above its validated ceiling and not yet validated by the developer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnvalidatedCliVersion {
+    pub backend: CliBackend,
+    pub version: String,
+    pub minimum: String,
+    pub maximum_exclusive: String,
+}
+
+impl UnvalidatedCliVersion {
+    /// The diagnostic stored on the CLI fallback checkpoint that this condition opens.
+    pub fn diagnostic(&self) -> String {
+        format!(
+            "{} v{} is newer than the last validated version (validated range {}–{}). Validate the updated CLI, switch provider or abort the pulsation.",
+            self.backend.label(),
+            self.version,
+            self.minimum,
+            self.maximum_exclusive
+        )
+    }
+}
+
+/// Outcome of `TerminalService::validate_cli_contract`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CliValidationReport {
+    pub backend: CliBackend,
+    pub version: Option<String>,
+    pub validated: bool,
+    pub diagnostic: String,
+}
+
 pub fn discover_clis() -> Vec<CliAvailability> {
     let path_entries = cli_search_paths();
     let extensions = executable_extensions();
@@ -2676,6 +3322,37 @@ pub async fn discover_clis_with_probes() -> Vec<CliAvailability> {
     discovered
 }
 
+/// Applies the adapter's version verdict to a probed CLI. Returns `false` when the CLI must not
+/// be used (below the minimum, or no parsable version). Versions newer than the last validated
+/// one stay `Available` — the minimum is the only gate — and only carry an advisory diagnostic, so
+/// a CLI auto-update never blocks a pulsation while the validated ceiling waits to be bumped.
+fn apply_version_verdict(availability: &mut CliAvailability) -> bool {
+    availability.capabilities =
+        adapters::capabilities(availability.backend, availability.version.as_deref());
+    match adapters::version_compatibility(availability.backend, availability.version.as_deref()) {
+        adapters::CliVersionCompatibility::Supported => true,
+        adapters::CliVersionCompatibility::Unsupported => {
+            availability.state = CliAvailabilityState::UnsupportedVersion;
+            availability.diagnostic = Some(format!(
+                "The detected {} version did not pass the adapter contract.",
+                availability.backend.label()
+            ));
+            false
+        }
+        adapters::CliVersionCompatibility::UnknownNewer => {
+            let (minimum, maximum_exclusive) = adapters::compatibility_range(availability.backend);
+            availability.diagnostic = Some(format!(
+                "{} v{} is newer than the last validated version (validated range {}–{}); the adapter runs against the minimum version.",
+                availability.backend.label(),
+                availability.version.as_deref().unwrap_or("unknown"),
+                minimum,
+                maximum_exclusive
+            ));
+            true
+        }
+    }
+}
+
 async fn probe_cli_availability(mut availability: CliAvailability) -> CliAvailability {
     let Some(executable) = availability.executable_path.clone() else {
         return availability;
@@ -2689,47 +3366,25 @@ async fn probe_cli_availability(mut availability: CliAvailability) -> CliAvailab
         Ok(Ok(version)) if !version.is_empty() => availability.version = Some(version),
         Ok(Ok(_)) => {
             availability.state = CliAvailabilityState::ProbeFailed;
-            availability.diagnostic = Some("A CLI retornou uma versão vazia.".into());
+            availability.diagnostic = Some("The CLI returned an empty version.".into());
             return availability;
         }
         Ok(Err(error)) => {
             availability.state = CliAvailabilityState::ProbeFailed;
-            availability.diagnostic = Some(format!("Não foi possível executar --version: {error}"));
+            availability.diagnostic = Some(format!("Could not run --version: {error}"));
             return availability;
         }
         Err(_) => {
             availability.state = CliAvailabilityState::ProbeFailed;
             availability.diagnostic = Some(format!(
-                "A verificação de versão excedeu {} segundos.",
+                "The version check took longer than {} seconds.",
                 CLI_VERSION_PROBE_TIMEOUT.as_secs()
             ));
             return availability;
         }
     }
-    availability.capabilities =
-        adapters::capabilities(availability.backend, availability.version.as_deref());
-    match adapters::version_compatibility(availability.backend, availability.version.as_deref()) {
-        adapters::CliVersionCompatibility::Supported => {}
-        adapters::CliVersionCompatibility::Unsupported => {
-            availability.state = CliAvailabilityState::UnsupportedVersion;
-            availability.diagnostic = Some(format!(
-                "A versão detectada do {} não passou pelo contrato do adapter.",
-                availability.backend.label()
-            ));
-            return availability;
-        }
-        adapters::CliVersionCompatibility::UnknownNewer => {
-            availability.state = CliAvailabilityState::CapabilityMissing;
-            let (minimum, maximum_exclusive) = adapters::compatibility_range(availability.backend);
-            availability.diagnostic = Some(format!(
-                "{} v{} é mais nova que a faixa validada ({}–{}). O adapter pode funcionar, mas não foi validado. Atualize o HVC ou reporte um problema.",
-                availability.backend.label(),
-                availability.version.as_deref().unwrap_or("desconhecida"),
-                minimum,
-                maximum_exclusive
-            ));
-            return availability;
-        }
+    if !apply_version_verdict(&mut availability) {
+        return availability;
     }
     if availability.capabilities.auth_probe {
         match tokio::time::timeout(
@@ -2749,14 +3404,14 @@ async fn probe_cli_availability(mut availability: CliAvailability) -> CliAvailab
             Ok(Err(error)) => {
                 availability.state = CliAvailabilityState::ProbeFailed;
                 availability.diagnostic = Some(format!(
-                    "Falha ao verificar autenticação do {}: {error}",
+                    "Could not check {} authentication: {error}",
                     availability.backend.label()
                 ));
             }
             Err(_) => {
                 availability.state = CliAvailabilityState::ProbeFailed;
                 availability.diagnostic = Some(format!(
-                    "A verificação de autenticação excedeu {} segundos.",
+                    "The authentication check took longer than {} seconds.",
                     CLI_AUTH_PROBE_TIMEOUT.as_secs()
                 ));
             }
@@ -2811,6 +3466,85 @@ struct ProbeOutput {
     stderr: Vec<u8>,
 }
 
+/// A real, hardened CLI launch used only by `validate_cli_contract`: the adapter's own args,
+/// the prompt on stdin, bounded output, a read-only scratch directory. No run is recorded.
+async fn run_contract_probe(
+    spec: CliProcessSpec,
+    backend: CliBackend,
+) -> Result<ProbeOutput, std::io::Error> {
+    let secured = tokio::task::spawn_blocking(move || secure_launch_spec(spec, backend))
+        .await
+        .map_err(std::io::Error::other)?
+        .map_err(std::io::Error::other)?;
+    let directory = tempfile::tempdir()?;
+    let mut command = Command::new(&secured.spec.executable);
+    command
+        .args(&secured.spec.args)
+        .current_dir(directory.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .env_clear();
+    copy_safe_environment(&mut command);
+    for (name, value) in &secured.spec.environment {
+        command.env(name, value);
+    }
+    configure_hidden(&mut command);
+    let mut child = command.spawn()?;
+    let process_tree = ProcessTreeJob::assign(&child)?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(&secured.spec.stdin_payload).await?;
+        stdin.shutdown().await?;
+    }
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("validation stdout unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("validation stderr unavailable"))?;
+    let abort = CancellationToken::new();
+    let stdout_task = tokio::spawn(read_bounded_stream(
+        stdout,
+        abort.clone(),
+        MAX_COMPANION_CLI_OUTPUT_BYTES,
+        None,
+        None,
+    ));
+    let stderr_task = tokio::spawn(read_bounded_stream(
+        stderr,
+        abort.clone(),
+        MAX_PROBE_OUTPUT_BYTES,
+        None,
+        None,
+    ));
+    let status = tokio::select! {
+        status = child.wait() => status?,
+        _ = abort.cancelled() => {
+            process_tree.terminate();
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the validation output exceeded the safe limit",
+            ));
+        }
+    };
+    let stdout = stdout_task
+        .await
+        .map_err(|error| std::io::Error::other(format!("leitor interrompido: {error}")))??;
+    let stderr = stderr_task
+        .await
+        .map_err(|error| std::io::Error::other(format!("leitor interrompido: {error}")))??;
+    Ok(ProbeOutput {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 async fn run_bounded_probe(spec: CliProcessSpec) -> Result<ProbeOutput, std::io::Error> {
     run_bounded_probe_in(spec, None).await
 }
@@ -2845,11 +3579,11 @@ async fn run_bounded_probe_in_with_limit(
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| std::io::Error::other("stdout do probe indisponível"))?;
+        .ok_or_else(|| std::io::Error::other("probe stdout unavailable"))?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| std::io::Error::other("stderr do probe indisponível"))?;
+        .ok_or_else(|| std::io::Error::other("probe stderr unavailable"))?;
     let abort = CancellationToken::new();
     let stdout_task = tokio::spawn(read_bounded_stream(
         stdout,
@@ -2873,7 +3607,7 @@ async fn run_bounded_probe_in_with_limit(
             let _ = child.wait().await;
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "a saída do probe excedeu o limite seguro",
+                "the probe output exceeded the safe limit",
             ));
         }
     };
@@ -2932,7 +3666,7 @@ async fn read_bounded_stream<R: AsyncRead + Unpin>(
             abort.cancel();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "a saída do probe excedeu o limite seguro",
+                "the probe output exceeded the safe limit",
             ));
         }
         output.extend_from_slice(&buffer[..read]);
@@ -3101,7 +3835,7 @@ fn install_guidance(backend: CliBackend) -> (&'static str, &'static str) {
             "https://dev.opencode.ai/docs/cli/",
             "npm install -g opencode-ai",
         ),
-        CliBackend::Custom => ("", "Selecione um executável direto"),
+        CliBackend::Custom => ("", "Choose a direct executable"),
     }
 }
 
@@ -3143,7 +3877,7 @@ pub fn sanitize_terminal_text_bounded(bytes: &[u8], max_chars: usize) -> String 
     let mut written = 0usize;
     while let Some(ch) = chars.next() {
         if written >= max_chars {
-            output.push_str("\n[saída truncada]");
+            output.push_str("\n[output truncated]");
             break;
         }
         if ch == '\u{1b}' {
@@ -3300,6 +4034,7 @@ enum ProcessTermination {
 enum ProcessAbortReason {
     OutputLimit,
     Persistence,
+    ModelIntegrity,
 }
 
 #[derive(Debug)]
@@ -3326,6 +4061,9 @@ struct ProcessEventSummary {
     /// one. Used to tell an output cut off by the token budget apart from a
     /// model that genuinely returned nothing.
     finish_reason: Option<String>,
+    model_generation_count: u64,
+    verified_model_generation_count: u64,
+    model_observation_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -3377,7 +4115,10 @@ pub struct TerminalService {
     event_sink: Arc<dyn TerminalEventSink>,
     active: Mutex<HashMap<String, CancellationToken>>,
     active_changed: Notify,
-    discovery_cache: Mutex<Option<CliDiscoveryCache>>,
+    discovery_cache: Arc<Mutex<Option<CliDiscoveryCache>>>,
+    /// Single-flight guard of the background rescan `discovery_for_launch`
+    /// starts when it serves a stale snapshot.
+    discovery_refreshing: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TerminalService {
@@ -3396,7 +4137,8 @@ impl TerminalService {
             event_sink,
             active: Mutex::new(HashMap::new()),
             active_changed: Notify::new(),
-            discovery_cache: Mutex::new(None),
+            discovery_cache: Arc::new(Mutex::new(None)),
+            discovery_refreshing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -3407,6 +4149,166 @@ impl TerminalService {
     /// Backends that are installed, supported and authenticated right now, in
     /// the fixed order of `CliBackend::ALL`. Used to elect the next backend for
     /// a role whose current one just failed.
+    /// `Some` when `backend` is installed at a version above its validated ceiling that the
+    /// developer has not validated yet — and the backend is one that gates on that. A pulsation
+    /// about to run it parks on a CLI fallback checkpoint instead of launching.
+    pub async fn unvalidated_newer_version(
+        &self,
+        backend: CliBackend,
+    ) -> Result<Option<UnvalidatedCliVersion>, TerminalError> {
+        if !backend.gates_unvalidated_versions() {
+            return Ok(None);
+        }
+        let Some(availability) = self
+            .discovery(false)
+            .await
+            .into_iter()
+            .find(|item| item.backend == backend)
+        else {
+            return Ok(None);
+        };
+        let Some(version) = availability.version.clone() else {
+            return Ok(None);
+        };
+        if adapters::version_compatibility(backend, Some(&version))
+            != adapters::CliVersionCompatibility::UnknownNewer
+        {
+            return Ok(None);
+        }
+        if self.repository.validated_cli_version(backend)?.as_deref() == Some(version.as_str()) {
+            return Ok(None);
+        }
+        let (minimum, maximum_exclusive) = adapters::compatibility_range(backend);
+        Ok(Some(UnvalidatedCliVersion {
+            backend,
+            version,
+            minimum,
+            maximum_exclusive,
+        }))
+    }
+
+    /// Runs the CLI for real, with the adapter's own flags and a one-word prompt, and checks
+    /// that the stream comes back in the shape the adapter expects (a completion frame with
+    /// text). Discovery is forced first so a CLI that updated itself on the previous launch is
+    /// probed at its new version. On success the version is remembered as validated.
+    pub async fn validate_cli_contract(
+        &self,
+        backend: CliBackend,
+    ) -> Result<CliValidationReport, TerminalError> {
+        let availability = self
+            .discovery(true)
+            .await
+            .into_iter()
+            .find(|item| item.backend == backend)
+            .ok_or_else(|| TerminalError::NotFound(format!("{} CLI", backend.label())))?;
+        let version = availability.version.clone();
+        let Some(executable) = availability.executable_path.clone() else {
+            return Ok(CliValidationReport {
+                backend,
+                version,
+                validated: false,
+                diagnostic: availability
+                    .diagnostic
+                    .unwrap_or_else(|| format!("{} was not found on PATH.", backend.label())),
+            });
+        };
+        if availability.state != CliAvailabilityState::Available {
+            return Ok(CliValidationReport {
+                backend,
+                version,
+                validated: false,
+                diagnostic: availability
+                    .diagnostic
+                    .unwrap_or_else(|| format!("{} is not ready.", backend.label())),
+            });
+        }
+        let spec = build_process_spec(CliInvocationRequest {
+            executable,
+            backend,
+            model: None,
+            model_profile: None,
+            thinking_level: ThinkingLevel::Default,
+            prompt: CLI_VALIDATION_PROMPT.to_string(),
+            schema_file: None,
+            schema: None,
+            custom_args: Vec::new(),
+            resume_session_id: None,
+        })?;
+        let outcome =
+            tokio::time::timeout(CLI_VALIDATION_TIMEOUT, run_contract_probe(spec, backend)).await;
+        let (validated, diagnostic) = match outcome {
+            Ok(Ok(probe)) => {
+                let frames = probe
+                    .stdout
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .map(|line| adapters::normalize_frame(backend, "stdout", line))
+                    .collect::<Vec<_>>();
+                let completed = frames
+                    .iter()
+                    .any(|frame| frame.kind == TerminalEventKind::Completed);
+                let text = frames
+                    .iter()
+                    .any(|frame| frame.is_text && !frame.content.trim().is_empty());
+                if probe.status.success() && completed && text {
+                    (
+                        true,
+                        format!(
+                            "{} v{} answered the adapter flags ({} frame(s), completion recognized).",
+                            backend.label(),
+                            version.as_deref().unwrap_or("unknown"),
+                            frames.len()
+                        ),
+                    )
+                } else {
+                    let stderr = sanitize_terminal_text_bounded(&probe.stderr, 400);
+                    (
+                        false,
+                        format!(
+                            "{} v{} did not answer the adapter contract: exit {}, {} frame(s), completion {}, text {}.{}",
+                            backend.label(),
+                            version.as_deref().unwrap_or("unknown"),
+                            probe
+                                .status
+                                .code()
+                                .map_or_else(|| "?".to_string(), |code| code.to_string()),
+                            frames.len(),
+                            if completed { "yes" } else { "no" },
+                            if text { "yes" } else { "no" },
+                            if stderr.trim().is_empty() {
+                                String::new()
+                            } else {
+                                format!(" stderr: {}", stderr.trim())
+                            }
+                        ),
+                    )
+                }
+            }
+            Ok(Err(error)) => (
+                false,
+                format!("{} could not be run: {error}", backend.label()),
+            ),
+            Err(_) => (
+                false,
+                format!(
+                    "{} did not finish validation within {} seconds.",
+                    backend.label(),
+                    CLI_VALIDATION_TIMEOUT.as_secs()
+                ),
+            ),
+        };
+        if validated && let Some(version) = version.as_deref() {
+            self.repository
+                .record_validated_cli_version(backend, version)?;
+        }
+        Ok(CliValidationReport {
+            backend,
+            version,
+            validated,
+            diagnostic,
+        })
+    }
+
     pub async fn available_backends(&self) -> Vec<CliBackend> {
         self.discovery(false)
             .await
@@ -3437,28 +4339,57 @@ impl TerminalService {
         if !force && let Some(items) = self.cache_if_fresh() {
             return items;
         }
-        let handle = self.runtime.clone();
-        let mut items = match handle.spawn(discover_clis_with_probes()).await {
-            Ok(items) => items,
-            Err(_) => discover_clis(),
-        };
-        if cli_mode_disabled() {
-            for availability in &mut items {
-                if availability.backend != CliBackend::Custom {
-                    availability.state = CliAvailabilityState::Unsupported;
-                    availability.diagnostic =
-                        Some("CLI Mode está desativado pelo kill switch local.".into());
-                }
-            }
-        }
-        *self
+        let items = scan_cli_discovery(self.runtime.clone()).await;
+        store_cli_discovery(&self.discovery_cache, items.clone());
+        items
+    }
+
+    /// Discovery for an automatic stage launch. A stale snapshot whose entry
+    /// for `backend` is still available is served at once and rescanned in
+    /// the background, one rescan at a time: re-probing every installed CLI
+    /// on the critical path cost 11-16 s at the first stage after a
+    /// checkpoint longer than the TTL (ToDoListWebView, 2026-09-22). No
+    /// snapshot, or the backend missing or unhealthy in it, still waits for a
+    /// fresh scan; the launch itself re-verifies the binary either way.
+    async fn discovery_for_launch(&self, backend: CliBackend) -> Vec<CliAvailability> {
+        let snapshot = self
             .discovery_cache
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(CliDiscoveryCache {
-            discovered_at: Instant::now(),
-            items: items.clone(),
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|cache| {
+                (
+                    cache.discovered_at.elapsed() < CLI_DISCOVERY_CACHE_TTL,
+                    cache.items.clone(),
+                )
+            });
+        match snapshot {
+            Some((true, items)) => items,
+            Some((false, items))
+                if items.iter().any(|item| {
+                    item.backend == backend && item.state == CliAvailabilityState::Available
+                }) =>
+            {
+                self.refresh_discovery_in_background();
+                items
+            }
+            _ => self.discovery(false).await,
+        }
+    }
+
+    fn refresh_discovery_in_background(&self) {
+        use std::sync::atomic::Ordering;
+        if self.discovery_refreshing.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let cache = self.discovery_cache.clone();
+        let refreshing = self.discovery_refreshing.clone();
+        let runtime = self.runtime.clone();
+        self.runtime.spawn(async move {
+            let items = scan_cli_discovery(runtime).await;
+            store_cli_discovery(&cache, items);
+            refreshing.store(false, Ordering::SeqCst);
         });
-        items
     }
 
     pub async fn refresh_discovery(&self) -> Vec<CliAvailability> {
@@ -3728,7 +4659,7 @@ impl TerminalService {
         if backend == CliBackend::Custom {
             return Ok((
                 custom_executable.map(PathBuf::from).ok_or_else(|| {
-                    TerminalError::Validation("configure o executável Custom".into())
+                    TerminalError::Validation("configure the Custom executable".into())
                 })?,
                 None,
                 adapters::capabilities(CliBackend::Custom, None),
@@ -3738,7 +4669,7 @@ impl TerminalService {
             .cache_if_fresh()
             .ok_or_else(|| {
                 TerminalError::Validation(
-                    "os diagnósticos das CLIs ainda não foram executados ou expiraram; atualize o painel antes de iniciar"
+                    "the CLI diagnostics have not run yet or expired; refresh the panel before starting"
                         .into(),
                 )
             })?
@@ -3747,9 +4678,9 @@ impl TerminalService {
             .ok_or_else(|| TerminalError::NotFound(format!("{} CLI", backend.label())))?;
         if availability.state != CliAvailabilityState::Available {
             return Err(TerminalError::Process(
-                availability.diagnostic.unwrap_or_else(|| {
-                    format!("{} não está pronto para execução", backend.label())
-                }),
+                availability
+                    .diagnostic
+                    .unwrap_or_else(|| format!("{} is not ready to run", backend.label())),
             ));
         }
         Ok((
@@ -3771,7 +4702,7 @@ impl TerminalService {
             .has_active_automatic_run(&request.project_id, request.agent_role)?
         {
             return Err(TerminalError::Validation(
-                "o agente está ocupado por uma execução automática".into(),
+                "the agent is busy with an automatic run".into(),
             ));
         }
         if self
@@ -3779,7 +4710,7 @@ impl TerminalService {
             .has_active_manual_run(&request.project_id, request.agent_role)?
         {
             return Err(TerminalError::Validation(
-                "já existe uma execução manual ativa para este agente".into(),
+                "a manual run is already active for this agent".into(),
             ));
         }
         let config = self
@@ -3787,12 +4718,12 @@ impl TerminalService {
             .get_config(&request.project_id, request.agent_role)?;
         if config.execution_mode != AgentExecutionMode::CliProcess {
             return Err(TerminalError::Validation(
-                "execução manual está disponível somente para agentes em CLI Mode".into(),
+                "manual runs are available only for agents in CLI Mode".into(),
             ));
         }
         if cli_mode_disabled() {
             return Err(TerminalError::Validation(
-                "CLI Mode está desativado pelo kill switch local".into(),
+                "CLI Mode is disabled by the local kill switch".into(),
             ));
         }
         let (executable, detected_version, _) =
@@ -3838,7 +4769,7 @@ impl TerminalService {
         let run_for_task = run.clone();
         self.runtime.spawn(async move {
             service
-                .run_process(run_for_task, spec, workspace, cancellation, deadline)
+                .run_process(run_for_task, spec, workspace, cancellation, Some(deadline))
                 .await;
         });
         Ok(run)
@@ -3851,7 +4782,7 @@ impl TerminalService {
         let prompt = required(&request.prompt, "prompt")?.to_string();
         if cli_mode_disabled() {
             return Err(TerminalError::Validation(
-                "CLI Mode está desativado pelo kill switch local".into(),
+                "CLI Mode is disabled by the local kill switch".into(),
             ));
         }
         let slot_ref = SessionSlot::FreeForm {
@@ -3862,13 +4793,13 @@ impl TerminalService {
             .has_active_slot_run(&request.project_id, &slot_ref)?
         {
             return Err(TerminalError::Validation(
-                "já existe uma execução ativa para este agente livre".into(),
+                "a run is already active for this free-form agent".into(),
             ));
         }
         let slot = self.repository.get_slot(&request.project_id, &slot_ref)?;
         if slot.execution_mode != AgentExecutionMode::CliProcess {
             return Err(TerminalError::Validation(
-                "execução manual está disponível somente em CLI Mode".into(),
+                "manual runs are available only in CLI Mode".into(),
             ));
         }
         let (executable, detected_version, _) =
@@ -3902,6 +4833,7 @@ impl TerminalService {
                 llm_execution_id: None,
                 parent_run_id: None,
                 continuation_reason: None,
+                observation_trial_id: None,
             })?;
         let run = self
             .repository
@@ -3918,7 +4850,7 @@ impl TerminalService {
         let run_for_task = run.clone();
         self.runtime.spawn(async move {
             service
-                .run_process(run_for_task, spec, workspace, cancellation, deadline)
+                .run_process(run_for_task, spec, workspace, cancellation, Some(deadline))
                 .await;
         });
         Ok(run)
@@ -3931,34 +4863,34 @@ impl TerminalService {
         let prompt = required(&request.prompt, "prompt")?.to_string();
         if cli_mode_disabled() {
             return Err(TerminalError::Validation(
-                "CLI Mode está desativado pelo kill switch local".into(),
+                "CLI Mode is disabled by the local kill switch".into(),
             ));
         }
         let source = self.repository.get_run(&request.source_run_id)?;
         if source.project_id != request.project_id {
             return Err(TerminalError::Validation(
-                "a sessão escolhida pertence a outro projeto".into(),
+                "the chosen session belongs to another project".into(),
             ));
         }
         if source.status.is_active() {
             return Err(TerminalError::Validation(
-                "a execução escolhida ainda está ativa".into(),
+                "the chosen run is still active".into(),
             ));
         }
         if source.workspace_snapshot_hash.is_none() || source.session_fingerprint.is_none() {
             return Err(TerminalError::Validation(
-                "a execução escolhida não possui fingerprint compatível para retomada".into(),
+                "the chosen run has no fingerprint compatible with resuming".into(),
             ));
         }
         let native_session_id = source.native_session_id.clone().ok_or_else(|| {
-            TerminalError::Validation("a execução escolhida não possui sessão nativa".into())
+            TerminalError::Validation("the chosen run has no native session".into())
         })?;
         if self
             .repository
             .has_active_slot_run(&request.project_id, &source.slot)?
         {
             return Err(TerminalError::Validation(
-                "já existe uma execução ativa para este slot".into(),
+                "a run is already active for this slot".into(),
             ));
         }
         let (backend, model, model_profile, thinking_level, custom_executable, custom_args) =
@@ -3969,13 +4901,13 @@ impl TerminalService {
                         .has_active_automatic_run(&request.project_id, role)?
                     {
                         return Err(TerminalError::Validation(
-                            "o agente está ocupado por uma execução automática".into(),
+                            "the agent is busy with an automatic run".into(),
                         ));
                     }
                     let config = self.repository.get_config(&request.project_id, role)?;
                     if config.execution_mode != AgentExecutionMode::CliProcess {
                         return Err(TerminalError::Validation(
-                            "ative CLI Mode antes de retomar esta sessão".into(),
+                            "turn on CLI Mode before resuming this session".into(),
                         ));
                     }
                     (
@@ -3995,7 +4927,7 @@ impl TerminalService {
                         || slot.session_policy != SessionPolicy::ResumeExplicit
                     {
                         return Err(TerminalError::Validation(
-                            "o agente livre não está configurado para retomada explícita".into(),
+                            "the free-form agent is not set up for explicit resuming".into(),
                         ));
                     }
                     (
@@ -4010,14 +4942,14 @@ impl TerminalService {
             };
         if source.backend != Some(backend) || source.model != model {
             return Err(TerminalError::Validation(
-                "backend ou modelo mudou desde a sessão escolhida".into(),
+                "the backend or model changed since the chosen session".into(),
             ));
         }
         let (executable, detected_version, capabilities) =
             self.resolve_launch(backend, custom_executable.as_deref())?;
         if !capabilities.native_resume {
             return Err(TerminalError::Validation(format!(
-                "{} não oferece retomada nativa compatível nesta versão",
+                "{} does not offer compatible native resuming in this version",
                 backend.label()
             )));
         }
@@ -4050,6 +4982,7 @@ impl TerminalService {
                 llm_execution_id: None,
                 parent_run_id: Some(source.id),
                 continuation_reason: Some("explicit_resume".into()),
+                observation_trial_id: None,
             })?;
         let run = self
             .repository
@@ -4066,7 +4999,7 @@ impl TerminalService {
         let run_for_task = run.clone();
         self.runtime.spawn(async move {
             service
-                .run_process(run_for_task, spec, workspace, cancellation, deadline)
+                .run_process(run_for_task, spec, workspace, cancellation, Some(deadline))
                 .await;
         });
         Ok(run)
@@ -4080,17 +5013,12 @@ impl TerminalService {
         let Some(agent_role) = request.target.agent_role() else {
             return Ok(None);
         };
-        if request.pulsation_id.as_deref().is_some_and(|pulsation_id| {
+        let api_recovery_override = request.pulsation_id.as_deref().is_some_and(|pulsation_id| {
             self.repository
                 .has_api_override(pulsation_id, agent_role)
                 .unwrap_or(false)
-        }) {
-            return Ok(None);
-        }
-        let config = match self
-            .repository
-            .get_config(&request.project_id, agent_role)
-        {
+        });
+        let config = match self.repository.get_config(&request.project_id, agent_role) {
             Ok(config) => config,
             Err(TerminalError::NotFound(_)) => {
                 let discovery = self.discovery(false).await;
@@ -4105,36 +5033,105 @@ impl TerminalService {
             }
             Err(error) => return Err(error),
         };
-        // A composed work unit may carry a specialty override; it replaces the
-        // role's transport/model/thinking for that specialty only.
+        if api_recovery_override {
+            if config.execution_mode != AgentExecutionMode::ApiDirect {
+                return Err(TerminalError::ModelMismatch {
+                    expected: format!("{}/{}", config.backend.as_str(), config.model.as_deref().unwrap_or("default")),
+                    observed: "API recovery override changes the selected backend".into(),
+                });
+            }
+            return Ok(None);
+        }
+        // A composed unit inherits the canonical role's frozen backend/model.
+        // Specialty overrides may change effort only; a stale or conflicting
+        // transport/model override is a structural host failure.
         let mut config = config;
+        if let Some(unit) = &request.dispatch.unit {
+            let selected_transport = if config.execution_mode == AgentExecutionMode::CliProcess {
+                "cli"
+            } else {
+                "api"
+            };
+            if unit.frozen_transport != selected_transport
+                || (selected_transport == "cli"
+                    && (unit.frozen_backend.as_deref() != Some(config.backend.as_str())
+                        || config.model.as_deref() != Some(unit.frozen_model.as_str())))
+            {
+                return Err(TerminalError::ModelMismatch {
+                    expected: format!(
+                        "{}/{}/{}",
+                        unit.frozen_transport,
+                        unit.frozen_backend.as_deref().unwrap_or("api"),
+                        unit.frozen_model
+                    ),
+                    observed: format!(
+                        "{}/{}/{}",
+                        selected_transport,
+                        config.backend.as_str(),
+                        config.model.as_deref().unwrap_or("default")
+                    ),
+                });
+            }
+        }
         if let Some(unit) = &request.dispatch.unit
             && let Some(specialty) = self
                 .repository
                 .specialty_override(&request.project_id, &unit.executor_kind)?
         {
-            config.execution_mode = specialty.execution_mode;
-            if let Some(backend) = specialty.backend {
-                config.backend = backend;
+            if specialty.execution_mode != config.execution_mode
+                || specialty.backend.is_some_and(|backend| backend != config.backend)
+            {
+                return Err(TerminalError::ModelMismatch {
+                    expected: format!("{}/{}", config.backend.as_str(), config.model.as_deref().unwrap_or("default")),
+                    observed: format!("{}/{}", specialty.backend.unwrap_or(config.backend).as_str(), specialty.model.as_deref().unwrap_or("inherited")),
+                });
             }
-            config.model = specialty.model.clone();
-            config.model_profile = None;
+            if let Some(specialty_model) = specialty.model.as_deref() {
+                match model_identity::verify_model(
+                    Some(config.backend.as_str()),
+                    config.model.as_deref(),
+                    Some(specialty_model),
+                ) {
+                    model_identity::ModelVerification::Verified => {}
+                    model_identity::ModelVerification::Mismatch => {
+                        return Err(TerminalError::ModelMismatch {
+                            expected: config.model.clone().unwrap_or_else(|| "default".into()),
+                            observed: specialty_model.to_owned(),
+                        });
+                    }
+                    model_identity::ModelVerification::Unverified => {
+                        return Err(TerminalError::ModelUnverified {
+                            detail: format!(
+                                "specialty model `{specialty_model}` cannot be tied to the selected role model"
+                            ),
+                        });
+                    }
+                }
+            }
             config.thinking_level = specialty.thinking_level;
         }
         if config.execution_mode == AgentExecutionMode::ApiDirect {
+            if let Some(pulsation_id) = request.pulsation_id.as_deref()
+                && self.repository.has_cli_role_run(pulsation_id, agent_role)?
+            {
+                return Err(TerminalError::ModelMismatch {
+                    expected: "frozen CLI role selection".into(),
+                    observed: "API direct transport".into(),
+                });
+            }
             return Ok(None);
         }
+        require_verifiable_cli_selection(config.backend, config.model.as_deref())?;
         // A pulsation that already burned a backend on this role carries the
         // one the host elected next. Project configuration is left untouched.
         if let Some(pulsation_id) = request.pulsation_id.as_deref()
-            && let Some(elected) = self
-                .repository
-                .backend_override(pulsation_id, agent_role)?
+            && let Some(elected) = self.repository.backend_override(pulsation_id, agent_role)?
             && elected != config.backend
         {
-            config.backend = elected;
-            config.model = None;
-            config.model_profile = None;
+            return Err(TerminalError::ModelMismatch {
+                expected: format!("{}/{}", config.backend.as_str(), config.model.as_deref().unwrap_or("default")),
+                observed: format!("{}/fallback", elected.as_str()),
+            });
         }
         let feature_discovery =
             request.pulsation_id.is_none() && request.job_chain.starts_with("feature:");
@@ -4146,7 +5143,7 @@ impl TerminalService {
         }
         if cli_mode_disabled() {
             return Err(TerminalError::Validation(
-                "CLI Mode está desativado pelo kill switch local".into(),
+                "CLI Mode is disabled by the local kill switch".into(),
             ));
         }
         if self
@@ -4154,7 +5151,7 @@ impl TerminalService {
             .has_active_manual_run(&request.project_id, agent_role)?
         {
             return Err(TerminalError::Process(
-                "o agente possui uma execução manual ativa".into(),
+                "the agent has an active manual run".into(),
             ));
         }
         let (executable, detected_version) = match config.backend {
@@ -4164,12 +5161,12 @@ impl TerminalService {
                     .as_deref()
                     .map(PathBuf::from)
                     .ok_or_else(|| {
-                        TerminalError::Validation("configure o executável Custom".into())
+                        TerminalError::Validation("configure the Custom executable".into())
                     })?,
                 None,
             ),
             backend => {
-                let discovery = self.discovery(false).await;
+                let discovery = self.discovery_for_launch(backend).await;
                 let availability = discovery
                     .into_iter()
                     .find(|item| item.backend == backend)
@@ -4178,7 +5175,7 @@ impl TerminalService {
                     return Err(TerminalError::Process(
                         availability
                             .diagnostic
-                            .unwrap_or_else(|| format!("{} não está pronto", backend.label())),
+                            .unwrap_or_else(|| format!("{} is not ready", backend.label())),
                     ));
                 }
                 (
@@ -4265,25 +5262,58 @@ impl TerminalService {
         } else {
             ExecutionOrigin::Pipeline
         };
-        let run = self.repository.create_run(CreateTerminalRunRequest {
-            project_id: request.project_id.clone(),
-            agent_role,
+        let slot = match &request.target {
+            crate::llm::AgentExecutionTarget::Ephemeral {
+                slot_id,
+                agent_role,
+            } => {
+                self.repository
+                    .ensure_ephemeral_slot(&request.project_id, slot_id, *agent_role)?;
+                SessionSlot::Ephemeral {
+                    id: slot_id.clone(),
+                    agent_role: *agent_role,
+                }
+            }
+            crate::llm::AgentExecutionTarget::Canonical { agent_role } => SessionSlot::Canonical {
+                agent_role: *agent_role,
+            },
+            crate::llm::AgentExecutionTarget::FreeForm { .. } => return Ok(None),
+        };
+        let observation_trial = self.repository.reserve_cli_observation_for_pulsation(
+            &request.project_id,
+            request.pulsation_id.as_deref(),
             origin,
-            execution_mode: AgentExecutionMode::CliProcess,
-            backend: Some(config.backend),
-            model: config.model.clone(),
-            pulsation_id: request.pulsation_id.clone(),
-            job_id: request.job_id.clone(),
-            agent_run_id: request.agent_run_id.clone(),
-            llm_execution_id: Some(request.execution_id.0.clone()),
-        })?;
-        let deadline = request
+        )?;
+        let run = match self.repository.create_session_run(CreateSessionRunRequest {
+                project_id: request.project_id.clone(),
+                slot,
+                origin,
+                execution_mode: AgentExecutionMode::CliProcess,
+                backend: Some(config.backend),
+                model: config.model.clone(),
+                pulsation_id: request.pulsation_id.clone(),
+                job_id: request.job_id.clone(),
+                agent_run_id: request.agent_run_id.clone(),
+                llm_execution_id: Some(request.execution_id.0.clone()),
+                parent_run_id: None,
+                continuation_reason: None,
+                observation_trial_id: observation_trial.as_ref().map(|trial| trial.id.clone()),
+            }) {
+            Ok(run) => run,
+            Err(error) => {
+                if let Some(trial) = observation_trial.as_ref() {
+                    let _ = self.repository.release_cli_observation_reservation(&trial.id);
+                }
+                return Err(error);
+            }
+        };
+        let deadline = observation_trial.as_ref().map(|_| None).unwrap_or_else(|| Some(request
             .dispatch
             .cli_timeout
-            .map_or(request.deadline, |budget| budget.deadline);
-        let run = self
-            .repository
-            .set_run_deadline(&run.id, &deadline_timestamp(deadline))?;
+            .map_or(request.deadline, |budget| budget.deadline)));
+        let run = if let Some(deadline) = deadline {
+            self.repository.set_run_deadline(&run.id, &deadline_timestamp(deadline))?
+        } else { run };
         let run = self
             .repository
             .set_adapter_metadata(&run.id, detected_version.as_deref())?;
@@ -4335,7 +5365,7 @@ impl TerminalService {
         }
         if !outcome.success {
             let message = format!(
-                "{} encerrou com código {:?}",
+                "{} exited with code {:?}",
                 config.backend.label(),
                 outcome.exit_code
             );
@@ -4367,14 +5397,21 @@ impl TerminalService {
         }
         if outcome.raw_output.trim().is_empty() {
             return Err(TerminalError::Process(format!(
-                "{} não produziu conteúdo final",
+                "{} produced no final content",
                 config.backend.label()
             )));
         }
+        let observed_model = self
+            .repository
+            .get_run(&run.id)?
+            .observed_model
+            .ok_or_else(|| TerminalError::ModelUnverified {
+                detail: "completed CLI run has no persisted generation model".into(),
+            })?;
         Ok(Some(CliCompletion {
             terminal_run_id: run.id.clone(),
             backend: config.backend,
-            model: config.model.unwrap_or_else(|| "default".into()),
+            model: observed_model.clone(),
             raw_output: outcome.raw_output,
             request_payload: serde_json::json!({
                 "mode": "cli_process",
@@ -4384,7 +5421,7 @@ impl TerminalService {
                 "promptTruncated": recorded_prompt_chars > CLI_REQUEST_PROMPT_MAX_CHARS,
                 "prompt": recorded_prompt,
             }),
-            response_payload: serde_json::json!({"terminalRunId":run.id,"exitCode":outcome.exit_code}),
+            response_payload: serde_json::json!({"terminalRunId":run.id,"exitCode":outcome.exit_code,"requestedModel":config.model,"observedModel":observed_model}),
         }))
     }
 
@@ -4394,7 +5431,7 @@ impl TerminalService {
         spec: CliProcessSpec,
         workspace: PathBuf,
         cancellation: CancellationToken,
-        deadline: Instant,
+        deadline: Option<Instant>,
     ) {
         let result = self
             .run_process_inner(&run, spec, workspace, &cancellation, deadline, None)
@@ -4415,13 +5452,13 @@ impl TerminalService {
         spec: CliProcessSpec,
         workspace: PathBuf,
         cancellation: &CancellationToken,
-        deadline: Instant,
+        deadline: Option<Instant>,
         policy_override: Option<AgentTimeoutPolicy>,
     ) -> Result<CliProcessOutcome, TerminalError> {
         if cancellation.is_cancelled() {
             return Err(TerminalError::Cancelled);
         }
-        if Instant::now() >= deadline {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Err(TerminalError::Timeout);
         }
         let backend = spec_backend(run);
@@ -4438,11 +5475,14 @@ impl TerminalService {
         if cancellation.is_cancelled() {
             return Err(TerminalError::Cancelled);
         }
-        if Instant::now() >= deadline {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Err(TerminalError::Timeout);
         }
         let launch_identity_sha256 = secured_launch.identity_sha256;
         let spec = secured_launch.spec;
+        if run.origin != ExecutionOrigin::Manual {
+            validate_cli_launch_model(backend, run.model.as_deref(), &spec)?;
+        }
         let session_fingerprint = session_fingerprint(run, &safe_workspace.manifest_hash);
         if let Some(parent_run_id) = run.parent_run_id.as_deref() {
             let parent = self.repository.get_run(parent_run_id)?;
@@ -4471,7 +5511,7 @@ impl TerminalService {
             self.repository.next_event_sequence(&run.id)?,
             TerminalEventKind::System,
             None,
-            "Execução iniciando.",
+            "Run starting.",
         )?;
         let mut command = Command::new(&spec.executable);
         command
@@ -4486,20 +5526,69 @@ impl TerminalService {
         command.envs(spec.environment.iter().map(|(key, value)| (key, value)));
         configure_hidden(&mut command);
         let mut child = command.spawn()?;
-        let process_tree = ProcessTreeJob::assign(&child)?;
-        let mut stdin = child.stdin.take().ok_or_else(|| {
-            TerminalError::Validation("stdin do processo CLI indisponível".into())
-        })?;
+        let read_clock = Arc::new(TransportReadClock::new());
+        let process_tree = Arc::new(ProcessTreeJob::assign(&child)?);
+        let observation_stop = CancellationToken::new();
+        let observation_started = Instant::now();
+        let observation_task = if run.observation_trial_id.is_some() {
+            let repository = self.repository.clone();
+            let process_tree = Arc::clone(&process_tree);
+            let stop = observation_stop.clone();
+            let run_id = run.id.clone();
+            let started = observation_started;
+            Some(tokio::spawn(async move {
+                loop {
+                    let sample = match process_tree.observation() {
+                        Ok((
+                            user_cpu_100ns,
+                            kernel_cpu_100ns,
+                            peak_process_memory_bytes,
+                            peak_job_memory_bytes,
+                        )) => CliObservationSample {
+                            observed_at: Utc::now().to_rfc3339(),
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                            user_cpu_100ns: Some(user_cpu_100ns),
+                            kernel_cpu_100ns: Some(kernel_cpu_100ns),
+                            peak_process_memory_bytes: Some(peak_process_memory_bytes),
+                            peak_job_memory_bytes: Some(peak_job_memory_bytes),
+                        },
+                        Err(_) => CliObservationSample {
+                            observed_at: Utc::now().to_rfc3339(),
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                            user_cpu_100ns: None,
+                            kernel_cpu_100ns: None,
+                            peak_process_memory_bytes: None,
+                            peak_job_memory_bytes: None,
+                        },
+                    };
+                    let repository_for_write = repository.clone();
+                    let run_for_write = run_id.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        repository_for_write.record_cli_observation_sample(&run_for_write, &sample)
+                    })
+                    .await;
+                    tokio::select! { _ = stop.cancelled() => break, _ = tokio::time::sleep(Duration::from_secs(5)) => {} }
+                }
+            }))
+        } else {
+            None
+        };
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| TerminalError::Validation("CLI process stdin unavailable".into()))?;
         stdin.write_all(&spec.stdin_payload).await?;
         stdin.write_all(b"\n").await?;
         stdin.shutdown().await?;
         drop(stdin);
-        let stdout = child.stdout.take().ok_or_else(|| {
-            TerminalError::Validation("stdout do processo CLI indisponível".into())
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            TerminalError::Validation("stderr do processo CLI indisponível".into())
-        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| TerminalError::Validation("CLI process stdout unavailable".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| TerminalError::Validation("CLI process stderr unavailable".into()))?;
         let running = self.repository.set_run_status(
             &run.id,
             TerminalRunStatus::Running,
@@ -4512,29 +5601,33 @@ impl TerminalService {
             self.repository.next_event_sequence(&run.id)?,
             TerminalEventKind::System,
             None,
-            "Execução em andamento.",
+            "Run in progress.",
         )?;
         let (stream_sender, stream_receiver) = mpsc::channel(PROCESS_EVENT_CHANNEL_CAPACITY);
         let abort_token = CancellationToken::new();
         let abort_reason = Arc::new(Mutex::new(None));
-        let caller_remaining = deadline.saturating_duration_since(Instant::now());
+        let caller_remaining = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
         let mut timeout_policy = policy_override.unwrap_or_else(|| match run.slot {
             SessionSlot::FreeForm { .. } => AgentTimeoutPolicy::manual(),
-            SessionSlot::Canonical { agent_role } => AgentTimeoutPolicy::for_role(agent_role),
+            SessionSlot::Canonical { agent_role } | SessionSlot::Ephemeral { agent_role, .. } => {
+                AgentTimeoutPolicy::for_role(agent_role)
+            }
         });
-        if caller_remaining.is_zero() {
+        if caller_remaining.is_some_and(|duration| duration.is_zero()) {
             process_tree.terminate();
             let _ = child.kill().await;
             let _ = child.wait().await;
             return Err(TerminalError::Timeout);
         }
-        timeout_policy.max_timeout_ms = timeout_policy
-            .max_timeout_ms
-            .min(caller_remaining.as_millis() as u64);
-        timeout_policy.base_timeout_ms = timeout_policy
-            .base_timeout_ms
-            .min(timeout_policy.max_timeout_ms);
-        let watchdog = ProgressWatchdog::new(timeout_policy);
+        if let Some(caller_remaining) = caller_remaining {
+            timeout_policy.max_timeout_ms = timeout_policy
+                .max_timeout_ms
+                .min(caller_remaining.as_millis() as u64);
+            timeout_policy.base_timeout_ms = timeout_policy
+                .base_timeout_ms
+                .min(timeout_policy.max_timeout_ms);
+        }
+        let watchdog = deadline.map(|_| ProgressWatchdog::new(timeout_policy));
         let coordinator_task = tokio::spawn(coordinate_process_events(
             self.repository.clone(),
             self.event_sink.clone(),
@@ -4543,7 +5636,7 @@ impl TerminalService {
             stream_receiver,
             abort_token.clone(),
             Arc::clone(&abort_reason),
-            watchdog.clone(),
+            watchdog.clone().unwrap_or_else(|| ProgressWatchdog::new(AgentTimeoutPolicy::manual())),
         ));
         let stdout_task = tokio::spawn(read_process_stream(
             "stdout",
@@ -4551,6 +5644,7 @@ impl TerminalService {
             stream_sender.clone(),
             watchdog.clone(),
             spec_backend(run),
+            Arc::clone(&read_clock),
         ));
         let stderr_task = tokio::spawn(read_process_stream(
             "stderr",
@@ -4558,27 +5652,39 @@ impl TerminalService {
             stream_sender.clone(),
             watchdog.clone(),
             spec_backend(run),
+            Arc::clone(&read_clock),
         ));
         drop(stream_sender);
-        let (status, termination) = tokio::select! {
-            status=child.wait()=>(status?,ProcessTermination::Exited),
-            _=cancellation.cancelled()=>{
-                process_tree.terminate();
-                let _=child.kill().await;
-                (child.wait().await?,ProcessTermination::Cancelled)
+        let (status, termination) = if let Some(watchdog) = watchdog.as_ref() {
+            tokio::select! {
+                status=child.wait()=>(status?,ProcessTermination::Exited),
+                _=cancellation.cancelled()=>{ process_tree.terminate(); let _=child.kill().await; (child.wait().await?,ProcessTermination::Cancelled) }
+                reason=watchdog.wait_for_timeout()=>{ process_tree.terminate(); let _=child.kill().await; (child.wait().await?,ProcessTermination::TimedOut(reason)) }
+                _=abort_token.cancelled()=>{ process_tree.terminate(); let _=child.kill().await; (child.wait().await?,ProcessTermination::Exited) }
             }
-            reason=watchdog.wait_for_timeout()=>{
-                process_tree.terminate();
-                let _=child.kill().await;
-                (child.wait().await?,ProcessTermination::TimedOut(reason))
-            }
-            _=abort_token.cancelled()=>{
-                process_tree.terminate();
-                let _=child.kill().await;
-                (child.wait().await?,ProcessTermination::Exited)
+        } else {
+            tokio::select! {
+                status=child.wait()=>(status?,ProcessTermination::Exited),
+                _=cancellation.cancelled()=>{ process_tree.terminate(); let _=child.kill().await; (child.wait().await?,ProcessTermination::Cancelled) }
+                _=abort_token.cancelled()=>{ process_tree.terminate(); let _=child.kill().await; (child.wait().await?,ProcessTermination::Exited) }
             }
         };
-        let timing_at_termination = watchdog.diagnostic();
+        let transport_silence_ms = read_clock.max_silence_ms(Instant::now());
+        observation_stop.cancel();
+        if let Some(task) = observation_task { let _ = task.await; }
+        if run.observation_trial_id.is_some() {
+            let sample = match process_tree.observation() {
+                Ok((user_cpu_100ns, kernel_cpu_100ns, peak_process_memory_bytes, peak_job_memory_bytes)) => CliObservationSample {
+                    observed_at: Utc::now().to_rfc3339(), elapsed_ms: observation_started.elapsed().as_millis() as u64,
+                    user_cpu_100ns: Some(user_cpu_100ns), kernel_cpu_100ns: Some(kernel_cpu_100ns),
+                    peak_process_memory_bytes: Some(peak_process_memory_bytes), peak_job_memory_bytes: Some(peak_job_memory_bytes),
+                },
+                Err(_) => CliObservationSample { observed_at: Utc::now().to_rfc3339(), elapsed_ms: observation_started.elapsed().as_millis() as u64,
+                    user_cpu_100ns: None, kernel_cpu_100ns: None, peak_process_memory_bytes: None, peak_job_memory_bytes: None },
+            };
+            let _ = self.repository.record_cli_observation_sample(&run.id, &sample);
+        }
+        let timing_at_termination = watchdog.as_ref().map(ProgressWatchdog::diagnostic).unwrap_or_else(|| "unbounded observation trial".into());
         stdout_task.await.map_err(|error| {
             TerminalError::Process(format!("leitor stdout interrompido: {error}"))
         })?;
@@ -4595,13 +5701,19 @@ impl TerminalService {
             return Err(match reason {
                 ProcessAbortReason::OutputLimit => TerminalError::OutputLimit,
                 ProcessAbortReason::Persistence => {
-                    TerminalError::Process("persistência do stream foi interrompida".into())
+                    TerminalError::Process("stream persistence was interrupted".into())
                 }
+                ProcessAbortReason::ModelIntegrity => TerminalError::ModelUnverified {
+                    detail: "stream stopped by the model identity guard".into(),
+                },
             });
         }
+        let _ = self
+            .repository
+            .set_transport_silence(&run.id, transport_silence_ms);
         self.emit(
             run, self.repository.next_event_sequence(&run.id)?, TerminalEventKind::System,
-            None, &format!("CLI timing: {}; max_queue_delay_ms={} max_persist_ms={}; termination={termination:?}", timing_at_termination, process_events.max_queue_delay_ms, process_events.max_persist_ms),
+            None, &format!("CLI timing: {}; max_transport_silence_ms={transport_silence_ms} max_queue_delay_ms={} max_persist_ms={}; termination={termination:?}", timing_at_termination, process_events.max_queue_delay_ms, process_events.max_persist_ms),
         )?;
         let cancellation_code = if run.origin == ExecutionOrigin::Manual {
             "user_cancelled"
@@ -4618,9 +5730,9 @@ impl TerminalService {
                 ProcessTermination::Cancelled => (
                     TerminalRunStatus::Cancelled,
                     Some(cancellation_code),
-                    Some("A execução foi cancelada."),
+                    Some("The run was cancelled."),
                     TerminalEventKind::Warning,
-                    "Execução cancelada.",
+                    "Run cancelled.",
                 ),
                 ProcessTermination::TimedOut(reason) => (
                     TerminalRunStatus::Failed,
@@ -4633,8 +5745,8 @@ impl TerminalService {
                     Some(reason.description()),
                     TerminalEventKind::Error,
                     match reason {
-                        TimeoutReason::Inactivity => "Execução encerrada por inatividade.",
-                        TimeoutReason::MaxCeiling => "Execução encerrada por timeout.",
+                        TimeoutReason::Inactivity => "Run stopped for inactivity.",
+                        TimeoutReason::MaxCeiling => "Run stopped at the timeout.",
                     },
                 ),
                 ProcessTermination::Exited if status.success() => (
@@ -4642,14 +5754,14 @@ impl TerminalService {
                     None,
                     None,
                     TerminalEventKind::Completed,
-                    "Execução concluída.",
+                    "Run completed.",
                 ),
                 ProcessTermination::Exited => (
                     TerminalRunStatus::Failed,
                     Some(failure_kind.code()),
-                    Some("O CLI encerrou com código diferente de zero."),
+                    Some("The CLI exited with a non-zero code."),
                     TerminalEventKind::Error,
-                    "Execução encerrada com falha.",
+                    "Run ended with a failure.",
                 ),
             };
         self.repository.set_run_status(
@@ -4733,12 +5845,52 @@ fn spec_backend(run: &TerminalRun) -> CliBackend {
     run.backend.unwrap_or(CliBackend::Custom)
 }
 
+/// Longest wait between two successful reads of a CLI's pipes (stdout or
+/// stderr), from spawn to exit - the signal the silence watchdog acts on.
+/// Audited frame timestamps only approximate it: a frame is persisted once a
+/// whole line arrives. Kept for every run, so trial runs (which have no
+/// watchdog) are measured the same way.
+#[derive(Debug)]
+struct TransportReadClock {
+    state: Mutex<(Instant, u64)>,
+}
+
+impl TransportReadClock {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new((Instant::now(), 0)),
+        }
+    }
+
+    fn record_read(&self) {
+        let now = Instant::now();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.1 = state.1.max(now.duration_since(state.0).as_millis() as u64);
+        state.0 = now;
+    }
+
+    /// Includes the tail from the last read to `until` (the process exit).
+    fn max_silence_ms(&self, until: Instant) -> u64 {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .1
+            .max(until.saturating_duration_since(state.0).as_millis() as u64)
+    }
+}
+
 async fn read_process_stream<R: AsyncRead + Unpin>(
     stream: &'static str,
     mut reader: R,
     sender: mpsc::Sender<ProcessStreamItem>,
-    watchdog: ProgressWatchdog,
+    watchdog: Option<ProgressWatchdog>,
     backend: CliBackend,
+    read_clock: Arc<TransportReadClock>,
 ) {
     let mut buffer = [0u8; 8192];
     let mut pending = Vec::new();
@@ -4758,7 +5910,9 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
         };
         if read == 0 {
             if !pending.is_empty() {
-                observe_received_frame(&watchdog, backend, stream, &pending);
+                if let Some(watchdog) = watchdog.as_ref() {
+                    observe_received_frame(watchdog, backend, stream, &pending);
+                }
                 let _ = sender
                     .send(ProcessStreamItem::Frame {
                         stream,
@@ -4769,11 +5923,16 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
             }
             break;
         }
-        watchdog.record_activity();
+        read_clock.record_read();
+        if let Some(watchdog) = watchdog.as_ref() {
+            watchdog.record_activity();
+        }
         pending.extend_from_slice(&buffer[..read]);
         while let Some(index) = pending.iter().position(|byte| *byte == b'\n') {
             let frame = pending.drain(..=index).collect::<Vec<_>>();
-            observe_received_frame(&watchdog, backend, stream, &frame);
+            if let Some(watchdog) = watchdog.as_ref() {
+                observe_received_frame(watchdog, backend, stream, &frame);
+            }
             if sender
                 .send(ProcessStreamItem::Frame {
                     stream,
@@ -4788,7 +5947,9 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
         }
         while pending.len() > MAX_PENDING_STREAM_BYTES {
             let frame = pending.drain(..MAX_EVENT_CHARS).collect::<Vec<_>>();
-            observe_received_frame(&watchdog, backend, stream, &frame);
+            if let Some(watchdog) = watchdog.as_ref() {
+                observe_received_frame(watchdog, backend, stream, &frame);
+            }
             if sender
                 .send(ProcessStreamItem::Frame {
                     stream,
@@ -4867,6 +6028,7 @@ async fn coordinate_process_events(
             receiver,
             abort_token,
             abort_reason,
+            None,
         )
     })
     .await
@@ -4890,6 +6052,7 @@ fn coordinate_process_events_blocking(
     mut receiver: mpsc::Receiver<ProcessStreamItem>,
     abort_token: CancellationToken,
     abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
+    codex_sessions_root: Option<PathBuf>,
 ) -> Result<ProcessEventSummary, TerminalError> {
     let mut sequence = repository.next_event_sequence(&run.id)?;
     let mut event_count = 0usize;
@@ -4897,6 +6060,7 @@ fn coordinate_process_events_blocking(
     let mut summary = ProcessEventSummary::default();
     let mut incomplete_stream = false;
     let mut raw_output_delta_active = false;
+    let mut codex_session_id: Option<String> = None;
     let usage = crate::usage::cli::CliUsageRecorder::new(
         &repository.db_path,
         crate::usage::UsageContext {
@@ -4957,6 +6121,10 @@ fn coordinate_process_events_blocking(
                         content: message,
                         native_session_id: None,
                         observed_model: None,
+                        message_id: None,
+                        parent_invocation_id: None,
+                        agent_id: None,
+                        is_model_generation: false,
                         is_text: false,
                         is_delta: false,
                         finish_reason: None,
@@ -4971,28 +6139,130 @@ fn coordinate_process_events_blocking(
             kind,
             content,
             native_session_id,
-            observed_model,
+            mut observed_model,
+            message_id,
+            parent_invocation_id,
+            agent_id,
+            is_model_generation,
             is_text,
             is_delta,
             finish_reason,
             is_reasoning: _,
         } = frame;
+        let mut model_evidence_source = "stream_event";
+        let mut codex_turn_models = None;
         // The last reason the provider gave wins: a turn that ends on `length`
         // has been cut off even if earlier turns ended normally.
         if let Some(reason) = finish_reason {
             summary.finish_reason = Some(reason);
         }
-        if let Some(session_id) = native_session_id
-            && let Err(error) = repository.set_native_session_id(&run.id, &session_id)
-        {
-            signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
-            return Err(error);
+        if let Some(session_id) = native_session_id {
+            if let Err(error) = repository.set_native_session_id(&run.id, &session_id) {
+                signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
+                return Err(error);
+            }
+            if backend == CliBackend::Codex {
+                codex_session_id = Some(session_id);
+            }
         }
-        if let Some(model) = observed_model
-            && let Err(error) = repository.set_observed_model(&run.id, &model)
-        {
-            signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
-            return Err(error);
+        if backend == CliBackend::Codex && is_model_generation && observed_model.is_none() {
+            if let Some(session_id) = codex_session_id.as_deref() {
+                for probe in 0..20 {
+                    let evidence = if let Some(root) = codex_sessions_root.as_deref() {
+                        codex_model_provenance::session_model_from_root(root, session_id, &run.created_at)
+                    } else {
+                        codex_model_provenance::current_session_model(session_id, &run.created_at)
+                    };
+                    if let Some(evidence) = evidence {
+                        observed_model = Some(evidence.latest_model);
+                        codex_turn_models = Some(evidence.turn_models);
+                        model_evidence_source = "codex_turn_context";
+                        break;
+                    }
+                    if probe < 19 {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                }
+            }
+        }
+        if observed_model.is_some() || is_model_generation {
+            summary.model_observation_count = summary.model_observation_count.saturating_add(1);
+            if let Err(error) = repository.record_model_observation(
+                &run.id,
+                summary.model_observation_count,
+                sequence,
+                observed_model.as_deref(),
+                message_id.as_deref(),
+                parent_invocation_id.as_deref(),
+                agent_id.as_deref(),
+                is_model_generation,
+                model_evidence_source,
+            ) {
+                signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
+                return Err(error);
+            }
+        }
+        if let Some(turn_models) = codex_turn_models {
+            for model in turn_models {
+                let error = match model_identity::verify_model(
+                    Some(backend.as_str()),
+                    run.model.as_deref(),
+                    Some(&model),
+                ) {
+                    model_identity::ModelVerification::Verified => continue,
+                    model_identity::ModelVerification::Mismatch => TerminalError::ModelMismatch {
+                        expected: run.model.clone().unwrap_or_else(|| "unselected".into()),
+                        observed: model,
+                    },
+                    model_identity::ModelVerification::Unverified => TerminalError::ModelUnverified {
+                        detail: format!("Codex turn context reported an unverifiable model: {model}"),
+                    },
+                };
+                signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::ModelIntegrity);
+                return Err(error);
+            }
+        }
+        if is_model_generation {
+            summary.model_generation_count = summary.model_generation_count.saturating_add(1);
+            let Some(model) = observed_model.as_deref() else {
+                signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::ModelIntegrity);
+                return Err(TerminalError::ModelUnverified {
+                    detail: format!(
+                        "backend={}, messageId={}, agentId={}",
+                        backend.as_str(),
+                        message_id.as_deref().unwrap_or("unknown"),
+                        agent_id.as_deref().unwrap_or("unknown")
+                    ),
+                });
+            };
+            if let Err(error) = repository.set_observed_model(&run.id, model) {
+                signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
+                return Err(error);
+            }
+            match model_identity::verify_model(Some(backend.as_str()), run.model.as_deref(), Some(model)) {
+                model_identity::ModelVerification::Verified => {
+                    summary.verified_model_generation_count =
+                        summary.verified_model_generation_count.saturating_add(1);
+                }
+                model_identity::ModelVerification::Mismatch => {
+                    signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::ModelIntegrity);
+                    return Err(TerminalError::ModelMismatch {
+                        expected: run.model.clone().unwrap_or_else(|| "unselected".into()),
+                        observed: model.to_owned(),
+                    });
+                }
+                model_identity::ModelVerification::Unverified => {
+                    signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::ModelIntegrity);
+                    return Err(TerminalError::ModelUnverified {
+                        detail: format!(
+                            "backend={}, requested={}, observed={}",
+                            backend.as_str(),
+                            run.model.as_deref().unwrap_or("default"),
+                            model
+                        ),
+                    });
+                }
+            }
         }
         if content.trim().is_empty() {
             continue;
@@ -5040,6 +6310,18 @@ fn coordinate_process_events_blocking(
             .max_persist_ms
             .max(persistence_started.elapsed().as_millis());
         sequence = sequence.saturating_add(1);
+    }
+    if !summary.raw_output.trim().is_empty() && summary.model_generation_count == 0 {
+        signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::ModelIntegrity);
+        return Err(TerminalError::ModelUnverified {
+            detail: format!("backend={} emitted output without a generation identity", backend.as_str()),
+        });
+    }
+    if summary.model_generation_count != summary.verified_model_generation_count {
+        signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::ModelIntegrity);
+        return Err(TerminalError::ModelUnverified {
+            detail: format!("backend={} has an unverified model generation", backend.as_str()),
+        });
     }
     if incomplete_stream {
         usage.mark_partial()?;
@@ -5135,6 +6417,11 @@ fn harden_spec(
             }
         }
         CliBackend::Claude => {
+            let selected_model = spec
+                .args
+                .windows(2)
+                .find(|pair| pair[0] == "--model")
+                .map(|pair| pair[1].clone());
             if mode == Hardening::Companion
                 && let Some(index) = spec
                     .args
@@ -5149,6 +6436,19 @@ fn harden_spec(
             spec.args.push("--strict-mcp-config".into());
             spec.args.push("--no-chrome".into());
             spec.args.push("--disable-slash-commands".into());
+            if let Some(selected_model) = selected_model {
+                // Keep Claude's own model picker and fallback chain confined
+                // to the selected model; generation events remain authoritative.
+                spec.args.extend([
+                    "--settings".into(),
+                    serde_json::json!({
+                        "availableModels": [selected_model],
+                        "enforceAvailableModels": true,
+                        "fallbackModel": []
+                    })
+                    .to_string(),
+                ]);
+            }
         }
         CliBackend::Gemini => {
             let tools = if mode == Hardening::Companion {
@@ -5334,10 +6634,17 @@ async fn run_companion_process(
     if !status.success() {
         // Codex reports provider failures in JSONL stdout, often with empty stderr.
         // Decode only error events; never expose reasoning or the control stream.
-        let diagnostic = if backend == CliBackend::Codex {
-            codex_companion_error(&stdout.text).unwrap_or_else(|| stderr.text.clone())
-        } else {
-            stderr.text.clone()
+        let diagnostic = match backend {
+            CliBackend::Codex => {
+                codex_companion_error(&stdout.text).unwrap_or_else(|| stderr.text.clone())
+            }
+            // Claude reports API failures in its stream-json `result` event
+            // with an empty stderr; without this the developer saw only
+            // "Claude CLI exited with status Some(1)".
+            CliBackend::Claude => {
+                claude_companion_error(&stdout.text).unwrap_or_else(|| stderr.text.clone())
+            }
+            _ => stderr.text.clone(),
         };
         // Decode before the final redaction, including JSON-escaped credentials.
         let diagnostic = redact_secrets(&sanitize_terminal_text(diagnostic.as_bytes()))
@@ -5406,6 +6713,20 @@ fn companion_stream_output(
         })
 }
 
+/// The `result` text of Claude's final stream-json event when it reports an
+/// error (for example `API Error: 400 ...`).
+fn claude_companion_error(stdout: &str) -> Option<String> {
+    stdout.lines().rev().find_map(|line| {
+        let value: Value = serde_json::from_str(line.trim()).ok()?;
+        (value.get("type").and_then(Value::as_str) == Some("result")
+            && value.get("is_error").and_then(Value::as_bool) == Some(true))
+        .then(|| value.get("result").and_then(Value::as_str))
+        .flatten()
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_owned)
+    })
+}
+
 fn codex_companion_error(stdout: &str) -> Option<String> {
     fn message(value: &Value, depth: usize) -> Option<String> {
         if depth > 6 {
@@ -5438,7 +6759,7 @@ fn codex_companion_error(stdout: &str) -> Option<String> {
     })
 }
 
-fn extract_companion_envelope_json(output: &str) -> Option<String> {
+pub(crate) fn extract_companion_envelope_json(output: &str) -> Option<String> {
     fn find(value: &Value, depth: usize) -> Option<Value> {
         if depth > 12 {
             return None;
@@ -5494,6 +6815,33 @@ fn cli_mode_disabled() -> bool {
     })
 }
 
+/// One full probe of every CLI, with the local kill switch applied.
+async fn scan_cli_discovery(runtime: Handle) -> Vec<CliAvailability> {
+    let mut items = match runtime.spawn(discover_clis_with_probes()).await {
+        Ok(items) => items,
+        Err(_) => discover_clis(),
+    };
+    if cli_mode_disabled() {
+        for availability in &mut items {
+            if availability.backend != CliBackend::Custom {
+                availability.state = CliAvailabilityState::Unsupported;
+                availability.diagnostic =
+                    Some("CLI Mode is disabled by the local kill switch.".into());
+            }
+        }
+    }
+    items
+}
+
+fn store_cli_discovery(cache: &Mutex<Option<CliDiscoveryCache>>, items: Vec<CliAvailability>) {
+    *cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(CliDiscoveryCache {
+        discovered_at: Instant::now(),
+        items,
+    });
+}
+
 fn deadline_timestamp(deadline: Instant) -> String {
     let remaining = deadline.saturating_duration_since(Instant::now());
     let offset = chrono::Duration::from_std(remaining).unwrap_or_default();
@@ -5530,31 +6878,31 @@ fn validate_resume_parent(
         || parent.model != run.model
     {
         return Err(TerminalError::Validation(
-            "a sessão escolhida pertence a outro projeto, slot, backend ou modelo".into(),
+            "the chosen session belongs to another project, slot, backend or model".into(),
         ));
     }
     if parent.status.is_active() {
         return Err(TerminalError::Validation(
-            "não é possível retomar uma sessão cuja execução ainda está ativa".into(),
+            "a session whose run is still active cannot be resumed".into(),
         ));
     }
     if parent.workspace_snapshot_hash.as_deref() != Some(workspace_snapshot_hash) {
         return Err(TerminalError::Validation(
-            "o workspace mudou desde a sessão escolhida; inicie uma nova sessão".into(),
+            "the workspace changed since the chosen session; start a new session".into(),
         ));
     }
     let native_session_id = parent.native_session_id.as_deref().ok_or_else(|| {
-        TerminalError::Validation("a execução escolhida não possui ID de sessão nativo".into())
+        TerminalError::Validation("the chosen run has no native session ID".into())
     })?;
     if requested_session_id != Some(native_session_id) {
         return Err(TerminalError::Validation(
-            "o ID de retomada não corresponde à sessão escolhida".into(),
+            "the resume ID does not match the chosen session".into(),
         ));
     }
     let expected = session_fingerprint(run, workspace_snapshot_hash);
     if parent.session_fingerprint.as_deref() != Some(expected.as_str()) {
         return Err(TerminalError::Validation(
-            "o fingerprint da sessão não é compatível com esta execução".into(),
+            "the session fingerprint is not compatible with this run".into(),
         ));
     }
     Ok(())
@@ -5628,12 +6976,12 @@ fn secure_launch_spec(
 ) -> Result<SecuredLaunch, TerminalError> {
     let executable = spec.executable.canonicalize().map_err(|error| {
         TerminalError::Security(format!(
-            "executável CLI não pôde ser canonicalizado: {error}"
+            "the CLI executable could not be canonicalized: {error}"
         ))
     })?;
     if !executable.is_file() {
         return Err(TerminalError::Security(
-            "o launch target da CLI não é um arquivo".into(),
+            "the CLI launch target is not a file".into(),
         ));
     }
     let extension = executable
@@ -5646,7 +6994,7 @@ fn secure_launch_spec(
     if matches!(extension.as_str(), "cmd" | "bat") {
         if backend == CliBackend::Custom {
             return Err(TerminalError::Security(
-                "Custom não pode executar wrappers de shell".into(),
+                "Custom cannot run shell wrappers".into(),
             ));
         }
         return resolve_trusted_npm_shim(spec, backend, &executable);
@@ -5654,7 +7002,7 @@ fn secure_launch_spec(
 
     if matches!(extension.as_str(), "cmd" | "bat" | "ps1" | "lnk") {
         return Err(TerminalError::Security(
-            "wrapper de shell ou atalho não é um launch target permitido".into(),
+            "a shell wrapper or shortcut is not an allowed launch target".into(),
         ));
     }
     let identity_sha256 = hash_launch_files(&[&executable])?;
@@ -5678,16 +7026,16 @@ fn resolve_trusted_npm_shim(
         ));
     }
     let shim_text = fs::read_to_string(shim)
-        .map_err(|error| TerminalError::Security(format!("wrapper npm inválido: {error}")))?;
+        .map_err(|error| TerminalError::Security(format!("invalid npm wrapper: {error}")))?;
     let normalized_shim = shim_text.replace('\\', "/").to_ascii_lowercase();
     if !normalized_shim.contains("%*") {
         return Err(TerminalError::Security(
-            "wrapper npm não possui o formato esperado".into(),
+            "the npm wrapper does not have the expected format".into(),
         ));
     }
     let shim_directory = shim
         .parent()
-        .ok_or_else(|| TerminalError::Security("wrapper npm sem diretório pai".into()))?;
+        .ok_or_else(|| TerminalError::Security("the npm wrapper has no parent directory".into()))?;
     let relative_candidates: &[&str] = match backend {
         CliBackend::Codex => &["node_modules/@openai/codex/bin/codex.js"],
         CliBackend::Claude => &["node_modules/@anthropic-ai/claude-code/cli.js"],
@@ -5714,12 +7062,12 @@ fn resolve_trusted_npm_shim(
         })
         .ok_or_else(|| {
             TerminalError::Security(format!(
-                "wrapper npm do {} não aponta para o pacote esperado",
+                "the {} npm wrapper does not point to the expected package",
                 backend.label()
             ))
         })?;
     if marker.is_empty() {
-        return Err(TerminalError::Security("entrypoint npm inválido".into()));
+        return Err(TerminalError::Security("invalid npm entrypoint".into()));
     }
     let entrypoint = entrypoint.canonicalize()?;
     let is_native_binary = entrypoint
@@ -5766,14 +7114,78 @@ fn find_node_for_shim(shim_directory: &Path) -> Result<PathBuf, TerminalError> {
         find_executable("node", &paths, &native_executable_extensions())
     };
     candidate
-        .ok_or_else(|| {
-            TerminalError::Security("node.exe não encontrado para o wrapper npm".into())
-        })?
+        .ok_or_else(|| TerminalError::Security("node.exe not found for the npm wrapper".into()))?
         .canonicalize()
         .map_err(TerminalError::Io)
 }
 
+/// Metadata a launch identity is cached under. Any change in path, length,
+/// modification or creation time recomputes the digest.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LaunchFileStamp {
+    path: PathBuf,
+    len: u64,
+    modified: std::time::SystemTime,
+    created: Option<std::time::SystemTime>,
+}
+
+const MAX_CACHED_LAUNCH_IDENTITIES: usize = 64;
+
+static LAUNCH_IDENTITY_CACHE: std::sync::OnceLock<Mutex<HashMap<Vec<LaunchFileStamp>, String>>> =
+    std::sync::OnceLock::new();
+
+fn launch_file_stamps(paths: &[&Path]) -> Option<Vec<LaunchFileStamp>> {
+    paths
+        .iter()
+        .map(|path| {
+            let metadata = fs::metadata(path).ok()?;
+            Some(LaunchFileStamp {
+                path: path.to_path_buf(),
+                len: metadata.len(),
+                modified: metadata.modified().ok()?,
+                created: metadata.created().ok(),
+            })
+        })
+        .collect()
+}
+
+/// Hashing a 170-290 MB CLI binary (plus node.exe) on every launch and every
+/// discovery probe cost 3-8 s per run in a debug build (ToDoListWebView,
+/// 2026-09-22). The digest is reused while the files' metadata is unchanged;
+/// a file rewritten while it was being hashed is never cached.
+fn cached_launch_identity(
+    paths: &[&Path],
+    compute: impl FnOnce() -> Result<String, TerminalError>,
+) -> Result<String, TerminalError> {
+    let Some(key) = launch_file_stamps(paths) else {
+        return compute();
+    };
+    let cache = LAUNCH_IDENTITY_CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+    {
+        return Ok(hit.clone());
+    }
+    let digest = compute()?;
+    if launch_file_stamps(paths).as_ref() == Some(&key) {
+        let mut entries = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if entries.len() >= MAX_CACHED_LAUNCH_IDENTITIES {
+            entries.clear();
+        }
+        entries.insert(key, digest.clone());
+    }
+    Ok(digest)
+}
+
 pub(crate) fn hash_launch_files(paths: &[&Path]) -> Result<String, TerminalError> {
+    cached_launch_identity(paths, || hash_launch_files_uncached(paths))
+}
+
+fn hash_launch_files_uncached(paths: &[&Path]) -> Result<String, TerminalError> {
     let mut digest = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     for path in paths {
@@ -5800,6 +7212,129 @@ pub(crate) fn configure_hidden(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn only_gemini_gates_an_unvalidated_newer_version_and_only_until_validated() {
+        use crate::persistence_service::PersistenceService;
+
+        let data = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let sink: Arc<dyn TerminalEventSink> = Arc::new(CollectTerminalEvents::default());
+        let service = TerminalService::new(
+            persistence.database_path(),
+            tokio::runtime::Handle::current(),
+            sink,
+        )
+        .unwrap();
+        let seeded = |backend: CliBackend, version: &str| {
+            let (install_url, install_command) = install_guidance(backend);
+            CliAvailability {
+                backend,
+                state: CliAvailabilityState::Available,
+                executable_path: Some(std::path::PathBuf::from("fixture.exe")),
+                version: Some(version.to_string()),
+                diagnostic: None,
+                install_url,
+                install_command,
+                capabilities: adapters::capabilities(backend, Some(version)),
+            }
+        };
+        *service
+            .discovery_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(CliDiscoveryCache {
+            discovered_at: Instant::now(),
+            items: vec![
+                seeded(CliBackend::Gemini, "99.0.0"),
+                seeded(CliBackend::Codex, "99.0.0"),
+            ],
+        });
+
+        let gate = service
+            .unvalidated_newer_version(CliBackend::Gemini)
+            .await
+            .unwrap()
+            .expect("an unvalidated newer Gemini gates");
+        assert_eq!(gate.version, "99.0.0");
+        assert!(gate.diagnostic().contains("99.0.0"));
+        assert!(gate.diagnostic().contains(&gate.minimum));
+        // Codex is newer too but does not gate: it runs with the advisory only.
+        assert!(
+            service
+                .unvalidated_newer_version(CliBackend::Codex)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // Validating another version does not cover this one; validating this one does.
+        service
+            .repository()
+            .record_validated_cli_version(CliBackend::Gemini, "98.0.0")
+            .unwrap();
+        assert!(
+            service
+                .unvalidated_newer_version(CliBackend::Gemini)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        service
+            .repository()
+            .record_validated_cli_version(CliBackend::Gemini, "99.0.0")
+            .unwrap();
+        assert!(
+            service
+                .unvalidated_newer_version(CliBackend::Gemini)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            service
+                .repository()
+                .validated_cli_version(CliBackend::Gemini)
+                .unwrap()
+                .as_deref(),
+            Some("99.0.0")
+        );
+    }
+
+    #[test]
+    fn newer_cli_versions_stay_available_with_an_advisory_and_older_ones_are_blocked() {
+        fn probed(backend: CliBackend, version: &str) -> CliAvailability {
+            let (install_url, install_command) = install_guidance(backend);
+            CliAvailability {
+                backend,
+                state: CliAvailabilityState::Available,
+                executable_path: Some(std::path::PathBuf::from("gemini.cmd")),
+                version: Some(version.to_string()),
+                diagnostic: None,
+                install_url,
+                install_command,
+                capabilities: adapters::capabilities(backend, None),
+            }
+        }
+
+        // Above the validated ceiling: usable, full contract, advisory note.
+        let mut newer = probed(CliBackend::Gemini, "0.60.0");
+        assert!(apply_version_verdict(&mut newer));
+        assert_eq!(newer.state, CliAvailabilityState::Available);
+        assert!(newer.capabilities.native_resume);
+        let note = newer.diagnostic.expect("advisory note");
+        assert!(note.contains("0.60.0") && note.contains("0.55.0"), "{note}");
+
+        // Inside the validated range: usable, no note.
+        let mut current = probed(CliBackend::Gemini, "0.59.5");
+        assert!(apply_version_verdict(&mut current));
+        assert_eq!(current.state, CliAvailabilityState::Available);
+        assert!(current.diagnostic.is_none());
+
+        // Below the minimum: blocked.
+        let mut older = probed(CliBackend::Gemini, "0.54.9");
+        assert!(!apply_version_verdict(&mut older));
+        assert_eq!(older.state, CliAvailabilityState::UnsupportedVersion);
+        assert!(!older.capabilities.native_resume);
+    }
 
     #[derive(Default)]
     struct CollectTerminalEvents {
@@ -5926,6 +7461,20 @@ mod tests {
                 r#"{"type":"item.completed","item":{"type":"agent_message","text":"not an error"}}"#
             )
             .is_none()
+        );
+        // Claude: the API error lives in the final `result` event; stderr is empty.
+        let claude = concat!(
+            r#"{"type":"system","subtype":"init","model":"claude-haiku-4-5"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":400,"result":"API Error: 400 tools.0.custom.input_schema.type: Field required"}"#,
+            "\n"
+        );
+        assert_eq!(
+            claude_companion_error(claude).as_deref(),
+            Some("API Error: 400 tools.0.custom.input_schema.type: Field required")
+        );
+        assert!(
+            claude_companion_error(r#"{"type":"result","is_error":false,"result":"ok"}"#).is_none()
         );
         let wrapped =
             serde_json::json!({"type":"item.completed","item":{"type":"agent_message","text":
@@ -6209,6 +7758,83 @@ mod tests {
     }
 
     #[test]
+    fn automatic_cli_launch_requires_one_explicit_selected_model() {
+        let mut spec = build_process_spec(CliInvocationRequest {
+            executable: PathBuf::from(r"C:\Tools\claude.exe"),
+            backend: CliBackend::Claude,
+            model: Some("haiku".into()),
+            model_profile: None,
+            thinking_level: ThinkingLevel::Default,
+            prompt: "Inspect the project".into(),
+            schema_file: None,
+            schema: None,
+            custom_args: vec![],
+            resume_session_id: None,
+        })
+        .unwrap();
+        harden_spec(CliBackend::Claude, Hardening::Pipeline, &mut spec).unwrap();
+        assert!(validate_cli_launch_model(CliBackend::Claude, Some("haiku"), &spec).is_ok());
+        let settings_arg = spec
+            .args
+            .windows(2)
+            .find(|pair| pair[0] == "--settings")
+            .map(|pair| pair[1].as_str())
+            .unwrap();
+        let settings: Value = serde_json::from_str(settings_arg).unwrap();
+        assert_eq!(settings["availableModels"], serde_json::json!(["haiku"]));
+        assert_eq!(settings["enforceAvailableModels"], true);
+        assert_eq!(settings["fallbackModel"], serde_json::json!([]));
+        assert_eq!(
+            validate_cli_launch_model(CliBackend::Claude, None, &spec)
+                .unwrap_err()
+                .code(),
+            "model_unverified"
+        );
+        for dynamic_model in ["default", "inherit", "best", "opusplan"] {
+            assert_eq!(
+                validate_cli_launch_model(CliBackend::Claude, Some(dynamic_model), &spec)
+                    .unwrap_err()
+                    .code(),
+                "model_unverified"
+            );
+        }
+        let mut custom = build_process_spec(CliInvocationRequest {
+            executable: PathBuf::from(r"C:\Tools\custom.exe"),
+            backend: CliBackend::Custom,
+            model: Some("haiku".into()),
+            model_profile: None,
+            thinking_level: ThinkingLevel::Default,
+            prompt: "Inspect the project".into(),
+            schema_file: None,
+            schema: None,
+            custom_args: vec![],
+            resume_session_id: None,
+        })
+        .unwrap();
+        assert!(validate_cli_launch_model(CliBackend::Custom, Some("haiku"), &custom).is_ok());
+        custom.environment.push(("HVC_SELECTED_MODEL".into(), "sonnet".into()));
+        assert_eq!(
+            validate_cli_launch_model(CliBackend::Custom, Some("haiku"), &custom)
+                .unwrap_err()
+                .code(),
+            "model_mismatch"
+        );
+        assert_eq!(
+            validate_cli_launch_model(CliBackend::Claude, Some("sonnet"), &spec)
+                .unwrap_err()
+                .code(),
+            "model_mismatch"
+        );
+        spec.args.extend(["--model".into(), "sonnet".into()]);
+        assert_eq!(
+            validate_cli_launch_model(CliBackend::Claude, Some("haiku"), &spec)
+                .unwrap_err()
+                .code(),
+            "model_mismatch"
+        );
+    }
+
+    #[test]
     fn custom_rejects_shell_scripts() {
         let error = build_process_spec(CliInvocationRequest {
             executable: PathBuf::from(r"C:\Temp\agent.cmd"),
@@ -6266,7 +7892,7 @@ mod tests {
         )
         .unwrap();
         let error = secure_launch_spec(original.clone(), CliBackend::Codex).unwrap_err();
-        assert!(error.to_string().contains("pacote esperado"));
+        assert!(error.to_string().contains("expected package"));
 
         fs::write(
             &shim,
@@ -6274,7 +7900,48 @@ mod tests {
         )
         .unwrap();
         let error = secure_launch_spec(original, CliBackend::Codex).unwrap_err();
-        assert!(error.to_string().contains("formato esperado"));
+        assert!(error.to_string().contains("expected format"));
+    }
+
+    #[test]
+    fn launch_identity_is_reused_while_metadata_holds_and_recomputed_when_it_changes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("cli.exe");
+        fs::write(&binary, b"version one").unwrap();
+        let reads = AtomicUsize::new(0);
+        let identity = || {
+            cached_launch_identity(&[&binary], || {
+                reads.fetch_add(1, Ordering::SeqCst);
+                hash_launch_files_uncached(&[&binary])
+            })
+            .unwrap()
+        };
+        let first = identity();
+        assert_eq!(identity(), first);
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            1,
+            "unchanged file is not re-read"
+        );
+        assert_eq!(first, hash_launch_files_uncached(&[&binary]).unwrap());
+
+        // Same length, new content: the modification time alone invalidates.
+        fs::write(&binary, b"version two").unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&binary)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + Duration::from_secs(60))
+            .unwrap();
+        let second = identity();
+        assert_ne!(second, first);
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        assert_eq!(second, hash_launch_files_uncached(&[&binary]).unwrap());
+
+        // A missing file is never served from the cache.
+        fs::remove_file(&binary).unwrap();
+        assert!(hash_launch_files(&[&binary]).is_err());
     }
 
     #[cfg(windows)]
@@ -6550,6 +8217,84 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), "cli_output_limit");
+    }
+
+    #[test]
+    fn pulsation_role_model_is_frozen_across_terminal_runs() {
+        use crate::persistence_service::{
+            CreateProjectRequest, CreatePulsationRequest, PersistenceService,
+        };
+
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Frozen CLI role".into()),
+            })
+            .unwrap()
+            .project;
+        let repository = TerminalRepository::new(persistence.database_path());
+        repository.ensure_project_configs(&project.id, true).unwrap();
+        let pulse = persistence
+            .create_pulsation(CreatePulsationRequest {
+                project_id: project.id.clone(),
+                feature_name: "Frozen CLI role".into(),
+            })
+            .unwrap()
+            .pulsation;
+        let create = |role, backend, model: &str| CreateTerminalRunRequest {
+            project_id: project.id.clone(),
+            agent_role: role,
+            origin: ExecutionOrigin::Pipeline,
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: Some(backend),
+            model: Some(model.into()),
+            pulsation_id: Some(pulse.id.clone()),
+            job_id: None,
+            agent_run_id: None,
+            llm_execution_id: None,
+        };
+        let first = repository
+            .create_run(create(AgentRole::IntakeRouter, CliBackend::Claude, "haiku"))
+            .unwrap();
+        assert!(repository
+            .has_cli_role_run(&pulse.id, AgentRole::IntakeRouter)
+            .unwrap());
+        assert!(!repository
+            .has_cli_role_run(&pulse.id, AgentRole::BackendAgent)
+            .unwrap());
+        repository
+            .set_run_status(&first.id, TerminalRunStatus::Failed, None, Some("fixture_done"), None)
+            .unwrap();
+        let second = repository
+            .create_run(create(AgentRole::IntakeRouter, CliBackend::Claude, "haiku"))
+            .unwrap();
+        repository
+            .set_run_status(&second.id, TerminalRunStatus::Failed, None, Some("fixture_done"), None)
+            .unwrap();
+        assert!(matches!(
+            repository.clear_history(&project.id, Some(AgentRole::IntakeRouter)),
+            Err(TerminalError::Validation(_))
+        ));
+        assert_eq!(
+            repository
+                .create_run(create(AgentRole::IntakeRouter, CliBackend::Claude, "sonnet"))
+                .unwrap_err()
+                .code(),
+            "model_mismatch"
+        );
+        assert_eq!(
+            repository
+                .create_run(create(AgentRole::IntakeRouter, CliBackend::Codex, "haiku"))
+                .unwrap_err()
+                .code(),
+            "model_mismatch"
+        );
+        repository
+            .create_run(create(AgentRole::BackendAgent, CliBackend::Codex, "gpt-5.6-luna"))
+            .unwrap();
     }
 
     #[test]
@@ -6837,7 +8582,7 @@ mod tests {
                 expected_version: original.version,
             })
             .unwrap_err();
-        assert!(error.to_string().contains("salvar em API Mode"));
+        assert!(error.to_string().contains("saving in API Mode"));
         let staged = repository
             .update_config(UpdateCliAgentConfigRequest {
                 project_id: project.id.clone(),
@@ -7014,6 +8759,7 @@ mod tests {
                 llm_execution_id: None,
                 parent_run_id: None,
                 continuation_reason: None,
+                observation_trial_id: None,
             })
             .unwrap();
         assert!(matches!(
@@ -7060,6 +8806,368 @@ mod tests {
                 .unwrap()
                 .len(),
             7
+        );
+    }
+
+    #[test]
+    fn ephemeral_slots_are_isolated_from_free_form_and_each_other() {
+        use crate::persistence_service::{CreateProjectRequest, PersistenceService};
+
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Execution slots".into()),
+            })
+            .unwrap()
+            .project;
+        let repository = TerminalRepository::new(persistence.database_path());
+        repository
+            .ensure_project_configs(&project.id, true)
+            .unwrap();
+        let role = AgentRole::BackendAgent;
+        let slots = [
+            "ephemeral:execution-a:unit-a",
+            "ephemeral:execution-a:unit-b",
+        ];
+        for id in &slots {
+            repository
+                .ensure_ephemeral_slot(&project.id, id, role)
+                .unwrap();
+        }
+        let create = |id: &str| CreateSessionRunRequest {
+            project_id: project.id.clone(),
+            slot: SessionSlot::Ephemeral {
+                id: id.into(),
+                agent_role: role,
+            },
+            origin: ExecutionOrigin::Pipeline,
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: Some(CliBackend::Codex),
+            model: None,
+            pulsation_id: None,
+            job_id: None,
+            agent_run_id: None,
+            llm_execution_id: None,
+            parent_run_id: None,
+            continuation_reason: None,
+            observation_trial_id: None,
+        };
+        let first = repository.create_session_run(create(slots[0])).unwrap();
+        let second = repository.create_session_run(create(slots[1])).unwrap();
+        assert_ne!(first.slot_id, second.slot_id);
+        assert!(matches!(first.slot, SessionSlot::Ephemeral { .. }));
+        assert!(
+            repository
+                .list_free_form_slots(&project.id, false)
+                .unwrap()
+                .is_empty()
+        );
+        let mut manual = create(slots[0]);
+        manual.origin = ExecutionOrigin::Manual;
+        assert!(matches!(
+            repository.create_session_run(manual),
+            Err(TerminalError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn observation_trial_reserves_exactly_twenty_automatic_pulsation_slots() {
+        use crate::persistence_service::{CreateProjectRequest, PersistenceService};
+
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Observation trial".into()),
+            })
+            .unwrap()
+            .project;
+        let repository = TerminalRepository::new(persistence.database_path());
+        let trial = repository.start_cli_observation_trial(&project.id).unwrap();
+
+        // Companion/manual, discovery and non-Pulsation work never consume a slot.
+        assert!(repository
+            .reserve_cli_observation_for_pulsation(&project.id, None, ExecutionOrigin::Pipeline)
+            .unwrap()
+            .is_none());
+        assert!(repository
+            .reserve_cli_observation_for_pulsation(&project.id, Some("pulse"), ExecutionOrigin::Manual)
+            .unwrap()
+            .is_none());
+        assert!(repository
+            .reserve_cli_observation_for_pulsation(&project.id, Some("pulse"), ExecutionOrigin::Feature)
+            .unwrap()
+            .is_none());
+
+        for _ in 0..20 {
+            assert_eq!(
+                repository
+                    .reserve_cli_observation_for_pulsation(&project.id, Some("pulse"), ExecutionOrigin::Pipeline)
+                    .unwrap()
+                    .as_ref()
+                    .map(|reserved| reserved.id.as_str()),
+                Some(trial.id.as_str())
+            );
+        }
+        let closing = repository.get_cli_observation_trial(&trial.id).unwrap();
+        assert_eq!(closing.admitted_runs, 20);
+        assert_eq!(closing.state, "closing");
+        assert!(repository
+            .reserve_cli_observation_for_pulsation(&project.id, Some("pulse"), ExecutionOrigin::Learning)
+            .unwrap()
+            .is_none());
+    }
+
+    /// The report explains a run's duration (tokens over throughput, boot,
+    /// preparation, admission) and a Pulsation's wall time (CLI, host, human
+    /// waits), and keeps a rejected output out of the accepted mean.
+    #[test]
+    fn observation_report_explains_durations_and_the_pulsation_critical_path() {
+        use crate::persistence_service::{CreateProjectRequest, PersistenceService};
+
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Observation report".into()),
+            })
+            .unwrap()
+            .project;
+        let repository = TerminalRepository::new(persistence.database_path());
+        let trial = repository.start_cli_observation_trial(&project.id).unwrap();
+        let at = |seconds: i64| {
+            (chrono::DateTime::parse_from_rfc3339("2026-09-22T18:00:00+00:00").unwrap()
+                + chrono::Duration::seconds(seconds))
+            .to_rfc3339()
+        };
+        let db = repository.connection().unwrap();
+        db.execute(
+            "INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at) VALUES('p1',?1,'Todo','Code','failed',?2,?3)",
+            params![project.id, at(0), at(600)],
+        )
+        .unwrap();
+        for (id, kind, class, started, finished) in [
+            ("j-spec", "run_stage::SPECIFICATION", "main", 1, 300),
+            ("j-learn", "learning_report", "background", 310, 400),
+        ] {
+            db.execute(
+                "INSERT INTO jobs(id,pulsation_id,project_id,kind,status,job_class,created_at,updated_at,started_at,finished_at) VALUES(?1,'p1',?2,?3,'done',?4,?5,?6,?5,?6)",
+                params![id, project.id, kind, class, at(started), at(finished)],
+            )
+            .unwrap();
+        }
+        db.execute(
+            "INSERT INTO learning_runs(job_id,pulsation_id,integration_epoch,state,created_at,updated_at) VALUES('j-learn','p1',1,'published',?1,?1)",
+            [at(400)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO agent_runs(id,job_id,agent_name,status,created_at,updated_at) VALUES('ar-code','j-spec','backend_agent','failed',?1,?1)",
+            [at(241)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at) VALUES('c1','p1','SPECIFICATION','approved',?1,?2)",
+            params![at(100), at(160)],
+        )
+        .unwrap();
+        for (
+            id,
+            role,
+            origin,
+            backend,
+            model,
+            job,
+            agent_run,
+            created,
+            started,
+            finished,
+            silence,
+        ) in [
+            (
+                "r-spec",
+                "task_specifier",
+                "pipeline",
+                "opencode",
+                "openrouter/nex-agi/nex-n2.5-pro:free",
+                "j-spec",
+                None,
+                11,
+                14,
+                214,
+                Some(190_000_i64),
+            ),
+            (
+                "r-code",
+                "backend_agent",
+                "pipeline",
+                "codex",
+                "gpt-5.6-luna",
+                "j-spec",
+                Some("ar-code"),
+                220,
+                225,
+                241,
+                None,
+            ),
+            (
+                "r-learn",
+                "learning_agent",
+                "learning",
+                "claude",
+                "haiku",
+                "j-learn",
+                None,
+                310,
+                313,
+                393,
+                None,
+            ),
+        ] {
+            db.execute(
+                "INSERT INTO terminal_runs(id,project_id,agent_role,origin,execution_mode,backend,model,pulsation_id,job_id,agent_run_id,status,created_at,started_at,finished_at,updated_at,observation_trial_id,max_transport_silence_ms)
+                 VALUES(?1,?2,?3,?4,'cli_process',?5,?6,'p1',?7,?8,'completed',?9,?10,?11,?11,?12,?13)",
+                params![id, project.id, role, origin, backend, model, job, agent_run, at(created), at(started), at(finished), trial.id, silence],
+            )
+            .unwrap();
+        }
+        db.execute(
+            "INSERT INTO terminal_events(run_id,sequence,kind,stream,content,created_at) VALUES('r-spec',1,'system','stdout','step_start',?1)",
+            [at(18)],
+        )
+        .unwrap();
+        for (run, unit, requested, observed, input, output, total, reasoning) in [
+            (
+                "r-spec",
+                "u1",
+                "openrouter/nex-agi/nex-n2.5-pro:free",
+                None,
+                12_402,
+                1_862,
+                17_293,
+                Some(3_029),
+            ),
+            (
+                "r-learn",
+                "u2",
+                "haiku",
+                Some("claude-haiku-4-5-20251001"),
+                7_018,
+                14,
+                7_032,
+                None,
+            ),
+            (
+                "r-learn",
+                "u3",
+                "haiku",
+                Some("claude-sonnet-5"),
+                22_547,
+                12_826,
+                35_373,
+                None,
+            ),
+        ] {
+            db.execute(
+                "INSERT INTO token_usage_records(source_kind,source_id,unit_key,transport,provider_id,requested_model,observed_model,input_tokens,output_tokens,total_tokens,reasoning_tokens,quality,started_at,updated_at)
+                 VALUES('terminal_run',?1,?2,'cli','x',?3,?4,?5,?6,?7,?8,'complete',?9,?9)",
+                params![run, unit, requested, observed, input, output, total, reasoning, at(0)],
+            )
+            .unwrap();
+        }
+        for (run_id, ordinal, model_id) in [
+            ("r-spec", 1_i64, "nex-agi/nex-n2.5-pro"),
+            ("r-learn", 1_i64, "claude-haiku-4-5-20251001"),
+            ("r-learn", 2_i64, "claude-sonnet-5"),
+        ] {
+            db.execute(
+                "INSERT INTO terminal_model_observations(run_id,ordinal,event_sequence,model_id,message_id,is_generation,created_at)
+                 VALUES(?1,?2,?2,?3,?4,1,?5)",
+                params![run_id, ordinal, model_id, format!("message-{ordinal}"), at(214)],
+            )
+            .unwrap();
+        }
+
+        let report = repository
+            .latest_cli_observation_report(&project.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                report.successful_runs,
+                report.stage_rejected_runs,
+                report.failed_runs
+            ),
+            (1, 2, 0),
+            "exit 0 with a rejected output is not a success"
+        );
+        assert_eq!(report.max_success_duration_ms, Some(200_000));
+        assert_eq!(report.max_transport_silence_ms, Some(190_000));
+        assert_eq!(
+            report.build_profile,
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            }
+        );
+        let spec = report
+            .runs
+            .iter()
+            .find(|run| run.run_id == "r-spec")
+            .unwrap();
+        assert_eq!(
+            (spec.prep_ms, spec.boot_ms, spec.admission_ms),
+            (Some(3_000), Some(4_000), Some(10_000))
+        );
+        assert_eq!(spec.generated_tokens, Some(4_891));
+        let rate = spec.tokens_per_second.unwrap();
+        assert!((rate - 24.95).abs() < 0.01, "{rate}");
+        let code = report
+            .runs
+            .iter()
+            .find(|run| run.run_id == "r-code")
+            .unwrap();
+        assert_eq!(code.outcome, ObservationOutcome::StageRejected);
+        assert_eq!(
+            code.admission_ms,
+            Some(6_000),
+            "measured from the previous run of the job"
+        );
+        let learning = report
+            .runs
+            .iter()
+            .find(|run| run.run_id == "r-learn")
+            .unwrap();
+        assert_eq!(learning.outcome, ObservationOutcome::StageRejected);
+        assert_eq!(learning.observed_model.as_deref(), Some("claude-sonnet-5"));
+        assert!(
+            learning.model_mismatch,
+            "haiku was requested, sonnet did the work"
+        );
+        assert!(!learning.model_verified);
+        assert_eq!(report.groups.len(), 3);
+        let [pulsation] = report.pulsations.as_slice() else {
+            panic!("one pulsation: {:?}", report.pulsations);
+        };
+        assert_eq!(
+            (
+                pulsation.total_ms,
+                pulsation.cli_ms,
+                pulsation.prep_ms,
+                pulsation.admission_ms,
+                pulsation.human_wait_ms,
+                pulsation.other_ms
+            ),
+            (300_000, 216_000, 8_000, 16_000, 60_000, 0),
+            "Learning runs in the background and is not on the critical path"
         );
     }
 
@@ -7162,7 +9270,7 @@ mod tests {
                 origin: ExecutionOrigin::Pipeline,
                 execution_mode: AgentExecutionMode::CliProcess,
                 backend: Some(CliBackend::Codex),
-                model: None,
+                model: Some("fixture".into()),
                 pulsation_id: None,
                 job_id: None,
                 agent_run_id: None,
@@ -7173,6 +9281,150 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn codex_model_less_item_uses_current_turn_context_and_audits_the_source() {
+        let (_data, repository, run) = audit_test_run();
+        let sessions = tempfile::tempdir().unwrap();
+        let day = sessions.path().join("2026/09/23");
+        std::fs::create_dir_all(&day).unwrap();
+        let session_id = Uuid::new_v4().to_string();
+        let turn_id = Uuid::new_v4().to_string();
+        let started_at = Utc::now().to_rfc3339();
+        let rollout = [
+            serde_json::json!({"timestamp":started_at,"type":"session_meta","payload":{"id":session_id}}),
+            serde_json::json!({"timestamp":started_at,"type":"event_msg","payload":{"type":"task_started","turn_id":turn_id}}),
+            serde_json::json!({"timestamp":started_at,"type":"turn_context","payload":{"turn_id":turn_id,"model":"fixture"}}),
+        ];
+        std::fs::write(
+            day.join(format!("rollout-fixture-{session_id}.jsonl")),
+            rollout.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"),
+        )
+        .unwrap();
+        let (sender, receiver) = mpsc::channel(4);
+        for frame in [
+            serde_json::json!({"type":"thread.started","thread_id":session_id}),
+            serde_json::json!({"type":"turn.started"}),
+            serde_json::json!({"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}),
+        ] {
+            sender
+                .send(ProcessStreamItem::Frame {
+                    stream: "stdout",
+                    bytes: frame.to_string().into_bytes(),
+                    received_at: Instant::now(),
+                })
+                .await
+                .unwrap();
+        }
+        drop(sender);
+        let repository_for_audit = repository.clone();
+        let run_id = run.id.clone();
+        let root = sessions.path().to_path_buf();
+        let summary = tokio::task::spawn_blocking(move || {
+            coordinate_process_events_blocking(
+                repository_for_audit,
+                Arc::new(CollectTerminalEvents::default()),
+                run,
+                CliBackend::Codex,
+                receiver,
+                CancellationToken::new(),
+                Arc::new(Mutex::new(None)),
+                Some(root),
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(summary.raw_output, "ok");
+        assert_eq!(summary.verified_model_generation_count, 1);
+        let observation: (Option<String>, String, Option<String>) = repository
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT model_id,evidence_source,message_id FROM terminal_model_observations WHERE run_id=?1 AND is_generation=1",
+                [&run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(observation.0.as_deref(), Some("fixture"));
+        assert_eq!(observation.1, "codex_turn_context");
+        assert_eq!(observation.2.as_deref(), Some("item_0"));
+    }
+
+    #[tokio::test]
+    async fn codex_turn_context_mismatch_rejects_the_item_before_output() {
+        let (_data, repository, run) = audit_test_run();
+        let sessions = tempfile::tempdir().unwrap();
+        let day = sessions.path().join("2026/09/23");
+        std::fs::create_dir_all(&day).unwrap();
+        let session_id = Uuid::new_v4().to_string();
+        let turn_id = Uuid::new_v4().to_string();
+        let started_at = Utc::now().to_rfc3339();
+        let rollout = [
+            serde_json::json!({"timestamp":started_at,"type":"session_meta","payload":{"id":session_id}}),
+            serde_json::json!({"timestamp":started_at,"type":"event_msg","payload":{"type":"task_started","turn_id":turn_id}}),
+            serde_json::json!({"timestamp":started_at,"type":"turn_context","payload":{"turn_id":turn_id,"model":"different-model"}}),
+        ];
+        std::fs::write(
+            day.join(format!("rollout-fixture-{session_id}.jsonl")),
+            rollout.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"),
+        )
+        .unwrap();
+        let (sender, receiver) = mpsc::channel(4);
+        for frame in [
+            serde_json::json!({"type":"thread.started","thread_id":session_id}),
+            serde_json::json!({"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"must-not-publish"}}),
+        ] {
+            sender
+                .send(ProcessStreamItem::Frame {
+                    stream: "stdout",
+                    bytes: frame.to_string().into_bytes(),
+                    received_at: Instant::now(),
+                })
+                .await
+                .unwrap();
+        }
+        drop(sender);
+        let run_id = run.id.clone();
+        let abort = CancellationToken::new();
+        let result = tokio::task::spawn_blocking({
+            let root = sessions.path().to_path_buf();
+            let abort = abort.clone();
+            let repository = repository.clone();
+            move || {
+                coordinate_process_events_blocking(
+                    repository,
+                    Arc::new(CollectTerminalEvents::default()),
+                    run,
+                    CliBackend::Codex,
+                    receiver,
+                    abort,
+                    Arc::new(Mutex::new(None)),
+                    Some(root),
+                )
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.unwrap_err().code(), "model_mismatch");
+        assert!(abort.is_cancelled());
+        let observation: (Option<String>, String) = repository
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT model_id,evidence_source FROM terminal_model_observations WHERE run_id=?1 AND is_generation=1 ORDER BY ordinal LIMIT 1",
+                [&run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(observation.0.as_deref(), Some("different-model"));
+        assert_eq!(observation.1, "codex_turn_context");
+        assert!(!repository
+            .list_events(&run_id, 0, 100)
+            .unwrap()
+            .iter()
+            .any(|event| event.content.contains("must-not-publish")));
+    }
+
+    #[tokio::test]
     async fn audit_waits_for_sqlite_without_blocking_runtime_or_replaying_heartbeats() {
         let (_data, repository, run) = audit_test_run();
         let id = run.id.clone();
@@ -7180,10 +9432,15 @@ mod tests {
         let mut unobserved = bus.subscribe();
         let (sender, receiver) = mpsc::channel(16);
         for index in 0..12 {
+            let bytes = if index == 0 {
+                br#"{"type":"hvc_model_attestation_v1","model":"fixture","messageId":"audit-generation"}"#.to_vec()
+            } else {
+                format!("frame {index}\n").into_bytes()
+            };
             sender
                 .send(ProcessStreamItem::Frame {
                     stream: "stdout",
-                    bytes: format!("frame {index}\n").into_bytes(),
+                    bytes,
                     received_at: Instant::now() - Duration::from_secs(1),
                 })
                 .await
@@ -7218,7 +9475,11 @@ mod tests {
             "old queued output is not new process activity"
         );
         assert!(result.max_queue_delay_ms >= 1_000);
-        assert_eq!(repository.list_events(&id, 0, 100).unwrap().len(), 12);
+        assert_eq!(
+            repository.list_events(&id, 0, 100).unwrap().len(),
+            11,
+            "the model attestation is persisted in the audit table, not as visible output"
+        );
         assert!(matches!(
             unobserved.recv().await,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
@@ -7251,24 +9512,44 @@ mod tests {
         assert!(abort.is_cancelled());
     }
 
+    #[test]
+    fn transport_read_clock_keeps_the_longest_gap_including_the_tail() {
+        let clock = TransportReadClock::new();
+        let start = clock.state.lock().unwrap().0;
+        // A read 30 ms in, another right after it, then 80 ms of silence to
+        // the exit: the tail is the longest gap.
+        std::thread::sleep(Duration::from_millis(30));
+        clock.record_read();
+        clock.record_read();
+        let (last, gap) = *clock.state.lock().unwrap();
+        assert!(gap >= 30, "{gap}");
+        let silence = clock.max_silence_ms(last + Duration::from_millis(80));
+        assert!((80..200).contains(&silence), "{silence}");
+        // An exit stamped before the last read never goes negative.
+        assert_eq!(clock.max_silence_ms(start), gap);
+    }
+
     #[tokio::test]
     async fn transport_activity_and_reasoning_do_not_depend_on_audit_consumption() {
         let watchdog = ProgressWatchdog::new(AgentTimeoutPolicy::default());
         let (sender, mut receiver) = mpsc::channel(4);
+        let read_clock = Arc::new(TransportReadClock::new());
         read_process_stream(
             "stdout",
             std::io::Cursor::new(b"{\"type\":\"step_start\"}\n"),
             sender.clone(),
-            watchdog.clone(),
+            Some(watchdog.clone()),
             CliBackend::Opencode,
+            Arc::clone(&read_clock),
         )
         .await;
         read_process_stream(
             "stderr",
             std::io::Cursor::new(b"connection bookkeeping\n"),
             sender.clone(),
-            watchdog.clone(),
+            Some(watchdog.clone()),
             CliBackend::Opencode,
+            Arc::clone(&read_clock),
         )
         .await;
         assert_eq!(
@@ -7336,7 +9617,7 @@ mod tests {
                 origin: ExecutionOrigin::Manual,
                 execution_mode: AgentExecutionMode::CliProcess,
                 backend: Some(CliBackend::Codex),
-                model: None,
+                model: Some("gpt-5.6-luna".into()),
                 pulsation_id: None,
                 job_id: None,
                 agent_run_id: None,
@@ -7357,7 +9638,7 @@ mod tests {
             .send(ProcessStreamItem::Frame {
                 received_at: Instant::now(),
                 stream: "stdout",
-                bytes: b"first\n".to_vec(),
+                bytes: br#"{"type":"item.completed","model":"gpt-5.6-luna","item":{"id":"msg-1","type":"agent_message","text":"first\n"}}"#.to_vec(),
             })
             .await
             .unwrap();
@@ -7441,7 +9722,7 @@ mod tests {
                 origin: ExecutionOrigin::Manual,
                 execution_mode: AgentExecutionMode::CliProcess,
                 backend: Some(CliBackend::Codex),
-                model: None,
+                model: Some("gpt-5.6-luna".into()),
                 pulsation_id: None,
                 job_id: None,
                 agent_run_id: None,
@@ -7461,7 +9742,7 @@ mod tests {
             .send(ProcessStreamItem::Frame {
                 received_at: Instant::now(),
                 stream: "stdout",
-                bytes: br#"{"type":"item.completed","item":{"type":"message","text":"{\"outputLanguage\":\"en\",\"message\":\"ok\"}"}}"#.to_vec(),
+                bytes: br#"{"type":"item.completed","model":"gpt-5.6-luna","item":{"id":"msg-2","type":"agent_message","text":"{\"outputLanguage\":\"en\",\"message\":\"ok\"}"}}"#.to_vec(),
             })
             .await
             .unwrap();
@@ -7518,7 +9799,7 @@ mod tests {
                 origin: ExecutionOrigin::Manual,
                 execution_mode: AgentExecutionMode::CliProcess,
                 backend: Some(CliBackend::Gemini),
-                model: None,
+                model: Some("gemini-2.5-flash".into()),
                 pulsation_id: None,
                 job_id: None,
                 agent_run_id: None,
@@ -7549,7 +9830,7 @@ mod tests {
                 received_at: Instant::now(),
                 stream: "stdout",
                 bytes:
-                    br#"{"type":"message","role":"assistant","content":"{\"a\":1,","delta":true}"#
+                    br#"{"type":"message","role":"assistant","model":"gemini-2.5-flash","message_id":"gen-1","content":"{\"a\":1,","delta":true}"#
                         .to_vec(),
             })
             .await
@@ -7559,7 +9840,7 @@ mod tests {
                 received_at: Instant::now(),
                 stream: "stdout",
                 bytes:
-                    br#"{"type":"message","role":"assistant","content":"\"b\":2}","delta":true}"#
+                    br#"{"type":"message","role":"assistant","model":"gemini-2.5-flash","message_id":"gen-1","content":"\"b\":2}","delta":true}"#
                         .to_vec(),
             })
             .await
@@ -7667,6 +9948,122 @@ mod tests {
         assert_eq!(
             first_stamp, second_stamp,
             "a fresh cache must not trigger a rescan on every call"
+        );
+    }
+
+    fn fixture_availability(backend: CliBackend, state: CliAvailabilityState) -> CliAvailability {
+        let (install_url, install_command) = install_guidance(backend);
+        CliAvailability {
+            backend,
+            state,
+            executable_path: Some(PathBuf::from("stale-fixture-cli.exe")),
+            version: Some("0.0.0-stale".into()),
+            diagnostic: None,
+            install_url,
+            install_command,
+            capabilities: adapters::capabilities(backend, None),
+        }
+    }
+
+    fn stale_discovery_service(
+        items: Vec<CliAvailability>,
+    ) -> (TerminalService, Instant, tempfile::TempDir) {
+        use crate::persistence_service::PersistenceService;
+        let data = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let sink: Arc<dyn TerminalEventSink> = Arc::new(CollectTerminalEvents::default());
+        let service = TerminalService::new(
+            persistence.database_path(),
+            tokio::runtime::Handle::current(),
+            sink,
+        )
+        .unwrap();
+        let stale_at = Instant::now()
+            .checked_sub(CLI_DISCOVERY_CACHE_TTL + Duration::from_secs(1))
+            .expect("test clock should support subtracting the TTL");
+        store_cli_discovery(&service.discovery_cache, items);
+        service
+            .discovery_cache
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .discovered_at = stale_at;
+        (service, stale_at, data)
+    }
+
+    fn discovered_at(service: &TerminalService) -> Instant {
+        service
+            .discovery_cache
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .discovered_at
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stale_snapshot_with_the_backend_available_launches_at_once_and_rescans_once() {
+        let (service, stale_at, _data) = stale_discovery_service(vec![fixture_availability(
+            CliBackend::Codex,
+            CliAvailabilityState::Available,
+        )]);
+        let served = service.discovery_for_launch(CliBackend::Codex).await;
+        assert_eq!(
+            served[0].version.as_deref(),
+            Some("0.0.0-stale"),
+            "the launch is not blocked behind a probe of every CLI"
+        );
+        // A second launch while the rescan runs starts no second rescan.
+        let again = service.discovery_for_launch(CliBackend::Codex).await;
+        assert_eq!(again[0].version.as_deref(), Some("0.0.0-stale"));
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while discovered_at(&service) == stale_at {
+            assert!(Instant::now() < deadline, "background rescan never landed");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        while service
+            .discovery_refreshing
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            assert!(
+                Instant::now() < deadline,
+                "single-flight flag never cleared"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            !service
+                .discovery_cache
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .any(|item| item.version.as_deref() == Some("0.0.0-stale")),
+            "the rescan replaced the stale snapshot"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stale_snapshot_without_the_backend_available_waits_for_a_fresh_scan() {
+        let (service, stale_at, _data) = stale_discovery_service(vec![fixture_availability(
+            CliBackend::Codex,
+            CliAvailabilityState::AuthRequired,
+        )]);
+        let served = service.discovery_for_launch(CliBackend::Codex).await;
+        assert!(
+            served
+                .iter()
+                .all(|item| item.version.as_deref() != Some("0.0.0-stale")),
+            "an unhealthy entry is never trusted from a stale snapshot"
+        );
+        assert!(discovered_at(&service) > stale_at);
+        assert!(
+            !service
+                .discovery_refreshing
+                .load(std::sync::atomic::Ordering::SeqCst)
         );
     }
 }

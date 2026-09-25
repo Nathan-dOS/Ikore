@@ -623,12 +623,19 @@ impl<'a> Checker<'a> {
         for intent in &payload.interface_intent {
             english("interface intent description", &intent.description)?;
             for handle in &intent.source_refs {
-                if !self.index.is_readable(handle) {
+                // A new interface may name the planned file it will live in
+                // (greenfield batches have no delivered source at all).
+                let planned_home = intent.intent == super::InterfaceIntent::New
+                    && matches!(
+                        self.index.reference(handle),
+                        Some(ReferenceEntryV1::PlannedDestination { .. })
+                    );
+                if !self.index.is_readable(handle) && !planned_home {
                     return Err(reject(
                         Invariant::Sc004,
                         ErrorCode::ReferenceConflict,
                         format!(
-                            "Interface intent cites `{handle}`, which is not a delivered source."
+                            "Interface intent cites `{handle}`, which is not a delivered source (only a `new` interface may cite the planned file it will live in)."
                         ),
                     )
                     .with_related([handle.clone()]));
@@ -697,12 +704,22 @@ impl<'a> Checker<'a> {
                 }
             }
             for handle in &proposal.input_refs {
-                if !self.index.is_readable(handle) {
+                // Reading a planned file another proposal creates is a
+                // read-after-write the planner turns into a dependency with
+                // the validated candidate delivered (ToDoListWebView: every
+                // greenfield view reads the planned store module).
+                let written_by_sibling = matches!(
+                    self.index.reference(handle),
+                    Some(ReferenceEntryV1::PlannedDestination { .. })
+                ) && payload.unit_proposals.iter().any(|other| {
+                    other.unit_key != proposal.unit_key && other.destination_refs.contains(handle)
+                });
+                if !self.index.is_readable(handle) && !written_by_sibling {
                     return Err(reject(
                         Invariant::Sc004,
                         ErrorCode::ReferenceConflict,
                         format!(
-                            "Proposal `{}` input `{handle}` is not a delivered source.",
+                            "Proposal `{}` input `{handle}` is neither a delivered source nor a planned file another proposal writes.",
                             proposal.unit_key
                         ),
                     ));
@@ -1728,6 +1745,68 @@ mod tests {
                 .unwrap_err()
                 .sc,
             Invariant::Sc004
+        );
+
+        // Greenfield read-after-write (ToDoListWebView, 2026-09-22): a view
+        // reads the planned store another proposal writes.
+        let file_proposal = |key: &str, criteria: &[&str], inputs: &[&str], owns: &[&str]| {
+            let mut p = proposal(key, ProposalKind::Code, criteria, &[]);
+            p.input_refs = inputs.iter().map(|i| h(i)).collect();
+            p.destination_refs = owns.iter().map(|o| h(o)).collect();
+            p
+        };
+        let greenfield = spec(
+            all(),
+            vec![
+                file_proposal("store", &["crit_1_1"], &[], &["plan_1"]),
+                file_proposal("view", &["crit_1_2", "crit_2_1"], &["plan_1"], &["src_1"]),
+            ],
+        );
+        assert!(run(ExecutorKind::SpecificationAuthor, &greenfield).is_ok());
+        // Nobody writes the planned file: still a reference conflict.
+        let unwritten = spec(
+            all(),
+            vec![file_proposal(
+                "view",
+                &["crit_1_1", "crit_1_2", "crit_2_1"],
+                &["plan_1"],
+                &["src_1"],
+            )],
+        );
+        assert_eq!(
+            run(ExecutorKind::SpecificationAuthor, &unwritten)
+                .unwrap_err()
+                .code,
+            ErrorCode::ReferenceConflict
+        );
+        // A new interface may name its planned home; a preserved one may not.
+        let with_intent = |intent: InterfaceIntent| {
+            let mut response = spec(all(), vec![]);
+            if let UnitModelResponseV1::Completed {
+                payload: CompletedPayloadV1::Specification(s),
+                ..
+            } = &mut response
+            {
+                s.interface_intent[0].intent = intent;
+                s.interface_intent[0].source_refs = vec![h("plan_1")];
+            }
+            response
+        };
+        assert!(
+            run(
+                ExecutorKind::SpecificationAuthor,
+                &with_intent(InterfaceIntent::New)
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            run(
+                ExecutorKind::SpecificationAuthor,
+                &with_intent(InterfaceIntent::Preserve)
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::ReferenceConflict
         );
     }
 

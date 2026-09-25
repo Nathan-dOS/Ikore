@@ -185,7 +185,7 @@ impl PersistenceService {
             request.expected_input_revision,
         )?;
         let current = Self::find_pulsation_by_id(&tx, &request.pulsation_id)?
-            .ok_or_else(|| invalid("Pulsação ausente."))?;
+            .ok_or_else(|| invalid("Pulsation missing."))?;
         let pulse = &current.id;
         let cancelled = tx.prepare("SELECT id FROM jobs WHERE pulsation_id=?1 AND status IN ('pending','running','interrupted')")?.query_map([pulse], |r| r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
         tx.execute("UPDATE jobs SET status='failed',cancellation_reason='superseded',finished_at=?2,updated_at=?2 WHERE pulsation_id=?1 AND status IN ('pending','running','interrupted')", params![pulse,Self::now_iso()])?;
@@ -208,7 +208,7 @@ impl PersistenceService {
         let updated = if current.status == PulsationStatus::Planning {
             tx.execute("UPDATE pulsations SET stage='Intake',state_version=state_version+1,updated_at=?2 WHERE id=?1",params![pulse,Self::now_iso()])?;
             tx.execute("INSERT INTO pulse_events(id,pulsation_id,event_type,from_status,to_status,from_stage,to_stage,message,created_at) VALUES(?1,?2,'description_revised','planning','planning',?3,'Intake','Pedido editado; geração anterior superada.',?4)",params![Uuid::new_v4().to_string(),pulse,current.stage.as_db_value(),Self::now_iso()])?;
-            Self::find_pulsation_by_id(&tx, pulse)?.ok_or_else(|| invalid("Pulsação ausente."))?
+            Self::find_pulsation_by_id(&tx, pulse)?.ok_or_else(|| invalid("Pulsation missing."))?
         } else {
             Self::transition_pulsation(
                 &tx,
@@ -291,11 +291,23 @@ impl PersistenceService {
         Ok(ids)
     }
 
+    #[cfg(test)]
     pub(super) fn coordination_details(
         db: &Connection,
         project: &str,
     ) -> Result<Vec<PulsationCoordinationSnapshot>, PersistenceServiceError> {
-        let rows = db.prepare("SELECT p.id,p.queue_sequence,p.pipeline_version,p.input_revision,p.state_version,p.stage,p.status,p.specification_started,r.assessment_json,r.review_state,r.prespec_state,r.context_artifact_id,r.skip_reason,r.context_disposition,r.diagnostic FROM pulsations p LEFT JOIN pulsation_preparation r ON r.pulsation_id=p.id AND r.input_revision=p.input_revision WHERE p.project_id=?1 ORDER BY p.queue_sequence")?.query_map([project],|r| Ok((r.get::<_,String>(0)?,r.get::<_,u64>(1)?,r.get::<_,u8>(2)?,r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,bool>(7)?,r.get::<_,Option<String>>(8)?,r.get::<_,Option<String>>(9)?,r.get::<_,Option<String>>(10)?,r.get::<_,Option<String>>(11)?,r.get::<_,Option<String>>(12)?,r.get::<_,Option<String>>(13)?,r.get::<_,Option<String>>(14)?)))?.collect::<Result<Vec<_>,_>>()?;
+        Self::coordination_details_for(db, project, None)
+    }
+
+    /// Rich coordination data contains per-pulsation artifacts, Learning and composition reads.
+    /// Runtime chrome needs it only for the active pulsation; the unfiltered wrapper remains for
+    /// explicit persistence callers and test fixtures.
+    pub(super) fn coordination_details_for(
+        db: &Connection,
+        project: &str,
+        pulsation_id: Option<&str>,
+    ) -> Result<Vec<PulsationCoordinationSnapshot>, PersistenceServiceError> {
+        let rows = db.prepare("SELECT p.id,p.queue_sequence,p.pipeline_version,p.input_revision,p.state_version,p.stage,p.status,p.specification_started,r.assessment_json,r.review_state,r.prespec_state,r.context_artifact_id,r.skip_reason,r.context_disposition,r.diagnostic FROM pulsations p LEFT JOIN pulsation_preparation r ON r.pulsation_id=p.id AND r.input_revision=p.input_revision WHERE p.project_id=?1 AND (?2 IS NULL OR p.id=?2) ORDER BY p.queue_sequence")?.query_map(params![project, pulsation_id],|r| Ok((r.get::<_,String>(0)?,r.get::<_,u64>(1)?,r.get::<_,u8>(2)?,r.get::<_,u64>(3)?,r.get::<_,u64>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,bool>(7)?,r.get::<_,Option<String>>(8)?,r.get::<_,Option<String>>(9)?,r.get::<_,Option<String>>(10)?,r.get::<_,Option<String>>(11)?,r.get::<_,Option<String>>(12)?,r.get::<_,Option<String>>(13)?,r.get::<_,Option<String>>(14)?)))?.collect::<Result<Vec<_>,_>>()?;
         let mut result = Vec::new();
         for (
             pulse,

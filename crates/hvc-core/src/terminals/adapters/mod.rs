@@ -16,6 +16,10 @@ pub(super) struct NormalizedCliFrame {
     pub content: String,
     pub native_session_id: Option<String>,
     pub observed_model: Option<String>,
+    pub message_id: Option<String>,
+    pub parent_invocation_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub is_model_generation: bool,
     pub is_text: bool,
     /// True when `content` is an incremental fragment of the assistant's
     /// message (streamed token-by-token) rather than the complete text -
@@ -39,6 +43,9 @@ pub(super) enum CliFailureKind {
     ProcessFailed,
 }
 
+/// Only the minimum is a gate. A version above the last one this adapter was validated against
+/// is `UnknownNewer`: it runs with the full contract and merely carries an advisory diagnostic,
+/// so a CLI auto-update never blocks a pulsation while the ceiling waits to be bumped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CliVersionCompatibility {
     Supported,
@@ -49,6 +56,7 @@ pub(super) enum CliVersionCompatibility {
 #[derive(Debug, Clone, Copy)]
 struct CliCompatibilityRule {
     minimum: (u64, u64, u64),
+    /// First version not yet validated; advisory, never blocking.
     maximum_exclusive: (u64, u64, u64),
 }
 
@@ -180,15 +188,24 @@ pub(super) fn version_compatibility(
     }
 }
 
+/// Whether the adapter's full contract (structured output, native resume) applies. Newer
+/// versions keep it: the CLIs have only added to their stream-json contracts so far, and losing
+/// resume on every auto-update cost more than the rare regression it guarded against.
 fn version_supports_contract(backend: CliBackend, version: Option<&str>) -> bool {
-    version_compatibility(backend, version) == CliVersionCompatibility::Supported
+    matches!(
+        version_compatibility(backend, version),
+        CliVersionCompatibility::Supported | CliVersionCompatibility::UnknownNewer
+    )
 }
 
 /// The validated `[minimum, maximum_exclusive)` version range for a backend, formatted as
 /// `major.minor.patch` strings for display in diagnostics.
 pub(super) fn compatibility_range(backend: CliBackend) -> (String, String) {
     let rule = compatibility_rule(backend);
-    (format_version(rule.minimum), format_version(rule.maximum_exclusive))
+    (
+        format_version(rule.minimum),
+        format_version(rule.maximum_exclusive),
+    )
 }
 
 fn format_version(version: (u64, u64, u64)) -> String {
@@ -270,6 +287,10 @@ fn normalize_json_frame(
             content: sanitized,
             native_session_id: None,
             observed_model: None,
+            message_id: None,
+            parent_invocation_id: None,
+            agent_id: None,
+            is_model_generation: false,
             is_text: false,
             is_delta: false,
             finish_reason: None,
@@ -282,6 +303,10 @@ fn normalize_json_frame(
             content: sanitized,
             native_session_id: None,
             observed_model: None,
+            message_id: None,
+            parent_invocation_id: None,
+            agent_id: None,
+            is_model_generation: false,
             is_text: true,
             is_delta: false,
             finish_reason: None,
@@ -289,6 +314,7 @@ fn normalize_json_frame(
         };
     };
     let kind = classify(&value);
+    let is_model_generation = is_model_generation(backend, &value, kind);
     let visible = extract_visible_text(&value);
     let is_text = visible.is_some();
     let content = visible.unwrap_or_else(|| format!("{}: {sanitized}", backend.label()));
@@ -302,6 +328,10 @@ fn normalize_json_frame(
         content: sanitize_terminal_text(content.as_bytes()),
         native_session_id: find_session_id(&value),
         observed_model: find_model_id(&value),
+        message_id: find_message_id(&value),
+        parent_invocation_id: find_string_for_keys(&value, &["parent_tool_use_id", "parentInvocationId"]),
+        agent_id: find_string_for_keys(&value, &["agent_id", "agentId"]),
+        is_model_generation,
         is_text,
         is_delta,
         finish_reason: find_finish_reason(&value),
@@ -363,6 +393,46 @@ fn event_type(value: &Value) -> &str {
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or_default()
+}
+
+fn is_model_generation(backend: CliBackend, value: &Value, kind: TerminalEventKind) -> bool {
+    match backend {
+        CliBackend::Claude => {
+            event_type(value) == "assistant"
+                || value.pointer("/event/type").and_then(Value::as_str) == Some("message_start")
+        }
+        CliBackend::Codex => {
+            let event = event_type(value);
+            event.starts_with("item.")
+                && value.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
+                && (event.ends_with("added") || event.ends_with("completed"))
+        }
+        CliBackend::Gemini | CliBackend::Opencode | CliBackend::Custom => {
+            kind == TerminalEventKind::Message && find_model_id(value).is_some()
+        }
+    }
+}
+
+fn find_message_id(value: &Value) -> Option<String> {
+    ["/event/message/id", "/message/id", "/item/id", "/message_id"]
+        .into_iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
+        .map(str::to_owned)
+}
+
+fn find_string_for_keys(value: &Value, keys: &[&str]) -> Option<String> {
+    match value {
+        Value::Object(object) => {
+            for key in keys {
+                if let Some(value) = object.get(*key).and_then(Value::as_str) {
+                    return Some(value.to_owned());
+                }
+            }
+            object.values().find_map(|value| find_string_for_keys(value, keys))
+        }
+        Value::Array(items) => items.iter().find_map(|value| find_string_for_keys(value, keys)),
+        _ => None,
+    }
 }
 
 fn find_session_id(value: &Value) -> Option<String> {
@@ -455,6 +525,18 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+
+    #[test]
+    fn codex_public_item_event_needs_turn_context_model_evidence() {
+        let frame = normalize_frame(
+            CliBackend::Codex,
+            "stdout",
+            br#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}"#,
+        );
+        assert!(frame.is_model_generation);
+        assert_eq!(frame.message_id.as_deref(), Some("item_0"));
+        assert_eq!(frame.observed_model, None);
+    }
 
     const FIXTURES: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -554,7 +636,10 @@ mod tests {
             version_compatibility(CliBackend::Codex, Some("0.155.0")),
             CliVersionCompatibility::UnknownNewer
         );
-        assert!(!capabilities(CliBackend::Claude, Some("2.2.0")).native_resume);
+        // Above the validated ceiling the contract stays on; below the floor it is off.
+        assert!(capabilities(CliBackend::Claude, Some("2.2.0")).native_resume);
+        assert!(capabilities(CliBackend::Gemini, Some("0.60.0")).native_resume);
+        assert!(!capabilities(CliBackend::Gemini, Some("0.54.9")).native_resume);
     }
 
     #[test]
@@ -611,6 +696,38 @@ mod tests {
             assert!(!spec.args.iter().any(|arg| arg == "--last"));
             assert!(!spec.args.iter().any(|arg| arg == "--continue"));
         }
+    }
+
+    #[test]
+    fn claude_json_schema_omits_only_the_unsupported_meta_reference() {
+        let schema = serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "unit-response",
+            "type": "object",
+            "properties": { "outcome": { "type": "string" } }
+        });
+        let spec = build_process_spec(CliInvocationRequest {
+            executable: PathBuf::from(r"C:\Tools\claude.exe"),
+            backend: CliBackend::Claude,
+            model: None,
+            model_profile: None,
+            thinking_level: ThinkingLevel::Default,
+            prompt: "reply".into(),
+            schema_file: None,
+            schema: Some(schema),
+            custom_args: Vec::new(),
+            resume_session_id: None,
+        })
+        .unwrap();
+        let index = spec
+            .args
+            .iter()
+            .position(|arg| arg == "--json-schema")
+            .unwrap();
+        let delivered: Value = serde_json::from_str(&spec.args[index + 1]).unwrap();
+        assert!(delivered.get("$schema").is_none());
+        assert_eq!(delivered["title"], "unit-response");
+        assert_eq!(delivered["properties"]["outcome"]["type"], "string");
     }
 
     #[test]

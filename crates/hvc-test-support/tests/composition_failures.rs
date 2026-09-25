@@ -5,11 +5,124 @@
 mod composition_support;
 
 use composition_support::*;
+use hvc_core::orchestration::{ClarificationAnswerV1, SubmitSpecificationAnswersRequest};
 use hvc_core::persistence_service::{
     PersistenceServiceError, PulsationStage, ResolveStageFailureRequest, StageFailureDecision,
 };
 use hvc_test_support::ScriptedResponse;
 use serde_json::json;
+
+/// Answers the open clarification checkpoint of the harness pulsation.
+fn answer_clarification(harness: &Harness, text: &str) {
+    wait_until(&harness.service, &harness.pulse, |db| {
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM checkpoints WHERE pulsation_id=?1 AND status='waiting' AND purpose='clarification')",
+            [&harness.pulse],
+            |r| r.get(0),
+        )
+        .unwrap()
+    });
+    let pending = harness
+        .service
+        .list_open_specification_checkpoints(&harness.project)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("an open clarification");
+    harness
+        .service
+        .submit_specification_answers(SubmitSpecificationAnswersRequest {
+            pulsation_id: harness.pulse.clone(),
+            question_set_id: pending.id,
+            checkpoint_id: pending.checkpoint_id,
+            expected_input_revision: pending.fence.input_revision.unwrap(),
+            expected_state_version: pending.fence.state_version,
+            answers: pending
+                .questions
+                .iter()
+                .map(|question| ClarificationAnswerV1 {
+                    question_id: question.id.clone(),
+                    text_answer: text.into(),
+                    planned_paths: Vec::new(),
+                    modified_paths: Vec::new(),
+                })
+                .collect(),
+        })
+        .unwrap();
+}
+
+#[test]
+fn clarification_rounds_open_a_fresh_allowance_and_keep_the_specification_repair() {
+    // ToDoListWebView, 2026-09-22: every answered round re-ran Specification
+    // from the extra pool, so the second round ended in `budget_exhausted`
+    // with no call at all and a malformed draft after one round had no
+    // correction left. Each answer now opens a fresh account.
+    let harness = Harness::start(
+        |facts, ordinal, _| match (facts.executor.as_str(), ordinal) {
+            ("specification_author", 2 | 3) => provider_reply(json!({
+                "schemaVersion": 1, "outcome": "needs_input", "missingRefs": [],
+                "questions": [{"key": "token_clock", "taskRefs": [facts.tasks[0]],
+                    "question": "Which clock source should validate_token use?",
+                    "rationale": "The expiry check needs a time source."}]
+            })),
+            ("specification_author", 4) => provider_reply(json!({
+                "schemaVersion": 1, "outcome": "completed",
+                "executorKind": "specification_author", "payload": {}
+            })),
+            _ => completed_reply(facts),
+        },
+    );
+    answer_clarification(&harness, "Use the caller-supplied `now` argument.");
+    answer_clarification(&harness, "Seconds since the Unix epoch.");
+    harness.wait_for_checkpoint("SPECIFICATION");
+    assert_eq!(
+        harness.calls(),
+        [
+            "intake_classifier",
+            "specification_author",
+            "specification_author",
+            "specification_author",
+            "specification_author",
+        ],
+        "two answered rounds, then one malformed draft and its correction"
+    );
+    let db = harness.db();
+    let failures: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM stage_failure_requests WHERE pulsation_id=?1",
+            [&harness.pulse],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(failures, 0, "no budget_exhausted checkpoint");
+    let accounts: Vec<(String, Option<String>)> = db
+        .prepare("SELECT state,predecessor_account_id FROM stage_budget_accounts WHERE pulsation_id=?1 AND stage='SPECIFICATION' ORDER BY created_at")
+        .unwrap()
+        .query_map([&harness.pulse], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(accounts.len(), 3, "one account per answered round");
+    assert_eq!(accounts[0].0, "closed");
+    assert_eq!(accounts[1].0, "closed");
+    assert_eq!(accounts[2].0, "open");
+    assert!(
+        accounts[1].1.is_some() && accounts[2].1.is_some(),
+        "every successor links its spent predecessor"
+    );
+    let pools: Vec<String> = db
+        .prepare("SELECT r.pool FROM stage_invocation_reservations r JOIN stage_budget_accounts a ON a.id=r.budget_account_id WHERE a.pulsation_id=?1 AND a.stage='SPECIFICATION' ORDER BY r.created_at")
+        .unwrap()
+        .query_map([&harness.pulse], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        pools,
+        ["initial", "initial", "initial", "extra"],
+        "answers ride initial permits; only the correction uses the extra pool"
+    );
+}
 
 #[test]
 fn a_transport_fault_is_retried_once_from_the_extra_pool_and_the_stage_completes() {

@@ -170,6 +170,11 @@ pub fn classify_stage_failure(error: &PersistenceServiceError) -> Option<Failure
         PersistenceServiceError::Cli { code, .. } if code == "cli_output_truncated" => {
             FailureClass::OutputTruncated
         }
+        PersistenceServiceError::Cli { code, .. }
+            if matches!(code.as_str(), "model_mismatch" | "model_unverified") =>
+        {
+            FailureClass::HostContract
+        }
         PersistenceServiceError::Cli { .. } => return None,
         PersistenceServiceError::Retryable(_) | PersistenceServiceError::ModelOutputInvalid(_) => {
             FailureClass::RetryBudgetExhausted
@@ -196,6 +201,7 @@ pub fn classify_stage_failure(error: &PersistenceServiceError) -> Option<Failure
             | LlmErrorKind::Permission
             | LlmErrorKind::ModelNotFound
             | LlmErrorKind::RouteConflict => FailureClass::ProviderConfiguration,
+            LlmErrorKind::ModelMismatch | LlmErrorKind::ModelUnverified => FailureClass::HostContract,
             LlmErrorKind::InvalidRequest
             | LlmErrorKind::InvalidResponse
             | LlmErrorKind::StreamFailed

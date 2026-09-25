@@ -1341,7 +1341,7 @@ impl PersistenceService {
         let project_id = Self::normalize_project_id(project_id)?;
         let db = self.connection()?;
         let project = Self::find_project_by_id(&db, &project_id, false)?
-            .ok_or_else(|| PersistenceServiceError::NotFound("Projeto não encontrado.".into()))?;
+            .ok_or_else(|| PersistenceServiceError::NotFound("Project not found.".into()))?;
         Ok(detect_presets(Path::new(&project.workspace_path)))
     }
 
@@ -1579,7 +1579,7 @@ impl PersistenceService {
             PulsationStatus::Checkpoint,
             stage,
             "stage_failure_opened",
-            Some("A etapa falhou e aguarda uma decisão explícita antes de encerrar."),
+            Some("The stage failed and waits for an explicit decision before closing."),
         )?;
         let (state_version, input_revision): (u64, u64) = transaction.query_row(
             "SELECT state_version,input_revision FROM pulsations WHERE id=?1",

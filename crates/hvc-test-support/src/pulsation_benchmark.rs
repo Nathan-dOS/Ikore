@@ -60,6 +60,9 @@ impl LlmEventSink for SilentEvents {
 /// Used by benchmarks and the UI fixture; intentionally no arbitrary model-generated writes.
 pub fn stage_response(request: &RecordedRequest) -> ScriptedResponse {
     let body: Value = serde_json::from_str(&request.body).expect("provider request JSON");
+    let model = body["model"]
+        .as_str()
+        .expect("provider request model identity");
     let prompt = body["messages"]
         .as_array()
         .expect("messages")
@@ -86,7 +89,7 @@ pub fn stage_response(request: &RecordedRequest) -> ScriptedResponse {
         output["componentProposals"] = json!([]);
     }
     // Simulated usage, not a tokenizer or a price estimate.
-    ScriptedResponse::json(200, json!({"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":prompt.chars().count().div_ceil(4),"completion_tokens":80}}).to_string())
+    ScriptedResponse::json(200, json!({"model":model,"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":prompt.chars().count().div_ceil(4),"completion_tokens":80}}).to_string())
 }
 
 fn source_fixture(root: &std::path::Path) -> String {

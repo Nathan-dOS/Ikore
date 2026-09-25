@@ -77,7 +77,7 @@ impl PersistenceService {
         let explanation = request.explanation.trim();
         if explanation.is_empty() || explanation.chars().count() > 16_000 {
             return Err(coordination::invalid(
-                "Descreva a revisão manual da base (1–16.000 caracteres).",
+                "Describe the manual review of the base (1–16,000 characters).",
             ));
         }
         let mut db = self.connection()?;
@@ -90,13 +90,13 @@ impl PersistenceService {
             || current.review_token != request.expected_review_token
         {
             return Err(coordination::invalid(
-                "Base/arquivos mudaram desde a revisão. Atualize e confira novamente.",
+                "The base or files changed since the review. Refresh and check again.",
             ));
         }
         let busy:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_slots WHERE project_id=?1) OR EXISTS(SELECT 1 FROM jobs WHERE project_id=?1 AND status='running')",[&request.project_id],|r|r.get(0))?;
         if busy {
             return Err(coordination::invalid(
-                "Aguarde o encerramento da unidade de execução/publicação antes de reconciliar.",
+                "Wait for the running or publishing unit to finish before reconciling.",
             ));
         }
         match &request.resume_pulsation_id {
@@ -118,14 +118,14 @@ impl PersistenceService {
                 }
                 if divergent {
                     return Err(coordination::invalid(
-                        "A pulsação selecionada tem evidências ausentes/divergentes. Cancele-a pela interface antes de adotar a base atual; nenhuma saída será descartada.",
+                        "The selected pulsation has missing or diverging evidence. Cancel it before adopting the current base; no output will be discarded.",
                     ));
                 }
             }
             None if current.owner_candidates.is_empty() => {}
             _ => {
                 return Err(coordination::invalid(
-                    "Selecione explicitamente a pulsação avançada que deve retomar. As demais serão preservadas.",
+                    "Choose which advanced pulsation resumes. The others are kept.",
                 ));
             }
         }
@@ -143,7 +143,7 @@ impl PersistenceService {
                         != item.observed_sha256.as_deref()
                     {
                         return Err(coordination::invalid(
-                            "Arquivo mudou durante a confirmação; revise novamente.",
+                            "A file changed during the confirmation; review again.",
                         ));
                     }
                     tx.execute("INSERT INTO project_file_baselines(project_id,relative_path,content_sha256,updated_at) VALUES(?1,?2,?3,?4) ON CONFLICT(project_id,relative_path) DO UPDATE SET content_sha256=excluded.content_sha256,updated_at=excluded.updated_at",params![request.project_id,item.relative_path,item.observed_sha256,now])?;
@@ -152,7 +152,7 @@ impl PersistenceService {
                     if item.observation_error.as_deref() == Some(error.to_string().as_str()) => {}
                 _ => {
                     return Err(coordination::invalid(
-                        "Disponibilidade do arquivo mudou durante a confirmação; revise novamente.",
+                        "A file's availability changed during the confirmation; review again.",
                     ));
                 }
             }

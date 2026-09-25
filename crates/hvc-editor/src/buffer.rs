@@ -66,9 +66,12 @@ pub enum EditorError {
     PositionOutOfBounds,
 }
 
+/// One undo/redo step. A `Rope` clone shares its chunks with the live buffer (copy-on-write), so
+/// a step costs a few pointers instead of a full copy of the document: 128 steps of a 2 MB file
+/// used to hold ~256 MB and copy 2 MB on every keystroke.
 #[derive(Debug, Clone)]
 struct HistoryEntry {
-    text: String,
+    rope: Rope,
     selection: EditorSelection,
 }
 
@@ -106,6 +109,21 @@ impl EditorBuffer {
 
     pub fn line_count(&self) -> usize {
         self.rope.len_lines()
+    }
+
+    /// Returns one logical line without its CR/LF terminator. Painting callers use this instead
+    /// of `snapshot()` so a large Rope is never materialized just to render a viewport.
+    pub fn line_content(&self, line: usize) -> String {
+        self.rope
+            .line(line.min(self.rope.len_lines().saturating_sub(1)))
+            .chars()
+            .take_while(|character| *character != '\n' && *character != '\r')
+            .collect()
+    }
+
+    /// Document length in characters, without materializing the text.
+    pub fn len_chars(&self) -> usize {
+        self.rope.len_chars()
     }
 
     pub fn scroll_top(&self) -> f32 {
@@ -417,7 +435,7 @@ impl EditorBuffer {
 
     fn history_entry(&self) -> HistoryEntry {
         HistoryEntry {
-            text: self.text(),
+            rope: self.rope.clone(),
             selection: self.selection,
         }
     }
@@ -430,7 +448,7 @@ impl EditorBuffer {
     }
 
     fn restore(&mut self, entry: HistoryEntry) {
-        self.rope = Rope::from_str(&entry.text);
+        self.rope = entry.rope;
         self.selection = entry.selection;
     }
 }
@@ -478,6 +496,31 @@ mod tests {
             .collect::<String>();
         let buffer = EditorBuffer::new(&text, "r1");
         assert_eq!(buffer.snapshot().text, text);
+    }
+
+    #[test]
+    fn reads_one_unicode_crlf_line_without_materializing_the_document() {
+        let text = format!("{}\r\nvisible 👋\n{}", "prefix\n".repeat(10_000), "suffix\n".repeat(10_000));
+        let buffer = EditorBuffer::new(&text, "r1");
+        assert_eq!(buffer.line_content(10_001), "visible 👋");
+        assert_eq!(buffer.line_content(usize::MAX), "");
+    }
+
+    #[test]
+    fn undo_history_restores_exact_text_after_many_edits_of_a_large_document() {
+        let original = "line of a large document
+"
+        .repeat(50_000);
+        let mut buffer = EditorBuffer::new(&original, "r1");
+        for _ in 0..(HISTORY_LIMIT + 10) {
+            buffer.insert("x").unwrap();
+        }
+        assert_eq!(buffer.undo.len(), HISTORY_LIMIT);
+        while buffer.undo() {}
+        // The oldest steps fell off the bounded history; the rest unwind exactly.
+        assert_eq!(buffer.text(), format!("{}{original}", "x".repeat(10)));
+        assert!(buffer.redo());
+        assert_eq!(buffer.text(), format!("{}{original}", "x".repeat(11)));
     }
 
     #[test]

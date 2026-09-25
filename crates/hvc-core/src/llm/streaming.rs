@@ -33,6 +33,7 @@ pub struct SseParser {
     protocol: ProviderProtocol,
     buffer: Vec<u8>,
     usage: crate::usage::UsageMeasurement,
+    observed_models: Vec<String>,
 }
 
 impl SseParser {
@@ -41,6 +42,7 @@ impl SseParser {
             protocol,
             buffer: Vec::new(),
             usage: Default::default(),
+            observed_models: Vec::new(),
         }
     }
 
@@ -48,12 +50,16 @@ impl SseParser {
         &self.usage
     }
 
+    pub fn observed_models(&self) -> &[String] {
+        &self.observed_models
+    }
+
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<ParsedStreamEvent>, LlmError> {
         self.buffer.extend_from_slice(chunk);
         if self.buffer.len() > MAX_STREAM_BUFFER_BYTES {
             return Err(LlmError::new(
                 LlmErrorKind::StreamFailed,
-                "Buffer máximo do stream excedido.",
+                "The stream buffer limit was exceeded.",
             ));
         }
 
@@ -64,7 +70,7 @@ impl SseParser {
             let frame = String::from_utf8(frame_bytes).map_err(|_| {
                 LlmError::new(
                     LlmErrorKind::StreamFailed,
-                    "Stream do provider contém UTF-8 inválido.",
+                    "The provider stream contains invalid UTF-8.",
                 )
             })?;
             if let Some(event) = self.parse_frame(&frame)? {
@@ -82,7 +88,7 @@ impl SseParser {
         let frame = String::from_utf8(std::mem::take(&mut self.buffer)).map_err(|_| {
             LlmError::new(
                 LlmErrorKind::StreamFailed,
-                "Stream do provider contém UTF-8 inválido.",
+                "The provider stream contains invalid UTF-8.",
             )
         })?;
         Ok(self.parse_frame(&frame)?.unwrap_or_default())
@@ -108,9 +114,10 @@ impl SseParser {
         let payload: Value = serde_json::from_str(&data).map_err(|_| {
             LlmError::new(
                 LlmErrorKind::StreamFailed,
-                "Evento SSE contém JSON inválido.",
+                "An SSE event contains invalid JSON.",
             )
         })?;
+        collect_model_ids(&payload, &mut self.observed_models);
         crate::usage::api::merge_usage(
             &mut self.usage,
             &crate::usage::api::parse_usage(self.protocol, &payload),
@@ -120,6 +127,31 @@ impl SseParser {
             frame_event.as_deref(),
             &payload,
         )))
+    }
+}
+
+fn collect_model_ids(payload: &Value, output: &mut Vec<String>) {
+    match payload {
+        Value::Object(object) => {
+            for key in ["model", "model_id", "modelId", "modelID", "modelVersion"] {
+                if let Some(model) = object
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .filter(|model| !model.trim().is_empty())
+                    && output.len() < 32
+                    && !output.iter().any(|item| item == model)
+                {
+                    output.push(model.to_owned());
+                }
+            }
+            for value in object.values() {
+                collect_model_ids(value, output);
+            }
+        }
+        Value::Array(values) => values
+            .iter()
+            .for_each(|value| collect_model_ids(value, output)),
+        _ => {}
     }
 }
 

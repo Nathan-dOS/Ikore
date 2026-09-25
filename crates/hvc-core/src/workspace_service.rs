@@ -55,7 +55,18 @@ pub enum WorkspaceServiceError {
     Io(io::Error),
     Notify(notify::Error),
     InvalidUtf8(String),
+    /// The file is larger than the editor accepts (`MAX_EDITOR_FILE_BYTES`).
+    TooLarge {
+        path: String,
+        bytes: u64,
+        limit: u64,
+    },
 }
+
+/// Largest file the workspace editor opens. The editor keeps the whole document in memory (plus
+/// undo history and syntax state), so a generated log or dump must be refused before it is read
+/// rather than freezing the window; 4 MiB still covers lockfiles and large sources.
+pub const MAX_EDITOR_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
 impl From<WorkspaceServiceError> for WorkspaceCommandError {
     fn from(value: WorkspaceServiceError) -> Self {
@@ -68,9 +79,9 @@ impl From<WorkspaceServiceError> for WorkspaceCommandError {
             },
             WorkspaceServiceError::WorkspaceNotOpen => Self {
                 code: WorkspaceErrorCode::InvalidRoot,
-                message: "Nenhum workspace aberto. Abra uma pasta antes de continuar.".to_string(),
+                message: "No workspace is open. Open a folder first.".to_string(),
                 details: None,
-                remediation: Some("Abra um workspace válido e tente novamente.".to_string()),
+                remediation: Some("Open a valid workspace and try again.".to_string()),
             },
             WorkspaceServiceError::PathForbidden(message) => Self {
                 code: WorkspaceErrorCode::PathForbidden,
@@ -93,13 +104,13 @@ impl From<WorkspaceServiceError> for WorkspaceCommandError {
             WorkspaceServiceError::Conflict { expected, actual } => Self {
                 code: WorkspaceErrorCode::Conflict,
                 message: format!(
-                    "Conflito detectado: revisão esperada `{expected}` não corresponde à revisão atual `{actual}`."
+                    "Conflict: expected revision `{expected}` does not match the current revision `{actual}`."
                 ),
                 details: Some(
                     serde_json::json!({"expectedRevision": expected, "actualRevision": actual}),
                 ),
                 remediation: Some(
-                    "Recarregue o arquivo, reconcilie as alterações e salve novamente.".to_string(),
+                    "Reload the file, reconcile the changes and save again.".to_string(),
                 ),
             },
             WorkspaceServiceError::Io(error) => Self {
@@ -110,15 +121,25 @@ impl From<WorkspaceServiceError> for WorkspaceCommandError {
             },
             WorkspaceServiceError::Notify(error) => Self {
                 code: WorkspaceErrorCode::IoError,
-                message: format!("Watcher falhou: {error}"),
+                message: format!("File watcher failed: {error}"),
                 details: None,
                 remediation: None,
             },
             WorkspaceServiceError::InvalidUtf8(path) => Self {
                 code: WorkspaceErrorCode::IoError,
-                message: format!("Arquivo `{path}` não está em UTF-8."),
+                message: format!("`{path}` is not UTF-8 text."),
                 details: None,
-                remediation: Some("Converta o arquivo para UTF-8 e tente novamente.".to_string()),
+                remediation: Some("Convert the file to UTF-8 and try again.".to_string()),
+            },
+            WorkspaceServiceError::TooLarge { path, bytes, limit } => Self {
+                code: WorkspaceErrorCode::ValidationError,
+                message: format!(
+                    "`{path}` is {:.1} MB; the editor opens files up to {} MB.",
+                    bytes as f64 / (1024.0 * 1024.0),
+                    limit / (1024 * 1024)
+                ),
+                details: Some(serde_json::json!({"bytes": bytes, "limit": limit})),
+                remediation: Some("Open it in an external editor.".to_string()),
             },
         }
     }
@@ -206,6 +227,49 @@ pub struct BootstrapGreenfieldWorkspaceResponse {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceTreeResponse {
     pub tree: Vec<FileNode>,
+    /// The walk stopped at `MAX_TREE_FILES`; the tree lists only the first files found.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+}
+
+/// Directories the tree and the text search never enter: VCS metadata, dependencies and build
+/// output. A brownfield checkout's `node_modules` alone holds thousands of README files, and
+/// walking `target/` costs seconds without ever yielding an editable note.
+const PRUNED_DIRECTORIES: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".turbo",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".cache",
+    ".gradle",
+    "coverage",
+];
+
+/// Files the workspace tree lists at most; every row is rendered by the Workspace and Vault
+/// panels.
+pub const MAX_TREE_FILES: usize = 5_000;
+
+/// Walks `root` without entering `PRUNED_DIRECTORIES` or following links.
+fn workspace_walk(root: &Path) -> impl Iterator<Item = walkdir::Result<walkdir::DirEntry>> {
+    WalkDir::new(root)
+        .min_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            !(entry.file_type().is_dir()
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| PRUNED_DIRECTORIES.contains(&name)))
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -623,7 +687,7 @@ pub fn bootstrap_greenfield_workspace(
 ) -> Result<GreenfieldBootstrapStatus, WorkspaceServiceError> {
     if !root.exists() || !root.is_dir() {
         return Err(WorkspaceServiceError::InvalidRoot(
-            "Workspace inválido para bootstrap greenfield.".to_string(),
+            "This folder cannot be set up as a greenfield workspace.".to_string(),
         ));
     }
 
@@ -635,7 +699,7 @@ pub fn bootstrap_greenfield_workspace(
         return Ok(GreenfieldBootstrapStatus {
             mode: "greenfield".to_string(),
             initialized: false,
-            message: "Workspace greenfield já inicializado.".to_string(),
+            message: "Greenfield workspace already set up.".to_string(),
             created_paths: repaired,
         });
     }
@@ -643,7 +707,7 @@ pub fn bootstrap_greenfield_workspace(
     let disallowed_entries = detect_disallowed_entries(root)?;
     if !disallowed_entries.is_empty() {
         return Err(WorkspaceServiceError::InvalidRoot(format!(
-            "Modo legacy ainda não suportado no V1. Remova estes itens para usar greenfield: {}",
+            "Legacy mode is not supported yet. Remove these items to use greenfield: {}",
             disallowed_entries.join(", ")
         )));
     }
@@ -682,7 +746,7 @@ pub fn bootstrap_greenfield_workspace(
 pub fn classify_workspace(root: &Path) -> Result<WorkspaceKind, WorkspaceServiceError> {
     if !root.exists() || !root.is_dir() {
         return Err(WorkspaceServiceError::InvalidRoot(
-            "Workspace inválido para classificação.".to_string(),
+            "This folder cannot be classified as a workspace.".to_string(),
         ));
     }
     if is_greenfield_bootstrapped(root) || detect_disallowed_entries(root)?.is_empty() {
@@ -698,7 +762,7 @@ pub fn prepare_brownfield_knowledge_root(
     let canonical_root = fs::canonicalize(root).map_err(WorkspaceServiceError::Io)?;
     if !canonical_root.is_dir() {
         return Err(WorkspaceServiceError::InvalidRoot(
-            "Workspace inválido para adoção brownfield.".to_string(),
+            "This folder cannot be adopted as a brownfield workspace.".to_string(),
         ));
     }
 
@@ -712,7 +776,7 @@ pub fn prepare_brownfield_knowledge_root(
             Ok(metadata) => {
                 if is_link_metadata(&metadata) || !metadata.is_dir() {
                     return Err(WorkspaceServiceError::PathForbidden(format!(
-                        "`{}` precisa ser um diretório real dentro do workspace.",
+                        "`{}` must be a real directory inside the workspace.",
                         relative.to_string_lossy().replace('\\', "/")
                     )));
                 }
@@ -1001,20 +1065,20 @@ pub fn validate_workspace_root(path: &str) -> Result<PathBuf, WorkspaceServiceEr
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return Err(WorkspaceServiceError::InvalidRoot(
-            "Escolha uma pasta válida para abrir como workspace.".to_string(),
+            "Choose a valid folder to open as the workspace.".to_string(),
         ));
     }
 
     let root = PathBuf::from(trimmed);
     if !root.exists() {
         return Err(WorkspaceServiceError::InvalidRoot(
-            "A pasta selecionada não existe.".to_string(),
+            "The selected folder does not exist.".to_string(),
         ));
     }
 
     if !root.is_dir() {
         return Err(WorkspaceServiceError::InvalidRoot(
-            "O caminho selecionado não é uma pasta.".to_string(),
+            "The selected path is not a folder.".to_string(),
         ));
     }
 
@@ -1023,16 +1087,23 @@ pub fn validate_workspace_root(path: &str) -> Result<PathBuf, WorkspaceServiceEr
 
 pub fn build_workspace_tree(root: &Path) -> Result<WorkspaceTreeResponse, WorkspaceServiceError> {
     let mut tree_builder = TreeBuilder::default();
+    let mut listed = 0usize;
+    let mut truncated = false;
 
-    for entry in WalkDir::new(root).min_depth(1).follow_links(false) {
+    for entry in workspace_walk(root) {
         let entry = entry.map_err(walkdir_to_io_error)?;
 
         if !entry.file_type().is_file() || !is_allowed_extension(entry.path()) {
             continue;
         }
+        if listed == MAX_TREE_FILES {
+            truncated = true;
+            break;
+        }
+        listed += 1;
 
         let relative_path = entry.path().strip_prefix(root).map_err(|_| {
-            WorkspaceServiceError::PathForbidden("Arquivo fora do workspace.".to_string())
+            WorkspaceServiceError::PathForbidden("The file is outside the workspace.".to_string())
         })?;
 
         tree_builder.insert_path(relative_path);
@@ -1040,6 +1111,7 @@ pub fn build_workspace_tree(root: &Path) -> Result<WorkspaceTreeResponse, Worksp
 
     Ok(WorkspaceTreeResponse {
         tree: tree_builder.into_nodes(""),
+        truncated,
     })
 }
 
@@ -1052,8 +1124,18 @@ pub fn read_workspace_file(
     if !path.exists() || !path.is_file() {
         return Err(WorkspaceServiceError::Io(io::Error::new(
             io::ErrorKind::NotFound,
-            "Arquivo não encontrado.",
+            "File not found.",
         )));
+    }
+
+    // Checked before reading: a multi-gigabyte log must never be pulled into memory.
+    let bytes = fs::metadata(&path)?.len();
+    if bytes > MAX_EDITOR_FILE_BYTES {
+        return Err(WorkspaceServiceError::TooLarge {
+            path: request.relative_path.clone(),
+            bytes,
+            limit: MAX_EDITOR_FILE_BYTES,
+        });
     }
 
     let content = fs::read_to_string(&path).map_err(|error| {
@@ -1097,13 +1179,13 @@ pub fn write_workspace_file_atomic(
     }
 
     let parent = path.parent().ok_or_else(|| {
-        WorkspaceServiceError::PathForbidden("Caminho inválido para escrita.".to_string())
+        WorkspaceServiceError::PathForbidden("Invalid path for writing.".to_string())
     })?;
 
     if !parent.exists() || !parent.is_dir() {
         return Err(WorkspaceServiceError::Io(io::Error::new(
             io::ErrorKind::NotFound,
-            "Diretório de destino não existe.",
+            "The target directory does not exist.",
         )));
     }
 
@@ -1133,7 +1215,7 @@ pub fn search_workspace_text(
     let normalized_query = request.query.trim();
     if normalized_query.is_empty() {
         return Err(WorkspaceServiceError::InvalidQuery(
-            "A consulta de busca nao pode ser vazia.".to_string(),
+            "The search query cannot be empty.".to_string(),
         ));
     }
 
@@ -1149,14 +1231,21 @@ pub fn search_workspace_text(
     let mut truncated = false;
     let mut scanned_files = 0usize;
 
-    'outer: for entry in WalkDir::new(root).min_depth(1).follow_links(false) {
+    'outer: for entry in workspace_walk(root) {
         let entry = entry.map_err(walkdir_to_io_error)?;
         if !entry.file_type().is_file() || !is_allowed_extension(entry.path()) {
             continue;
         }
+        // Search reads each file whole; a file the editor would refuse is skipped, not loaded.
+        if entry
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() > MAX_EDITOR_FILE_BYTES)
+        {
+            continue;
+        }
 
         let relative_path = entry.path().strip_prefix(root).map_err(|_| {
-            WorkspaceServiceError::PathForbidden("Arquivo fora do workspace.".to_string())
+            WorkspaceServiceError::PathForbidden("The file is outside the workspace.".to_string())
         })?;
         let relative_path_string = normalize_relative_path(relative_path);
 
@@ -1363,7 +1452,7 @@ fn get_context_candidates_inner(
     let feature_name = request.feature_name.trim();
     if feature_name.is_empty() {
         return Err(WorkspaceServiceError::InvalidQuery(
-            "featureName não pode ser vazio.".to_string(),
+            "featureName cannot be empty.".to_string(),
         ));
     }
 
@@ -1575,26 +1664,24 @@ pub fn rename_workspace_note(
     if !from_absolute_path.exists() || !from_absolute_path.is_file() {
         return Err(WorkspaceServiceError::Io(io::Error::new(
             io::ErrorKind::NotFound,
-            "Nota origem não encontrada para renomeio.",
+            "The note to rename was not found.",
         )));
     }
 
     let to_absolute_path = root.join(&to_relative_path);
     if to_absolute_path.exists() {
         return Err(WorkspaceServiceError::InvalidQuery(
-            "Já existe uma nota com esse nome no caminho de destino.".to_string(),
+            "A note with that name already exists at the destination.".to_string(),
         ));
     }
 
     let to_parent = to_absolute_path.parent().ok_or_else(|| {
-        WorkspaceServiceError::PathForbidden(
-            "Caminho de destino inválido para renomeio.".to_string(),
-        )
+        WorkspaceServiceError::PathForbidden("Invalid destination for the rename.".to_string())
     })?;
     if !to_parent.exists() || !to_parent.is_dir() {
         return Err(WorkspaceServiceError::Io(io::Error::new(
             io::ErrorKind::NotFound,
-            "Diretório de destino para renomeio não existe.",
+            "The destination folder for the rename does not exist.",
         )));
     }
 
@@ -1757,7 +1844,7 @@ fn parse_frontmatter_and_body(content: &str) -> Result<ParsedFrontmatter, Worksp
         .map(|value| value.as_str())
         .unwrap_or("");
     let parsed_yaml = serde_yaml::from_str::<serde_yaml::Value>(yaml_body).map_err(|error| {
-        WorkspaceServiceError::InvalidQuery(format!("Frontmatter YAML inválido: {error}"))
+        WorkspaceServiceError::InvalidQuery(format!("Invalid YAML frontmatter: {error}"))
     })?;
     let parsed = serde_json::to_value(parsed_yaml).ok();
     let body = content[full_match.end()..].to_string();
@@ -1967,7 +2054,7 @@ fn rewrite_wikilinks_for_rename(
 
 fn write_text_file_atomically(path: &Path, content: &str) -> Result<(), WorkspaceServiceError> {
     let parent = path.parent().ok_or_else(|| {
-        WorkspaceServiceError::PathForbidden("Caminho inválido para escrita.".to_string())
+        WorkspaceServiceError::PathForbidden("Invalid path for writing.".to_string())
     })?;
 
     let mut temp_file = NamedTempFile::new_in(parent).map_err(WorkspaceServiceError::Io)?;
@@ -2032,11 +2119,11 @@ fn normalize_frontmatter_properties(frontmatter: Option<&Value>) -> Option<Value
 fn schema_warnings_for_note(frontmatter: Option<&Value>) -> Vec<String> {
     let mut warnings = Vec::new();
     let Some(frontmatter) = frontmatter else {
-        warnings.push("frontmatter ausente.".to_string());
+        warnings.push("missing frontmatter.".to_string());
         return warnings;
     };
     let Some(object) = frontmatter.as_object() else {
-        warnings.push("frontmatter inválido (esperado objeto YAML).".to_string());
+        warnings.push("invalid frontmatter (a YAML mapping is expected).".to_string());
         return warnings;
     };
 
@@ -2048,10 +2135,10 @@ fn schema_warnings_for_note(frontmatter: Option<&Value>) -> Vec<String> {
 
     if note_type == "feature" {
         if object.get("risk").and_then(Value::as_str).is_none() {
-            warnings.push("feature sem `risk` definido.".to_string());
+            warnings.push("feature has no `risk`.".to_string());
         }
         if object.get("status").and_then(Value::as_str).is_none() {
-            warnings.push("feature sem `status` definido.".to_string());
+            warnings.push("feature has no `status`.".to_string());
         }
         let tested_by = object.get("tested-by");
         let has_tested_by = match tested_by {
@@ -2060,25 +2147,25 @@ fn schema_warnings_for_note(frontmatter: Option<&Value>) -> Vec<String> {
             _ => false,
         };
         if !has_tested_by {
-            warnings.push("feature sem `tested-by` vinculado.".to_string());
+            warnings.push("feature has no linked `tested-by`.".to_string());
         }
         if frontmatter_string_list(Some(frontmatter), "source-files").is_empty() {
-            warnings.push("feature sem `source-files` definido.".to_string());
+            warnings.push("feature has no `source-files`.".to_string());
         }
         if frontmatter_string_list(Some(frontmatter), "test-files").is_empty() {
-            warnings.push("feature sem `test-files` definido.".to_string());
+            warnings.push("feature has no `test-files`.".to_string());
         }
     }
 
     if note_type == "test" {
         if object.get("covers").is_none() {
-            warnings.push("test sem `covers` vinculado.".to_string());
+            warnings.push("test has no linked `covers`.".to_string());
         }
         if frontmatter_string_list(Some(frontmatter), "source-files").is_empty() {
-            warnings.push("test sem `source-files` definido.".to_string());
+            warnings.push("test has no `source-files`.".to_string());
         }
         if frontmatter_string_list(Some(frontmatter), "test-files").is_empty() {
-            warnings.push("test sem `test-files` definido.".to_string());
+            warnings.push("test has no `test-files`.".to_string());
         }
     }
 
@@ -2143,7 +2230,7 @@ pub(crate) fn validate_generated_vault_note(
             });
             if !present {
                 return Err(WorkspaceServiceError::InvalidQuery(format!(
-                    "Nota gerada em `{relative_path}` (stage-composition-v1) deve declarar `{field}` (lista, possivelmente vazia)."
+                    "Generated note `{relative_path}` (stage-composition-v1) must declare `{field}` (a list, possibly empty)."
                 )));
             }
         }
@@ -2153,7 +2240,7 @@ pub(crate) fn validate_generated_vault_note(
             .and_then(crate::orchestration::composition::render::CoverageState::parse);
         if coverage.is_none() {
             return Err(WorkspaceServiceError::InvalidQuery(format!(
-                "Nota gerada em `{relative_path}` (stage-composition-v1) deve declarar `coverage-state` como complete, partial ou unavailable."
+                "Generated note `{relative_path}` (stage-composition-v1) must declare `coverage-state` as complete, partial or unavailable."
             )));
         }
         return Ok(());
@@ -2162,7 +2249,7 @@ pub(crate) fn validate_generated_vault_note(
         let paths = frontmatter_string_list(parsed.parsed.as_ref(), field);
         if paths.is_empty() {
             return Err(WorkspaceServiceError::InvalidQuery(format!(
-                "Nota gerada em `{relative_path}` deve preencher `{field}`."
+                "Generated note `{relative_path}` must fill `{field}`."
             )));
         }
     }
@@ -2216,7 +2303,7 @@ fn load_scope_filter(
         }
     })?;
     let parsed = serde_json::from_str::<Value>(&raw).map_err(|error| {
-        WorkspaceServiceError::InvalidQuery(format!("Arquivo .base inválido `{relative}`: {error}"))
+        WorkspaceServiceError::InvalidQuery(format!("Invalid .base file `{relative}`: {error}"))
     })?;
     Ok(parsed.get("filters").cloned())
 }
@@ -2589,7 +2676,7 @@ pub(crate) fn patch_learning_graph_relation(
         if let Some(end_offset) = content.find(end) {
             if !content[..end_offset].contains(start) {
                 return Err(WorkspaceServiceError::InvalidQuery(
-                    "Seção gerenciada de relações está incompleta.".to_string(),
+                    "The managed relations section is incomplete.".to_string(),
                 ));
             }
             let mut patched = content.to_string();
@@ -2607,13 +2694,13 @@ pub(crate) fn patch_learning_graph_relation(
     }
     if !matches!(relation, "tested-by" | "contracts" | "affects") {
         return Err(WorkspaceServiceError::InvalidQuery(
-            "Relação de grafo não suportada.".to_string(),
+            "Unsupported graph relation.".to_string(),
         ));
     }
     let parsed = parse_frontmatter_and_body(content)?;
     let Some(frontmatter) = parsed.parsed.as_ref() else {
         return Err(WorkspaceServiceError::InvalidQuery(
-            "Nota normativa sem frontmatter editável.".to_string(),
+            "This normative note has no editable frontmatter.".to_string(),
         ));
     };
     let Some(object) = frontmatter.as_object() else {
@@ -2629,7 +2716,7 @@ pub(crate) fn patch_learning_graph_relation(
             }
             _ => {
                 return Err(WorkspaceServiceError::InvalidQuery(format!(
-                    "Campo `{relation}` usa construção YAML complexa; edição recusada."
+                    "Field `{relation}` uses complex YAML; the edit was refused."
                 )));
             }
         };
@@ -2651,7 +2738,7 @@ pub(crate) fn patch_learning_graph_relation(
         .collect::<Vec<_>>();
     if lines.first().map(String::as_str) != Some("---") {
         return Err(WorkspaceServiceError::InvalidQuery(
-            "Frontmatter precisa iniciar na primeira linha.".to_string(),
+            "Frontmatter must start on the first line.".to_string(),
         ));
     }
     let Some(end_index) = lines
@@ -2661,7 +2748,7 @@ pub(crate) fn patch_learning_graph_relation(
         .find_map(|(index, line)| (line.trim() == "---").then_some(index))
     else {
         return Err(WorkspaceServiceError::InvalidQuery(
-            "Frontmatter sem delimitador final.".to_string(),
+            "Frontmatter has no closing delimiter.".to_string(),
         ));
     };
     let key_prefix = format!("{relation}:");
@@ -2702,7 +2789,7 @@ pub(crate) fn patch_learning_graph_relation(
             );
         } else {
             return Err(WorkspaceServiceError::InvalidQuery(format!(
-                "Campo `{relation}` não é lista inline/bloco simples; edição recusada."
+                "Field `{relation}` is not a simple inline or block list; the edit was refused."
             )));
         }
     } else {
@@ -2717,7 +2804,7 @@ pub(crate) fn patch_learning_graph_relation(
         .is_none()
     {
         return Err(WorkspaceServiceError::InvalidQuery(
-            "Patch produziria frontmatter YAML inválido.".to_string(),
+            "The patch would produce invalid YAML frontmatter.".to_string(),
         ));
     }
     Ok(patched)
@@ -2887,7 +2974,7 @@ fn resolve_workspace_path(
 
     if !is_allowed_extension(&normalized_relative_path) {
         return Err(WorkspaceServiceError::InvalidExtension(
-            "Apenas arquivos `.md` e `.txt` são permitidos.".to_string(),
+            "Only `.md` and `.txt` files are allowed.".to_string(),
         ));
     }
 
@@ -2921,7 +3008,7 @@ fn parse_relative_path(raw_relative_path: &str) -> Result<PathBuf, WorkspaceServ
     let trimmed = raw_relative_path.trim();
     if trimmed.is_empty() {
         return Err(WorkspaceServiceError::PathForbidden(
-            "relativePath não pode ser vazio.".to_string(),
+            "relativePath cannot be empty.".to_string(),
         ));
     }
 
@@ -2940,7 +3027,7 @@ fn parse_relative_path(raw_relative_path: &str) -> Result<PathBuf, WorkspaceServ
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                 return Err(WorkspaceServiceError::PathForbidden(
-                    "Path traversal detectado. Use apenas caminhos relativos sem `..`.".to_string(),
+                    "Path traversal detected. Use relative paths without `..`.".to_string(),
                 ));
             }
         }
@@ -2948,7 +3035,7 @@ fn parse_relative_path(raw_relative_path: &str) -> Result<PathBuf, WorkspaceServ
 
     if normalized.as_os_str().is_empty() {
         return Err(WorkspaceServiceError::PathForbidden(
-            "relativePath inválido.".to_string(),
+            "Invalid relativePath.".to_string(),
         ));
     }
 
@@ -3076,6 +3163,80 @@ mod tests {
             Err(WorkspaceServiceError::PathForbidden(_)) => {}
             _ => panic!("expected path forbidden error"),
         }
+    }
+
+    #[test]
+    fn refuses_files_larger_than_the_editor_limit_before_reading_them() {
+        let root = prepare_root();
+        let root_path = fs::canonicalize(root.path()).expect("canonical root path");
+        let at_limit = vec![b'a'; MAX_EDITOR_FILE_BYTES as usize];
+        fs::write(root_path.join("fits.md"), &at_limit).expect("write file at the limit");
+        fs::write(
+            root_path.join("huge.md"),
+            [at_limit.as_slice(), b"a"].concat(),
+        )
+        .expect("write file over the limit");
+
+        let fits = read_workspace_file(
+            &root_path,
+            ReadWorkspaceFileRequest {
+                relative_path: "fits.md".to_string(),
+            },
+        )
+        .expect("a file at the limit opens");
+        assert_eq!(fits.content.len() as u64, MAX_EDITOR_FILE_BYTES);
+
+        let huge = read_workspace_file(
+            &root_path,
+            ReadWorkspaceFileRequest {
+                relative_path: "huge.md".to_string(),
+            },
+        );
+        match huge {
+            Err(WorkspaceServiceError::TooLarge { bytes, limit, .. }) => {
+                assert_eq!(bytes, MAX_EDITOR_FILE_BYTES + 1);
+                assert_eq!(limit, MAX_EDITOR_FILE_BYTES);
+            }
+            _ => panic!("expected the size guard"),
+        }
+        let command: WorkspaceCommandError = WorkspaceServiceError::TooLarge {
+            path: "huge.md".into(),
+            bytes: MAX_EDITOR_FILE_BYTES + 1,
+            limit: MAX_EDITOR_FILE_BYTES,
+        }
+        .into();
+        assert!(command.message.contains("4 MB"), "{}", command.message);
+    }
+
+    #[test]
+    fn tree_and_search_skip_dependency_and_build_directories() {
+        let root = prepare_root();
+        let root_path = fs::canonicalize(root.path()).expect("canonical root path");
+        for dir in ["notes", "node_modules/pkg", "target/doc", ".git"] {
+            fs::create_dir_all(root_path.join(dir)).expect("create directory");
+        }
+        fs::write(root_path.join("notes/plan.md"), "needle").expect("write note");
+        fs::write(root_path.join("node_modules/pkg/README.md"), "needle").expect("write readme");
+        fs::write(root_path.join("target/doc/index.md"), "needle").expect("write output");
+        fs::write(root_path.join(".git/description.txt"), "needle").expect("write git file");
+
+        let tree = build_workspace_tree(&root_path).expect("tree builds");
+        assert!(!tree.truncated);
+        let names: Vec<&str> = tree.tree.iter().map(|node| node.name.as_str()).collect();
+        assert_eq!(names, vec!["notes"]);
+
+        let search = search_workspace_text(
+            &root_path,
+            SearchWorkspaceTextRequest {
+                query: "needle".into(),
+                mode: SearchMode::Substring,
+                case_sensitive: false,
+                max_results: 0,
+            },
+        )
+        .expect("search runs");
+        assert_eq!(search.scanned_files, 1);
+        assert_eq!(search.matches.len(), 1);
     }
 
     #[test]
@@ -3339,7 +3500,7 @@ mod tests {
         let result = bootstrap_greenfield_workspace(root.path());
         match result {
             Err(WorkspaceServiceError::InvalidRoot(message)) => {
-                assert!(message.contains("Modo legacy"));
+                assert!(message.contains("Legacy mode"));
             }
             _ => panic!("expected invalid root error for legacy workspace"),
         }

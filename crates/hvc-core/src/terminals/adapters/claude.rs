@@ -30,7 +30,9 @@ impl CliAdapter for ClaudeAdapter {
             "--verbose",
             "--include-partial-messages",
             "--permission-mode",
-            "plan",
+            // Plan mode upgrades Haiku sessions to Sonnet for planning.
+            // dontAsk keeps read tools available while denying prompts.
+            "dontAsk",
             "--tools",
             "Read,Glob,Grep",
             "--disallowedTools",
@@ -49,7 +51,14 @@ impl CliAdapter for ClaudeAdapter {
         if let Some(model_profile) = model_profile {
             args.extend(["--effort".into(), model_profile.into()]);
         }
-        if let Some(schema) = request.schema {
+        if let Some(mut schema) = request.schema {
+            // Claude Code currently validates the supplied schema against a
+            // registry that does not resolve draft/2020-12's meta URI. The
+            // v4 Claude flavor already omits it; retaining this adapter guard
+            // makes the argv contract safe for every caller.
+            if let Some(object) = schema.as_object_mut() {
+                object.remove("$schema");
+            }
             args.extend(["--json-schema".into(), serde_json::to_string(&schema)?]);
         }
         Ok(CliProcessSpec {
@@ -108,5 +117,55 @@ impl CliAdapter for ClaudeAdapter {
 
     fn classify_failure(&self, _exit_code: Option<i32>, stderr: &str) -> CliFailureKind {
         classify_failure_text(stderr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn haiku_launch_does_not_enable_plan_mode_model_upgrade() {
+        let spec = ClaudeAdapter
+            .build_process_spec(CliInvocationRequest {
+                executable: std::path::PathBuf::from(r"C:\Tools\claude.exe"),
+                backend: CliBackend::Claude,
+                model: Some("haiku".into()),
+                model_profile: None,
+                thinking_level: ThinkingLevel::Default,
+                prompt: "Read the project".into(),
+                schema_file: None,
+                schema: None,
+                custom_args: Vec::new(),
+                resume_session_id: None,
+            })
+            .unwrap();
+        assert!(spec.args.windows(2).any(|pair| pair == ["--model", "haiku"]));
+        assert!(spec.args.windows(2).any(|pair| pair == ["--permission-mode", "dontAsk"]));
+        assert!(spec.args.windows(2).any(|pair| pair == ["--tools", "Read,Glob,Grep"]));
+        assert!(!spec.args.windows(2).any(|pair| pair == ["--permission-mode", "plan"]));
+    }
+
+    #[test]
+    fn message_start_captures_generation_identity_and_invocation_lineage() {
+        let frame = ClaudeAdapter.normalize_frame(
+            "stdout",
+            br#"{"type":"stream_event","parent_tool_use_id":"tool-parent","agent_id":"agent-child","event":{"type":"message_start","message":{"id":"msg-17","model":"claude-haiku-4-5-20251001"}}}"#,
+        );
+        assert!(frame.is_model_generation);
+        assert_eq!(frame.observed_model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        assert_eq!(frame.message_id.as_deref(), Some("msg-17"));
+        assert_eq!(frame.parent_invocation_id.as_deref(), Some("tool-parent"));
+        assert_eq!(frame.agent_id.as_deref(), Some("agent-child"));
+    }
+
+    #[test]
+    fn session_initialization_does_not_count_as_an_assistant_generation() {
+        let frame = ClaudeAdapter.normalize_frame(
+            "stdout",
+            br#"{"type":"system","subtype":"init","model":"claude-haiku-4-5-20251001"}"#,
+        );
+        assert!(!frame.is_model_generation);
+        assert_eq!(frame.observed_model.as_deref(), Some("claude-haiku-4-5-20251001"));
     }
 }

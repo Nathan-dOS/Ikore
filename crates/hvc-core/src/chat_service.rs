@@ -237,7 +237,7 @@ impl ChatTransportKind {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "transport", rename_all = "snake_case")]
 pub enum ChatExecutionTargetRequest {
     Api {
@@ -306,6 +306,31 @@ pub struct ListChatConversationsResponse {
 pub struct CreateChatConversationRequest {
     pub project_id: String,
     pub target: ChatExecutionTargetRequest,
+}
+
+/// Retargets an existing conversation (ADR-014 amendment, 2026-09-22): the
+/// Companion panel applies to the open conversation from its next message.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateChatConversationTargetRequest {
+    pub conversation_id: String,
+    pub target: ChatExecutionTargetRequest,
+}
+
+/// The validated columns a target resolves to.
+struct ResolvedTarget {
+    connection_id: Option<String>,
+    provider_id: String,
+    model_id: String,
+    transport: ChatTransportKind,
+    cli_backend: Option<CliBackend>,
+    model_profile: Option<String>,
+    model_source: CliModelSelectionSource,
+}
+
+/// `runtime_settings` key of a project's last chosen Companion target.
+pub fn companion_target_setting_key(project_id: &str) -> String {
+    format!("companion.target.{project_id}")
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -543,23 +568,13 @@ impl ChatService {
         Ok(ListChatConversationsResponse { conversations })
     }
 
-    pub fn create_conversation(
+    /// Validates a Companion target exactly as conversation creation does.
+    fn resolve_target(
         &self,
-        request: CreateChatConversationRequest,
-    ) -> Result<CreateChatConversationResponse, ChatCommandError> {
-        let project_id = normalize_id(&request.project_id, "projectId")?;
-        let database = self.connection()?;
-        let project_exists: bool = database.query_row(
-            "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 AND is_archived = 0)",
-            params![project_id],
-            |row| row.get(0),
-        )?;
-        if !project_exists {
-            return Err(ChatCommandError::new(
-                "project_not_found",
-                "Projeto ativo não encontrado.",
-            ));
-        }
+        database: &Connection,
+        project_id: &str,
+        target: ChatExecutionTargetRequest,
+    ) -> Result<ResolvedTarget, ChatCommandError> {
         let (
             connection_id,
             provider_id,
@@ -568,7 +583,7 @@ impl ChatService {
             cli_backend,
             model_profile,
             model_source,
-        ) = match request.target {
+        ) = match target {
             ChatExecutionTargetRequest::Api { connection_id } => {
                 let connection_id = normalize_id(&connection_id, "connectionId")?;
                 let provider_connection = self
@@ -628,8 +643,8 @@ impl ChatService {
                     }
                 };
                 validate_catalog_model_selection(
-                    &database,
-                    &project_id,
+                    database,
+                    project_id,
                     backend,
                     model.as_deref(),
                     model_profile.as_deref(),
@@ -647,6 +662,138 @@ impl ChatService {
                 )
             }
         };
+
+        Ok(ResolvedTarget {
+            connection_id,
+            provider_id,
+            model_id,
+            transport,
+            cli_backend,
+            model_profile,
+            model_source,
+        })
+    }
+
+    /// The project's last chosen Companion target, if any. An unreadable
+    /// value is ignored rather than failing the chat.
+    pub fn default_target(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<ChatExecutionTargetRequest>, ChatCommandError> {
+        let project_id = normalize_id(project_id, "projectId")?;
+        let value: Option<String> = self
+            .connection()?
+            .query_row(
+                "SELECT value FROM runtime_settings WHERE key = ?1",
+                params![companion_target_setting_key(&project_id)],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value.and_then(|value| serde_json::from_str(&value).ok()))
+    }
+
+    /// Remembers `target` as the project's Companion target after validating
+    /// it, so the panel and resolution conversations survive a restart.
+    pub fn save_default_target(
+        &self,
+        project_id: &str,
+        target: ChatExecutionTargetRequest,
+    ) -> Result<(), ChatCommandError> {
+        let project_id = normalize_id(project_id, "projectId")?;
+        let database = self.connection()?;
+        self.resolve_target(&database, &project_id, target.clone())?;
+        Self::store_default_target(&database, &project_id, &target)
+    }
+
+    fn store_default_target(
+        database: &Connection,
+        project_id: &str,
+        target: &ChatExecutionTargetRequest,
+    ) -> Result<(), ChatCommandError> {
+        let value = serde_json::to_string(target).map_err(|error| {
+            ChatCommandError::new(
+                "invalid_target",
+                format!("Invalid Companion target: {error}"),
+            )
+        })?;
+        database.execute(
+            "INSERT INTO runtime_settings(key, value, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![companion_target_setting_key(project_id), value, now_iso()],
+        )?;
+        Ok(())
+    }
+
+    /// Applies `target` to an existing conversation from its next message and
+    /// remembers it as the project default. Refused while a reply is running.
+    pub fn update_conversation_target(
+        &self,
+        request: UpdateChatConversationTargetRequest,
+    ) -> Result<GetChatConversationResponse, ChatCommandError> {
+        let conversation_id = normalize_id(&request.conversation_id, "conversationId")?;
+        let record = self.get_conversation_record(&conversation_id)?;
+        let database = self.connection()?;
+        let running: bool = database.query_row(
+            "SELECT EXISTS(SELECT 1 FROM chat_messages WHERE conversation_id = ?1 AND status IN ('pending', 'streaming'))",
+            params![conversation_id],
+            |row| row.get(0),
+        )?;
+        if running {
+            return Err(ChatCommandError::new(
+                "conversation_busy",
+                "Wait for the current reply to finish before changing the connection.",
+            ));
+        }
+        let resolved =
+            self.resolve_target(&database, &record.project_id, request.target.clone())?;
+        database.execute(
+            "UPDATE chat_conversations
+             SET connection_id = ?2, provider_id_snapshot = ?3, model_id_snapshot = ?4,
+                 transport_kind = ?5, cli_backend = ?6, model_profile = ?7, model_source = ?8,
+                 updated_at = ?9
+             WHERE id = ?1",
+            params![
+                conversation_id,
+                resolved.connection_id,
+                resolved.provider_id,
+                resolved.model_id,
+                resolved.transport.as_str(),
+                resolved.cli_backend.map(CliBackend::as_str),
+                resolved.model_profile,
+                resolved.model_source.as_str(),
+                now_iso(),
+            ],
+        )?;
+        Self::store_default_target(&database, &record.project_id, &request.target)?;
+        self.get_conversation(GetChatConversationRequest { conversation_id })
+    }
+
+    pub fn create_conversation(
+        &self,
+        request: CreateChatConversationRequest,
+    ) -> Result<CreateChatConversationResponse, ChatCommandError> {
+        let project_id = normalize_id(&request.project_id, "projectId")?;
+        let database = self.connection()?;
+        let project_exists: bool = database.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 AND is_archived = 0)",
+            params![project_id],
+            |row| row.get(0),
+        )?;
+        if !project_exists {
+            return Err(ChatCommandError::new(
+                "project_not_found",
+                "Active project not found.",
+            ));
+        }
+        let ResolvedTarget {
+            connection_id,
+            provider_id,
+            model_id,
+            transport,
+            cli_backend,
+            model_profile,
+            model_source,
+        } = self.resolve_target(&database, &project_id, request.target.clone())?;
 
         let id = Uuid::new_v4().to_string();
         let now = now_iso();
@@ -669,6 +816,7 @@ impl ChatService {
                 model_source.as_str(),
             ],
         )?;
+        Self::store_default_target(&database, &project_id, &request.target)?;
         let conversation = self.get_conversation_record(&id)?;
         Ok(CreateChatConversationResponse {
             conversation: self.decorate_conversation(conversation)?,
@@ -719,7 +867,7 @@ impl ChatService {
         if specification_linked {
             return Err(ChatCommandError::new(
                 "specification_history",
-                "Esta conversa preserva perguntas/respostas de Specification. Consulte e responda pela view Pulsations.",
+                "This conversation keeps Specification questions and answers. Read and answer them in Pulsations.",
             ));
         }
         let resolution_linked: bool = transaction.query_row(
@@ -730,7 +878,7 @@ impl ChatService {
         if resolution_linked {
             return Err(ChatCommandError::new(
                 "specification_history",
-                "Esta conversa preserva a resolução de uma clarification de Specification. Consulte pela view Pulsations.",
+                "This conversation keeps the resolution of a Specification clarification. Read it in Pulsations.",
             ));
         }
         transaction.execute(
@@ -765,7 +913,7 @@ impl ChatService {
                 let connection_id = conversation.connection_id.clone().ok_or_else(|| {
                     ChatCommandError::new(
                         "connection_removed",
-                        "A conexão desta conversa foi removida. Crie uma nova conversa.",
+                        "This conversation's connection was removed. Start a new conversation.",
                     )
                 })?;
                 let provider_connection = self
@@ -774,13 +922,13 @@ impl ChatService {
                     .map_err(|_| {
                         ChatCommandError::new(
                             "connection_removed",
-                            "A conexão desta conversa não existe mais. Crie uma nova conversa.",
+                            "This conversation's connection no longer exists. Start a new conversation.",
                         )
                     })?;
                 if provider_connection.provider_id.as_str() != conversation.provider_id {
                     return Err(ChatCommandError::new(
                         "connection_changed",
-                        "O provider da conexão mudou. Crie uma nova conversa.",
+                        "The connection's provider changed. Start a new conversation.",
                     ));
                 }
                 self.ensure_connection_eligible_for_model(
@@ -823,7 +971,7 @@ impl ChatService {
         {
             return Err(ChatCommandError::new(
                 "turn_active",
-                "Esta conversa já possui uma resposta em andamento.",
+                "This conversation already has a reply in progress.",
             ));
         }
 
@@ -997,7 +1145,7 @@ impl ChatService {
                 map_message,
             )
             .optional()?
-            .ok_or_else(|| ChatCommandError::new("turn_not_found", "Turno não encontrado."))?;
+            .ok_or_else(|| ChatCommandError::new("turn_not_found", "Turn not found."))?;
         let tool_calls = self.list_tool_calls_for_message(&message.id)?;
         Ok(GetChatTurnSnapshotResponse {
             message,
@@ -1018,12 +1166,15 @@ impl ChatService {
                 |row| row.get(0),
             )
             .optional()?
-            .ok_or_else(|| ChatCommandError::new("project_not_found", "Projeto não encontrado."))?;
+            .ok_or_else(|| ChatCommandError::new("project_not_found", "Project not found."))?;
         let expected = Path::new(&expected).canonicalize().map_err(|_| {
-            ChatCommandError::new("workspace_mismatch", "Workspace do projeto não existe.")
+            ChatCommandError::new(
+                "workspace_mismatch",
+                "The project workspace does not exist.",
+            )
         })?;
         let actual = workspace_root.canonicalize().map_err(|_| {
-            ChatCommandError::new("workspace_mismatch", "Workspace ativo inválido.")
+            ChatCommandError::new("workspace_mismatch", "The active workspace is invalid.")
         })?;
         if expected != actual {
             return Err(ChatCommandError::new(
@@ -1047,24 +1198,27 @@ impl ChatService {
         model: &str,
     ) -> Result<(), ChatCommandError> {
         let profile = profile_by_id(connection.provider_id.as_str()).ok_or_else(|| {
-            ChatCommandError::new("provider_incompatible", "Provider sem perfil compatível.")
+            ChatCommandError::new(
+                "provider_incompatible",
+                "The provider has no compatible profile.",
+            )
         })?;
         let model = model_entry(connection.provider_id.as_str(), model).ok_or_else(|| {
             ChatCommandError::new(
                 "model_incompatible",
-                "O modelo não está marcado como compatível com tool calling no catálogo versionado.",
+                "The model is not marked as tool-calling capable in the versioned catalog.",
             )
         })?;
         if !connection.enabled || connection.state == "blocked" {
             return Err(ChatCommandError::new(
                 "connection_unavailable",
-                "A conexão está desabilitada ou bloqueada.",
+                "The connection is disabled or blocked.",
             ));
         }
         if !profile.capabilities.tool_calling || !model.tool_calling {
             return Err(ChatCommandError::new(
                 "model_incompatible",
-                "A conexão e o modelo precisam oferecer tool calling.",
+                "The connection and model must support tool calling.",
             ));
         }
         if profile.auth_style != AuthStyle::None
@@ -1076,7 +1230,7 @@ impl ChatService {
         {
             return Err(ChatCommandError::new(
                 "credential_unavailable",
-                "A conexão não possui credencial configurada.",
+                "The connection has no credential configured.",
             ));
         }
         Ok(())
@@ -1094,7 +1248,7 @@ impl ChatService {
             )
             .optional()?
             .ok_or_else(|| {
-                ChatCommandError::new("conversation_not_found", "Conversa não encontrada.")
+                ChatCommandError::new("conversation_not_found", "Conversation not found.")
             })
     }
 
@@ -1298,7 +1452,7 @@ fn normalize_id(raw: &str, field: &str) -> Result<String, ChatCommandError> {
     if value.is_empty() {
         return Err(ChatCommandError::new(
             "invalid_request",
-            format!("{field} não pode ser vazio."),
+            format!("{field} cannot be empty."),
         ));
     }
     Ok(value.to_string())
@@ -1497,7 +1651,7 @@ impl ChatService {
                     &context.assistant_message_id,
                     "cancelled",
                     Some("cancelled"),
-                    Some("Resposta cancelada pelo usuário."),
+                    Some("Reply cancelled by the user."),
                 );
                 let _ = self.emit_turn_event(
                     ChatEventKind::TurnCancelled,
@@ -1549,7 +1703,10 @@ impl ChatService {
             )
         })?;
         let profile = profile_by_id(connection.provider_id.as_str()).ok_or_else(|| {
-            ChatCommandError::new("provider_incompatible", "Provider sem perfil compatível.")
+            ChatCommandError::new(
+                "provider_incompatible",
+                "The provider has no compatible profile.",
+            )
         })?;
         let api_key = if profile.auth_style == AuthStyle::None {
             None
@@ -1670,7 +1827,7 @@ impl ChatService {
                 if response.content.trim().is_empty() {
                     return Err(ChatCommandError::new(
                         "empty_response",
-                        "O provider encerrou o turno sem conteúdo ou chamada de ferramenta.",
+                        "The provider ended the turn with no content or tool call.",
                     ));
                 }
                 if !response.streamed {
@@ -2288,7 +2445,7 @@ fn execute_repository_tool(repository: &RepositoryContext, call: NormalizedToolC
     let outcome = match call.name.as_str() {
         "list_repository_tree" => {
             serde_json::from_value::<ListRepositoryTreeArgs>(call.arguments.clone())
-                .map_err(|error| format!("Argumentos inválidos: {error}"))
+                .map_err(|error| format!("Invalid arguments: {error}"))
                 .and_then(|args| repository.list_tree(args).map_err(|error| error.0))
                 .and_then(|result| {
                     serde_json::to_string(&result).map_err(|error| error.to_string())
@@ -2296,7 +2453,7 @@ fn execute_repository_tool(repository: &RepositoryContext, call: NormalizedToolC
         }
         "search_repository" => {
             serde_json::from_value::<SearchRepositoryArgs>(call.arguments.clone())
-                .map_err(|error| format!("Argumentos inválidos: {error}"))
+                .map_err(|error| format!("Invalid arguments: {error}"))
                 .and_then(|args| repository.search(args).map_err(|error| error.0))
                 .and_then(|result| {
                     serde_json::to_string(&result).map_err(|error| error.to_string())
@@ -2304,7 +2461,7 @@ fn execute_repository_tool(repository: &RepositoryContext, call: NormalizedToolC
         }
         "read_repository_file" => {
             serde_json::from_value::<ReadRepositoryFileArgs>(call.arguments.clone())
-                .map_err(|error| format!("Argumentos inválidos: {error}"))
+                .map_err(|error| format!("Invalid arguments: {error}"))
                 .and_then(|args| repository.read_file(args).map_err(|error| error.0))
                 .and_then(|result| {
                     serde_json::to_string(&result).map_err(|error| error.to_string())
@@ -2977,10 +3134,10 @@ fn summarize_tool_result(result: &ToolResult) -> String {
             .collect();
     }
     match result.call.name.as_str() {
-        "list_repository_tree" => "Árvore do repositório consultada.".into(),
-        "search_repository" => "Busca no repositório concluída.".into(),
-        "read_repository_file" => "Trecho de arquivo consultado.".into(),
-        _ => "Ferramenta concluída.".into(),
+        "list_repository_tree" => "Repository tree read.".into(),
+        "search_repository" => "Repository search finished.".into(),
+        "read_repository_file" => "File excerpt read.".into(),
+        _ => "Tool finished.".into(),
     }
 }
 
@@ -3011,7 +3168,7 @@ impl ChatService {
             AuthStyle::Bearer => {
                 let secret = api_key.ok_or_else(|| ModelFailure {
                     code: "credential_unavailable".into(),
-                    message: "A conexão não possui credencial configurada.".into(),
+                    message: "The connection has no credential configured.".into(),
                     retryable: false,
                 })?;
                 headers.insert(
@@ -3019,7 +3176,7 @@ impl ChatService {
                     HeaderValue::from_str(&format!("Bearer {secret}")).map_err(|_| {
                         ModelFailure {
                             code: "invalid_credential".into(),
-                            message: "A credencial contém caracteres inválidos.".into(),
+                            message: "The credential contains invalid characters.".into(),
                             retryable: false,
                         }
                     })?,
@@ -3028,14 +3185,14 @@ impl ChatService {
             AuthStyle::Anthropic => {
                 let secret = api_key.ok_or_else(|| ModelFailure {
                     code: "credential_unavailable".into(),
-                    message: "A conexão não possui credencial configurada.".into(),
+                    message: "The connection has no credential configured.".into(),
                     retryable: false,
                 })?;
                 headers.insert(
                     "x-api-key",
                     HeaderValue::from_str(secret).map_err(|_| ModelFailure {
                         code: "invalid_credential".into(),
-                        message: "A credencial contém caracteres inválidos.".into(),
+                        message: "The credential contains invalid characters.".into(),
                         retryable: false,
                     })?,
                 );
@@ -3059,9 +3216,9 @@ impl ChatService {
                 }
                 .into(),
                 message: if error.is_timeout() {
-                    "O provider não respondeu dentro do prazo."
+                    "The provider did not answer in time."
                 } else {
-                    "Não foi possível alcançar o provider configurado."
+                    "Could not reach the configured provider."
                 }
                 .into(),
                 retryable: true,
@@ -3070,7 +3227,7 @@ impl ChatService {
         if !status.is_success() {
             let body = response.text().await.map_err(|_| ModelFailure {
                 code: "invalid_response".into(),
-                message: "Não foi possível ler a resposta de erro do provider.".into(),
+                message: "Could not read the provider's error response.".into(),
                 retryable: false,
             })?;
             let value: Value = serde_json::from_str(&body).unwrap_or_else(|_| json!({}));
@@ -3100,9 +3257,9 @@ impl ChatService {
             let body = response
                 .text()
                 .await
-                .map_err(|_| invalid_response("Não foi possível ler a resposta do provider."))?;
+                .map_err(|_| invalid_response("Could not read the provider's response."))?;
             let value: Value = serde_json::from_str(&body)
-                .map_err(|_| invalid_response("O provider retornou uma resposta JSON inválida."))?;
+                .map_err(|_| invalid_response("The provider returned an invalid JSON response."))?;
             usage.observe(&crate::usage::api::parse_usage(profile.protocol, &value));
             return match profile.protocol {
                 ProviderProtocol::OpenaiResponses => parse_openai_responses(&value),
@@ -3172,9 +3329,7 @@ impl ChatService {
                 } else {
                     serde_json::from_str(&call.arguments).map_err(|_| ModelFailure {
                         code: "invalid_tool_arguments".into(),
-                        message:
-                            "O provider retornou argumentos de ferramenta fragmentados inválidos."
-                                .into(),
+                        message: "The provider returned invalid fragmented tool arguments.".into(),
                         retryable: false,
                     })?
                 };
@@ -3367,8 +3522,20 @@ fn companion_control_envelope_schema() -> Value {
 
 // Codex Structured Outputs requires a closed root object and fully required
 // properties. Keep the host envelope unchanged behind a provider-only wrapper.
+// Claude Code turns `--json-schema` into a tool whose input schema must be an
+// object at the root: the bare `oneOf` envelope was rejected by the API
+// (`tools.0.custom.input_schema.type: Field required`) on every call. The
+// envelope extractor finds the inner `final`/`tool_calls` object either way.
 fn companion_schema_for_backend(backend: CliBackend) -> Value {
     let schema = companion_control_envelope_schema();
+    if backend == CliBackend::Claude {
+        return json!({
+            "type": "object",
+            "properties": {"response": {"anyOf": schema["oneOf"].clone()}},
+            "required": ["response"],
+            "additionalProperties": false
+        });
+    }
     if backend != CliBackend::Codex {
         return schema;
     }
@@ -3986,14 +4153,14 @@ fn parse_arguments(value: Option<&Value>) -> Result<Value, ModelFailure> {
         Some(Value::String(arguments)) => {
             serde_json::from_str(arguments).map_err(|_| ModelFailure {
                 code: "invalid_tool_arguments".into(),
-                message: "O provider retornou argumentos de ferramenta inválidos.".into(),
+                message: "The provider returned invalid tool arguments.".into(),
                 retryable: false,
             })
         }
         Some(arguments @ Value::Object(_)) => Ok(arguments.clone()),
         _ => Err(ModelFailure {
             code: "invalid_tool_arguments".into(),
-            message: "O provider retornou argumentos de ferramenta inválidos.".into(),
+            message: "The provider returned invalid tool arguments.".into(),
             retryable: false,
         }),
     }
@@ -4545,10 +4712,28 @@ mod tests {
         ] {
             assert!(!validator.is_valid(&invalid));
         }
-        assert_eq!(
-            companion_schema_for_backend(CliBackend::Claude),
-            companion_control_envelope_schema()
-        );
+        // Claude Code rejects a tool input schema without a root object type
+        // (`tools.0.custom.input_schema.type: Field required`).
+        let claude = companion_schema_for_backend(CliBackend::Claude);
+        assert_eq!(claude["type"], "object");
+        assert_eq!(claude["required"], json!(["response"]));
+        assert!(claude.get("oneOf").is_none() && claude.get("$schema").is_none());
+        let claude_validator = jsonschema::validator_for(&claude).unwrap();
+        assert!(claude_validator.is_valid(&json!({"response":{"type":"final","text":"Ready"}})));
+        assert!(!claude_validator.is_valid(&json!({"type":"final","text":"Ready"})));
+        let claude_result = r#"{"type":"result","is_error":false,"structured_output":{"response":{"type":"final","text":"Ready"}}}"#;
+        let inner = crate::terminals::extract_companion_envelope_json(claude_result)
+            .expect("the inner envelope is found under `response`");
+        assert!(matches!(
+            parse_cli_companion_envelope(&inner, CliBackend::Claude).unwrap(),
+            CompanionControlEnvelope::Final { text } if text == "Ready"
+        ));
+        for backend in [CliBackend::Gemini, CliBackend::Opencode] {
+            assert_eq!(
+                companion_schema_for_backend(backend),
+                companion_control_envelope_schema()
+            );
+        }
     }
 
     #[test]
@@ -4609,7 +4794,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_conversation_target_is_immutable_and_survives_restart() {
+    fn cli_conversation_target_survives_restart_and_invalid_targets_are_refused() {
         let (_temp, _workspace, service) = prepare_chat();
         let created = service
             .create_conversation(CreateChatConversationRequest {
@@ -4664,6 +4849,100 @@ mod tests {
             },
         });
         assert!(invalid_model.is_err());
+    }
+
+    /// ADR-014 amendment (2026-09-22): the Companion panel applies to the open
+    /// conversation, and the project remembers the last chosen target across
+    /// restarts. A running reply and an invalid target leave it unchanged.
+    #[test]
+    fn a_conversation_is_retargeted_and_the_project_remembers_the_target() {
+        let (_temp, _workspace, service) = prepare_chat();
+        assert_eq!(service.default_target("project-a").unwrap(), None);
+        let claude = ChatExecutionTargetRequest::Cli {
+            backend: CliBackend::Claude,
+            model: Some("haiku".into()),
+            model_profile: None,
+        };
+        let created = service
+            .create_conversation(CreateChatConversationRequest {
+                project_id: "project-a".into(),
+                target: claude.clone(),
+            })
+            .unwrap()
+            .conversation;
+        assert_eq!(
+            service.default_target("project-a").unwrap(),
+            Some(claude.clone())
+        );
+
+        let codex = ChatExecutionTargetRequest::Cli {
+            backend: CliBackend::Codex,
+            model: None,
+            model_profile: None,
+        };
+        let retargeted = service
+            .update_conversation_target(UpdateChatConversationTargetRequest {
+                conversation_id: created.id.clone(),
+                target: codex.clone(),
+            })
+            .unwrap()
+            .conversation;
+        assert_eq!(retargeted.cli_backend, Some(CliBackend::Codex));
+        assert_eq!(retargeted.model_id, "default");
+        assert_eq!(retargeted.model_source, CliModelSelectionSource::Default);
+
+        // The remembered target survives a restart of the service.
+        let database_path = service.db_path.clone();
+        drop(service);
+        let reopened = ChatService::new(
+            database_path,
+            Arc::new(TestCredentials),
+            Arc::new(NoopChatEventSink),
+        );
+        assert_eq!(
+            reopened.default_target("project-a").unwrap(),
+            Some(codex.clone())
+        );
+
+        // An invalid target is refused and changes nothing.
+        let invalid = reopened.update_conversation_target(UpdateChatConversationTargetRequest {
+            conversation_id: created.id.clone(),
+            target: ChatExecutionTargetRequest::Cli {
+                backend: CliBackend::Claude,
+                model: Some("model with spaces".into()),
+                model_profile: None,
+            },
+        });
+        assert!(invalid.is_err());
+        assert_eq!(reopened.default_target("project-a").unwrap(), Some(codex));
+
+        // A reply in progress keeps the conversation on its current target.
+        reopened
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO chat_messages (
+                   id, conversation_id, ordinal, role, content, status, generation_id,
+                   created_at, updated_at
+                 ) VALUES ('assistant-a', ?1, 0, 'assistant', 'parcial', 'streaming',
+                           'generation-a', ?2, ?2)",
+                params![created.id, now_iso()],
+            )
+            .unwrap();
+        let busy = reopened
+            .update_conversation_target(UpdateChatConversationTargetRequest {
+                conversation_id: created.id.clone(),
+                target: claude,
+            })
+            .unwrap_err();
+        assert_eq!(busy.code, "conversation_busy");
+        let loaded = reopened
+            .get_conversation(GetChatConversationRequest {
+                conversation_id: created.id,
+            })
+            .unwrap()
+            .conversation;
+        assert_eq!(loaded.cli_backend, Some(CliBackend::Codex));
     }
 
     #[test]

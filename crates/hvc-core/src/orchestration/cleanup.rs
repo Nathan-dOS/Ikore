@@ -1,7 +1,7 @@
 //! Explicit removal of the files a failed pulsation left in the workspace.
 //!
 //! A failure is absorbing and never undoes publications by itself (see
-//! `cancel_pulsation_jobs`: "arquivos já publicados não foram desfeitos"). This
+//! `cancel_pulsation_jobs`: "files already published were not undone"). This
 //! is the operator's way to undo them, under the same rule as every other host
 //! write: human content is never discarded. Only a file the pulsation itself
 //! created (`expected_sha256 IS NULL`) that still holds bytes the pulsation
@@ -64,7 +64,7 @@ impl PersistenceService {
         let resolved = self.resolve_cleanup_plan(&tx, &pulse)?;
         if resolved.plan.plan_token != request.expected_plan_token {
             return Err(coordination::invalid(
-                "Os arquivos mudaram desde a prévia. Atualize a lista e confira novamente.",
+                "The files changed since the preview. Refresh the list and check again.",
             ));
         }
         let project_id = resolved.plan.project_id.clone();
@@ -75,7 +75,7 @@ impl PersistenceService {
         )?;
         if busy {
             return Err(coordination::invalid(
-                "Aguarde o encerramento da unidade de execução/publicação antes de limpar.",
+                "Wait for the running or publishing unit to finish before cleaning up.",
             ));
         }
         let now = Self::now_iso();
@@ -97,7 +97,7 @@ impl PersistenceService {
                         Some(observed) if written.contains(observed.as_str()) => {}
                         _ => {
                             return Err(coordination::invalid(format!(
-                                "`{}` mudou durante a limpeza; nada foi removido. Atualize a prévia.",
+                                "`{}` changed during the cleanup; nothing was removed. Refresh the preview.",
                                 entry.relative_path
                             )));
                         }
@@ -175,10 +175,10 @@ impl PersistenceService {
         pulse: &str,
     ) -> Result<ResolvedPlan, PersistenceServiceError> {
         let current = Self::find_pulsation_by_id(db, pulse)?
-            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação não encontrada.".into()))?;
+            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsation not found.".into()))?;
         if current.status != PulsationStatus::Failed {
             return Err(coordination::invalid(
-                "Só uma pulsação com falha pode ter seus arquivos removidos.",
+                "Only a failed pulsation can have its files removed.",
             ));
         }
         let root: String = db.query_row(
@@ -536,7 +536,7 @@ mod tests {
             })
             .unwrap_err();
         assert!(
-            error.to_string().contains("mudaram desde a prévia"),
+            error.to_string().contains("changed since the preview"),
             "{error}"
         );
         assert!(f.workspace.path().join("out.rs").exists());
@@ -557,7 +557,7 @@ mod tests {
                 expected_plan_token: plan.plan_token.clone(),
             })
             .unwrap_err();
-        assert!(error.to_string().contains("Aguarde"), "{error}");
+        assert!(error.to_string().contains("Wait for"), "{error}");
         assert!(f.workspace.path().join("out.rs").exists());
         db.execute("DELETE FROM runtime_slots WHERE token='busy'", [])
             .unwrap();

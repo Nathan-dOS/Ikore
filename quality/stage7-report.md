@@ -27,6 +27,7 @@
 | HVC-APP-003 | Compartilhar o cliente HTTP/TLS entre persistência/LLM e Chat | Aceita | elimina a criação de um segundo cliente no startup sem alterar recovery ou streaming |
 | HVC-APP-004 | Tornar todas as entidades e inputs secundários opcionais | Adiada | o custo observado do conjunto é pequeno e a mudança ampliaria risco em foco, IME e restauração das seis views |
 | HVC-GPUI-003 | Lazy init de DirectWrite, shaders e pipelines internos | Adiada | alteração extensa do backend gráfico, sem segurança suficiente para o corte; requer matriz própria de GPUs/drivers |
+| HVC-GPUI-004 | Chave de cache da medição de texto inclui a largura de truncamento (2026-09-24) | Aceita | corrige a reticência de texto em linha única, que nunca aparecia; texto sem `text_overflow` mantém o comportamento anterior |
 
 O GPUI vendorizado e o patch efetivamente adotado estão documentados em
 [`../third_party/gpui/HVC-PATCHES.md`](../third_party/gpui/HVC-PATCHES.md). Não

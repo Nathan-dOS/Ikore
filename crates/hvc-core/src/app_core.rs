@@ -84,13 +84,13 @@ impl AppPaths {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppCoreError {
-    #[error("não foi possível resolver o diretório de dados da aplicação")]
+    #[error("could not resolve the application data directory")]
     DataDirectoryUnavailable,
-    #[error("outra instância do Hard Vibe Code já está usando este diretório de dados")]
+    #[error("another Hard Vibe Code instance is already using this data directory")]
     DataDirectoryInUse,
-    #[error("falha de I/O no diretório de dados: {0}")]
+    #[error("I/O failure in the data directory: {0}")]
     Io(#[from] std::io::Error),
-    #[error("falha ao inicializar persistência: {0}")]
+    #[error("failed to initialize persistence: {0}")]
     Persistence(#[from] PersistenceServiceError),
     #[error("falha ao recuperar o Chat Companion: {0}")]
     Chat(#[from] crate::chat_service::ChatCommandError),
@@ -374,8 +374,7 @@ impl AppCore {
         {
             return Err(WorkspaceCommandError {
                 code: workspace_service::WorkspaceErrorCode::ValidationError,
-                message: "O onboarding brownfield só pode ser alterado em um workspace existente."
-                    .into(),
+                message: "Brownfield onboarding can only change in an existing workspace.".into(),
                 details: None,
                 remediation: None,
             });
@@ -389,7 +388,7 @@ impl AppCore {
         if project_root != root {
             return Err(WorkspaceCommandError {
                 code: workspace_service::WorkspaceErrorCode::ValidationError,
-                message: "O projeto informado não corresponde ao workspace aberto.".into(),
+                message: "The project does not match the open workspace.".into(),
                 details: None,
                 remediation: Some("Reabra o projeto correto e tente novamente.".into()),
             });
@@ -422,7 +421,7 @@ impl AppCore {
             code: workspace_service::WorkspaceErrorCode::IoError,
             message: error.to_string(),
             details: None,
-            remediation: Some("Tente atualizar o inventário novamente.".into()),
+            remediation: Some("Try refreshing the inventory again.".into()),
         })?;
         self.persistence
             .enqueue_brownfield_mapping(&request.project_id)
@@ -448,7 +447,7 @@ impl AppCore {
         if project_root != root {
             return Err(WorkspaceCommandError {
                 code: workspace_service::WorkspaceErrorCode::ValidationError,
-                message: "O módulo informado não pertence ao workspace aberto.".into(),
+                message: "The module does not belong to the open workspace.".into(),
                 details: None,
                 remediation: None,
             });

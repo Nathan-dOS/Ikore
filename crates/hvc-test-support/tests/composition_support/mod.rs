@@ -154,7 +154,7 @@ pub fn completed_reply(facts: &PromptFacts) -> ScriptedResponse {
 pub fn provider_reply(content: Value) -> ScriptedResponse {
     ScriptedResponse::json(
         200,
-        json!({"choices":[{"message":{"content":content.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":60}}).to_string(),
+        json!({"model":"gpt-4.1-mini","choices":[{"message":{"content":content.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":60}}).to_string(),
     )
 }
 
@@ -336,11 +336,13 @@ impl Harness {
             "--mode",
             "bridge",
             "--bridge-url",
-            self.server_url("/v1/chat/completions")
+            self.server_url("/v1/chat/completions"),
+            "--fixture-model",
+            "gpt-4.1-mini"
         ]);
         self.db()
             .execute(
-                "UPDATE cli_agent_configs SET execution_mode='cli_process',backend='custom',custom_executable=?3,custom_args_json=?4,custom_risk_ack=1,version=version+1 WHERE project_id=?1 AND agent_role=?2",
+                "UPDATE cli_agent_configs SET execution_mode='cli_process',backend='custom',model='gpt-4.1-mini',custom_executable=?3,custom_args_json=?4,custom_risk_ack=1,version=version+1 WHERE project_id=?1 AND agent_role=?2",
                 rusqlite::params![
                     self.project,
                     role,
@@ -349,6 +351,41 @@ impl Harness {
                 ],
             )
             .unwrap();
+    }
+
+    /// Routes one stage role through an official CLI backend found on PATH (the test puts a
+    /// `cli_fixture` copy there under the backend's name). Attaches a terminal service like
+    /// `route_role_to_cli_bridge` does.
+    pub fn route_role_to_official_cli(&self, role: &str, backend: &str) {
+        let model = match backend {
+            "claude" => "haiku",
+            "codex" => "gpt-5.6-luna",
+            "gemini" => "gemini-2.5-flash",
+            "opencode" => "fixture-opencode-model",
+            other => panic!("unknown official CLI fixture backend: {other}"),
+        };
+        let terminals = hvc_core::terminals::TerminalService::new(
+            self.service.database_path(),
+            self._runtime.handle().clone(),
+            Arc::new(SilentEvents),
+        )
+        .unwrap();
+        terminals
+            .repository()
+            .ensure_project_configs(&self.project, false)
+            .unwrap();
+        self.service.attach_terminal_service(Arc::new(terminals));
+        self.db()
+            .execute(
+                "UPDATE cli_agent_configs SET execution_mode='cli_process',backend=?3,model=?4,custom_executable=NULL,custom_args_json='[]',version=version+1 WHERE project_id=?1 AND agent_role=?2",
+                rusqlite::params![self.project, role, backend, model],
+            )
+            .unwrap();
+    }
+
+    /// The runtime the worker runs on, for tests that must await host APIs.
+    pub fn runtime_handle(&self) -> tokio::runtime::Handle {
+        self._runtime.handle().clone()
     }
 
     pub fn calls(&self) -> Vec<String> {

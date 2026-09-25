@@ -2760,6 +2760,7 @@ dependencies = [
  "hvc-core",
  "hvc-editor",
  "hvc-test-support",
+ "raw-window-handle",
  "serde_json",
  "tokio",
  "uuid",

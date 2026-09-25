@@ -79,7 +79,7 @@ impl PersistenceService {
             PulsationStage::Specification,
             "specification_needs_clarification",
             Some(
-                "Specification aguarda suas respostas; a especificação ainda não pode ser aprovada.",
+                "Specification is waiting for your answers; the specification cannot be approved yet.",
             ),
         )?;
         Self::open_checkpoint(db, &updated.id, updated.stage)?;
@@ -107,7 +107,7 @@ impl PersistenceService {
         let id = Uuid::new_v4().to_string();
         db.execute("INSERT INTO specification_question_sets(id,checkpoint_id,pulsation_id,input_revision,generation,state_version,conversation_id,questions_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![id,checkpoint,current.id,fence.input_revision,fence.generation,state,conversation,serde_json::to_string(questions).map_err(|e|invalid(e.to_string()))?])?;
         let content = format!(
-            "Specification — esclarecimentos (revisão {}, conjunto {}). Responda na view Pulsations; esta mensagem não é uma aprovação.\n\n{}",
+            "Specification — clarifications (revision {}, set {}). Answer in Pulsations; this message is not an approval.\n\n{}",
             fence.input_revision.unwrap_or(0),
             id,
             questions
@@ -142,11 +142,11 @@ impl PersistenceService {
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::check_project_admission(&tx, &request.pulsation_id)?;
         let pending = Self::pending_questions(&tx, &request.pulsation_id)?.ok_or_else(|| {
-            invalid("Perguntas já respondidas ou checkpoint obsoleto. Atualize antes de enviar.")
+            invalid("Questions already answered or checkpoint stale. Refresh before sending.")
         })?;
         validate_specification_answers(&request, &pending).map_err(|e| invalid(e.to_string()))?;
         let current = Self::find_pulsation_by_id(&tx, &request.pulsation_id)?
-            .ok_or_else(|| invalid("Pulsação ausente."))?;
+            .ok_or_else(|| invalid("Pulsation missing."))?;
         if current.stage != PulsationStage::Specification {
             return Err(invalid("Esclarecimento fora de Specification."));
         }
@@ -195,7 +195,7 @@ impl PersistenceService {
             > config.context_chars_limit
         {
             return Err(invalid(
-                "Respostas/histórico excedem o orçamento de contexto. Resuma as respostas ou aumente o limite antes de enviar.",
+                "The answers and history exceed the context budget. Shorten the answers or raise the limit before sending.",
             ));
         }
         tx.execute("UPDATE specification_question_sets SET answers_json=?2 WHERE id=?1 AND answers_json IS NULL",params![pending.id,answers_json])?;
@@ -220,9 +220,15 @@ impl PersistenceService {
             PulsationStatus::Planning,
             PulsationStage::Specification,
             "specification_answers_submitted",
-            Some("Respostas registradas; uma nova geração de Specification será executada."),
+            Some("Answers recorded; Specification will run a new generation."),
         )?;
         Self::enqueue_stage_job(&tx, &current.id, PulsationStage::Specification)?;
+        // An answer is new human input, like a revision: the re-run opens a
+        // fresh v4 stage allowance (linked to the spent one) instead of
+        // paying for the answer with the unit's single correction permit.
+        // Two rounds used to end in `budget_exhausted` before any repair.
+        // Rounds stay bounded by the context check above. No-op before v4.
+        Self::close_budget_accounts(&tx, &current.id, PulsationStage::Specification)?;
         tx.commit()?;
         self.wake_scheduler();
         Ok(updated)

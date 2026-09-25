@@ -12,7 +12,7 @@ use crate::persistence_service::PulsationStage;
 /// Read-only tool contract. Identical for every stage and every backend.
 ///
 /// The adapters already impose read-only execution (`OPENCODE_PERMISSION`,
-/// `--sandbox read-only`, `--permission-mode plan`), but until now the prompt
+/// `--sandbox read-only`, `--permission-mode dontAsk`), but until now the prompt
 /// never said so: the model attempted `bash`, was denied without explanation,
 /// retried, and stalled until the watchdog killed the run. Publication always
 /// goes through the host from the JSON `artifacts` array, so files written

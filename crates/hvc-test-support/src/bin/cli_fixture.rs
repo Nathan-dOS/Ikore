@@ -22,6 +22,8 @@ fn main() {
     let official_backend = ["codex", "claude", "gemini", "opencode"]
         .into_iter()
         .find(|backend| executable_name == *backend);
+    // The state comes from the environment or, because the host launches CLIs with a scrubbed
+    // environment, from a `<backend>.fixture-state` file next to the executable.
     let fixture_state = official_backend
         .and_then(|backend| {
             env::var(format!(
@@ -29,6 +31,14 @@ fn main() {
                 backend.to_ascii_uppercase()
             ))
             .ok()
+            .or_else(|| {
+                let sibling = env::current_exe()
+                    .ok()?
+                    .with_file_name(format!("{backend}.fixture-state"));
+                std::fs::read_to_string(sibling)
+                    .ok()
+                    .map(|state| state.trim().to_string())
+            })
         })
         .unwrap_or_default();
     if args.iter().any(|arg| arg == "--version") {
@@ -38,6 +48,9 @@ fn main() {
         }
         if fixture_state == "unsupported" {
             println!("0.0.0-fixture");
+        } else if fixture_state == "newer" || fixture_state == "newer_broken" {
+            // Above every adapter's validated ceiling.
+            println!("99.0.0");
         } else {
             println!(
                 "{}",
@@ -76,6 +89,15 @@ fn main() {
             include_str!("../../fixtures/cli/opencode/current/models-verbose.txt")
         );
         return;
+    }
+    // A self-updated CLI whose stream no longer matches the adapter contract: the prompt run
+    // prints prose instead of frames and fails, so a contract validation must reject it.
+    if fixture_state == "newer_broken" && official_backend.is_some() {
+        let mut ignored = String::new();
+        let _ = std::io::stdin().read_to_string(&mut ignored);
+        println!("Welcome to the new CLI! Run `init` to get started.");
+        eprintln!("unknown option: --output-format");
+        std::process::exit(7);
     }
     let mode = value_after(&args, "--mode").unwrap_or("success");
     let heartbeat = value_after(&args, "--heartbeat").map(PathBuf::from);
@@ -134,6 +156,18 @@ fn main() {
         return;
     }
 
+    if let Some(model) = value_after(&args, "--fixture-model") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "type": "hvc_model_attestation_v1",
+                "model": model,
+                "messageId": "custom-fixture-generation",
+                "agentId": "custom-fixture-agent"
+            })
+        );
+    }
+
     match mode {
         "success" => println!("fixture success"),
         // Composed-stage transport bridge (ADR-022): the prompt the host
@@ -182,6 +216,15 @@ fn main() {
                 thread::sleep(Duration::from_millis(100));
             }
             println!("fixture completed after initial budget");
+        }
+        // A worker that computes silently - no byte on either pipe for
+        // `--quiet-ms` - and then answers (ADR-025 observation trial).
+        "quiet" => {
+            let quiet = value_after(&args, "--quiet-ms")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(1_000);
+            thread::sleep(Duration::from_millis(quiet));
+            println!("fixture completed after silence");
         }
         "hang" => loop {
             thread::sleep(Duration::from_secs(1));
@@ -248,6 +291,7 @@ fn emit_companion_success(backend: &str) {
 }
 
 fn emit_official_success(backend: &str, args: &[String]) {
+    let requested_model = value_after(args, "--model").unwrap_or("fixture-model");
     let session = ["resume", "--resume", "--session"]
         .into_iter()
         .find_map(|flag| value_after(args, flag))
@@ -256,26 +300,58 @@ fn emit_official_success(backend: &str, args: &[String]) {
         "codex" => {
             println!(r#"{{"type":"thread.started","thread_id":"{session}"}}"#);
             println!(
-                r#"{{"type":"item.completed","item":{{"type":"agent_message","text":"ok codex fixture"}}}}"#
+                r#"{{"type":"item.completed","model":"{requested_model}","item":{{"id":"codex-message-1","type":"agent_message","text":"ok codex fixture"}}}}"#
             );
             println!(
                 r#"{{"type":"turn.completed","usage":{{"input_tokens":20,"output_tokens":5,"cached_input_tokens":12}}}}"#
             );
         }
         "claude" => {
-            println!(r#"{{"type":"system","subtype":"init","session_id":"{session}"}}"#);
+            let observed_model = if fixture_model_mismatch() {
+                "claude-sonnet-5"
+            } else {
+                "claude-haiku-4-5-20251001"
+            };
+            println!(r#"{{"type":"system","subtype":"init","session_id":"{session}","model":"{requested_model}"}}"#);
+            if fixture_model_unverified() {
+                println!(r#"{{"type":"stream_event","agent_id":"subagent-1","event":{{"type":"message_start","parent_tool_use_id":"tool-parent-1","message":{{"id":"claude-message-1"}}}}}}"#);
+                thread::sleep(Duration::from_secs(2));
+                if let Ok(path) = env::current_exe() {
+                    let _ = std::fs::write(path.with_file_name("claude.fixture-after-mismatch"), b"still-running");
+                }
+                return;
+            }
+            if fixture_subagent_mismatch() {
+                println!(r#"{{"type":"stream_event","agent_id":"subagent-1","event":{{"type":"message_start","parent_tool_use_id":"tool-parent-1","message":{{"id":"claude-message-1","model":"{observed_model}"}}}}}}"#);
+                thread::sleep(Duration::from_secs(2));
+                if let Ok(path) = env::current_exe() {
+                    let _ = std::fs::write(path.with_file_name("claude.fixture-after-mismatch"), b"still-running");
+                }
+                return;
+            }
+            println!(r#"{{"type":"stream_event","event":{{"type":"message_start","message":{{"id":"claude-message-1","model":"{observed_model}"}}}}}}"#);
+            if fixture_model_mismatch() {
+                thread::sleep(Duration::from_secs(2));
+                if let Ok(path) = env::current_exe() {
+                    let _ = std::fs::write(path.with_file_name("claude.fixture-after-mismatch"), b"still-running");
+                }
+                return;
+            }
+            println!(r#"{{"type":"assistant","message":{{"id":"claude-message-1","model":"{observed_model}","content":[{{"type":"text","text":"ok claude fixture"}}]}}}}"#);
             println!(
-                r#"{{"type":"result","result":"ok claude fixture","session_id":"{session}","modelUsage":{{"claude-fixture":{{"inputTokens":8,"outputTokens":5,"cacheReadInputTokens":12}}}}}}"#
+                r#"{{"type":"result","result":"ok claude fixture","session_id":"{session}","model":"{observed_model}","modelUsage":{{"claude-fixture":{{"inputTokens":8,"outputTokens":5,"cacheReadInputTokens":12}}}}}}"#
             );
         }
         "gemini" => {
             println!(r#"{{"type":"init","session_id":"{session}"}}"#);
             println!(
-                r#"{{"type":"result","result":"ok gemini fixture","stats":{{"models":{{"gemini-fixture":{{"input_tokens":20,"output_tokens":5,"total_tokens":25,"cached":12}}}}}}}}"#
+                r#"{{"type":"message","model":"{requested_model}","content":"ok gemini fixture"}}"#
             );
+            println!(r#"{{"type":"result","result":"ok gemini fixture","stats":{{"models":{{"gemini-fixture":{{"input_tokens":20,"output_tokens":5,"total_tokens":25,"cached":12}}}}}}}}"#);
         }
         "opencode" => {
             println!(r#"{{"type":"session.created","sessionID":"{session}"}}"#);
+            println!(r#"{{"type":"text","model":"{requested_model}","part":{{"id":"opencode-message-1","text":"ok opencode fixture"}}}}"#);
             println!(
                 r#"{{"type":"step_finish","part":{{"id":"fixture-step","tokens":{{"input":8,"output":3,"reasoning":2,"cache":{{"read":12,"write":0}}}}}}}}"#
             );
@@ -285,6 +361,27 @@ fn emit_official_success(backend: &str, args: &[String]) {
         }
         _ => unreachable!(),
     }
+}
+
+fn fixture_model_mismatch() -> bool {
+    env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path.with_file_name("claude.fixture-state")).ok())
+        .is_some_and(|state| matches!(state.trim(), "sonnet_mismatch" | "subagent_sonnet_mismatch"))
+}
+
+fn fixture_model_unverified() -> bool {
+    env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path.with_file_name("claude.fixture-state")).ok())
+        .is_some_and(|state| state.trim() == "missing_generation_identity")
+}
+
+fn fixture_subagent_mismatch() -> bool {
+    env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path.with_file_name("claude.fixture-state")).ok())
+        .is_some_and(|state| state.trim() == "subagent_sonnet_mismatch")
 }
 
 fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {

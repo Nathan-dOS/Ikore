@@ -58,7 +58,11 @@ fn real_provider_results_are_accepted_failed_or_fenced_without_duplicate_effects
         let env = IsolatedTestEnvironment::new();
         let db_path = env.data_dir().join("hard-vibe-code.db");
         let output=json!({"outputLanguage":"en","summary":"Evidence from fixture provider","statusUpdate":status,"contextUsage":[],"notes":[],"artifacts":[{"name":"result","kind":"stage_output","relativePath":"generated.md","content":"  exact provider bytes\r\n"}]}).to_string();
-        let server=ScriptedHttpServer::start([ScriptedResponse::json(200,json!({"choices":[{"message":{"content":output},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":12}}).to_string())]);
+        let server = ScriptedHttpServer::respond_with(move |request| {
+            let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+            let model = body["model"].as_str().expect("provider request model identity");
+            ScriptedResponse::json(200,json!({"model":model,"choices":[{"message":{"content":output},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":12}}).to_string())
+        });
         let stop = CancellationToken::new();
         let sink = Arc::new(StopAfterResponse {
             stop: stop.clone(),

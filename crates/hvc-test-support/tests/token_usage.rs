@@ -54,6 +54,11 @@ async fn adapters_persist_native_usage_on_complete_streamed_and_failed_responses
     };
     let adapter = ProtocolAdapter::new(Default::default(), profile.protocol);
     for index in 0..3 {
+        let model = match index {
+            0 => "actual-a",
+            1 => "actual-b",
+            _ => "requested",
+        };
         let id = format!("adapter-{index}");
         let request = LlmRequest {
             execution_id: id.clone().into(),
@@ -73,7 +78,7 @@ async fn adapters_persist_native_usage_on_complete_streamed_and_failed_responses
             deadline: Instant::now() + Duration::from_secs(10),
             stream: index == 1,
             legacy_provider: profile.id.clone(),
-            legacy_model: "requested".into(),
+            legacy_model: model.into(),
             dispatch: hvc_core::llm::DispatchPolicy::default(),
         };
         let recorder = UsageRecorder::new(
@@ -85,7 +90,7 @@ async fn adapters_persist_native_usage_on_complete_streamed_and_failed_responses
                 project_id: None,
                 transport: UsageTransport::Api,
                 provider_id: profile.id.clone(),
-                requested_model: Some("requested".into()),
+                requested_model: Some(model.into()),
                 started_at: chrono::Utc::now().to_rfc3339(),
             },
         );
@@ -98,7 +103,7 @@ async fn adapters_persist_native_usage_on_complete_streamed_and_failed_responses
                 AdapterCall {
                     profile: &profile,
                     connection: &connection,
-                    model: "requested",
+                    model,
                     credential: Some("fixture"),
                     request: &request,
                 },

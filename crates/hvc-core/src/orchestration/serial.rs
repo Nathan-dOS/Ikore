@@ -57,7 +57,7 @@ impl PersistenceService {
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let pulse = &request.pulsation_id;
         let current = Self::find_pulsation_by_id(&tx, pulse)?
-            .ok_or_else(|| invalid("Pulsação não encontrada."))?;
+            .ok_or_else(|| invalid("Pulsation not found."))?;
         if !matches!(request.decision, HitlDecision::Reject) {
             Self::check_project_admission(&tx, pulse)?;
         }
@@ -168,7 +168,7 @@ impl PersistenceService {
         self.wake_scheduler();
         self.reconcile_publications()?;
         let result = Self::find_pulsation_by_id(&self.connection()?, pulse)?
-            .ok_or_else(|| invalid("Pulsação ausente"))?;
+            .ok_or_else(|| invalid("Pulsation missing"))?;
         if result.terminal_reason.as_deref() == Some("publication_conflict") {
             return Err(invalid(
                 "Aprovação registrada, mas a publicação encontrou conflito. Os arquivos humanos foram preservados; consulte os artifacts e eventos da pulsação.",
@@ -410,7 +410,7 @@ impl PersistenceService {
             .as_deref()
             .ok_or_else(|| invalid("Sem pulsação"))?;
         let current =
-            Self::find_pulsation_by_id(&tx, pulse)?.ok_or_else(|| invalid("Pulsação ausente"))?;
+            Self::find_pulsation_by_id(&tx, pulse)?.ok_or_else(|| invalid("Pulsation missing"))?;
         if current.status != PulsationStatus::Running || current.stage != handoff.stage {
             return Err(invalid(ContractError::StaleExecution));
         }
@@ -720,7 +720,7 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = Self::find_pulsation_by_id(&tx, &request.pulsation_id)?
-            .ok_or_else(|| invalid("Pulsação ausente."))?;
+            .ok_or_else(|| invalid("Pulsation missing."))?;
         if current.stage != PulsationStage::Intake {
             return Err(invalid("Esclarecimento de caminho fora do Intake."));
         }
@@ -979,7 +979,7 @@ impl PersistenceService {
                     return Err(error);
                 }
                 let current = Self::find_pulsation_by_id(&tx, &pulse)?
-                    .ok_or_else(|| invalid("Pulsação ausente"))?;
+                    .ok_or_else(|| invalid("Pulsation missing"))?;
                 if !matches!(
                     current.status,
                     PulsationStatus::Done | PulsationStatus::Failed

@@ -80,7 +80,7 @@ impl ProviderProfile {
         let parsed = reqwest::Url::parse(candidate).map_err(|_| {
             LlmError::new(
                 LlmErrorKind::InvalidRequest,
-                "Endpoint do Ollama deve ser uma URL válida.",
+                "The Ollama endpoint must be a valid URL.",
             )
         })?;
         let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
@@ -88,7 +88,7 @@ impl ProviderProfile {
         if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
             return Err(LlmError::new(
                 LlmErrorKind::InvalidRequest,
-                "Endpoint Ollama aceita HTTP somente em loopback; use HTTPS fora da máquina local.",
+                "The Ollama endpoint accepts HTTP only on loopback; use HTTPS off this machine.",
             ));
         }
 

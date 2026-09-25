@@ -77,12 +77,12 @@ fn harness(custom_args: Vec<String>) -> Harness {
             agent_role: AgentRole::BackendAgent,
             execution_mode: AgentExecutionMode::ApiDirect,
             backend: CliBackend::Custom,
-            model: None,
+            model: Some("haiku".into()),
             model_profile: None,
-            model_source: CliModelSelectionSource::Default,
+            model_source: CliModelSelectionSource::Manual,
             thinking_level: ThinkingLevel::Default,
             custom_executable: Some(env!("CARGO_BIN_EXE_cli_fixture").into()),
-            custom_args,
+            custom_args: [vec!["--fixture-model".into(), "haiku".into()], custom_args].concat(),
             custom_risk_ack: true,
             expected_version: current.version,
         })
@@ -93,9 +93,9 @@ fn harness(custom_args: Vec<String>) -> Harness {
             agent_role: AgentRole::BackendAgent,
             execution_mode: AgentExecutionMode::CliProcess,
             backend: CliBackend::Custom,
-            model: None,
+            model: Some("haiku".into()),
             model_profile: None,
-            model_source: CliModelSelectionSource::Default,
+            model_source: CliModelSelectionSource::Manual,
             thinking_level: ThinkingLevel::Default,
             custom_executable: custom.custom_executable.clone(),
             custom_args: custom.custom_args.clone(),
@@ -194,6 +194,86 @@ async fn progressive_cli_budget_outlives_api_deadline_without_an_active_viewer()
     );
 }
 
+/// ADR-025: the same silent CLI expires under the normal silence window and
+/// completes inside the observation trial, which records how long the pipes
+/// stayed quiet. The window is scaled down from 90 s to keep the test fast.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_cli_expires_normally_but_completes_inside_the_observation_trial() {
+    let harness = harness(vec![
+        "--mode".into(),
+        "quiet".into(),
+        "--quiet-ms".into(),
+        "2500".into(),
+    ]);
+    let short_window = || hvc_core::agent_timeout::CliTimeoutBudget {
+        policy: hvc_core::AgentTimeoutPolicy::new(300, 300, 10_000, 100),
+        deadline: Instant::now() + Duration::from_secs(10),
+    };
+    let db = rusqlite::Connection::open(&harness.database_path).unwrap();
+    db.execute(
+        "INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at) VALUES('trial-pulse',?1,'Quiet','Code','running',?2,?2)",
+        rusqlite::params![harness.project_id, chrono::Utc::now().to_rfc3339()],
+    )
+    .unwrap();
+
+    let mut outside = request(
+        &harness.project_id,
+        Instant::now() + Duration::from_secs(10),
+    );
+    outside.pulsation_id = Some("trial-pulse".into());
+    outside.dispatch.cli_timeout = Some(short_window());
+    let error = harness
+        .terminals
+        .execute_llm_request(&outside, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "cli_inactivity_timeout");
+
+    let trial = harness
+        .terminals
+        .repository()
+        .start_cli_observation_trial(&harness.project_id)
+        .unwrap();
+    let mut inside = request(
+        &harness.project_id,
+        Instant::now() + Duration::from_secs(10),
+    );
+    inside.pulsation_id = Some("trial-pulse".into());
+    inside.dispatch.cli_timeout = Some(short_window());
+    let result = harness
+        .terminals
+        .execute_llm_request(&inside, &CancellationToken::new())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(result.raw_output.contains("completed after silence"));
+    let run = harness
+        .terminals
+        .repository()
+        .get_run(&result.terminal_run_id)
+        .unwrap();
+    assert_eq!(run.status, TerminalRunStatus::Completed);
+    assert_eq!(run.observation_trial_id.as_deref(), Some(trial.id.as_str()));
+    assert!(run.deadline_at.is_none(), "a trial run carries no deadline");
+    let silence: i64 = db
+        .query_row(
+            "SELECT max_transport_silence_ms FROM terminal_runs WHERE id=?1",
+            [&run.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(silence >= 1_300, "pipes were quiet ~1.5 s: {silence}");
+    let report = harness
+        .terminals
+        .repository()
+        .latest_cli_observation_report(&harness.project_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!((report.trial.admitted_runs, report.successful_runs), (1, 1));
+    assert!(report.max_transport_silence_ms.unwrap() >= 1_300);
+    assert!(report.runs[0].prep_ms.is_some() && report.runs[0].boot_ms.is_some());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn explicit_short_cli_ceiling_is_not_extended_by_progress() {
     let harness = harness(vec!["--mode".into(), "paced".into()]);
@@ -283,6 +363,13 @@ async fn four_official_adapters_capture_and_resume_the_exact_native_session() {
         CliBackend::Gemini,
         CliBackend::Opencode,
     ] {
+        let model = match backend {
+            CliBackend::Codex => "gpt-5.6-luna",
+            CliBackend::Claude => "haiku",
+            CliBackend::Gemini => "gemini-2.5-flash",
+            CliBackend::Opencode => "fixture-opencode-model",
+            CliBackend::Custom => unreachable!(),
+        };
         assert!(discovery.iter().any(|item| {
             item.backend == backend && item.state == CliAvailabilityState::Available
         }));
@@ -298,9 +385,9 @@ async fn four_official_adapters_capture_and_resume_the_exact_native_session() {
                 agent_role: AgentRole::BackendAgent,
                 execution_mode: AgentExecutionMode::CliProcess,
                 backend,
-                model: None,
+                model: Some(model.into()),
                 model_profile: None,
-                model_source: CliModelSelectionSource::Default,
+                model_source: CliModelSelectionSource::Manual,
                 thinking_level: ThinkingLevel::Default,
                 custom_executable: None,
                 custom_args: Vec::new(),
@@ -343,6 +430,239 @@ async fn four_official_adapters_capture_and_resume_the_exact_native_session() {
     assert_eq!(usage.totals.total_tokens, Some(200));
     assert_eq!(usage.totals.records, 8);
     assert_eq!(usage.totals.unavailable_records, 0);
+}
+
+#[tokio::test]
+async fn claude_sonnet_generation_rejects_haiku_output_and_terminates_the_process_tree() {
+    let _path_lock = PATH_TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let binaries = tempfile::tempdir().unwrap();
+    let claude = binaries.path().join("claude.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_cli_fixture"), &claude).unwrap();
+    std::fs::write(binaries.path().join("claude.fixture-state"), "sonnet_mismatch").unwrap();
+    let marker = binaries.path().join("claude.fixture-after-mismatch");
+    let original_path = std::env::var_os("PATH");
+    let _restore = PathRestore(original_path.clone());
+    let mut paths = vec![binaries.path().to_path_buf()];
+    if let Some(original_path) = original_path {
+        paths.extend(std::env::split_paths(&original_path));
+    }
+    // SAFETY: PATH_TEST_LOCK serializes this mutation and PathRestore restores the variable.
+    unsafe { std::env::set_var("PATH", std::env::join_paths(paths).unwrap()) };
+
+    let h = harness(Vec::new());
+    let current = h
+        .terminals
+        .repository()
+        .get_config(&h.project_id, AgentRole::BackendAgent)
+        .unwrap();
+    h.terminals
+        .update_config(UpdateCliAgentConfigRequest {
+            project_id: h.project_id.clone(),
+            agent_role: AgentRole::BackendAgent,
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: CliBackend::Claude,
+            model: Some("haiku".into()),
+            model_profile: None,
+            model_source: CliModelSelectionSource::Manual,
+            thinking_level: ThinkingLevel::Default,
+            custom_executable: None,
+            custom_args: Vec::new(),
+            custom_risk_ack: false,
+            expected_version: current.version,
+        })
+        .unwrap();
+
+    let error = h
+        .terminals
+        .execute_llm_request(
+            &request(&h.project_id, Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "model_mismatch");
+
+    let db = rusqlite::Connection::open(&h.database_path).unwrap();
+    let (run_id, status, error_code, observed_model): (String, String, Option<String>, Option<String>) = db
+        .query_row(
+            "SELECT id,status,error_code,observed_model FROM terminal_runs ORDER BY created_at DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "failed");
+    assert_eq!(error_code.as_deref(), Some("model_mismatch"));
+    assert_eq!(observed_model.as_deref(), Some("claude-sonnet-5"));
+    let generation = db
+        .query_row(
+            "SELECT model_id,message_id,is_generation FROM terminal_model_observations WHERE run_id=?1 AND is_generation=1 ORDER BY ordinal LIMIT 1",
+            [&run_id],
+            |row| Ok((row.get::<_,Option<String>>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,bool>(2)?)),
+        )
+        .unwrap();
+    assert_eq!(generation.0.as_deref(), Some("claude-sonnet-5"));
+    assert_eq!(generation.1.as_deref(), Some("claude-message-1"));
+    assert!(generation.2);
+    assert!(!marker.exists(), "the host must kill the local process tree immediately");
+}
+
+/// ADR-022/025 live qualification: one synthetic request through the real
+/// authenticated Claude CLI. It is explicit and ignored in normal CI.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Requires local Claude authentication and network; sends one synthetic Haiku identity probe"]
+async fn authenticated_claude_model_identity_smoke() {
+    let harness = harness(Vec::new());
+    let current = harness
+        .terminals
+        .repository()
+        .get_config(&harness.project_id, AgentRole::BackendAgent)
+        .unwrap();
+    harness
+        .terminals
+        .update_config(UpdateCliAgentConfigRequest {
+            project_id: harness.project_id.clone(),
+            agent_role: AgentRole::BackendAgent,
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: CliBackend::Claude,
+            model: Some("haiku".into()),
+            model_profile: None,
+            model_source: CliModelSelectionSource::Manual,
+            thinking_level: ThinkingLevel::Default,
+            custom_executable: None,
+            custom_args: Vec::new(),
+            custom_risk_ack: false,
+            expected_version: current.version,
+        })
+        .unwrap();
+
+    let mut probe = request(&harness.project_id, Instant::now() + Duration::from_secs(120));
+    probe.user_prompt = "Reply with exactly HVC_MODEL_IDENTITY_OK and no tools.".into();
+    probe.max_output_tokens = 32;
+    let result = harness
+        .terminals
+        .execute_llm_request(&probe, &CancellationToken::new())
+        .await;
+
+    let db = rusqlite::Connection::open(&harness.database_path).unwrap();
+    let (run_id, status, error_code, selected, observed): (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = db
+        .query_row(
+            "SELECT id,status,error_code,model,observed_model FROM terminal_runs WHERE project_id=?1 ORDER BY created_at DESC LIMIT 1",
+            [&harness.project_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(selected.as_deref(), Some("haiku"));
+    let generations: Vec<Option<String>> = db
+        .prepare(
+            "SELECT model_id FROM terminal_model_observations WHERE run_id=?1 AND is_generation=1 ORDER BY ordinal",
+        )
+        .unwrap()
+        .query_map([&run_id], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    if generations.is_empty() {
+        let stderr: String = db
+            .query_row(
+                "SELECT COALESCE(group_concat(content, char(10)), '') FROM terminal_events WHERE run_id=?1 AND stream='stderr'",
+                [&run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        panic!(
+            "live Claude produced no auditable generation; status={status}, code={error_code:?}, observed={observed:?}, stderr={stderr:?}, returned_error={:?}",
+            result.as_ref().err().map(ToString::to_string)
+        );
+    }
+    match result {
+        Ok(_) => {
+            assert_eq!(status, "completed");
+            assert!(generations.iter().all(|model| model
+                .as_deref()
+                .is_some_and(|model| model.to_ascii_lowercase().contains("haiku"))));
+        }
+        Err(error) => {
+            assert!(matches!(error.code(), "model_mismatch" | "model_unverified"), "{error}");
+            assert_eq!(status, "failed");
+            assert_eq!(error_code.as_deref(), Some(error.code()));
+        }
+    }
+    if status == "completed" {
+        assert!(observed.as_deref().is_some_and(|model| model.to_ascii_lowercase().contains("haiku")));
+    }
+}
+
+/// ADR-010/022 live qualification for Codex's model-less public item events.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Requires local Codex authentication and network; sends one synthetic model identity probe"]
+async fn authenticated_codex_turn_context_model_smoke() {
+    let harness = harness(Vec::new());
+    harness.terminals.refresh_discovery().await;
+    let current = harness
+        .terminals
+        .repository()
+        .get_config(&harness.project_id, AgentRole::BackendAgent)
+        .unwrap();
+    harness
+        .terminals
+        .update_config(UpdateCliAgentConfigRequest {
+            project_id: harness.project_id.clone(),
+            agent_role: AgentRole::BackendAgent,
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: CliBackend::Codex,
+            model: Some("gpt-5.6-luna".into()),
+            model_profile: None,
+            model_source: CliModelSelectionSource::Manual,
+            thinking_level: ThinkingLevel::Default,
+            custom_executable: None,
+            custom_args: Vec::new(),
+            custom_risk_ack: false,
+            expected_version: current.version,
+        })
+        .unwrap();
+    let mut probe = request(&harness.project_id, Instant::now() + Duration::from_secs(180));
+    probe.user_prompt = "Reply with exactly HVC_CODEX_MODEL_OK and do not call tools.".into();
+    probe.max_output_tokens = 32;
+    let result = tokio::time::timeout(
+        Duration::from_secs(180),
+        harness
+            .terminals
+            .execute_llm_request(&probe, &CancellationToken::new()),
+    )
+    .await
+    .expect("Codex identity smoke exceeded 180 seconds");
+    if let Err(error) = &result {
+        panic!("Codex identity smoke failed before audit: {error}");
+    }
+    let db = rusqlite::Connection::open(&harness.database_path).unwrap();
+    let (run_id, selected, observed): (String, Option<String>, Option<String>) = db
+        .query_row(
+            "SELECT id,model,observed_model FROM terminal_runs WHERE project_id=?1 ORDER BY created_at DESC LIMIT 1",
+            [&harness.project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(selected.as_deref(), Some("gpt-5.6-luna"));
+    assert_eq!(observed.as_deref(), Some("gpt-5.6-luna"));
+    let evidence: (Option<String>, String) = db
+        .query_row(
+            "SELECT model_id,evidence_source FROM terminal_model_observations WHERE run_id=?1 AND is_generation=1 ORDER BY ordinal LIMIT 1",
+            [&run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(evidence.0.as_deref(), Some("gpt-5.6-luna"));
+    assert_eq!(evidence.1, "codex_turn_context");
+    assert!(result.unwrap().unwrap().raw_output.contains("HVC_CODEX_MODEL_OK"));
 }
 
 #[tokio::test]
@@ -638,7 +958,7 @@ async fn deadline_kills_the_process_tree_and_stops_descendant_heartbeat() {
         .execute_llm_request(
             &request(
                 &harness.project_id,
-                Instant::now() + Duration::from_millis(1_200),
+                Instant::now() + Duration::from_secs(5),
             ),
             &CancellationToken::new(),
         )
@@ -696,6 +1016,13 @@ async fn feature_discovery_uses_four_official_cli_adapters_with_isolated_context
         CliBackend::Gemini,
         CliBackend::Opencode,
     ] {
+        let model = match backend {
+            CliBackend::Codex => "gpt-5.6-luna",
+            CliBackend::Claude => "haiku",
+            CliBackend::Gemini => "gemini-2.5-flash",
+            CliBackend::Opencode => "fixture-opencode-model",
+            CliBackend::Custom => unreachable!(),
+        };
         let config = h
             .terminals
             .repository()
@@ -707,9 +1034,9 @@ async fn feature_discovery_uses_four_official_cli_adapters_with_isolated_context
                 agent_role: AgentRole::FeatureAgent,
                 execution_mode: AgentExecutionMode::CliProcess,
                 backend,
-                model: None,
+                model: Some(model.into()),
                 model_profile: None,
-                model_source: CliModelSelectionSource::Default,
+                model_source: CliModelSelectionSource::Manual,
                 thinking_level: ThinkingLevel::Default,
                 custom_executable: None,
                 custom_args: vec![],

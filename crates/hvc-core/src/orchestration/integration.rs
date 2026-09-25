@@ -26,7 +26,7 @@ impl PersistenceService {
             }
             progressed = true;
             let current = Self::find_pulsation_by_id(&tx, &id)?
-                .ok_or_else(|| coordination::invalid("Pulsação ausente"))?;
+                .ok_or_else(|| coordination::invalid("Pulsation missing"))?;
             if let Err(error) = Self::verify_integration_files(&tx, &id) {
                 Self::transition_pulsation(
                     &tx,
@@ -52,7 +52,7 @@ impl PersistenceService {
                 current.stage,
                 "hitl_approved_final",
                 Some(
-                    "Integração aprovada; hashes atuais conferidos (ou no-op sem arquivos). Base liberada; isto não certifica execução de testes/Git.",
+                    "Integration approved; current hashes checked (or a no-op without files). Base released; this does not certify tests or Git.",
                 ),
             )?;
             tx.execute("UPDATE project_pipeline_state SET base_epoch=base_epoch+1,active_pulsation_id=NULL,base_state='ready',blocking_reason=NULL,state_version=state_version+1 WHERE active_pulsation_id=?1", [&id])?;
@@ -71,13 +71,13 @@ impl PersistenceService {
         let unresolved: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM artifacts WHERE pulsation_id=?1 AND acceptance='accepted' AND (legacy_adaptation='unavailable_or_ambiguous' OR (relative_path IS NOT NULL AND publication_state<>'applied')))", [pulse], |r| r.get(0))?;
         if unresolved {
             return Err(coordination::invalid(
-                "Artefatos obrigatórios ainda não verificados.",
+                "Required artifacts are not verified yet.",
             ));
         }
         let missing_baseline: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM artifacts a WHERE a.pulsation_id=?1 AND a.publication_state='applied' AND a.relative_path IS NOT NULL AND NOT EXISTS(SELECT 1 FROM project_file_baselines b WHERE b.project_id=?2 AND b.relative_path=a.relative_path COLLATE NOCASE))",params![pulse,project],|r|r.get(0))?;
         if missing_baseline {
             return Err(coordination::invalid(
-                "Baseline publicada indisponível; reconciliação necessária.",
+                "The published baseline is unavailable; reconciliation is needed.",
             ));
         }
         // Later stages may replace the same path. Check the final host baseline, not each older draft.
@@ -87,7 +87,7 @@ impl PersistenceService {
             let observed = publication::observed_hash(Path::new(&root), &path)?;
             if observed.as_ref().map(ContentSha256::as_str) != hash.as_deref() {
                 return Err(coordination::invalid(format!(
-                    "Arquivo mudou antes da liberação da base: {path}"
+                    "A file changed before the base was released: {path}"
                 )));
             }
         }
@@ -103,7 +103,7 @@ impl PersistenceService {
                         != Some(&source.content_sha256)
                 {
                     return Err(coordination::invalid(
-                        "Fonte de nota obrigatória mudou; é necessária nova revisão.",
+                        "A required note source changed; a new review is needed.",
                     ));
                 }
             }

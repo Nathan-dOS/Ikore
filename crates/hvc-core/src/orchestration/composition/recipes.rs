@@ -570,6 +570,7 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
                     contract,
                     ExecutorKind::CodeImplementer,
                     SourceRole::Test,
+                    &[],
                 )?
             }
         }
@@ -629,6 +630,16 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
                     unit_id: None,
                 }]
             } else {
+                // The accepted Code aggregate is re-read by the host before
+                // Test preparation, so every readable production source is a
+                // delivered candidate input even when a model proposal omitted
+                // or malformed its `inputRefs`.
+                let production_inputs = inputs
+                    .sources
+                    .iter()
+                    .filter(|source| source.role != SourceRole::Test)
+                    .filter_map(|source| builder.handle_for_path(&source.path).cloned())
+                    .collect::<Vec<_>>();
                 plan_stage_units(
                     &mut builder,
                     &delivered,
@@ -638,6 +649,7 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
                     contract,
                     ExecutorKind::TestAuthor,
                     SourceRole::Source,
+                    &production_inputs,
                 )?
             }
         }
@@ -737,6 +749,7 @@ fn plan_stage_units(
     contract: Option<&InterfaceContractV1>,
     kind: ExecutorKind,
     forbidden_role: SourceRole,
+    fallback_inputs: &[Handle],
 ) -> Result<Vec<UnitDraft>, CompositionError> {
     let stage_name = kind.stage().as_str();
     // A Specification-stage handle names a path; the same path has a
@@ -797,9 +810,21 @@ fn plan_stage_units(
                 )
                 .with_related([proposal.unit_key.clone()]));
             };
+            // A planned file another proposal writes stays an input: the
+            // planner turns it into a dependency and delivers the validated
+            // candidate. Dropping it left greenfield units blind to their
+            // predecessors' files.
+            let written_by_proposal = proposals.iter().any(|other| {
+                other.unit_key != proposal.unit_key
+                    && other
+                        .destination_refs
+                        .iter()
+                        .any(|destination| spec_record.path_of(destination) == Some(&path))
+            });
             if builder
                 .entry(&current)
                 .is_some_and(ReferenceEntryV1::is_readable_input)
+                || written_by_proposal
             {
                 node_inputs.push(PathRef {
                     handle: current,
@@ -833,6 +858,10 @@ fn plan_stage_units(
     let planned = plan_units(&nodes, builder.scope())?;
     let mut owned_all = Vec::new();
     let mut drafts = Vec::with_capacity(planned.len());
+    let mut candidate_handles: BTreeMap<
+        String,
+        (super::Uuid, Option<Handle>, SourceRole, Handle),
+    > = BTreeMap::new();
     for unit in planned {
         let mut input_refs = unit.input_refs.clone();
         for read in &unit.candidate_reads {
@@ -845,15 +874,81 @@ fn plan_stage_units(
                 .and_then(ReferenceEntryV1::content_sha256)
                 .cloned()
                 .unwrap_or_else(|| Sha256Hex::of(b""));
-            let candidate = builder.add_candidate(
-                read.path.clone(),
-                baseline,
-                read.producer_unit_id.clone(),
-                read.role,
-            )?;
-            input_refs.push(candidate);
+            let path_key = read.path.canonical_key();
+            let candidate = if let Some((producer, baseline_handle, role, handle)) =
+                candidate_handles.get(&path_key)
+            {
+                if producer != &read.producer_unit_id
+                    || baseline_handle != &read.baseline_handle
+                    || role != &read.role
+                {
+                    return Err(recipe_error(
+                        ErrorCode::ReferenceConflict,
+                        format!(
+                            "Candidate read `{}` resolves to conflicting producer or baseline identities.",
+                            read.path
+                        ),
+                    ));
+                }
+                handle.clone()
+            } else {
+                let handle = builder.add_candidate(
+                    read.path.clone(),
+                    baseline,
+                    read.producer_unit_id.clone(),
+                    read.role,
+                )?;
+                candidate_handles.insert(
+                    path_key,
+                    (
+                        read.producer_unit_id.clone(),
+                        read.baseline_handle.clone(),
+                        read.role,
+                        handle.clone(),
+                    ),
+                );
+                handle
+            };
+            if !input_refs.contains(&candidate) {
+                input_refs.push(candidate);
+            }
         }
-        owned_all.extend(unit.owned_destination_refs.iter().cloned());
+        if kind == ExecutorKind::TestAuthor {
+            for handle in fallback_inputs {
+                if !input_refs.contains(handle) {
+                    input_refs.push(handle.clone());
+                }
+            }
+            if input_refs.is_empty() {
+                return Err(recipe_error(
+                    ErrorCode::ScopeInsufficient,
+                    format!(
+                        "Test unit `{}` has no readable production candidate; dispatch is refused.",
+                        unit.key
+                    ),
+                )
+                .with_related([unit.key.clone()]));
+            }
+        }
+        let mut owned_destination_refs = unit.owned_destination_refs;
+        if kind == ExecutorKind::TestAuthor && owned_destination_refs.is_empty() {
+            let destination = default_test_destination(&inputs.title, &inputs.sources).ok_or_else(|| {
+                recipe_error(
+                    ErrorCode::ScopeInsufficient,
+                    format!(
+                        "Test unit `{}` has no owned test destination and the host cannot derive one.",
+                        unit.key
+                    ),
+                )
+                .with_related([unit.key.clone()])
+            })?;
+            let handle = match builder.handle_for_path(&destination) {
+                Some(handle) => handle.clone(),
+                None => builder.add_planned(destination, SourceRole::Test)?,
+            };
+            owned_destination_refs.push(handle);
+        }
+        owned_all.extend(owned_destination_refs.iter().cloned());
         drafts.push(UnitDraft {
             logical_unit_key: unit.key,
             executor_kind: kind,
@@ -861,7 +956,7 @@ fn plan_stage_units(
             criterion_refs: unit.criterion_refs,
             depends_on: unit.depends_on,
             input_refs,
-            owned_destination_refs: unit.owned_destination_refs,
+            owned_destination_refs,
             required_check_refs: inputs.checks.clone(),
             objective: unit.objective,
             estimated_output_tokens: unit.estimated_output_tokens,
@@ -1628,7 +1723,7 @@ pub fn explicit_paths(text: &str) -> Vec<RelPath> {
         ch.is_whitespace() || matches!(ch, '`' | '"' | '\'' | ',' | ';' | '(' | ')' | '[' | ']')
     }) {
         let token = token.trim_end_matches(['.', ':']);
-        if token.contains('/')
+        if (token.contains('/') || is_root_file_name(token))
             && token.contains('.')
             && !token.contains("://")
             && !token.starts_with('.')
@@ -1640,17 +1735,50 @@ pub fn explicit_paths(text: &str) -> Vec<RelPath> {
     paths.into_iter().collect()
 }
 
-/// Parses the `FILES_NEW:`/`FILES_MOD:`/`FILES:` tag lines a developer (or,
-/// from M5 onward, the Companion's synthesis prompt) may write at the start
-/// of a clarification answer (ADR-022 clarification loop, P2/A2.2). Only the
-/// leading block of tag lines is read -- scanning stops at the first line
-/// that does not start with one of the three prefixes, so the prose that
-/// follows is never touched. Values are comma-separated; a value that does
-/// not parse as a `RelPath` is dropped rather than failing the whole answer,
-/// since a malformed tag should mean "no extra anchor", never "reject the
-/// developer's answer". `FILES:` (no suffix) is returned unresolved -- the
-/// host decides new-vs-existing by checking the workspace, which this pure
-/// function has no access to (see `submit_specification_answers`).
+/// A workspace-root file named without a directory (`index.html`,
+/// `package.json`, `README.md`). Requiring a `/` left every root file
+/// unanchored, so each greenfield ToDoListWebView pulsation spent a
+/// Specification call and a clarification round asking for `index.html`
+/// (2026-09-22). Only known source/config extensions count, and library
+/// names written like files in prose (`Node.js`, `Vue.js`) are ignored.
+fn is_root_file_name(token: &str) -> bool {
+    const EXTENSIONS: &[&str] = &[
+        "html", "htm", "css", "scss", "js", "mjs", "cjs", "jsx", "ts", "tsx", "json", "md", "toml",
+        "yaml", "yml", "py", "rs", "go", "java", "cs", "rb", "php", "vue", "svelte", "sql", "sh",
+        "ps1", "xml", "txt",
+    ];
+    const LIBRARY_NAMES: &[&str] = &[
+        "node", "vue", "next", "nuxt", "react", "express", "three", "chart", "d3", "ember",
+        "backbone", "socket", "moment", "angular", "alpine", "solid", "deno", "bun",
+    ];
+    let Some((stem, extension)) = token.rsplit_once('.') else {
+        return false;
+    };
+    !token.contains('/')
+        && !stem.is_empty()
+        && stem
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+        && EXTENSIONS.contains(&extension)
+        && !LIBRARY_NAMES.contains(&stem.to_ascii_lowercase().as_str())
+}
+
+/// Parses every `FILES_NEW:`/`FILES_MOD:`/`FILES:` tag line a developer (or,
+/// from M5 onward, the Companion's synthesis prompt) writes anywhere in a
+/// clarification answer (ADR-022 clarification loop, P2/A2.2) -- prose lines
+/// before, between or after a tag line are simply skipped, never scanned for
+/// a false-positive path mention, since a match still requires the trimmed
+/// line itself to start with one of the three prefixes. This is deliberately
+/// position-independent: `SYNTHESIS_PROMPT` (`hvc-ui/src/resolution_ui.rs`)
+/// asks the Companion for a short prose summary *before* the tag lines, and a
+/// developer typing a manual answer writes the same way, so a leading-block-
+/// only scan would silently discard every tag it never reaches. Values are
+/// comma-separated; a value that does not parse as a `RelPath` is dropped
+/// rather than failing the whole answer, since a malformed tag should mean
+/// "no extra anchor", never "reject the developer's answer". `FILES:` (no
+/// suffix) is returned unresolved -- the host decides new-vs-existing by
+/// checking the workspace, which this pure function has no access to (see
+/// `submit_specification_answers`).
 pub fn parse_clarification_tags(text: &str) -> (Vec<RelPath>, Vec<RelPath>, Vec<RelPath>) {
     let mut planned = Vec::new();
     let mut modified = Vec::new();
@@ -1664,7 +1792,7 @@ pub fn parse_clarification_tags(text: &str) -> (Vec<RelPath>, Vec<RelPath>, Vec<
         } else if let Some(rest) = line.strip_prefix("FILES:") {
             (&mut unresolved, rest)
         } else {
-            break;
+            continue;
         };
         for value in rest.split(',') {
             let value = value.trim();
@@ -1817,6 +1945,18 @@ mod tests {
                 RelPath::new("tests/auth_test.rs").unwrap()
             ]
         );
+        // Root files are anchored too; prose that only looks like a file is not.
+        assert_eq!(
+            explicit_paths(
+                "Build the views (index.html, src/js/app.js) with package.json and README.md; built on Node.js and Vue.js, e.g. v1.2 in 3.5 seconds."
+            ),
+            vec![
+                RelPath::new("README.md").unwrap(),
+                RelPath::new("index.html").unwrap(),
+                RelPath::new("package.json").unwrap(),
+                RelPath::new("src/js/app.js").unwrap(),
+            ]
+        );
         assert_eq!(
             role_for_path(&RelPath::new("tests/auth_test.rs").unwrap()),
             SourceRole::Test
@@ -1848,10 +1988,13 @@ mod tests {
     }
 
     // ADR-022 clarification loop (P2/A2.2): `parse_clarification_tags` reads
-    // only the leading `FILES_*:` block of a clarification answer, leaving
-    // the prose (including the raw tag lines) untouched for `batch_guidance`.
+    // `FILES_*:` tag lines wherever they appear in a clarification answer,
+    // leaving the prose (including the raw tag lines) untouched for
+    // `batch_guidance`. Prose mentioning a path in passing is never matched:
+    // a line only counts as a tag when the trimmed line itself starts with
+    // one of the three prefixes, regardless of position.
     #[test]
-    fn clarification_tags_are_parsed_from_the_leading_lines_only() {
+    fn clarification_tags_are_parsed_wherever_they_appear_not_mentions_in_prose() {
         let (planned, modified, unresolved) = parse_clarification_tags(
             "FILES_NEW: src/foo.rs, src/bar.rs\nFILES_MOD: src/existing.rs\n\nProsa livre que menciona src/never.rs mas não é uma tag.",
         );
@@ -1863,6 +2006,29 @@ mod tests {
             ]
         );
         assert_eq!(modified, vec![RelPath::new("src/existing.rs").unwrap()]);
+        assert!(unresolved.is_empty());
+    }
+
+    // Reproduces the exact shape `SYNTHESIS_PROMPT` (`hvc-ui/src/resolution_ui.rs`)
+    // asks the Companion for -- and that a developer typing a manual answer
+    // naturally writes too: a short prose summary first, tag lines after. A
+    // leading-block-only scan silently discarded these (the bug this session
+    // found via two real clarification answers in the app's own database
+    // whose `plannedPaths`/`modifiedPaths` came back empty despite the tags
+    // being present in `textAnswer`).
+    #[test]
+    fn a_prose_summary_before_the_tag_lines_does_not_suppress_them() {
+        let (planned, modified, unresolved) = parse_clarification_tags(
+            "Create a planned-destination handle for the application shell, and provide existing-file handles for both domain models.\n\nFILES_NEW: index.html\nFILES_MOD: src/js/models/task.js, src/js/models/calendarSettings.js",
+        );
+        assert_eq!(planned, vec![RelPath::new("index.html").unwrap()]);
+        assert_eq!(
+            modified,
+            vec![
+                RelPath::new("src/js/models/task.js").unwrap(),
+                RelPath::new("src/js/models/calendarSettings.js").unwrap()
+            ]
+        );
         assert!(unresolved.is_empty());
     }
 
@@ -2083,5 +2249,307 @@ mod tests {
                 .id,
             "q_1"
         );
+    }
+
+    /// ToDoListWebView, 2026-09-22: both pulsations failed Code with
+    /// `scope_insufficient` because the first unit (owning only
+    /// `localStore.js`) read the batch-wide title, guidance and a clarification
+    /// naming the other four files as missing destinations. The plan keeps
+    /// exclusive ownership; every unit's prompt now names its siblings' files
+    /// as context, serial or parallel.
+    #[test]
+    fn a_split_code_stage_tells_each_unit_its_siblings_files_are_context() {
+        use super::super::plan::{PlanInputs, freeze_plan};
+        use super::super::policy::policy_for;
+        use super::super::projection::render_unit_prompt;
+        use super::super::schema::SchemaFlavor;
+        use super::super::{ParentFenceV1, Uuid};
+
+        let files = [
+            "index.html",
+            "src/js/app.js",
+            "src/js/views/calendarView.js",
+            "src/js/views/dayDetailView.js",
+            "src/js/storage/localStore.js",
+        ];
+        let mut batch = manifest();
+        batch.tasks.truncate(1);
+        let task = &mut batch.tasks[0];
+        task.draft.title = format!(
+            "Build local task management and calendar views ({})",
+            files.join(", ")
+        );
+        task.draft.description = format!("Files: {}.", files.join(", "));
+        task.draft.criteria.truncate(1);
+        task.draft.criteria.push(AcceptanceCriterion {
+            id: "AC-2".into(),
+            description: "Tasks survive browser reloads.".into(),
+        });
+        let spec_handles = ["plan_1", "plan_2", "plan_3", "plan_4", "plan_5"];
+        let h = |text: &str| Handle::new(text).unwrap();
+        let proposal =
+            |key: &str, criterion: &str, owned: &[&str], depends: &[&str]| UnitProposalV1 {
+                unit_key: h(key),
+                kind: ProposalKind::Code,
+                task_refs: vec![h("task_1")],
+                criterion_refs: vec![h(criterion)],
+                input_refs: vec![],
+                destination_refs: owned.iter().map(|o| h(o)).collect(),
+                depends_on: depends.iter().map(|d| h(d)).collect(),
+                objective: format!("Implement {key}."),
+            };
+        let spec_record = StagePayloadRecord {
+            schema_version: SchemaV1,
+            stage: Stage::Specification,
+            plan_sha256: Sha256Hex::of(b"p"),
+            references: files
+                .iter()
+                .zip(spec_handles)
+                .map(|(path, handle)| ReferenceEntryV1::PlannedDestination {
+                    handle: h(handle),
+                    relative_path: RelPath::new(*path).unwrap(),
+                    source_role: SourceRole::Source,
+                })
+                .collect(),
+            units: vec![UnitPayloadRecord {
+                logical_unit_key: h("specify_batch"),
+                response: UnitModelResponseV1::Completed {
+                    executor_kind: ExecutorKind::SpecificationAuthor,
+                    payload: CompletedPayloadV1::Specification(SpecificationContractV1 {
+                        objective: "o".into(),
+                        exclusions: vec![],
+                        decisions: vec![],
+                        requirements: vec![],
+                        existing_file_refs: vec![],
+                        planned_file_refs: spec_handles.iter().map(|p| h(p)).collect(),
+                        interface_intent: vec![],
+                        unit_proposals: vec![
+                            proposal("local_store_code", "crit_1_2", &["plan_5"], &[]),
+                            proposal(
+                                "task_lifecycle_code",
+                                "crit_1_1",
+                                &["plan_1", "plan_2", "plan_3", "plan_4"],
+                                &["local_store_code"],
+                            ),
+                        ],
+                    }),
+                },
+            }],
+        };
+        let mut stage_inputs = inputs(vec![], files.to_vec());
+        stage_inputs.manifest = Some(batch);
+        stage_inputs.clarification_answers = vec![(
+            "Please provide a planned-destination handle for index.html.".into(),
+            "It is required by this batch.\nFILES_NEW: index.html".into(),
+        )];
+        stage_inputs.prior.insert(Stage::Specification, spec_record);
+        let code = prepare(Stage::Code, &stage_inputs).unwrap();
+        assert_eq!(code.drafts.len(), 2, "exclusive ownership keeps two units");
+
+        for max_in_flight in [1, 2] {
+            let mut snapshots = BTreeMap::new();
+            snapshots.insert(ExecutorKind::CodeImplementer, Uuid::generate());
+            let plan = freeze_plan(PlanInputs {
+                stage_execution_id: Uuid::generate(),
+                budget_account_id: Uuid::generate(),
+                parent_fence: ParentFenceV1 {
+                    project_id: Uuid::generate(),
+                    pulsation_id: Uuid::generate(),
+                    input_revision: 1,
+                    job_id: Uuid::generate(),
+                    generation: 1,
+                    state_version: 1,
+                },
+                stage: Stage::Code,
+                policy_sha256: Sha256Hex::of(b"policy"),
+                batch_sha256: Sha256Hex::of(b"batch"),
+                approved_contract_sha256: None,
+                table: &code.table,
+                units: code.drafts.clone(),
+                stage_output_limit: 16_000,
+                context_chars_limit: 16_000,
+                max_in_flight_units: max_in_flight,
+                profile_snapshots: snapshots,
+            })
+            .unwrap();
+            let first = &plan.units[0];
+            assert_eq!(first.logical_unit_key, h("local_store_code"));
+            assert_eq!(first.owned_destination_refs.len(), 1);
+            let prompt = render_unit_prompt(
+                &plan,
+                first,
+                &code.table,
+                policy_for(ExecutorKind::CodeImplementer),
+                &prompt_inputs(&code, first),
+                SchemaFlavor::Strict,
+            );
+            let user = &prompt.user;
+            assert!(user.contains("This unit delivers only: `src/js/storage/localStore.js`"));
+            assert!(user.contains(
+                "- unit task_lifecycle_code: `index.html`, `src/js/app.js`, `src/js/views/calendarView.js`, `src/js/views/dayDetailView.js`"
+            ));
+            assert!(user.contains("do not fail with `scope_insufficient` because of it"));
+            // The batch context the worker misread is still delivered, now
+            // after the boundary and labelled as shared.
+            assert!(user.contains("## Stage guidance (whole batch, shared by every unit)"));
+            assert!(user.contains("FILES_NEW: index.html"));
+            assert!(user.find("## Scope of this unit") < user.find("## Stage guidance"));
+            // Ownership is unchanged: no sibling destination is citable here.
+            let second = &plan.units[1];
+            for handle in &second.owned_destination_refs {
+                assert!(!user.contains(&format!("| `{handle}` |")));
+            }
+            let sibling_prompt = render_unit_prompt(
+                &plan,
+                second,
+                &code.table,
+                policy_for(ExecutorKind::CodeImplementer),
+                &prompt_inputs(&code, second),
+                SchemaFlavor::Strict,
+            );
+            assert!(
+                sibling_prompt
+                    .user
+                    .contains("- unit local_store_code: `src/js/storage/localStore.js`")
+            );
+        }
+    }
+
+    /// Greenfield read-after-write: a view that only declares it reads the
+    /// planned store module becomes a dependent unit that receives the store's
+    /// validated candidate, instead of silently losing that input.
+    #[test]
+    fn a_planned_input_written_by_a_sibling_becomes_a_dependency_with_its_candidate() {
+        let h = |text: &str| Handle::new(text).unwrap();
+        let proposal =
+            |key: &str, criterion: &str, inputs: &[&str], owned: &[&str]| UnitProposalV1 {
+                unit_key: h(key),
+                kind: ProposalKind::Code,
+                task_refs: vec![h("task_1")],
+                criterion_refs: vec![h(criterion)],
+                input_refs: inputs.iter().map(|i| h(i)).collect(),
+                destination_refs: owned.iter().map(|o| h(o)).collect(),
+                depends_on: vec![],
+                objective: format!("Implement {key}."),
+            };
+        let files = [
+            "src/js/storage/localStore.js",
+            "src/js/views/calendarView.js",
+        ];
+        let spec_record = StagePayloadRecord {
+            schema_version: SchemaV1,
+            stage: Stage::Specification,
+            plan_sha256: Sha256Hex::of(b"p"),
+            references: files
+                .iter()
+                .zip(["plan_1", "plan_2"])
+                .map(|(path, handle)| ReferenceEntryV1::PlannedDestination {
+                    handle: h(handle),
+                    relative_path: RelPath::new(*path).unwrap(),
+                    source_role: SourceRole::Source,
+                })
+                .collect(),
+            units: vec![UnitPayloadRecord {
+                logical_unit_key: h("specify_batch"),
+                response: UnitModelResponseV1::Completed {
+                    executor_kind: ExecutorKind::SpecificationAuthor,
+                    payload: CompletedPayloadV1::Specification(SpecificationContractV1 {
+                        objective: "o".into(),
+                        exclusions: vec![],
+                        decisions: vec![],
+                        requirements: vec![],
+                        existing_file_refs: vec![],
+                        planned_file_refs: vec![h("plan_1"), h("plan_2")],
+                        interface_intent: vec![],
+                        unit_proposals: vec![
+                            proposal("view", "crit_1_2", &["plan_1", "plan_1"], &["plan_2"]),
+                            proposal("store", "crit_1_1", &[], &["plan_1"]),
+                        ],
+                    }),
+                },
+            }],
+        };
+        let mut batch = manifest();
+        batch.tasks.truncate(1);
+        let mut stage_inputs = inputs(vec![], files.to_vec());
+        stage_inputs.manifest = Some(batch);
+        stage_inputs.prior.insert(Stage::Specification, spec_record);
+        let code = prepare(Stage::Code, &stage_inputs).unwrap();
+        let view = code
+            .drafts
+            .iter()
+            .find(|draft| draft.logical_unit_key == h("view"))
+            .expect("the view stays its own unit");
+        assert_eq!(view.depends_on, vec![h("store")]);
+        let candidate = view
+            .input_refs
+            .iter()
+            .find_map(|handle| match code.table.entry(handle) {
+                Some(ReferenceEntryV1::CandidateSource { relative_path, .. }) => {
+                    Some(relative_path.as_str())
+                }
+                _ => None,
+            });
+        assert_eq!(candidate, Some("src/js/storage/localStore.js"));
+        let candidate_refs = view
+            .input_refs
+            .iter()
+            .filter(|handle| {
+                matches!(
+                    code.table.entry(handle),
+                    Some(ReferenceEntryV1::CandidateSource { relative_path, .. })
+                        if relative_path.as_str() == "src/js/storage/localStore.js"
+                )
+            })
+            .count();
+        assert_eq!(candidate_refs, 1, "repeated reads share one candidate reference");
+    }
+
+    /// A proposal that writes a file the Specification never planned is a
+    /// real gap: it fails in preparation, before any reservation or CLI call.
+    #[test]
+    fn a_code_proposal_writing_an_unplanned_file_fails_before_dispatch() {
+        let h = |text: &str| Handle::new(text).unwrap();
+        let spec_record = StagePayloadRecord {
+            schema_version: SchemaV1,
+            stage: Stage::Specification,
+            plan_sha256: Sha256Hex::of(b"p"),
+            references: vec![ReferenceEntryV1::PlannedDestination {
+                handle: h("plan_1"),
+                relative_path: RelPath::new("src/js/app.js").unwrap(),
+                source_role: SourceRole::Source,
+            }],
+            units: vec![UnitPayloadRecord {
+                logical_unit_key: h("specify_batch"),
+                response: UnitModelResponseV1::Completed {
+                    executor_kind: ExecutorKind::SpecificationAuthor,
+                    payload: CompletedPayloadV1::Specification(SpecificationContractV1 {
+                        objective: "o".into(),
+                        exclusions: vec![],
+                        decisions: vec![],
+                        requirements: vec![],
+                        existing_file_refs: vec![],
+                        planned_file_refs: vec![h("plan_1")],
+                        interface_intent: vec![],
+                        unit_proposals: vec![UnitProposalV1 {
+                            unit_key: h("app_code"),
+                            kind: ProposalKind::Code,
+                            task_refs: vec![h("task_1")],
+                            criterion_refs: vec![h("crit_1_1")],
+                            input_refs: vec![],
+                            // `plan_9` resolves to no path of the approved plan.
+                            destination_refs: vec![h("plan_1"), h("plan_9")],
+                            depends_on: vec![],
+                            objective: "Implement the shell.".into(),
+                        }],
+                    }),
+                },
+            }],
+        };
+        let mut stage_inputs = inputs(vec![], vec!["src/js/app.js"]);
+        stage_inputs.prior.insert(Stage::Specification, spec_record);
+        let error = prepare(Stage::Code, &stage_inputs).unwrap_err();
+        assert_eq!(error.code, ErrorCode::ScopeInsufficient);
+        assert!(error.message.contains("neither delivered nor planned"));
     }
 }

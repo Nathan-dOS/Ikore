@@ -83,8 +83,17 @@ fn classify_composition_error(error: &CompositionError) -> UnitFailure {
     let (class, repairable) = match error.code {
         ErrorCode::InvalidShape
         | ErrorCode::InvalidLanguage
-        | ErrorCode::EvidenceUnresolved
-        | ErrorCode::ReferenceConflict => (FailureClass::BudgetExhausted, true),
+        | ErrorCode::EvidenceUnresolved => (FailureClass::BudgetExhausted, true),
+        ErrorCode::ReferenceConflict
+            if matches!(error.sc, Invariant::Sc002 | Invariant::Sc004) =>
+        {
+            // A model that cites an unassigned task or an undelivered input
+            // can correct its own malformed envelope within the bounded
+            // allowance. Path, candidate, ownership and content identity
+            // conflicts are host invariants and remain non-repairable below.
+            (FailureClass::BudgetExhausted, true)
+        }
+        ErrorCode::ReferenceConflict => (FailureClass::HostContract, false),
         ErrorCode::OwnershipViolation => (FailureClass::OwnershipViolation, true),
         ErrorCode::UnsupportedOperation => (FailureClass::HostContract, true),
         ErrorCode::OutputTruncated => (FailureClass::OutputTruncated, false),
@@ -166,6 +175,19 @@ fn transport_diagnostic(error: &PersistenceServiceError) -> String {
 }
 
 fn classify_transport_error(error: &PersistenceServiceError) -> Option<UnitFailure> {
+    if matches!(
+        error,
+        PersistenceServiceError::Cli { code, .. }
+            if matches!(code.as_str(), "model_mismatch" | "model_unverified")
+    ) {
+        return Some(UnitFailure {
+            class: FailureClass::HostContract,
+            code: crate::orchestration::stage_failure_error_code(error),
+            diagnostic: transport_diagnostic(error),
+            repairable: false,
+            correction: None,
+        });
+    }
     if matches!(
         error,
         PersistenceServiceError::Cli { code, .. } if code == "cli_output_truncated"
@@ -1397,9 +1419,8 @@ impl PersistenceService {
         })
     }
 
-    /// Resolves the transport/model a specialty will use, in the documented
-    /// order: pulsation recovery override, specialty override, stage role
-    /// configuration, API default. Never returns credentials.
+    /// Resolves a role's frozen transport/model. A specialty may tune effort,
+    /// but it cannot replace the canonical role's model or backend.
     fn resolve_effective_profile(
         db: &Connection,
         project_id: &str,
@@ -1425,9 +1446,6 @@ impl PersistenceService {
             attempt_limit: 1,
             source: source.to_owned(),
         };
-        if api_override {
-            return Ok(api_profile("recovery_override"));
-        }
         let specialty: Option<(String, Option<String>, Option<String>, String)> = db
             .query_row(
                 "SELECT execution_mode,backend,model,thinking_level FROM composition_specialty_overrides WHERE project_id=?1 AND executor_kind=?2",
@@ -1450,23 +1468,104 @@ impl PersistenceService {
             )
             .optional()?
             .flatten();
-        let (mode, backend, model, thinking, source) = match (specialty, configured) {
-            (Some((mode, backend, model, thinking)), _) => (
-                mode,
-                backend,
-                model,
-                thinking,
-                "specialty_override".to_owned(),
-            ),
-            (None, Some((mode, backend, model, thinking))) => (
-                mode,
-                Some(elected_backend.unwrap_or(backend)),
-                model,
-                thinking,
-                "stage_role".to_owned(),
-            ),
-            (None, None) => return Ok(api_profile("stage_role_default")),
+        if api_override {
+            if configured
+                .as_ref()
+                .is_some_and(|(mode, _, _, _)| mode != "api_direct")
+            {
+                return Err(PersistenceServiceError::Cli {
+                    code: "model_mismatch".into(),
+                    message: format!(
+                        "API recovery override attempted to switch role `{}` away from its frozen CLI backend/model.",
+                        role.as_str()
+                    ),
+                });
+            }
+            return Ok(api_profile("recovery_override"));
+        }
+        let Some((mode, backend, model, thinking)) = configured else {
+            if specialty.is_some() {
+                return Err(PersistenceServiceError::Cli {
+                    code: "model_mismatch".into(),
+                    message: format!(
+                        "Specialty `{}` defines a transport/model without a canonical selection for role `{}`.",
+                        kind.as_str(), role.as_str()
+                    ),
+                });
+            }
+            return Ok(api_profile("stage_role_default"));
         };
+        if elected_backend.as_deref().is_some_and(|elected| elected != backend) {
+            return Err(PersistenceServiceError::Cli {
+                code: "model_mismatch".into(),
+                message: format!(
+                    "Pulsation fallback attempted to switch role `{}` from its frozen backend `{backend}` to `{}`.",
+                    role.as_str(), elected_backend.as_deref().unwrap_or_default()
+                ),
+            });
+        }
+        if let Some((specialty_mode, specialty_backend, specialty_model, specialty_thinking)) = specialty {
+            let selected_backend = elected_backend.as_deref().unwrap_or(&backend);
+            if specialty_mode != mode
+                || specialty_backend.as_deref().is_some_and(|value| value != selected_backend)
+            {
+                return Err(PersistenceServiceError::Cli {
+                    code: "model_mismatch".into(),
+                    message: format!(
+                        "Specialty `{}` attempted to replace role `{}` transport/backend `{}/{};` its frozen selection must be inherited.",
+                        kind.as_str(), role.as_str(), mode, selected_backend
+                    ),
+                });
+            }
+            if let Some(specialty_model) = specialty_model {
+                match crate::terminals::model_identity::verify_model(
+                    Some(selected_backend),
+                    model.as_deref(),
+                    Some(&specialty_model),
+                ) {
+                    crate::terminals::model_identity::ModelVerification::Verified => {}
+                    crate::terminals::model_identity::ModelVerification::Mismatch => {
+                        return Err(PersistenceServiceError::Cli {
+                            code: "model_mismatch".into(),
+                            message: format!(
+                                "Specialty `{}` selected `{}` but canonical role `{}` is frozen to `{}`.",
+                                kind.as_str(), specialty_model, role.as_str(),
+                                model.as_deref().unwrap_or("default")
+                            ),
+                        });
+                    }
+                    crate::terminals::model_identity::ModelVerification::Unverified => {
+                        return Err(PersistenceServiceError::Cli {
+                            code: "model_unverified".into(),
+                            message: format!(
+                                "Specialty `{}` cannot prove its model is the frozen selection for role `{}`.",
+                                kind.as_str(), role.as_str()
+                            ),
+                        });
+                    }
+                }
+            }
+            // Keep the selected canonical transport/model and allow only the
+            // specialty's effort setting to vary.
+            let backend = elected_backend.unwrap_or(backend);
+            let flavor = crate::terminals::CliBackend::parse(&backend)
+                .map(SchemaFlavor::for_cli_backend)
+                .unwrap_or(SchemaFlavor::Canonical);
+            return Ok(EffectiveProfile {
+                executor_kind: kind.as_str().to_owned(),
+                transport: if mode == "cli_process" { "cli" } else { "api" }.into(),
+                backend: (mode == "cli_process").then_some(backend),
+                requested_model: model
+                    .filter(|m| !m.trim().is_empty())
+                    .unwrap_or_else(|| runtime_config.model.clone()),
+                thinking_level: Some(specialty_thinking),
+                schema_flavor: flavor,
+                attempt_limit: 1,
+                source: "stage_role_with_specialty_effort".into(),
+            });
+        }
+        let source = "stage_role".to_owned();
+        let backend = Some(elected_backend.unwrap_or(backend));
         if mode != "cli_process" {
             return Ok(api_profile(&source));
         }
@@ -1762,7 +1861,7 @@ impl PersistenceService {
             .as_deref()
             .ok_or_else(|| PersistenceServiceError::Validation("Job sem pulsação.".into()))?;
         let current = Self::find_pulsation_by_id(&tx, pulse)?
-            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação ausente.".into()))?;
+            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsation missing.".into()))?;
         Self::park_in_tx_without_execution(&tx, job, parent_run_id, stage, &current, failure)?;
         tx.commit()?;
         self.wake_scheduler();
@@ -1841,7 +1940,7 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = Self::find_pulsation_by_id(&tx, &execution.pulsation_id)?
-            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação ausente.".into()))?;
+            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsation missing.".into()))?;
         let ledger = Self::load_ledger(&tx, &execution.budget_account_id)?;
         let mut remaining = ledger.remaining();
         if let Some(unit) = unit {
@@ -2052,17 +2151,6 @@ impl PersistenceService {
                 replaceable: false,
             })
             .collect();
-        let prompt = render_unit_prompt(
-            &execution.plan,
-            &unit.spec,
-            &preparation.table,
-            policy,
-            &prompt_inputs,
-        );
-        let canonical = executor_response_schema(kind, SchemaFlavor::Canonical);
-        let strict = executor_response_schema(kind, SchemaFlavor::Strict);
-        let prompt_chars =
-            (prompt.chars + canonical.to_string().chars().count()).min(u32::MAX as usize) as u32;
         let profile_binding = execution
             .plan
             .profile_bindings
@@ -2079,6 +2167,18 @@ impl PersistenceService {
             profile_binding.profile_snapshot_id.as_str(),
         )?)
         .map_err(|e| PersistenceServiceError::Runtime(e.to_string()))?;
+        let prompt = render_unit_prompt(
+            &execution.plan,
+            &unit.spec,
+            &preparation.table,
+            policy,
+            &prompt_inputs,
+            profile.schema_flavor,
+        );
+        let response_schema = executor_response_schema(kind, profile.schema_flavor);
+        let strict = executor_response_schema(kind, SchemaFlavor::Strict);
+        let prompt_chars = (prompt.chars + response_schema.to_string().chars().count())
+            .min(u32::MAX as usize) as u32;
 
         // Reservation + attempt in one transaction; nothing external yet.
         let (attempt, unit) = {
@@ -2156,13 +2256,16 @@ impl PersistenceService {
             job_id: Some(job.id.clone()),
             agent_run_id: Some(attempt.agent_run_id.clone()),
             job_chain: execution.pulsation_id.clone(),
-            target: AgentExecutionTarget::canonical(role),
+            target: AgentExecutionTarget::ephemeral(
+                format!("ephemeral:{}:{}", execution.id, unit.id),
+                role,
+            ),
             stage: execution.stage.as_db_value().to_string(),
             system_prompt: prompt.system.clone(),
             user_prompt: prompt.user.clone(),
             response_format: crate::llm::ResponseFormat::JsonSchema {
                 name: RESPONSE_SCHEMA_NAME.to_string(),
-                schema: canonical.clone(),
+                schema: response_schema.clone(),
             },
             max_output_tokens: unit.spec.max_output_tokens,
             temperature: runtime_config.temperature,
@@ -2184,6 +2287,9 @@ impl PersistenceService {
                     unit_id: unit.id.clone(),
                     attempt_id: attempt.id.clone(),
                     executor_kind: kind.as_str().to_owned(),
+                    frozen_transport: profile.transport.clone(),
+                    frozen_backend: profile.backend.clone(),
+                    frozen_model: profile.requested_model.clone(),
                 }),
                 strict_schema: Some(strict),
                 host_validated: true,
@@ -2310,7 +2416,7 @@ impl PersistenceService {
                 return Ok(AttemptResult::Failed(failure));
             }
         };
-        Self::persist_attempt_output(&db, &attempt, job, &output, &canonical, None)?;
+        Self::persist_attempt_output(&db, &attempt, job, &output, &response_schema, None)?;
         let flavor = flavor_for_provider(&output.provider);
         let parsed = comp::parse::parse_unit_response(&output.raw_output, kind, flavor).and_then(
             |response| {
@@ -2336,7 +2442,14 @@ impl PersistenceService {
                         UnitState::Failed,
                         Some(("needs_input", "The worker requested human input.")),
                     )?;
-                    Self::persist_attempt_output(&db, &attempt, job, &output, &canonical, None)?;
+                    Self::persist_attempt_output(
+                        &db,
+                        &attempt,
+                        job,
+                        &output,
+                        &response_schema,
+                        None,
+                    )?;
                     return Ok(AttemptResult::NeedsInput(questions.clone()));
                 }
                 if let UnitModelResponseV1::Failed {
@@ -2455,7 +2568,7 @@ impl PersistenceService {
                     &attempt,
                     job,
                     &output,
-                    &canonical,
+                    &response_schema,
                     Some(&failure.diagnostic),
                 )?;
                 Ok(AttemptResult::Failed(failure))
@@ -2532,7 +2645,7 @@ impl PersistenceService {
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::check_execution(&tx, &handoff.recipient)?;
         let current = Self::find_pulsation_by_id(&tx, &execution.pulsation_id)?
-            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação ausente.".into()))?;
+            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsation missing.".into()))?;
         if current.status != PulsationStatus::Running || current.stage != execution.stage {
             return Err(PersistenceServiceError::Validation(
                 "SC-015: execução obsoleta.".into(),
@@ -2702,7 +2815,7 @@ impl PersistenceService {
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::check_execution(&tx, &handoff.recipient)?;
         let current = Self::find_pulsation_by_id(&tx, &execution.pulsation_id)?
-            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação ausente.".into()))?;
+            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsation missing.".into()))?;
         if current.status != PulsationStatus::Running || current.stage != execution.stage {
             return Err(PersistenceServiceError::Validation(
                 "SC-015: execução obsoleta na aceitação.".into(),
@@ -2852,6 +2965,7 @@ fn clarification_with_task_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
     use crate::orchestration::composition::plan::{PlanInputs, UnitDraft, freeze_plan};
     use crate::orchestration::composition::references::ReferenceTable;
     use crate::orchestration::composition::{RelPath, SourceRole};
@@ -2942,6 +3056,154 @@ mod tests {
             reused_from_attempt_id: None,
             reuse_key_sha256: None,
         }
+    }
+
+    fn profile_test_db(specialty_model: Option<&str>) -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE pulse_execution_overrides(
+               pulsation_id TEXT,agent_role TEXT,execution_mode TEXT,backend TEXT);
+             CREATE TABLE composition_specialty_overrides(
+               project_id TEXT,executor_kind TEXT,execution_mode TEXT,backend TEXT,model TEXT,thinking_level TEXT);
+             CREATE TABLE cli_agent_configs(
+               project_id TEXT,agent_role TEXT,execution_mode TEXT,backend TEXT,model TEXT,thinking_level TEXT);",
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO cli_agent_configs VALUES('project','backend_agent','cli_process','claude','haiku','medium')",
+            [],
+        )
+        .unwrap();
+        if let Some(model) = specialty_model {
+            db.execute(
+                "INSERT INTO composition_specialty_overrides VALUES('project','code_implementer','cli_process','claude',?1,'high')",
+                [model],
+            )
+            .unwrap();
+        }
+        db
+    }
+
+    #[test]
+    fn specialty_inherits_canonical_model_and_rejects_conflicting_model() {
+        let runtime = crate::agent_runtime::AgentRuntimeConfig::default();
+        let role = crate::llm::AgentRole::BackendAgent;
+        let same = profile_test_db(Some("haiku"));
+        let profile = PersistenceService::resolve_effective_profile(
+            &same,
+            "project",
+            "pulsation",
+            role,
+            ExecutorKind::CodeImplementer,
+            &runtime,
+        )
+        .unwrap();
+        assert_eq!(profile.backend.as_deref(), Some("claude"));
+        assert_eq!(profile.requested_model, "haiku");
+        assert_eq!(profile.source, "stage_role_with_specialty_effort");
+
+        let conflicting = profile_test_db(Some("sonnet"));
+        let error = PersistenceService::resolve_effective_profile(
+            &conflicting,
+            "project",
+            "pulsation",
+            role,
+            ExecutorKind::CodeImplementer,
+            &runtime,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            PersistenceServiceError::Cli { ref code, .. } if code == "model_mismatch"
+        ));
+
+        let repair = PersistenceService::resolve_effective_profile(
+            &same,
+            "project",
+            "pulsation",
+            role,
+            ExecutorKind::CodeRepairer,
+            &runtime,
+        )
+        .unwrap();
+        assert_eq!(repair.backend.as_deref(), Some("claude"));
+        assert_eq!(repair.requested_model, "haiku");
+    }
+
+    #[test]
+    fn canonical_roles_keep_independent_model_selections_for_code_and_intake() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE pulse_execution_overrides(
+               pulsation_id TEXT,agent_role TEXT,execution_mode TEXT,backend TEXT);
+             CREATE TABLE composition_specialty_overrides(
+               project_id TEXT,executor_kind TEXT,execution_mode TEXT,backend TEXT,model TEXT,thinking_level TEXT);
+             CREATE TABLE cli_agent_configs(
+               project_id TEXT,agent_role TEXT,execution_mode TEXT,backend TEXT,model TEXT,thinking_level TEXT);
+             INSERT INTO cli_agent_configs VALUES
+               ('project','backend_agent','cli_process','codex','gpt-5.6-luna','medium'),
+               ('project','intake_router','cli_process','claude','haiku','low');",
+        )
+        .unwrap();
+        let runtime = crate::agent_runtime::AgentRuntimeConfig::default();
+        let code = PersistenceService::resolve_effective_profile(
+            &db,
+            "project",
+            "pulsation",
+            crate::llm::AgentRole::BackendAgent,
+            ExecutorKind::CodeImplementer,
+            &runtime,
+        )
+        .unwrap();
+        let repair = PersistenceService::resolve_effective_profile(
+            &db,
+            "project",
+            "pulsation",
+            crate::llm::AgentRole::BackendAgent,
+            ExecutorKind::CodeRepairer,
+            &runtime,
+        )
+        .unwrap();
+        let intake = PersistenceService::resolve_effective_profile(
+            &db,
+            "project",
+            "pulsation",
+            crate::llm::AgentRole::IntakeRouter,
+            ExecutorKind::IntakeClassifier,
+            &runtime,
+        )
+        .unwrap();
+        assert_eq!((code.backend.as_deref(), code.requested_model.as_str()), (Some("codex"), "gpt-5.6-luna"));
+        assert_eq!((repair.backend.as_deref(), repair.requested_model.as_str()), (Some("codex"), "gpt-5.6-luna"));
+        assert_eq!((intake.backend.as_deref(), intake.requested_model.as_str()), (Some("claude"), "haiku"));
+    }
+
+    #[test]
+    fn real_reference_conflicts_are_host_contract_failures_not_budget_exhaustion() {
+        let error = CompositionError::new(
+            Invariant::Sc003,
+            ErrorCode::ReferenceConflict,
+            "same candidate path has different producer identity",
+        );
+        let failure = classify_composition_error(&error);
+        assert_eq!(failure.class, FailureClass::HostContract);
+        assert_eq!(failure.code, "reference_conflict");
+        assert!(!failure.repairable);
+        assert!(failure.correction.is_none());
+    }
+
+    #[test]
+    fn model_citations_outside_the_unit_keep_the_bounded_correction_path() {
+        let error = CompositionError::new(
+            Invariant::Sc002,
+            ErrorCode::ReferenceConflict,
+            "Task `task_9` is not assigned to this unit.",
+        );
+        let failure = classify_composition_error(&error);
+        assert_eq!(failure.class, FailureClass::BudgetExhausted);
+        assert_eq!(failure.code, "reference_conflict");
+        assert!(failure.repairable);
+        assert!(failure.correction.is_some());
     }
 
     #[test]
