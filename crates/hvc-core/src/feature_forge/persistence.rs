@@ -115,6 +115,12 @@ impl PersistenceService {
         if blocked {
             return Err(invalid("Reconcile the project before dispatching tasks"));
         }
+        // Refuse a batch whose stages cannot reach their model before any
+        // stage runs; what is only doubtful is recorded on the pulsation below.
+        let preflight = self.stage_preflight(&tx, &request.project_id)?;
+        if let Some(message) = crate::orchestration::stage_preflight::blocking_message(&preflight) {
+            return Err(invalid(message));
+        }
         // Failed batches release their task reservations only after reconciliation.
         tx.execute("UPDATE work_tasks SET state='ready',active_pulsation_id=NULL WHERE project_id=?1 AND state='queued' AND active_pulsation_id IN (SELECT id FROM pulsations WHERE status='failed') AND NOT EXISTS(SELECT 1 FROM project_pipeline_state s WHERE s.project_id=?1 AND s.base_state='needs_review')",[&request.project_id])?;
         let selected = request
@@ -300,6 +306,12 @@ impl PersistenceService {
             Some("Selected task revisions frozen; batch queued."),
         )?;
         Self::enqueue_stage_job(&tx, &pulse, PulsationStage::Intake)?;
+        for issue in preflight.iter().filter(|issue| !issue.blocking) {
+            tx.execute(
+                "INSERT INTO pulse_events(id,pulsation_id,event_type,message,created_at) VALUES(?1,?2,'route_preflight_warning',?3,?4)",
+                params![id(), pulse, issue.message, now],
+            )?;
+        }
         let description = manifest
             .tasks
             .iter()

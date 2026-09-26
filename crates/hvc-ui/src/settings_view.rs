@@ -15,7 +15,7 @@ use crate::settings::SettingsPage;
 use crate::settings_search::entry_by_id;
 use crate::settings_ui::{
     PageContent, back_link, hint, nav_row, note, readout, row, row_with, section, select,
-    stacked_row, switch,
+    stacked_row, switch, warning_note,
 };
 use crate::sizing::{INPUT_LONG, INPUT_MEDIUM, INPUT_SHORT, StyledExt, sized_input};
 use crate::theme;
@@ -402,6 +402,22 @@ fn connection_test_body(
 // ---------------------------------------------------------------------------------------------
 // Routes
 
+/// Why a route target fails every call: its model belongs to another
+/// first-party provider than its connection's. The dispatch preflight blocks a
+/// pulsation whose stage route has only such targets.
+fn target_conflict(
+    connections: &[hvc_core::llm::ProviderConnection],
+    connection_id: &str,
+    model_id: &str,
+) -> Option<String> {
+    let connection = connections.iter().find(|c| c.id == connection_id)?;
+    let owner = hvc_core::llm::model_family_conflict(&connection.provider_id, model_id)?;
+    Some(format!(
+        "`{model_id}` is an {owner} model and `{}` is a {} connection: this target fails every call.",
+        connection.display_name, connection.provider_id
+    ))
+}
+
 pub(crate) fn routes_page(
     model: &AppModel,
     hl: Option<&str>,
@@ -434,19 +450,34 @@ pub(crate) fn routes_page(
             .iter()
             .map(|route| {
                 let id = route.id.clone();
+                let failing = route
+                    .targets
+                    .iter()
+                    .filter(|target| {
+                        target_conflict(&snapshot.connections, &target.connection_id, &target.model_id)
+                            .is_some()
+                    })
+                    .count();
                 nav_row(
                     SharedString::from(format!("settings-route:{id}")),
-                    if route.enabled {
+                    if failing > 0 {
+                        theme::warning()
+                    } else if route.enabled {
                         theme::success()
                     } else {
                         theme::text_subtle()
                     },
                     route.name.clone(),
                     format!(
-                        "{} · {} target(s) · {} attempt(s)",
+                        "{} · {} target(s) · {} attempt(s){}",
                         route.strategy,
                         route.targets.len(),
-                        route.max_attempts
+                        route.max_attempts,
+                        if failing > 0 {
+                            format!(" · {failing} will fail")
+                        } else {
+                            String::new()
+                        }
                     ),
                     cx,
                     move |model, cx| model.open_route_detail(id.clone(), cx),
@@ -528,17 +559,25 @@ fn route_detail(model: &AppModel, hl: Option<&str>, cx: &mut Context<AppModel>) 
     let target_lines: Vec<AnyElement> = if targets.is_empty() {
         vec![hint("No targets yet — choose a connection below and save.")]
     } else {
+        let connections = snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.connections.as_slice())
+            .unwrap_or_default();
         targets
             .iter()
             .enumerate()
-            .map(|(index, target)| {
-                readout(format!(
+            .flat_map(|(index, target)| {
+                let line = readout(format!(
                     "{}. {} · {}{}",
                     index + 1,
                     connection_name(&target.connection_id),
                     target.model_id,
                     if target.enabled { "" } else { " · disabled" }
-                ))
+                ));
+                let conflict =
+                    target_conflict(connections, &target.connection_id, &target.model_id)
+                        .map(warning_note);
+                std::iter::once(line).chain(conflict)
             })
             .collect()
     };
@@ -1434,5 +1473,55 @@ fn action_variant(id: &str) -> ButtonVariant {
         ButtonVariant::Tinted
     } else {
         ButtonVariant::Secondary
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::target_conflict;
+
+    fn connection(id: &str, provider: &str, name: &str) -> hvc_core::llm::ProviderConnection {
+        hvc_core::llm::ProviderConnection {
+            id: id.into(),
+            provider_id: provider.into(),
+            display_name: name.into(),
+            endpoint_url: None,
+            default_model: "model".into(),
+            enabled: true,
+            state: "active".into(),
+            blocked_reason: None,
+            cooldown_until: None,
+            max_concurrency: 1,
+            version: 1,
+            has_api_key: true,
+            chat_eligible: true,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        }
+    }
+
+    /// The route of "Haiku Teste 1": the legacy connection became Gemini and
+    /// still received `gpt-4.1-mini`.
+    #[test]
+    fn a_target_whose_model_belongs_to_another_provider_is_flagged() {
+        let connections = [
+            connection("legacy-openai", "gemini", "Gemini"),
+            connection("router", "openrouter", "OpenRouter"),
+        ];
+        assert_eq!(
+            target_conflict(&connections, "legacy-openai", "gpt-4.1-mini").as_deref(),
+            Some(
+                "`gpt-4.1-mini` is an openai model and `Gemini` is a gemini connection: this target fails every call."
+            )
+        );
+        assert_eq!(
+            target_conflict(&connections, "legacy-openai", "gemini-2.5-flash"),
+            None
+        );
+        assert_eq!(
+            target_conflict(&connections, "router", "openai/gpt-4.1-mini"),
+            None
+        );
+        assert_eq!(target_conflict(&connections, "missing", "gpt-4.1-mini"), None);
     }
 }

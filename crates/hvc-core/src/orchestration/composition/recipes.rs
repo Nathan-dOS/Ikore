@@ -791,11 +791,24 @@ fn plan_stage_units(
                 )
                 .with_related([proposal.unit_key.clone()]));
             }
+            // A file the approved Specification planned keeps its planned
+            // estimate after this stage published it, so a revision or Retry
+            // groups the units exactly like the first run. Sizing it by its
+            // published bytes regrouped a revised Code ("Teste Haiku Only 1",
+            // 2026-09-24). The delivered content itself is unchanged.
+            let planned_at_specification = spec_record.references.iter().any(|entry| {
+                entry.handle() == handle
+                    && matches!(entry, ReferenceEntryV1::PlannedDestination { .. })
+            });
             destinations.push(Destination {
                 handle: current.clone(),
                 path,
                 role,
-                baseline_bytes: delivered.get(&current).map(String::len),
+                baseline_bytes: if planned_at_specification {
+                    None
+                } else {
+                    delivered.get(&current).map(String::len)
+                },
             });
         }
         let mut node_inputs = Vec::new();
@@ -1010,6 +1023,12 @@ pub fn prompt_inputs<'a>(
             .iter()
             .filter(|(criterion, _)| unit.criterion_refs.contains(criterion))
             .map(|(criterion, text)| (criterion, text.as_str()))
+            .collect(),
+        not_applicable: preparation
+            .approved
+            .not_applicable_criteria
+            .iter()
+            .filter(|criterion| unit.criterion_refs.contains(criterion))
             .collect(),
         decisions: &preparation.decisions,
         interfaces: &preparation.interfaces,
@@ -2413,6 +2432,88 @@ mod tests {
                     .contains("- unit local_store_code: `src/js/storage/localStore.js`")
             );
         }
+    }
+
+    /// "Teste Haiku Only 1" (2026-09-24): a revision of Code ran after the
+    /// first run had published its files, so the planner sized them by their
+    /// bytes and grouped the units differently. Files the approved
+    /// Specification planned keep their planned estimate.
+    #[test]
+    fn publishing_the_planned_files_does_not_regroup_a_revised_code_stage() {
+        let h = |text: &str| Handle::new(text).unwrap();
+        let files = ["src/js/storage/localStore.js", "src/js/views/listView.js"];
+        let proposal = |key: &str, criterion: &str, owned: &str| UnitProposalV1 {
+            unit_key: h(key),
+            kind: ProposalKind::Code,
+            task_refs: vec![h("task_1")],
+            criterion_refs: vec![h(criterion)],
+            input_refs: vec![],
+            destination_refs: vec![h(owned)],
+            depends_on: vec![],
+            objective: format!("Implement {key}."),
+        };
+        let spec_record = StagePayloadRecord {
+            schema_version: SchemaV1,
+            stage: Stage::Specification,
+            plan_sha256: Sha256Hex::of(b"p"),
+            references: files
+                .iter()
+                .zip(["plan_1", "plan_2"])
+                .map(|(path, handle)| ReferenceEntryV1::PlannedDestination {
+                    handle: h(handle),
+                    relative_path: RelPath::new(*path).unwrap(),
+                    source_role: SourceRole::Source,
+                })
+                .collect(),
+            units: vec![UnitPayloadRecord {
+                logical_unit_key: h("specify_batch"),
+                response: UnitModelResponseV1::Completed {
+                    executor_kind: ExecutorKind::SpecificationAuthor,
+                    payload: CompletedPayloadV1::Specification(SpecificationContractV1 {
+                        objective: "o".into(),
+                        exclusions: vec![],
+                        decisions: vec![],
+                        requirements: vec![],
+                        existing_file_refs: vec![],
+                        planned_file_refs: vec![h("plan_1"), h("plan_2")],
+                        interface_intent: vec![],
+                        unit_proposals: vec![
+                            proposal("store", "crit_1_1", "plan_1"),
+                            proposal("view", "crit_1_2", "plan_2"),
+                        ],
+                    }),
+                },
+            }],
+        };
+        let units = |sources: Vec<SourceFile>, missing: Vec<&str>| {
+            let mut batch = manifest();
+            batch.tasks.truncate(1);
+            let mut stage_inputs = inputs(sources, missing);
+            stage_inputs.manifest = Some(batch);
+            stage_inputs
+                .prior
+                .insert(Stage::Specification, spec_record.clone());
+            prepare(Stage::Code, &stage_inputs)
+                .unwrap()
+                .drafts
+                .into_iter()
+                .map(|draft| (draft.logical_unit_key, draft.criterion_refs))
+                .collect::<Vec<_>>()
+        };
+        let first_run = units(vec![], files.to_vec());
+        // After the first run published both files (8 KB each, large enough
+        // that sizing them by bytes would keep the units apart).
+        let published = files
+            .iter()
+            .map(|path| SourceFile {
+                path: RelPath::new(*path).unwrap(),
+                role: SourceRole::Source,
+                content: "x".repeat(8_000),
+            })
+            .collect();
+        let revision = units(published, vec![]);
+        assert_eq!(first_run.len(), 1, "two small planned files coalesce");
+        assert_eq!(revision, first_run);
     }
 
     /// Greenfield read-after-write: a view that only declares it reads the

@@ -17,6 +17,7 @@ use std::fmt::Write as _;
 use super::policy::{ExecutorPolicy, common_rules};
 use super::references::ReferenceTable;
 use super::schema::SchemaFlavor;
+use super::validate::exclusive_criteria;
 use super::{
     AnchorBindingV1, ExecutorKind, Handle, InterfaceGroupV1, ReferenceEntryV1,
     StageExecutionPlanV1, UnavailableReason, WorkUnitSpecV1,
@@ -45,6 +46,8 @@ pub struct CorrectionContext {
 pub struct UnitPromptInputs<'a> {
     /// Approved requirement text per criterion handle.
     pub requirements: Vec<(&'a Handle, &'a str)>,
+    /// This unit's criteria the approved specification marked `not_applicable`.
+    pub not_applicable: Vec<&'a Handle>,
     pub decisions: &'a [String],
     pub interfaces: &'a [InterfaceGroupV1],
     pub delivered: Vec<DeliveredSource<'a>>,
@@ -151,7 +154,7 @@ pub fn response_field_guide(kind: ExecutorKind) -> &'static str {
             "Return `{\"schemaVersion\":1,\"outcome\":\"completed\",\"executorKind\":\"intake_classifier\",\"payload\":{\"tasks\":[{\"taskRef\",\"classification\",\"risk\",\"summary\"}],\"issues\":[...],\"usedRefs\":[...]}}`. One `tasks` entry per task handle listed above. Or `{\"schemaVersion\":1,\"outcome\":\"failed\",\"code\",\"message\",\"relatedRefs\"}`."
         }
         ExecutorKind::SpecificationAuthor => {
-            "Return `{\"schemaVersion\":1,\"outcome\":\"completed\",\"executorKind\":\"specification_author\",\"payload\":{\"objective\",\"exclusions\":[...],\"decisions\":[...],\"requirements\":[{\"taskRef\",\"criterionRef\",\"requirement\",\"verificationIntent\",\"verificationMode\":\"executed_check|document_check|not_applicable\",\"requiredCheckRefs\":[...],\"notApplicableReason\":null|\"...\"}],\"existingFileRefs\":[...],\"plannedFileRefs\":[...],\"interfaceIntent\":[{\"intent\":\"preserve|change|new|none\",\"sourceRefs\",\"criterionRefs\",\"description\"}],\"unitProposals\":[{\"unitKey\",\"kind\":\"code|test\",\"taskRefs\",\"criterionRefs\",\"inputRefs\",\"destinationRefs\",\"dependsOn\",\"objective\"}]}}`. Exactly one requirement per criterion handle. When a human decision is missing: `{\"schemaVersion\":1,\"outcome\":\"needs_input\",\"missingRefs\":[...],\"questions\":[{\"key\",\"taskRefs\",\"question\",\"rationale\"}]}`."
+            "Return `{\"schemaVersion\":1,\"outcome\":\"completed\",\"executorKind\":\"specification_author\",\"payload\":{\"objective\",\"exclusions\":[...],\"decisions\":[...],\"requirements\":[{\"taskRef\",\"criterionRef\",\"requirement\",\"verificationIntent\",\"verificationMode\":\"executed_check|document_check|not_applicable\",\"requiredCheckRefs\":[...],\"notApplicableReason\":null|\"...\"}],\"existingFileRefs\":[...],\"plannedFileRefs\":[...],\"interfaceIntent\":[{\"intent\":\"preserve|change|new|none\",\"sourceRefs\",\"criterionRefs\",\"description\"}],\"unitProposals\":[{\"unitKey\",\"kind\":\"code|test\",\"taskRefs\",\"criterionRefs\",\"inputRefs\",\"destinationRefs\",\"dependsOn\",\"objective\"}]}}`. Exactly one requirement per criterion handle; `requiredCheckRefs` may name only handles listed under \"Host checks\". When a human decision is missing: `{\"schemaVersion\":1,\"outcome\":\"needs_input\",\"missingRefs\":[...],\"questions\":[{\"key\",\"taskRefs\",\"question\",\"rationale\"}]}`."
         }
         ExecutorKind::ContractAuthor => {
             "Return `{\"schemaVersion\":1,\"outcome\":\"completed\",\"executorKind\":\"contract_author\",\"payload\":{\"groups\":[{\"interfaceKey\",\"intent\":\"preserve|change|new\",\"sourceRefs\",\"criterionRefs\",\"signature\",\"invariants\":[...]}],\"unitBindings\":[{\"unitKey\",\"interfaceKeys\",\"dependsOn\"}],\"usedRefs\":[...]}}` or a `failed` outcome with `code` in contract_conflict|scope_insufficient|implementation_mismatch|unsupported_operation."
@@ -160,10 +163,10 @@ pub fn response_field_guide(kind: ExecutorKind) -> &'static str {
             "Return `{\"schemaVersion\":1,\"outcome\":\"completed\",\"executorKind\":\"<your specialty>\",\"payload\":{\"edits\":[{\"artifactKey\",\"edit\":{\"operation\":\"create_file\",\"destinationRef\",\"content\"}|{\"operation\":\"replace_file\",\"sourceRef\",\"content\"}|{\"operation\":\"replace_anchor\",\"anchorRef\",\"content\"}}],\"evidence\":[{\"taskRef\",\"criterionRefs\",\"artifactKeys\",\"inputRefs\",\"explanation\"}],\"usedRefs\":[...]}}`. `content` for an anchor replaces exactly the bytes between its markers. Or a `failed` outcome (`contract_conflict` when an approved interface would have to change)."
         }
         ExecutorKind::TestAuthor | ExecutorKind::TestRepairer => {
-            "Return `{\"schemaVersion\":1,\"outcome\":\"completed\",\"executorKind\":\"<your specialty>\",\"payload\":{\"edits\":[...same edit shape as Code...],\"coverage\":[{\"taskRef\",\"criterionRef\",\"coverage\":\"authored|existing|not_applicable\",\"testArtifactKeys\",\"testInputRefs\",\"checkRefs\",\"explanation\"}],\"evidence\":[...],\"usedRefs\":[...]}}`. One `coverage` entry per criterion handle. Or a `failed` outcome (`implementation_mismatch` for a production defect)."
+            "Return `{\"schemaVersion\":1,\"outcome\":\"completed\",\"executorKind\":\"<your specialty>\",\"payload\":{\"edits\":[...same edit shape as Code...],\"coverage\":[{\"taskRef\",\"criterionRef\",\"coverage\":\"authored|existing|not_applicable\",\"testArtifactKeys\",\"testInputRefs\",\"checkRefs\",\"explanation\"}],\"evidence\":[...],\"usedRefs\":[...]}}`. One `coverage` entry per criterion handle; `checkRefs` may name only handles listed under \"Host checks\". A criterion approved as not_applicable takes `coverage: not_applicable` and needs no evidence item. Or a `failed` outcome (`implementation_mismatch` for a production defect)."
         }
         ExecutorKind::IntegrationReviewer => {
-            "Return `{\"schemaVersion\":1,\"outcome\":\"completed\",\"executorKind\":\"integration_reviewer\",\"payload\":{\"assessments\":[{\"taskRef\",\"criterionRef\",\"verdict\":\"supported|contradicted|unverified\",\"inputRefs\",\"checkRefs\",\"explanation\"}],\"blockers\":[...],\"documentationEdits\":[...],\"usedRefs\":[...]}}`. One assessment per criterion handle."
+            "Return `{\"schemaVersion\":1,\"outcome\":\"completed\",\"executorKind\":\"integration_reviewer\",\"payload\":{\"assessments\":[{\"taskRef\",\"criterionRef\",\"verdict\":\"supported|contradicted|unverified\",\"inputRefs\",\"checkRefs\",\"explanation\"}],\"blockers\":[...],\"documentationEdits\":[...],\"usedRefs\":[...]}}`. One assessment per criterion handle; `checkRefs` may name only handles listed under \"Host checks\", never a file handle."
         }
     }
 }
@@ -177,8 +180,14 @@ pub fn failure_envelope_guide(flavor: SchemaFlavor) -> &'static str {
         SchemaFlavor::Canonical => {
             r#"For any `failed` outcome, return exactly `{"schemaVersion":1,"outcome":"failed","code":"<code>","message":"short reason","relatedRefs":[...]}`, where `<code>` is exactly one of `contract_conflict`, `scope_insufficient`, `implementation_mismatch` or `unsupported_operation` and names the actual blocker. Do not include `executorKind`, `payload`, `missingRefs`, or `questions`."#
         }
+        // The StructuredOutput tool's only argument is already `response`.
+        // Showing the envelope wrapped in `{"response":…}` made Haiku nest a
+        // second one; Claude Code rejected each call and the model rewrote
+        // 20 KB of tests four times ("Haiku CLI teste 1", 2026-09-26).
         SchemaFlavor::Claude => {
-            r#"For any `failed` outcome, return exactly `{"response":{"schemaVersion":1,"outcome":"failed","code":"<code>","message":"short reason","relatedRefs":[...]}}`, where `<code>` is exactly one of `contract_conflict`, `scope_insufficient`, `implementation_mismatch` or `unsupported_operation` and names the actual blocker. Do not include `executorKind`, `payload`, `missingRefs`, or `questions`."#
+            r#"For any `failed` outcome, return exactly `{"schemaVersion":1,"outcome":"failed","code":"<code>","message":"short reason","relatedRefs":[...]}`, where `<code>` is exactly one of `contract_conflict`, `scope_insufficient`, `implementation_mismatch` or `unsupported_operation` and names the actual blocker. Do not include `executorKind`, `payload`, `missingRefs`, or `questions`.
+
+Deliver the response only by calling the StructuredOutput tool with its `response` argument set to that JSON object. Never wrap it in a second `response`, and keep file contents properly escaped JSON strings."#
         }
         SchemaFlavor::Strict => {
             r#"For any `failed` outcome, return exactly `{"schemaVersion":1,"outcome":"failed","executorKind":null,"payload":null,"missingRefs":null,"questions":null,"code":"<code>","message":"short reason","relatedRefs":[...]}`, where `<code>` is exactly one of `contract_conflict`, `scope_insufficient`, `implementation_mismatch` or `unsupported_operation` and names the actual blocker. Do not put a non-null value in any inactive field."#
@@ -192,6 +201,14 @@ fn path_list(table: &ReferenceTable, handles: &[Handle]) -> Vec<String> {
         .filter_map(|handle| table.entry(handle)?.relative_path())
         .map(|path| format!("`{path}`"))
         .collect()
+}
+
+fn handle_list(handles: &[&Handle]) -> String {
+    handles
+        .iter()
+        .map(|handle| format!("`{handle}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Boundary between this unit's obligation and the batch-wide context, only
@@ -258,6 +275,10 @@ pub fn render_unit_prompt(
     flavor: SchemaFlavor,
 ) -> RenderedPrompt {
     let mut user = String::new();
+    let tests = matches!(
+        policy.kind,
+        ExecutorKind::TestAuthor | ExecutorKind::TestRepairer
+    );
     let _ = writeln!(user, "## Objective\n\n{}\n", unit.objective);
     render_unit_scope(&mut user, plan, unit, table);
 
@@ -280,7 +301,34 @@ pub fn render_unit_prompt(
             {
                 let _ = writeln!(user, "    - requirement: {requirement}");
             }
+            if tests && inputs.not_applicable.contains(&criterion) {
+                user.push_str("    - approved as not_applicable: cover it `not_applicable`; it needs no evidence item.\n");
+            }
         }
+    }
+    let exclusive = exclusive_criteria(plan, unit);
+    let shared = unit
+        .criterion_refs
+        .iter()
+        .filter(|criterion| !exclusive.contains(criterion))
+        .collect::<Vec<_>>();
+    // Test settles an approved `not_applicable` criterion by its coverage entry.
+    let required = exclusive
+        .into_iter()
+        .filter(|criterion| !(tests && inputs.not_applicable.contains(criterion)))
+        .collect::<Vec<_>>();
+    if policy.requires_evidence && !shared.is_empty() {
+        let _ = writeln!(
+            user,
+            "\nEvidence required from this unit: {}. Shared with other units of this stage (evidence them only where your own edits contribute): {}.",
+            if required.is_empty() {
+                "none of its own, but cite at least one shared criterion your edits contribute to"
+                    .to_owned()
+            } else {
+                handle_list(&required)
+            },
+            handle_list(&shared)
+        );
     }
     user.push('\n');
 
@@ -345,6 +393,18 @@ pub fn render_unit_prompt(
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+    } else if plan.check_refs.is_empty()
+        && matches!(
+            policy.kind,
+            ExecutorKind::SpecificationAuthor
+                | ExecutorKind::TestAuthor
+                | ExecutorKind::TestRepairer
+                | ExecutorKind::IntegrationReviewer
+        )
+    {
+        // Without this line a model filled `checkRefs` with the test file
+        // it relied on ("Teste Haiku Only 1", 2026-09-24).
+        user.push_str("\nNo host check is configured for this stage: every `checkRefs` / `requiredCheckRefs` must be `[]`.\n");
     }
     user.push('\n');
 
@@ -412,7 +472,27 @@ pub fn render_unit_prompt(
     }
 
     if let Some(correction) = inputs.correction {
-        user.push_str("## Correction\n\nYour unit's previous output was rejected. Fix only what is listed; do not re-author anything else.\n\n");
+        // The rejected answer is discarded whole and never shown: asking for
+        // "only the fix" produced a partial answer the same validation
+        // rejected again ("Teste Haiku Only 1", 2026-09-24).
+        user.push_str("## Correction\n\nYour previous response was rejected for the reasons below. It is not shown to you and nothing from it is kept: return the COMPLETE response again, not only the corrected part.\n");
+        // Code and Test deliver files; the Integrator's documentation edits
+        // stay optional.
+        if policy.requires_evidence && !unit.owned_destination_refs.is_empty() {
+            let _ = writeln!(
+                user,
+                "- Deliver the complete edits for: {}.",
+                path_list(table, &unit.owned_destination_refs).join(", ")
+            );
+        }
+        if policy.requires_evidence && !required.is_empty() {
+            let _ = writeln!(
+                user,
+                "- Evidence every criterion this unit must evidence: {}.",
+                handle_list(&required)
+            );
+        }
+        user.push_str("\nRejection reasons:\n");
         for diagnostic in &correction.diagnostics {
             let _ = writeln!(user, "- {diagnostic}");
         }
@@ -587,6 +667,7 @@ mod tests {
         }];
         let inputs = UnitPromptInputs {
             requirements: vec![(&plan.units[0].criterion_refs[0], "Return 2 from `value()`.")],
+            not_applicable: Vec::new(),
             decisions: &decisions,
             interfaces: &interfaces,
             delivered: vec![DeliveredSource {
@@ -691,6 +772,150 @@ mod tests {
         assert!(prompt.user.contains("Rejected artifact keys: `lib_v2`."));
         assert!(!prompt.user.contains("Small file"));
         assert!(prompt.system.contains("code_repairer"));
+        // "Teste Haiku Only 1": "fix only what is listed" produced a partial
+        // answer that the same validation rejected. The correction asks for
+        // the whole replacement and names what it must contain.
+        assert!(prompt.user.contains("return the COMPLETE response again"));
+        assert!(!prompt.user.contains("Fix only what is listed"));
+        assert!(
+            prompt
+                .user
+                .contains("- Deliver the complete edits for: `src/lib.rs`.")
+        );
+        assert!(
+            prompt
+                .user
+                .contains("- Evidence every criterion this unit must evidence: `crit_1_1`.")
+        );
+        assert!(prompt.system.contains("complete result again"));
+        assert!(!prompt.system.contains("only the corrected edits"));
+    }
+
+    #[test]
+    fn a_stage_without_host_checks_says_check_citations_must_be_empty() {
+        let (mut plan, table, _) = setup();
+        let render = |plan: &StageExecutionPlanV1, kind: ExecutorKind| {
+            let mut unit = plan.units[0].clone();
+            unit.executor_kind = kind;
+            render_unit_prompt(
+                plan,
+                &unit,
+                &table,
+                policy_for(kind),
+                &UnitPromptInputs::default(),
+                SchemaFlavor::Canonical,
+            )
+            .user
+        };
+        let no_checks = "No host check is configured for this stage: every `checkRefs` / `requiredCheckRefs` must be `[]`.";
+        // With a configured check the prompt names it, and says nothing else.
+        let with = render(&plan, ExecutorKind::IntegrationReviewer);
+        assert!(with.contains("Host checks that will run on your output: `cargo_check`."));
+        assert!(!with.contains(no_checks));
+        plan.check_refs.clear();
+        plan.units[0].required_check_refs.clear();
+        for kind in [
+            ExecutorKind::SpecificationAuthor,
+            ExecutorKind::TestAuthor,
+            ExecutorKind::IntegrationReviewer,
+        ] {
+            let text = render(&plan, kind);
+            assert!(text.contains(no_checks), "{kind:?}");
+            assert!(
+                text.contains("may name only handles listed under \"Host checks\""),
+                "{kind:?}"
+            );
+        }
+        // Code has no check field to fill.
+        assert!(!render(&plan, ExecutorKind::CodeImplementer).contains(no_checks));
+    }
+
+    #[test]
+    fn a_split_stage_names_required_and_shared_criteria() {
+        let (mut plan, table, _) = setup();
+        plan.units[0].task_refs = vec![h("task_1"), h("task_2")];
+        plan.units[0].criterion_refs = vec![h("crit_1_1"), h("crit_2_1")];
+        let mut sibling = plan.units[0].clone();
+        sibling.unit_id = uuid(9);
+        sibling.logical_unit_key = h("sibling");
+        sibling.task_refs = vec![h("task_2")];
+        sibling.criterion_refs = vec![h("crit_2_1")];
+        sibling.owned_destination_refs = vec![];
+        plan.units.push(sibling);
+        let correction = CorrectionContext {
+            diagnostics: vec!["No evidence covers criterion `crit_1_1`.".into()],
+            rejected_artifact_keys: vec![],
+        };
+        let inputs = UnitPromptInputs {
+            correction: Some(&correction),
+            ..Default::default()
+        };
+        let prompt = render_unit_prompt(
+            &plan,
+            &plan.units[0],
+            &table,
+            policy_for(ExecutorKind::CodeImplementer),
+            &inputs,
+            SchemaFlavor::Canonical,
+        );
+        assert!(prompt.user.contains("Evidence required from this unit: `crit_1_1`. Shared with other units of this stage (evidence them only where your own edits contribute): `crit_2_1`."), "{}", prompt.user);
+        assert!(
+            prompt
+                .user
+                .contains("- Evidence every criterion this unit must evidence: `crit_1_1`.")
+        );
+        // A single-unit stage has nothing shared to explain.
+        let (plan, table, _) = setup();
+        let single = render_unit_prompt(
+            &plan,
+            &plan.units[0],
+            &table,
+            policy_for(ExecutorKind::CodeImplementer),
+            &UnitPromptInputs::default(),
+            SchemaFlavor::Canonical,
+        );
+        assert!(!single.user.contains("Evidence required from this unit"));
+    }
+
+    /// Test is told which criteria the Specification exempted and is not
+    /// asked to evidence them; Code keeps owing them ("Haiku CLI teste 1").
+    #[test]
+    fn test_prompts_mark_approved_not_applicable_criteria_as_needing_no_evidence() {
+        let (mut plan, table, _) = setup();
+        plan.units[0].task_refs = vec![h("task_1"), h("task_2")];
+        plan.units[0].criterion_refs = vec![h("crit_1_1"), h("crit_2_1")];
+        let correction = CorrectionContext {
+            diagnostics: vec!["No evidence covers criterion `crit_1_1`.".into()],
+            rejected_artifact_keys: vec![],
+        };
+        let exempt = h("crit_2_1");
+        let inputs = UnitPromptInputs {
+            not_applicable: vec![&exempt],
+            correction: Some(&correction),
+            ..Default::default()
+        };
+        let render = |kind| {
+            render_unit_prompt(
+                &plan,
+                &plan.units[0],
+                &table,
+                policy_for(kind),
+                &inputs,
+                SchemaFlavor::Canonical,
+            )
+            .user
+        };
+        let line =
+            "approved as not_applicable: cover it `not_applicable`; it needs no evidence item.";
+        let test = render(ExecutorKind::TestAuthor);
+        assert!(test.contains(line), "{test}");
+        assert!(test.contains("- Evidence every criterion this unit must evidence: `crit_1_1`."));
+        assert!(test.contains("needs no evidence item. Or a `failed` outcome"));
+        let code = render(ExecutorKind::CodeImplementer);
+        assert!(!code.contains(line));
+        assert!(code.contains(
+            "- Evidence every criterion this unit must evidence: `crit_1_1`, `crit_2_1`."
+        ));
     }
 
     #[test]
@@ -698,8 +923,14 @@ mod tests {
         let canonical = failure_envelope_guide(SchemaFlavor::Canonical);
         assert!(canonical.contains("Do not include `executorKind`"));
         assert!(!canonical.contains("\"executorKind\":null"));
+        // Claude answers through a tool whose only argument is `response`:
+        // the example is unwrapped and a second wrapper is forbidden.
         let claude = failure_envelope_guide(SchemaFlavor::Claude);
-        assert!(claude.contains("{\"response\":{\"schemaVersion\":1"));
+        assert!(claude.contains("`{\"schemaVersion\":1,\"outcome\":\"failed\""));
+        assert!(!claude.contains("{\"response\":"));
+        assert!(claude.contains("StructuredOutput tool with its `response` argument"));
+        assert!(claude.contains("Never wrap it in a second `response`"));
+        assert!(!canonical.contains("StructuredOutput"));
         assert!(claude.contains("Do not include `executorKind`"));
         assert!(!claude.contains("\"executorKind\":null"));
         let strict = failure_envelope_guide(SchemaFlavor::Strict);

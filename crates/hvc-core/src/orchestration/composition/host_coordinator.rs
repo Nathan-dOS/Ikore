@@ -77,6 +77,39 @@ struct UnitFailure {
     /// The worker could plausibly fix this with a bounded correction.
     repairable: bool,
     correction: Option<CorrectionContext>,
+    /// The model's own answer was rejected (parse, validation, truncation):
+    /// Test and the Integrator then revise themselves, not the Code.
+    rejected_answer: bool,
+}
+
+/// A rejection of the worker's own response (parse or `validate_child`).
+/// Every reference conflict there is the model citing a handle it may not
+/// cite - a task, input, proposal key, anchor or check - and gets the bounded
+/// correction; only a reference-table identity conflict (SC-003) is a host
+/// invariant. Restricting the correction to SC-002/SC-004 turned an
+/// Integrator's `checkRefs` slip into a forced Code revision ("Teste Haiku
+/// Only 1", 2026-09-24). Host-side paths keep `classify_composition_error`.
+fn classify_worker_rejection(error: &CompositionError) -> UnitFailure {
+    let mut failure = classify_composition_error(error);
+    failure.rejected_answer = true;
+    if error.code == ErrorCode::ReferenceConflict && error.sc != Invariant::Sc003 {
+        failure.class = FailureClass::BudgetExhausted;
+        failure.repairable = true;
+        failure.correction = Some(correction_for(error));
+    }
+    failure
+}
+
+fn correction_for(error: &CompositionError) -> CorrectionContext {
+    CorrectionContext {
+        diagnostics: vec![error.message.clone()],
+        rejected_artifact_keys: error
+            .related
+            .iter()
+            .filter(|handle| comp::references::Namespace::of(handle).is_none())
+            .cloned()
+            .collect(),
+    }
 }
 
 fn classify_composition_error(error: &CompositionError) -> UnitFailure {
@@ -125,15 +158,8 @@ fn classify_composition_error(error: &CompositionError) -> UnitFailure {
             error.message
         ),
         repairable,
-        correction: repairable.then(|| CorrectionContext {
-            diagnostics: vec![error.message.clone()],
-            rejected_artifact_keys: error
-                .related
-                .iter()
-                .filter(|handle| comp::references::Namespace::of(handle).is_none())
-                .cloned()
-                .collect(),
-        }),
+        correction: repairable.then(|| correction_for(error)),
+        rejected_answer: false,
     }
 }
 
@@ -186,6 +212,7 @@ fn classify_transport_error(error: &PersistenceServiceError) -> Option<UnitFailu
             diagnostic: transport_diagnostic(error),
             repairable: false,
             correction: None,
+            rejected_answer: false,
         });
     }
     if matches!(
@@ -198,6 +225,7 @@ fn classify_transport_error(error: &PersistenceServiceError) -> Option<UnitFailu
             diagnostic: error.to_string(),
             repairable: false,
             correction: None,
+            rejected_answer: true,
         });
     }
     let class = match error {
@@ -214,6 +242,7 @@ fn classify_transport_error(error: &PersistenceServiceError) -> Option<UnitFailu
             FailureClass::ProviderTransport | FailureClass::RetryBudgetExhausted
         ),
         correction: None,
+        rejected_answer: false,
     })
 }
 
@@ -332,7 +361,7 @@ impl PersistenceService {
             let findings = self.integrator_prechecks(&current.id, &inputs, root)?;
             if !findings.is_empty() {
                 let mut extra = preparation.extra_instructions.take().unwrap_or_default();
-                extra.push_str("\n## Host pre-checks\n\nThe host verified these deterministically; address only what they leave open and never contradict them:\n");
+                extra.push_str("\n## Host pre-checks\n\nThe host verified these deterministically; address only what they leave open and never contradict them. They describe checks of earlier stages by name for context only: cite no check handle that is not listed under Host checks.\n");
                 for finding in &findings {
                     extra.push_str("- ");
                     extra.push_str(finding);
@@ -421,6 +450,10 @@ impl PersistenceService {
                 self.park_execution(job, parent_run_id, &execution, Some(unit), failure)?;
                 return Ok(());
             }
+        }
+        if let Some(failure) = Self::uncovered_criteria_failure(&self.connection()?, &execution)? {
+            self.park_execution(job, parent_run_id, &execution, None, &failure)?;
+            return Ok(());
         }
         // Every unit validated: run the host checks on the assembled
         // candidate (M4). A required failure either gets one bounded repair
@@ -557,14 +590,14 @@ impl PersistenceService {
                 let receipts = Self::latest_validation_receipts(&db, &execution.id)?;
                 let Some(receipt) = receipts.iter().find(|r| &r.check_ref == check) else {
                     findings.push(format!(
-                        "Check `{check}` of stage {} has no receipt (not run).",
+                        "The {} check named {check} has no receipt (not run).",
                         stage.as_db_value()
                     ));
                     continue;
                 };
                 if receipt.status != comp::ReceiptStatus::Passed {
                     findings.push(format!(
-                        "Check `{check}` of stage {} did not pass ({}).",
+                        "The {} check named {check} did not pass ({}).",
                         stage.as_db_value(),
                         receipt_status_label(receipt.status)
                     ));
@@ -598,7 +631,7 @@ impl PersistenceService {
                     .map_err(|e| composition_invalid(&e))?;
                 if current != receipt.input_manifest_sha256 {
                     findings.push(format!(
-                        "Check `{check}` of stage {} is stale: its inputs changed after the receipt.",
+                        "The {} check named {check} is stale: its inputs changed after the receipt.",
                         stage.as_db_value()
                     ));
                 }
@@ -825,6 +858,7 @@ impl PersistenceService {
                     ),
                     repairable: false,
                     correction: None,
+                    rejected_answer: false,
                 };
                 self.park_execution(job, parent_run_id, execution, None, &failure)?;
                 return Ok(None);
@@ -915,6 +949,7 @@ impl PersistenceService {
                 ),
                 repairable: false,
                 correction: None,
+                rejected_answer: false,
             };
             self.park_execution(job, parent_run_id, execution, owner.as_ref(), &failure)?;
             return Ok(None);
@@ -1022,6 +1057,7 @@ impl PersistenceService {
                         .into(),
                 repairable: false,
                 correction: None,
+                rejected_answer: false,
             }),
             Ok(AttemptResult::Failed(mut failure)) => {
                 failure.repairable = false;
@@ -1951,8 +1987,12 @@ impl PersistenceService {
             Some(unit) => format!("Unit `{}`: {}", unit.logical_unit_key, failure.diagnostic),
             None => failure.diagnostic.clone(),
         };
-        let offered =
-            offered_decisions_v4(failure.class, execution.stage, remaining.extra_invocations);
+        let offered = offered_decisions_v4(
+            failure.class,
+            execution.stage,
+            remaining.extra_invocations,
+            failure.rejected_answer,
+        );
         let parked = match &offered {
             Some(offered) => Self::record_stage_failure_checkpoint_v4(
                 &tx,
@@ -1992,6 +2032,7 @@ impl PersistenceService {
                 diagnostic,
                 repairable: false,
                 correction: None,
+                rejected_answer: failure.rejected_answer,
             };
             Self::finalize_composed_failure(&tx, job, parent_run_id, &current, &terminal)?;
         }
@@ -2017,6 +2058,86 @@ impl PersistenceService {
         Ok(())
     }
 
+    /// A unit evidences only the criteria no sibling shares
+    /// (`validate::exclusive_criteria`); the stage still owes evidence for
+    /// every criterion. A shared criterion none of its units evidenced parks
+    /// the stage before any host check runs.
+    fn uncovered_criteria_failure(
+        db: &Connection,
+        execution: &ExecutionRow,
+    ) -> Result<Option<UnitFailure>, PersistenceServiceError> {
+        if execution.plan.units.len() < 2 {
+            return Ok(None);
+        }
+        let responses = Self::load_units(db, &execution.id)?
+            .into_iter()
+            .filter_map(|unit| unit.validated_result_json)
+            .filter_map(|json| serde_json::from_str::<UnitModelResponseV1>(&json).ok())
+            .collect::<Vec<_>>();
+        let mut evidenced = HashSet::new();
+        for response in &responses {
+            let UnitModelResponseV1::Completed { payload, .. } = response else {
+                continue;
+            };
+            // Other stages judge their criteria per unit only.
+            let Some(settled) = comp::validate::settled_criteria(payload) else {
+                return Ok(None);
+            };
+            evidenced.extend(settled);
+        }
+        let uncovered = comp::validate::uncovered_stage_criteria(&execution.plan, &evidenced);
+        if uncovered.is_empty() {
+            return Ok(None);
+        }
+        let listed = uncovered
+            .iter()
+            .map(|(criterion, units)| {
+                format!(
+                    "`{criterion}` (units {})",
+                    units
+                        .iter()
+                        .map(|unit| format!("`{unit}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        Ok(Some(UnitFailure {
+            class: FailureClass::HostContract,
+            code: ErrorCode::EvidenceUnresolved.as_str().to_owned(),
+            diagnostic: format!(
+                "{} {}: no unit evidenced {listed}. A shared criterion needs evidence from at least one unit whose edits contribute to it.",
+                Invariant::Sc010.as_str(),
+                ErrorCode::EvidenceUnresolved.as_str()
+            ),
+            repairable: false,
+            correction: None,
+            rejected_answer: false,
+        }))
+    }
+
+    /// Why the predecessor execution (a parked stage the user retried)
+    /// rejected the last answer of this logical unit. Only rejections of the
+    /// answer itself qualify; a transport fault says nothing to the model.
+    fn carried_rejection(
+        db: &Connection,
+        execution: &ExecutionRow,
+        unit: &UnitRow,
+    ) -> Result<Option<CorrectionContext>, PersistenceServiceError> {
+        let diagnostic: Option<String> = db
+            .query_row(
+                "SELECT a.diagnostic FROM stage_work_unit_attempts a JOIN stage_work_units u ON u.id=a.unit_id WHERE u.execution_id=(SELECT predecessor_execution_id FROM stage_executions WHERE id=?1) AND u.logical_unit_key=?2 AND a.state='rejected' AND a.diagnostic IS NOT NULL AND a.error_code IN ('invalid_shape','invalid_language','output_truncated','reference_conflict','ownership_violation','evidence_unresolved') ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1",
+                params![execution.id, unit.logical_unit_key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(diagnostic.map(|diagnostic| CorrectionContext {
+            diagnostics: vec![diagnostic],
+            rejected_artifact_keys: Vec::new(),
+        }))
+    }
+
     /// Runs one unit: initial attempt, then at most one bounded correction or
     /// transport retry within the shared allowance. Never parks: the driver
     /// does, once per execution, after the round settles.
@@ -2033,6 +2154,14 @@ impl PersistenceService {
     ) -> Result<UnitOutcome, PersistenceServiceError> {
         let mut unit = unit.clone();
         let mut correction: Option<CorrectionContext> = None;
+        // A Retry of a parked stage re-runs this unit in a fresh execution:
+        // the first attempt carries why its last answer was rejected (never
+        // the answer), or the Retry would resend the same prompt.
+        let mut carried = if unit.generation == 1 {
+            Self::carried_rejection(&self.connection()?, execution, &unit)?
+        } else {
+            None
+        };
         let mut kind = unit.executor_kind;
         loop {
             if cancellation.is_cancelled() {
@@ -2060,7 +2189,7 @@ impl PersistenceService {
                     &unit,
                     kind,
                     pool,
-                    correction.as_ref(),
+                    correction.as_ref().or(carried.as_ref()),
                     project,
                     runtime_config,
                     cancellation,
@@ -2078,6 +2207,7 @@ impl PersistenceService {
                 }
                 Err(error) => return Err(error),
             };
+            carried = None;
             // One bounded correction/retry per unit, only for repairable
             // faults and only while the shared allowance permits it.
             let can_repair = attempt.repairable && unit.generation == 1;
@@ -2217,6 +2347,7 @@ impl PersistenceService {
                         diagnostic: message,
                         repairable: false,
                         correction: None,
+                        rejected_answer: false,
                     }));
                 }
                 Err(error) => return Err(error),
@@ -2382,6 +2513,7 @@ impl PersistenceService {
                     diagnostic: error.to_string(),
                     repairable: false,
                     correction: None,
+                    rejected_answer: false,
                 });
                 // Release the budget reservation for provider-configuration
                 // errors (MissingApiKey, Authentication, Billing, Permission,
@@ -2416,12 +2548,20 @@ impl PersistenceService {
         };
         Self::persist_attempt_output(&db, &attempt, job, &output, &response_schema, None)?;
         let flavor = flavor_for_provider(&output.provider);
+        let mut host_notes = Vec::new();
         let parsed = comp::parse::parse_unit_response(&output.raw_output, kind, flavor).and_then(
-            |response| {
+            |mut response| {
+                // A stage without host checks has nothing a check citation
+                // could name: the host clears such citations (with an audit
+                // note) instead of failing the answer over them.
+                if index.plan().check_refs.is_empty() {
+                    host_notes = comp::validate::normalize_without_checks(&mut response);
+                }
                 validate_child(index, &unit.spec, &preparation.approved, &response)?;
                 Ok(response)
             },
         );
+        let host_note = (!host_notes.is_empty()).then(|| host_notes.join("; "));
         match parsed {
             Ok(response) => {
                 if let UnitModelResponseV1::NeedsInput { questions, .. } = &response {
@@ -2524,7 +2664,7 @@ impl PersistenceService {
                     &attempt,
                     AttemptState::Succeeded,
                     None,
-                    None,
+                    host_note.as_deref(),
                     Some(&output.model),
                     Some(sha.as_str()),
                 )?;
@@ -2545,7 +2685,7 @@ impl PersistenceService {
                 Ok(AttemptResult::Validated)
             }
             Err(error) => {
-                let failure = classify_composition_error(&error);
+                let failure = classify_worker_rejection(&error);
                 Self::finish_attempt(
                     &db,
                     &attempt,
@@ -3202,6 +3342,64 @@ mod tests {
         assert_eq!(failure.code, "reference_conflict");
         assert!(failure.repairable);
         assert!(failure.correction.is_some());
+    }
+
+    /// "Teste Haiku Only 1" (2026-09-24): an Integrator citing the test file
+    /// `src_7` in `checkRefs` (SC-011) became a non-repairable host failure
+    /// and forced a Code revision. A worker's citation of the wrong handle is
+    /// correctable whatever the invariant; the table identity (SC-003) and
+    /// host-side paths are not.
+    #[test]
+    fn a_worker_citation_error_of_any_invariant_gets_the_bounded_correction() {
+        for (invariant, message) in [
+            (
+                Invariant::Sc011,
+                "`assessment.checkRefs` cites unknown check `src_7`.",
+            ),
+            (
+                Invariant::Sc006,
+                "Proposal `view` depends on `plan_4`, which is not another proposal.",
+            ),
+            (
+                Invariant::Sc009,
+                "Anchor `anchor_9` was not issued in this plan.",
+            ),
+            (
+                Invariant::Sc002,
+                "Task `task_9` is not assigned to this unit.",
+            ),
+        ] {
+            let error = CompositionError::new(invariant, ErrorCode::ReferenceConflict, message);
+            let failure = classify_worker_rejection(&error);
+            assert_eq!(
+                failure.class,
+                FailureClass::BudgetExhausted,
+                "{invariant:?}"
+            );
+            assert!(failure.repairable, "{invariant:?}");
+            let correction = failure.correction.expect("a correction");
+            assert_eq!(correction.diagnostics, vec![message.to_string()]);
+            assert!(failure.diagnostic.starts_with(invariant.as_str()));
+        }
+        let identity = CompositionError::new(
+            Invariant::Sc003,
+            ErrorCode::ReferenceConflict,
+            "same candidate path has different producer identity",
+        );
+        let failure = classify_worker_rejection(&identity);
+        assert_eq!(failure.class, FailureClass::HostContract);
+        assert!(!failure.repairable && failure.correction.is_none());
+        // Host-side paths are unchanged: an SC-011 raised outside a worker
+        // response stays a host contract failure.
+        let host = CompositionError::new(
+            Invariant::Sc011,
+            ErrorCode::ReferenceConflict,
+            "Unit `review_batch` requires unknown check `cargo_check`.",
+        );
+        assert_eq!(
+            classify_composition_error(&host).class,
+            FailureClass::HostContract
+        );
     }
 
     #[test]

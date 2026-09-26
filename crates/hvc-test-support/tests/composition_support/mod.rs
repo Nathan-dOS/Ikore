@@ -211,6 +211,22 @@ impl Harness {
         + Sync
         + 'static,
     ) -> Self {
+        Self::start_prepared(env, tasks, settings, responder, |_| {})
+    }
+
+    /// Like `start_with`, running `prepare` after the pulsation is queued but
+    /// before the job worker starts, so a role routed there is in place before
+    /// its stage is planned (routing after `start_with` races the first stages).
+    pub fn start_prepared(
+        env: IsolatedTestEnvironment,
+        tasks: Vec<TaskDraft>,
+        settings: CompositionSettings,
+        responder: impl Fn(&PromptFacts, usize, &RecordedRequest) -> ScriptedResponse
+        + Send
+        + Sync
+        + 'static,
+        prepare: impl FnOnce(&Self),
+    ) -> Self {
         let observed: Arc<Mutex<Vec<String>>> = Arc::default();
         let seen = observed.clone();
         let server = ScriptedHttpServer::respond_with(move |request| {
@@ -290,9 +306,7 @@ impl Harness {
             .unwrap();
         let stop = CancellationToken::new();
         let guard = stop.clone().drop_guard();
-        let worker_service = service.clone();
-        runtime.spawn(async move { worker_service.run_job_worker_until(stop).await });
-        Self {
+        let harness = Self {
             env,
             service,
             project,
@@ -302,7 +316,13 @@ impl Harness {
             _server: server,
             _runtime: runtime,
             _stop: guard,
-        }
+        };
+        prepare(&harness);
+        let worker_service = harness.service.clone();
+        harness
+            ._runtime
+            .spawn(async move { worker_service.run_job_worker_until(stop).await });
+        harness
     }
 
     pub fn db(&self) -> Connection {

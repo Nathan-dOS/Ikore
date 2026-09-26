@@ -428,7 +428,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 })
                 .when_some(active_conversation.clone(), |panel, conversation| {
                     panel
-                        .child(
+                        .child(centred(
                             chat_column()
                                 .debug_selector(|| "chat-header".into())
                                 .flex()
@@ -466,11 +466,11 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                                 .child(conversation.model_id.clone()),
                                         ),
                                 ),
-                        )
+                        ))
                         .when(!conversation.connection_available, |panel| {
-                            panel.child(chat_column().child(warning(
+                            panel.child(centred(chat_column().child(warning(
                                 if conversation.provider_id=="specification" {"Questions presented by Specification, without extra LLM. Answer in the Pulsations view; this conversation preserves history."}else{"The pinned connection was removed or blocked. History remains readable."},
-                            )))
+                            ))))
                         })
                         .child(
                             div()
@@ -483,7 +483,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 .flex()
                                 .flex_col()
                                 .items_center()
-                                .child(chat_column().flex().flex_col().gap_5().py_2()
+                                .child(centred(chat_column().debug_selector(|| "chat-messages-column".into()).flex().flex_col().gap_5().py_2()
                                 .when(messages.is_empty(), |list| {
                                     list.child(
                                         div()
@@ -543,10 +543,10 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 })
                                 .children(messages.into_iter().map(|message| {
                                     render_message(message, cx)
-                                }))),
+                                })))),
                         )
                         .when(disclosure_required && !disclosure_accepted, |panel| {
-                            panel.child(
+                            panel.child(centred(
                                 chat_column()
                                     .p_3()
                                     .rounded_md()
@@ -565,12 +565,11 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                         cx,
                                         |model, cx| model.acknowledge_chat_disclosure(cx),
                                     )),
-                            )
+                            ))
                         })
-                        .child(
+                        .child(centred(
                             chat_column()
                                 .debug_selector(|| "chat-composer".into())
-                                .flex_shrink_0()
                                 .p_3()
                                 .rounded_xl()
                                 .border_1()
@@ -580,6 +579,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 .child(draft)
                                 .child(
                                     div()
+                                        .debug_selector(|| "chat-composer-actions".into())
                                         .mt_2()
                                         .flex()
                                         .items_center()
@@ -613,7 +613,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                             .into_any_element()
                                         }),
                                 ),
-                        )
+                        ))
                 }),
         )
         .when(show_tool_activity && tool_activity_open, |layout| layout.child(
@@ -689,8 +689,10 @@ pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -
                     .child(error),
             )
         });
+    let id = message.id;
     if assistant {
         div()
+            .debug_selector(move || format!("chat-message:{id}"))
             .w_full()
             .flex()
             .items_start()
@@ -737,6 +739,7 @@ pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -
             .into_any_element()
     } else {
         div()
+            .debug_selector(move || format!("chat-message:{id}"))
             .w_full()
             .flex()
             .flex_col()
@@ -758,9 +761,22 @@ pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -
 }
 
 /// The conversation's reading width: header, messages and composer line up on it, centred in the
-/// pane like a chat app, however wide the window is.
+/// pane like a chat app, however wide the window is. Always place it through [`centred`].
 fn chat_column() -> gpui::Div {
     div().w_full().max_w(px(CHAT_COLUMN_WIDTH)).min_w_0()
+}
+
+/// Centres a [`chat_column`] in its pane. The flex row resolves the column's clamped width before
+/// its height is measured: placed straight in the pane, wrapped text was measured at the pane's
+/// full width but painted at the column's, so a long draft pushed Send out through the composer
+/// and the end of a long answer could never be scrolled into view.
+fn centred(column: gpui::Div) -> gpui::Div {
+    div()
+        .w_full()
+        .flex_shrink_0()
+        .flex()
+        .justify_center()
+        .child(column)
 }
 
 const CHAT_COLUMN_WIDTH: f32 = 760.0;

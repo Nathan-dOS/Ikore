@@ -536,6 +536,15 @@ pub(crate) fn hint(text: impl Into<SharedString>) -> AnyElement {
         .into_any_element()
 }
 
+/// A sentence about something that will fail: warning colour, not monospace.
+pub(crate) fn warning_note(text: impl Into<SharedString>) -> AnyElement {
+    div()
+        .text_sm()
+        .text_color(theme::warning())
+        .child(text.into())
+        .into_any_element()
+}
+
 /// A monospace value on the right of a row.
 pub(crate) fn readout(text: impl Into<SharedString>) -> AnyElement {
     div()

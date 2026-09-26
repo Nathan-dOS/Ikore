@@ -327,6 +327,92 @@ fn dispatch_freezes_mixed_sources_and_rejects_duplicate_reservations() {
     assert!(manifest.features.iter().any(|x| x.id == a.id));
     assert!(manifest.features.iter().any(|x| x.id == b.id));
 }
+/// "Haiku Teste 1" (2026-09-26): the legacy connection had become Gemini and
+/// the route still sent it `gpt-4.1-mini`. The Contract failed with HTTP 404
+/// after Intake, Specification and an 11-minute review.
+#[test]
+fn a_stage_that_cannot_reach_its_model_blocks_the_dispatch() {
+    let f = Fixture::new();
+    let task = f.add("Fix validation");
+    let db = rusqlite::Connection::open(f.service.database_path()).unwrap();
+    // Nathan's route had this one target; a fresh database also seeds Anthropic.
+    db.execute(
+        "DELETE FROM provider_route_targets WHERE route_id='legacy-default' AND connection_id='legacy-anthropic'",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE provider_connections SET provider_id='gemini',display_name='Gemini',default_model='gemini-2.5-flash-lite' WHERE id='legacy-openai'",
+        [],
+    )
+    .unwrap();
+    let error = f
+        .tasks()
+        .dispatch(f.dispatch(std::slice::from_ref(&task)))
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("Pulsation not started"), "{message}");
+    assert!(
+        message.contains(
+            "Contract (contract_agent): the API route `Legacy default` has no usable target: it sends the openai model `gpt-4.1-mini` to the gemini connection `Gemini`."
+        ),
+        "{message}"
+    );
+    let pulsations: i64 = db
+        .query_row("SELECT COUNT(*) FROM pulsations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(pulsations, 0);
+    assert_eq!(f.tasks().list(&f.project).unwrap()[0].state, "ready");
+
+    // A second, compatible target makes the first a warning on the pulsation.
+    db.execute(
+        "INSERT INTO provider_route_targets(route_id,position,connection_id,model_id,enabled,created_at,updated_at) VALUES('legacy-default',1,'legacy-anthropic','claude-3-5-sonnet-latest',1,'now','now')",
+        [],
+    )
+    .unwrap();
+    let pulse = f
+        .tasks()
+        .dispatch(f.dispatch(std::slice::from_ref(&task)))
+        .unwrap();
+    let warnings: Vec<String> = db
+        .prepare("SELECT message FROM pulse_events WHERE pulsation_id=?1 AND event_type='route_preflight_warning'")
+        .unwrap()
+        .query_map([&pulse.id], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(warnings.len(), 6, "{warnings:?}");
+    assert!(
+        warnings
+            .iter()
+            .all(|w| w.contains("will fail and fall back"))
+    );
+}
+
+#[test]
+fn a_cli_stage_without_its_executable_blocks_the_dispatch() {
+    let f = Fixture::new();
+    let task = f.add("Fix validation");
+    let db = rusqlite::Connection::open(f.service.database_path()).unwrap();
+    crate::terminals::TerminalRepository::new(f.service.database_path())
+        .ensure_project_configs(&f.project, false)
+        .unwrap();
+    db.execute(
+        "UPDATE cli_agent_configs SET execution_mode='cli_process',backend='custom',custom_executable=NULL WHERE project_id=?1 AND agent_role='test_agent'",
+        [&f.project],
+    )
+    .unwrap();
+    let message = f
+        .tasks()
+        .dispatch(f.dispatch(&[task]))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains("Test (test_agent): the custom CLI has no executable."),
+        "{message}"
+    );
+}
+
 #[test]
 fn foreign_project_ids_are_rejected() {
     let f = Fixture::new();

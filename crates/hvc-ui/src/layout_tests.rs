@@ -3398,6 +3398,53 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
     assert!(offset <= px(2.0), "composer off centre by {offset:?}");
     // The composer sits under the conversation, not beside it.
     assert!(composer.top() >= scroll.bottom());
+    // A long draft grows the card with it: the Send row never spills past the border, whatever
+    // the number of wrapped lines (the input caps at six rows and then scrolls).
+    let sentence = "A long question about the architecture of this repository, typed at length. ";
+    for repeats in [1, 2, 4, 6, 8, 12, 40] {
+        let text = sentence.repeat(repeats);
+        model.update(visual, |m, cx| {
+            m.chat_draft_input
+                .update(cx, |input, cx| input.set_value(text, cx))
+        });
+        visual.run_until_parked();
+        let composer = visual.debug_bounds("chat-composer").unwrap();
+        let actions = visual.debug_bounds("chat-composer-actions").unwrap();
+        assert!(
+            actions.bottom() <= composer.bottom(),
+            "{repeats} sentences: actions {actions:?} spill out of composer {composer:?}"
+        );
+    }
+    // Long answers are measured at the column's width too, so the list reaches its last line.
+    model.update(visual, |m, cx| {
+        m.chat.update(cx, |chat, _| {
+            let messages = chat
+                .messages_by_conversation
+                .get_mut("conversation-1")
+                .unwrap();
+            messages[1].content = sentence.repeat(60);
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let column = visual.debug_bounds("chat-messages-column").unwrap();
+    let answer = visual.debug_bounds("chat-message:message-1").unwrap();
+    assert!(
+        answer.bottom() <= column.bottom(),
+        "answer {answer:?} overflows its column {column:?}"
+    );
+    let scroll = visual.debug_bounds("chat-messages-scroll").unwrap();
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: scroll.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-10_000.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let answer = visual.debug_bounds("chat-message:message-1").unwrap();
+    assert!(
+        answer.bottom() <= scroll.bottom(),
+        "the end of {answer:?} cannot be scrolled into {scroll:?}"
+    );
 }
 
 #[gpui::test]

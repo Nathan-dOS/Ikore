@@ -36,6 +36,11 @@ const MAX_MODEL_ROUNDS: usize = 8;
 const MAX_TOOL_CALLS: usize = 24;
 const MAX_TOOL_RESULT_BYTES: usize = 256 * 1024;
 const TURN_TIMEOUT: Duration = Duration::from_secs(120);
+/// A CLI turn runs one fresh CLI process per round and re-sends every read so
+/// far. A seven-round repository review took about 70 s of rounds plus two
+/// repairs and hit the API's 120 s limit on its last round (2026-09-26). Each
+/// round keeps its own `TURN_TIMEOUT`; the developer can cancel at any time.
+const CLI_TURN_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_USER_MESSAGE_CHARS: usize = 20_000;
 
 #[derive(Debug, Clone, Serialize)]
@@ -1613,6 +1618,20 @@ struct CompanionControlCall {
 }
 
 impl ChatService {
+    /// Closes the calls of a turn that ended with a round still in flight.
+    fn close_running_model_calls(
+        &self,
+        assistant_message_id: &str,
+        reason: &str,
+    ) -> Result<(), ChatCommandError> {
+        self.connection()?.execute(
+            "UPDATE chat_model_calls SET status='failed',completed_at=?2,error_code=?3,termination_reason=?3
+             WHERE assistant_message_id=?1 AND status='running'",
+            params![assistant_message_id, now_iso(), reason],
+        )?;
+        Ok(())
+    }
+
     async fn run_turn(&self, context: TurnContext) {
         let _ = self.set_message_status(&context.assistant_message_id, "streaming", None, None);
         let _ = self.emit_turn_event(
@@ -1621,20 +1640,42 @@ impl ChatService {
             ChatEventDetail::Empty {},
         );
 
+        let (limit, limit_message) = if context.conversation.transport == ChatTransportKind::Cli {
+            (
+                CLI_TURN_TIMEOUT,
+                "The turn reached its 5-minute limit. Narrow the question and try again.",
+            )
+        } else {
+            (
+                TURN_TIMEOUT,
+                "The turn reached its 120-second limit. Narrow the question and try again.",
+            )
+        };
         let result = tokio::select! {
             biased;
             _ = context.cancellation.cancelled() => Err(TurnOutcome::Cancelled),
-            timed = tokio::time::timeout(TURN_TIMEOUT, self.run_model_loop(&context)) => {
+            timed = tokio::time::timeout(limit, self.run_model_loop(&context)) => {
                 match timed {
                     Ok(Ok(())) => Ok(()),
                     Ok(Err(error)) => Err(TurnOutcome::Failed(error)),
                     Err(_) => Err(TurnOutcome::Failed(ChatCommandError::new(
                         "turn_timeout",
-                        "The turn reached its 120-second limit. Narrow the question and try again.",
+                        limit_message,
                     ))),
                 }
             }
         };
+        // A timeout or cancellation drops the round in flight; its call row
+        // stayed `running` forever (2026-09-26).
+        match &result {
+            Err(TurnOutcome::Cancelled) => {
+                let _ = self.close_running_model_calls(&context.assistant_message_id, "cancelled");
+            }
+            Err(TurnOutcome::Failed(error)) => {
+                let _ = self.close_running_model_calls(&context.assistant_message_id, &error.code);
+            }
+            Ok(()) => {}
+        }
 
         match result {
             Ok(()) => {
@@ -2018,17 +2059,37 @@ impl ChatService {
                         }
                     }
                     Err(error) => {
-                        let invalid_envelope = matches!(&error, TerminalError::Process(message) if message.contains("invalid control envelope"));
+                        // The miss cause (`unavailable_tool`, `schema_rejected`, …)
+                        // is kept on the call: a repaired round used to leave
+                        // no trace of why its first attempt failed.
+                        let envelope_miss = match &error {
+                            TerminalError::Process(message)
+                                if message.contains("invalid control envelope") =>
+                            {
+                                Some(
+                                    message
+                                        .rsplit_once('(')
+                                        .and_then(|(_, cause)| cause.strip_suffix(')'))
+                                        .unwrap_or("no_envelope"),
+                                )
+                            }
+                            _ => None,
+                        };
+                        let invalid_envelope = envelope_miss.is_some();
                         self.finish_cli_model_call(
                             &model_call_id,
                             "failed",
                             latency_ms,
                             None,
                             None,
-                            terminal_termination_reason(&error),
+                            envelope_miss.unwrap_or_else(|| terminal_termination_reason(&error)),
                             0,
                             0,
-                            Some(error.code()),
+                            Some(if invalid_envelope {
+                                "invalid_control_envelope"
+                            } else {
+                                error.code()
+                            }),
                         )?;
                         if invalid_envelope && !repair {
                             repair = true;
@@ -3653,9 +3714,22 @@ fn build_cli_companion_prompt(
     } else {
         ""
     };
+    // Claude Code delivers `--json-schema` through a StructuredOutput tool.
+    // Listed like tool definitions, the repository operations were called as
+    // native tools: "No such tool available" five to nine times per round, and
+    // some rounds never reached StructuredOutput ("invalid control envelope",
+    // 2026-09-26; reproduced 3/3, fixed 3/3 by this wording). Left alone, Haiku
+    // also wrote the whole answer as text and again inside the tool (1713 →
+    // 860 tokens and 16.6 → 9.2 s on the same question).
+    let delivery = if backend == CliBackend::Claude {
+        "\nYour only callable tool is StructuredOutput; any other tool call fails. Call it once per reply with `response` set to the envelope: {\"type\":\"tool_calls\",\"calls\":[...]} to run operations, or {\"type\":\"final\",\"text\":\"...\"} to answer. Do not write the answer as plain text before or after that call: text outside it is discarded."
+    } else {
+        ""
+    };
     format!(
-        "<system>\n{}\nYou have no native tools. To inspect local data, return a tool_calls envelope using only the schemas below. When enough evidence is available, return a final envelope. Never include reasoning, traces, Markdown fences, or text outside the envelope.\n{}\n</system>\n<history>\n{}\n</history>\n<tool_exchanges>\n{}\n</tool_exchanges>\n<control_envelope_schema>\n{}\n</control_envelope_schema>\n{}",
+        "<system>\n{}\nYou have no native tools. The repository operations in <operations> are not tools you can call: to run them, return a tool_calls envelope naming them, batching every read you need (up to 24 calls); the host runs them and returns the results in <tool_exchanges>. When enough evidence is available, return a final envelope. Never include reasoning, traces, Markdown fences, or text outside the envelope.{}\n<operations>\n{}\n</operations>\n</system>\n<history>\n{}\n</history>\n<tool_exchanges>\n{}\n</tool_exchanges>\n<control_envelope_schema>\n{}\n</control_envelope_schema>\n{}",
         system_prompt(),
+        delivery,
         serde_json::to_string(&repository_tool_schemas()).unwrap_or_else(|_| "[]".into()),
         serde_json::to_string(&messages).unwrap_or_else(|_| "[]".into()),
         serde_json::to_string(&exchanges).unwrap_or_else(|_| "[]".into()),
@@ -4366,6 +4440,68 @@ mod tests {
         assert!(!loaded.conversation.connection_available);
     }
 
+    /// 2026-09-26: a CLI turn timed out during its seventh round, and that
+    /// round's call stayed `running`; other messages' rounds are untouched.
+    #[test]
+    fn a_turn_that_ends_early_closes_its_round_in_flight() {
+        let (_temp, _workspace, service) = prepare_chat();
+        let conversation = service
+            .create_conversation(CreateChatConversationRequest {
+                project_id: "project-a".into(),
+                target: ChatExecutionTargetRequest::Api {
+                    connection_id: "connection-a".into(),
+                },
+            })
+            .unwrap()
+            .conversation;
+        let database = service.connection().unwrap();
+        let now = now_iso();
+        for (ordinal, message) in ["assistant-timed-out", "assistant-other"]
+            .iter()
+            .enumerate()
+        {
+            database
+                .execute(
+                    "INSERT INTO chat_messages (
+                       id, conversation_id, ordinal, role, content, status, generation_id,
+                       created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, 'assistant', '', 'streaming', ?1, ?4, ?4)",
+                    params![
+                        message,
+                        conversation.id.as_str(),
+                        ordinal as i64,
+                        now.as_str()
+                    ],
+                )
+                .unwrap();
+            database
+                .execute(
+                    "INSERT INTO chat_model_calls (
+                       id, assistant_message_id, round_index, provider_id, model_id, started_at, status
+                     ) VALUES (?1, ?2, 6, 'claude', 'haiku', ?3, 'running')",
+                    params![format!("call-{message}"), message, now.as_str()],
+                )
+                .unwrap();
+        }
+        service
+            .close_running_model_calls("assistant-timed-out", "turn_timeout")
+            .unwrap();
+        let state = |id: &str| -> (String, Option<String>, Option<String>) {
+            database
+                .query_row(
+                    "SELECT status, error_code, completed_at FROM chat_model_calls WHERE id=?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap()
+        };
+        let closed = state("call-assistant-timed-out");
+        assert_eq!(closed.0, "failed");
+        assert_eq!(closed.1.as_deref(), Some("turn_timeout"));
+        assert!(closed.2.is_some());
+        assert_eq!(state("call-assistant-other").0, "running");
+    }
+
     #[test]
     fn reopened_service_recovers_pending_messages_and_running_child_records() {
         let (_temp, _workspace, service) = prepare_chat();
@@ -4976,6 +5112,23 @@ mod tests {
         );
         assert!(!prompt.contains("alpha-private-evidence"));
         assert!(!prompt.contains("beta-private-evidence"));
+        // Only Claude answers through a StructuredOutput tool.
+        assert!(!prompt.contains("StructuredOutput"));
+        let claude_prompt = build_cli_companion_prompt(
+            &[ProtocolMessage {
+                role: "user".into(),
+                content: "Which model should I use?".into(),
+            }],
+            &[],
+            false,
+            CliBackend::Claude,
+        );
+        assert!(claude_prompt.contains("Your only callable tool is StructuredOutput"));
+        // Operations are framed as requests, never as callable tools.
+        for rendered in [&prompt, &claude_prompt] {
+            assert!(rendered.contains("are not tools you can call"));
+            assert!(rendered.contains("<operations>\n[[\"list_repository_tree\""));
+        }
 
         let matches = search_agent_outputs_tool(
             &service.db_path,

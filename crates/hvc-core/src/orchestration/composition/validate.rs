@@ -462,11 +462,15 @@ impl<'a> Checker<'a> {
         group_by_destination(edits, |anchor| self.index.anchor_source(anchor))
     }
 
+    /// `settled` holds criteria the answer already accounted for without
+    /// evidence: Test's `not_applicable` coverage of a criterion the approved
+    /// specification exempted.
     fn check_evidence(
         &self,
         evidence: &'a [EvidenceItemV1],
         artifact_keys: &HashSet<&Handle>,
         require_full: bool,
+        settled: &HashSet<&Handle>,
     ) -> Result<(), CompositionError> {
         let mut covered = HashSet::new();
         for item in evidence {
@@ -490,19 +494,33 @@ impl<'a> Checker<'a> {
             self.require_inputs("evidence.inputRefs", &item.input_refs)?;
             english("evidence explanation", &item.explanation)?;
         }
-        if require_full
-            && let Some(missing) = self
-                .unit
-                .criterion_refs
-                .iter()
-                .find(|c| !covered.contains(c))
-        {
-            return Err(reject(
-                Invariant::Sc010,
-                ErrorCode::EvidenceUnresolved,
-                format!("No evidence covers criterion `{missing}`."),
-            )
-            .with_related([missing.clone()]));
+        if require_full {
+            // Every missing criterion at once, so a correction does not
+            // discover them one per paid call.
+            let missing = exclusive_criteria(self.index.plan(), self.unit)
+                .into_iter()
+                .filter(|c| !covered.contains(c) && !settled.contains(c))
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                return Err(reject(
+                    Invariant::Sc010,
+                    ErrorCode::EvidenceUnresolved,
+                    format!(
+                        "No evidence covers {} {}; every criterion this unit must evidence needs an evidence item.",
+                        if missing.len() == 1 {
+                            "criterion"
+                        } else {
+                            "criteria"
+                        },
+                        missing
+                            .iter()
+                            .map(|c| format!("`{c}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )
+                .with_related(missing.into_iter().cloned()));
+            }
         }
         Ok(())
     }
@@ -973,7 +991,16 @@ impl<'a> Checker<'a> {
             }
         }
         let require_full = !self.policy.repair;
-        self.check_evidence(&payload.evidence, &artifact_keys, require_full)?;
+        // Every `not_applicable` entry passed the approval check above. Asking
+        // for evidence as well rejected a correct answer and its Retry made
+        // the model invent a load-time test ("Haiku CLI teste 1", 2026-09-26).
+        let settled = payload
+            .coverage
+            .iter()
+            .filter(|coverage| coverage.coverage == CoverageKind::NotApplicable)
+            .map(|coverage| &coverage.criterion_ref)
+            .collect::<HashSet<_>>();
+        self.check_evidence(&payload.evidence, &artifact_keys, require_full, &settled)?;
         self.check_authored_contents(&groups)?;
         let (clean_refs, _ref_warnings) = self.sanitize_used_refs(&payload.used_refs);
         self.require_inputs("usedRefs", &clean_refs)?;
@@ -1072,7 +1099,12 @@ impl<'a> Checker<'a> {
                     .iter()
                     .map(|e| &e.artifact_key)
                     .collect::<HashSet<_>>();
-                self.check_evidence(&edits.evidence, &artifact_keys, !self.policy.repair)?;
+                self.check_evidence(
+                    &edits.evidence,
+                    &artifact_keys,
+                    !self.policy.repair,
+                    &HashSet::new(),
+                )?;
                 self.check_authored_contents(&groups)?;
                 let (clean_refs, _ref_warnings) = self.sanitize_used_refs(&edits.used_refs);
                 self.require_inputs("usedRefs", &clean_refs)?;
@@ -1106,6 +1138,142 @@ fn has_cycle(edges: &BTreeMap<&Handle, Vec<&Handle>>) -> bool {
     }
     let mut state = HashMap::new();
     edges.keys().any(|node| visit(node, edges, &mut state))
+}
+
+/// The criteria only `unit` carries in `plan`: its answer must evidence each
+/// of them. A criterion shared with a sibling unit is evidenced by whichever
+/// unit contributes to it, and the stage checks the union. Requiring it from
+/// every sharer rejected a unit that owned only `index.html` for not
+/// evidencing persistence ("Teste Haiku Only 1", 2026-09-24).
+pub fn exclusive_criteria<'p>(
+    plan: &'p StageExecutionPlanV1,
+    unit: &'p WorkUnitSpecV1,
+) -> Vec<&'p Handle> {
+    unit.criterion_refs
+        .iter()
+        .filter(|criterion| {
+            !plan.units.iter().any(|other| {
+                other.unit_id != unit.unit_id && other.criterion_refs.contains(criterion)
+            })
+        })
+        .collect()
+}
+
+/// The criteria a validated Code or Test answer accounts for: its evidence,
+/// plus Test's approved `not_applicable` coverage. `None` for stages whose
+/// criteria are judged per unit only.
+pub fn settled_criteria(payload: &CompletedPayloadV1) -> Option<HashSet<&Handle>> {
+    match payload {
+        CompletedPayloadV1::Edits(edits) => Some(
+            edits
+                .evidence
+                .iter()
+                .flat_map(|item| &item.criterion_refs)
+                .collect(),
+        ),
+        CompletedPayloadV1::Tests(tests) => Some(
+            tests
+                .evidence
+                .iter()
+                .flat_map(|item| &item.criterion_refs)
+                .chain(
+                    tests
+                        .coverage
+                        .iter()
+                        .filter(|coverage| coverage.coverage == CoverageKind::NotApplicable)
+                        .map(|coverage| &coverage.criterion_ref),
+                )
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// Criteria of the stage's units that no validated answer evidences, each
+/// with the units that carried it (only shared criteria can end up here).
+pub fn uncovered_stage_criteria<'p>(
+    plan: &'p StageExecutionPlanV1,
+    evidenced: &HashSet<&Handle>,
+) -> Vec<(&'p Handle, Vec<&'p Handle>)> {
+    let mut uncovered: Vec<(&Handle, Vec<&Handle>)> = Vec::new();
+    for unit in &plan.units {
+        for criterion in &unit.criterion_refs {
+            if evidenced.contains(criterion) {
+                continue;
+            }
+            match uncovered.iter_mut().find(|(c, _)| *c == criterion) {
+                Some((_, units)) => units.push(&unit.logical_unit_key),
+                None => uncovered.push((criterion, vec![&unit.logical_unit_key])),
+            }
+        }
+    }
+    uncovered
+}
+
+fn strip_check_citations(field: &str, refs: &mut Vec<Handle>, notes: &mut Vec<String>) {
+    if refs.is_empty() {
+        return;
+    }
+    notes.push(format!(
+        "host removed {} from `{field}`: no host check is configured for this stage",
+        refs.iter()
+            .map(|handle| format!("`{handle}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    refs.clear();
+}
+
+/// A stage with no configured host check has no check to cite, so any check
+/// citation is a model mix-up: the Integrator of "Teste Haiku Only 1"
+/// (2026-09-24) cited the test file `src_7`, and rejecting the whole answer
+/// escalated into a Code revision. The host clears those citations instead,
+/// and never lets a verdict stand on one it removed: a `supported` assessment
+/// left without any input is downgraded to `unverified`. Call only when the
+/// plan has no check; returns one note per change for the attempt's audit.
+pub fn normalize_without_checks(response: &mut UnitModelResponseV1) -> Vec<String> {
+    let mut notes = Vec::new();
+    let UnitModelResponseV1::Completed { payload, .. } = response else {
+        return notes;
+    };
+    match payload {
+        CompletedPayloadV1::Specification(specification) => {
+            for requirement in &mut specification.requirements {
+                strip_check_citations(
+                    "requirement.requiredCheckRefs",
+                    &mut requirement.required_check_refs,
+                    &mut notes,
+                );
+            }
+        }
+        CompletedPayloadV1::Tests(tests) => {
+            for coverage in &mut tests.coverage {
+                strip_check_citations("coverage.checkRefs", &mut coverage.check_refs, &mut notes);
+            }
+        }
+        CompletedPayloadV1::Integration(integration) => {
+            for assessment in &mut integration.assessments {
+                let cited = !assessment.check_refs.is_empty();
+                strip_check_citations(
+                    "assessment.checkRefs",
+                    &mut assessment.check_refs,
+                    &mut notes,
+                );
+                if cited
+                    && assessment.verdict == super::Verdict::Supported
+                    && assessment.input_refs.is_empty()
+                {
+                    assessment.verdict = super::Verdict::Unverified;
+                    notes.push(format!(
+                        "host downgraded `{}` to unverified: its only support was a removed check citation",
+                        assessment.criterion_ref
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+    notes
 }
 
 /// Validates a parsed response for `unit` inside `plan`.
@@ -1422,7 +1590,13 @@ mod tests {
         );
         let error = run(ExecutorKind::CodeImplementer, &response).unwrap_err();
         assert_eq!(error.code, ErrorCode::EvidenceUnresolved);
-        assert_eq!(error.related, vec![h("crit_1_2")]);
+        // Every missing criterion in one message, not one per paid call.
+        assert_eq!(error.related, vec![h("crit_1_2"), h("crit_2_1")]);
+        assert!(
+            error.message.contains("criteria `crit_1_2`, `crit_2_1`"),
+            "{}",
+            error.message
+        );
         // A repairer may cover a subset.
         let response = UnitModelResponseV1::Completed {
             executor_kind: ExecutorKind::CodeRepairer,
@@ -1433,6 +1607,54 @@ mod tests {
             }),
         };
         assert!(run(ExecutorKind::CodeRepairer, &response).is_ok());
+    }
+
+    /// "Teste Haiku Only 1": the unit owning only `index.html` carried every
+    /// criterion and was rejected for not evidencing persistence, which a
+    /// sibling delivered. A shared criterion is owed by the stage, not by
+    /// each sharer; an exclusive one is still owed by its unit.
+    #[test]
+    fn only_criteria_exclusive_to_the_unit_require_its_evidence() {
+        let mut fixture = fixture(ExecutorKind::CodeImplementer);
+        let mut sibling = fixture.plan.units[0].clone();
+        sibling.unit_id = uuid(9);
+        sibling.logical_unit_key = h("unit_b");
+        sibling.criterion_refs = vec![h("crit_1_2"), h("crit_2_1")];
+        sibling.owned_destination_refs = vec![];
+        fixture.plan.units.push(sibling);
+        let index = PlanIndex::new(&fixture.plan);
+        let approved = ApprovedContext {
+            not_applicable_criteria: vec![h("crit_2_1")],
+            proposal_keys: vec![],
+        };
+        let unit = &fixture.plan.units[0];
+        assert_eq!(
+            exclusive_criteria(&fixture.plan, unit),
+            vec![&h("crit_1_1")]
+        );
+        let shared_left_out = code_response(
+            vec![anchor_edit("lib")],
+            vec![evidence("task_1", &["crit_1_1"], &["lib"])],
+        );
+        validate_child(&index, unit, &approved, &shared_left_out).unwrap();
+        let exclusive_left_out = code_response(
+            vec![anchor_edit("lib")],
+            vec![evidence("task_1", &["crit_1_2"], &["lib"])],
+        );
+        let error = validate_child(&index, unit, &approved, &exclusive_left_out).unwrap_err();
+        assert_eq!(error.code, ErrorCode::EvidenceUnresolved);
+        assert_eq!(error.related, vec![h("crit_1_1")]);
+
+        // The stage owes the union: a shared criterion nobody evidenced is
+        // reported with the units that carried it.
+        let crit_1_1 = h("crit_1_1");
+        let crit_2_1 = h("crit_2_1");
+        let evidenced = HashSet::from([&crit_1_1, &crit_2_1]);
+        let uncovered = uncovered_stage_criteria(&fixture.plan, &evidenced);
+        assert_eq!(
+            uncovered,
+            vec![(&h("crit_1_2"), vec![&h("unit_a"), &h("unit_b")])]
+        );
     }
 
     #[test]
@@ -1603,6 +1825,70 @@ mod tests {
             run(ExecutorKind::TestAuthor, &partial).unwrap_err().code,
             ErrorCode::EvidenceUnresolved
         );
+    }
+
+    /// "Haiku CLI teste 1" (2026-09-26): the Specification approved a load-time
+    /// criterion as not_applicable, Test covered it so, and the host still
+    /// demanded an evidence item; the Retry then invented a load-time test.
+    #[test]
+    fn an_approved_not_applicable_coverage_needs_no_evidence_item() {
+        let covered = |criterion: &str, kind: CoverageKind, keys: &[&str]| TestCoverageV1 {
+            task_ref: h(if criterion.starts_with("crit_1") {
+                "task_1"
+            } else {
+                "task_2"
+            }),
+            criterion_ref: h(criterion),
+            coverage: kind,
+            test_artifact_keys: keys.iter().map(|k| h(k)).collect(),
+            test_input_refs: vec![],
+            check_refs: vec![h("behavior_check")],
+            explanation: "Covered as listed.".into(),
+        };
+        let tests = |evidenced: &[&str]| UnitModelResponseV1::Completed {
+            executor_kind: ExecutorKind::TestAuthor,
+            payload: CompletedPayloadV1::Tests(TestPayloadV1 {
+                edits: vec![EditEntryV1 {
+                    artifact_key: h("new_test"),
+                    edit: EditOperationV1::CreateFile {
+                        destination_ref: h("plan_1"),
+                        content: "#[test] fn works() {}\n".into(),
+                    },
+                }],
+                coverage: vec![
+                    covered("crit_1_1", CoverageKind::Authored, &["new_test"]),
+                    covered("crit_1_2", CoverageKind::Authored, &["new_test"]),
+                    covered("crit_2_1", CoverageKind::NotApplicable, &[]),
+                ],
+                evidence: vec![EvidenceItemV1 {
+                    task_ref: h("task_1"),
+                    criterion_refs: evidenced.iter().map(|c| h(c)).collect(),
+                    artifact_keys: vec![h("new_test")],
+                    input_refs: vec![],
+                    explanation: "Authored tests.".into(),
+                }],
+                used_refs: vec![h("src_2")],
+            }),
+        };
+        let accepted = tests(&["crit_1_1", "crit_1_2"]);
+        assert_eq!(run(ExecutorKind::TestAuthor, &accepted).unwrap(), 1);
+        // An authored criterion still owes its evidence.
+        let error = run(ExecutorKind::TestAuthor, &tests(&["crit_1_1"])).unwrap_err();
+        assert_eq!(error.code, ErrorCode::EvidenceUnresolved);
+        assert_eq!(error.related, vec![h("crit_1_2")]);
+        // Code still evidences the approved not_applicable criterion it carries.
+        let code = code_response(
+            vec![anchor_edit("lib")],
+            vec![evidence("task_1", &["crit_1_1", "crit_1_2"], &["lib"])],
+        );
+        let error = run(ExecutorKind::CodeImplementer, &code).unwrap_err();
+        assert_eq!(error.related, vec![h("crit_2_1")]);
+        // The stage-level check counts the coverage entry as settled.
+        let UnitModelResponseV1::Completed { payload, .. } = &accepted else {
+            unreachable!()
+        };
+        let settled = settled_criteria(payload).unwrap();
+        assert!(settled.contains(&h("crit_2_1")) && settled.contains(&h("crit_1_2")));
     }
 
     #[test]
@@ -1932,5 +2218,95 @@ mod tests {
         let error =
             validate_child(&index, &unit, &ApprovedContext::default(), &response).unwrap_err();
         assert_eq!(error.code, ErrorCode::HostContractError);
+    }
+
+    fn integration_response(assessments: Vec<CriterionAssessmentV1>) -> UnitModelResponseV1 {
+        UnitModelResponseV1::Completed {
+            executor_kind: ExecutorKind::IntegrationReviewer,
+            payload: CompletedPayloadV1::Integration(IntegrationPayloadV1 {
+                assessments,
+                blockers: vec![],
+                documentation_edits: vec![],
+                used_refs: vec![],
+            }),
+        }
+    }
+
+    fn assessment(
+        criterion: &str,
+        verdict: Verdict,
+        inputs: &[&str],
+        checks: &[&str],
+    ) -> CriterionAssessmentV1 {
+        CriterionAssessmentV1 {
+            task_ref: h(if criterion.starts_with("crit_1") {
+                "task_1"
+            } else {
+                "task_2"
+            }),
+            criterion_ref: h(criterion),
+            verdict,
+            input_refs: inputs.iter().map(|i| h(i)).collect(),
+            check_refs: checks.iter().map(|c| h(c)).collect(),
+            explanation: "The delivered source implements the approved behavior.".into(),
+        }
+    }
+
+    /// "Teste Haiku Only 1" (2026-09-24): with no host check configured, the
+    /// Integrator cited the test file `src_7` as a check. The host clears the
+    /// citation and never lets a verdict stand on it alone.
+    #[test]
+    fn check_citations_are_cleared_when_the_stage_has_no_check() {
+        let mut response = integration_response(vec![
+            assessment("crit_1_1", Verdict::Supported, &["src_1"], &["src_7"]),
+            assessment("crit_1_2", Verdict::Supported, &[], &["src_7"]),
+            assessment("crit_2_1", Verdict::Contradicted, &[], &[]),
+        ]);
+        let notes = normalize_without_checks(&mut response);
+        let UnitModelResponseV1::Completed {
+            payload: CompletedPayloadV1::Integration(payload),
+            ..
+        } = &response
+        else {
+            panic!("integration payload");
+        };
+        assert!(payload.assessments.iter().all(|a| a.check_refs.is_empty()));
+        assert_eq!(payload.assessments[0].verdict, Verdict::Supported);
+        assert_eq!(
+            payload.assessments[1].verdict,
+            Verdict::Unverified,
+            "a verdict whose only support was the removed citation is downgraded"
+        );
+        assert_eq!(payload.assessments[2].verdict, Verdict::Contradicted);
+        assert_eq!(notes.len(), 3, "{notes:?}");
+        assert!(notes[0].contains("`src_7`") && notes[0].contains("assessment.checkRefs"));
+        assert!(notes[2].contains("downgraded `crit_1_2`"));
+        // Nothing to clear: no note.
+        let mut clean = integration_response(vec![assessment(
+            "crit_1_1",
+            Verdict::Supported,
+            &["src_1"],
+            &[],
+        )]);
+        assert!(normalize_without_checks(&mut clean).is_empty());
+    }
+
+    /// With a configured check, citing a non-check handle is still rejected
+    /// (now as a correctable worker error, see the coordinator).
+    #[test]
+    fn a_non_check_citation_is_still_rejected_when_checks_exist() {
+        let response = integration_response(vec![
+            assessment("crit_1_1", Verdict::Supported, &["src_1"], &["src_2"]),
+            assessment(
+                "crit_1_2",
+                Verdict::Supported,
+                &["src_1"],
+                &["behavior_check"],
+            ),
+            assessment("crit_2_1", Verdict::Unverified, &["src_1"], &[]),
+        ]);
+        let error = run(ExecutorKind::IntegrationReviewer, &response).unwrap_err();
+        assert_eq!(error.sc, Invariant::Sc011);
+        assert_eq!(error.code, ErrorCode::ReferenceConflict);
     }
 }

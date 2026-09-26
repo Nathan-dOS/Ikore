@@ -258,6 +258,57 @@ pub fn profile_by_id(id: &str) -> Option<ProviderProfile> {
     profiles().into_iter().find(|profile| profile.id == id)
 }
 
+/// Model-name prefixes of the first-party providers, lower case.
+const MODEL_FAMILIES: [(&str, &[&str]); 5] = [
+    (
+        "openai",
+        &["gpt-", "chatgpt-", "o1", "o3", "o4", "text-embedding-"],
+    ),
+    ("anthropic", &["claude-"]),
+    ("gemini", &["gemini-", "gemma-", "learnlm-"]),
+    ("deepseek", &["deepseek-"]),
+    (
+        "mistral",
+        &[
+            "mistral-",
+            "open-mistral",
+            "codestral",
+            "pixtral",
+            "ministral",
+            "magistral",
+        ],
+    ),
+];
+
+/// The first-party provider whose model `model_id` names, when that is not
+/// the connection's own provider. `gpt-4.1-mini` on a Gemini connection
+/// failed a Contract with HTTP 404 after the connection changed provider
+/// ("Haiku Teste 1", 2026-09-26). Aggregators and local servers (OpenRouter,
+/// Groq, Ollama) serve many families, so nothing is ever a conflict there,
+/// and an unknown name is never one either.
+pub fn model_family_conflict(provider_id: &str, model_id: &str) -> Option<&'static str> {
+    // The legacy profile is the same OpenAI API through Chat Completions.
+    let provider_id = if provider_id == "openai_legacy" {
+        "openai"
+    } else {
+        provider_id
+    };
+    let prefixes = |provider: &str| {
+        MODEL_FAMILIES
+            .iter()
+            .find(|(id, _)| *id == provider)
+            .map(|(_, prefixes)| *prefixes)
+    };
+    prefixes(provider_id)?;
+    let model = model_id.trim().to_ascii_lowercase();
+    let model = model.strip_prefix("models/").unwrap_or(&model);
+    MODEL_FAMILIES
+        .iter()
+        .find(|(_, family)| family.iter().any(|prefix| model.starts_with(prefix)))
+        .map(|(owner, _)| *owner)
+        .filter(|owner| *owner != provider_id)
+}
+
 fn sanitize_provider_message(message: &str) -> String {
     let trimmed = message.trim();
     if trimmed.is_empty() {
@@ -274,6 +325,42 @@ fn sanitize_provider_message(message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_model_of_another_first_party_family_is_a_conflict_and_nothing_else_is() {
+        assert_eq!(
+            super::model_family_conflict("gemini", "gpt-4.1-mini"),
+            Some("openai")
+        );
+        assert_eq!(
+            super::model_family_conflict("openai", "claude-3-5-sonnet-latest"),
+            Some("anthropic")
+        );
+        assert_eq!(
+            super::model_family_conflict("anthropic", "models/gemini-2.5-flash"),
+            Some("gemini")
+        );
+        assert_eq!(
+            super::model_family_conflict("openai_legacy", "gemini-2.5-flash"),
+            Some("gemini")
+        );
+        for (provider, model) in [
+            ("gemini", "gemini-2.5-flash-lite"),
+            ("gemini", "models/gemma-3-27b-it"),
+            ("openai", "o4-mini"),
+            ("openai_legacy", "gpt-4.1-mini"),
+            ("openai", "a-fine-tune-of-mine"),
+            ("openrouter", "openai/gpt-4.1-mini"),
+            ("ollama", "gpt-oss:20b"),
+            ("groq", "gemma2-9b-it"),
+        ] {
+            assert_eq!(
+                super::model_family_conflict(provider, model),
+                None,
+                "{provider}/{model}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

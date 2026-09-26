@@ -143,20 +143,104 @@ pub struct LearningReportV2 {
     pub limitations: Vec<String>,
 }
 
+/// Item and text ceilings of a V2 report (also the schema's `maxItems`).
+const MAX_OBSERVATIONS: usize = 8;
+const MAX_RECOMMENDATIONS: usize = 6;
+const MAX_GRAPH_SELECTIONS: usize = 8;
+const MAX_LIMITATIONS: usize = 8;
+const MAX_EVIDENCE_IDS: usize = 8;
+const MAX_TEXT_CHARS: usize = 1000;
+
+/// Cuts `text` to the ceiling at a character boundary, ending with "…".
+fn clamp_text(text: &mut String) -> bool {
+    if text.chars().count() <= MAX_TEXT_CHARS {
+        return false;
+    }
+    let mut cut = text.chars().take(MAX_TEXT_CHARS - 1).collect::<String>();
+    cut.push('…');
+    *text = cut;
+    true
+}
+
+/// Drops repeated ids (keeping the first) and ids beyond the ceiling.
+fn clamp_ids(ids: &mut Vec<String>) -> usize {
+    let before = ids.len();
+    let mut seen = HashSet::new();
+    ids.retain(|id| seen.insert(id.clone()));
+    ids.truncate(MAX_EVIDENCE_IDS);
+    before - ids.len()
+}
+
+fn clamp_list<T>(items: &mut Vec<T>, limit: usize) -> usize {
+    let dropped = items.len().saturating_sub(limit);
+    items.truncate(limit);
+    dropped
+}
+
 impl LearningReportV2 {
+    /// Trims the report to its item and text limits instead of rejecting it:
+    /// an over-long list is not a wrong answer, and the rejection cost a
+    /// whole extra Learning call ("Teste Haiku Only 1", 2026-09-24). What the
+    /// host cannot fix (unknown evidence, wrong language) is still rejected
+    /// by `validate`. Returns how many items or texts were trimmed; a
+    /// non-zero count is recorded in `limitations`, within its own limit.
+    pub fn clamp_to_limits(&mut self, input: &LearningInputV2) -> usize {
+        let mut trimmed = clamp_list(&mut self.observations, MAX_OBSERVATIONS)
+            + clamp_list(&mut self.recommendations, MAX_RECOMMENDATIONS)
+            + clamp_list(&mut self.graph_selections, MAX_GRAPH_SELECTIONS)
+            + clamp_list(&mut self.context_assessments, input.context_runs.len());
+        for finding in self
+            .observations
+            .iter_mut()
+            .chain(&mut self.recommendations)
+        {
+            trimmed += usize::from(clamp_text(&mut finding.text));
+            trimmed += clamp_ids(&mut finding.evidence_ids);
+        }
+        for assessment in &mut self.context_assessments {
+            trimmed += usize::from(clamp_text(&mut assessment.rationale));
+            trimmed += clamp_ids(&mut assessment.evidence_ids);
+        }
+        for selection in &mut self.graph_selections {
+            trimmed += usize::from(clamp_text(&mut selection.rationale));
+            trimmed += clamp_ids(&mut selection.evidence_ids);
+        }
+        for limitation in &mut self.limitations {
+            trimmed += usize::from(clamp_text(limitation));
+        }
+        let limit = if trimmed > 0 {
+            MAX_LIMITATIONS - 1
+        } else {
+            MAX_LIMITATIONS
+        };
+        trimmed += clamp_list(&mut self.limitations, limit);
+        if trimmed > 0 {
+            self.limitations.push(format!(
+                "Host trimmed {trimmed} items to the report limits."
+            ));
+        }
+        trimmed
+    }
+
     pub fn validate(&self, input: &LearningInputV2) -> Result<(), ContractError> {
-        if self.schema_version != 2
-            || self.observations.len() > 8
-            || self.recommendations.len() > 6
+        if self.schema_version != 2 {
+            return Err(ContractError::Invalid(
+                "Learning report schema_version must be 2",
+            ));
+        }
+        if self.observations.len() > MAX_OBSERVATIONS
+            || self.recommendations.len() > MAX_RECOMMENDATIONS
             || self.context_assessments.len() > input.context_runs.len()
-            || self.graph_selections.len() > 8
-            || self.limitations.len() > 8
+            || self.graph_selections.len() > MAX_GRAPH_SELECTIONS
+            || self.limitations.len() > MAX_LIMITATIONS
             || self
                 .limitations
                 .iter()
-                .any(|value| value.chars().count() > 1000)
+                .any(|value| value.chars().count() > MAX_TEXT_CHARS)
         {
-            return Err(ContractError::Invalid("Learning V2 report limits"));
+            return Err(ContractError::Invalid(
+                "Learning report exceeds its limits: at most 8 observations, 6 recommendations, 8 graph selections, 8 limitations, one context assessment per supplied context run, and 1000 characters per text",
+            ));
         }
         validate_findings(
             self.observations.iter().chain(&self.recommendations),
@@ -172,18 +256,35 @@ impl LearningReportV2 {
             .iter()
             .map(|run| run.retrieval_run_id.as_str())
             .collect::<HashSet<_>>();
+        // Each rejection names exactly what to correct: the retry prompt
+        // quotes it back to the model.
         let mut assessed = HashSet::new();
         for assessment in &self.context_assessments {
-            if !allowed_runs.contains(assessment.retrieval_run_id.as_str())
-                || !assessed.insert(assessment.retrieval_run_id.as_str())
-                || assessment.rationale.trim().is_empty()
-                || assessment.rationale.chars().count() > 1000
-                || assessment
-                    .evidence_ids
-                    .iter()
-                    .any(|id| !allowed_evidence.contains(id.as_str()))
+            if !allowed_runs.contains(assessment.retrieval_run_id.as_str()) {
+                return Err(ContractError::Invalid(
+                    "a context assessment names a retrieval_run_id that was not supplied",
+                ));
+            }
+            if !assessed.insert(assessment.retrieval_run_id.as_str()) {
+                return Err(ContractError::Invalid(
+                    "two context assessments name the same retrieval_run_id",
+                ));
+            }
+            if assessment.rationale.trim().is_empty()
+                || assessment.rationale.chars().count() > MAX_TEXT_CHARS
             {
-                return Err(ContractError::Invalid("invalid context assessment"));
+                return Err(ContractError::Invalid(
+                    "a context assessment rationale must have 1 to 1000 characters",
+                ));
+            }
+            if assessment
+                .evidence_ids
+                .iter()
+                .any(|id| !allowed_evidence.contains(id.as_str()))
+            {
+                return Err(ContractError::Invalid(
+                    "a context assessment cites an evidence_id that was not supplied",
+                ));
             }
         }
         let candidates = input
@@ -194,20 +295,31 @@ impl LearningReportV2 {
         let mut selected = HashSet::new();
         for selection in &self.graph_selections {
             let Some(candidate) = candidates.get(selection.candidate_id.as_str()) else {
-                return Err(ContractError::Invalid("candidate_id de grafo desconhecido"));
+                return Err(ContractError::Invalid(
+                    "a graph selection names a candidate_id that was not supplied",
+                ));
             };
             let operational = candidate.evidence_ids.iter().collect::<HashSet<_>>();
-            if !selected.insert(selection.candidate_id.as_str())
-                || selection.rationale.trim().is_empty()
-                || selection.rationale.chars().count() > 1000
-                || selection.evidence_ids.is_empty()
+            if !selected.insert(selection.candidate_id.as_str()) {
+                return Err(ContractError::Invalid(
+                    "two graph selections name the same candidate_id",
+                ));
+            }
+            if selection.rationale.trim().is_empty()
+                || selection.rationale.chars().count() > MAX_TEXT_CHARS
+            {
+                return Err(ContractError::Invalid(
+                    "a graph selection rationale must have 1 to 1000 characters",
+                ));
+            }
+            if selection.evidence_ids.is_empty()
                 || selection
                     .evidence_ids
                     .iter()
                     .any(|id| !allowed_evidence.contains(id.as_str()) || !operational.contains(id))
             {
                 return Err(ContractError::Invalid(
-                    "graph selection without known operational evidence",
+                    "a graph selection must cite only evidence_ids listed on its own candidate",
                 ));
             }
         }
@@ -298,29 +410,34 @@ fn validate_findings<'a>(
         .map(|item| (item.id.as_str(), item.pulsation_id.as_str()))
         .collect::<HashMap<_, _>>();
     for finding in findings {
-        if finding.text.trim().is_empty()
-            || finding.text.chars().count() > 1000
-            || finding.evidence_ids.is_empty()
-            || finding.evidence_ids.len() > 8
-        {
+        if finding.text.trim().is_empty() || finding.text.chars().count() > MAX_TEXT_CHARS {
             return Err(ContractError::Invalid(
-                "Learning finding without evidence or over budget",
+                "a Learning finding text must have 1 to 1000 characters",
+            ));
+        }
+        if finding.evidence_ids.is_empty() || finding.evidence_ids.len() > MAX_EVIDENCE_IDS {
+            return Err(ContractError::Invalid(
+                "a Learning finding must cite 1 to 8 evidence_ids",
             ));
         }
         let mut pulses = HashSet::new();
         let mut ids = HashSet::new();
         for id in &finding.evidence_ids {
             let Some(pulse) = allowed.get(id.as_str()) else {
-                return Err(ContractError::Invalid("unknown Learning evidence"));
+                return Err(ContractError::Invalid(
+                    "a Learning finding cites an evidence_id that was not supplied",
+                ));
             };
             if !ids.insert(id) {
-                return Err(ContractError::Invalid("duplicate Learning evidence"));
+                return Err(ContractError::Invalid(
+                    "a Learning finding repeats an evidence_id",
+                ));
             }
             pulses.insert(pulse);
         }
         if finding.recurring && pulses.len() < 2 {
             return Err(ContractError::Invalid(
-                "recurrence requires at least two pulsations",
+                "recurring=true requires evidence from at least two pulsations",
             ));
         }
     }
@@ -478,12 +595,14 @@ pub(crate) fn schema() -> serde_json::Value {
     json!({"type":"object","additionalProperties":false,"required":["schema_version","observations","recommendations","limitations"],"properties":{"schema_version":{"type":"integer","const":1},"observations":{"type":"array","maxItems":8,"items":finding},"recommendations":{"type":"array","maxItems":6,"items":finding},"limitations":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":1000}}}})
 }
 
-pub(crate) fn schema_v2() -> serde_json::Value {
+/// `context_runs` is the number of supplied context runs: the report may
+/// assess each at most once, the same ceiling `validate` applies.
+pub(crate) fn schema_v2(context_runs: usize) -> serde_json::Value {
     use serde_json::json;
     let finding = json!({"type":"object","additionalProperties":false,"required":["text","evidence_ids","recurring"],"properties":{"text":{"type":"string","minLength":1,"maxLength":1000},"evidence_ids":{"type":"array","minItems":1,"maxItems":8,"uniqueItems":true,"items":{"type":"string"}},"recurring":{"type":"boolean"}}});
     let assessment = json!({"type":"object","additionalProperties":false,"required":["retrieval_run_id","verdict","evidence_ids","rationale"],"properties":{"retrieval_run_id":{"type":"string","minLength":1},"verdict":{"type":"string","enum":["material","supporting","no_observable_use","indeterminate"]},"evidence_ids":{"type":"array","maxItems":8,"uniqueItems":true,"items":{"type":"string"}},"rationale":{"type":"string","minLength":1,"maxLength":1000}}});
     let selection = json!({"type":"object","additionalProperties":false,"required":["candidate_id","evidence_ids","rationale"],"properties":{"candidate_id":{"type":"string","minLength":1},"evidence_ids":{"type":"array","minItems":1,"maxItems":8,"uniqueItems":true,"items":{"type":"string"}},"rationale":{"type":"string","minLength":1,"maxLength":1000}}});
-    json!({"type":"object","additionalProperties":false,"required":["schema_version","observations","recommendations","context_assessments","graph_selections","limitations"],"properties":{"schema_version":{"type":"integer","const":2},"observations":{"type":"array","maxItems":8,"items":finding},"recommendations":{"type":"array","maxItems":6,"items":finding},"context_assessments":{"type":"array","maxItems":6,"items":assessment},"graph_selections":{"type":"array","maxItems":8,"items":selection},"limitations":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":1000}}}})
+    json!({"type":"object","additionalProperties":false,"required":["schema_version","observations","recommendations","context_assessments","graph_selections","limitations"],"properties":{"schema_version":{"type":"integer","const":2},"observations":{"type":"array","maxItems":8,"items":finding},"recommendations":{"type":"array","maxItems":6,"items":finding},"context_assessments":{"type":"array","maxItems":context_runs,"items":assessment},"graph_selections":{"type":"array","maxItems":8,"items":selection},"limitations":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":1000}}}})
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

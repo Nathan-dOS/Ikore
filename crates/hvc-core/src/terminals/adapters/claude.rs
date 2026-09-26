@@ -51,6 +51,10 @@ impl CliAdapter for ClaudeAdapter {
         if let Some(model_profile) = model_profile {
             args.extend(["--effort".into(), model_profile.into()]);
         }
+        let environment = model_profile
+            .and_then(thinking_budget)
+            .map(|budget| vec![("MAX_THINKING_TOKENS".into(), budget.to_string())])
+            .unwrap_or_default();
         if let Some(mut schema) = request.schema {
             // Claude Code currently validates the supplied schema against a
             // registry that does not resolve draft/2020-12's meta URI. The
@@ -64,7 +68,7 @@ impl CliAdapter for ClaudeAdapter {
         Ok(CliProcessSpec {
             executable: request.executable,
             args,
-            environment: Vec::new(),
+            environment,
             stdin_payload: request.prompt.into_bytes(),
             resume_session_id: request.resume_session_id,
         })
@@ -120,6 +124,19 @@ impl CliAdapter for ClaudeAdapter {
     }
 }
 
+/// Hard cap on one turn's thinking for a role set to a lower effort. On the
+/// same prompt, Haiku 4.5 thought about 2,100 tokens by default and about
+/// 1,040 with a 2,048 cap (29.3 s → 17.5 s, 2026-09-26). Specification and
+/// Contract spent 70–77 % of their time thinking. High and above keep the CLI
+/// default, and so does a role left on its default level.
+fn thinking_budget(level: &str) -> Option<u32> {
+    match level {
+        "low" => Some(4_096),
+        "medium" => Some(12_000),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +161,46 @@ mod tests {
         assert!(spec.args.windows(2).any(|pair| pair == ["--permission-mode", "dontAsk"]));
         assert!(spec.args.windows(2).any(|pair| pair == ["--tools", "Read,Glob,Grep"]));
         assert!(!spec.args.windows(2).any(|pair| pair == ["--permission-mode", "plan"]));
+    }
+
+    #[test]
+    fn a_lower_thinking_level_caps_claude_thinking_and_default_leaves_it_alone() {
+        let spec = |thinking_level, model_profile: Option<&str>| {
+            ClaudeAdapter
+                .build_process_spec(CliInvocationRequest {
+                    executable: std::path::PathBuf::from(r"C:\Tools\claude.exe"),
+                    backend: CliBackend::Claude,
+                    model: Some("haiku".into()),
+                    model_profile: model_profile.map(str::to_owned),
+                    thinking_level,
+                    prompt: "Specify the batch".into(),
+                    schema_file: None,
+                    schema: None,
+                    custom_args: Vec::new(),
+                    resume_session_id: None,
+                })
+                .unwrap()
+        };
+        let budget = |spec: &CliProcessSpec| {
+            spec.environment
+                .iter()
+                .find(|(name, _)| name == "MAX_THINKING_TOKENS")
+                .map(|(_, value)| value.clone())
+        };
+        let low = spec(ThinkingLevel::Low, None);
+        assert_eq!(budget(&low).as_deref(), Some("4096"));
+        assert!(low.args.windows(2).any(|pair| pair == ["--effort", "low"]));
+        assert_eq!(
+            budget(&spec(ThinkingLevel::Medium, None)).as_deref(),
+            Some("12000")
+        );
+        assert_eq!(budget(&spec(ThinkingLevel::High, None)), None);
+        assert_eq!(budget(&spec(ThinkingLevel::Default, None)), None);
+        // A catalog profile wins over the role's level, as it does for `--effort`.
+        assert_eq!(
+            budget(&spec(ThinkingLevel::High, Some("low"))).as_deref(),
+            Some("4096")
+        );
     }
 
     #[test]

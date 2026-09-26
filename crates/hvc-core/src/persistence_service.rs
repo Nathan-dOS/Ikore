@@ -1467,6 +1467,34 @@ impl PersistenceService {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(service);
     }
 
+    /// Whether every stage of a new pulsation can reach its model, from the
+    /// same configuration the runtime reads and the last CLI discovery
+    /// (never a new probe).
+    pub(crate) fn stage_preflight(
+        &self,
+        db: &Connection,
+        project_id: &str,
+    ) -> Result<
+        Vec<crate::orchestration::stage_preflight::StagePreflightIssue>,
+        PersistenceServiceError,
+    > {
+        let cached = self
+            .terminal_service
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .and_then(|terminals| terminals.cached_discovery());
+        let discovery = cached
+            .as_ref()
+            .map(|(items, fresh)| (items.as_slice(), *fresh));
+        Ok(crate::orchestration::stage_preflight::check_stages(
+            db,
+            &self.llm_repository,
+            project_id,
+            discovery,
+        )?)
+    }
+
     pub fn attach_indexing_event_sink(&self, sink: Arc<dyn IndexingEventSink>) {
         *self
             .indexing_events

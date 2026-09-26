@@ -4335,6 +4335,21 @@ impl TerminalService {
             .map(|cache| cache.items.clone())
     }
 
+    /// The last discovery without probing anything, and whether it is still
+    /// inside `CLI_DISCOVERY_CACHE_TTL`. `None` before the first scan.
+    pub fn cached_discovery(&self) -> Option<(Vec<CliAvailability>, bool)> {
+        self.discovery_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|cache| {
+                (
+                    cache.items.clone(),
+                    cache.discovered_at.elapsed() < CLI_DISCOVERY_CACHE_TTL,
+                )
+            })
+    }
+
     async fn discovery(&self, force: bool) -> Vec<CliAvailability> {
         if !force && let Some(items) = self.cache_if_fresh() {
             return items;
@@ -6054,13 +6069,20 @@ fn coordinate_process_events_blocking(
     abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
     codex_sessions_root: Option<PathBuf>,
 ) -> Result<ProcessEventSummary, TerminalError> {
-    let mut sequence = repository.next_event_sequence(&run.id)?;
+    let mut writer = AuditWriter {
+        repository: &repository,
+        event_sink: &event_sink,
+        run: &run,
+        sequence: repository.next_event_sequence(&run.id)?,
+        raw_output_delta_active: false,
+        pending: None,
+    };
     let mut event_count = 0usize;
     let mut observed_bytes = 0usize;
     let mut summary = ProcessEventSummary::default();
     let mut incomplete_stream = false;
-    let mut raw_output_delta_active = false;
     let mut codex_session_id: Option<String> = None;
+    let mut persisted_session_id: Option<String> = None;
     let usage = crate::usage::cli::CliUsageRecorder::new(
         &repository.db_path,
         crate::usage::UsageContext {
@@ -6082,7 +6104,35 @@ fn coordinate_process_events_blocking(
         signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
         TerminalError::Database(error)
     })?;
-    while let Some(item) = receiver.blocking_recv() {
+    loop {
+        let item = if writer.pending.is_none() {
+            match receiver.blocking_recv() {
+                Some(item) => item,
+                None => break,
+            }
+        } else {
+            // Buffered deltas reach the database once the stream pauses for a
+            // window, so a quiet model never leaves its last words unsaved.
+            match receiver.try_recv() {
+                Ok(item) => item,
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    if writer.pending_expired() {
+                        if let Err(error) = writer.flush(&mut summary) {
+                            signal_process_abort(
+                                &abort_token,
+                                &abort_reason,
+                                ProcessAbortReason::Persistence,
+                            );
+                            return Err(error);
+                        }
+                    } else {
+                        std::thread::sleep(DELTA_IDLE_POLL);
+                    }
+                    continue;
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => break,
+            }
+        };
         let received_at = match &item {
             ProcessStreamItem::Frame { received_at, .. }
             | ProcessStreamItem::ReadError { received_at, .. } => *received_at,
@@ -6149,6 +6199,22 @@ fn coordinate_process_events_blocking(
             finish_reason,
             is_reasoning: _,
         } = frame;
+        // A frame that names a model opens a generation: it and everything
+        // after it wait for identity checks, so it is never buffered and the
+        // deltas before it are written first.
+        let coalescible = is_delta
+            && kind == TerminalEventKind::Message
+            && !is_model_generation
+            && observed_model.is_none();
+        if writer
+            .pending
+            .as_ref()
+            .is_some_and(|pending| !coalescible || !pending.accepts(stream, is_text))
+            && let Err(error) = writer.flush(&mut summary)
+        {
+            signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
+            return Err(error);
+        }
         let mut model_evidence_source = "stream_event";
         let mut codex_turn_models = None;
         // The last reason the provider gave wins: a turn that ends on `length`
@@ -6157,9 +6223,17 @@ fn coordinate_process_events_blocking(
             summary.finish_reason = Some(reason);
         }
         if let Some(session_id) = native_session_id {
-            if let Err(error) = repository.set_native_session_id(&run.id, &session_id) {
-                signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
-                return Err(error);
+            // Claude repeats its session id on every frame; one write is enough.
+            if persisted_session_id.as_deref() != Some(session_id.as_str()) {
+                if let Err(error) = repository.set_native_session_id(&run.id, &session_id) {
+                    signal_process_abort(
+                        &abort_token,
+                        &abort_reason,
+                        ProcessAbortReason::Persistence,
+                    );
+                    return Err(error);
+                }
+                persisted_session_id = Some(session_id.clone());
             }
             if backend == CliBackend::Codex {
                 codex_session_id = Some(session_id);
@@ -6190,7 +6264,7 @@ fn coordinate_process_events_blocking(
             if let Err(error) = repository.record_model_observation(
                 &run.id,
                 summary.model_observation_count,
-                sequence,
+                writer.sequence,
                 observed_model.as_deref(),
                 message_id.as_deref(),
                 parent_invocation_id.as_deref(),
@@ -6273,43 +6347,22 @@ fn coordinate_process_events_blocking(
             signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::OutputLimit);
             return Err(TerminalError::OutputLimit);
         }
-        let event = match persist_and_emit(
-            &repository,
-            &event_sink,
-            &run,
-            sequence,
-            kind,
-            Some(stream),
-            &content,
-        ) {
-            Ok(event) => event,
-            Err(error) => {
-                signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
-                return Err(error);
-            }
+        let written = if coalescible {
+            writer.buffer(stream, is_text, &content, &mut summary)
+        } else {
+            writer.write(kind, stream, is_text, is_delta, &content, &mut summary)
         };
-        if is_text
-            && matches!(
-                event.kind,
-                TerminalEventKind::Completed
-                    | TerminalEventKind::Message
-                    | TerminalEventKind::Stdout
-            )
-        {
-            if is_delta && event.kind == TerminalEventKind::Message && raw_output_delta_active {
-                summary.raw_output.push_str(&event.content);
-            } else {
-                summary.raw_output.clone_from(&event.content);
-                raw_output_delta_active = is_delta && event.kind == TerminalEventKind::Message;
-            }
-        }
-        if stream == "stderr" {
-            summary.last_stderr.clone_from(&event.content);
+        if let Err(error) = written {
+            signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
+            return Err(error);
         }
         summary.max_persist_ms = summary
             .max_persist_ms
             .max(persistence_started.elapsed().as_millis());
-        sequence = sequence.saturating_add(1);
+    }
+    if let Err(error) = writer.flush(&mut summary) {
+        signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
+        return Err(error);
     }
     if !summary.raw_output.trim().is_empty() && summary.model_generation_count == 0 {
         signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::ModelIntegrity);
@@ -6339,6 +6392,130 @@ fn signal_process_abort(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get_or_insert(reason);
     abort_token.cancel();
+}
+
+/// Stream deltas are persisted together: one row per window of stream instead
+/// of one per frame. One Claude Test run wrote 12,166 rows, a write
+/// transaction and three connections each, and its end trailed the process by
+/// 7.8 s while the queue drained ("Haiku CLI teste 1", 2026-09-26).
+const DELTA_COALESCE_WINDOW: Duration = Duration::from_millis(250);
+/// Upper bound of one coalesced row, well under `MAX_RUN_OUTPUT_BYTES`.
+const DELTA_COALESCE_MAX_BYTES: usize = 16 * 1024;
+/// Poll interval while deltas wait for the window to close.
+const DELTA_IDLE_POLL: Duration = Duration::from_millis(10);
+
+/// Consecutive deltas of one stream and one kind of content.
+struct PendingDeltas {
+    stream: &'static str,
+    is_text: bool,
+    content: String,
+    started: Instant,
+}
+
+impl PendingDeltas {
+    fn accepts(&self, stream: &str, is_text: bool) -> bool {
+        self.stream == stream
+            && self.is_text == is_text
+            && self.content.len() < DELTA_COALESCE_MAX_BYTES
+    }
+}
+
+/// Persists and emits a run's events in order, coalescing stream deltas.
+struct AuditWriter<'a> {
+    repository: &'a TerminalRepository,
+    event_sink: &'a Arc<dyn TerminalEventSink>,
+    run: &'a TerminalRun,
+    /// The sequence the next persisted event receives.
+    sequence: u64,
+    raw_output_delta_active: bool,
+    pending: Option<PendingDeltas>,
+}
+
+impl AuditWriter<'_> {
+    fn pending_expired(&self) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|pending| pending.started.elapsed() >= DELTA_COALESCE_WINDOW)
+    }
+
+    fn buffer(
+        &mut self,
+        stream: &'static str,
+        is_text: bool,
+        content: &str,
+        summary: &mut ProcessEventSummary,
+    ) -> Result<(), TerminalError> {
+        let pending = self.pending.get_or_insert_with(|| PendingDeltas {
+            stream,
+            is_text,
+            content: String::new(),
+            started: Instant::now(),
+        });
+        // Text deltas continue one another; raw frames stay one per line.
+        if !is_text && !pending.content.is_empty() {
+            pending.content.push('\n');
+        }
+        pending.content.push_str(content);
+        if pending.content.len() >= DELTA_COALESCE_MAX_BYTES || self.pending_expired() {
+            self.flush(summary)?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self, summary: &mut ProcessEventSummary) -> Result<(), TerminalError> {
+        match self.pending.take() {
+            Some(pending) => self.write(
+                TerminalEventKind::Message,
+                pending.stream,
+                pending.is_text,
+                true,
+                &pending.content,
+                summary,
+            ),
+            None => Ok(()),
+        }
+    }
+
+    fn write(
+        &mut self,
+        kind: TerminalEventKind,
+        stream: &str,
+        is_text: bool,
+        is_delta: bool,
+        content: &str,
+        summary: &mut ProcessEventSummary,
+    ) -> Result<(), TerminalError> {
+        let event = persist_and_emit(
+            self.repository,
+            self.event_sink,
+            self.run,
+            self.sequence,
+            kind,
+            Some(stream),
+            content,
+        )?;
+        if is_text
+            && matches!(
+                event.kind,
+                TerminalEventKind::Completed
+                    | TerminalEventKind::Message
+                    | TerminalEventKind::Stdout
+            )
+        {
+            let delta = is_delta && event.kind == TerminalEventKind::Message;
+            if delta && self.raw_output_delta_active {
+                summary.raw_output.push_str(&event.content);
+            } else {
+                summary.raw_output.clone_from(&event.content);
+                self.raw_output_delta_active = delta;
+            }
+        }
+        if stream == "stderr" {
+            summary.last_stderr.clone_from(&event.content);
+        }
+        self.sequence = self.sequence.saturating_add(1);
+        Ok(())
+    }
 }
 
 fn persist_and_emit(
@@ -6433,6 +6610,13 @@ fn harden_spec(
             spec.args.push("--no-session-persistence".into());
             spec.args
                 .extend(["--setting-sources".into(), String::new()]);
+            // `--setting-sources ""` leaves Claude's auto-memory on: ~3,000
+            // prompt tokens a call (2,549 vs 5,553 cached, 2026-09-26) and a
+            // Test worker that spent a turn looking for `memory/MEMORY.md`.
+            // Model parameters (effort, thinking budget) belong to the
+            // adapter, not to this isolation step.
+            spec.environment
+                .push(("CLAUDE_CODE_DISABLE_AUTO_MEMORY".into(), "1".into()));
             spec.args.push("--strict-mcp-config".into());
             spec.args.push("--no-chrome".into());
             spec.args.push("--disable-slash-commands".into());
@@ -6676,7 +6860,10 @@ async fn run_companion_process(
         );
     }
     let envelope_json = extract_companion_envelope_json(&stdout.text).ok_or_else(|| {
-        TerminalError::Process("Companion CLI returned an invalid control envelope".into())
+        TerminalError::Process(format!(
+            "Companion CLI returned an invalid control envelope ({})",
+            companion_envelope_miss(backend, &stdout.text)
+        ))
     })?;
     Ok(CompanionCliRoundOutput {
         envelope_json,
@@ -6711,6 +6898,55 @@ fn companion_stream_output(
             }
             TerminalError::Io(error)
         })
+}
+
+/// Why a stream carried no envelope, as a short stable code. The model called
+/// host operations as native tools (`unavailable_tool`), the CLI rejected its
+/// structured output (`schema_rejected`), it wrote only prose (`text_only`),
+/// or nothing came back (`no_output`). Only Claude reports these events.
+fn companion_envelope_miss(backend: CliBackend, stdout: &str) -> &'static str {
+    if backend != CliBackend::Claude {
+        return "no_envelope";
+    }
+    let (mut unavailable, mut rejected, mut text) = (false, false, false);
+    for event in stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+    {
+        let blocks = event
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten();
+        match event.get("type").and_then(Value::as_str) {
+            Some("user") => {
+                for block in blocks.filter(|block| block["type"] == "tool_result") {
+                    let content = block["content"].to_string();
+                    unavailable |= content.contains("No such tool available");
+                    rejected |= content.contains("does not match required schema")
+                        || content.contains("could not be parsed as JSON");
+                }
+            }
+            Some("assistant") => {
+                text |= blocks.into_iter().any(|block| {
+                    block["type"] == "text"
+                        && block["text"]
+                            .as_str()
+                            .is_some_and(|text| !text.trim().is_empty())
+                });
+            }
+            _ => {}
+        }
+    }
+    if rejected {
+        "schema_rejected"
+    } else if unavailable {
+        "unavailable_tool"
+    } else if text {
+        "text_only"
+    } else {
+        "no_output"
+    }
 }
 
 /// The `result` text of Claude's final stream-json event when it reports an
@@ -6803,7 +7039,25 @@ pub(crate) fn extract_companion_envelope_json(output: &str) -> Option<String> {
         None
     }
 
-    parse_candidate(output, 0).and_then(|value| serde_json::to_string(&value).ok())
+    // JSONL transports carry the envelope in one of their last whole events,
+    // after one frame per streamed delta. A long Claude answer emits hundreds of
+    // `stream_event` lines whose braces used up the bounded scan below before it
+    // reached the answer ("invalid control envelope", Companion, 2026-09-26).
+    // Read whole events newest first, prefer Claude's `structured_output`, and
+    // skip deltas, which only ever carry fragments.
+    output
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+        .filter(|event| event.get("type").and_then(Value::as_str) != Some("stream_event"))
+        .find_map(|event| {
+            event
+                .get("structured_output")
+                .and_then(|structured| find(structured, 0))
+                .or_else(|| find(&event, 0))
+        })
+        .or_else(|| parse_candidate(output, 0))
+        .and_then(|value| serde_json::to_string(&value).ok())
 }
 
 fn cli_mode_disabled() -> bool {
@@ -7488,6 +7742,92 @@ mod tests {
         );
     }
 
+    /// Mirrors a real `claude -p --include-partial-messages --json-schema` run
+    /// (2026-09-26): a long answer streamed as ~750 delta frames holding about
+    /// 2,400 braces before the whole `assistant` and `result` events. The
+    /// bounded brace scan gave up long before them.
+    #[test]
+    fn companion_envelope_survives_a_long_claude_partial_message_stream() {
+        let text = "Line with an object { \"key\": 1 } in the answer.\n".repeat(120);
+        let envelope = serde_json::json!({"response":{"type":"final","text":text}});
+        let mut stream = vec![
+            serde_json::json!({"type":"system","subtype":"init","tools":["Read","StructuredOutput"]})
+                .to_string(),
+        ];
+        let json = envelope.to_string();
+        let chars = json.chars().collect::<Vec<_>>();
+        for chunk in chars.chunks(12) {
+            stream.push(
+                serde_json::json!({"type":"stream_event","event":{"type":"content_block_delta",
+                    "index":1,"delta":{"type":"input_json_delta",
+                    "partial_json":chunk.iter().collect::<String>()}},"parent_tool_use_id":null})
+                .to_string(),
+            );
+        }
+        stream.push(
+            serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use",
+                "name":"StructuredOutput","input":envelope.clone()}]}})
+            .to_string(),
+        );
+        stream.push(
+            serde_json::json!({"type":"result","subtype":"success","is_error":false,
+                "result":json,"structured_output":envelope})
+            .to_string(),
+        );
+        let stdout = stream.join("\n");
+        assert!(stdout.matches('{').count() > 1_000);
+        let found = extract_companion_envelope_json(&stdout).expect("the final envelope");
+        assert_eq!(
+            serde_json::from_str::<Value>(&found).unwrap(),
+            serde_json::json!({"type":"final","text":text})
+        );
+        // Deltas alone never make an envelope, however many there are.
+        let deltas_only = stream[..stream.len() - 2].join("\n");
+        assert!(extract_companion_envelope_json(&deltas_only).is_none());
+    }
+
+    /// The rounds that failed on 2026-09-26: the model called the host's
+    /// operations as native tools and never reached StructuredOutput.
+    #[test]
+    fn a_missing_envelope_names_why_it_is_missing() {
+        let stream = |events: &[Value]| {
+            events
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let unavailable = stream(&[
+            serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"read_repository_file","input":{"path":"index.html"}}]}}),
+            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","content":"<tool_use_error>Error: No such tool available: read_repository_file</tool_use_error>"}]}}),
+            serde_json::json!({"type":"result","subtype":"success","result":""}),
+        ]);
+        assert!(extract_companion_envelope_json(&unavailable).is_none());
+        assert_eq!(
+            companion_envelope_miss(CliBackend::Claude, &unavailable),
+            "unavailable_tool"
+        );
+        let rejected = stream(&[
+            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","content":"InputValidationError: StructuredOutput was called with input that could not be parsed as JSON."}]}}),
+        ]);
+        assert_eq!(
+            companion_envelope_miss(CliBackend::Claude, &rejected),
+            "schema_rejected"
+        );
+        let prose = stream(&[
+            serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":"Everything is ready."}]}}),
+        ]);
+        assert_eq!(
+            companion_envelope_miss(CliBackend::Claude, &prose),
+            "text_only"
+        );
+        assert_eq!(companion_envelope_miss(CliBackend::Claude, ""), "no_output");
+        assert_eq!(
+            companion_envelope_miss(CliBackend::Codex, &prose),
+            "no_envelope"
+        );
+    }
+
     fn spec_for(backend: CliBackend) -> CliProcessSpec {
         let executable = match backend {
             CliBackend::Codex => r"C:\Tools\codex.exe",
@@ -7531,6 +7871,11 @@ mod tests {
             .position(|arg| arg == "--setting-sources")
             .unwrap();
         assert_eq!(claude.args[sources + 1], "");
+        assert!(
+            claude
+                .environment
+                .contains(&("CLAUDE_CODE_DISABLE_AUTO_MEMORY".into(), "1".into()))
+        );
 
         let mut codex = spec_for(CliBackend::Codex);
         harden_spec(CliBackend::Codex, Hardening::Pipeline, &mut codex).unwrap();
@@ -7644,6 +7989,10 @@ mod tests {
                         spec.args
                             .iter()
                             .any(|arg| arg == "--disable-slash-commands")
+                    );
+                    assert!(
+                        spec.environment
+                            .contains(&("CLAUDE_CODE_DISABLE_AUTO_MEMORY".into(), "1".into()))
                     );
                 }
                 CliBackend::Gemini => {
@@ -9245,6 +9594,151 @@ mod tests {
         assert!(
             validate_resume_parent(&changed, &parent, "workspace-a", Some("session-a")).is_err()
         );
+    }
+
+    fn claude_frame(value: Value) -> ProcessStreamItem {
+        ProcessStreamItem::Frame {
+            stream: "stdout",
+            bytes: value.to_string().into_bytes(),
+            received_at: Instant::now(),
+        }
+    }
+
+    fn text_delta(text: &str) -> ProcessStreamItem {
+        claude_frame(serde_json::json!({"type":"stream_event","session_id":"s-1",
+            "event":{"type":"content_block_delta","index":0,
+                "delta":{"type":"text_delta","text":text}}}))
+    }
+
+    fn message_start() -> ProcessStreamItem {
+        claude_frame(serde_json::json!({"type":"stream_event","session_id":"s-1",
+            "event":{"type":"message_start",
+                "message":{"id":"m-1","model":"claude-haiku-4-5-20251001"}}}))
+    }
+
+    /// "Haiku CLI teste 1" (2026-09-26): a Claude Test run persisted 12,166
+    /// events, one per stream frame, and its end trailed the process by 7.8 s.
+    #[tokio::test]
+    async fn claude_stream_deltas_share_rows_in_order_around_each_generation() {
+        let (_data, repository, mut run) = audit_test_run();
+        run.model = Some("haiku".into());
+        let run_id = run.id.clone();
+        let (sender, receiver) = mpsc::channel(128);
+        sender
+            .send(claude_frame(
+                serde_json::json!({"type":"system","subtype":"init",
+                "session_id":"s-1","model":"claude-haiku-4-5-20251001"}),
+            ))
+            .await
+            .unwrap();
+        sender.send(message_start()).await.unwrap();
+        for word in 0..40 {
+            sender.send(text_delta(&format!("w{word} "))).await.unwrap();
+        }
+        for part in 0..20 {
+            sender
+                .send(claude_frame(serde_json::json!({"type":"stream_event","session_id":"s-1",
+                    "event":{"type":"content_block_delta","index":1,
+                        "delta":{"type":"input_json_delta","partial_json":format!("{{\"k{part}\":")}}})))
+                .await
+                .unwrap();
+        }
+        sender
+            .send(claude_frame(
+                serde_json::json!({"type":"result","subtype":"success",
+                "session_id":"s-1","result":"final answer"}),
+            ))
+            .await
+            .unwrap();
+        drop(sender);
+        let summary = tokio::task::spawn_blocking({
+            let repository = repository.clone();
+            move || {
+                coordinate_process_events_blocking(
+                    repository,
+                    Arc::new(CollectTerminalEvents::default()),
+                    run,
+                    CliBackend::Claude,
+                    receiver,
+                    CancellationToken::new(),
+                    Arc::new(Mutex::new(None)),
+                    None,
+                )
+            }
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(summary.raw_output, "final answer");
+        assert_eq!(summary.verified_model_generation_count, 1);
+        let events = repository.list_events(&run_id, 0, 1000).unwrap();
+        // init, message_start, 40 text deltas, 20 raw deltas, result.
+        assert_eq!(events.len(), 5, "{events:#?}");
+        assert!(
+            events
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
+        assert!(events[0].content.contains("\"subtype\":\"init\""));
+        assert!(events[1].content.contains("message_start"));
+        let words = (0..40).map(|word| format!("w{word} ")).collect::<String>();
+        assert_eq!(events[2].content, words);
+        assert_eq!(events[3].content.lines().count(), 20);
+        assert!(
+            events[3]
+                .content
+                .lines()
+                .all(|line| line.contains("input_json_delta"))
+        );
+        assert_eq!(events[4].content, "final answer");
+        let stored = repository.get_run(&run_id).unwrap();
+        assert_eq!(stored.native_session_id.as_deref(), Some("s-1"));
+        assert_eq!(stored.event_count, 5);
+    }
+
+    /// Deltas never wait for the next frame: a pause in the stream writes them.
+    #[tokio::test]
+    async fn buffered_deltas_are_written_when_the_stream_pauses() {
+        let (_data, repository, mut run) = audit_test_run();
+        run.model = Some("haiku".into());
+        let run_id = run.id.clone();
+        let (sender, receiver) = mpsc::channel(16);
+        let audit = tokio::task::spawn_blocking({
+            let repository = repository.clone();
+            move || {
+                coordinate_process_events_blocking(
+                    repository,
+                    Arc::new(CollectTerminalEvents::default()),
+                    run,
+                    CliBackend::Claude,
+                    receiver,
+                    CancellationToken::new(),
+                    Arc::new(Mutex::new(None)),
+                    None,
+                )
+            }
+        });
+        sender.send(message_start()).await.unwrap();
+        for word in ["a ", "b ", "c"] {
+            sender.send(text_delta(word)).await.unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !repository
+            .list_events(&run_id, 0, 100)
+            .unwrap()
+            .iter()
+            .any(|event| event.content == "a b c")
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the paused deltas were never written"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        drop(sender);
+        let summary = audit.await.unwrap().unwrap();
+        assert_eq!(summary.raw_output, "a b c");
+        assert_eq!(repository.list_events(&run_id, 0, 100).unwrap().len(), 2);
     }
 
     fn audit_test_run() -> (tempfile::TempDir, TerminalRepository, TerminalRun) {
