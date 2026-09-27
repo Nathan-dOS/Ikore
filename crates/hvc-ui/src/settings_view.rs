@@ -38,6 +38,52 @@ pub(crate) fn reload_action(model: &AppModel, cx: &mut Context<AppModel>) -> Any
     .into_any_element()
 }
 
+pub(crate) fn projects_page(model: &AppModel, cx: &mut Context<AppModel>) -> PageContent {
+    let settings=model.settings.read(cx);
+    let selected=settings.deletion_project_id.clone();
+    if selected.is_some() {
+        let preview=settings.deletion_preview.clone();
+        let loading=settings.deletion_loading;
+        let busy=settings.deletion_busy;
+        let confirmed=preview.as_ref().is_some_and(|p|model.settings_project_delete_input.read(cx).value()==p.project.name);
+        let mut page=PageContent::new(SettingsPage::Projects.label())
+            .description(SettingsPage::Projects.description())
+            .back(back_link("settings-project-back","All projects",cx,|model,cx|model.cancel_project_deletion(cx)));
+        if let Some(preview)=preview {
+            let project=preview.project;
+            let state=if project.is_archived {"Archived"} else {"Active"};
+            page=page.meta(format!("{} · {state}",project.name))
+                .section("Repository",section("Repository",None,vec![
+                    row_with("project-delete-path","Directory".into(),Some("The entire directory, including .git and files you created, will be removed.".into()),Some(project.workspace_path.into()),false,readout(state)),
+                    row_with("project-delete-size","Files".into(),None,None,false,readout(format!("{} files · {} bytes",preview.files,preview.bytes))),
+                    row_with("project-delete-history","App history".into(),None,None,false,readout(format!("{} pulsations · {} conversations",preview.pulsations,preview.conversations))),
+                ]))
+                .section("Permanent deletion",section("Permanent deletion",None,vec![
+                    warning_note("This removes the repository folder and project data. Provider usage remains attributed to this project in separate local history. The operation cannot be undone."),
+                    stacked_row("project-deletion",None,div().flex().flex_col().gap_2().child(note(format!("Type {} to confirm:",project.name))).child(model.settings_project_delete_input.clone())),
+                    action_with("settings-delete-project","Delete repository permanently",ButtonVariant::Danger,confirmed && !busy && !loading,cx,|model,cx|model.confirm_project_deletion(cx)).into_any_element(),
+                ]));
+        } else {
+            page=page.section("Repository",section("Repository",None,vec![note(if loading {"Inspecting the repository…"} else {"The repository preview is unavailable. Return to the project list and retry."})]));
+        }
+        return page;
+    }
+    let projects=settings.snapshot.as_ref().map(|s|s.projects.clone()).unwrap_or_default();
+    let mut rows=vec![stacked_row("project-deletion",None,note("Choose a project to review its files and delete it permanently."))];
+    let pending=settings.snapshot.as_ref().map_or(0,|s|s.pending_project_deletions);
+    if pending>0 {rows.push(warning_note(format!("Cleanup is pending for {pending} deleted project(s). The app retries when it starts.")));}
+    rows.extend(if projects.is_empty() {vec![note("No local projects are registered.")]} else {
+        projects.into_iter().map(|project| {
+            let id=project.id.clone();
+            nav_row(SharedString::from(format!("settings-project:{id}")),if project.is_archived {theme::text_subtle()} else {theme::success()},project.name,project.workspace_path,cx,move |model,cx|model.select_project_for_deletion(id.clone(),cx))
+        }).collect()
+    });
+    PageContent::new(SettingsPage::Projects.label())
+        .description(SettingsPage::Projects.description())
+        .action(reload_action(model,cx))
+        .section("Local projects",section("Local projects",describe("project-deletion"),rows))
+}
+
 // ---------------------------------------------------------------------------------------------
 // Connections
 

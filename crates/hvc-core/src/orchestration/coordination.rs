@@ -142,6 +142,7 @@ impl PersistenceService {
         let job = tx.query_row(
             "SELECT j.id,j.pulsation_id,j.kind,j.status,j.attempts,j.last_error,j.created_at,j.updated_at,j.started_at,j.finished_at,j.cancel_requested_at,j.available_at
              FROM jobs j JOIN pulsations p ON p.id=j.pulsation_id
+             JOIN projects owner ON owner.id=p.project_id AND owner.is_archived=0
              JOIN project_pipeline_state s ON s.project_id=p.project_id
              WHERE j.status='pending' AND j.cancellation_reason IS NULL
                AND j.project_id=p.project_id AND j.input_revision=p.input_revision AND j.state_version=p.state_version

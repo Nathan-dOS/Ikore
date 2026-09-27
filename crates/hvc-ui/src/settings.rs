@@ -13,9 +13,11 @@ use hvc_core::llm::{
     UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
 };
 use hvc_core::persistence_service::{
-    EmbeddingReadinessReport, PersistenceCommandError, ReindexWorkspaceEmbeddingsRequest,
+    EmbeddingReadinessReport, ListProjectsRequest, PersistenceCommandError, Project,
+    ReindexWorkspaceEmbeddingsRequest,
     ReindexWorkspaceEmbeddingsResponse, UpdateAgentRuntimeConfigRequest,
 };
+use hvc_core::project_deletion::{ProjectDeletionOutcome, ProjectDeletionPreview};
 
 use crate::errors::UiCommandError;
 
@@ -46,6 +48,8 @@ pub(crate) struct CompositionProjectSettings {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SettingsSnapshot {
+    pub(crate) projects: Vec<Project>,
+    pub(crate) pending_project_deletions: i64,
     pub(crate) composition: Option<CompositionProjectSettings>,
     pub(crate) preparation: hvc_core::orchestration::PreparationSettings,
     pub(crate) config: AgentRuntimeConfig,
@@ -60,6 +64,8 @@ pub(crate) struct SettingsSnapshot {
 }
 
 pub(crate) trait SettingsBackend: Send + Sync {
+    fn preview_project_deletion(&self, project_id: String) -> SettingsFuture<ProjectDeletionPreview>;
+    fn delete_project_permanently(&self, project_id: String, confirmation: String) -> SettingsFuture<ProjectDeletionOutcome>;
     fn update_preparation(
         &self,
         settings: hvc_core::orchestration::PreparationSettings,
@@ -166,6 +172,18 @@ impl CoreSettingsBackend {
 }
 
 impl SettingsBackend for CoreSettingsBackend {
+    fn preview_project_deletion(&self, project_id: String) -> SettingsFuture<ProjectDeletionPreview> {
+        self.blocking(move |persistence| persistence.preview_project_deletion(&project_id))
+    }
+
+    fn delete_project_permanently(&self, project_id: String, confirmation: String) -> SettingsFuture<ProjectDeletionOutcome> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime.spawn_blocking(move || core.delete_project_permanently(&project_id,&confirmation))
+                .await.map_err(|error|UiCommandError::worker(error.to_string()))?.map_err(command_error)
+        })
+    }
     fn update_preparation(
         &self,
         settings: hvc_core::orchestration::PreparationSettings,
@@ -260,6 +278,8 @@ impl SettingsBackend for CoreSettingsBackend {
                         None => None,
                     };
                     Ok(SettingsSnapshot {
+                        projects: persistence.list_projects(ListProjectsRequest {include_archived:true})?.projects,
+                        pending_project_deletions: persistence.pending_project_deletion_count()?,
                         composition,
                         preparation: persistence.get_preparation_settings()?,
                         config: persistence.get_agent_runtime_config()?.config,
@@ -502,6 +522,7 @@ pub(crate) enum SettingsPage {
     #[default]
     General,
     Usage,
+    Projects,
     Shortcuts,
     Connections,
     Routes,
@@ -535,9 +556,10 @@ impl SettingsGroup {
 }
 
 impl SettingsPage {
-    pub(crate) const ALL: [Self; 12] = [
+    pub(crate) const ALL: [Self; 13] = [
         Self::General,
         Self::Usage,
+        Self::Projects,
         Self::Shortcuts,
         Self::Connections,
         Self::Routes,
@@ -554,6 +576,7 @@ impl SettingsPage {
         match self {
             Self::General => "general",
             Self::Usage => "usage",
+            Self::Projects => "projects",
             Self::Shortcuts => "shortcuts",
             Self::Connections => "connections",
             Self::Routes => "routes",
@@ -571,6 +594,7 @@ impl SettingsPage {
         match self {
             Self::General => "General",
             Self::Usage => "Usage",
+            Self::Projects => "Projects & data",
             Self::Shortcuts => "Keyboard shortcuts",
             Self::Connections => "Connections",
             Self::Routes => "Routes",
@@ -588,6 +612,7 @@ impl SettingsPage {
         match self {
             Self::General => "How the workbench behaves around you.",
             Self::Usage => "Tokens recorded by Hard Vibe Code across projects and transports.",
+            Self::Projects => "Review local projects and permanently delete their repository and project data.",
             Self::Shortcuts => "Every keyboard shortcut, grouped by where it works.",
             Self::Connections => "LLM providers, default models and the keys stored for them.",
             Self::Routes => "Ordered fallbacks across connections and the agents bound to them.",
@@ -608,6 +633,7 @@ impl SettingsPage {
         match self {
             Self::General => Icon::SlidersHorizontal,
             Self::Usage => Icon::ChartColumn,
+            Self::Projects => Icon::Folder,
             Self::Shortcuts => Icon::Keyboard,
             Self::Connections => Icon::Plug,
             Self::Routes => Icon::Route,
@@ -623,7 +649,7 @@ impl SettingsPage {
 
     pub(crate) fn group(self) -> SettingsGroup {
         match self {
-            Self::General | Self::Usage | Self::Shortcuts => SettingsGroup::General,
+            Self::General | Self::Usage | Self::Projects | Self::Shortcuts => SettingsGroup::General,
             Self::Connections | Self::Routes | Self::Embeddings | Self::SecondBrain => {
                 SettingsGroup::AiModels
             }
@@ -637,6 +663,7 @@ impl SettingsPage {
         match self {
             Self::General => "preferences workflow layout accessibility",
             Self::Usage => "tokens cost billing input output chart",
+            Self::Projects => "repository delete remove folder disk pulsations companion history",
             Self::Shortcuts => "keyboard hotkeys keybindings keys",
             Self::Connections => "providers api keys openai anthropic ollama credentials",
             Self::Routes => "routing fallback failover binding resilience cooldown",
@@ -802,6 +829,11 @@ pub(crate) enum StatusTone {
 #[derive(Debug)]
 pub(crate) struct SettingsModel {
     pub(crate) usage: crate::usage::UsageState,
+    pub(crate) deletion_preview: Option<ProjectDeletionPreview>,
+    pub(crate) deletion_project_id: Option<String>,
+    pub(crate) deletion_loading: bool,
+    pub(crate) deletion_busy: bool,
+    pub(crate) deletion_generation: u64,
     pub(crate) page: SettingsPage,
     /// Connections/Routes drill-in: the detail of the selected (or new) item is open.
     pub(crate) connection_detail: bool,
@@ -841,6 +873,11 @@ impl Default for SettingsModel {
     fn default() -> Self {
         Self {
             usage: Default::default(),
+            deletion_preview: None,
+            deletion_project_id: None,
+            deletion_loading: false,
+            deletion_busy: false,
+            deletion_generation: 0,
             page: SettingsPage::General,
             connection_detail: false,
             route_detail: false,
@@ -1053,6 +1090,8 @@ mod tests {
         model.apply_snapshot(
             generation,
             SettingsSnapshot {
+                projects: Vec::new(),
+                pending_project_deletions: 0,
                 composition: None,
                 preparation: Default::default(),
                 config: AgentRuntimeConfig::default(),

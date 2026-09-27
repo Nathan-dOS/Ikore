@@ -366,7 +366,7 @@ fn query_usage_at(
     // A single snapshot makes cards, table and graph agree during active calls.
     let transaction = db.unchecked_transaction()?;
     let totals = transaction.query_row(
-        &format!("SELECT {TOTALS_SQL} FROM token_usage_records WHERE {FILTER_SQL}"),
+        &format!("SELECT {TOTALS_SQL} FROM all_token_usage_records WHERE {FILTER_SQL}"),
         args,
         |row| read_totals(row, 0),
     )?;
@@ -375,7 +375,7 @@ fn query_usage_at(
             "SELECT provider_id,COALESCE(observed_model,requested_model,'Unknown model') AS model,
              CASE WHEN observed_model IS NOT NULL THEN 'observed' WHEN requested_model IS NOT NULL
              THEN 'requested' ELSE 'unknown' END AS model_source,transport,{TOTALS_SQL}
-             FROM token_usage_records WHERE {FILTER_SQL}
+             FROM all_token_usage_records WHERE {FILTER_SQL}
              GROUP BY provider_id,model,model_source,transport
              ORDER BY SUM(total_tokens) DESC,provider_id,model,transport,model_source"
         ))?;
@@ -403,7 +403,7 @@ fn query_usage_at(
         };
         let mut statement = transaction.prepare(&format!(
             "SELECT strftime('{format}',started_at) AS period,{TOTALS_SQL}
-             FROM token_usage_records WHERE {FILTER_SQL} GROUP BY period ORDER BY period"
+             FROM all_token_usage_records WHERE {FILTER_SQL} GROUP BY period ORDER BY period"
         ))?;
         statement
             .query_map(args, |row| {
@@ -438,6 +438,7 @@ fn query_usage_at(
     let projects = {
         let mut statement = transaction.prepare(
             "SELECT p.id,p.name FROM projects p
+             UNION SELECT r.project_id,r.project_name FROM retained_usage_projects r
              UNION SELECT DISTINCT r.project_id,'Deleted project' FROM token_usage_records r
              WHERE r.project_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM projects p WHERE p.id=r.project_id)
              ORDER BY 2,1")?;
@@ -451,13 +452,13 @@ fn query_usage_at(
             .collect::<rusqlite::Result<Vec<_>>>()?
     };
     let without_pulsation = transaction.query_row(
-        &format!("SELECT {TOTALS_SQL} FROM token_usage_records WHERE {FILTER_SQL} AND pulsation_id IS NULL"),
+        &format!("SELECT {TOTALS_SQL} FROM all_token_usage_records WHERE {FILTER_SQL} AND pulsation_id IS NULL"),
         args, |row| read_totals(row, 0),
     )?;
     let mut pulsations = {
         let mut statement = transaction.prepare(&format!(
             "SELECT pulsation_id,COALESCE((SELECT feature_name FROM pulsations p WHERE p.id=r.pulsation_id),'Deleted pulsation'),{TOTALS_SQL}
-             FROM token_usage_records r WHERE {FILTER_SQL} AND pulsation_id IS NOT NULL
+             FROM all_token_usage_records r WHERE {FILTER_SQL} AND pulsation_id IS NOT NULL
              GROUP BY pulsation_id ORDER BY SUM(total_tokens) DESC,pulsation_id"
         ))?;
         statement
@@ -477,7 +478,7 @@ fn query_usage_at(
             "SELECT pulsation_id,provider_id,COALESCE(observed_model,requested_model,'Unknown model') AS model,
              CASE WHEN observed_model IS NOT NULL THEN 'observed' WHEN requested_model IS NOT NULL
              THEN 'requested' ELSE 'unknown' END AS model_source,transport,{TOTALS_SQL}
-             FROM token_usage_records WHERE {FILTER_SQL} AND pulsation_id IS NOT NULL
+             FROM all_token_usage_records WHERE {FILTER_SQL} AND pulsation_id IS NOT NULL
              GROUP BY pulsation_id,provider_id,model,model_source,transport
              ORDER BY SUM(total_tokens) DESC,provider_id,model,transport,model_source"
         ))?;
@@ -511,7 +512,7 @@ fn query_usage_at(
     let executors = transaction
         .prepare(&format!(
             "SELECT executor_kind,COUNT(DISTINCT attempt_id),{TOTALS_SQL}
-             FROM token_usage_records WHERE {FILTER_SQL} AND executor_kind IS NOT NULL
+             FROM all_token_usage_records WHERE {FILTER_SQL} AND executor_kind IS NOT NULL
              GROUP BY executor_kind ORDER BY SUM(total_tokens) DESC,executor_kind"
         ))?
         .query_map(args, |row| {
@@ -532,7 +533,7 @@ fn query_usage_at(
                    THEN 'free_form:' || e.free_form_slot_id
                    ELSE 'canonical:' || e.agent_role END AS target_key,
                  a.estimated_cost_usd
-               FROM token_usage_records r
+               FROM all_token_usage_records r
                JOIN llm_attempts a ON r.source_kind='llm_attempt' AND r.source_id=a.id
                JOIN llm_route_executions e ON e.id=a.execution_id
              )

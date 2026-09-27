@@ -45,6 +45,7 @@ use crate::agents::{
     CliModelPickerState, CliModelPickerTarget, CoreAgentsBackend,
 };
 use crate::chat::{ChatBackend, ChatEventOutcome, ChatModel, CoreChatBackend};
+use crate::errors::UiCommandError;
 use crate::flow::FlowTarget;
 use crate::icons::Icon;
 use crate::lifecycle::LifecycleState;
@@ -320,6 +321,7 @@ pub struct AppModel {
     pub(crate) settings_connection_endpoint_input: Entity<NativeTextInput>,
     pub(crate) settings_connection_secret_input: Entity<NativeTextInput>,
     pub(crate) settings_route_name_input: Entity<NativeTextInput>,
+    pub(crate) settings_project_delete_input: Entity<NativeTextInput>,
     pub(crate) settings_embedding_model_input: Entity<NativeTextInput>,
     pub(crate) chat_draft_input: Entity<NativeTextInput>,
     pub(crate) cli_model_search_input: Entity<NativeTextInput>,
@@ -586,6 +588,7 @@ impl AppModel {
         let settings_connection_secret_input = cx
             .new(|cx| NativeTextInput::new("API key (will not be displayed again)", cx).obscured());
         let settings_route_name_input = cx.new(|cx| NativeTextInput::new("Route name", cx));
+        let settings_project_delete_input = cx.new(|cx| NativeTextInput::new("Type the exact project name", cx));
         let settings_embedding_model_input =
             cx.new(|cx| NativeTextInput::new("Embedding model", cx));
         let chat_draft_input =
@@ -687,6 +690,7 @@ impl AppModel {
             cx.observe(&settings_connection_endpoint_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_connection_secret_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_route_name_input, |_, _, cx| cx.notify()),
+            cx.observe(&settings_project_delete_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_embedding_model_input, |_, _, cx| cx.notify()),
             cx.observe(&chat_draft_input, |_, _, cx| cx.notify()),
             cx.subscribe(
@@ -763,6 +767,7 @@ impl AppModel {
             settings_connection_endpoint_input,
             settings_connection_secret_input,
             settings_route_name_input,
+            settings_project_delete_input,
             settings_embedding_model_input,
             chat_draft_input,
             cli_model_search_input,
@@ -5886,6 +5891,124 @@ impl AppModel {
                 cx.notify();
             });
         }));
+    }
+
+    pub(crate) fn select_project_for_deletion(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else { return; };
+        self.settings_project_delete_input.update(cx, |input,cx|input.clear(cx));
+        let generation = self.settings.update(cx, |settings,_| {
+            settings.deletion_generation = settings.deletion_generation.saturating_add(1);
+            settings.deletion_project_id = Some(id.clone());
+            settings.deletion_preview = None;
+            settings.deletion_loading = true;
+            settings.error = None;
+            settings.deletion_generation
+        });
+        cx.notify();
+        cx.spawn(async move |this,cx| {
+            let result = backend.preview_project_deletion(id.clone()).await;
+            let _ = this.update(cx, |model,cx| {
+                model.settings.update(cx,|settings,_| {
+                    if settings.deletion_generation != generation || settings.deletion_project_id.as_deref()!=Some(&id) {return;}
+                    settings.deletion_loading=false;
+                    match result {
+                        Ok(preview)=>settings.deletion_preview=Some(preview),
+                        Err(error)=>settings.error=Some(error),
+                    }
+                });
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    pub(crate) fn cancel_project_deletion(&mut self, cx: &mut Context<Self>) {
+        if self.settings.read(cx).deletion_busy {return;}
+        self.settings.update(cx,|settings,_| {
+            settings.deletion_generation=settings.deletion_generation.saturating_add(1);
+            settings.deletion_project_id=None;
+            settings.deletion_preview=None;
+            settings.deletion_loading=false;
+            settings.deletion_busy=false;
+            settings.error=None;
+        });
+        self.settings_project_delete_input.update(cx,|input,cx|input.clear(cx));
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_project_deletion(&mut self, cx: &mut Context<Self>) {
+        let Some(backend)=self.settings_backend.clone() else {return;};
+        let (preview,generation,busy)={
+            let settings=self.settings.read(cx);
+            (settings.deletion_preview.clone(),settings.deletion_generation,settings.deletion_busy)
+        };
+        let Some(preview)=preview else {return;};
+        if busy {return;}
+        let confirmation=self.settings_project_delete_input.read(cx).value().to_owned();
+        if confirmation!=preview.project.name {
+            self.settings.update(cx,|settings,_|settings.error=Some(UiCommandError::worker("Type the exact project name to confirm deletion.")));
+            cx.notify();
+            return;
+        }
+        let active=self.workspace.read(cx).project_id.as_ref().is_some_and(|id|id.as_ref()==preview.project.id);
+        if active && self.workspace.read(cx).tabs.iter().any(|tab|tab.dirty || tab.saving || tab.conflict.is_some()) {
+            self.settings.update(cx,|settings,_|settings.error=Some(UiCommandError::worker("Save or close all dirty, saving or conflicted editor tabs before deleting this project.")));
+            cx.notify();
+            return;
+        }
+        let id=preview.project.id.clone();
+        self.settings.update(cx,|settings,_| {settings.deletion_busy=true;settings.error=None;});
+        cx.notify();
+        cx.spawn(async move |this,cx| {
+            let result=backend.delete_project_permanently(id.clone(),confirmation).await;
+            let _=this.update(cx,|model,cx| {
+                let current=model.settings.read(cx).deletion_generation==generation;
+                model.settings.update(cx,|settings,_|settings.deletion_busy=false);
+                match result {
+                    Ok(outcome)=> {
+                        if active && model.workspace.read(cx).project_id.as_ref().is_some_and(|current|current.as_ref()==id) {model.clear_deleted_active_project(cx);}
+                        let message=if outcome.cleanup_pending {
+                            "Project removed. Some quarantined files or old backups still need cleanup; the app will retry on startup."
+                        } else {"Project and repository permanently removed. Usage remains in the attributed history."};
+                        model.settings.update(cx,|settings,_| {
+                            settings.deletion_project_id=None;
+                            settings.deletion_preview=None;
+                            settings.notice=Some(message.into());
+                            settings.status_line=Some((crate::settings::StatusTone::Saved,message.into()));
+                        });
+                        model.status=message.into();
+                        model.settings_project_delete_input.update(cx,|input,cx|input.clear(cx));
+                        model.refresh_settings(cx);
+                        model.refresh_usage(cx);
+                    }
+                    Err(error) if current=>model.settings.update(cx,|settings,_|settings.error=Some(error)),
+                    Err(_)=>{},
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    fn clear_deleted_active_project(&mut self, cx: &mut Context<Self>) {
+        self.session_task.take();
+        self.session_generation=self.session_generation.saturating_add(1);
+        self.workspace_task.take();
+        self.brownfield_task.take();
+        self.brownfield_generation=self.brownfield_generation.saturating_add(1);
+        self.workspace.update(cx,|workspace,cx| {
+            workspace.project_id=None;
+            workspace.root_path=None;
+            workspace.root_path_canonical=None;
+            workspace.tree.clear();
+            workspace.tabs.clear();
+            workspace.active_relative_path=None;
+            workspace.editor.update(cx,|editor,cx|*editor=crate::native_editor::NativeEditor::new(cx));
+        });
+        self.pulsations.update(cx,|pulsations,_|pulsations.reset(None));
+        self.chat.update(cx,|chat,_|*chat=ChatModel::default());
+        self.agents.update(cx,|agents,_|*agents=crate::agents::AgentsModel::default());
+        self.vault.update(cx,|vault,_|*vault=VaultModel::default());
+        self.forge=crate::forge::ForgeUi::new(cx);
+        self.navigation.update(cx,|navigation,_|navigation.active=AppView::Home);
     }
 
     pub(crate) fn run_settings_operation(

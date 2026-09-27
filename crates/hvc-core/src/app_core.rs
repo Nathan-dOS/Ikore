@@ -298,6 +298,38 @@ impl AppCore {
         &self.persistence
     }
 
+    /// Detaches the active watcher before the filesystem rename. The UI checks
+    /// unsaved editor buffers before calling this explicit user operation.
+    pub fn delete_project_permanently(
+        &self,
+        project_id: &str,
+        confirmation: &str,
+    ) -> Result<crate::project_deletion::ProjectDeletionOutcome, PersistenceServiceError> {
+        let preview = self.persistence.preview_project_deletion(project_id)?;
+        let target = fs::canonicalize(&preview.project.workspace_path)?;
+        let active = {
+            let mut workspace = self.workspace.lock().map_err(|_| {
+                PersistenceServiceError::Runtime("Workspace lock is unavailable.".into())
+            })?;
+            let active = workspace.root_path.as_ref().is_some_and(|root| root == &target);
+            if active {
+                workspace.watcher = None;
+                workspace.root_path = None;
+            }
+            active
+        };
+        let result = self.persistence.delete_project_permanently(project_id, confirmation);
+        if result.is_err() && active && target.exists() {
+            self.open_workspace(OpenWorkspaceRequest {
+                path: target.to_string_lossy().into_owned(),
+            }).map_err(|error| PersistenceServiceError::Runtime(format!(
+                "Project deletion failed, and the workspace watcher could not restart: {}",
+                error.message
+            )))?;
+        }
+        result
+    }
+
     pub fn chat(&self) -> Arc<ChatService> {
         Arc::clone(&self.chat)
     }

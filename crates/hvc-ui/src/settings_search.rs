@@ -94,6 +94,14 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         "Generation usage recorded by Hard Vibe Code, kept when conversations are deleted.",
         "tokens cost input output chart model pulsation",
     ),
+    entry(
+        "project-deletion",
+        P::Projects,
+        "Local projects",
+        "Delete a local project",
+        "Permanently removes the repository directory, its Git files, pulsations, Companion conversations and project data. Token usage remains attributed in separate history.",
+        "delete repository folder disk permanent project companion pulsations usage",
+    ),
     // Keyboard shortcuts
     entry(
         "shortcuts-navigation",

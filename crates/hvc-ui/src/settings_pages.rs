@@ -42,6 +42,7 @@ pub(crate) fn page_content(
     match page {
         SettingsPage::General => general_page(model, hl, cx),
         SettingsPage::Usage => usage_page(model, cx),
+        SettingsPage::Projects => crate::settings_view::projects_page(model, cx),
         SettingsPage::Shortcuts => shortcuts_page(),
         SettingsPage::Connections => crate::settings_view::connections_page(model, hl, cx),
         SettingsPage::Routes => crate::settings_view::routes_page(model, hl, cx),

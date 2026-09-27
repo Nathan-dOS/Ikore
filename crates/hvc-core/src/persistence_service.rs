@@ -1422,6 +1422,7 @@ impl PersistenceService {
                 "Migration left invalid foreign keys".into(),
             ));
         }
+        crate::project_deletion::recover_project_deletions(&connection, app_data_dir)?;
         crate::orchestration::upgrade::adapt_legacy(&mut connection)?;
 
         let llm_repository = SqliteLlmRepository::new(&db_path);
@@ -2386,6 +2387,16 @@ impl PersistenceService {
 
         if let Some(existing) = Self::find_project_by_workspace_path(&connection, &workspace_path)?
         {
+            let deleting: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM project_deletion_journal WHERE project_id=?1)",
+                [&existing.id],
+                |row| row.get(0),
+            )?;
+            if deleting {
+                return Err(PersistenceServiceError::Validation(
+                    "This project is being permanently deleted. Wait for cleanup or restart the app.".into(),
+                ));
+            }
             connection.execute(
                 "UPDATE projects
                  SET is_archived = 0, last_opened_at = ?1, updated_at = ?1

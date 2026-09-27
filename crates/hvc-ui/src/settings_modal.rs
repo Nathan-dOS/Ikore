@@ -118,6 +118,9 @@ impl AppModel {
     /// Closes Settings. `restore_focus` gives focus back to what had it before opening (Escape,
     /// the X, the backdrop); navigating elsewhere does not.
     pub(crate) fn close_settings(&mut self, restore_focus: bool, cx: &mut Context<Self>) {
+        if self.settings.read(cx).deletion_busy {
+            return;
+        }
         if !self.settings_modal.open {
             return;
         }
@@ -149,6 +152,9 @@ impl AppModel {
     }
 
     pub(crate) fn set_settings_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
+        if self.settings.read(cx).deletion_busy {
+            return;
+        }
         let previous = self.settings.read(cx).page;
         self.settings.update(cx, |settings, _| settings.page = page);
         let state = &mut self.settings_modal;

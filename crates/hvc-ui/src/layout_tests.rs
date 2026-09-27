@@ -88,6 +88,8 @@ pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
     });
     model.settings.update(cx, |settings, _| {
         settings.snapshot = Some(SettingsSnapshot {
+            projects: vec![],
+            pending_project_deletions: 0,
             composition: None,
             preparation: Default::default(),
             config: Default::default(),
@@ -1278,6 +1280,23 @@ fn settings_backdrop_closes_but_clicks_inside_the_panel_do_not(cx: &mut TestAppC
         model.read_with(visual, |m, _| m.active_view()),
         AppView::Agents
     );
+}
+
+#[gpui::test]
+fn permanent_deletion_keeps_settings_open_and_prevents_page_navigation(cx: &mut TestAppContext) {
+    let (model,visual)=cx.add_window_view(|_,cx|fixture(cx));
+    visual.simulate_resize(size(px(960.0),px(640.0)));
+    open_settings(&model,visual,Some(SettingsPage::Projects));
+    assert!(visual.debug_bounds("settings-row:project-deletion").is_some());
+    model.update(visual,|model,cx| {
+        model.settings.update(cx,|settings,_|settings.deletion_busy=true);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(visual,"settings-close");
+    click(visual,"settings-nav:general");
+    assert!(model.read_with(visual,|model,_|model.settings_modal.open));
+    assert_eq!(model.read_with(visual,|model,cx|model.settings.read(cx).page),SettingsPage::Projects);
 }
 
 #[gpui::test]

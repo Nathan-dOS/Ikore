@@ -45,7 +45,7 @@ impl PersistenceService {
     ) -> Result<Option<BackgroundClaim>, PersistenceServiceError> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let job = tx.query_row("SELECT id,pulsation_id,kind,status,attempts,last_error,created_at,updated_at,started_at,finished_at,cancel_requested_at,available_at FROM jobs WHERE id=?1 AND job_class='background' AND status='pending' AND cancellation_reason IS NULL AND (available_at IS NULL OR available_at<=?2)",params![id,self.clock.now().to_rfc3339()],Self::map_job).optional()?;
+        let job = tx.query_row("SELECT j.id,j.pulsation_id,j.kind,j.status,j.attempts,j.last_error,j.created_at,j.updated_at,j.started_at,j.finished_at,j.cancel_requested_at,j.available_at FROM jobs j WHERE j.id=?1 AND j.job_class='background' AND j.status='pending' AND j.cancellation_reason IS NULL AND (j.available_at IS NULL OR j.available_at<=?2) AND (j.project_id IS NULL OR EXISTS(SELECT 1 FROM projects p WHERE p.id=j.project_id AND p.is_archived=0))",params![id,self.clock.now().to_rfc3339()],Self::map_job).optional()?;
         let Some(mut job) = job else {
             return Ok(None);
         };
