@@ -8,7 +8,7 @@ use chrono::Utc;
 use futures::{StreamExt, stream};
 use regex::Regex;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::runtime::Handle;
@@ -272,6 +272,8 @@ pub struct ChatMessage {
     pub estimated_cost_usd: Option<f64>,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
+    /// Frozen at send time; older turns are reconstructed from their first model call.
+    pub target_label: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -375,6 +377,9 @@ pub struct DeleteChatConversationResponse {
 pub struct SendChatMessageRequest {
     pub conversation_id: String,
     pub content: String,
+    /// The panel target the developer saw when pressing Send.
+    #[serde(default)]
+    pub expected_target: Option<ChatExecutionTargetRequest>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -737,8 +742,9 @@ impl ChatService {
     ) -> Result<GetChatConversationResponse, ChatCommandError> {
         let conversation_id = normalize_id(&request.conversation_id, "conversationId")?;
         let record = self.get_conversation_record(&conversation_id)?;
-        let database = self.connection()?;
-        let running: bool = database.query_row(
+        let mut database = self.connection()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let running: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM chat_messages WHERE conversation_id = ?1 AND status IN ('pending', 'streaming'))",
             params![conversation_id],
             |row| row.get(0),
@@ -750,8 +756,8 @@ impl ChatService {
             ));
         }
         let resolved =
-            self.resolve_target(&database, &record.project_id, request.target.clone())?;
-        database.execute(
+            self.resolve_target(&transaction, &record.project_id, request.target.clone())?;
+        transaction.execute(
             "UPDATE chat_conversations
              SET connection_id = ?2, provider_id_snapshot = ?3, model_id_snapshot = ?4,
                  transport_kind = ?5, cli_backend = ?6, model_profile = ?7, model_source = ?8,
@@ -769,7 +775,8 @@ impl ChatService {
                 now_iso(),
             ],
         )?;
-        Self::store_default_target(&database, &record.project_id, &request.target)?;
+        Self::store_default_target(&transaction, &record.project_id, &request.target)?;
+        transaction.commit()?;
         self.get_conversation(GetChatConversationRequest { conversation_id })
     }
 
@@ -913,6 +920,16 @@ impl ChatService {
             ));
         }
         let conversation = self.get_conversation_record(&conversation_id)?;
+        if request
+            .expected_target
+            .as_ref()
+            .is_some_and(|target| !target_matches_record(target, &conversation))
+        {
+            return Err(ChatCommandError::new(
+                "target_changed",
+                "The conversation target changed before Send. Review the selected model and send again.",
+            ));
+        }
         let provider_connection = match conversation.transport {
             ChatTransportKind::Api => {
                 let connection_id = conversation.connection_id.clone().ok_or_else(|| {
@@ -985,8 +1002,26 @@ impl ChatService {
         let user_message_id = Uuid::new_v4().to_string();
         let assistant_message_id = Uuid::new_v4().to_string();
         let now = now_iso();
-        let database = self.connection()?;
-        let transaction = database.unchecked_transaction()?;
+        let mut database = self.connection()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = transaction.query_row(
+            "SELECT id, project_id, connection_id, provider_id_snapshot, model_id_snapshot,
+                    title, created_at, updated_at, transport_kind, cli_backend,
+                    model_profile, model_source FROM chat_conversations WHERE id=?1",
+            [&conversation_id],
+            map_conversation_record,
+        )?;
+        if !same_target(&conversation, &current)
+            || request
+                .expected_target
+                .as_ref()
+                .is_some_and(|target| !target_matches_record(target, &current))
+        {
+            return Err(ChatCommandError::new(
+                "target_changed",
+                "The conversation target changed before Send. Review the selected model and send again.",
+            ));
+        }
         let next_ordinal: i64 = transaction.query_row(
             "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM chat_messages WHERE conversation_id = ?1",
             params![conversation_id],
@@ -1001,15 +1036,16 @@ impl ChatService {
         transaction.execute(
             "INSERT INTO chat_messages (
                id, conversation_id, ordinal, role, content, status, execution_id,
-               generation_id, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, 'assistant', '', 'pending', ?4, ?5, ?6, ?6)",
+               generation_id, created_at, updated_at, target_label
+             ) VALUES (?1, ?2, ?3, 'assistant', '', 'pending', ?4, ?5, ?6, ?6, ?7)",
             params![
                 assistant_message_id,
                 conversation_id,
                 next_ordinal + 1,
                 execution_id,
                 generation_id,
-                now
+                now,
+                target_label(&current),
             ],
         )?;
         if next_ordinal == 0 {
@@ -1144,7 +1180,8 @@ impl ChatService {
             .query_row(
                 "SELECT id, conversation_id, ordinal, role, content, status, execution_id,
                         generation_id, last_sequence, input_tokens, output_tokens,
-                        estimated_cost_usd, error_code, error_message, created_at, updated_at
+                        estimated_cost_usd, error_code, error_message, created_at, updated_at,
+                        target_label
                  FROM chat_messages WHERE generation_id = ?1",
                 params![generation_id],
                 map_message,
@@ -1301,7 +1338,8 @@ impl ChatService {
         let mut statement = connection.prepare(
             "SELECT id, conversation_id, ordinal, role, content, status, execution_id,
                     generation_id, last_sequence, input_tokens, output_tokens,
-                    estimated_cost_usd, error_code, error_message, created_at, updated_at
+                    estimated_cost_usd, error_code, error_message, created_at, updated_at,
+                    target_label
              FROM chat_messages WHERE conversation_id = ?1 ORDER BY ordinal",
         )?;
         let rows = statement.query_map(params![conversation_id], map_message)?;
@@ -1363,6 +1401,44 @@ struct ConversationRecord {
     updated_at: String,
 }
 
+fn same_target(a: &ConversationRecord, b: &ConversationRecord) -> bool {
+    a.transport == b.transport
+        && a.connection_id == b.connection_id
+        && a.provider_id == b.provider_id
+        && a.model_id == b.model_id
+        && a.cli_backend == b.cli_backend
+        && a.model_profile == b.model_profile
+        && a.model_source == b.model_source
+}
+
+fn target_matches_record(target: &ChatExecutionTargetRequest, record: &ConversationRecord) -> bool {
+    match target {
+        ChatExecutionTargetRequest::Api { connection_id } => {
+            record.transport == ChatTransportKind::Api
+                && record.connection_id.as_deref() == Some(connection_id)
+        }
+        ChatExecutionTargetRequest::Cli {
+            backend,
+            model,
+            model_profile,
+        } => {
+            record.transport == ChatTransportKind::Cli
+                && record.cli_backend == Some(*backend)
+                && record.model_id == model.as_deref().unwrap_or("default")
+                && record.model_profile == *model_profile
+        }
+    }
+}
+
+fn target_label(record: &ConversationRecord) -> String {
+    let mut label = format!("{} / {}", record.provider_id, record.model_id);
+    if let Some(profile) = &record.model_profile {
+        label.push_str(" / ");
+        label.push_str(profile);
+    }
+    label
+}
+
 fn map_conversation_record(row: &Row<'_>) -> rusqlite::Result<ConversationRecord> {
     let transport: String = row.get(8)?;
     let cli_backend: Option<String> = row.get(9)?;
@@ -1411,6 +1487,7 @@ fn map_message(row: &Row<'_>) -> rusqlite::Result<ChatMessage> {
         error_message: row.get(13)?,
         created_at: row.get(14)?,
         updated_at: row.get(15)?,
+        target_label: row.get(16)?,
     })
 }
 
@@ -1606,6 +1683,10 @@ struct ModelFailure {
 enum CompanionControlEnvelope {
     Final { text: String },
     ToolCalls { calls: Vec<CompanionControlCall> },
+}
+
+fn exceeds_remaining_read_budget(envelope: &CompanionControlEnvelope, remaining: usize) -> bool {
+    matches!(envelope, CompanionControlEnvelope::ToolCalls { calls } if calls.len() > remaining)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1991,7 +2072,14 @@ impl ChatService {
                         context.conversation.model_profile,
                     ],
                 )?;
-                let prompt = build_cli_companion_prompt(&messages, &exchanges, repair, backend);
+                let remaining_reads = MAX_TOOL_CALLS.saturating_sub(total_tool_calls);
+                let prompt = build_cli_companion_prompt(
+                    &messages,
+                    &exchanges,
+                    repair,
+                    backend,
+                    remaining_reads,
+                );
                 let started = Instant::now();
                 let outcome = terminals
                     .execute_companion_round(
@@ -2022,9 +2110,34 @@ impl ChatService {
                 let latency_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
                 match outcome {
                     Ok(output) => {
+                        self.connection()?.execute(
+                            "UPDATE chat_model_calls SET observed_model=?2,model_verification=?3 WHERE id=?1",
+                            params![model_call_id, output.observed_model, output.model_verification],
+                        )?;
                         let parsed = parse_cli_companion_envelope(&output.envelope_json, backend);
                         match parsed {
                             Ok(envelope) => {
+                                if exceeds_remaining_read_budget(&envelope, remaining_reads) {
+                                    self.finish_cli_model_call(
+                                        &model_call_id,
+                                        "failed",
+                                        latency_ms,
+                                        output.detected_cli_version.as_deref(),
+                                        output.exit_code,
+                                        "read_budget_exceeded",
+                                        output.output_bytes,
+                                        output.redaction_count,
+                                        Some("tool_call_limit"),
+                                    )?;
+                                    if !repair {
+                                        repair = true;
+                                        continue;
+                                    }
+                                    return Err(ChatCommandError::new(
+                                        "tool_call_limit",
+                                        "The turn has no remaining reads. Ask a narrower question or use the evidence already gathered.",
+                                    ));
+                                }
                                 self.finish_cli_model_call(
                                     &model_call_id,
                                     "completed",
@@ -3686,6 +3799,7 @@ fn build_cli_companion_prompt(
     exchanges: &[ToolExchange],
     repair: bool,
     backend: CliBackend,
+    remaining_reads: usize,
 ) -> String {
     let messages = messages
         .iter()
@@ -3710,7 +3824,7 @@ fn build_cli_companion_prompt(
         })
         .collect::<Vec<_>>();
     let repair_instruction = if repair {
-        "Your previous response did not satisfy the control envelope. Return exactly one valid JSON envelope now."
+        "Your previous response exceeded the control envelope or remaining read budget. Return exactly one valid envelope within the remaining budget, or a final answer using evidence already gathered."
     } else {
         ""
     };
@@ -3727,7 +3841,7 @@ fn build_cli_companion_prompt(
         ""
     };
     format!(
-        "<system>\n{}\nYou have no native tools. The repository operations in <operations> are not tools you can call: to run them, return a tool_calls envelope naming them, batching every read you need (up to 24 calls); the host runs them and returns the results in <tool_exchanges>. When enough evidence is available, return a final envelope. Never include reasoning, traces, Markdown fences, or text outside the envelope.{}\n<operations>\n{}\n</operations>\n</system>\n<history>\n{}\n</history>\n<tool_exchanges>\n{}\n</tool_exchanges>\n<control_envelope_schema>\n{}\n</control_envelope_schema>\n{}",
+        "<system>\n{}\nYou have no native tools. The repository operations in <operations> are not tools you can call: to run them, return a tool_calls envelope naming them. This turn has {remaining_reads} reads remaining in total; never request more than that number. If none remain, return a final answer from the evidence already gathered and state any limit. The host runs requested operations and returns the results in <tool_exchanges>. When enough evidence is available, return a final envelope. Never include reasoning, traces, Markdown fences, or text outside the envelope.{}\n<operations>\n{}\n</operations>\n</system>\n<history>\n{}\n</history>\n<tool_exchanges>\n{}\n</tool_exchanges>\n<control_envelope_schema>\n{}\n</control_envelope_schema>\n{}",
         system_prompt(),
         delivery,
         serde_json::to_string(&repository_tool_schemas()).unwrap_or_else(|_| "[]".into()),
@@ -4650,7 +4764,7 @@ mod tests {
         assert!(
             service
                 .delete_conversation(DeleteChatConversationRequest {
-                    conversation_id: conversation.id,
+                    conversation_id: conversation.id.clone(),
                 })
                 .unwrap()
                 .deleted
@@ -4709,6 +4823,7 @@ mod tests {
             SendChatMessageRequest {
                 conversation_id: conversation.id.clone(),
                 content: "Persist both messages".into(),
+                expected_target: None,
             },
             &workspace,
         );
@@ -4748,8 +4863,9 @@ mod tests {
         let started = service
             .start_turn(
                 SendChatMessageRequest {
-                    conversation_id: conversation.id,
+                    conversation_id: conversation.id.clone(),
                     content: "Cancele antes de iniciar a rede".into(),
+                    expected_target: None,
                 },
                 &workspace,
             )
@@ -4776,6 +4892,23 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.message.status, "cancelled");
         assert_eq!(snapshot.message.error_code.as_deref(), Some("cancelled"));
+        assert_eq!(snapshot.message.target_label.as_deref(), Some("openai / gpt-4.1-mini"));
+        service
+            .update_conversation_target(UpdateChatConversationTargetRequest {
+                conversation_id: conversation.id.clone(),
+                target: ChatExecutionTargetRequest::Cli {
+                    backend: CliBackend::Codex,
+                    model: None,
+                    model_profile: None,
+                },
+            })
+            .unwrap();
+        let historical = service
+            .get_conversation(GetChatConversationRequest {
+                conversation_id: conversation.id,
+            })
+            .unwrap();
+        assert_eq!(historical.messages[1].target_label, snapshot.message.target_label);
     }
 
     #[test]
@@ -4990,6 +5123,51 @@ mod tests {
     /// conversation, and the project remembers the last chosen target across
     /// restarts. A running reply and an invalid target leave it unchanged.
     #[test]
+    fn v43_backfills_historical_assistant_target_without_changing_user_messages() {
+        let database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE chat_messages(id TEXT PRIMARY KEY, role TEXT NOT NULL);
+                 CREATE TABLE chat_model_calls(
+                   id TEXT PRIMARY KEY, assistant_message_id TEXT, provider_id TEXT,
+                   model_id TEXT, model_profile TEXT, started_at TEXT
+                 );
+                 INSERT INTO chat_messages VALUES('user-1','user'),('assistant-1','assistant');
+                 INSERT INTO chat_model_calls VALUES(
+                   'call-1','assistant-1','codex','gpt-5.6-luna','low','2026-09-26T00:00:00Z'
+                 );",
+            )
+            .unwrap();
+        database
+            .execute_batch(include_str!("../migrations/V43__companion_turn_target_and_model_evidence.sql"))
+            .unwrap();
+        let historical: Option<String> = database
+            .query_row(
+                "SELECT target_label FROM chat_messages WHERE id='assistant-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let user: Option<String> = database
+            .query_row(
+                "SELECT target_label FROM chat_messages WHERE id='user-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let verification: String = database
+            .query_row(
+                "SELECT model_verification FROM chat_model_calls WHERE id='call-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(historical.as_deref(), Some("codex / gpt-5.6-luna / low"));
+        assert_eq!(user, None);
+        assert_eq!(verification, "unverified");
+    }
+
+    #[test]
     fn a_conversation_is_retargeted_and_the_project_remembers_the_target() {
         let (_temp, _workspace, service) = prepare_chat();
         assert_eq!(service.default_target("project-a").unwrap(), None);
@@ -5029,11 +5207,11 @@ mod tests {
         // The remembered target survives a restart of the service.
         let database_path = service.db_path.clone();
         drop(service);
-        let reopened = ChatService::new(
+        let reopened = Arc::new(ChatService::new(
             database_path,
             Arc::new(TestCredentials),
             Arc::new(NoopChatEventSink),
-        );
+        ));
         assert_eq!(
             reopened.default_target("project-a").unwrap(),
             Some(codex.clone())
@@ -5050,6 +5228,27 @@ mod tests {
         });
         assert!(invalid.is_err());
         assert_eq!(reopened.default_target("project-a").unwrap(), Some(codex));
+
+        // A stale panel selection cannot start a turn on the retargeted model.
+        let stale_send = reopened.start_turn(
+            SendChatMessageRequest {
+                conversation_id: created.id.clone(),
+                content: "Use the model shown in the panel".into(),
+                expected_target: Some(claude.clone()),
+            },
+            _workspace.as_path(),
+        );
+        assert_eq!(stale_send.unwrap_err().code, "target_changed");
+        let message_count: i64 = reopened
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM chat_messages WHERE conversation_id=?1",
+                [&created.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(message_count, 0);
 
         // A reply in progress keeps the conversation on its current target.
         reopened
@@ -5081,6 +5280,25 @@ mod tests {
     }
 
     #[test]
+    fn companion_read_budget_rejects_an_overlarge_round_before_execution() {
+        let calls = (0..21)
+            .map(|index| CompanionControlCall {
+                id: format!("read-{index}"),
+                name: "list_repository_tree".into(),
+                arguments: json!({}),
+            })
+            .collect();
+        let envelope = CompanionControlEnvelope::ToolCalls { calls };
+        assert!(exceeds_remaining_read_budget(&envelope, 20));
+        assert!(!exceeds_remaining_read_budget(&envelope, 21));
+        assert!(exceeds_remaining_read_budget(&envelope, 0));
+        assert!(!exceeds_remaining_read_budget(
+            &CompanionControlEnvelope::Final { text: "Done".into() },
+            0,
+        ));
+    }
+
+    #[test]
     fn agent_outputs_are_project_scoped_and_only_enter_prompts_after_a_tool_call() {
         let (_temp, _workspace, service) = prepare_chat();
         let database = service.connection().unwrap();
@@ -5109,7 +5327,9 @@ mod tests {
             &[],
             false,
             CliBackend::Codex,
+            20,
         );
+        assert!(prompt.contains("20 reads remaining in total"));
         assert!(!prompt.contains("alpha-private-evidence"));
         assert!(!prompt.contains("beta-private-evidence"));
         // Only Claude answers through a StructuredOutput tool.
@@ -5122,7 +5342,9 @@ mod tests {
             &[],
             false,
             CliBackend::Claude,
+            0,
         );
+        assert!(claude_prompt.contains("0 reads remaining in total"));
         assert!(claude_prompt.contains("Your only callable tool is StructuredOutput"));
         // Operations are framed as requests, never as callable tools.
         for rendered in [&prompt, &claude_prompt] {

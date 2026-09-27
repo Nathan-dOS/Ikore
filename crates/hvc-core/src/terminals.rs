@@ -4007,6 +4007,9 @@ pub struct CompanionCliRoundRequest {
 #[derive(Debug, Clone)]
 pub struct CompanionCliRoundOutput {
     pub envelope_json: String,
+    pub observed_model: Option<String>,
+    /// `verified` means exact identity; a Claude family alias is weaker evidence.
+    pub model_verification: &'static str,
     pub detected_cli_version: Option<String>,
     pub exit_code: Option<i32>,
     pub output_bytes: usize,
@@ -4503,6 +4506,8 @@ impl TerminalService {
             );
             prompt.push_str(&serde_json::to_string(&request.schema)?);
         }
+        let requested_model = request.model.clone();
+        let requested_profile = request.model_profile.clone();
         let mut spec = build_process_spec(CliInvocationRequest {
             executable,
             backend: request.backend,
@@ -4516,6 +4521,12 @@ impl TerminalService {
             resume_session_id: None,
         })?;
         let hardening_guard = harden_spec(request.backend, Hardening::Companion, &mut spec)?;
+        validate_companion_launch_selection(
+            &spec,
+            request.backend,
+            requested_model.as_deref(),
+            requested_profile.as_deref(),
+        )?;
         let result = run_companion_process(
             spec,
             request.backend,
@@ -4524,6 +4535,7 @@ impl TerminalService {
             availability.version,
             self.repository.db_path.clone(),
             request.usage_context,
+            requested_model,
         )
         .await;
         drop(hardening_guard);
@@ -6687,6 +6699,85 @@ fn harden_spec(
     Ok(settings_guard)
 }
 
+fn validate_companion_launch_selection(
+    spec: &CliProcessSpec,
+    backend: CliBackend,
+    model: Option<&str>,
+    profile: Option<&str>,
+) -> Result<(), TerminalError> {
+    let values = |flag: &str| {
+        spec.args
+            .windows(2)
+            .filter(|pair| pair[0] == flag)
+            .map(|pair| pair[1].as_str())
+            .collect::<Vec<_>>()
+    };
+    let models = values("--model");
+    if models.as_slice() != model.map_or_else(Vec::new, |model| vec![model]).as_slice() {
+        return Err(TerminalError::ModelMismatch {
+            expected: model.unwrap_or("CLI default").into(),
+            observed: "Companion launch arguments did not bind the selected model".into(),
+        });
+    }
+    let profiles = match backend {
+        CliBackend::Codex => values("-c")
+            .into_iter()
+            .filter_map(|value| value.strip_prefix("model_reasoning_effort=\"")?.strip_suffix('"'))
+            .collect::<Vec<_>>(),
+        CliBackend::Claude => values("--effort"),
+        CliBackend::Opencode => values("--variant"),
+        CliBackend::Gemini | CliBackend::Custom => Vec::new(),
+    };
+    if profiles.as_slice() != profile.map_or_else(Vec::new, |profile| vec![profile]).as_slice() {
+        return Err(TerminalError::Validation(
+            "Companion launch arguments did not bind the selected profile".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn companion_model_evidence(
+    backend: CliBackend,
+    requested: Option<&str>,
+    stdout: &str,
+) -> Result<(Option<String>, &'static str), TerminalError> {
+    let mut observed = None;
+    for line in stdout.lines() {
+        let frame = adapters::normalize_frame(backend, "stdout", line.as_bytes());
+        if !frame.is_model_generation {
+            continue;
+        }
+        let Some(model) = frame.observed_model else {
+            continue;
+        };
+        if let Some(requested) = requested {
+            match model_identity::verify_model(Some(backend.as_str()), Some(requested), Some(&model)) {
+                model_identity::ModelVerification::Verified => {}
+                model_identity::ModelVerification::Mismatch => {
+                    return Err(TerminalError::ModelMismatch {
+                        expected: requested.into(),
+                        observed: model,
+                    });
+                }
+                model_identity::ModelVerification::Unverified => continue,
+            }
+        }
+        observed = Some(model);
+    }
+    let verification = if observed.is_some() && requested.is_some() {
+        if backend == CliBackend::Claude
+            && matches!(requested, Some("haiku" | "sonnet" | "opus"))
+        {
+            "family_verified"
+        } else {
+            "verified"
+        }
+    } else {
+        "unverified"
+    };
+    Ok((observed, verification))
+}
+
 async fn run_companion_process(
     spec: CliProcessSpec,
     backend: CliBackend,
@@ -6695,6 +6786,7 @@ async fn run_companion_process(
     detected_cli_version: Option<String>,
     usage_path: PathBuf,
     usage_context: crate::usage::UsageContext,
+    requested_model: Option<String>,
 ) -> Result<CompanionCliRoundOutput, TerminalError> {
     if cancellation.is_cancelled() {
         return Err(TerminalError::Cancelled);
@@ -6815,7 +6907,10 @@ async fn run_companion_process(
     let sanitized_stderr = sanitize_terminal_text(&stderr);
     let stdout = redact_secrets(&sanitized_stdout).map_err(TerminalError::Redaction)?;
     let stderr = redact_secrets(&sanitized_stderr).map_err(TerminalError::Redaction)?;
-    if !status.success() {
+    let claude_error = (backend == CliBackend::Claude)
+        .then(|| claude_companion_error(&stdout.text))
+        .flatten();
+    if !status.success() || claude_error.is_some() {
         // Codex reports provider failures in JSONL stdout, often with empty stderr.
         // Decode only error events; never expose reasoning or the control stream.
         let diagnostic = match backend {
@@ -6825,9 +6920,7 @@ async fn run_companion_process(
             // Claude reports API failures in its stream-json `result` event
             // with an empty stderr; without this the developer saw only
             // "Claude CLI exited with status Some(1)".
-            CliBackend::Claude => {
-                claude_companion_error(&stdout.text).unwrap_or_else(|| stderr.text.clone())
-            }
+            CliBackend::Claude => claude_error.unwrap_or_else(|| stderr.text.clone()),
             _ => stderr.text.clone(),
         };
         // Decode before the final redaction, including JSON-escaped credentials.
@@ -6865,8 +6958,12 @@ async fn run_companion_process(
             companion_envelope_miss(backend, &stdout.text)
         ))
     })?;
+    let (observed_model, model_verification) =
+        companion_model_evidence(backend, requested_model.as_deref(), &stdout.text)?;
     Ok(CompanionCliRoundOutput {
         envelope_json,
+        observed_model,
+        model_verification,
         detected_cli_version,
         exit_code: status.code(),
         output_bytes: stdout.text.len().saturating_add(stderr.text.len()),
@@ -6908,6 +7005,9 @@ fn companion_envelope_miss(backend: CliBackend, stdout: &str) -> &'static str {
     if backend != CliBackend::Claude {
         return "no_envelope";
     }
+    if stdout.trim().is_empty() {
+        return "no_output";
+    }
     let (mut unavailable, mut rejected, mut text) = (false, false, false);
     for event in stdout
         .lines()
@@ -6945,7 +7045,7 @@ fn companion_envelope_miss(backend: CliBackend, stdout: &str) -> &'static str {
     } else if text {
         "text_only"
     } else {
-        "no_output"
+        "no_control_envelope"
     }
 }
 
@@ -7039,6 +7139,58 @@ pub(crate) fn extract_companion_envelope_json(output: &str) -> Option<String> {
         None
     }
 
+    // Claude may omit the whole assistant/result envelope after streaming a
+    // complete StructuredOutput tool input. Reassemble only deltas belonging
+    // to that named tool and then pass them through the same envelope parser.
+    fn streamed_structured_output(output: &str) -> Option<Value> {
+        let mut inputs = HashMap::<u64, String>::new();
+        let mut last_complete = None;
+        for frame in output
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+            .filter(|frame| frame["type"] == "stream_event")
+        {
+            let event = &frame["event"];
+            let Some(index) = event["index"].as_u64() else {
+                continue;
+            };
+            match event["type"].as_str() {
+                Some("content_block_start") => {
+                    if event["content_block"]["type"] == "tool_use"
+                        && event["content_block"]["name"] == "StructuredOutput"
+                    {
+                        inputs.insert(index, String::new());
+                    } else {
+                        inputs.remove(&index);
+                    }
+                }
+                Some("content_block_delta") if event["delta"]["type"] == "input_json_delta" => {
+                    if let (Some(input), Some(fragment)) =
+                        (inputs.get_mut(&index), event["delta"]["partial_json"].as_str())
+                    {
+                        input.push_str(fragment);
+                    }
+                }
+                Some("content_block_stop") => {
+                    if let Some(input) = inputs.remove(&index)
+                        && let Ok(value) = serde_json::from_str::<Value>(&input)
+                        && let Some(envelope) = find(&value, 0)
+                    {
+                        last_complete = Some(envelope);
+                    }
+                }
+                _ => {}
+            }
+        }
+        last_complete.or_else(|| {
+            inputs
+                .values()
+                .filter_map(|input| serde_json::from_str::<Value>(input).ok())
+                .filter_map(|value| find(&value, 0))
+                .next()
+        })
+    }
+
     // JSONL transports carry the envelope in one of their last whole events,
     // after one frame per streamed delta. A long Claude answer emits hundreds of
     // `stream_event` lines whose braces used up the bounded scan below before it
@@ -7056,7 +7208,16 @@ pub(crate) fn extract_companion_envelope_json(output: &str) -> Option<String> {
                 .and_then(|structured| find(structured, 0))
                 .or_else(|| find(&event, 0))
         })
-        .or_else(|| parse_candidate(output, 0))
+        .or_else(|| streamed_structured_output(output))
+        .or_else(|| {
+            let jsonl_transport = output.lines().any(|line| {
+                serde_json::from_str::<Value>(line.trim())
+                    .ok()
+                    .and_then(|event| event.get("type").and_then(Value::as_str).map(str::to_owned))
+                    .is_some()
+            });
+            (!jsonl_transport).then(|| parse_candidate(output, 0)).flatten()
+        })
         .and_then(|value| serde_json::to_string(&value).ok())
 }
 
@@ -7786,6 +7947,39 @@ mod tests {
         assert!(extract_companion_envelope_json(&deltas_only).is_none());
     }
 
+    #[test]
+    fn companion_recovers_only_complete_structured_output_streams() {
+        let envelope = serde_json::json!({"response":{"type":"final","text":"Ready"}});
+        let start = |name: &str| serde_json::json!({"type":"stream_event","event":{
+            "type":"content_block_start","index":0,
+            "content_block":{"type":"tool_use","name":name,"input":{}}
+        }}).to_string();
+        let frames = |name: &str, input: &str| {
+            let mut lines = vec![start(name)];
+            for chunk in input.as_bytes().chunks(7) {
+                lines.push(serde_json::json!({"type":"stream_event","event":{
+                    "type":"content_block_delta","index":0,"delta":{
+                        "type":"input_json_delta","partial_json":std::str::from_utf8(chunk).unwrap()
+                    }
+                }}).to_string());
+            }
+            lines
+        };
+        let lines = frames("StructuredOutput", &envelope.to_string());
+        let recovered = extract_companion_envelope_json(&lines.join("\n")).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&recovered).unwrap(),
+            serde_json::json!({"type":"final","text":"Ready"}));
+        assert!(extract_companion_envelope_json(&frames("Read", &envelope.to_string()).join("\n")).is_none());
+        assert!(extract_companion_envelope_json(&frames("StructuredOutput", "{\"response\":").join("\n")).is_none());
+        assert!(extract_companion_envelope_json(&frames("StructuredOutput", "{\"response\":{\"type\":\"final\",\"text\":\"Ready\"}").join("\n")).is_none());
+        let malformed_single_delta = serde_json::json!({"type":"stream_event","event":{
+            "type":"content_block_delta","index":0,"delta":{"type":"input_json_delta",
+            "partial_json":"{\"response\":{\"type\":\"final\",\"text\":\"Ready\"}"
+        }}}).to_string();
+        assert!(extract_companion_envelope_json(&malformed_single_delta).is_none());
+        assert_eq!(companion_envelope_miss(CliBackend::Claude, &lines.join("\n")), "no_control_envelope");
+    }
+
     /// The rounds that failed on 2026-09-26: the model called the host's
     /// operations as native tools and never reached StructuredOutput.
     #[test]
@@ -7822,6 +8016,10 @@ mod tests {
             "text_only"
         );
         assert_eq!(companion_envelope_miss(CliBackend::Claude, ""), "no_output");
+        assert_eq!(
+            companion_envelope_miss(CliBackend::Claude, r#"{"type":"result","result":""}"#),
+            "no_control_envelope"
+        );
         assert_eq!(
             companion_envelope_miss(CliBackend::Codex, &prose),
             "no_envelope"
@@ -8035,6 +8233,53 @@ mod tests {
                 CliBackend::Custom => unreachable!(),
             }
         }
+    }
+
+    #[test]
+    fn companion_launch_binds_model_and_profile_and_reports_model_evidence() {
+        for (backend, model, profile) in [
+            (CliBackend::Codex, "gpt-5.6-luna", "low"),
+            (CliBackend::Claude, "haiku", "low"),
+            (CliBackend::Opencode, "openai/gpt-5.6-luna", "low"),
+        ] {
+            let mut spec = build_process_spec(CliInvocationRequest {
+                executable: PathBuf::from(r"C:\Tools\companion-cli.exe"),
+                backend,
+                model: Some(model.into()),
+                model_profile: Some(profile.into()),
+                thinking_level: ThinkingLevel::Default,
+                prompt: "Return one control envelope".into(),
+                schema_file: (backend == CliBackend::Codex)
+                    .then(|| PathBuf::from(r"C:\Temp\schema.json")),
+                schema: (backend == CliBackend::Claude).then(|| serde_json::json!({})),
+                custom_args: vec![],
+                resume_session_id: None,
+            })
+            .unwrap();
+            let _guard = harden_spec(backend, Hardening::Companion, &mut spec).unwrap();
+            validate_companion_launch_selection(&spec, backend, Some(model), Some(profile))
+                .unwrap();
+            assert!(validate_companion_launch_selection(&spec, backend, Some("other"), Some(profile)).is_err());
+            assert!(validate_companion_launch_selection(&spec, backend, Some(model), Some("high")).is_err());
+        }
+
+        let frame = serde_json::json!({"type":"stream_event","session_id":"s-1",
+            "event":{"type":"message_start",
+                "message":{"id":"m-1","model":"claude-haiku-4-5-20251001"}}})
+            .to_string();
+        let (observed, verification) =
+            companion_model_evidence(CliBackend::Claude, Some("haiku"), &frame).unwrap();
+        assert_eq!(observed.as_deref(), Some("claude-haiku-4-5-20251001"));
+        assert_eq!(verification, "family_verified");
+        assert!(matches!(
+            companion_model_evidence(CliBackend::Claude, Some("sonnet"), &frame),
+            Err(TerminalError::ModelMismatch { .. })
+        ));
+        assert_eq!(
+            companion_model_evidence(CliBackend::Codex, Some("gpt-5.6-luna"), "")
+                .unwrap(),
+            (None, "unverified")
+        );
     }
 
     #[test]

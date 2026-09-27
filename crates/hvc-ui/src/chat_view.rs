@@ -1,5 +1,5 @@
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
-use hvc_core::chat_service::{ChatMessage, ChatToolArgumentValue, ChatToolCall, ChatTransportKind};
+use hvc_core::chat_service::{ChatConversation, ChatMessage, ChatToolArgumentValue, ChatToolCall, ChatTransportKind};
 use hvc_core::terminals::CliAvailabilityState;
 use hvc_editor::{ChatContentPart, parse_chat_content, parse_markdown};
 
@@ -30,6 +30,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         streaming,
         loading,
         busy,
+        target_change_pending,
         _error,
         disclosure_required,
         disclosure_accepted,
@@ -63,6 +64,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
             chat.streaming,
             chat.loading,
             chat.busy,
+            chat.target_change_pending,
             chat.error.clone(),
             chat.disclosure_required(),
             chat.disclosure_accepted(),
@@ -156,7 +158,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                     let summary = match selected_transport {
                         ChatTransportKind::Api => selected_connection
                             .map(|connection| {
-                                format!("API · {} · {}", connection.display_name, connection.default_model)
+                                format!("API · {} · {}", connection.display_name, visible_api_model(active_conversation.as_ref(), &connection.default_model))
                             })
                             .unwrap_or_else(|| "API · no connection selected".into()),
                         ChatTransportKind::Cli => {
@@ -180,7 +182,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         ChatTransportKind::Cli => "CLI",
                     };
                     div()
-                        .child(crate::select_menu::control("chat-transport","TRANSPORT",transport_label,!busy && !streaming,cx))
+                        .child(crate::select_menu::control("chat-transport","TRANSPORT",transport_label,!busy && !streaming && !target_change_pending,cx))
 
                 }))
                 .when(!config_collapsed, |panel| panel.child({
@@ -212,7 +214,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                                 format!(
                                                     "{} · {}",
                                                     connection.display_name,
-                                                    connection.default_model
+                                                    visible_api_model(active_conversation.as_ref(), &connection.default_model)
                                                 )
                                             })
                                             .unwrap_or_else(|| "None available".into())
@@ -249,7 +251,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                     if selected_transport == ChatTransportKind::Api && connections.len() > 1 {
 
                         let conn_wrapper = div().mt_2().child(crate::select_menu::control(
-                            "chat-cycle-connection", "Connection", selected_connection.map(|c| c.display_name.clone()).unwrap_or_default(), !busy && !streaming, cx,
+                            "chat-cycle-connection", "Connection", selected_connection.map(|c| c.display_name.clone()).unwrap_or_default(), !busy && !streaming && !target_change_pending, cx,
                         ));
 
                         auth_card = auth_card.child(conn_wrapper);
@@ -264,10 +266,10 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                         );
 
 
-                        let backend_div = div().child(crate::select_menu::control("chat-cli-backend","CLI BACKEND",selected_cli_backend.label(),!busy && !streaming,cx));
+                        let backend_div = div().child(crate::select_menu::control("chat-cli-backend","CLI BACKEND",selected_cli_backend.label(),!busy && !streaming && !target_change_pending,cx));
 
 
-                        let profile_div = div().child(crate::select_menu::control("chat-cli-profile","PROFILE",cli_profile_label,!busy && !streaming && selected_cli_model.is_some() && !profiles.is_empty(),cx));
+                        let profile_div = div().child(crate::select_menu::control("chat-cli-profile","PROFILE",cli_profile_label,!busy && !streaming && !target_change_pending && selected_cli_model.is_some() && !profiles.is_empty(),cx));
 
 
                         auth_card = auth_card
@@ -281,7 +283,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                         "chat-cli-model",
                                         "MODEL",
                                         cli_model_label,
-                                        !busy && !streaming,
+                                        !busy && !streaming && !target_change_pending,
                                         cx,
                                         |model, cx| model.open_companion_model_picker(cx),
                                     ))
@@ -294,7 +296,7 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .child(action(
                     "chat-new-conversation",
                     if busy { "Please wait…" } else { "New conversation" },
-                    new_target_available && !busy && !streaming,
+                    new_target_available && !busy && !streaming && !target_change_pending,
                     cx,
                     |model, cx| model.create_chat_conversation(cx),
                 ))
@@ -329,12 +331,14 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 .as_ref()
                                 .is_some_and(|active| active.id == id);
                             let delete_id = id.clone();
+                            let conversation_selector = format!("chat-conversation:{id}");
                             let title_selector = format!("chat-title:{id}");
                             let awaiting_confirmation = pending_delete
                                 .as_ref()
                                 .is_some_and(|pending| pending.as_ref() == id);
                             div()
-                                .id(SharedString::from(format!("chat-conversation:{id}")))
+                                .id(SharedString::from(conversation_selector.clone()))
+                                .debug_selector(move || conversation_selector.clone())
                                 .p_3()
                                 .rounded_md()
                                 .border_1()
@@ -348,8 +352,10 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                 } else {
                                     theme::surface_raised()
                                 })
-                                .child(
+                                .child(div().flex().items_start().gap_1().child(
                                     div()
+                                        .flex_1()
+                                        .min_w_0()
                                         .id(SharedString::from(format!("chat-select:{id}")))
                                         .cursor_pointer()
                                         .on_click(cx.listener(move |model, _, _, cx| {
@@ -379,20 +385,17 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                                     conversation.model_id
                                                 )),
                                         ),
-                                )
-                                .child(action(
+                                ).child(compact_icon_action(
                                     SharedString::from(format!("chat-delete:{delete_id}")),
-                                    if awaiting_confirmation {
-                                        "Confirm deletion"
-                                    } else {
-                                        "Delete"
-                                    },
+                                    if awaiting_confirmation { crate::icons::Icon::Check } else { crate::icons::Icon::Trash },
+                                    if awaiting_confirmation { "Confirm deletion" } else { "Delete conversation" },
+                                    if awaiting_confirmation { theme::danger() } else { theme::text_muted() },
                                     !busy && !streaming,
                                     cx,
                                     move |model, cx| {
                                         model.delete_chat_conversation(delete_id.clone(), cx)
                                     },
-                                ))
+                                )))
                         })),
                 ),
         )
@@ -651,6 +654,13 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         .into_any_element()
 }
 
+fn visible_api_model<'a>(conversation: Option<&'a ChatConversation>, connection_default: &'a str) -> &'a str {
+    conversation
+        .filter(|conversation| conversation.transport == ChatTransportKind::Api)
+        .map(|conversation| conversation.model_id.as_str())
+        .unwrap_or(connection_default)
+}
+
 fn should_show_tool_activity(
     conversation: Option<&hvc_core::chat_service::ChatConversation>,
 ) -> bool {
@@ -659,9 +669,15 @@ fn should_show_tool_activity(
 
 pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -> AnyElement {
     let assistant = message.role == "assistant";
+    let copy_text = copyable_chat_message_text(&message);
     let meta = format!(
-        "{} · {}",
+        "{}{} · {}",
         message.status,
+        message
+            .target_label
+            .as_ref()
+            .map(|target| format!(" · requested: {target}"))
+            .unwrap_or_default(),
         crate::time::format_timestamp(&message.created_at)
     );
     let body = div()
@@ -691,6 +707,7 @@ pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -
         });
     let id = message.id;
     if assistant {
+        let copy_id = format!("chat-copy-message:{id}");
         div()
             .debug_selector(move || format!("chat-message:{id}"))
             .w_full()
@@ -732,12 +749,24 @@ pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -
                                     .text_color(theme::text())
                                     .child("Companion"),
                             )
-                            .child(meta),
+                            .child(meta)
+                            .when_some(copy_text, |header, text| {
+                                header.child(compact_icon_action(
+                                    SharedString::from(copy_id),
+                                    crate::icons::Icon::Copy,
+                                    "Copy message",
+                                    theme::text_muted(),
+                                    true,
+                                    cx,
+                                    move |_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone())),
+                                ))
+                            }),
                     )
                     .child(body),
             )
             .into_any_element()
     } else {
+        let copy_id = format!("chat-copy-message:{id}");
         div()
             .debug_selector(move || format!("chat-message:{id}"))
             .w_full()
@@ -755,8 +784,31 @@ pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -
                     .bg(theme::accent_soft())
                     .child(body),
             )
-            .child(div().text_xs().text_color(theme::text_subtle()).child(meta))
+            .child(div().flex().items_center().gap_1()
+                .child(div().text_xs().text_color(theme::text_subtle()).child(meta))
+                .when_some(copy_text, |row, text| {
+                    row.child(compact_icon_action(
+                        SharedString::from(copy_id),
+                        crate::icons::Icon::Copy,
+                        "Copy message",
+                        theme::text_muted(),
+                        true,
+                        cx,
+                        move |_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone())),
+                    ))
+                }))
             .into_any_element()
+    }
+}
+
+fn copyable_chat_message_text(message: &ChatMessage) -> Option<String> {
+    let content = (!message.content.trim().is_empty()).then_some(message.content.as_str());
+    let error = message.error_message.as_deref().filter(|error| !error.trim().is_empty());
+    match (content, error) {
+        (Some(content), Some(error)) => Some(format!("{content}\n\n{error}")),
+        (Some(content), None) => Some(content.to_owned()),
+        (None, Some(error)) => Some(error.to_owned()),
+        (None, None) => None,
     }
 }
 
@@ -926,6 +978,39 @@ fn section_header(kicker: &'static str, title: &'static str, count: usize) -> im
     crate::widgets::section_header(kicker, title, count)
 }
 
+fn compact_icon_action(
+    id: SharedString,
+    glyph: crate::icons::Icon,
+    tooltip: &'static str,
+    ink: gpui::Rgba,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+    handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
+) -> AnyElement {
+    let debug_id = id.clone();
+    div()
+        .id(id)
+        .debug_selector(move || debug_id.to_string())
+        .flex_shrink_0()
+        .size(px(30.0))
+        .rounded_md()
+        .flex()
+        .items_center()
+        .justify_center()
+        .opacity(if enabled { 1.0 } else { 0.45 })
+        .tab_index(0)
+        .focus_visible(|style| style.border_1().border_color(ink))
+        .tooltip(crate::widgets::text_tooltip(tooltip))
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::surface_hover()))
+                .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
+        })
+        .child(crate::widgets::icon(glyph, px(15.0), ink))
+        .into_any_element()
+}
+
 fn action(
     id: impl Into<SharedString>,
     label: &'static str,
@@ -935,11 +1020,11 @@ fn action(
 ) -> AnyElement {
     use crate::widgets::ButtonVariant;
     let id: SharedString = id.into();
-    // Sending leads; deleting and cancelling are danger; starting a conversation is tinted;
+    // Sending leads; cancelling is danger; starting a conversation is tinted;
     // panel toggles and copy stay secondary.
     let variant = if id.as_ref() == "chat-send-message" {
         ButtonVariant::Primary
-    } else if id.as_ref() == "chat-cancel-turn" || id.starts_with("chat-delete:") {
+    } else if id.as_ref() == "chat-cancel-turn" {
         ButtonVariant::Danger
     } else if id.as_ref() == "chat-new-conversation" {
         ButtonVariant::Tinted
@@ -1018,6 +1103,37 @@ mod tests {
     use super::*;
     use hvc_core::terminals::CliModelSelectionSource;
 
+    fn message(role: &str, content: &str, error: Option<&str>) -> ChatMessage {
+        ChatMessage {
+            id: "message".into(),
+            conversation_id: "conversation".into(),
+            ordinal: 0,
+            role: role.into(),
+            content: content.into(),
+            status: "completed".into(),
+            execution_id: None,
+            generation_id: None,
+            last_sequence: 0,
+            input_tokens: None,
+            output_tokens: None,
+            estimated_cost_usd: None,
+            error_code: None,
+            error_message: error.map(str::to_owned),
+            target_label: None,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        }
+    }
+
+    #[test]
+    fn message_copy_includes_user_assistant_and_error_text() {
+        assert_eq!(copyable_chat_message_text(&message("user", "Question", None)).as_deref(), Some("Question"));
+        assert_eq!(copyable_chat_message_text(&message("assistant", "Answer", None)).as_deref(), Some("Answer"));
+        assert_eq!(copyable_chat_message_text(&message("assistant", "", Some("CLI failed"))).as_deref(), Some("CLI failed"));
+        assert_eq!(copyable_chat_message_text(&message("assistant", "Partial", Some("CLI failed"))).as_deref(), Some("Partial\n\nCLI failed"));
+        assert!(copyable_chat_message_text(&message("assistant", "  ", Some("  "))).is_none());
+    }
+
     #[test]
     fn renders_safe_markdown_with_copy_only_diff() {
         let content = "Safe<script>alert(1)</script>\n\n```diff\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-a\n+b\n```";
@@ -1048,5 +1164,13 @@ mod tests {
         };
         assert!(!should_show_tool_activity(Some(&conversation)));
         assert!(should_show_tool_activity(None));
+        assert_eq!(visible_api_model(Some(&conversation), "configured"), "configured");
+        let mut api_conversation = conversation;
+        api_conversation.transport = ChatTransportKind::Api;
+        api_conversation.model_id = "frozen-model".into();
+        assert_eq!(
+            visible_api_model(Some(&api_conversation), "changed-default"),
+            "frozen-model"
+        );
     }
 }

@@ -3426,6 +3426,9 @@ impl AppModel {
         transport: ChatTransportKind,
         cx: &mut Context<Self>,
     ) {
+        if self.chat.read(cx).target_change_pending {
+            return;
+        }
         self.chat.update(cx, |chat, _| {
             chat.selected_transport = transport;
         });
@@ -3435,6 +3438,9 @@ impl AppModel {
     }
 
     pub(crate) fn set_chat_cli_backend(&mut self, backend: CliBackend, cx: &mut Context<Self>) {
+        if self.chat.read(cx).target_change_pending {
+            return;
+        }
         if self.chat.read(cx).selected_cli_backend == backend {
             self.close_dropdown(cx);
             return;
@@ -3454,6 +3460,9 @@ impl AppModel {
     }
 
     pub(crate) fn set_chat_cli_profile(&mut self, profile: Option<String>, cx: &mut Context<Self>) {
+        if self.chat.read(cx).target_change_pending {
+            return;
+        }
         self.chat.update(cx, |chat, _| {
             chat.selected_cli_model_profile = profile;
         });
@@ -3462,6 +3471,9 @@ impl AppModel {
     }
 
     pub(crate) fn set_chat_connection(&mut self, connection_id: String, cx: &mut Context<Self>) {
+        if self.chat.read(cx).target_change_pending {
+            return;
+        }
         self.chat.update(cx, |chat, _| {
             chat.selected_connection_id = Some(connection_id.into());
         });
@@ -3492,6 +3504,11 @@ impl AppModel {
                 target,
             )
         };
+        let generation = self.chat.update(cx, |chat, _| {
+            chat.target_change_generation = chat.target_change_generation.saturating_add(1);
+            chat.target_change_pending = true;
+            chat.target_change_generation
+        });
         cx.notify();
         self.chat_target_task = Some(cx.spawn(async move |this, cx| match conversation_id {
             Some(conversation_id) => {
@@ -3500,14 +3517,20 @@ impl AppModel {
                     .await;
                 let _ = this.update(cx, |model, cx| {
                     model.chat.update(cx, |chat, _| match result {
+                        _ if chat.target_change_generation != generation => return,
                         Ok(snapshot)
                             if chat.active_conversation.as_ref().map(AsRef::as_ref)
                                 == Some(conversation_id.as_str()) =>
                         {
+                            chat.target_change_pending = false;
                             chat.apply_retargeted(snapshot)
                         }
-                        Ok(snapshot) => chat.store_conversation_snapshot(snapshot),
+                        Ok(snapshot) => {
+                            chat.target_change_pending = false;
+                            chat.store_conversation_snapshot(snapshot)
+                        }
                         Err(error) => {
+                            chat.target_change_pending = false;
                             chat.sync_panel_with_active_conversation();
                             chat.set_error(error);
                         }
@@ -3517,12 +3540,18 @@ impl AppModel {
             }
             None => {
                 let result = backend.save_default_target(project_id, target).await;
-                if let Err(error) = result {
-                    let _ = this.update(cx, |model, cx| {
-                        model.chat.update(cx, |chat, _| chat.set_error(error));
-                        cx.notify();
+                let _ = this.update(cx, |model, cx| {
+                    model.chat.update(cx, |chat, _| {
+                        if chat.target_change_generation != generation {
+                            return;
+                        }
+                        chat.target_change_pending = false;
+                        if let Err(error) = result {
+                            chat.set_error(error);
+                        }
                     });
-                }
+                    cx.notify();
+                });
             }
         }));
     }
@@ -3637,7 +3666,7 @@ impl AppModel {
             return;
         };
         let content = self.chat_draft_input.read(cx).value().trim().to_string();
-        let conversation_id = {
+        let (conversation_id, expected_target) = {
             let chat = self.chat.read(cx);
             if content.is_empty()
                 || !chat.composer_available()
@@ -3649,7 +3678,10 @@ impl AppModel {
             {
                 return;
             }
-            chat.active_conversation.as_ref().map(ToString::to_string)
+            (
+                chat.active_conversation.as_ref().map(ToString::to_string),
+                chat.panel_target(),
+            )
         };
         let Some(conversation_id) = conversation_id else {
             return;
@@ -3662,7 +3694,7 @@ impl AppModel {
         cx.notify();
         self.chat_task = Some(cx.spawn(async move |this, cx| {
             let result = backend
-                .send_message(conversation_id.clone(), content.clone())
+                .send_message(conversation_id.clone(), content.clone(), expected_target)
                 .await;
             let _ = this.update(cx, |model, cx| {
                 model.chat.update(cx, |chat, _| {
@@ -4553,6 +4585,10 @@ impl AppModel {
                 self.save_free_form_slot(slot, cx);
             }
             CliModelPickerTarget::Companion => {
+                if self.chat.read(cx).target_change_pending {
+                    self.close_cli_model_picker(cx);
+                    return;
+                }
                 self.chat.update(cx, |chat, _| {
                     chat.selected_cli_model = model_id;
                     chat.selected_cli_model_profile = None;
@@ -9410,6 +9446,7 @@ mod tests {
                 estimated_cost_usd: None,
                 error_code: None,
                 error_message: None,
+                target_label: None,
                 created_at: "now".into(),
                 updated_at: "now".into(),
             }
@@ -9455,6 +9492,7 @@ mod tests {
             &self,
             conversation_id: String,
             content: String,
+            _: Option<hvc_core::chat_service::ChatExecutionTargetRequest>,
         ) -> crate::chat::ChatFuture<(
             hvc_core::chat_service::SendChatMessageResponse,
             hvc_core::chat_service::GetChatConversationResponse,

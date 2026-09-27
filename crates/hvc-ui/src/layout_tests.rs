@@ -3377,6 +3377,7 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
                         estimated_cost_usd: None,
                         error_code: None,
                         error_message: None,
+                        target_label: None,
                         created_at: "now".into(),
                         updated_at: "now".into(),
                     })
@@ -3386,6 +3387,37 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
         cx.notify();
     });
     visual.run_until_parked();
+    let conversation = visual.debug_bounds("chat-conversation:conversation-1").unwrap();
+    let delete = visual.debug_bounds("chat-delete:conversation-1").unwrap();
+    assert!(delete.right() <= conversation.right() && delete.top() >= conversation.top());
+    assert!(delete.size.width <= px(36.0) && delete.size.height <= px(36.0));
+    click(visual, "chat-delete:conversation-1");
+    model.read_with(visual, |model, cx| {
+        assert_eq!(model.chat.read(cx).pending_delete_conversation_id.as_ref().map(ToString::to_string).as_deref(), Some("conversation-1"));
+    });
+    assert_eq!(visual.debug_bounds("chat-delete:conversation-1").unwrap().size, delete.size);
+    click(visual, "chat-copy-message:message-0");
+    visual.update(|_, cx| {
+        assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some("A user message."));
+    });
+    click(visual, "chat-copy-message:message-1");
+    visual.update(|_, cx| {
+        assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some("A assistant message."));
+    });
+    model.update(visual, |m, cx| {
+        m.chat.update(cx, |chat, _| {
+            let answer = &mut chat.messages_by_conversation.get_mut("conversation-1").unwrap()[1];
+            answer.content.clear();
+            answer.error_message = Some("Companion CLI returned an invalid control envelope".into());
+            answer.status = "failed".into();
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(visual, "chat-copy-message:message-1");
+    visual.update(|_, cx| {
+        assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some("Companion CLI returned an invalid control envelope"));
+    });
     let composer = visual.debug_bounds("chat-composer").unwrap();
     let header = visual.debug_bounds("chat-header").unwrap();
     let scroll = visual.debug_bounds("chat-messages-scroll").unwrap();

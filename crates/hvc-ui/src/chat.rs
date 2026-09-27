@@ -57,6 +57,7 @@ pub(crate) trait ChatBackend: Send + Sync {
         &self,
         conversation_id: String,
         content: String,
+        expected_target: Option<ChatExecutionTargetRequest>,
     ) -> ChatFuture<(SendChatMessageResponse, GetChatConversationResponse)>;
     fn cancel_turn(&self, execution_id: String) -> ChatFuture<bool>;
     fn turn_snapshot(&self, generation_id: String) -> ChatFuture<GetChatTurnSnapshotResponse>;
@@ -219,6 +220,7 @@ impl ChatBackend for CoreChatBackend {
         &self,
         conversation_id: String,
         content: String,
+        expected_target: Option<ChatExecutionTargetRequest>,
     ) -> ChatFuture<(SendChatMessageResponse, GetChatConversationResponse)> {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
@@ -232,6 +234,7 @@ impl ChatBackend for CoreChatBackend {
                             SendChatMessageRequest {
                                 conversation_id: conversation_id.clone(),
                                 content,
+                                expected_target,
                             },
                             &workspace_root,
                         )
@@ -374,6 +377,8 @@ pub struct ChatModel {
     pub(crate) selected_cli_model: Option<String>,
     pub(crate) selected_cli_model_profile: Option<String>,
     pub(crate) selected_cli_model_source: CliModelSelectionSource,
+    pub(crate) target_change_pending: bool,
+    pub(crate) target_change_generation: u64,
     pub streaming: bool,
     pub(crate) loading: bool,
     pub(crate) busy: bool,
@@ -418,6 +423,8 @@ impl ChatModel {
         self.selected_cli_model = None;
         self.selected_cli_model_profile = None;
         self.selected_cli_model_source = CliModelSelectionSource::Default;
+        self.target_change_pending = false;
+        self.target_change_generation = self.target_change_generation.saturating_add(1);
         self.pending_delete_conversation_id = None;
         self.loading = true;
         self.busy = false;
@@ -527,7 +534,9 @@ impl ChatModel {
     }
 
     pub(crate) fn composer_available(&self) -> bool {
-        self.project_id.is_some() && self.active_conversation_record().is_some()
+        self.project_id.is_some()
+            && self.active_conversation_record().is_some()
+            && !self.target_change_pending
     }
 
     pub(crate) fn disclosure_required(&self) -> bool {
@@ -569,6 +578,8 @@ impl ChatModel {
             return false;
         }
         self.active_conversation = Some(conversation_id.to_string().into());
+        self.target_change_generation = self.target_change_generation.saturating_add(1);
+        self.target_change_pending = false;
         self.pending_delete_conversation_id = None;
         self.loading = true;
         self.error = None;
@@ -953,6 +964,7 @@ mod tests {
             estimated_cost_usd: None,
             error_code: None,
             error_message: None,
+            target_label: None,
             created_at: "now".into(),
             updated_at: "now".into(),
         }
@@ -1115,6 +1127,10 @@ mod tests {
         let generation = model.begin_hydration("project-1".into(), None);
         assert!(model.apply_hydration(generation, snapshot("project-1", "", 0)));
         assert!(model.composer_available());
+        model.target_change_pending = true;
+        assert!(!model.composer_available());
+        model.target_change_pending = false;
+        assert!(model.composer_available());
     }
 
     #[test]
@@ -1250,6 +1266,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingChatBackend {
         sent: Mutex<Vec<(String, String)>>,
+        sent_targets: Mutex<Vec<Option<ChatExecutionTargetRequest>>>,
         cancelled: Mutex<Vec<String>>,
         retargeted: Mutex<Vec<(String, ChatExecutionTargetRequest)>>,
     }
@@ -1285,7 +1302,12 @@ mod tests {
             &self,
             conversation_id: String,
             content: String,
+            expected_target: Option<ChatExecutionTargetRequest>,
         ) -> ChatFuture<(SendChatMessageResponse, GetChatConversationResponse)> {
+            self.sent_targets
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(expected_target);
             self.sent
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1370,7 +1392,10 @@ mod tests {
             });
             model.set_chat_transport(ChatTransportKind::Cli, cx);
             model.set_chat_cli_backend(CliBackend::Claude, cx);
+            assert_eq!(model.chat.read(cx).selected_cli_backend, CliBackend::Codex);
         });
+        cx.run_until_parked();
+        model.update(cx, |model, cx| model.set_chat_cli_backend(CliBackend::Claude, cx));
         cx.run_until_parked();
         let calls = backend
             .retargeted
@@ -1425,6 +1450,12 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_slice(),
             &[("conversation-1".into(), "Explain the architecture".into())]
+        );
+        assert_eq!(
+            backend.sent_targets.lock().unwrap().as_slice(),
+            &[Some(ChatExecutionTargetRequest::Api {
+                connection_id: "eligible".into(),
+            })]
         );
 
         model.update(cx, |model, cx| model.cancel_chat_turn(cx));

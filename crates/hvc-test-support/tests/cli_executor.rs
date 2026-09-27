@@ -754,6 +754,7 @@ async fn companion_cli_uses_existing_cli_auth_without_hvc_credentials_and_persis
             SendChatMessageRequest {
                 conversation_id: conversation.id.clone(),
                 content: "Recommend a model using only local evidence.".into(),
+                expected_target: None,
             },
             harness._workspace.path(),
         )
@@ -786,6 +787,7 @@ async fn companion_cli_uses_existing_cli_auth_without_hvc_credentials_and_persis
                 SendChatMessageRequest {
                     conversation_id: conversation.id.clone(),
                     content: "companion-error-fixture".into(),
+                    expected_target: None,
                 },
                 harness._workspace.path(),
             )
@@ -842,6 +844,7 @@ async fn authenticated_codex_companion_smoke() {
             SendChatMessageRequest {
                 conversation_id: conversation.id.clone(),
                 content: content.into(),
+                expected_target: None,
             },
             harness._workspace.path(),
         )
