@@ -6000,9 +6000,13 @@ impl PersistenceService {
                 // fallback's "retry the CLI": the same prompt against the same
                 // budget stops at the same place. It falls through to the
                 // stage-failure checkpoint, which offers a revision instead.
+                // A run the host stopped for spending past its output ceiling
+                // is the same: another backend would be billed for the same
+                // overrun.
                 let truncated = matches!(
                     &error,
-                    PersistenceServiceError::Cli { code, .. } if code == "cli_output_truncated"
+                    PersistenceServiceError::Cli { code, .. }
+                        if matches!(code.as_str(), "cli_output_truncated" | "cli_output_budget_exceeded")
                 );
                 if !truncated && let PersistenceServiceError::Cli { code, message } = &error {
                     // Ask the human only once the host has run out of backends
@@ -8295,6 +8299,7 @@ mod tests {
             "cli_redaction_failed",
             "cli_invalid_state_transition",
             "cli_output_truncated",
+            "cli_output_budget_exceeded",
         ] {
             assert!(
                 !PersistenceService::backend_switch_can_help(code),

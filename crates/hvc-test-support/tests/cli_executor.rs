@@ -509,6 +509,84 @@ async fn claude_sonnet_generation_rejects_haiku_output_and_terminates_the_proces
     assert!(!marker.exists(), "the host must kill the local process tree immediately");
 }
 
+/// "Haiku CLI teste 1" (2026-09-26): a Claude run spent 44,354 output tokens
+/// against a 16,000-token reservation and nothing stopped it. The ceiling is
+/// twice the reservation (floor 24,000); the fixture reports 40,000.
+#[tokio::test]
+async fn claude_run_past_its_output_ceiling_is_killed_and_its_partial_usage_recorded() {
+    let _path_lock = PATH_TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let binaries = tempfile::tempdir().unwrap();
+    let claude = binaries.path().join("claude.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_cli_fixture"), &claude).unwrap();
+    std::fs::write(binaries.path().join("claude.fixture-state"), "output_runaway").unwrap();
+    let marker = binaries.path().join("claude.fixture-after-mismatch");
+    let original_path = std::env::var_os("PATH");
+    let _restore = PathRestore(original_path.clone());
+    let mut paths = vec![binaries.path().to_path_buf()];
+    if let Some(original_path) = original_path {
+        paths.extend(std::env::split_paths(&original_path));
+    }
+    // SAFETY: PATH_TEST_LOCK serializes this mutation and PathRestore restores the variable.
+    unsafe { std::env::set_var("PATH", std::env::join_paths(paths).unwrap()) };
+
+    let h = harness(Vec::new());
+    let current = h
+        .terminals
+        .repository()
+        .get_config(&h.project_id, AgentRole::BackendAgent)
+        .unwrap();
+    h.terminals
+        .update_config(UpdateCliAgentConfigRequest {
+            project_id: h.project_id.clone(),
+            agent_role: AgentRole::BackendAgent,
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: CliBackend::Claude,
+            model: Some("haiku".into()),
+            model_profile: None,
+            model_source: CliModelSelectionSource::Manual,
+            thinking_level: ThinkingLevel::Default,
+            custom_executable: None,
+            custom_args: Vec::new(),
+            custom_risk_ack: false,
+            expected_version: current.version,
+        })
+        .unwrap();
+
+    let mut call = request(&h.project_id, Instant::now() + Duration::from_secs(15));
+    call.max_output_tokens = 16_000;
+    let error = h
+        .terminals
+        .execute_llm_request(&call, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "cli_output_budget_exceeded");
+
+    let db = rusqlite::Connection::open(&h.database_path).unwrap();
+    let (run_id, status, error_code, reason): (String, String, Option<String>, Option<String>) = db
+        .query_row(
+            "SELECT id,status,error_code,termination_reason FROM terminal_runs ORDER BY created_at DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "failed");
+    assert_eq!(error_code.as_deref(), Some("cli_output_budget_exceeded"));
+    assert_eq!(reason.as_deref(), Some("output_limit"));
+    let (output, quality): (i64, String) = db
+        .query_row(
+            "SELECT output_tokens,quality FROM token_usage_records WHERE source_kind='terminal_run' AND source_id=?1",
+            [&run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((output, quality.as_str()), (40_000, "partial"));
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(!marker.exists(), "the host must kill the process before it finishes");
+}
+
 /// ADR-022/025 live qualification: one synthetic request through the real
 /// authenticated Claude CLI. It is explicit and ignored in normal CI.
 #[tokio::test(flavor = "multi_thread")]

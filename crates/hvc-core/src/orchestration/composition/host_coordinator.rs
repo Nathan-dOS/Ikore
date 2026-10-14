@@ -228,6 +228,22 @@ fn classify_transport_error(error: &PersistenceServiceError) -> Option<UnitFailu
             rejected_answer: true,
         });
     }
+    // The host stopped a run that kept producing past its ceiling. Like a
+    // truncation, the same prompt against the same ceiling spends it again, so
+    // it is neither retried in place nor switched to another backend.
+    if matches!(
+        error,
+        PersistenceServiceError::Cli { code, .. } if code == "cli_output_budget_exceeded"
+    ) {
+        return Some(UnitFailure {
+            class: FailureClass::OutputTruncated,
+            code: "output_budget_exceeded".into(),
+            diagnostic: error.to_string(),
+            repairable: false,
+            correction: None,
+            rejected_answer: true,
+        });
+    }
     let class = match error {
         PersistenceServiceError::Cli { .. } => FailureClass::ProviderTransport,
         other => crate::orchestration::classify_stage_failure(other)?,
@@ -2256,7 +2272,7 @@ impl PersistenceService {
     ) -> Result<Option<CorrectionContext>, PersistenceServiceError> {
         let diagnostic: Option<String> = db
             .query_row(
-                "SELECT a.diagnostic FROM stage_work_unit_attempts a JOIN stage_work_units u ON u.id=a.unit_id WHERE u.execution_id=(SELECT predecessor_execution_id FROM stage_executions WHERE id=?1) AND u.logical_unit_key=?2 AND a.state='rejected' AND a.diagnostic IS NOT NULL AND a.error_code IN ('invalid_shape','invalid_language','output_truncated','reference_conflict','ownership_violation','evidence_unresolved') ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1",
+                "SELECT a.diagnostic FROM stage_work_unit_attempts a JOIN stage_work_units u ON u.id=a.unit_id WHERE u.execution_id=(SELECT predecessor_execution_id FROM stage_executions WHERE id=?1) AND u.logical_unit_key=?2 AND a.state='rejected' AND a.diagnostic IS NOT NULL AND a.error_code IN ('invalid_shape','invalid_language','output_truncated','output_budget_exceeded','reference_conflict','ownership_violation','evidence_unresolved') ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1",
                 params![execution.id, unit.logical_unit_key],
                 |r| r.get(0),
             )
@@ -3510,6 +3526,20 @@ mod tests {
         assert_eq!((code.backend.as_deref(), code.requested_model.as_str()), (Some("codex"), "gpt-5.6-luna"));
         assert_eq!((repair.backend.as_deref(), repair.requested_model.as_str()), (Some("codex"), "gpt-5.6-luna"));
         assert_eq!((intake.backend.as_deref(), intake.requested_model.as_str()), (Some("claude"), "haiku"));
+    }
+
+    #[test]
+    fn a_run_stopped_for_its_output_ceiling_rejects_the_answer_without_a_retry() {
+        let error = PersistenceServiceError::Cli {
+            code: "cli_output_budget_exceeded".into(),
+            message: "the CLI was stopped after producing 32624 output tokens".into(),
+        };
+        let failure = classify_transport_error(&error).unwrap();
+        assert_eq!(failure.class, FailureClass::OutputTruncated);
+        assert_eq!(failure.code, "output_budget_exceeded");
+        // The same prompt against the same ceiling spends it again.
+        assert!(!failure.repairable);
+        assert!(failure.rejected_answer);
     }
 
     #[test]

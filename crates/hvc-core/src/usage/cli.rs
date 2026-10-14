@@ -17,6 +17,152 @@ pub struct CliUsageTracker {
     model: Option<String>,
     turn: u64,
     incomplete: bool,
+    live: ClaudeLiveUsage,
+}
+
+/// Characters per token assumed for text that is still streaming. Real text
+/// and code run at three to four characters per token, so dividing by four
+/// under-counts: the estimate can miss a runaway message by a few percent but
+/// never ends a healthy one early. The exact figure replaces it when the
+/// message closes.
+const LIVE_CHARS_PER_TOKEN: u64 = 4;
+
+/// What a Claude stream has reported before its final `result` event.
+///
+/// Claude's `result` snapshot is the only place the accounting above reads, so
+/// a run that is stopped early would otherwise record nothing at all. Each
+/// message states its prompt size when it opens (`message_start`) and its exact
+/// output when it closes (`message_delta`); the `assistant` frames repeat a
+/// stale figure of one to four tokens and are only a lower bound.
+#[derive(Default)]
+struct ClaudeLiveUsage {
+    messages: BTreeMap<String, LiveMessage>,
+    current: Option<String>,
+}
+
+#[derive(Default)]
+struct LiveMessage {
+    input: i64,
+    cache_read: i64,
+    cache_write: i64,
+    /// Exact output once the message closed, else the largest figure seen.
+    output: i64,
+    closed: bool,
+    streamed_chars: u64,
+}
+
+impl LiveMessage {
+    fn output_tokens(&self) -> u64 {
+        let reported = self.output.max(0) as u64;
+        if self.closed {
+            reported
+        } else {
+            reported.max(self.streamed_chars / LIVE_CHARS_PER_TOKEN)
+        }
+    }
+}
+
+impl ClaudeLiveUsage {
+    fn observe(&mut self, value: &Value) {
+        match value.get("type").and_then(Value::as_str) {
+            Some("stream_event") => {
+                let event = value.get("event").unwrap_or(&Value::Null);
+                match event.get("type").and_then(Value::as_str) {
+                    Some("message_start") => {
+                        let Some(id) = event.pointer("/message/id").and_then(Value::as_str) else {
+                            return;
+                        };
+                        let usage = event.pointer("/message/usage").unwrap_or(&Value::Null);
+                        let message = self.messages.entry(id.to_owned()).or_default();
+                        message.input = number(usage, "/input_tokens").unwrap_or(0);
+                        message.cache_read = number(usage, "/cache_read_input_tokens").unwrap_or(0);
+                        message.cache_write =
+                            number(usage, "/cache_creation_input_tokens").unwrap_or(0);
+                        message.output = message
+                            .output
+                            .max(number(usage, "/output_tokens").unwrap_or(0));
+                        self.current = Some(id.to_owned());
+                    }
+                    Some("content_block_delta") => {
+                        let delta = event.get("delta").unwrap_or(&Value::Null);
+                        let chars = ["text", "thinking", "partial_json"]
+                            .iter()
+                            .filter_map(|key| delta.get(*key).and_then(Value::as_str))
+                            .map(|text| text.chars().count() as u64)
+                            .sum::<u64>();
+                        if let Some(message) = self.current_message() {
+                            message.streamed_chars = message.streamed_chars.saturating_add(chars);
+                        }
+                    }
+                    Some("message_delta") => {
+                        let reported = event
+                            .pointer("/usage/output_tokens")
+                            .and_then(Value::as_i64)
+                            .filter(|n| *n >= 0);
+                        if let (Some(reported), Some(message)) = (reported, self.current_message())
+                        {
+                            message.output = reported;
+                            message.closed = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("assistant") => {
+                // Without partial-message frames this is all there is: a lower
+                // bound, never an estimate to act on alone.
+                let Some(id) = value.pointer("/message/id").and_then(Value::as_str) else {
+                    return;
+                };
+                let reported = number(value, "/message/usage/output_tokens").unwrap_or(0);
+                let message = self.messages.entry(id.to_owned()).or_default();
+                message.output = message.output.max(reported);
+            }
+            _ => {}
+        }
+    }
+
+    fn current_message(&mut self) -> Option<&mut LiveMessage> {
+        let id = self.current.as_deref()?;
+        self.messages.get_mut(id)
+    }
+
+    fn output_tokens(&self) -> u64 {
+        self.messages
+            .values()
+            .map(LiveMessage::output_tokens)
+            .fold(0, u64::saturating_add)
+    }
+
+    /// Prompt and output tokens for the partial record of a stopped run.
+    fn measurement(&self, model: Option<String>) -> Option<UsageMeasurement> {
+        if self.messages.is_empty() {
+            return None;
+        }
+        let sum = |field: fn(&LiveMessage) -> i64| {
+            self.messages
+                .values()
+                .map(field)
+                .try_fold(0i64, i64::checked_add)
+        };
+        let (input, read, write) = (
+            sum(|m| m.input)?,
+            sum(|m| m.cache_read)?,
+            sum(|m| m.cache_write)?,
+        );
+        Some(UsageMeasurement {
+            counts: TokenCounts {
+                input_tokens: input.checked_add(read)?.checked_add(write),
+                output_tokens: i64::try_from(self.output_tokens()).ok(),
+                cache_read_tokens: Some(read),
+                cache_write_tokens: Some(write),
+                ..Default::default()
+            },
+            observed_model: model,
+            // Open messages are estimated, so the figure is a floor.
+            partial: true,
+        })
+    }
 }
 
 fn number(value: &Value, key: &str) -> Option<i64> {
@@ -78,6 +224,9 @@ impl CliUsageTracker {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .or(self.model.take());
+        }
+        if backend == CliBackend::Claude {
+            self.live.observe(value);
         }
         let mut changes = Vec::new();
         let mut replace = false;
@@ -258,6 +407,18 @@ impl CliUsageTracker {
         }
         totals
     }
+
+    /// Output tokens produced so far, whatever the backend has reported yet:
+    /// Claude message by message, Codex and OpenCode per turn or step, Gemini
+    /// only once it closes (so a Gemini run cannot be metered while it runs).
+    pub fn output_tokens_so_far(&self) -> u64 {
+        let reported = self
+            .totals()
+            .output_tokens
+            .and_then(|n| u64::try_from(n).ok())
+            .unwrap_or(0);
+        reported.max(self.live.output_tokens())
+    }
 }
 
 pub struct CliUsageRecorder {
@@ -323,6 +484,43 @@ impl CliUsageRecorder {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .totals()
+    }
+
+    /// Output tokens the stream has shown so far; see
+    /// [`CliUsageTracker::output_tokens_so_far`].
+    pub fn output_tokens_so_far(&self) -> u64 {
+        self.tracker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .output_tokens_so_far()
+    }
+
+    /// Records what a Claude stream showed before the host stopped it. Claude
+    /// reports usage only in its final `result`, so without this a run ended
+    /// early (for spending past its output ceiling, for instance) would keep
+    /// the empty `unavailable` placeholder and its cost would not exist in
+    /// the ledger. Does nothing when `result` already arrived or the stream
+    /// never opened a message.
+    pub fn record_live_partial(&self) -> rusqlite::Result<()> {
+        let measurement = {
+            let tracker = self.tracker.lock().unwrap_or_else(|e| e.into_inner());
+            if !tracker.units.is_empty() {
+                return Ok(());
+            }
+            tracker.live.measurement(tracker.model.clone())
+        };
+        let Some(measurement) = measurement else {
+            return Ok(());
+        };
+        let db = super::connection(&self.path, false)?;
+        let transaction = db.unchecked_transaction()?;
+        transaction.execute(
+            "DELETE FROM token_usage_records WHERE source_kind=?1 AND source_id=?2 AND unit_key='unavailable'",
+            params![self.context.source_kind, self.context.source_id],
+        )?;
+        let key = format!("unit:{:x}", Sha256::digest(b"live"));
+        record_usage_on(&transaction, &self.context, &key, &measurement)?;
+        transaction.commit()
     }
 
     fn mark_incomplete(&self) -> rusqlite::Result<()> {
@@ -401,6 +599,110 @@ mod tests {
         );
         assert_eq!(gemini.totals().input_tokens, Some(27));
         assert_eq!(gemini.units.len(), 2);
+    }
+
+    fn message_start(id: &str, input: i64, cache_read: i64, cache_write: i64) -> Value {
+        json!({"type":"stream_event","event":{"type":"message_start","message":{
+            "id":id,"usage":{"input_tokens":input,"cache_read_input_tokens":cache_read,
+                "cache_creation_input_tokens":cache_write,"output_tokens":1}}}})
+    }
+
+    fn message_delta(output: i64) -> Value {
+        json!({"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":output}}})
+    }
+
+    fn text_delta(chars: usize) -> Value {
+        json!({"type":"stream_event","event":{"type":"content_block_delta",
+            "delta":{"type":"text_delta","text":"x".repeat(chars)}}})
+    }
+
+    #[test]
+    fn claude_output_is_known_message_by_message_before_the_result_arrives() {
+        // The seven closing counts of "Haiku CLI teste 1" (2026-09-26), whose
+        // `result` recorded the same 44,354.
+        let mut tracker = CliUsageTracker::default();
+        for (index, output) in [6_955, 393, 9_438, 9_284, 6_554, 6_619, 5_111]
+            .into_iter()
+            .enumerate()
+        {
+            tracker.observe(CliBackend::Claude, &message_start(&format!("m{index}"), 8, 100, 0));
+            // The `assistant` frame repeats a stale one-to-four token figure.
+            tracker.observe(
+                CliBackend::Claude,
+                &json!({"type":"assistant","message":{"id":format!("m{index}"),"usage":{"output_tokens":3}}}),
+            );
+            tracker.observe(CliBackend::Claude, &message_delta(output));
+        }
+        assert_eq!(tracker.output_tokens_so_far(), 44_354);
+        assert!(tracker.units.is_empty(), "no result has been seen yet");
+    }
+
+    #[test]
+    fn an_open_message_is_estimated_low_and_replaced_by_the_exact_count_on_close() {
+        let mut tracker = CliUsageTracker::default();
+        tracker.observe(CliBackend::Claude, &message_start("m1", 8, 0, 0));
+        tracker.observe(CliBackend::Claude, &text_delta(4_000));
+        // 4,000 characters at four per token; the start frame's own "1" is lower.
+        assert_eq!(tracker.output_tokens_so_far(), 1_000);
+        // The real count is higher than the estimate: the estimate never ends a run early.
+        tracker.observe(CliBackend::Claude, &message_delta(1_400));
+        assert_eq!(tracker.output_tokens_so_far(), 1_400);
+        // ...and an exact count lower than the estimate wins too.
+        tracker.observe(CliBackend::Claude, &message_start("m2", 8, 0, 0));
+        tracker.observe(CliBackend::Claude, &text_delta(4_000));
+        tracker.observe(CliBackend::Claude, &message_delta(300));
+        assert_eq!(tracker.output_tokens_so_far(), 1_700);
+    }
+
+    #[test]
+    fn thinking_and_tool_input_stream_count_like_text() {
+        let mut tracker = CliUsageTracker::default();
+        tracker.observe(CliBackend::Claude, &message_start("m1", 8, 0, 0));
+        for delta in [
+            json!({"thinking": "t".repeat(400)}),
+            json!({"partial_json": "j".repeat(400)}),
+            json!({"signature": "s".repeat(4_000)}),
+        ] {
+            tracker.observe(
+                CliBackend::Claude,
+                &json!({"type":"stream_event","event":{"type":"content_block_delta","delta":delta}}),
+            );
+        }
+        assert_eq!(tracker.output_tokens_so_far(), 200);
+    }
+
+    #[test]
+    fn other_backends_report_through_their_own_turn_counts() {
+        let mut codex = CliUsageTracker::default();
+        codex.observe(CliBackend::Codex, &json!({"type":"turn.started"}));
+        codex.observe(
+            CliBackend::Codex,
+            &json!({"type":"turn.completed","usage":{"input_tokens":20,"output_tokens":3}}),
+        );
+        // Codex frames that look like Claude's are not read as Claude's.
+        codex.observe(CliBackend::Codex, &message_start("m1", 8, 0, 0));
+        codex.observe(CliBackend::Codex, &text_delta(4_000));
+        assert_eq!(codex.output_tokens_so_far(), 3);
+        // Gemini only reports at the end, so there is nothing to meter before then.
+        let mut gemini = CliUsageTracker::default();
+        gemini.observe(CliBackend::Gemini, &text_delta(4_000));
+        assert_eq!(gemini.output_tokens_so_far(), 0);
+    }
+
+    #[test]
+    fn the_live_measurement_counts_prompt_cache_and_output_as_a_floor() {
+        let mut tracker = CliUsageTracker::default();
+        assert!(tracker.live.measurement(None).is_none(), "nothing streamed yet");
+        tracker.observe(CliBackend::Claude, &message_start("m1", 8, 1_000, 200));
+        tracker.observe(CliBackend::Claude, &message_delta(500));
+        tracker.observe(CliBackend::Claude, &message_start("m2", 8, 1_500, 0));
+        let measurement = tracker.live.measurement(Some("haiku".into())).unwrap();
+        assert_eq!(measurement.counts.input_tokens, Some(8 + 1_000 + 200 + 8 + 1_500));
+        assert_eq!(measurement.counts.cache_read_tokens, Some(2_500));
+        assert_eq!(measurement.counts.cache_write_tokens, Some(200));
+        // m1 exact, m2 still at the start frame's own "1".
+        assert_eq!(measurement.counts.output_tokens, Some(501));
+        assert!(measurement.partial);
     }
 
     #[test]

@@ -160,6 +160,34 @@ const MAX_RUN_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 /// reproduced from the record. Matches the context character budget.
 const CLI_REQUEST_PROMPT_MAX_CHARS: usize = 64_000;
 const MAX_RUN_EVENTS: usize = 100_000;
+/// Least a CLI call may spend before the host stops it, whatever it asked for.
+///
+/// A CLI run is an agent session, not one completion: its output tokens add up
+/// the thinking and every turn of the tool loop, so a call that asked for 1,600
+/// tokens routinely and legitimately spends three times that. Of the 99
+/// pipeline CLI runs recorded by 2026-09, all but one spent 23,175 tokens or
+/// fewer (16,701 for calls asking for 12,000 or less, accepted or rejected);
+/// the 72 learning runs peaked at 12,826. The floor sits above all of them.
+const CLI_OUTPUT_CEILING_FLOOR: u64 = 24_000;
+/// How many times a call's requested output a CLI run may spend. Two mirrors
+/// the stage account, whose extra pool is as large as its initial one.
+const CLI_OUTPUT_CEILING_FACTOR: u64 = 2;
+
+/// Output tokens a CLI process may produce for a call that reserved
+/// `max_output_tokens`, counting everything the session emits. Over it the host
+/// stops the process instead of paying for a run that will not converge.
+///
+/// "Haiku CLI teste 1" (2026-09-26) printed the same 9,000-token test file five
+/// times before calling the structured-output tool, spent 44,354 tokens
+/// against a 16,000 reservation, and was rejected afterwards for missing
+/// evidence. Nothing had been enforcing the reservation: the HTTP adapters
+/// send it to the provider as `max_tokens`, but the CLI has no such flag.
+pub(crate) fn cli_output_ceiling(max_output_tokens: u32) -> u64 {
+    u64::from(max_output_tokens)
+        .saturating_mul(CLI_OUTPUT_CEILING_FACTOR)
+        .max(CLI_OUTPUT_CEILING_FLOOR)
+}
+
 const PROCESS_EVENT_CHANNEL_CAPACITY: usize = 256;
 const DEFAULT_MANUAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_SAFE_SNAPSHOT_FILES: usize = 10_000;
@@ -203,6 +231,15 @@ pub enum TerminalError {
     InactivityTimeout,
     #[error("CLI run exceeded the output limit")]
     OutputLimit,
+    /// The host stopped the process because the model had already produced
+    /// more output tokens than the attempt's ceiling allows (see
+    /// [`cli_output_ceiling`]). Unlike `OutputTruncated` nothing cut the model
+    /// off: it kept going, and every further token would have been billed.
+    /// Repeating the prompt against the same ceiling spends it again.
+    #[error(
+        "the CLI was stopped after producing {observed} output tokens, past the {ceiling}-token ceiling for this call"
+    )]
+    OutputBudgetExceeded { observed: u64, ceiling: u64 },
     #[error("model_mismatch: modelo esperado `{expected}`, observado `{observed}`")]
     ModelMismatch { expected: String, observed: String },
     #[error(
@@ -251,6 +288,7 @@ impl TerminalError {
             Self::Timeout => "cli_timeout",
             Self::InactivityTimeout => "cli_inactivity_timeout",
             Self::OutputLimit => "cli_output_limit",
+            Self::OutputBudgetExceeded { .. } => "cli_output_budget_exceeded",
             Self::ModelMismatch { .. } => "model_mismatch",
             Self::ModelUnverified { .. } => "model_unverified",
             Self::OutputTruncated { .. } => "cli_output_truncated",
@@ -1827,7 +1865,7 @@ impl TerminalRepository {
                 // both timeouts belong to its `timeout` value; the distinction
                 // between them lives in `error_code`.
                 Some("cli_timeout" | "cli_inactivity_timeout") => "timeout",
-                Some("cli_output_limit") => "output_limit",
+                Some("cli_output_limit" | "cli_output_budget_exceeded") => "output_limit",
                 Some("cli_persistence_failed") => "persistence_failed",
                 Some("cli_io_failed") => "io_failed",
                 _ => "exited",
@@ -4036,6 +4074,7 @@ enum ProcessTermination {
 #[derive(Debug, Clone, Copy)]
 enum ProcessAbortReason {
     OutputLimit,
+    OutputBudget,
     Persistence,
     ModelIntegrity,
 }
@@ -5365,6 +5404,10 @@ impl TerminalService {
                 &combined,
                 deadline,
                 request.dispatch.cli_timeout.map(|budget| budget.policy),
+                // An observation trial exists to watch a run without limits.
+                observation_trial
+                    .is_none()
+                    .then(|| cli_output_ceiling(request.max_output_tokens)),
             )
             .await;
         cancellation_bridge.abort();
@@ -5461,7 +5504,7 @@ impl TerminalService {
         deadline: Option<Instant>,
     ) {
         let result = self
-            .run_process_inner(&run, spec, workspace, &cancellation, deadline, None)
+            .run_process_inner(&run, spec, workspace, &cancellation, deadline, None, None)
             .await;
         if let Err(error) = result {
             self.record_process_failure(&run, &error);
@@ -5481,6 +5524,7 @@ impl TerminalService {
         cancellation: &CancellationToken,
         deadline: Option<Instant>,
         policy_override: Option<AgentTimeoutPolicy>,
+        output_ceiling: Option<u64>,
     ) -> Result<CliProcessOutcome, TerminalError> {
         if cancellation.is_cancelled() {
             return Err(TerminalError::Cancelled);
@@ -5664,6 +5708,7 @@ impl TerminalService {
             abort_token.clone(),
             Arc::clone(&abort_reason),
             watchdog.clone().unwrap_or_else(|| ProgressWatchdog::new(AgentTimeoutPolicy::manual())),
+            output_ceiling,
         ));
         let stdout_task = tokio::spawn(read_process_stream(
             "stdout",
@@ -5727,6 +5772,12 @@ impl TerminalService {
         {
             return Err(match reason {
                 ProcessAbortReason::OutputLimit => TerminalError::OutputLimit,
+                // The coordinator's own error, with the observed count, wins
+                // above; this arm only keeps the match total.
+                ProcessAbortReason::OutputBudget => TerminalError::OutputBudgetExceeded {
+                    observed: output_ceiling.unwrap_or(0),
+                    ceiling: output_ceiling.unwrap_or(0),
+                },
                 ProcessAbortReason::Persistence => {
                     TerminalError::Process("stream persistence was interrupted".into())
                 }
@@ -6043,6 +6094,7 @@ async fn coordinate_process_events(
     abort_token: CancellationToken,
     abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
     _watchdog: ProgressWatchdog,
+    output_ceiling: Option<u64>,
 ) -> Result<ProcessEventSummary, TerminalError> {
     let failure_token = abort_token.clone();
     let failure_reason = abort_reason.clone();
@@ -6056,6 +6108,7 @@ async fn coordinate_process_events(
             abort_token,
             abort_reason,
             None,
+            output_ceiling,
         )
     })
     .await
@@ -6080,6 +6133,7 @@ fn coordinate_process_events_blocking(
     abort_token: CancellationToken,
     abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
     codex_sessions_root: Option<PathBuf>,
+    output_ceiling: Option<u64>,
 ) -> Result<ProcessEventSummary, TerminalError> {
     let mut writer = AuditWriter {
         repository: &repository,
@@ -6165,6 +6219,24 @@ fn coordinate_process_events_blocking(
                         ProcessAbortReason::Persistence,
                     );
                     return Err(error.into());
+                }
+                if stream == "stdout"
+                    && let Some(ceiling) = output_ceiling
+                {
+                    let observed = usage.output_tokens_so_far();
+                    if observed > ceiling {
+                        // Stop first: every further token is billed. The
+                        // buffered deltas and the partial usage record are
+                        // best-effort, the abort is not.
+                        signal_process_abort(
+                            &abort_token,
+                            &abort_reason,
+                            ProcessAbortReason::OutputBudget,
+                        );
+                        let _ = writer.flush(&mut summary);
+                        let _ = usage.record_live_partial();
+                        return Err(TerminalError::OutputBudgetExceeded { observed, ceiling });
+                    }
                 }
                 (
                     adapters::normalize_frame(backend, stream, &bytes),
@@ -9908,6 +9980,7 @@ mod tests {
                     CancellationToken::new(),
                     Arc::new(Mutex::new(None)),
                     None,
+                    None,
                 )
             }
         })
@@ -9959,6 +10032,7 @@ mod tests {
                     receiver,
                     CancellationToken::new(),
                     Arc::new(Mutex::new(None)),
+                    None,
                     None,
                 )
             }
@@ -10067,6 +10141,7 @@ mod tests {
                 CancellationToken::new(),
                 Arc::new(Mutex::new(None)),
                 Some(root),
+                None,
             )
         })
         .await
@@ -10138,6 +10213,7 @@ mod tests {
                     abort,
                     Arc::new(Mutex::new(None)),
                     Some(root),
+                    None,
                 )
             }
         })
@@ -10198,6 +10274,7 @@ mod tests {
             CancellationToken::new(),
             Arc::new(Mutex::new(None)),
             watchdog.clone(),
+            None,
         ));
         // On a single-thread runtime the old synchronous coordinator blocked
         // this release for the entire SQLite busy timeout and failed the run.
@@ -10245,10 +10322,162 @@ mod tests {
             abort.clone(),
             Arc::new(Mutex::new(None)),
             ProgressWatchdog::new(AgentTimeoutPolicy::default()),
+            None,
         )
         .await;
         assert!(result.is_err());
         assert!(abort.is_cancelled());
+    }
+
+    #[test]
+    fn a_cli_call_may_spend_twice_its_reservation_and_never_less_than_the_floor() {
+        // Small asks (intake 1,600, specification 8,000) are governed by the
+        // floor: their successful runs reached 4,714 and 16,701 tokens.
+        assert_eq!(cli_output_ceiling(1_600), 24_000);
+        assert_eq!(cli_output_ceiling(8_000), 24_000);
+        // The test author asked for 16,000 and a healthy sibling spent 23,175.
+        assert_eq!(cli_output_ceiling(16_000), 32_000);
+        assert_eq!(cli_output_ceiling(u32::MAX), u64::from(u32::MAX) * 2);
+    }
+
+    fn claude_message(id: &str, input: u64, cached: u64, output: Option<u64>) -> Vec<ProcessStreamItem> {
+        let mut frames = vec![claude_frame(serde_json::json!({
+            "type":"stream_event","session_id":"s-1",
+            "event":{"type":"message_start","message":{
+                "id":id,"model":"claude-haiku-4-5-20251001",
+                "usage":{"input_tokens":input,"cache_read_input_tokens":cached,
+                    "cache_creation_input_tokens":0,"output_tokens":1}}}
+        }))];
+        if let Some(output) = output {
+            frames.push(claude_frame(serde_json::json!({
+                "type":"stream_event","session_id":"s-1",
+                "event":{"type":"message_delta","usage":{"output_tokens":output}}
+            })));
+        }
+        frames
+    }
+
+    async fn run_claude_stream_against_ceiling(
+        frames: Vec<ProcessStreamItem>,
+        ceiling: Option<u64>,
+    ) -> (
+        Result<ProcessEventSummary, TerminalError>,
+        CancellationToken,
+        Arc<Mutex<Option<ProcessAbortReason>>>,
+        TerminalRepository,
+        String,
+        tempfile::TempDir,
+    ) {
+        let (data, repository, mut run) = audit_test_run();
+        run.model = Some("haiku".into());
+        let run_id = run.id.clone();
+        let (sender, receiver) = mpsc::channel(512);
+        for frame in frames {
+            sender.send(frame).await.unwrap();
+        }
+        drop(sender);
+        let abort = CancellationToken::new();
+        let reason = Arc::new(Mutex::new(None));
+        let result = tokio::task::spawn_blocking({
+            let (repository, abort, reason) = (repository.clone(), abort.clone(), reason.clone());
+            move || {
+                coordinate_process_events_blocking(
+                    repository,
+                    Arc::new(CollectTerminalEvents::default()),
+                    run,
+                    CliBackend::Claude,
+                    receiver,
+                    abort,
+                    reason,
+                    None,
+                    ceiling,
+                )
+            }
+        })
+        .await
+        .unwrap();
+        (result, abort, reason, repository, run_id, data)
+    }
+
+    /// "Haiku CLI teste 1" (2026-09-26): seven messages of 6,955, 393, 9,438,
+    /// 9,284, 6,554, 6,619 and 5,111 output tokens (44,354 in all) against a
+    /// 16,000-token reservation. The host must end the run while it is still
+    /// producing, keep what it had spent, and not touch a run that stays under.
+    #[tokio::test]
+    async fn a_claude_run_past_its_output_ceiling_is_stopped_and_its_partial_usage_kept() {
+        let outputs = [6_955, 393, 9_438, 9_284, 6_554, 6_619, 5_111];
+        let mut frames = vec![claude_frame(serde_json::json!({
+            "type":"system","subtype":"init","session_id":"s-1",
+            "model":"claude-haiku-4-5-20251001"}))];
+        for (index, output) in outputs.into_iter().enumerate() {
+            // The stale `assistant` echo must not count for more than it says.
+            frames.extend(claude_message(&format!("m-{index}"), 8, 20_000, Some(output)));
+            frames.push(claude_frame(serde_json::json!({
+                "type":"assistant","session_id":"s-1",
+                "message":{"id":format!("m-{index}"),"model":"claude-haiku-4-5-20251001",
+                    "content":[],"usage":{"output_tokens":2}}})));
+        }
+        let (result, abort, reason, repository, run_id, _data) =
+            run_claude_stream_against_ceiling(frames, Some(32_000)).await;
+
+        // 6,955 + 393 + 9,438 + 9,284 = 26,070; the fifth message closes at 32,624.
+        match result.unwrap_err() {
+            TerminalError::OutputBudgetExceeded { observed, ceiling } => {
+                assert_eq!((observed, ceiling), (32_624, 32_000));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert!(abort.is_cancelled(), "the process must be told to die");
+        assert!(matches!(
+            *reason.lock().unwrap(),
+            Some(ProcessAbortReason::OutputBudget)
+        ));
+        let db = repository.connection().unwrap();
+        let (input, output, quality, key_count): (i64, i64, String, i64) = db
+            .query_row(
+                "SELECT input_tokens,output_tokens,quality,(SELECT COUNT(*) FROM token_usage_records WHERE source_id=?1)
+                 FROM token_usage_records WHERE source_kind='terminal_run' AND source_id=?1",
+                [&run_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(key_count, 1, "the empty placeholder is replaced, not joined");
+        assert_eq!(output, 32_624);
+        assert_eq!(input, 5 * (8 + 20_000));
+        assert_eq!(quality, "partial");
+    }
+
+    #[tokio::test]
+    async fn a_claude_message_still_streaming_counts_by_estimate_and_ends_the_run_mid_message() {
+        let mut frames = claude_message("m-1", 8, 0, Some(900));
+        frames.extend(claude_message("m-2", 8, 0, None));
+        // 4,000 characters estimate 1,000 tokens: 900 + 1,000 passes 1,500
+        // before the second message ever closes.
+        for _ in 0..10 {
+            frames.push(text_delta(&"x".repeat(400)));
+        }
+        let (result, _, _, _, _, _data) = run_claude_stream_against_ceiling(frames, Some(1_500)).await;
+        assert!(matches!(
+            result,
+            Err(TerminalError::OutputBudgetExceeded { ceiling: 1_500, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_run_that_stays_under_its_ceiling_or_has_none_is_left_alone() {
+        let build = || {
+            let mut frames = claude_message("m-1", 8, 0, Some(900));
+            frames.extend(claude_message("m-2", 8, 0, Some(900)));
+            frames.push(claude_frame(serde_json::json!({
+                "type":"result","subtype":"success","session_id":"s-1","result":"done"})));
+            frames
+        };
+        let (under, abort, ..) = run_claude_stream_against_ceiling(build(), Some(1_800)).await;
+        assert_eq!(under.unwrap().raw_output, "done");
+        assert!(!abort.is_cancelled());
+        let (unbounded, abort, ..) = run_claude_stream_against_ceiling(build(), None).await;
+        assert_eq!(unbounded.unwrap().raw_output, "done");
+        assert!(!abort.is_cancelled());
     }
 
     #[test]
@@ -10400,6 +10629,7 @@ mod tests {
             CancellationToken::new(),
             Arc::new(Mutex::new(None)),
             ProgressWatchdog::new(AgentTimeoutPolicy::default()),
+            None,
         )
         .await
         .unwrap();
@@ -10504,6 +10734,7 @@ mod tests {
             CancellationToken::new(),
             Arc::new(Mutex::new(None)),
             ProgressWatchdog::new(AgentTimeoutPolicy::default()),
+            None,
         )
         .await
         .unwrap();
@@ -10606,6 +10837,7 @@ mod tests {
             CancellationToken::new(),
             Arc::new(Mutex::new(None)),
             ProgressWatchdog::new(AgentTimeoutPolicy::default()),
+            None,
         )
         .await
         .unwrap();

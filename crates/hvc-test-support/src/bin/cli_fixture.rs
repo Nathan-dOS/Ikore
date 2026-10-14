@@ -330,6 +330,19 @@ fn emit_official_success(backend: &str, args: &[String]) {
                 return;
             }
             println!(r#"{{"type":"stream_event","event":{{"type":"message_start","message":{{"id":"claude-message-1","model":"{observed_model}"}}}}}}"#);
+            if fixture_output_runaway() {
+                // Two 20,000-token messages, then a long pause: a host that
+                // does not stop the run at its output ceiling lets the marker appear.
+                println!(r#"{{"type":"stream_event","event":{{"type":"message_delta","usage":{{"output_tokens":20000}}}}}}"#);
+                println!(r#"{{"type":"stream_event","event":{{"type":"message_start","message":{{"id":"claude-message-2","model":"{observed_model}"}}}}}}"#);
+                println!(r#"{{"type":"stream_event","event":{{"type":"message_delta","usage":{{"output_tokens":20000}}}}}}"#);
+                std::io::stdout().flush().unwrap();
+                thread::sleep(Duration::from_secs(3));
+                if let Ok(path) = env::current_exe() {
+                    let _ = std::fs::write(path.with_file_name("claude.fixture-after-mismatch"), b"still-running");
+                }
+                return;
+            }
             if fixture_model_mismatch() {
                 thread::sleep(Duration::from_secs(2));
                 if let Ok(path) = env::current_exe() {
@@ -375,6 +388,13 @@ fn fixture_model_unverified() -> bool {
         .ok()
         .and_then(|path| std::fs::read_to_string(path.with_file_name("claude.fixture-state")).ok())
         .is_some_and(|state| state.trim() == "missing_generation_identity")
+}
+
+fn fixture_output_runaway() -> bool {
+    env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path.with_file_name("claude.fixture-state")).ok())
+        .is_some_and(|state| state.trim() == "output_runaway")
 }
 
 fn fixture_subagent_mismatch() -> bool {

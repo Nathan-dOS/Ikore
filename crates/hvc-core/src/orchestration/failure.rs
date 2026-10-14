@@ -167,7 +167,12 @@ pub fn classify_stage_failure(error: &PersistenceServiceError) -> Option<Failure
         // A truncated answer reaches here as a CLI fault, but "retry the CLI"
         // is precisely the wrong offer for it, so it does not opt out with the
         // rest of the CLI faults.
-        PersistenceServiceError::Cli { code, .. } if code == "cli_output_truncated" => {
+        PersistenceServiceError::Cli { code, .. }
+            if matches!(
+                code.as_str(),
+                "cli_output_truncated" | "cli_output_budget_exceeded"
+            ) =>
+        {
             FailureClass::OutputTruncated
         }
         PersistenceServiceError::Cli { code, .. }
@@ -679,5 +684,18 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn a_run_the_host_stopped_for_its_output_ceiling_is_classified_like_a_truncation() {
+        let error = PersistenceServiceError::Cli {
+            code: "cli_output_budget_exceeded".into(),
+            message: "the CLI was stopped after producing 32624 output tokens".into(),
+        };
+        assert_eq!(
+            classify_stage_failure(&error),
+            Some(FailureClass::OutputTruncated)
+        );
+        assert_eq!(stage_failure_error_code(&error), "cli_output_budget_exceeded");
     }
 }
