@@ -332,13 +332,13 @@ impl Drop for PathRestore {
 }
 
 #[tokio::test]
-async fn four_official_adapters_capture_and_resume_the_exact_native_session() {
+async fn official_adapters_capture_and_resume_the_exact_native_session() {
     let _path_lock = PATH_TEST_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
     let binaries = tempfile::tempdir().unwrap();
-    for backend in ["codex", "claude", "gemini", "opencode"] {
+    for backend in ["codex", "claude", "gemini", "opencode", "agy"] {
         std::fs::copy(
             env!("CARGO_BIN_EXE_cli_fixture"),
             binaries.path().join(format!("{backend}.exe")),
@@ -362,12 +362,14 @@ async fn four_official_adapters_capture_and_resume_the_exact_native_session() {
         CliBackend::Claude,
         CliBackend::Gemini,
         CliBackend::Opencode,
+        CliBackend::Antigravity,
     ] {
         let model = match backend {
             CliBackend::Codex => "gpt-5.6-luna",
             CliBackend::Claude => "haiku",
             CliBackend::Gemini => "gemini-2.5-flash",
             CliBackend::Opencode => "fixture-opencode-model",
+            CliBackend::Antigravity => "gemini-3.8-flash",
             CliBackend::Custom => unreachable!(),
         };
         assert!(discovery.iter().any(|item| {
@@ -427,8 +429,8 @@ async fn four_official_adapters_capture_and_resume_the_exact_native_session() {
         assert_eq!(resumed.native_session_id, initial.native_session_id);
     }
     let usage = hvc_core::usage::query_usage(&harness.database_path, &Default::default()).unwrap();
-    assert_eq!(usage.totals.total_tokens, Some(200));
-    assert_eq!(usage.totals.records, 8);
+    assert_eq!(usage.totals.total_tokens, Some(250));
+    assert_eq!(usage.totals.records, 10);
     assert_eq!(usage.totals.unavailable_records, 0);
 }
 
@@ -677,6 +679,183 @@ async fn authenticated_claude_model_identity_smoke() {
     if status == "completed" {
         assert!(observed.as_deref().is_some_and(|model| model.to_ascii_lowercase().contains("haiku")));
     }
+}
+
+/// ADR-010 live qualification for Antigravity's CLI: discovery with quota, the
+/// live catalog, a stage run through the hardened launch path, and a write that
+/// the private `--gemini_dir` must refuse. Uses the cheapest Gemini effort.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Requires local Antigravity (agy) authentication and network; sends two synthetic prompts"]
+async fn authenticated_antigravity_pipeline_smoke() {
+    let harness = harness(Vec::new());
+    let discovery = harness.terminals.refresh_discovery().await;
+    let antigravity = discovery
+        .iter()
+        .find(|item| item.backend == CliBackend::Antigravity)
+        .unwrap();
+    assert_eq!(
+        antigravity.state,
+        CliAvailabilityState::Available,
+        "{antigravity:?}"
+    );
+    assert!(
+        antigravity
+            .executable_path
+            .as_ref()
+            .is_some_and(|path| path.ends_with("agy.exe"))
+    );
+    assert!(
+        !antigravity.quota.is_empty(),
+        "the auth probe reports quota"
+    );
+
+    let catalog = harness
+        .terminals
+        .model_catalog(&harness.project_id, CliBackend::Antigravity, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        catalog.state,
+        CliModelCatalogState::Ready,
+        "{:?}",
+        catalog.diagnostic
+    );
+    let flash = catalog
+        .models
+        .iter()
+        .find(|model| model.model_id.as_deref() == Some("gemini-3.8-flash"))
+        .expect("the account lists Gemini 3.8 Flash");
+    assert!(flash.profiles.iter().any(|profile| profile == "low"));
+
+    let current = harness
+        .terminals
+        .repository()
+        .get_config(&harness.project_id, AgentRole::BackendAgent)
+        .unwrap();
+    harness
+        .terminals
+        .update_config(UpdateCliAgentConfigRequest {
+            project_id: harness.project_id.clone(),
+            agent_role: AgentRole::BackendAgent,
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: CliBackend::Antigravity,
+            model: Some("gemini-3.8-flash".into()),
+            model_profile: Some("low".into()),
+            model_source: CliModelSelectionSource::Catalog,
+            thinking_level: ThinkingLevel::Default,
+            custom_executable: None,
+            custom_args: Vec::new(),
+            custom_risk_ack: false,
+            expected_version: current.version,
+        })
+        .unwrap();
+
+    let mut probe = request(
+        &harness.project_id,
+        Instant::now() + Duration::from_secs(180),
+    );
+    probe.user_prompt =
+        "Reply with exactly HVC_ANTIGRAVITY_OK and nothing else. Do not use tools.".into();
+    let completion = harness
+        .terminals
+        .execute_llm_request(&probe, &CancellationToken::new())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        completion.raw_output.contains("HVC_ANTIGRAVITY_OK"),
+        "{}",
+        completion.raw_output
+    );
+    let db = rusqlite::Connection::open(&harness.database_path).unwrap();
+    let (observed, source): (String, String) = db
+        .query_row(
+            "SELECT o.model_id,o.evidence_source FROM terminal_model_observations o
+             WHERE o.run_id=?1 AND o.is_generation=1 ORDER BY o.ordinal LIMIT 1",
+            [&completion.terminal_run_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (observed.as_str(), source.as_str()),
+        ("gemini-3.8-flash", "cli_init")
+    );
+
+    let mut write = request(
+        &harness.project_id,
+        Instant::now() + Duration::from_secs(180),
+    );
+    write.user_prompt =
+        "Use your file writing tool to create hvc-probe.txt containing the word blocked. \
+        Then answer in one sentence whether the write succeeded or was denied."
+            .into();
+    let completion = harness
+        .terminals
+        .execute_llm_request(&write, &CancellationToken::new())
+        .await
+        .unwrap()
+        .unwrap();
+    let answer = completion.raw_output.to_ascii_lowercase();
+    assert!(
+        answer.contains("denied") || answer.contains("deny") || answer.contains("permission"),
+        "the deny rule must stop the write: {}",
+        completion.raw_output
+    );
+}
+
+/// The Companion over Antigravity: one synthetic round in a read-only, tool-less directory.
+#[tokio::test]
+#[ignore = "Requires local Antigravity (agy) authentication and network; sends one synthetic message"]
+async fn authenticated_antigravity_companion_smoke() {
+    let harness = harness(Vec::new());
+    harness.terminals.refresh_discovery().await;
+    harness
+        .terminals
+        .model_catalog(&harness.project_id, CliBackend::Antigravity, true)
+        .await
+        .unwrap();
+    let credentials = Arc::new(NoHvcCredentials::default());
+    let chat = Arc::new(ChatService::new(
+        &harness.database_path,
+        credentials.clone(),
+        Arc::new(NoopChatEventSink),
+    ));
+    chat.attach_terminal_service(harness.terminals.clone());
+    let conversation = chat
+        .create_conversation(CreateChatConversationRequest {
+            project_id: harness.project_id.clone(),
+            target: ChatExecutionTargetRequest::Cli {
+                backend: CliBackend::Antigravity,
+                model: Some("gemini-3.8-flash".into()),
+                model_profile: Some("low".into()),
+            },
+        })
+        .unwrap()
+        .conversation;
+    chat.start_turn(
+        SendChatMessageRequest {
+            conversation_id: conversation.id.clone(),
+            content: "Reply with exactly Ready. Do not call any tools.".into(),
+            expected_target: None,
+        },
+        harness._workspace.path(),
+    )
+    .unwrap();
+    assert!(chat.wait_for_idle(Duration::from_secs(180)).await);
+    let loaded = chat
+        .get_conversation(GetChatConversationRequest {
+            conversation_id: conversation.id.clone(),
+        })
+        .unwrap();
+    let assistant = loaded
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .unwrap();
+    assert_eq!(assistant.status, "completed", "{:?}", assistant.error_message);
+    assert!(assistant.content.contains("Ready"), "{}", assistant.content);
+    assert_eq!(credentials.0.load(Ordering::SeqCst), 0);
 }
 
 /// ADR-010/022 live qualification for Codex's model-less public item events.
@@ -1066,14 +1245,14 @@ async fn deadline_kills_the_process_tree_and_stops_descendant_heartbeat() {
 }
 
 #[tokio::test]
-async fn feature_discovery_uses_four_official_cli_adapters_with_isolated_context_and_own_identity()
+async fn feature_discovery_uses_the_official_cli_adapters_with_isolated_context_and_own_identity()
 {
     let _lock = PATH_TEST_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
     let binaries = tempfile::tempdir().unwrap();
-    for name in ["codex", "claude", "gemini", "opencode"] {
+    for name in ["codex", "claude", "gemini", "opencode", "agy"] {
         std::fs::copy(
             env!("CARGO_BIN_EXE_cli_fixture"),
             binaries.path().join(format!("{name}.exe")),
@@ -1096,12 +1275,14 @@ async fn feature_discovery_uses_four_official_cli_adapters_with_isolated_context
         CliBackend::Claude,
         CliBackend::Gemini,
         CliBackend::Opencode,
+        CliBackend::Antigravity,
     ] {
         let model = match backend {
             CliBackend::Codex => "gpt-5.6-luna",
             CliBackend::Claude => "haiku",
             CliBackend::Gemini => "gemini-2.5-flash",
             CliBackend::Opencode => "fixture-opencode-model",
+            CliBackend::Antigravity => "gemini-3.8-flash",
             CliBackend::Custom => unreachable!(),
         };
         let config = h

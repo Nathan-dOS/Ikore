@@ -77,7 +77,12 @@ impl SchemaFlavor {
         match backend {
             CliBackend::Codex => Self::Strict,
             CliBackend::Claude => Self::Claude,
-            CliBackend::Gemini | CliBackend::Opencode | CliBackend::Custom => Self::Canonical,
+            // Antigravity takes the canonical schema natively through
+            // `--json-schema`, `$schema` key included.
+            CliBackend::Gemini
+            | CliBackend::Opencode
+            | CliBackend::Antigravity
+            | CliBackend::Custom => Self::Canonical,
         }
     }
 }

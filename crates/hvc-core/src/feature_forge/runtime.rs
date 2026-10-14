@@ -936,6 +936,7 @@ pub(crate) fn response_schema_for_backend(backend: Option<CliBackend>) -> Value 
         Some(CliBackend::Claude) => canonical_response_schema(),
         Some(CliBackend::Gemini) => canonical_response_schema(),
         Some(CliBackend::Opencode) => canonical_response_schema(),
+        Some(CliBackend::Antigravity) => canonical_response_schema(),
         Some(CliBackend::Custom) => canonical_response_schema(),
         None => canonical_response_schema(),
     }

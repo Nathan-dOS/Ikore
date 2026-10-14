@@ -86,8 +86,8 @@ fn seed_profile(root: &Path) {
         ),
         (
             AgentRole::Integrator,
-            AgentExecutionMode::ApiDirect,
-            CliBackend::Codex,
+            AgentExecutionMode::CliProcess,
+            CliBackend::Antigravity,
         ),
         (
             AgentRole::LearningAgent,

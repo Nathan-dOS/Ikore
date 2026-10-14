@@ -226,7 +226,11 @@ pub(crate) fn cli_model_picker_panel(
             picker.backend.label(),
             catalog.cli_version.as_deref().unwrap_or("—")
         );
-        let catalog_version_label = if picker.backend == CliBackend::Opencode {
+        // Live catalogs come from the CLI itself, not from the embedded preset.
+        let catalog_version_label = if matches!(
+            picker.backend,
+            CliBackend::Opencode | CliBackend::Antigravity
+        ) {
             String::new()
         } else {
             format!(" · Catalog v{}", hvc_core::terminals::cli_model_catalog_version())
@@ -2205,6 +2209,21 @@ fn agent_card(
                     .child(identity),
             )
         })
+        .when_some(
+            availability.and_then(|availability| quota_line(&availability.quota)),
+            |card, (line, low)| {
+                card.child(
+                    div()
+                        .text_xs()
+                        .text_color(if low {
+                            theme::warning()
+                        } else {
+                            theme::text_muted()
+                        })
+                        .child(line),
+                )
+            },
+        )
         .when_some(install_guidance, |card, (command, url)| {
             let command_for_copy = command.clone();
             let url_for_copy = url.clone();
@@ -3689,6 +3708,38 @@ fn empty_state(message: &'static str) -> AnyElement {
     crate::widgets::empty_state(message)
 }
 
+/// Windows the quota line shows at most; the core already sorts them lowest first.
+const MAX_QUOTA_WINDOWS_SHOWN: usize = 4;
+/// Below this share left, a quota window is worth the warning colour.
+const LOW_QUOTA_PERCENT: u8 = 10;
+
+/// One muted line with what is left of a quota-billed CLI's allowance, e.g.
+/// `Quota · Claude and GPT models 2% (5h, resets 14/10/2026 18:11:40) · Gemini Models 92% (5h)`.
+/// Only the tightest window names its reset, the one that decides when work can resume.
+fn quota_line(quota: &[hvc_core::terminals::CliQuotaBucket]) -> Option<(String, bool)> {
+    let first = quota.first()?;
+    let parts = quota
+        .iter()
+        .take(MAX_QUOTA_WINDOWS_SHOWN)
+        .enumerate()
+        .map(|(index, bucket)| {
+            let reset = (index == 0)
+                .then_some(bucket.reset_time.as_deref())
+                .flatten()
+                .map(|reset| format!(", resets {}", crate::time::format_timestamp(reset)))
+                .unwrap_or_default();
+            format!(
+                "{} {}% ({}{reset})",
+                bucket.group, bucket.remaining_percent, bucket.window
+            )
+        })
+        .collect::<Vec<_>>();
+    Some((
+        format!("Quota · {}", parts.join(" · ")),
+        first.remaining_percent < LOW_QUOTA_PERCENT,
+    ))
+}
+
 fn availability_status(
     availability: Option<&hvc_core::terminals::CliAvailability>,
 ) -> &'static str {
@@ -3729,6 +3780,32 @@ fn status_color(status: Option<TerminalRunStatus>) -> Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_quota_line_is_bounded_and_warns_only_when_the_tightest_window_is_low() {
+        let bucket = |group: &str, percent: u8| hvc_core::terminals::CliQuotaBucket {
+            group: group.into(),
+            window: "5h".into(),
+            remaining_percent: percent,
+            reset_time: Some("not a timestamp".into()),
+        };
+        assert_eq!(quota_line(&[]), None);
+        let (line, low) = quota_line(&[
+            bucket("Claude and GPT models", 2),
+            bucket("Gemini Models", 92),
+            bucket("Gemini Models", 95),
+            bucket("Claude and GPT models", 96),
+            bucket("Hidden", 99),
+        ])
+        .unwrap();
+        assert!(low);
+        assert!(line.starts_with("Quota · Claude and GPT models 2% (5h, resets not a timestamp)"));
+        assert!(line.contains("Gemini Models 92% (5h)"));
+        assert!(!line.contains("Hidden"), "at most four windows are shown");
+        assert_eq!(line.matches("resets").count(), 1);
+        let (_, low) = quota_line(&[bucket("Gemini Models", 40)]).unwrap();
+        assert!(!low);
+    }
 
     #[test]
     fn searchable_model_picker_filters_a_thousand_entries_by_all_supported_fields() {

@@ -1,0 +1,2 @@
+{"event":"result","result":{"conversation_id":"fixture-error","status":"ERROR","response":"","error":"Authentication expired. Please log back in."}}
+{"event":"result","result":{"conversation_id":"fixture-quota","status":"ERROR","response":"","error":"Your AI credits balance is too low to continue."}}

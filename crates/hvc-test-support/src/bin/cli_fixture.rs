@@ -19,9 +19,17 @@ fn main() {
                 .map(|name| name.to_string_lossy().to_ascii_lowercase())
         })
         .unwrap_or_default();
-    let official_backend = ["codex", "claude", "gemini", "opencode"]
-        .into_iter()
-        .find(|backend| executable_name == *backend);
+    // Antigravity's CLI ships as `agy`; every other backend's file stem is its id.
+    let official_backend = [
+        ("codex", "codex"),
+        ("claude", "claude"),
+        ("gemini", "gemini"),
+        ("opencode", "opencode"),
+        ("agy", "antigravity"),
+    ]
+    .into_iter()
+    .find(|(stem, _)| executable_name == *stem)
+    .map(|(_, backend)| backend);
     // The state comes from the environment or, because the host launches CLIs with a scrubbed
     // environment, from a `<backend>.fixture-state` file next to the executable.
     let fixture_state = official_backend
@@ -59,6 +67,7 @@ fn main() {
                     "claude" => "2.1.81 (Claude Code)",
                     "gemini" => "0.59.0",
                     "opencode" => "1.18.17",
+                    "antigravity" => "1.3.5",
                     _ => unreachable!(),
                 }
             );
@@ -75,6 +84,35 @@ fn main() {
             std::process::exit(1);
         }
         println!("authenticated fixture");
+        return;
+    }
+    // `agy -p /usage --output-format json`: the login check that also reports quota.
+    if official_backend == Some("antigravity")
+        && args
+            .windows(2)
+            .any(|pair| pair[0] == "-p" && pair[1] == "/usage")
+    {
+        if fixture_state == "auth_required" {
+            eprintln!("error: You are not logged into Antigravity.");
+            std::process::exit(1);
+        }
+        println!(
+            "{}",
+            include_str!("../../fixtures/cli/antigravity/current/usage.json").trim()
+        );
+        return;
+    }
+    if official_backend == Some("antigravity")
+        && args.first().is_some_and(|argument| argument == "models")
+    {
+        if fixture_state == "catalog_failed" {
+            eprintln!("fixture model catalog failed");
+            std::process::exit(3);
+        }
+        print!(
+            "{}",
+            include_str!("../../fixtures/cli/antigravity/current/models.txt")
+        );
         return;
     }
     if official_backend == Some("opencode")
@@ -124,6 +162,20 @@ fn main() {
             Some("gemini") => assert!(env::var_os("GEMINI_CLI_SYSTEM_SETTINGS_PATH").is_some()),
             Some("opencode") => {
                 assert_eq!(env::var("OPENCODE_PERMISSION").unwrap(), r#"{"*":"deny"}"#)
+            }
+            Some("antigravity") => {
+                let directory = args
+                    .iter()
+                    .find_map(|arg| arg.strip_prefix("--gemini_dir="))
+                    .expect("Antigravity discovery needs a private config directory");
+                let settings = std::fs::read_to_string(
+                    std::path::Path::new(directory).join("antigravity-cli/settings.json"),
+                )
+                .unwrap();
+                assert!(
+                    settings.contains("read_file(*)"),
+                    "Discovery must deny reads"
+                );
             }
             _ => panic!("Discovery cannot use Custom"),
         }
@@ -281,6 +333,14 @@ fn emit_companion_success(backend: &str) {
         ),
         "gemini" => println!(r#"{{"type":"message","content":"{envelope}"}}"#),
         "opencode" => println!(r#"{{"type":"text","part":{{"text":"{envelope}"}}}}"#),
+        "antigravity" => {
+            println!(
+                r#"{{"event":"init","conversation_id":"fixture-companion","init":{{"model":"gemini-fixture","permission_mode":"request-review"}}}}"#
+            );
+            println!(
+                r#"{{"event":"result","result":{{"conversation_id":"fixture-companion","status":"SUCCESS","response":"{envelope}","usage":{{"input_tokens":8,"output_tokens":5,"thinking_tokens":0,"cache_read_tokens":12,"total_tokens":13}}}}}}"#
+            );
+        }
         _ => unreachable!(),
     }
     if backend == "codex" {
@@ -292,7 +352,7 @@ fn emit_companion_success(backend: &str) {
 
 fn emit_official_success(backend: &str, args: &[String]) {
     let requested_model = value_after(args, "--model").unwrap_or("fixture-model");
-    let session = ["resume", "--resume", "--session"]
+    let session = ["resume", "--resume", "--session", "--conversation"]
         .into_iter()
         .find_map(|flag| value_after(args, flag))
         .unwrap_or("fixture-native-session");
@@ -370,6 +430,17 @@ fn emit_official_success(backend: &str, args: &[String]) {
             );
             println!(
                 r#"{{"type":"session.idle","sessionID":"{session}","result":"ok opencode fixture"}}"#
+            );
+        }
+        "antigravity" => {
+            println!(
+                r#"{{"event":"init","conversation_id":"{session}","init":{{"model":"{requested_model}","permission_mode":"request-review"}}}}"#
+            );
+            println!(
+                r#"{{"event":"step_update","step_update":{{"conversation_id":"{session}","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"ok antigravity fixture","usage":{{"input_tokens":8,"output_tokens":5,"thinking_tokens":0,"cache_read_tokens":12,"total_tokens":13}}}}}}"#
+            );
+            println!(
+                r#"{{"event":"result","result":{{"conversation_id":"{session}","status":"SUCCESS","response":"ok antigravity fixture","num_turns":1,"usage":{{"input_tokens":8,"output_tokens":5,"thinking_tokens":0,"cache_read_tokens":12,"total_tokens":13}}}}}}"#
             );
         }
         _ => unreachable!(),

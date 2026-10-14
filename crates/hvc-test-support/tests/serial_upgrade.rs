@@ -127,7 +127,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        45
+        46
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -290,7 +290,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        45
+        46
     );
     assert_eq!(
         db.query_row(
@@ -831,7 +831,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        45
+        46
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -987,7 +987,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        45
+        46
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1079,7 +1079,7 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     assert_eq!(
         db.query_row("SELECT MAX(version) FROM refinery_schema_history", [], |r| r.get::<_, u32>(0)).unwrap(),
-        45
+        46
     );
     let (error, failure, notices): (String, Option<String>, Option<String>) = db
         .query_row(
@@ -1099,6 +1099,59 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
         .expect_err("failure_json must be valid JSON");
     db.execute("UPDATE forge_turns SET notices_json='not json' WHERE id='t'", [])
         .expect_err("notices_json must be valid JSON");
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get::<_, u32>(0)).unwrap(),
+        0
+    );
+}
+
+/// V46 widens every backend CHECK to admit Antigravity's CLI. The rebuilt
+/// tables must keep their rows, still reject an unknown backend, and leave
+/// no dangling reference behind - a pulsation's history hangs off two of them.
+#[test]
+fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(45))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V45 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version) VALUES('pulse','p','Work','Code','running','now','now',2)",[]).unwrap();
+    db.execute("INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,thinking_level,custom_args_json,version,created_at,updated_at) VALUES('p','backend_agent','cli_process','opencode','high','[]',3,'now','now')",[]).unwrap();
+    db.execute("INSERT INTO cli_backend_attempts(pulsation_id,agent_role,backend,error_code,diagnostic,created_at) VALUES('pulse','backend_agent','gemini','cli_rate_limited','503','now')",[]).unwrap();
+    db.execute("INSERT INTO cli_model_catalog_snapshots(id,project_id,backend,adapter_contract_version,state,source,refreshed_at,created_at) VALUES('s','p','opencode',2,'ready','cli','now','now')",[]).unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert_eq!(
+        db.query_row("SELECT MAX(version) FROM refinery_schema_history", [], |r| r.get::<_, u32>(0)).unwrap(),
+        46
+    );
+    let (backend, version): (String, u32) = db
+        .query_row(
+            "SELECT backend,version FROM cli_agent_configs WHERE project_id='p' AND agent_role='backend_agent'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((backend.as_str(), version), ("opencode", 3));
+    assert_eq!(
+        db.query_row("SELECT backend FROM cli_backend_attempts WHERE pulsation_id='pulse'", [], |r| r.get::<_, String>(0)).unwrap(),
+        "gemini"
+    );
+    db.execute("UPDATE cli_agent_configs SET backend='antigravity' WHERE project_id='p'", [])
+        .expect("Antigravity is a valid CLI backend");
+    db.execute("INSERT INTO cli_backend_attempts(pulsation_id,agent_role,backend,error_code,diagnostic,created_at) VALUES('pulse','backend_agent','antigravity','cli_rate_limited','quota','now')",[])
+        .expect("an Antigravity attempt can be recorded");
+    db.execute("INSERT INTO cli_model_catalog_snapshots(id,project_id,backend,adapter_contract_version,state,source,refreshed_at,created_at) VALUES('a','p','antigravity',2,'ready','cli','now','now')",[])
+        .expect("an Antigravity catalog snapshot can be stored");
+    db.execute("UPDATE cli_agent_configs SET backend='grok' WHERE project_id='p'", [])
+        .expect_err("an unknown backend is still rejected");
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get::<_, u32>(0)).unwrap(),
         0

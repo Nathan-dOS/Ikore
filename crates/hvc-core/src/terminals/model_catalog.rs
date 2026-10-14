@@ -16,6 +16,10 @@ use super::{
 
 const ADAPTER_CONTRACT_VERSION: u32 = 2;
 const MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(20);
+/// `agy` starts its language server (about 10 s) before it fetches the list.
+const SLOW_MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(45);
+/// Effort suffixes `agy models` appends to a model slug, in the order the picker shows them.
+const ANTIGRAVITY_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const CLI_DEFAULT_ID: &str = "";
 /// Read-only, single-field config inspection cap: the CLI default-model detector never
 /// reads more than this many bytes of a local config file, and never logs their contents.
@@ -90,7 +94,7 @@ fn declarative_models(backend: CliBackend) -> Vec<CliModelCatalogEntry> {
         CliBackend::Codex => &backends.codex.models,
         CliBackend::Claude => &backends.claude.models,
         CliBackend::Gemini => &backends.gemini.models,
-        CliBackend::Opencode | CliBackend::Custom => return Vec::new(),
+        CliBackend::Opencode | CliBackend::Antigravity | CliBackend::Custom => return Vec::new(),
     };
     entries.iter().map(CliModelCatalogEntry::from).collect()
 }
@@ -236,7 +240,9 @@ impl CliModelCatalogService {
                 "Custom CLI does not expose a verified model catalog".into(),
             ));
         }
-        if backend != CliBackend::Opencode {
+        // OpenCode aggregates third-party providers and Antigravity lists what
+        // the signed-in account may use, so both are read from the CLI itself.
+        if !matches!(backend, CliBackend::Opencode | CliBackend::Antigravity) {
             let home_dir = std::env::var_os("USERPROFILE")
                 .or_else(|| std::env::var_os("HOME"))
                 .map(PathBuf::from);
@@ -249,12 +255,13 @@ impl CliModelCatalogService {
             return Ok(cached);
         }
 
+        let label = backend.label();
         let Some(availability) = availability else {
             return self.cached_or_state(
                 project_id,
                 backend,
                 CliModelCatalogState::Missing,
-                "OpenCode CLI was not discovered",
+                &format!("{label} CLI was not discovered"),
             );
         };
         if availability.state != CliAvailabilityState::Available {
@@ -270,10 +277,10 @@ impl CliModelCatalogService {
                 project_id,
                 backend,
                 state,
-                availability
+                &availability
                     .diagnostic
-                    .as_deref()
-                    .unwrap_or("OpenCode model catalog is unavailable"),
+                    .clone()
+                    .unwrap_or_else(|| format!("{label} model catalog is unavailable")),
             );
         }
         let Some(executable) = availability.executable_path.as_deref() else {
@@ -281,14 +288,19 @@ impl CliModelCatalogService {
                 project_id,
                 backend,
                 CliModelCatalogState::Missing,
-                "OpenCode executable path is unavailable",
+                &format!("{label} executable path is unavailable"),
             );
         };
 
-        let mut args = vec!["models".to_string(), "--verbose".to_string()];
-        if refresh {
-            args.push("--refresh".to_string());
-        }
+        let (args, timeout) = if backend == CliBackend::Antigravity {
+            (vec!["models".to_string()], SLOW_MODEL_CATALOG_TIMEOUT)
+        } else {
+            let mut args = vec!["models".to_string(), "--verbose".to_string()];
+            if refresh {
+                args.push("--refresh".to_string());
+            }
+            (args, MODEL_CATALOG_TIMEOUT)
+        };
         let spec = match secure_probe_spec(backend, executable, args).await {
             Ok(spec) => spec,
             Err(error) => {
@@ -296,12 +308,12 @@ impl CliModelCatalogService {
                     project_id,
                     backend,
                     CliModelCatalogState::Failed,
-                    &format!("OpenCode model catalog launch was rejected: {error}"),
+                    &format!("{label} model catalog launch was rejected: {error}"),
                 );
             }
         };
         let output = tokio::time::timeout(
-            MODEL_CATALOG_TIMEOUT,
+            timeout,
             run_bounded_probe_in_with_limit(spec, Some(workspace), MAX_MODEL_CATALOG_OUTPUT_BYTES),
         )
         .await;
@@ -312,7 +324,7 @@ impl CliModelCatalogService {
                     project_id,
                     backend,
                     CliModelCatalogState::Failed,
-                    &format!("OpenCode model catalog probe failed: {error}"),
+                    &format!("{label} model catalog probe failed: {error}"),
                 );
             }
             Err(_) => {
@@ -320,7 +332,7 @@ impl CliModelCatalogService {
                     project_id,
                     backend,
                     CliModelCatalogState::Failed,
-                    "OpenCode model catalog probe timed out",
+                    &format!("{label} model catalog probe timed out"),
                 );
             }
         };
@@ -330,22 +342,27 @@ impl CliModelCatalogService {
                 project_id,
                 backend,
                 CliModelCatalogState::Failed,
-                if diagnostic.trim().is_empty() {
-                    "OpenCode model catalog command failed"
+                &if diagnostic.trim().is_empty() {
+                    format!("{label} model catalog command failed")
                 } else {
-                    diagnostic.trim()
+                    diagnostic.trim().to_owned()
                 },
             );
         }
         let stdout = sanitize_redacted(&output.stdout)?;
-        let models = match parse_opencode_verbose_models(&stdout) {
+        let parsed = if backend == CliBackend::Antigravity {
+            parse_antigravity_models(&stdout)
+        } else {
+            parse_opencode_verbose_models(&stdout)
+        };
+        let models = match parsed {
             Ok(models) if !models.is_empty() => models,
             Ok(_) => {
                 return self.cached_or_state(
                     project_id,
                     backend,
                     CliModelCatalogState::Failed,
-                    "OpenCode returned an empty model catalog",
+                    &format!("{label} returned an empty model catalog"),
                 );
             }
             Err(error) => {
@@ -726,6 +743,11 @@ fn detect_cli_default_model(backend: CliBackend, home_dir: &Path) -> Option<Stri
             let value: Value = serde_json::from_str(&contents).ok()?;
             value.get("model")?.as_str().map(str::to_string)
         }
+        CliBackend::Antigravity => {
+            let contents = read_capped(&home_dir.join(".gemini/antigravity-cli/settings.json"))?;
+            let value: Value = serde_json::from_str(&contents).ok()?;
+            value.get("model")?.as_str().map(str::to_string)
+        }
         CliBackend::Opencode | CliBackend::Custom => None,
     }
 }
@@ -799,6 +821,98 @@ pub(crate) fn parse_opencode_verbose_models(
         return Err("OpenCode verbose output did not contain any provider/model entries".into());
     }
     Ok(models)
+}
+
+/// Reads `agy models`: one `slug<TAB>label` line per model, where the slug ends in the
+/// effort it runs at (`gemini-3.8-flash-low`). Variants of one model become one entry whose
+/// profiles are those efforts, so the picker offers a model and then an effort - the same
+/// pair `--model` and `--effort` take.
+pub(crate) fn parse_antigravity_models(output: &str) -> Result<Vec<CliModelCatalogEntry>, String> {
+    let mut models: Vec<CliModelCatalogEntry> = Vec::new();
+    for line in output.lines() {
+        let Some((slug, label)) = line.trim().split_once('\t') else {
+            continue;
+        };
+        let (slug, label) = (slug.trim(), label.trim());
+        if slug.is_empty()
+            || slug.len() > 128
+            || !slug
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+        {
+            continue;
+        }
+        let (base, effort) = ANTIGRAVITY_EFFORTS
+            .iter()
+            .find_map(|effort| {
+                slug.strip_suffix(effort)?
+                    .strip_suffix('-')
+                    .filter(|base| !base.is_empty())
+                    .map(|base| (base, Some(*effort)))
+            })
+            .unwrap_or((slug, None));
+        let display_name = match effort {
+            Some(_) => label
+                .rsplit_once(" (")
+                .map_or(label, |(name, _)| name)
+                .to_string(),
+            None => label.to_string(),
+        };
+        let entry = match models
+            .iter()
+            .position(|entry| entry.model_id.as_deref() == Some(base))
+        {
+            Some(index) => &mut models[index],
+            None => {
+                models.push(CliModelCatalogEntry {
+                    provider_id: Some(antigravity_provider(base).into()),
+                    model_id: Some(base.to_string()),
+                    display_name: if display_name.is_empty() {
+                        base.to_string()
+                    } else {
+                        display_name
+                    },
+                    context_window: None,
+                    input_cost_usd_per_million: None,
+                    output_cost_usd_per_million: None,
+                    capabilities: Vec::new(),
+                    profiles: Vec::new(),
+                    raw_metadata: Value::Object(Default::default()),
+                });
+                models.last_mut().expect("an entry was just pushed")
+            }
+        };
+        if let Some(effort) = effort
+            && !entry.profiles.iter().any(|profile| profile == effort)
+        {
+            entry.profiles.push(effort.to_string());
+        }
+    }
+    for entry in &mut models {
+        entry.profiles.sort_by_key(|profile| {
+            ANTIGRAVITY_EFFORTS
+                .iter()
+                .position(|effort| effort == profile)
+                .unwrap_or(usize::MAX)
+        });
+    }
+    if models.is_empty() {
+        return Err("agy models did not list any model".into());
+    }
+    Ok(models)
+}
+
+/// The vendor behind a model `agy` serves; Antigravity itself is only the gateway.
+fn antigravity_provider(model: &str) -> &'static str {
+    if model.starts_with("gemini") {
+        "google"
+    } else if model.starts_with("claude") {
+        "anthropic"
+    } else if model.starts_with("gpt") {
+        "openai"
+    } else {
+        "antigravity"
+    }
 }
 
 fn is_opencode_model_reference(value: &str) -> bool {
@@ -914,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn versioned_fixtures_cover_all_four_cli_model_contracts() {
+    fn versioned_fixtures_cover_every_cli_model_contract() {
         const FIXTURES: &str = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../hvc-test-support/fixtures/cli"
@@ -942,6 +1056,46 @@ mod tests {
         assert_eq!(models[0].model_id.as_deref(), Some("openai/gpt-5.4"));
         assert_eq!(models[0].profiles, vec!["deep", "fast"]);
         assert_eq!(models[2].raw_metadata["experimentalMetadata"], "preserved");
+
+        // `agy models` from 1.3.5: ten effort-suffixed slugs, four models.
+        let antigravity =
+            std::fs::read_to_string(Path::new(FIXTURES).join("antigravity/current/models.txt"))
+                .unwrap();
+        let models = parse_antigravity_models(&antigravity).unwrap();
+        let summary = models
+            .iter()
+            .map(|model| {
+                (
+                    model.provider_id.as_deref().unwrap(),
+                    model.model_id.as_deref().unwrap(),
+                    model.display_name.as_str(),
+                    model.profiles.join(","),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            vec![
+                ("google", "gemini-3.8-flash", "Gemini 3.8 Flash", "low,medium,high".into()),
+                ("anthropic", "claude-opus-5-5", "Claude Opus 5.5", "low,medium,high".into()),
+                ("anthropic", "claude-sonnet-5-5", "Claude Sonnet 5.5", "low,medium,high".into()),
+                ("openai", "gpt-oss-120b", "GPT-OSS 120B", "medium".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn antigravity_catalog_keeps_unsuffixed_models_and_rejects_noise() {
+        let models = parse_antigravity_models(
+            "Fetching available models...\nnew-model\tNew Model\nbad slug\tBroken\nx-max\tX (Max)\n",
+        )
+        .unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].model_id.as_deref(), Some("new-model"));
+        assert!(models[0].profiles.is_empty());
+        assert_eq!(models[1].model_id.as_deref(), Some("x"));
+        assert_eq!(models[1].profiles, vec!["max"]);
+        assert!(parse_antigravity_models("no models here").is_err());
     }
 
     #[test]
@@ -961,6 +1115,7 @@ mod tests {
             assert_eq!(snapshot.models[1..], expected[..]);
         }
         assert!(declarative_models(CliBackend::Opencode).is_empty());
+        assert!(declarative_models(CliBackend::Antigravity).is_empty());
         assert!(declarative_models(CliBackend::Custom).is_empty());
     }
 

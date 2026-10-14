@@ -195,6 +195,7 @@ const MAX_SAFE_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 const CLI_DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const CLI_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLI_AUTH_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const CLI_SLOW_AUTH_PROBE_TIMEOUT: Duration = Duration::from_secs(45);
 const MAX_PROBE_OUTPUT_BYTES: usize = 128 * 1024;
 const MAX_MODEL_CATALOG_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_COMPANION_CLI_OUTPUT_BYTES: usize = 1024 * 1024;
@@ -335,23 +336,26 @@ pub enum CliBackend {
     Claude,
     Gemini,
     Opencode,
+    Antigravity,
     Custom,
 }
 
 impl CliBackend {
     /// Backends whose self-updates are gated behind an explicit validation when a pulsation
-    /// would run a version above the adapter's validated ceiling. Only Gemini so far: it
-    /// updates itself on launch, and its update cadence is what kept breaking pulsations. The
-    /// other CLIs run newer versions with an advisory only (see `apply_version_verdict`).
+    /// would run a version above the adapter's validated ceiling: Gemini and Antigravity both
+    /// update themselves on launch, and Gemini's update cadence is what kept breaking
+    /// pulsations. The other CLIs run newer versions with an advisory only (see
+    /// `apply_version_verdict`).
     pub const fn gates_unvalidated_versions(self) -> bool {
-        matches!(self, Self::Gemini)
+        matches!(self, Self::Gemini | Self::Antigravity)
     }
 
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Codex,
         Self::Claude,
         Self::Gemini,
         Self::Opencode,
+        Self::Antigravity,
         Self::Custom,
     ];
 
@@ -361,7 +365,17 @@ impl CliBackend {
             Self::Claude => "claude",
             Self::Gemini => "gemini",
             Self::Opencode => "opencode",
+            Self::Antigravity => "antigravity",
             Self::Custom => "custom",
+        }
+    }
+
+    /// The file stem discovery looks for on PATH. It equals the backend id except for
+    /// Antigravity: its CLI ships as `agy`, while `antigravity.cmd` launches the IDE.
+    pub const fn executable_name(self) -> &'static str {
+        match self {
+            Self::Antigravity => "agy",
+            _ => self.as_str(),
         }
     }
 
@@ -371,6 +385,7 @@ impl CliBackend {
             Self::Claude => "Claude",
             Self::Gemini => "Gemini",
             Self::Opencode => "OpenCode",
+            Self::Antigravity => "Antigravity",
             Self::Custom => "Custom",
         }
     }
@@ -381,6 +396,7 @@ impl CliBackend {
             "claude" => Some(Self::Claude),
             "gemini" => Some(Self::Gemini),
             "opencode" => Some(Self::Opencode),
+            "antigravity" => Some(Self::Antigravity),
             "custom" => Some(Self::Custom),
             _ => None,
         }
@@ -3269,6 +3285,21 @@ pub struct CliCapabilities {
     pub model_catalog: bool,
 }
 
+/// One window of a CLI subscription's usage allowance, as the CLI's own auth probe reported it.
+/// Antigravity bills by quota rather than by token price, so this is the only cost signal it
+/// gives; the other CLIs report none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliQuotaBucket {
+    /// The model group the window covers, e.g. "Gemini Models".
+    pub group: String,
+    /// The window's length as the CLI names it, e.g. "5h" or "weekly".
+    pub window: String,
+    pub remaining_percent: u8,
+    /// RFC 3339 instant at which the window refills.
+    pub reset_time: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CliAvailability {
@@ -3280,6 +3311,8 @@ pub struct CliAvailability {
     pub install_url: &'static str,
     pub install_command: &'static str,
     pub capabilities: CliCapabilities,
+    /// Remaining usage allowance, lowest first. Empty when the CLI reports none.
+    pub quota: Vec<CliQuotaBucket>,
 }
 
 /// A gated backend installed above its validated ceiling and not yet validated by the developer.
@@ -3323,7 +3356,7 @@ pub fn discover_clis() -> Vec<CliAvailability> {
             let executable_path = if backend == CliBackend::Custom {
                 None
             } else {
-                find_executable(backend.as_str(), &path_entries, &extensions)
+                find_executable(backend.executable_name(), &path_entries, &extensions)
             };
             let (install_url, install_command) = install_guidance(backend);
             CliAvailability {
@@ -3339,6 +3372,7 @@ pub fn discover_clis() -> Vec<CliAvailability> {
                 install_url,
                 install_command,
                 capabilities: adapters::capabilities(backend, None),
+                quota: Vec::new(),
             }
         })
         .collect()
@@ -3355,7 +3389,8 @@ pub async fn discover_clis_with_probes() -> Vec<CliAvailability> {
         CliBackend::Claude => 1,
         CliBackend::Gemini => 2,
         CliBackend::Opencode => 3,
-        CliBackend::Custom => 4,
+        CliBackend::Antigravity => 4,
+        CliBackend::Custom => 5,
     });
     discovered
 }
@@ -3425,14 +3460,10 @@ async fn probe_cli_availability(mut availability: CliAvailability) -> CliAvailab
         return availability;
     }
     if availability.capabilities.auth_probe {
-        match tokio::time::timeout(
-            CLI_AUTH_PROBE_TIMEOUT,
-            probe_auth(availability.backend, &executable),
-        )
-        .await
-        {
-            Ok(Ok(true)) => {}
-            Ok(Ok(false)) => {
+        let timeout = auth_probe_timeout(availability.backend);
+        match tokio::time::timeout(timeout, probe_auth(availability.backend, &executable)).await {
+            Ok(Ok((true, quota))) => availability.quota = quota,
+            Ok(Ok((false, _))) => {
                 availability.state = CliAvailabilityState::AuthRequired;
                 availability.diagnostic = Some(format!(
                     "{} installed, but no confirmed login.",
@@ -3450,12 +3481,21 @@ async fn probe_cli_availability(mut availability: CliAvailability) -> CliAvailab
                 availability.state = CliAvailabilityState::ProbeFailed;
                 availability.diagnostic = Some(format!(
                     "The authentication check took longer than {} seconds.",
-                    CLI_AUTH_PROBE_TIMEOUT.as_secs()
+                    timeout.as_secs()
                 ));
             }
         }
     }
     availability
+}
+
+/// `agy` starts a language server before it answers anything, which took 9.7-10.4 s on this
+/// machine (2026-10-14) - right at the shared 10 s limit.
+fn auth_probe_timeout(backend: CliBackend) -> Duration {
+    match backend {
+        CliBackend::Antigravity => CLI_SLOW_AUTH_PROBE_TIMEOUT,
+        _ => CLI_AUTH_PROBE_TIMEOUT,
+    }
 }
 
 async fn probe_version(backend: CliBackend, executable: &Path) -> Result<String, std::io::Error> {
@@ -3485,9 +3525,13 @@ async fn probe_version(backend: CliBackend, executable: &Path) -> Result<String,
     Ok(redacted.text.trim().to_string())
 }
 
-async fn probe_auth(backend: CliBackend, executable: &Path) -> Result<bool, std::io::Error> {
+/// Whether the CLI confirmed a login, plus whatever quota its probe reported on the way.
+async fn probe_auth(
+    backend: CliBackend,
+    executable: &Path,
+) -> Result<(bool, Vec<CliQuotaBucket>), std::io::Error> {
     let Some(args) = adapters::auth_probe_args(backend) else {
-        return Ok(true);
+        return Ok((true, Vec::new()));
     };
     let secured = secure_probe_spec(
         backend,
@@ -3495,7 +3539,14 @@ async fn probe_auth(backend: CliBackend, executable: &Path) -> Result<bool, std:
         args.iter().map(|value| (*value).to_string()).collect(),
     )
     .await?;
-    Ok(run_bounded_probe(secured).await?.status.success())
+    let output = run_bounded_probe(secured).await?;
+    if !output.status.success() {
+        return Ok((false, Vec::new()));
+    }
+    Ok((
+        true,
+        adapters::quota_from_auth_probe(backend, &output.stdout),
+    ))
 }
 
 struct ProbeOutput {
@@ -3611,6 +3662,9 @@ async fn run_bounded_probe_in_with_limit(
         command.current_dir(current_dir);
     }
     copy_safe_environment(&mut command);
+    for (name, value) in &spec.environment {
+        command.env(name, value);
+    }
     configure_hidden(&mut command);
     let mut child = command.spawn()?;
     let process_tree = ProcessTreeJob::assign(&child)?;
@@ -3766,7 +3820,10 @@ where
             paths.push(PathBuf::from(app_data).join("npm"));
         }
         if let Some(local_app_data) = read_var("LOCALAPPDATA") {
-            paths.push(PathBuf::from(local_app_data).join("Microsoft/WinGet/Links"));
+            let local_app_data = PathBuf::from(local_app_data);
+            paths.push(local_app_data.join("Microsoft/WinGet/Links"));
+            // The Antigravity installer puts `agy.exe` in its own folder.
+            paths.push(local_app_data.join("agy/bin"));
         }
         if let Some(user_profile) = read_var("USERPROFILE") {
             let user_profile = PathBuf::from(user_profile);
@@ -3872,6 +3929,10 @@ fn install_guidance(backend: CliBackend) -> (&'static str, &'static str) {
         CliBackend::Opencode => (
             "https://dev.opencode.ai/docs/cli/",
             "npm install -g opencode-ai",
+        ),
+        CliBackend::Antigravity => (
+            "https://antigravity.google/",
+            "irm https://antigravity.google/cli/install.ps1 | iex",
         ),
         CliBackend::Custom => ("", "Choose a direct executable"),
     }
@@ -5503,9 +5564,14 @@ impl TerminalService {
         cancellation: CancellationToken,
         deadline: Option<Instant>,
     ) {
-        let result = self
-            .run_process_inner(&run, spec, workspace, &cancellation, deadline, None, None)
-            .await;
+        let mut spec = spec;
+        let result = match self.isolate_resumable_antigravity(&run, &mut spec) {
+            Ok(()) => {
+                self.run_process_inner(&run, spec, workspace, &cancellation, deadline, None, None)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
         if let Err(error) = result {
             self.record_process_failure(&run, &error);
         }
@@ -5514,6 +5580,26 @@ impl TerminalService {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&run.id);
         self.active_changed.notify_waiters();
+    }
+
+    /// Manual and FreeForm runs can be resumed, and `agy` keeps a conversation inside its
+    /// config root, so these runs share one private root beside the database instead of a
+    /// fresh one per launch. Same rules as a pipeline stage: reads only.
+    fn isolate_resumable_antigravity(
+        &self,
+        run: &TerminalRun,
+        spec: &mut CliProcessSpec,
+    ) -> Result<(), TerminalError> {
+        if spec_backend(run) != CliBackend::Antigravity {
+            return Ok(());
+        }
+        let directory = self
+            .repository
+            .db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("antigravity-cli-home");
+        isolate_antigravity(&directory, Hardening::Pipeline, spec)
     }
 
     async fn run_process_inner(
@@ -6299,7 +6385,13 @@ fn coordinate_process_events_blocking(
             signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
             return Err(error);
         }
-        let mut model_evidence_source = "stream_event";
+        // `agy` names only the model it resolved at start-up; recorded apart so
+        // an audit can tell it from a model reported per generation.
+        let mut model_evidence_source = if backend == CliBackend::Antigravity {
+            "cli_init"
+        } else {
+            "stream_event"
+        };
         let mut codex_turn_models = None;
         // The last reason the provider gave wins: a turn that ends on `length`
         // has been cut off even if earlier turns ended normally.
@@ -6660,11 +6752,18 @@ pub(crate) enum Hardening {
     Pipeline,
 }
 
+/// Keeps a hardening artefact on disk for as long as the process it configures runs.
+#[derive(Debug)]
+enum HardeningGuard {
+    SettingsFile(#[allow(dead_code)] tempfile::NamedTempFile),
+    ConfigDirectory(#[allow(dead_code)] tempfile::TempDir),
+}
+
 fn harden_spec(
     backend: CliBackend,
     mode: Hardening,
     spec: &mut CliProcessSpec,
-) -> Result<Option<tempfile::NamedTempFile>, TerminalError> {
+) -> Result<Option<HardeningGuard>, TerminalError> {
     let mut settings_guard = None;
     match backend {
         CliBackend::Codex => {
@@ -6741,7 +6840,18 @@ fn harden_spec(
                 settings.path().to_string_lossy().into_owned(),
             ));
             spec.args.extend(["--extensions".into(), "none".into()]);
-            settings_guard = Some(settings);
+            settings_guard = Some(HardeningGuard::SettingsFile(settings));
+        }
+        CliBackend::Antigravity => {
+            // `agy` reads MCP servers, plugins, rules and permission grants from
+            // its `--gemini_dir`. A private one per launch keeps the developer's
+            // configuration out; the login lives in the OS keyring and survives
+            // (verified with 1.3.5, 2026-10-14). The deny rules matter more than
+            // the isolation: a headless `agy` refuses shell commands by default
+            // but writes files without asking.
+            let directory = tempfile::Builder::new().prefix("hvc-agy-").tempdir()?;
+            isolate_antigravity(directory.path(), mode, spec)?;
+            settings_guard = Some(HardeningGuard::ConfigDirectory(directory));
         }
         CliBackend::Opencode => {
             if mode == Hardening::Companion
@@ -6771,6 +6881,37 @@ fn harden_spec(
     Ok(settings_guard)
 }
 
+/// Points `agy` at `directory` as its whole config root and writes the permission rules the
+/// mode allows. Shell commands, URL fetches and every file write are denied; the Companion
+/// loses file reads as well.
+fn isolate_antigravity(
+    directory: &Path,
+    mode: Hardening,
+    spec: &mut CliProcessSpec,
+) -> Result<(), TerminalError> {
+    let cli_directory = directory.join("antigravity-cli");
+    fs::create_dir_all(&cli_directory)?;
+    let mut deny = vec![
+        "write_file(*)",
+        "command(*)",
+        "unsandboxed(*)",
+        "execute_url(*)",
+    ];
+    if mode == Hardening::Companion {
+        deny.push("read_file(*)");
+    }
+    fs::write(
+        cli_directory.join("settings.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "permissions": { "allow": [], "deny": deny }
+        }))?,
+    )?;
+    spec.args
+        .insert(0, format!("--gemini_dir={}", directory.to_string_lossy()));
+    spec.args.push("--disable-slash-commands".into());
+    Ok(())
+}
+
 fn validate_companion_launch_selection(
     spec: &CliProcessSpec,
     backend: CliBackend,
@@ -6796,7 +6937,7 @@ fn validate_companion_launch_selection(
             .into_iter()
             .filter_map(|value| value.strip_prefix("model_reasoning_effort=\"")?.strip_suffix('"'))
             .collect::<Vec<_>>(),
-        CliBackend::Claude => values("--effort"),
+        CliBackend::Claude | CliBackend::Antigravity => values("--effort"),
         CliBackend::Opencode => values("--variant"),
         CliBackend::Gemini | CliBackend::Custom => Vec::new(),
     };
@@ -7494,6 +7635,13 @@ fn secure_launch_spec(
     }
     let identity_sha256 = hash_launch_files(&[&executable])?;
     spec.executable = executable;
+    if backend == CliBackend::Antigravity {
+        // `agy` otherwise spawns a background self-update on launch, which can swap the
+        // binary between two calls of the same pulsation. Only `true` is honoured; `1` is
+        // ignored (verified against 1.3.5's own log, 2026-10-14).
+        spec.environment
+            .push(("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "true".into()));
+    }
     Ok(SecuredLaunch {
         spec,
         identity_sha256,
@@ -7535,7 +7683,8 @@ fn resolve_trusted_npm_shim(
             "node_modules/opencode-ai/bin/opencode",
             "node_modules/opencode-ai/bin/opencode.js",
         ],
-        CliBackend::Custom => &[],
+        // `agy` ships as a native executable, never through npm.
+        CliBackend::Antigravity | CliBackend::Custom => &[],
     };
     let (entrypoint, marker) = relative_candidates
         .iter()
@@ -7724,6 +7873,7 @@ mod tests {
                 install_url,
                 install_command,
                 capabilities: adapters::capabilities(backend, Some(version)),
+                quota: Vec::new(),
             }
         };
         *service
@@ -7799,6 +7949,7 @@ mod tests {
                 install_url,
                 install_command,
                 capabilities: adapters::capabilities(backend, None),
+                quota: Vec::new(),
             }
         }
 
@@ -8104,6 +8255,7 @@ mod tests {
             CliBackend::Claude => r"C:\Tools\claude.exe",
             CliBackend::Gemini => r"C:\Tools\gemini.exe",
             CliBackend::Opencode => r"C:\Tools\opencode.exe",
+            CliBackend::Antigravity => r"C:\Tools\agy.exe",
             CliBackend::Custom => r"C:\Tools\custom.exe",
         };
         build_process_spec(CliInvocationRequest {
@@ -8220,6 +8372,7 @@ mod tests {
             (CliBackend::Claude, r"C:\Tools\claude.exe"),
             (CliBackend::Gemini, r"C:\Tools\gemini.exe"),
             (CliBackend::Opencode, r"C:\Tools\opencode.exe"),
+            (CliBackend::Antigravity, r"C:\Tools\agy.exe"),
         ];
         for (backend, executable) in cases {
             let schema_file =
@@ -8302,9 +8455,81 @@ mod tests {
                         .unwrap();
                     assert_eq!(permissions, r#"{"*":"deny"}"#);
                 }
+                CliBackend::Antigravity => {
+                    let deny = antigravity_deny_rules(&spec);
+                    for rule in ["write_file(*)", "command(*)", "read_file(*)"] {
+                        assert!(deny.iter().any(|value| value == rule), "{rule}");
+                    }
+                    assert!(spec.args.iter().any(|arg| arg == "--disable-slash-commands"));
+                    assert!(guard.is_some());
+                }
                 CliBackend::Custom => unreachable!(),
             }
         }
+    }
+
+    /// The deny rules `harden_spec` wrote into the private `--gemini_dir`.
+    fn antigravity_deny_rules(spec: &CliProcessSpec) -> Vec<String> {
+        let directory = spec
+            .args
+            .iter()
+            .find_map(|arg| arg.strip_prefix("--gemini_dir="))
+            .expect("hardening must point agy at a private config directory");
+        let settings: Value = serde_json::from_str(
+            &fs::read_to_string(Path::new(directory).join("antigravity-cli/settings.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        settings["permissions"]["deny"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn antigravity_pipeline_keeps_reads_but_denies_writes_shell_and_urls() {
+        let mut spec = spec_for(CliBackend::Antigravity);
+        let guard = harden_spec(CliBackend::Antigravity, Hardening::Pipeline, &mut spec).unwrap();
+        let deny = antigravity_deny_rules(&spec);
+        for rule in [
+            "write_file(*)",
+            "command(*)",
+            "unsandboxed(*)",
+            "execute_url(*)",
+        ] {
+            assert!(deny.iter().any(|value| value == rule), "{rule}");
+        }
+        assert!(!deny.iter().any(|value| value == "read_file(*)"));
+        // The directory is private to this launch and goes away with the guard.
+        let directory = spec.args[0].strip_prefix("--gemini_dir=").unwrap().to_owned();
+        assert!(Path::new(&directory).is_dir());
+        drop(guard);
+        assert!(!Path::new(&directory).exists());
+    }
+
+    #[test]
+    fn antigravity_launches_never_self_update_and_skip_the_npm_shim_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("agy.exe");
+        fs::write(&executable, b"MZ fixture").unwrap();
+        let spec = CliProcessSpec {
+            executable,
+            args: Vec::new(),
+            environment: Vec::new(),
+            stdin_payload: Vec::new(),
+            resume_session_id: None,
+        };
+        let secured = secure_launch_spec(spec, CliBackend::Antigravity).unwrap();
+        assert!(
+            secured
+                .spec
+                .environment
+                .contains(&("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "true".into()))
+        );
+        assert!(secured.spec.executable.ends_with("agy.exe"));
     }
 
     #[test]
@@ -8651,6 +8876,32 @@ mod tests {
 
         assert_eq!(paths.first(), Some(&inherited.path().to_path_buf()));
         assert!(paths.contains(&app_data.path().join("npm")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn antigravity_is_discovered_as_agy_never_as_the_ide_launcher() {
+        // The IDE installs `antigravity.cmd` on PATH; launching it opens a window.
+        let ide = tempfile::tempdir().unwrap();
+        fs::write(ide.path().join("antigravity.cmd"), "@ECHO off\r\n").unwrap();
+        let cli = tempfile::tempdir().unwrap();
+        let agy = cli.path().join("agy.exe");
+        fs::write(&agy, b"MZ fixture").unwrap();
+        let paths = vec![ide.path().to_path_buf(), cli.path().to_path_buf()];
+        assert_eq!(
+            find_executable(
+                CliBackend::Antigravity.executable_name(),
+                &paths,
+                &windows_executable_extensions(None)
+            ),
+            Some(agy)
+        );
+
+        let local_app_data = tempfile::tempdir().unwrap();
+        let environment =
+            HashMap::from([("LOCALAPPDATA", local_app_data.path().as_os_str().to_owned())]);
+        let paths = cli_search_paths_from_environment(|name| environment.get(name).cloned());
+        assert!(paths.contains(&local_app_data.path().join("agy/bin")));
     }
 
     #[cfg(windows)]
@@ -10933,6 +11184,7 @@ mod tests {
             install_url,
             install_command,
             capabilities: adapters::capabilities(backend, None),
+            quota: Vec::new(),
         }
     }
 

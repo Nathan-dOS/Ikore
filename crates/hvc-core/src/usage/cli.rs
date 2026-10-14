@@ -205,6 +205,19 @@ fn snake_counts(value: &Value) -> TokenCounts {
     }
 }
 
+/// `agy` 1.3.5 counts cache reads apart from `input_tokens` and folds thinking
+/// into `output_tokens` (80 output with 72 thinking for an eight-token answer).
+fn antigravity_counts(usage: &Value) -> TokenCounts {
+    let read = number(usage, "/cache_read_tokens");
+    TokenCounts {
+        input_tokens: plus(number(usage, "/input_tokens"), read),
+        output_tokens: number(usage, "/output_tokens"),
+        cache_read_tokens: read,
+        reasoning_tokens: number(usage, "/thinking_tokens"),
+        ..Default::default()
+    }
+}
+
 impl CliUsageTracker {
     /// Returns changed units and whether a final model snapshot replaces a
     /// previous aggregate snapshot. Parsing never searches assistant text.
@@ -374,6 +387,46 @@ impl CliUsageTracker {
                     ));
                 }
             }
+            // `agy` names frames with `event`, reports each finished step's usage
+            // and then the run's sum on `result`, which replaces the steps.
+            CliBackend::Antigravity => match value.get("event").and_then(Value::as_str) {
+                Some("init") => {
+                    self.model = value
+                        .pointer("/init/model")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .or(self.model.take());
+                }
+                Some("step_update") => {
+                    if let Some(usage) = value.pointer("/step_update/usage") {
+                        let step = value
+                            .pointer("/step_update/step_index")
+                            .and_then(Value::as_u64);
+                        changes.push((
+                            format!("step:{}", step.map_or("unknown".into(), |n| n.to_string())),
+                            UsageMeasurement {
+                                counts: antigravity_counts(usage),
+                                observed_model: self.model.clone(),
+                                partial: step.is_none(),
+                            },
+                        ));
+                    }
+                }
+                Some("result") => {
+                    if let Some(usage) = value.pointer("/result/usage") {
+                        replace = true;
+                        changes.push((
+                            "summary".into(),
+                            UsageMeasurement {
+                                counts: antigravity_counts(usage),
+                                observed_model: self.model.clone(),
+                                partial: false,
+                            },
+                        ));
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
         for (_, measurement) in &mut changes {
@@ -730,5 +783,39 @@ mod tests {
         );
         assert_eq!(claude.units.len(), 1);
         assert!(claude.units.contains_key("model:claude-sonnet-5"));
+    }
+
+    #[test]
+    fn antigravity_steps_meter_the_run_and_the_result_replaces_them() {
+        // Figures from a real `agy` 1.3.5 resume (2026-10-14): each finished
+        // step reports its usage, and `result` reports the sum once more.
+        let mut tracker = CliUsageTracker::default();
+        tracker.observe(
+            CliBackend::Antigravity,
+            &json!({"event":"init","init":{"model":"gemini-3.8-flash-low"}}),
+        );
+        let step = json!({"event":"step_update","step_update":{"step_index":4,"state":"DONE",
+            "step_type":"agent_response","usage":{"input_tokens":2317,"output_tokens":41,
+            "thinking_tokens":39,"cache_read_tokens":14983,"total_tokens":2358}}});
+        tracker.observe(CliBackend::Antigravity, &step);
+        tracker.observe(CliBackend::Antigravity, &step);
+        assert_eq!(tracker.output_tokens_so_far(), 41);
+
+        let (replace, changes) = tracker.observe(
+            CliBackend::Antigravity,
+            &json!({"event":"result","result":{"status":"SUCCESS","usage":{"input_tokens":4379,
+            "output_tokens":84,"thinking_tokens":80,"cache_read_tokens":29966,"total_tokens":4463}}}),
+        );
+        assert!(replace);
+        assert_eq!(
+            changes[0].1.observed_model.as_deref(),
+            Some("gemini-3.8-flash-low")
+        );
+        assert_eq!(tracker.units.len(), 1);
+        let totals = tracker.totals();
+        assert_eq!(totals.input_tokens, Some(4379 + 29966));
+        assert_eq!(totals.cache_read_tokens, Some(29966));
+        assert_eq!(totals.output_tokens, Some(84));
+        assert_eq!(totals.reasoning_tokens, Some(80));
     }
 }

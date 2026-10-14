@@ -2,9 +2,11 @@ use serde_json::Value;
 
 use super::{
     CliBackend, CliCapabilities, CliInvocationRequest, CliOutputFormat, CliProcessSpec,
-    TerminalError, TerminalEventKind, ThinkingLevel, extract_visible_text, sanitize_terminal_text,
+    CliQuotaBucket, TerminalError, TerminalEventKind, ThinkingLevel, extract_visible_text,
+    sanitize_terminal_text,
 };
 
+mod antigravity;
 mod claude;
 mod codex;
 mod custom;
@@ -79,6 +81,10 @@ pub(super) trait CliAdapter: Sync {
     ) -> Result<CliProcessSpec, TerminalError>;
     fn normalize_frame(&self, stream: &str, bytes: &[u8]) -> NormalizedCliFrame;
     fn auth_probe_args(&self) -> Option<&'static [&'static str]>;
+    /// Usage allowance the auth probe printed on its way, for CLIs billed by quota.
+    fn quota_from_auth_probe(&self, _stdout: &[u8]) -> Vec<CliQuotaBucket> {
+        Vec::new()
+    }
     fn classify_failure(&self, exit_code: Option<i32>, stderr: &str) -> CliFailureKind;
 }
 
@@ -86,6 +92,7 @@ static CODEX: codex::CodexAdapter = codex::CodexAdapter;
 static CLAUDE: claude::ClaudeAdapter = claude::ClaudeAdapter;
 static GEMINI: gemini::GeminiAdapter = gemini::GeminiAdapter;
 static OPENCODE: opencode::OpenCodeAdapter = opencode::OpenCodeAdapter;
+static ANTIGRAVITY: antigravity::AntigravityAdapter = antigravity::AntigravityAdapter;
 static CUSTOM: custom::CustomAdapter = custom::CustomAdapter;
 
 fn adapter(backend: CliBackend) -> &'static dyn CliAdapter {
@@ -94,6 +101,7 @@ fn adapter(backend: CliBackend) -> &'static dyn CliAdapter {
         CliBackend::Claude => &CLAUDE,
         CliBackend::Gemini => &GEMINI,
         CliBackend::Opencode => &OPENCODE,
+        CliBackend::Antigravity => &ANTIGRAVITY,
         CliBackend::Custom => &CUSTOM,
     }
 }
@@ -104,6 +112,10 @@ pub(super) fn capabilities(backend: CliBackend, version: Option<&str>) -> CliCap
 
 pub(super) fn auth_probe_args(backend: CliBackend) -> Option<&'static [&'static str]> {
     adapter(backend).auth_probe_args()
+}
+
+pub(super) fn quota_from_auth_probe(backend: CliBackend, stdout: &[u8]) -> Vec<CliQuotaBucket> {
+    adapter(backend).quota_from_auth_probe(stdout)
 }
 
 pub(super) fn build_process_spec(
@@ -229,6 +241,10 @@ fn compatibility_rule(backend: CliBackend) -> CliCompatibilityRule {
         CliBackend::Opencode => CliCompatibilityRule {
             minimum: (1, 18, 0),
             maximum_exclusive: (1, 19, 0),
+        },
+        CliBackend::Antigravity => CliCompatibilityRule {
+            minimum: (1, 3, 0),
+            maximum_exclusive: (1, 4, 0),
         },
         CliBackend::Custom => CliCompatibilityRule {
             minimum: (0, 0, 0),
@@ -407,6 +423,15 @@ fn is_model_generation(backend: CliBackend, value: &Value, kind: TerminalEventKi
                 && value.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
                 && (event.ends_with("added") || event.ends_with("completed"))
         }
+        // `agy` names the model only in `init`: the one it resolved from
+        // `--model`, failing the run when it cannot. No later frame repeats it.
+        CliBackend::Antigravity => {
+            value.get("event").and_then(Value::as_str) == Some("init")
+                && value
+                    .pointer("/init/model")
+                    .and_then(Value::as_str)
+                    .is_some()
+        }
         CliBackend::Gemini | CliBackend::Opencode | CliBackend::Custom => {
             kind == TerminalEventKind::Message && find_model_id(value).is_some()
         }
@@ -443,6 +468,8 @@ fn find_session_id(value: &Value) -> Option<String> {
             "sessionID",
             "thread_id",
             "threadId",
+            "conversation_id",
+            "conversationId",
         ] {
             if let Some(session_id) = values
                 .get(key)
@@ -558,6 +585,7 @@ mod tests {
             (CliBackend::Claude, "claude"),
             (CliBackend::Gemini, "gemini"),
             (CliBackend::Opencode, "opencode"),
+            (CliBackend::Antigravity, "antigravity"),
         ] {
             let lines = fixture_lines(name, "success.jsonl");
             let normalized = lines
@@ -586,6 +614,11 @@ mod tests {
             (CliBackend::Claude, "claude", "claude-sonnet-4-6"),
             (CliBackend::Gemini, "gemini", "gemini-3-pro"),
             (CliBackend::Opencode, "opencode", "openai/gpt-5.4"),
+            (
+                CliBackend::Antigravity,
+                "antigravity",
+                "gemini-3.8-flash-low",
+            ),
         ] {
             let observed = fixture_lines(name, "success.jsonl")
                 .iter()
@@ -604,6 +637,7 @@ mod tests {
             (CliBackend::Gemini, "v0.55.1"),
             (CliBackend::Gemini, "0.59.5"),
             (CliBackend::Opencode, "opencode 1.18.17"),
+            (CliBackend::Antigravity, "1.3.5"),
         ] {
             assert_eq!(
                 version_compatibility(backend, Some(version)),
@@ -625,6 +659,14 @@ mod tests {
         );
         assert_eq!(
             version_compatibility(CliBackend::Opencode, Some("1.19.0")),
+            CliVersionCompatibility::UnknownNewer
+        );
+        assert_eq!(
+            version_compatibility(CliBackend::Antigravity, Some("1.2.15")),
+            CliVersionCompatibility::Unsupported
+        );
+        assert_eq!(
+            version_compatibility(CliBackend::Antigravity, Some("1.4.0")),
             CliVersionCompatibility::UnknownNewer
         );
         assert_eq!(
@@ -656,6 +698,7 @@ mod tests {
             (CliBackend::Claude, "claude"),
             (CliBackend::Gemini, "gemini"),
             (CliBackend::Opencode, "opencode"),
+            (CliBackend::Antigravity, "antigravity"),
         ] {
             let kinds = fixture_lines(name, "tools.jsonl")
                 .iter()
@@ -676,6 +719,7 @@ mod tests {
             (CliBackend::Claude, "--resume"),
             (CliBackend::Gemini, "--resume"),
             (CliBackend::Opencode, "--session"),
+            (CliBackend::Antigravity, "--conversation"),
         ] {
             let spec = build_process_spec(CliInvocationRequest {
                 executable: PathBuf::from(r"C:\Tools\agent.exe"),
@@ -692,7 +736,13 @@ mod tests {
             .unwrap();
             assert!(spec.args.iter().any(|arg| arg == resume_flag));
             assert!(spec.args.iter().any(|arg| arg == "session-fixture-1"));
-            assert_eq!(spec.stdin_payload, b"follow-up");
+            if backend == CliBackend::Antigravity {
+                // `agy` reads its prompt as one NDJSON stream message.
+                let message: Value = serde_json::from_slice(&spec.stdin_payload).unwrap();
+                assert_eq!(message["message"]["content"], "follow-up");
+            } else {
+                assert_eq!(spec.stdin_payload, b"follow-up");
+            }
             assert!(!spec.args.iter().any(|arg| arg == "--last"));
             assert!(!spec.args.iter().any(|arg| arg == "--continue"));
         }
@@ -737,6 +787,7 @@ mod tests {
             (CliBackend::Claude, "claude"),
             (CliBackend::Gemini, "gemini"),
             (CliBackend::Opencode, "opencode"),
+            (CliBackend::Antigravity, "antigravity"),
         ] {
             let unknown = fixture_lines(name, "unknown.jsonl").remove(0);
             let event = normalize_frame(backend, "stdout", unknown.as_bytes());
@@ -822,6 +873,53 @@ mod tests {
             );
             assert!(is_output_truncation(expected), "{backend:?}");
         }
+    }
+
+    #[test]
+    fn antigravity_fixtures_yield_the_answer_the_host_parses() {
+        // The last text frame becomes the run's raw output (see the stream
+        // writer): deltas append, a complete frame replaces them.
+        let final_text = |name: &str| {
+            fixture_lines("antigravity", name)
+                .iter()
+                .map(|line| normalize_frame(CliBackend::Antigravity, "stdout", line.as_bytes()))
+                .rfind(|frame| frame.is_text)
+                .map(|frame| frame.content)
+                .unwrap()
+        };
+        assert_eq!(final_text("success.jsonl").trim(), "PONG");
+        assert_eq!(final_text("resume.jsonl").trim(), "PONG");
+        let structured: Value = serde_json::from_str(&final_text("structured.jsonl")).unwrap();
+        assert_eq!(structured["answer"], "The capital of France is Paris.");
+
+        // A headless turn refused a tool: the run still completes, empty.
+        let denied = fixture_lines("antigravity", "denied.jsonl")
+            .iter()
+            .map(|line| normalize_frame(CliBackend::Antigravity, "stdout", line.as_bytes()))
+            .collect::<Vec<_>>();
+        assert!(
+            denied
+                .iter()
+                .any(|frame| frame.kind == TerminalEventKind::Completed)
+        );
+        assert!(
+            denied
+                .iter()
+                .any(|frame| frame.kind == TerminalEventKind::ToolUse)
+        );
+    }
+
+    #[test]
+    fn antigravity_error_fixtures_classify_as_failures() {
+        for line in fixture_lines("antigravity", "errors.jsonl") {
+            let frame = normalize_frame(CliBackend::Antigravity, "stdout", line.as_bytes());
+            assert_eq!(frame.kind, TerminalEventKind::Error);
+        }
+        let stderr = fixture_lines("antigravity", "stderr-nonzero.txt").join("\n");
+        assert_eq!(
+            classify_failure(CliBackend::Antigravity, Some(1), &stderr),
+            CliFailureKind::ProcessFailed
+        );
     }
 
     #[test]

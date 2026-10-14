@@ -27,13 +27,7 @@ pub(crate) fn segments(id: &str) -> Option<Vec<(&'static str, &'static str)>> {
     }
 }
 
-const BACKENDS: [CliBackend; 5] = [
-    CliBackend::Codex,
-    CliBackend::Claude,
-    CliBackend::Gemini,
-    CliBackend::Opencode,
-    CliBackend::Custom,
-];
+const BACKENDS: [CliBackend; 6] = CliBackend::ALL;
 const FILTERS: [TerminalEventFilter; 7] = [
     TerminalEventFilter::All,
     TerminalEventFilter::Activity,
@@ -222,8 +216,10 @@ impl AppModel {
                 );
             }
             "chat-cli-backend" => {
-                return BACKENDS[..4]
+                // The Companion refuses Custom: it has no tool or config knob to turn off.
+                return BACKENDS
                     .iter()
+                    .filter(|b| **b != CliBackend::Custom)
                     .map(|b| Choice::new(b.label(), b.label(), *b == chat.selected_cli_backend))
                     .collect();
             }

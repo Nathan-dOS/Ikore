@@ -1146,6 +1146,7 @@ mod tests {
                 diagnostic: Some("Authentication required".into()),
                 install_url: "https://example.invalid/claude",
                 install_command: "install claude",
+                quota: Vec::new(),
                 capabilities: hvc_core::terminals::CliCapabilities {
                     output_format: hvc_core::terminals::CliOutputFormat::JsonLines,
                     structured_output: true,

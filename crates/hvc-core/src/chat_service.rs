@@ -4046,7 +4046,7 @@ fn repository_tool_schemas() -> Vec<(&'static str, &'static str, Value)> {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "maxLength": 256 },
-                    "backend": { "type": "string", "enum": ["codex", "claude", "gemini", "opencode"] },
+                    "backend": { "type": "string", "enum": ["codex", "claude", "gemini", "opencode", "antigravity"] },
                     "provider": { "type": "string" },
                     "capability": { "type": "string" },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
@@ -4996,7 +4996,11 @@ mod tests {
             parse_cli_companion_envelope(&inner, CliBackend::Claude).unwrap(),
             CompanionControlEnvelope::Final { text } if text == "Ready"
         ));
-        for backend in [CliBackend::Gemini, CliBackend::Opencode] {
+        for backend in [
+            CliBackend::Gemini,
+            CliBackend::Opencode,
+            CliBackend::Antigravity,
+        ] {
             assert_eq!(
                 companion_schema_for_backend(backend),
                 companion_control_envelope_schema()
