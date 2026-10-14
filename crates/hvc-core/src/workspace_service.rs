@@ -1010,7 +1010,7 @@ fn greenfield_file_specs() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "knowledge/obsidian/_templates/contract-template.md",
-            "---\ntype: contract\nproducers: []\nconsumers: []\naffects-features: []\nstatus: draft\n---\n\n# Contract Name\n",
+            "---\ntype: contract\nproducers: []\nconsumers: []\naffects-features: []\nstatus: draft\ncontracted-literals: []\n---\n\n# Contract Name\n\n## Contracted literals\n\nEvery literal value this contract fixes (storage keys, field names, enum values), so later stages can be checked against it automatically:\n\n- key: \"storage.tasks.key\"\n  value: \"hvc_tasks\"\n",
         ),
         (
             "knowledge/obsidian/bases/task-specifier.base",
@@ -2201,13 +2201,38 @@ pub(crate) fn validate_generated_vault_note(
     content: &str,
 ) -> Result<(), WorkspaceServiceError> {
     let normalized = relative_path.replace('\\', "/").to_ascii_lowercase();
+    let is_contract_note = normalized.starts_with("knowledge/obsidian/contracts/");
     let strict_note = normalized.starts_with("knowledge/obsidian/features/")
-        || normalized.starts_with("knowledge/obsidian/tests/");
+        || normalized.starts_with("knowledge/obsidian/tests/")
+        || is_contract_note;
     if !strict_note || !normalized.ends_with(".md") {
         return Ok(());
     }
     let parsed = parse_frontmatter_and_body(content)?;
     let frontmatter = parsed.parsed.as_ref().and_then(Value::as_object);
+    // A contract note has its own shape (no source/test files); it fixes
+    // literal values other stages must be checked against instead.
+    if is_contract_note {
+        for field in ["producers", "consumers", "affects-features", "contracted-literals"] {
+            let present = frontmatter
+                .is_some_and(|object| matches!(object.get(field), Some(Value::Array(_))));
+            if !present {
+                return Err(WorkspaceServiceError::InvalidQuery(format!(
+                    "Generated note `{relative_path}` must declare `{field}` (a list, possibly empty)."
+                )));
+            }
+        }
+        let has_status = frontmatter
+            .and_then(|object| object.get("status"))
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty());
+        if !has_status {
+            return Err(WorkspaceServiceError::InvalidQuery(format!(
+                "Generated note `{relative_path}` must declare a non-empty `status`."
+            )));
+        }
+        return Ok(());
+    }
     // The versioned stage-composition contract (ADR-022) distinguishes physical
     // files from approved planned destinations, so its physical arrays may be
     // empty; it must instead carry all four arrays and a coverage state. Legacy
@@ -3773,6 +3798,37 @@ mod tests {
             "---\ntype: test\nsource-files: [src/lib.rs]\ntest-files: [tests/new.rs]\n---\n# Test\n",
         )
         .expect("new notes with both fields should pass schema validation");
+    }
+
+    #[test]
+    fn generated_contract_notes_require_producers_consumers_and_literals() {
+        let root = prepare_root();
+        let missing = validate_generated_vault_note(
+            root.path(),
+            "knowledge/obsidian/contracts/local-browser.md",
+            "---\ntype: contract\nproducers: []\nconsumers: []\naffects-features: []\nstatus: draft\n---\n# Local Browser\n",
+        );
+        assert!(matches!(
+            missing,
+            Err(WorkspaceServiceError::InvalidQuery(message)) if message.contains("contracted-literals")
+        ));
+
+        let no_status = validate_generated_vault_note(
+            root.path(),
+            "knowledge/obsidian/contracts/local-browser.md",
+            "---\ntype: contract\nproducers: []\nconsumers: []\naffects-features: []\ncontracted-literals: []\nstatus: \"\"\n---\n# Local Browser\n",
+        );
+        assert!(matches!(
+            no_status,
+            Err(WorkspaceServiceError::InvalidQuery(_))
+        ));
+
+        validate_generated_vault_note(
+            root.path(),
+            "knowledge/obsidian/contracts/local-browser.md",
+            "---\ntype: contract\nproducers: [Code]\nconsumers: [Test]\naffects-features: []\nstatus: draft\ncontracted-literals:\n  - key: \"storage.tasks.key\"\n    value: \"hvc_tasks\"\n---\n# Local Browser\n",
+        )
+        .expect("a contract note with every required field should pass schema validation");
     }
 
     #[test]

@@ -309,6 +309,27 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// Like `require_inputs`, but tolerates a handle genuinely assigned to
+    /// this unit that is not yet readable. The planner can list a unit's own
+    /// new-file destination among its `inputRefs` (baseline inputs still
+    /// valid for a unit with no predecessor - see `planner.rs`), so a model
+    /// that faithfully cites that same handle as evidence for creating it is
+    /// not fabricating support; only a handle never assigned to this unit at
+    /// all is a reference conflict.
+    fn require_assigned_inputs(&self, field: &str, refs: &[Handle]) -> Result<(), CompositionError> {
+        for handle in refs {
+            if !self.unit_inputs.contains(handle) {
+                return Err(reject(
+                    Invariant::Sc004,
+                    ErrorCode::ReferenceConflict,
+                    format!("`{field}` cites `{handle}`, which is not an input assigned to this unit."),
+                )
+                .with_related([handle.clone()]));
+            }
+        }
+        Ok(())
+    }
+
     /// Filters `usedRefs` to only readable inputs, returning the clean list
     /// and a (currently unused) diagnostic list for every stripped handle.
     /// This prevents SC-004 `reference_conflict` rejections caused by models
@@ -491,7 +512,7 @@ impl<'a> Checker<'a> {
                     .with_related([key.clone()]));
                 }
             }
-            self.require_inputs("evidence.inputRefs", &item.input_refs)?;
+            self.require_assigned_inputs("evidence.inputRefs", &item.input_refs)?;
             english("evidence explanation", &item.explanation)?;
         }
         if require_full {
@@ -670,7 +691,68 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        self.require_existing_sources_acknowledged(payload)?;
         self.check_proposals(payload)
+    }
+
+    /// "Haiku CLI teste 1" (2026-09-26): the specification narrated an
+    /// explicit "greenfield ... without inheriting from pre-existing
+    /// codebase" decision while five files this exact task had already
+    /// delivered sat unacknowledged in its own context; the stage rebuilt
+    /// them from scratch under an incompatible contract. Every existing
+    /// source assigned to this unit must be acknowledged, in one combined
+    /// diagnostic (SC-010's philosophy) so a correction does not discover
+    /// them one per paid call.
+    fn require_existing_sources_acknowledged(
+        &self,
+        payload: &'a SpecificationContractV1,
+    ) -> Result<(), CompositionError> {
+        let mut acknowledged: HashSet<&Handle> = HashSet::new();
+        for handle in &payload.existing_file_refs {
+            acknowledged.insert(handle);
+        }
+        for intent in &payload.interface_intent {
+            for handle in &intent.source_refs {
+                acknowledged.insert(handle);
+            }
+        }
+        let mut unacknowledged = Vec::new();
+        for handle in &self.unit_inputs {
+            if matches!(
+                self.index.reference(handle),
+                Some(ReferenceEntryV1::ExistingSource { .. })
+            ) && !acknowledged.contains(*handle)
+            {
+                unacknowledged.push((*handle).clone());
+            }
+        }
+        if unacknowledged.is_empty() {
+            return Ok(());
+        }
+        unacknowledged.sort();
+        Err(reject(
+            Invariant::Sc010,
+            ErrorCode::EvidenceUnresolved,
+            format!(
+                "Existing {} supplied in context {} not acknowledged in `existingFileRefs` or any interface intent's `sourceRefs`; never call a task greenfield while they are present: {}.",
+                if unacknowledged.len() == 1 {
+                    "file"
+                } else {
+                    "files"
+                },
+                if unacknowledged.len() == 1 {
+                    "is"
+                } else {
+                    "are"
+                },
+                unacknowledged
+                    .iter()
+                    .map(|h| format!("`{h}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+        .with_related(unacknowledged))
     }
 
     fn check_proposals(
@@ -1827,6 +1909,144 @@ mod tests {
         );
     }
 
+    /// "Test" pulsation (2026-09-21): the planner can list a unit's own new
+    /// file among its own `inputRefs` (baseline inputs still valid for a unit
+    /// with no predecessor - see `planner.rs`). A model that then cited that
+    /// same handle in `evidence.inputRefs` was rejected with SC-004
+    /// reference_conflict even though it was only repeating what its own plan
+    /// told it, forcing an avoidable code_implementer -> code_repairer round
+    /// trip. Only a handle never assigned to the unit at all should reject.
+    #[test]
+    fn evidence_may_cite_a_units_own_assigned_new_file() {
+        let fixture = fixture(ExecutorKind::TestAuthor);
+        let mut plan = fixture.plan;
+        plan.units[0].input_refs.push(h("plan_1"));
+        let index = PlanIndex::new(&plan);
+        let approved = ApprovedContext {
+            not_applicable_criteria: vec![h("crit_2_1")],
+            proposal_keys: vec![h("implement_a"), h("test_a")],
+        };
+        let coverage = vec![
+            TestCoverageV1 {
+                task_ref: h("task_1"),
+                criterion_ref: h("crit_1_1"),
+                coverage: CoverageKind::Authored,
+                test_artifact_keys: vec![h("new_test")],
+                test_input_refs: vec![],
+                check_refs: vec![h("behavior_check")],
+                explanation: "Covered by the new test.".into(),
+            },
+            TestCoverageV1 {
+                task_ref: h("task_1"),
+                criterion_ref: h("crit_1_2"),
+                coverage: CoverageKind::Authored,
+                test_artifact_keys: vec![h("new_test")],
+                test_input_refs: vec![],
+                check_refs: vec![h("behavior_check")],
+                explanation: "Covered by the new test.".into(),
+            },
+            TestCoverageV1 {
+                task_ref: h("task_2"),
+                criterion_ref: h("crit_2_1"),
+                coverage: CoverageKind::NotApplicable,
+                test_artifact_keys: vec![],
+                test_input_refs: vec![],
+                check_refs: vec![h("behavior_check")],
+                explanation: "Not applicable by approval.".into(),
+            },
+        ];
+        let response = |input_refs: Vec<Handle>| UnitModelResponseV1::Completed {
+            executor_kind: ExecutorKind::TestAuthor,
+            payload: CompletedPayloadV1::Tests(TestPayloadV1 {
+                edits: vec![EditEntryV1 {
+                    artifact_key: h("new_test"),
+                    edit: EditOperationV1::CreateFile {
+                        destination_ref: h("plan_1"),
+                        content: "#[test] fn works() {}\n".into(),
+                    },
+                }],
+                coverage: coverage.clone(),
+                evidence: vec![EvidenceItemV1 {
+                    task_ref: h("task_1"),
+                    criterion_refs: vec![h("crit_1_1"), h("crit_1_2")],
+                    artifact_keys: vec![h("new_test")],
+                    input_refs,
+                    explanation: "Authored a test exercising the new module.".into(),
+                }],
+                used_refs: vec![],
+            }),
+        };
+
+        validate_child(&index, &plan.units[0], &approved, &response(vec![h("plan_1")]))
+            .expect("citing the unit's own assigned new file as evidence input must not be a reference conflict");
+
+        assert_eq!(
+            validate_child(
+                &index,
+                &plan.units[0],
+                &approved,
+                &response(vec![h("never_assigned")])
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::ReferenceConflict
+        );
+    }
+
+    /// "Haiku CLI teste 1" (2026-09-26): the specification explicitly recorded
+    /// "Implement greenfield MVP without inheriting from pre-existing
+    /// codebase" while the task's own prior deliverables sat, unacknowledged,
+    /// in its context - the next stage rebuilt them under an incompatible
+    /// contract, five days after they were first delivered.
+    #[test]
+    fn specification_must_acknowledge_every_existing_source_in_context() {
+        let requirement = |criterion: &str| RequirementV1 {
+            task_ref: h(if criterion.starts_with("crit_1") {
+                "task_1"
+            } else {
+                "task_2"
+            }),
+            criterion_ref: h(criterion),
+            requirement: "Return the approved value.".into(),
+            verification_intent: "Execute the configured behavioral test.".into(),
+            verification_mode: VerificationMode::ExecutedCheck,
+            required_check_refs: vec![h("behavior_check")],
+            not_applicable_reason: None,
+        };
+        let spec = |existing_file_refs: Vec<Handle>| UnitModelResponseV1::Completed {
+            executor_kind: ExecutorKind::SpecificationAuthor,
+            payload: CompletedPayloadV1::Specification(SpecificationContractV1 {
+                objective: "Implement the approved behavior.".into(),
+                exclusions: vec![],
+                decisions: vec!["Reuse the existing modules.".into()],
+                requirements: vec![
+                    requirement("crit_1_1"),
+                    requirement("crit_1_2"),
+                    requirement("crit_2_1"),
+                ],
+                existing_file_refs,
+                planned_file_refs: vec![],
+                interface_intent: vec![InterfaceIntentV1 {
+                    intent: InterfaceIntent::Preserve,
+                    source_refs: vec![h("src_1")],
+                    criterion_refs: vec![h("crit_1_1")],
+                    description: "Keep the signature.".into(),
+                }],
+                unit_proposals: vec![],
+            }),
+        };
+
+        // `src_1` is acknowledged through the interface intent's `sourceRefs`,
+        // but `src_2` (also in the fixture's context) is cited nowhere.
+        let error = run(ExecutorKind::SpecificationAuthor, &spec(vec![]))
+            .expect_err("an unacknowledged existing source must be rejected");
+        assert_eq!(error.code, ErrorCode::EvidenceUnresolved);
+        assert_eq!(error.related, vec![h("src_2")]);
+
+        // Acknowledging it directly in `existingFileRefs` is enough.
+        assert!(run(ExecutorKind::SpecificationAuthor, &spec(vec![h("src_2")])).is_ok());
+    }
+
     /// "Haiku CLI teste 1" (2026-09-26): the Specification approved a load-time
     /// criterion as not_applicable, Test covered it so, and the host still
     /// demanded an evidence item; the Retry then invented a load-time test.
@@ -1915,7 +2135,7 @@ mod tests {
                     exclusions: vec![],
                     decisions: vec!["Preserve the public signature.".into()],
                     requirements,
-                    existing_file_refs: vec![h("src_1")],
+                    existing_file_refs: vec![h("src_1"), h("src_2")],
                     planned_file_refs: vec![h("plan_1")],
                     interface_intent: vec![InterfaceIntentV1 {
                         intent: InterfaceIntent::Preserve,

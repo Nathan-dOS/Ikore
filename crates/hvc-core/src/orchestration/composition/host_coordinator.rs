@@ -263,6 +263,133 @@ fn receipt_status_label(status: comp::ReceiptStatus) -> &'static str {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct ContractedLiteralEntry {
+    key: String,
+    value: String,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct ContractFrontmatterFields {
+    #[serde(rename = "type")]
+    note_type: Option<String>,
+    #[serde(rename = "contracted-literals", default)]
+    contracted_literals: Vec<ContractedLiteralEntry>,
+}
+
+/// The YAML frontmatter block of a rendered vault note (between the two
+/// `---` fences), if any. Not a general Markdown parser - just enough to
+/// read the fixed shape `workspace_service`'s templates emit.
+fn frontmatter_yaml(content: &str) -> Option<serde_yaml::Value> {
+    let rest = content.strip_prefix("---")?;
+    let end = rest.find("\n---")?;
+    serde_yaml::from_str(&rest[..end]).ok()
+}
+
+/// Best-effort literal-value diff (recipes §Integrator): if a delivered
+/// source is a rendered contract note (frontmatter `type: contract`), every
+/// literal it lists under `contracted-literals` must appear verbatim in some
+/// other delivered source. Contract-drift bugs on this project (wrong
+/// localStorage keys, an inverted priority scale) went undetected because
+/// nothing ever compared the contract's literal values against the code; a
+/// contract note that documents none, or was never published as a file,
+/// yields no findings here - this is additive to the reviewer's own reading,
+/// never a blocker on its own.
+fn contracted_literal_findings(sources: &[SourceFile]) -> Vec<String> {
+    let mut findings = Vec::new();
+    for (index, note) in sources.iter().enumerate() {
+        let Some(yaml) = frontmatter_yaml(&note.content) else {
+            continue;
+        };
+        let Ok(fields) = serde_yaml::from_value::<ContractFrontmatterFields>(yaml) else {
+            continue;
+        };
+        if fields.note_type.as_deref() != Some("contract") {
+            continue;
+        }
+        for literal in &fields.contracted_literals {
+            if literal.value.is_empty() {
+                continue;
+            }
+            let found_elsewhere = sources
+                .iter()
+                .enumerate()
+                .any(|(other_index, other)| other_index != index && other.content.contains(&literal.value));
+            if !found_elsewhere {
+                findings.push(format!(
+                    "Contracted literal `{}` = `{}` (from `{}`) was not found in any other delivered file.",
+                    literal.key, literal.value, note.path
+                ));
+            }
+        }
+    }
+    findings
+}
+
+/// `<script src="...">` targets named by one HTML source, in document order,
+/// duplicates included. Not a general HTML parser - only reads the literal
+/// `src="..."`/`src='...'` attribute of a `<script>` start tag.
+fn extract_script_srcs(html: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = html;
+    while let Some(tag_start) = rest.find("<script") {
+        let tail = &rest[tag_start..];
+        let Some(tag_end) = tail.find('>') else {
+            break;
+        };
+        let tag = &tail[..tag_end];
+        if let Some(after_src) = tag.split("src=").nth(1) {
+            if let Some(quote) = after_src.chars().next().filter(|c| *c == '"' || *c == '\'') {
+                if let Some(end) = after_src[1..].find(quote) {
+                    out.push(after_src[1..1 + end].to_string());
+                }
+            }
+        }
+        rest = &tail[tag_end + 1..];
+    }
+    out
+}
+
+/// Best-effort dead-code detection (recipes §Integrator), deliberately
+/// narrow: for a simple no-bundler web project (an HTML entrypoint loading
+/// plain `<script src="...">` files), a delivered `.js` source no HTML
+/// entrypoint reaches is flagged as possibly unused. Only runs when at least
+/// one `.html` source is present, so it never applies to a project with a
+/// build step or that isn't browser-served at all - a real orphan (like
+/// pulsation-2's `task.js`/`calendarSettings.js`, superseded in practice but
+/// never wired up or removed) went unreported because the Integrator only
+/// ever compares its own pulsation's files against each other.
+fn unreachable_script_findings(sources: &[SourceFile]) -> Vec<String> {
+    let html_sources: Vec<&SourceFile> = sources
+        .iter()
+        .filter(|s| s.path.as_str().to_ascii_lowercase().ends_with(".html"))
+        .collect();
+    if html_sources.is_empty() {
+        return Vec::new();
+    }
+    let referenced: HashSet<String> = html_sources
+        .iter()
+        .flat_map(|html| extract_script_srcs(&html.content))
+        .map(|src| src.trim_start_matches("./").to_ascii_lowercase())
+        .collect();
+    let html_paths = html_sources
+        .iter()
+        .map(|h| h.path.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    sources
+        .iter()
+        .filter(|s| s.path.as_str().to_ascii_lowercase().ends_with(".js"))
+        .filter(|s| !referenced.contains(&s.path.as_str().to_ascii_lowercase()))
+        .map(|s| {
+            format!(
+                "`{}` is delivered but no `<script src>` in {html_paths} reaches it - verify it is intentionally unused.",
+                s.path
+            )
+        })
+        .collect()
+}
+
 /// Build caches live under the data directory, keyed by toolchain, so a
 /// candidate rebuild does not start from scratch and never touches the
 /// project's own `target`.
@@ -572,6 +699,8 @@ impl PersistenceService {
         root: &Path,
     ) -> Result<Vec<String>, PersistenceServiceError> {
         let mut findings = recipes::criterion_representation_findings(inputs);
+        findings.extend(contracted_literal_findings(&inputs.sources));
+        findings.extend(unreachable_script_findings(&inputs.sources));
         let db = self.connection()?;
         let Some(data_dir) = self.database_path().parent().map(Path::to_path_buf) else {
             return Ok(findings);
@@ -3110,6 +3239,73 @@ mod tests {
 
     fn h(text: &str) -> comp::Handle {
         comp::Handle::new(text).unwrap()
+    }
+
+    fn source(path: &str, content: &str) -> SourceFile {
+        SourceFile {
+            path: RelPath::new(path).unwrap(),
+            role: SourceRole::Source,
+            content: content.into(),
+        }
+    }
+
+    /// "Local Browser Architecture" / "Haiku CLI teste 1" (2026-09-09,
+    /// 2026-09-26): the contract fixed `hvc_tasks` as the storage key, but a
+    /// later, unrelated pulsation shipped `tasks_data` instead - nothing
+    /// compared the two, so the divergence went unnoticed until a human read
+    /// both documents side by side.
+    #[test]
+    fn contracted_literal_findings_flag_a_value_missing_from_every_other_file() {
+        let contract = source(
+            "knowledge/obsidian/contracts/local-browser.md",
+            "---\ntype: contract\nproducers: []\nconsumers: []\naffects-features: []\nstatus: approved\ncontracted-literals:\n  - key: \"storage.tasks.key\"\n    value: \"hvc_tasks\"\n---\n\n# Local Browser\n",
+        );
+        let matching_code = source(
+            "src/js/storage/localStore.js",
+            "const STORAGE_KEY = 'hvc_tasks';\n",
+        );
+        let drifted_code = source(
+            "src/js/storage/localStore.js",
+            "const STORAGE_KEY = 'tasks_data';\n",
+        );
+
+        assert!(contracted_literal_findings(&[contract.clone(), matching_code]).is_empty());
+
+        let findings = contracted_literal_findings(&[contract, drifted_code]);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].contains("hvc_tasks"));
+    }
+
+    #[test]
+    fn contracted_literal_findings_are_empty_without_a_published_contract_note() {
+        let code = source("src/js/app.js", "console.log('no contract note in context');\n");
+        assert!(contracted_literal_findings(&[code]).is_empty());
+    }
+
+    /// "Haiku CLI teste 1" (2026-09-26): `task.js`/`calendarSettings.js`
+    /// (pulsation 2's deliverables) stayed on disk, fully accepted, but
+    /// `index.html` never loaded them - the Integrator only ever compared its
+    /// own pulsation's files against each other and never noticed.
+    #[test]
+    fn unreachable_script_findings_flag_a_js_file_no_entrypoint_loads() {
+        let html = source(
+            "index.html",
+            "<html><body><script src=\"src/js/app.js\"></script></body></html>",
+        );
+        let wired = source("src/js/app.js", "// wired\n");
+        let orphan = source("src/js/models/task.js", "// never loaded by index.html\n");
+
+        assert!(unreachable_script_findings(&[html.clone(), wired.clone()]).is_empty());
+
+        let findings = unreachable_script_findings(&[html, wired, orphan]);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].contains("src/js/models/task.js"));
+    }
+
+    #[test]
+    fn unreachable_script_findings_are_empty_without_any_html_entrypoint() {
+        let js = source("src/lib.js", "// a library, not a browser entrypoint\n");
+        assert!(unreachable_script_findings(&[js]).is_empty());
     }
 
     fn two_unit_plan() -> comp::StageExecutionPlanV1 {
