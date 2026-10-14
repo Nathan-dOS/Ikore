@@ -243,7 +243,23 @@ pub(crate) struct ForgeUi {
     /// Collapsed/expanded state per feature-state group in the list, keyed by
     /// [`feature_state_group_id`].
     pub group_expansion: HashMap<&'static str, bool>,
+    /// Failed turns whose technical detail is open. Collapsed by default: the
+    /// explanation above it is what the developer acts on.
+    pub expanded_failures: HashSet<String>,
 }
+
+/// Which message a failure card's button sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureFollowUp {
+    Retry,
+    Ask,
+}
+
+/// Sent as the developer's own message, so the exchange reads as a
+/// conversation and the agent answers it in the developer's language.
+const RETRY_MESSAGE: &str = "Please try that reply again.";
+const ASK_AGENT_MESSAGE: &str = "Your last reply could not be applied. Explain in plain language what went wrong and tell me what you need from me to continue.";
+
 impl ForgeUi {
     pub fn new(cx: &mut Context<AppModel>) -> Self {
         let message = cx
@@ -307,6 +323,7 @@ impl ForgeUi {
             triage_aside_open: false,
             graph_bounds: Default::default(),
             group_expansion: HashMap::new(),
+            expanded_failures: HashSet::new(),
         }
     }
 
@@ -381,6 +398,38 @@ impl ForgeUi {
             feature.revision,
             message.into(),
         ))
+    }
+
+    /// The message behind a failure card's button.
+    ///
+    /// Same gates as the composer, and only while the newest discovery turn is
+    /// a failure that allows it: a button for an older failure would resend a
+    /// stale request, and one for a running turn would queue a second reply.
+    fn failure_operation(
+        &self,
+        project: Option<&str>,
+        follow_up: FailureFollowUp,
+    ) -> Option<Operation> {
+        let feature = self.feature()?;
+        if self.busy
+            || project != self.project_id.as_deref()
+            || project != Some(feature.project_id.as_str())
+            || feature.state == FeatureState::Archived
+        {
+            return None;
+        }
+        let history: Vec<FeatureTurn> = self
+            .history
+            .iter()
+            .filter(|turn| turn.feature_id == feature.id)
+            .cloned()
+            .collect();
+        let (_, actions) = failure_actions(&history, TurnKind::Discovery)?;
+        let (allowed, message) = match follow_up {
+            FailureFollowUp::Retry => (actions.retry, RETRY_MESSAGE),
+            FailureFollowUp::Ask => (actions.ask_agent, ASK_AGENT_MESSAGE),
+        };
+        allowed.then(|| Operation::Send(feature.id.clone(), feature.revision, message.into()))
     }
 
     fn clear_accepted_message(&self, feature: &str, message: &str, cx: &mut Context<AppModel>) {
@@ -504,6 +553,14 @@ pub(crate) enum ForgeAction {
     Dispatch,
     Send,
     CancelTurn(String),
+    /// Send the same kind of reply request again after a Feature Agent reply
+    /// the host could not apply (Incubation chat).
+    RetryTurn,
+    /// Tell the Feature Agent its last reply could not be applied and ask what
+    /// it needs from the developer to continue.
+    AskAgentAboutFailure,
+    /// Show or hide a failed turn's raw technical detail.
+    ToggleFailureDetail(String),
     Approve,
     Archive,
     Reopen,
@@ -879,6 +936,13 @@ impl AppModel {
                 cx.notify();
                 return;
             }
+            ForgeAction::ToggleFailureDetail(id) => {
+                if !self.forge.expanded_failures.remove(&id) {
+                    self.forge.expanded_failures.insert(id);
+                }
+                cx.notify();
+                return;
+            }
             ForgeAction::ToggleFeatureGroup(state) => {
                 self.forge.toggle_group(state);
                 cx.notify();
@@ -981,6 +1045,18 @@ impl AppModel {
                 };
                 operation
             }
+            ForgeAction::RetryTurn => {
+                let Some(operation) = self.failure_follow_up(FailureFollowUp::Retry, cx) else {
+                    return;
+                };
+                operation
+            }
+            ForgeAction::AskAgentAboutFailure => {
+                let Some(operation) = self.failure_follow_up(FailureFollowUp::Ask, cx) else {
+                    return;
+                };
+                operation
+            }
             ForgeAction::Approve => {
                 let Some(f) = f else {
                     return;
@@ -1047,6 +1123,19 @@ impl AppModel {
             _ => return,
         };
         self.run_forge(operation, cx);
+    }
+    fn failure_follow_up(
+        &self,
+        follow_up: FailureFollowUp,
+        cx: &Context<Self>,
+    ) -> Option<Operation> {
+        let project = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string);
+        self.forge.failure_operation(project.as_deref(), follow_up)
     }
     fn run_forge(&mut self, operation: Operation, cx: &mut Context<Self>) {
         let Some(core) = self.core.clone() else {
@@ -1399,7 +1488,7 @@ mod tests {
             forge.busy = true;
             assert!(forge.message_operation(Some("project"), cx).is_none());
             forge.busy = false;
-            forge.history.push(FeatureTurn { id: "turn".into(), feature_id: "feature".into(), feature_revision: 1, status: "running".into(), user_message: "Previous message".into(), assistant_message: None, error: None, suggested_dependencies: vec![], kind: TurnKind::Discovery });
+            forge.history.push(FeatureTurn { id: "turn".into(), feature_id: "feature".into(), feature_revision: 1, status: "running".into(), user_message: "Previous message".into(), assistant_message: None, error: None, suggested_dependencies: vec![], kind: TurnKind::Discovery, failure: None, notices: vec![] });
             assert!(forge.message_operation(Some("project"), cx).is_none());
             forge.history[0].status = "failed".into();
             assert!(forge.message_operation(Some("project"), cx).is_some());
@@ -1411,6 +1500,70 @@ mod tests {
             assert_eq!(forge.message.read(cx).value(), draft);
             forge.clear_accepted_message("feature", draft, cx);
             assert_eq!(forge.message.read(cx).value(), "");
+        });
+    }
+
+    fn failed_turn(id: &str, kind: TurnFailureKind) -> FeatureTurn {
+        FeatureTurn {
+            id: id.into(),
+            feature_id: "feature".into(),
+            feature_revision: 1,
+            status: "failed".into(),
+            user_message: "Answers".into(),
+            assistant_message: None,
+            error: Some("raw".into()),
+            suggested_dependencies: vec![],
+            kind: TurnKind::Discovery,
+            failure: Some(TurnFailure::new(kind, "raw")),
+            notices: vec![],
+        }
+    }
+
+    #[gpui::test]
+    fn failure_follow_ups_exist_only_for_the_newest_failed_reply(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, _| {
+            let forge = &mut model.forge;
+            forge.project_id = Some("project".into());
+            forge.snapshot.features = vec![feature()];
+            forge.selected_feature = Some("feature".into());
+            let retry = |forge: &ForgeUi| forge.failure_operation(Some("project"), FailureFollowUp::Retry);
+            let ask = |forge: &ForgeUi| forge.failure_operation(Some("project"), FailureFollowUp::Ask);
+
+            assert!(retry(forge).is_none() && ask(forge).is_none(), "nothing failed yet");
+
+            forge.history = vec![failed_turn("t1", TurnFailureKind::ReplyUnreadable)];
+            assert!(matches!(retry(forge), Some(Operation::Send(id, 1, text)) if id == "feature" && text == RETRY_MESSAGE));
+            assert!(matches!(ask(forge), Some(Operation::Send(id, 1, text)) if id == "feature" && text == ASK_AGENT_MESSAGE));
+            assert!(forge.failure_operation(Some("other-project"), FailureFollowUp::Retry).is_none());
+
+            forge.busy = true;
+            assert!(retry(forge).is_none(), "the same gate as the composer");
+            forge.busy = false;
+
+            let mut running = failed_turn("t2", TurnFailureKind::Unclassified);
+            running.status = "running".into();
+            running.failure = None;
+            forge.history.push(running);
+            assert!(retry(forge).is_none(), "a newer running turn owns the conversation");
+
+            forge.history = vec![failed_turn("t1", TurnFailureKind::ProviderSetup)];
+            assert!(retry(forge).is_some());
+            assert!(ask(forge).is_none(), "the agent is not asked about a route it cannot use");
+
+            forge.history = vec![failed_turn("t1", TurnFailureKind::ContextTooLarge)];
+            assert!(retry(forge).is_none() && ask(forge).is_none());
+
+            forge.history = vec![
+                failed_turn("t1", TurnFailureKind::ReplyLanguage),
+                failed_turn("t2", TurnFailureKind::ReplyLanguage),
+            ];
+            assert!(retry(forge).is_some());
+            assert!(ask(forge).is_none(), "the second identical failure stops the paid follow-up");
+
+            forge.history = vec![failed_turn("t1", TurnFailureKind::ReplyLanguage)];
+            forge.snapshot.features[0].state = FeatureState::Archived;
+            assert!(retry(forge).is_none(), "an archived feature takes no messages");
         });
     }
 

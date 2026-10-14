@@ -127,7 +127,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        44
+        45
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -290,7 +290,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        44
+        45
     );
     assert_eq!(
         db.query_row(
@@ -831,7 +831,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        44
+        45
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -987,7 +987,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        44
+        45
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1051,5 +1051,56 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
         .unwrap(),
         0,
         "ON DELETE CASCADE must remove the resolution conversation link with its question set"
+    );
+}
+
+/// V45 adds the typed failure and repair-note columns to `forge_turns`. A
+/// populated V44 database with a turn that failed under the old raw-string
+/// scheme must migrate with that turn intact, both columns empty, and the
+/// JSON checks in force.
+#[test]
+fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(44))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V44 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO forge_features(id,project_id,title,original_idea,brief_json,evaluation_json,created_at,updated_at) VALUES('f','p','UI update','Improve the interface','{}','{}','now','now')",[]).unwrap();
+    db.execute("INSERT INTO forge_turns(id,feature_id,feature_revision,ordinal,request_id,status,user_message,error,created_at,updated_at) VALUES('t','f',1,1,'r','failed','Answers','Suggested dependency was not supplied by the host','now','now')",[]).unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert_eq!(
+        db.query_row("SELECT MAX(version) FROM refinery_schema_history", [], |r| r.get::<_, u32>(0)).unwrap(),
+        45
+    );
+    let (error, failure, notices): (String, Option<String>, Option<String>) = db
+        .query_row(
+            "SELECT error,failure_json,notices_json FROM forge_turns WHERE id='t'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(error, "Suggested dependency was not supplied by the host");
+    assert!(failure.is_none() && notices.is_none(), "old rows stay untyped");
+    db.execute(
+        "UPDATE forge_turns SET failure_json='{\"kind\":\"reply_unreadable\",\"technical\":\"x\"}',notices_json='[\"note\"]' WHERE id='t'",
+        [],
+    )
+    .expect("well-formed JSON is stored");
+    db.execute("UPDATE forge_turns SET failure_json='not json' WHERE id='t'", [])
+        .expect_err("failure_json must be valid JSON");
+    db.execute("UPDATE forge_turns SET notices_json='not json' WHERE id='t'", [])
+        .expect_err("notices_json must be valid JSON");
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get::<_, u32>(0)).unwrap(),
+        0
     );
 }

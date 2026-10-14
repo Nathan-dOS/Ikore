@@ -753,6 +753,117 @@ fn state(s: FeatureState) -> &'static str {
         FeatureState::Archived => "Archived",
     }
 }
+/// What the host changed in an accepted reply (a suggestion it repaired or
+/// dropped), so the developer sees the difference between what the agent said
+/// and what was applied.
+fn turn_notices(turn: &FeatureTurn) -> Option<AnyElement> {
+    if turn.notices.is_empty() {
+        return None;
+    }
+    let mut notes = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .min_w_0()
+        .child(
+            div()
+                .text_xs()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::warning())
+                .child("Adjusted by the host"),
+        );
+    for note in &turn.notices {
+        notes = notes.child(label(note.clone()));
+    }
+    Some(notes.into_any_element())
+}
+
+/// Explains a turn that did not complete.
+///
+/// `actions` is `Some` only for the newest failed turn of its kind: that one
+/// gets the full card and its buttons, older failures collapse to their
+/// summary line so a run of failed attempts cannot bury the conversation.
+/// `retry` is what "Try again" does on this surface: a chat message in
+/// Incubation, re-running the analysis in the Triage and Dependencies columns.
+fn turn_failure_notice(
+    model: &AppModel,
+    turn: &FeatureTurn,
+    actions: Option<FailureActions>,
+    retry: ForgeAction,
+    cx: &mut Context<AppModel>,
+) -> Option<AnyElement> {
+    let failure = turn.failure.as_ref()?;
+    let explanation = failure.explain();
+    if failure.kind == TurnFailureKind::Cancelled {
+        return Some(label(explanation.summary).into_any_element());
+    }
+    let summary = div()
+        .text_sm()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(theme::danger())
+        .child(explanation.summary);
+    let Some(actions) = actions else {
+        return Some(summary.into_any_element());
+    };
+    let turn_id = turn.id.clone();
+    let mut notice = div()
+        .debug_selector({
+            let turn_id = turn_id.clone();
+            move || format!("forge-failure-{turn_id}")
+        })
+        .flex()
+        .flex_col()
+        .gap_2()
+        .p_3()
+        .rounded_lg()
+        .bg(theme::danger_soft())
+        .min_w_0()
+        .child(summary)
+        .child(div().text_sm().child(explanation.cause))
+        .child(label(explanation.remedy));
+    let mut buttons = div().flex().flex_wrap().gap_2();
+    if actions.retry {
+        buttons = buttons.child(gated_button(
+            format!("retry-feature-turn-{turn_id}"),
+            "Try again",
+            retry,
+            !model.forge.busy,
+            cx,
+        ));
+    }
+    if actions.ask_agent {
+        buttons = buttons.child(gated_button(
+            format!("ask-agent-about-failure-{turn_id}"),
+            "Ask the agent what it needs",
+            ForgeAction::AskAgentAboutFailure,
+            !model.forge.busy,
+            cx,
+        ));
+    }
+    let expanded = model.forge.expanded_failures.contains(&turn_id);
+    buttons = buttons.child(button(
+        format!("toggle-failure-detail-{turn_id}"),
+        if expanded {
+            "Hide technical detail"
+        } else {
+            "Technical detail"
+        },
+        ForgeAction::ToggleFailureDetail(turn_id),
+        cx,
+    ));
+    notice = notice.child(buttons);
+    if expanded {
+        notice = notice.child(
+            div()
+                .text_xs()
+                .text_color(theme::text_subtle())
+                .min_w_0()
+                .child(failure.technical.clone()),
+        );
+    }
+    Some(notice.into_any_element())
+}
+
 /// The conversation column: what the feature is, the exchange with the agent,
 /// and the composer.
 fn incubation_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> AnyElement {
@@ -767,6 +878,7 @@ fn incubation_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) ->
         .child(label(f.original_idea.clone()));
     // Analysis turns share the table but are not conversation -- their verdicts
     // are read in the Triage and Dependencies columns, not here.
+    let actionable = failure_actions(&model.forge.history, TurnKind::Discovery);
     for turn in model
         .forge
         .history
@@ -777,8 +889,17 @@ fn incubation_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) ->
         if let Some(reply) = &turn.assistant_message {
             panel = panel.child(card().child(label("Feature Agent")).child(reply.clone()));
         }
-        if let Some(error) = &turn.error {
-            panel = panel.child(div().text_color(theme::danger()).child(error.clone()));
+        if let Some(notes) = turn_notices(turn) {
+            panel = panel.child(notes);
+        }
+        let actions = actionable
+            .as_ref()
+            .filter(|(id, _)| id == &turn.id)
+            .map(|(_, actions)| *actions);
+        if let Some(notice) =
+            turn_failure_notice(model, turn, actions, ForgeAction::RetryTurn, cx)
+        {
+            panel = panel.child(notice);
         }
         if turn.status == "running" {
             panel = panel
@@ -967,8 +1088,13 @@ fn triage_aside(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> An
             } else if let Some(message) = &turn.assistant_message {
                 agent = agent.child(message.clone());
             }
-            if let Some(error) = &turn.error {
-                agent = agent.child(div().text_color(theme::danger()).child(error.clone()));
+            let actions = failure_actions(&model.forge.history, TurnKind::Triage)
+                .filter(|(id, _)| id == &turn.id)
+                .map(|(_, actions)| actions);
+            if let Some(notice) =
+                turn_failure_notice(model, turn, actions, ForgeAction::AnalyzeTriage, cx)
+            {
+                agent = agent.child(notice);
             }
         }
         None => {
@@ -1131,8 +1257,16 @@ fn dependency_analysis_card(model: &AppModel, f: &Feature, cx: &mut Context<AppM
         } else if let Some(message) = &turn.assistant_message {
             agent = agent.child(label(message.clone()));
         }
-        if let Some(error) = &turn.error {
-            agent = agent.child(div().text_color(theme::danger()).child(error.clone()));
+        if let Some(notes) = turn_notices(turn) {
+            agent = agent.child(notes);
+        }
+        let actions = failure_actions(&model.forge.history, TurnKind::Dependencies)
+            .filter(|(id, _)| id == &turn.id)
+            .map(|(_, actions)| actions);
+        if let Some(notice) =
+            turn_failure_notice(model, turn, actions, ForgeAction::AnalyzeDependencies, cx)
+        {
+            agent = agent.child(notice);
         }
     }
     agent

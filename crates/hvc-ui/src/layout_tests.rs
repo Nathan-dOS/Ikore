@@ -2500,6 +2500,81 @@ fn forge_busy_state_never_moves_the_task_controls(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn forge_failed_reply_is_explained_once_with_its_actions(cx: &mut TestAppContext) {
+    use crate::forge::{ForgeAction, ForgeSection};
+    use hvc_core::feature_forge::*;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    let turn = |id: &str, kind: TurnFailureKind| FeatureTurn {
+        id: id.into(),
+        feature_id: "feature-1".into(),
+        feature_revision: 1,
+        status: "failed".into(),
+        user_message: "Answers".into(),
+        assistant_message: None,
+        error: Some("raw".into()),
+        suggested_dependencies: vec![],
+        kind: TurnKind::Discovery,
+        failure: Some(TurnFailure::new(kind, "raw technical detail")),
+        notices: vec![],
+    };
+    model.update(visual, |m, cx| {
+        m.forge.snapshot.features = vec![Feature {
+            id: "feature-1".into(),
+            project_id: "layout-project".into(),
+            title: "UI update".into(),
+            original_idea: "Improve the interface".into(),
+            revision: 1,
+            approved_revision: None,
+            state: FeatureState::Incubating,
+            brief: Default::default(),
+            evaluation: Default::default(),
+            structural_level: 0,
+            wave: None,
+            position: 0,
+            archive_reason: None,
+        }];
+        m.forge.selected_feature = Some("feature-1".into());
+        m.forge.history = vec![
+            turn("older", TurnFailureKind::ReplyLanguage),
+            turn("newest", TurnFailureKind::ReplyUnreadable),
+        ];
+        m.select_view(AppView::Forge, cx);
+        m.forge_action(ForgeAction::Section(ForgeSection::Incubation), cx);
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        visual.run_until_parked();
+        let detail = visual.debug_bounds("forge-detail").unwrap();
+        let card = visual.debug_bounds("forge-failure-newest").unwrap();
+        assert!(card.right() <= detail.right(), "{card:?} overflows {detail:?}");
+        assert!(
+            visual.debug_bounds("forge-failure-older").is_none(),
+            "an older failure collapses to its summary line"
+        );
+        for control in [
+            "retry-feature-turn-newest",
+            "ask-agent-about-failure-newest",
+            "toggle-failure-detail-newest",
+        ] {
+            let bounds = visual.debug_bounds(control).unwrap();
+            assert!(bounds.right() <= card.right(), "{control}: {bounds:?} leaves {card:?}");
+        }
+        assert!(visual.debug_bounds("retry-feature-turn-older").is_none());
+    }
+    // A repeated failure of the same kind stops offering the paid follow-up.
+    model.update(visual, |m, cx| {
+        m.forge.history = vec![
+            turn("first", TurnFailureKind::ReplyUnreadable),
+            turn("second", TurnFailureKind::ReplyUnreadable),
+        ];
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("retry-feature-turn-second").is_some());
+    assert!(visual.debug_bounds("ask-agent-about-failure-second").is_none());
+}
+
+#[gpui::test]
 fn forge_graph_waves_and_delivery_fit_supported_window_sizes(cx: &mut TestAppContext) {
     use hvc_core::feature_forge::*;
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));

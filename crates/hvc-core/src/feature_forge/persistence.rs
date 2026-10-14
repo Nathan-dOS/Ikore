@@ -15,14 +15,15 @@ impl PersistenceService {
         schema: Value,
         cancellation: &CancellationToken,
         gateway: Option<&dyn crate::llm::LlmGateway>,
-    ) -> Result<String, PersistenceServiceError> {
+    ) -> Result<String, RequestError> {
         use crate::llm::{
             AgentExecutionTarget, ExecutionId, GenerationId, LlmRequest, ResponseFormat,
         };
         let config = self.load_runtime_config()?;
         if prompt.chars().count() > config.context_chars_limit {
-            return Err(invalid(
-                "Feature conversation exceeds the context budget; shorten the scope or increase the configured limit",
+            return Err(RequestError::ContextTooLarge(
+                "Feature conversation exceeds the context budget; shorten the scope or increase the configured limit"
+                    .into(),
             ));
         }
         let request=LlmRequest {
@@ -45,7 +46,7 @@ impl PersistenceService {
             Some(terminals) => terminals
                 .execute_llm_request(&request, cancellation)
                 .await
-                .map_err(invalid)?,
+                .map_err(RequestError::Cli)?,
             None => None,
         } {
             completion.raw_output
@@ -54,18 +55,21 @@ impl PersistenceService {
                 .unwrap_or(self.llm_router.as_ref())
                 .execute(&request, cancellation)
                 .await
-                .map_err(invalid)?;
+                .map_err(RequestError::Llm)?;
             if result.execution_id != request.execution_id
                 || result.generation_id != request.generation_id
             {
-                return Err(invalid("Planning response belongs to another generation"));
+                return Err(invalid("Planning response belongs to another generation").into());
             }
             result.content
         };
-        let parsed: Value = decode(&output)?;
+        let parsed: Value =
+            decode(&output).map_err(|error| RequestError::Unreadable(error.to_string()))?;
         let validator = jsonschema::validator_for(&schema).map_err(invalid)?;
-        validator.validate(&parsed).map_err(invalid)?;
-        serde_json::to_string(&parsed).map_err(invalid)
+        validator
+            .validate(&parsed)
+            .map_err(|error| RequestError::Unreadable(error.to_string()))?;
+        Ok(serde_json::to_string(&parsed).map_err(invalid)?)
     }
 
     pub fn active_agent_cli_backend(
