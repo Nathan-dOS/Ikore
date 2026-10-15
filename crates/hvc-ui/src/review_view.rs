@@ -7,7 +7,17 @@ use hvc_core::persistence_service::{
 
 use crate::app_model::AppModel;
 use crate::failure_checkpoint::{AbortFailedStage, RetryFailedStage, ReviseFailedStage};
-use crate::hitl::{ApproveHitl, RejectHitl, RequestHitlRevision};
+use crate::hitl::{
+    ApproveHitl, ConfirmBriefItem, FlagBriefItem, ItemMark, NextBriefItem, PreviousBriefItem,
+    RejectHitl, RequestHitlRevision,
+};
+
+/// The brief item the keyboard acts on, when the Brief tab is showing items.
+fn brief_cursor_in_view(model: &AppModel, cx: &gpui::App) -> Option<usize> {
+    let hitl = &model.pulsations.read(cx).hitl;
+    (hitl.brief_selected && hitl.brief.is_some() && !hitl.marks.is_empty() && !hitl.busy)
+        .then_some(hitl.brief_cursor.min(hitl.marks.len() - 1))
+}
 use crate::theme;
 use crate::workspace_view::render_markdown_block;
 
@@ -416,11 +426,17 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
     // bar and its gate do not change with it.
     let has_brief_tab = hitl.has_brief_tab() && !documents.is_empty();
     let showing_brief = has_brief_tab && hitl.brief_selected;
-    let brief_content = showing_brief.then(|| match (&hitl.brief, &hitl.brief_error) {
-        (Some(brief), _) => crate::review_brief_view::brief_panel(brief),
-        (None, Some(error)) => crate::review_brief_view::brief_error_panel(error),
-        (None, None) => crate::review_brief_view::brief_error_panel("No brief was produced."),
+    // Built after the `pulsations` borrow ends: the brief's buttons need `cx`.
+    let brief_source = showing_brief.then(|| {
+        (
+            hitl.brief.clone(),
+            hitl.brief_error.clone(),
+            hitl.marks.clone(),
+            hitl.brief_cursor,
+        )
     });
+    let (confirmed, flagged, open) = hitl.mark_counts();
+    let has_marks = has_brief_tab && !hitl.marks.is_empty();
     let active_document = documents.get(selected).cloned().filter(|_| !showing_brief);
     let reader_id = SharedString::from(format!(
         "review-reader-{}-{}-{}",
@@ -439,6 +455,21 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         source,
     ));
     let confirm_reject = model.confirm_hitl_reject;
+    let notes = model.current_brief_notes(cx);
+    let brief_content = brief_source.map(|(brief, error, marks, cursor)| match (brief, error) {
+        (Some(brief), _) => crate::review_brief_view::brief_panel(
+            &brief,
+            &crate::review_brief_view::BriefMarks {
+                marks: &marks,
+                cursor,
+                notes: &notes,
+                interactive: can_decide,
+            },
+            cx,
+        ),
+        (None, Some(error)) => crate::review_brief_view::brief_error_panel(&error),
+        (None, None) => crate::review_brief_view::brief_error_panel("No brief was produced."),
+    });
 
     div()
         .size_full()
@@ -448,8 +479,45 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         .flex()
         .flex_col()
         .key_context("HitlReview")
+        .track_focus(&model.review_focus)
         .on_action(cx.listener(|model, _: &ApproveHitl, _, cx| {
+            // Enter never discards the developer's flags; the Approve button still can.
+            let flagged = model.pulsations.read(cx).hitl.flag_count();
+            if flagged > 0 {
+                model.pulsations.update(cx, |pulsations, _| {
+                    pulsations.hitl.error = Some(format!(
+                        "{} flagged in the brief. Press R to request revision, or click Approve to approve without them.",
+                        if flagged == 1 {
+                            "1 item is".to_owned()
+                        } else {
+                            format!("{flagged} items are")
+                        }
+                    ));
+                });
+                cx.notify();
+                return;
+            }
             model.apply_hitl_decision(HitlDecision::Approve, cx);
+        }))
+        .on_action(cx.listener(|model, _: &ConfirmBriefItem, _, cx| {
+            if let Some(cursor) = brief_cursor_in_view(model, cx) {
+                model.toggle_brief_mark(cursor, ItemMark::Confirmed, None, cx);
+            }
+        }))
+        .on_action(cx.listener(|model, _: &FlagBriefItem, _, cx| {
+            if let Some(cursor) = brief_cursor_in_view(model, cx) {
+                model.toggle_brief_mark(cursor, ItemMark::Flagged, None, cx);
+            }
+        }))
+        .on_action(cx.listener(|model, _: &NextBriefItem, _, cx| {
+            if brief_cursor_in_view(model, cx).is_some() {
+                model.move_brief_cursor(true, cx);
+            }
+        }))
+        .on_action(cx.listener(|model, _: &PreviousBriefItem, _, cx| {
+            if brief_cursor_in_view(model, cx).is_some() {
+                model.move_brief_cursor(false, cx);
+            }
         }))
         .on_action(cx.listener(|model, _: &RequestHitlRevision, _, cx| {
             model.apply_hitl_decision(HitlDecision::RequestRevision, cx);
@@ -540,12 +608,13 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                                     theme::surface_raised()
                                 })
                                 .cursor_pointer()
-                                .on_click(cx.listener(|model, _, _, cx| {
+                                .on_click(cx.listener(|model, _, window, cx| {
                                     model.set_confirm_hitl_reject(false, cx);
                                     model.pulsations.update(cx, |pulsations, cx| {
                                         pulsations.hitl.brief_selected = true;
                                         cx.notify();
                                     });
+                                    model.review_focus.focus(window);
                                     cx.notify();
                                 }))
                                 .child(crate::widgets::icon(
@@ -758,6 +827,21 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                 .p_3()
                 .border_t_1()
                 .border_color(theme::border())
+                .when(has_marks, |bar| {
+                    bar.child(
+                        div()
+                            .debug_selector(|| "review-brief-progress".into())
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .mr_2()
+                            .text_xs()
+                            .text_color(theme::text_muted())
+                            .child(format!(
+                                "{confirmed} confirmed · {flagged} flagged · {open} not looked at"
+                            )),
+                    )
+                })
                 .child(hitl_button(
                     "hitl-approve",
                     "Approve",
@@ -768,10 +852,14 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                 ))
                 .child(hitl_button(
                     "hitl-revision",
-                    "Request revision",
+                    match flagged {
+                        0 => "Request revision".to_owned(),
+                        1 => "Request revision · 1 flag".to_owned(),
+                        count => format!("Request revision · {count} flags"),
+                    },
                     can_decide,
                     HitlDecision::RequestRevision,
-                    false,
+                    flagged > 0,
                     cx,
                 ))
                 .when(has_checkpoint, |bar| {
@@ -819,12 +907,13 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         .into_any_element()
 }
 
+/// `primary` marks the button the developer's own flags point to (ADR-024 M2).
 fn hitl_button(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     enabled: bool,
     decision: HitlDecision,
-    danger: bool,
+    primary: bool,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
     div()
@@ -834,15 +923,18 @@ fn hitl_button(
         .py_2()
         .rounded_md()
         .tab_index(0)
-        .bg(if danger {
-            theme::danger_soft()
+        .bg(if primary {
+            theme::warning()
         } else {
             theme::surface_raised()
         })
-        .text_color(if danger {
-            theme::danger()
+        .text_color(if primary {
+            theme::canvas()
         } else {
             theme::text()
+        })
+        .when(primary, |button| {
+            button.font_weight(gpui::FontWeight::SEMIBOLD)
         })
         .when(enabled, |button| {
             button
@@ -854,7 +946,7 @@ fn hitl_button(
                 }))
         })
         .when(!enabled, |button| button.opacity(0.45))
-        .child(label)
+        .child(label.into())
 }
 
 fn hitl_reject_button(

@@ -306,6 +306,15 @@ pub struct AppModel {
     pub(crate) description_review_input: Entity<NativeTextInput>,
     pub(crate) specification_answer_inputs: Vec<(String, Entity<NativeTextInput>)>,
     pub(crate) stage_feedback_input: Entity<NativeTextInput>,
+    /// Keeps the Review's C/F/Tab/Enter/R/D bindings reachable after a click on the brief.
+    pub(crate) review_focus: gpui::FocusHandle,
+    /// Notes of flagged brief items, by item index, for the checkpoint in
+    /// `brief_notes_scope` (ADR-024 M2). Never persisted.
+    pub(crate) brief_notes: HashMap<usize, Entity<NativeTextInput>>,
+    brief_notes_scope: Option<(String, u64)>,
+    /// The feedback of the last HITL decision request, for tests.
+    #[cfg(test)]
+    pub(crate) last_revision_feedback: Option<String>,
     pub(crate) preparation_threshold_input: Entity<NativeTextInput>,
     pub(crate) composition_override_model_input: Entity<NativeTextInput>,
     pub(crate) context_limit_input: Entity<NativeTextInput>,
@@ -726,6 +735,11 @@ impl AppModel {
             reconciliation_input,
             description_review_input,
             stage_feedback_input,
+            review_focus: cx.focus_handle(),
+            brief_notes: HashMap::new(),
+            brief_notes_scope: None,
+            #[cfg(test)]
+            last_revision_feedback: None,
             preparation_threshold_input,
             composition_override_model_input,
             context_limit_input,
@@ -2800,6 +2814,105 @@ impl AppModel {
         cx.notify();
     }
 
+    /// The checkpoint the brief notes belong to.
+    fn brief_scope(&self, cx: &gpui::App) -> Option<(String, u64)> {
+        self.pulsations
+            .read(cx)
+            .hitl
+            .expected_checkpoint
+            .as_ref()
+            .map(|checkpoint| (checkpoint.checkpoint_id.clone(), checkpoint.state_version))
+    }
+
+    /// The note input of brief item `index`, created when the item is first
+    /// flagged. Notes of another checkpoint or version are dropped first.
+    fn brief_note_input(
+        &mut self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> Entity<NativeTextInput> {
+        let scope = self.brief_scope(cx);
+        if self.brief_notes_scope != scope {
+            self.brief_notes.clear();
+            self.brief_notes_scope = scope;
+        }
+        if let Some(input) = self.brief_notes.get(&index) {
+            return input.clone();
+        }
+        let input = cx.new(|cx| NativeTextInput::new("What should change? (optional)", cx));
+        cx.observe(&input, |_, _, cx| cx.notify()).detach();
+        self.brief_notes.insert(index, input.clone());
+        input
+    }
+
+    /// Notes of the current checkpoint only, by item index.
+    pub(crate) fn current_brief_notes(
+        &self,
+        cx: &gpui::App,
+    ) -> HashMap<usize, Entity<NativeTextInput>> {
+        if self.brief_notes_scope == self.brief_scope(cx) {
+            self.brief_notes.clone()
+        } else {
+            HashMap::new()
+        }
+    }
+
+    /// Confirms or flags brief item `index` (ADR-024 M2); the same mark again
+    /// reopens it. A flag set with the mouse focuses its note; otherwise the
+    /// focus stays on the review so C/F/Tab keep working.
+    pub(crate) fn toggle_brief_mark(
+        &mut self,
+        index: usize,
+        mark: crate::hitl::ItemMark,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        let marked = self
+            .pulsations
+            .update(cx, |pulsations, _| pulsations.hitl.toggle_mark(index, mark));
+        match (marked, window) {
+            (Some(crate::hitl::ItemMark::Flagged), Some(window)) => {
+                let input = self.brief_note_input(index, cx);
+                gpui::Focusable::focus_handle(input.read(cx), cx).focus(window);
+            }
+            (Some(crate::hitl::ItemMark::Flagged), None) => {
+                self.brief_note_input(index, cx);
+            }
+            (Some(_), Some(window)) => self.review_focus.focus(window),
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn move_brief_cursor(&mut self, forward: bool, cx: &mut Context<Self>) {
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.hitl.move_brief_cursor(forward)
+        });
+        cx.notify();
+    }
+
+    /// The Request revision feedback: flagged brief items with their notes,
+    /// then the free-text feedback. Without flags the free text goes out as
+    /// typed, exactly as before the brief existed.
+    fn revision_feedback(&self, cx: &gpui::App) -> String {
+        let free_text = self.stage_feedback_input.read(cx).value().to_owned();
+        let hitl = &self.pulsations.read(cx).hitl;
+        let Some(brief) = hitl.brief.as_ref().filter(|_| hitl.flag_count() > 0) else {
+            return free_text;
+        };
+        let notes = self.current_brief_notes(cx);
+        crate::hitl::compose_revision_feedback(
+            &brief.judgement,
+            &hitl.marks,
+            |index| {
+                notes
+                    .get(&index)
+                    .map(|input| input.read(cx).value().to_owned())
+            },
+            &free_text,
+        )
+    }
+
     pub(crate) fn apply_hitl_decision(&mut self, decision: HitlDecision, cx: &mut Context<Self>) {
         self.confirm_hitl_reject = false;
         self.confirm_stage_reject = false;
@@ -2809,13 +2922,17 @@ impl AppModel {
             .update(cx, |pulsations, _| pulsations.hitl.begin(decision));
         let request = request.map(|mut request| {
             if decision == HitlDecision::RequestRevision {
-                request.feedback = Some(self.stage_feedback_input.read(cx).value().to_owned());
+                request.feedback = Some(self.revision_feedback(cx));
             }
             request
         });
         let Some(request) = request else {
             return;
         };
+        #[cfg(test)]
+        {
+            self.last_revision_feedback = request.feedback.clone();
+        }
         let Some(core) = self.core.clone() else {
             self.pulsations.update(cx, |pulsations, _| {
                 pulsations
