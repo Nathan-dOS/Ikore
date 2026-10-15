@@ -655,6 +655,138 @@ fn brief_marks_compose_the_revision_feedback_and_keep_enter_from_dropping_flags(
     });
 }
 
+#[gpui::test]
+fn brief_review_drafts_stay_with_their_checkpoint_and_flags_never_block_approve(
+    cx: &mut TestAppContext,
+) {
+    use crate::hitl::ItemMark;
+    use hvc_core::persistence_service::HitlCheckpoint;
+    let (model, visual) = open_specification_brief(cx);
+    let long_note = "Add an executed test for the empty range, ".repeat(12);
+    model.update(visual, |model, cx| {
+        model.sync_stage_feedback_scope(cx);
+        model.toggle_brief_mark(1, ItemMark::Flagged, None, cx);
+        model.toggle_brief_mark(0, ItemMark::Confirmed, None, cx);
+        let note = model.brief_notes.get(&1).cloned().unwrap();
+        note.update(cx, |input, cx| input.set_value(long_note.clone(), cx));
+        model.stage_feedback_input.update(cx, |input, cx| {
+            input.set_value("Free text for this checkpoint.", cx)
+        });
+    });
+
+    // A long note and the progress line fit the reader and the footer at both sizes.
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let actions = visual.debug_bounds("review-decision-bar").unwrap();
+        let note = visual.debug_bounds("brief-note-1").unwrap();
+        assert!(
+            note.left() >= reader.left() && note.right() <= reader.right() + px(1.0),
+            "note overflows at {width}x{height}: {note:?} vs {reader:?}"
+        );
+        assert!(reader.bottom() <= actions.top() && actions.bottom() <= px(height));
+        for element in [
+            "review-brief-progress",
+            "hitl-approve",
+            "hitl-revision",
+            "hitl-reject",
+        ] {
+            let bounds = visual.debug_bounds(element).unwrap();
+            assert!(
+                bounds.left() >= actions.left()
+                    && bounds.right() <= actions.right()
+                    && bounds.top() >= actions.top()
+                    && bounds.bottom() <= actions.bottom(),
+                "{element} leaves the decision bar at {width}x{height}: {bounds:?} vs {actions:?}"
+            );
+        }
+    }
+
+    // A refresh of the same checkpoint keeps the review; so does switching tabs.
+    let same = model.read_with(visual, |model, cx| {
+        model
+            .pulsations
+            .read(cx)
+            .hitl
+            .expected_checkpoint
+            .clone()
+            .unwrap()
+    });
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |state, _| {
+            let pulse = state.pulsations[0].clone();
+            state.hitl.load_checkpoint(Some(&pulse), Some(same.clone()));
+            state.hitl.brief_selected = false;
+            state.hitl.brief_selected = true;
+        });
+        model.sync_stage_feedback_scope(cx);
+    });
+    model.read_with(visual, |model, cx| {
+        assert_eq!(
+            model.pulsations.read(cx).hitl.marks[..2],
+            [ItemMark::Confirmed, ItemMark::Flagged]
+        );
+        assert_eq!(model.current_brief_notes(cx).len(), 1);
+        assert_eq!(
+            model.stage_feedback_input.read(cx).value(),
+            "Free text for this checkpoint."
+        );
+    });
+
+    // Flags never block an explicit Approve: the decision is dispatched.
+    click(visual, "hitl-approve");
+    model.read_with(visual, |model, cx| {
+        assert_eq!(
+            model.pulsations.read(cx).hitl.error.as_deref(),
+            Some("HITL decision unavailable in test environment")
+        );
+    });
+
+    // Checkpoint B of the same pulsation and input revision starts clean:
+    // no marks, no notes and no free-text draft from A.
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |state, _| {
+            let pulse = state.pulsations[0].clone();
+            state.hitl.load_checkpoint(
+                Some(&pulse),
+                Some(HitlCheckpoint {
+                    checkpoint_id: "contract-checkpoint".into(),
+                    ..same.clone()
+                }),
+            );
+        });
+        model.sync_stage_feedback_scope(cx);
+    });
+    model.read_with(visual, |model, cx| {
+        assert!(model.pulsations.read(cx).hitl.marks.is_empty());
+        assert!(model.current_brief_notes(cx).is_empty());
+        assert_eq!(model.stage_feedback_input.read(cx).value(), "");
+    });
+
+    // A newer state version of one checkpoint is a new review as well.
+    model.update(visual, |model, cx| {
+        model
+            .stage_feedback_input
+            .update(cx, |input, cx| input.set_value("Draft for version 1.", cx));
+        model.pulsations.update(cx, |state, _| {
+            let pulse = state.pulsations[0].clone();
+            state.hitl.load_checkpoint(
+                Some(&pulse),
+                Some(HitlCheckpoint {
+                    checkpoint_id: "contract-checkpoint".into(),
+                    state_version: same.state_version + 1,
+                    ..same.clone()
+                }),
+            );
+        });
+        model.sync_stage_feedback_scope(cx);
+    });
+    model.read_with(visual, |model, cx| {
+        assert_eq!(model.stage_feedback_input.read(cx).value(), "");
+    });
+}
+
 /// Parks a stage failure with the given offered decisions in a window of its own.
 ///
 /// Each case needs a fresh window: GPUI keeps debug selectors alive in reused frames,

@@ -621,6 +621,49 @@ mod tests {
     }
 
     #[test]
+    fn items_sharing_a_label_keep_independent_marks_and_notes() {
+        // Two interface changes on the same path carry the same label; marks
+        // and notes are keyed by position, never by label.
+        let items = vec![
+            item(
+                JudgementKind::InterfaceChange,
+                "src/auth.rs",
+                "validate_token changes shape.",
+            ),
+            item(
+                JudgementKind::InterfaceChange,
+                "src/auth.rs",
+                "Token gains an issuer field.",
+            ),
+        ];
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));
+        let (generation, first) = state.begin_documents().unwrap();
+        state.finish_documents(generation, &first, Ok(documents()));
+        state.finish_brief(
+            generation,
+            &first,
+            Ok(Some(ReviewBrief {
+                judgement: items.clone(),
+                ..brief()
+            })),
+        );
+        state.toggle_mark(0, ItemMark::Flagged);
+        state.toggle_mark(1, ItemMark::Confirmed);
+        assert_eq!(state.marks, [ItemMark::Flagged, ItemMark::Confirmed]);
+        state.toggle_mark(1, ItemMark::Flagged);
+        let notes = |index: usize| Some(format!("note {index}"));
+        let feedback = compose_revision_feedback(&items, &state.marks, notes, "");
+        assert_eq!(
+            feedback.lines().skip(1).collect::<Vec<_>>(),
+            [
+                "- [Existing interface changes] src/auth.rs: validate_token changes shape. — note 0",
+                "- [Existing interface changes] src/auth.rs: Token gains an issuer field. — note 1",
+            ]
+        );
+    }
+
+    #[test]
     fn failed_read_can_retry_or_request_revision_without_fabricated_content() {
         let mut state = HitlReviewState::default();
         state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));

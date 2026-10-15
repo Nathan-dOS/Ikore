@@ -312,6 +312,8 @@ pub struct AppModel {
     /// `brief_notes_scope` (ADR-024 M2). Never persisted.
     pub(crate) brief_notes: HashMap<usize, Entity<NativeTextInput>>,
     brief_notes_scope: Option<(String, u64)>,
+    /// `(pulsation, checkpoint, state version)` the free-text feedback belongs to.
+    stage_feedback_scope: Option<(String, String, u64)>,
     /// The feedback of the last HITL decision request, for tests.
     #[cfg(test)]
     pub(crate) last_revision_feedback: Option<String>,
@@ -738,6 +740,7 @@ impl AppModel {
             review_focus: cx.focus_handle(),
             brief_notes: HashMap::new(),
             brief_notes_scope: None,
+            stage_feedback_scope: None,
             #[cfg(test)]
             last_revision_feedback: None,
             preparation_threshold_input,
@@ -1769,6 +1772,7 @@ impl AppModel {
             self.refresh_pulsation_usage(cx);
         }
         self.sync_preparation_inputs(cx);
+        self.sync_stage_feedback_scope(cx);
         if let Some(active_id) = active_id.clone() {
             self.refresh_backend_override(active_id.clone(), cx);
             self.refresh_cleanup_preview(active_id, cx);
@@ -2348,6 +2352,7 @@ impl AppModel {
         self.refresh_failure_detail(cx);
         self.refresh_pulsation_usage(cx);
         self.sync_preparation_inputs(cx);
+        self.sync_stage_feedback_scope(cx);
         self.pulsations.update(cx, |pulsations, _| {
             pulsations.diff_expanded = false;
         });
