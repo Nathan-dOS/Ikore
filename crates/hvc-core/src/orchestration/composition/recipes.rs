@@ -218,6 +218,15 @@ fn add_tasks(
     Ok(handles)
 }
 
+/// The task and criterion bindings of a frozen batch, with the same handles
+/// `prepare` registers first for every stage. Readers that only hold a
+/// persisted payload use it to label `task_*`/`crit_*` handles.
+pub fn task_table(manifest: &BatchManifest) -> Result<ReferenceTable, CompositionError> {
+    let mut builder = ReferenceTable::builder();
+    add_tasks(&mut builder, manifest)?;
+    Ok(builder.build())
+}
+
 fn all_criteria(table: &ReferenceTable) -> Vec<Handle> {
     table
         .scope()

@@ -412,17 +412,30 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
     let show_feedback = hitl.show_feedback;
     let expanded = pulsations.diff_expanded;
     let documents = hitl.documents.clone();
-    let active_document = documents.get(selected).cloned();
+    // The Brief tab (ADR-024) shares the reader with the documents; the decision
+    // bar and its gate do not change with it.
+    let has_brief_tab = hitl.has_brief_tab() && !documents.is_empty();
+    let showing_brief = has_brief_tab && hitl.brief_selected;
+    let brief_content = showing_brief.then(|| match (&hitl.brief, &hitl.brief_error) {
+        (Some(brief), _) => crate::review_brief_view::brief_panel(brief),
+        (None, Some(error)) => crate::review_brief_view::brief_error_panel(error),
+        (None, None) => crate::review_brief_view::brief_error_panel("No brief was produced."),
+    });
+    let active_document = documents.get(selected).cloned().filter(|_| !showing_brief);
     let reader_id = SharedString::from(format!(
         "review-reader-{}-{}-{}",
         hitl.expected_checkpoint
             .as_ref()
             .map(|c| c.checkpoint_id.as_str())
             .unwrap_or("none"),
-        active_document
-            .as_ref()
-            .map(|d| d.artifact.artifact_id.as_str())
-            .unwrap_or("none"),
+        if showing_brief {
+            "brief"
+        } else {
+            active_document
+                .as_ref()
+                .map(|d| d.artifact.artifact_id.as_str())
+                .unwrap_or("none")
+        },
         source,
     ));
     let confirm_reject = model.confirm_hitl_reject;
@@ -508,20 +521,66 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                     .p_2()
                     .border_b_1()
                     .border_color(theme::border())
+                    .when(has_brief_tab, |tabs| {
+                        tabs.child(
+                            div()
+                                .id("review-brief-tab")
+                                .debug_selector(|| "review-brief-tab".into())
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .px_3()
+                                .py_1()
+                                .rounded_sm()
+                                .text_sm()
+                                .bg(if showing_brief {
+                                    theme::accent_soft()
+                                } else {
+                                    theme::surface_raised()
+                                })
+                                .cursor_pointer()
+                                .on_click(cx.listener(|model, _, _, cx| {
+                                    model.set_confirm_hitl_reject(false, cx);
+                                    model.pulsations.update(cx, |pulsations, cx| {
+                                        pulsations.hitl.brief_selected = true;
+                                        cx.notify();
+                                    });
+                                    cx.notify();
+                                }))
+                                .child(crate::widgets::icon(
+                                    crate::icons::Icon::Eye,
+                                    px(14.0),
+                                    theme::accent(),
+                                ))
+                                .child("Brief")
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme::text_muted())
+                                        .child("derived"),
+                                ),
+                        )
+                    })
                     .children(documents.iter().enumerate().map(|(index, document)| {
                         div()
                             .id(SharedString::from(format!(
                                 "review-document-{}",
                                 document.artifact.artifact_id
                             )))
-                            .min_w_0()
+                            .debug_selector(move || format!("review-document-tab-{index}"))
+                            // One line, ellipsised: a wrapping label collapsed to its
+                            // first word ("1") inside the 40 px scrolling strip.
                             .flex_shrink_0()
-                            .max_w_full()
+                            .max_w(px(320.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
                             .px_3()
                             .py_1()
                             .rounded_sm()
                             .text_sm()
-                            .bg(if index == selected {
+                            .bg(if index == selected && !showing_brief {
                                 theme::accent_soft()
                             } else {
                                 theme::surface_raised()
@@ -531,6 +590,7 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                                 model.set_confirm_hitl_reject(false, cx);
                                 model.pulsations.update(cx, |pulsations, cx| {
                                     pulsations.hitl.selected_document = index;
+                                    pulsations.hitl.brief_selected = false;
                                     cx.notify();
                                 });
                                 cx.notify();
@@ -618,6 +678,7 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                 .when(loading, |reader| {
                     reader.child("Loading complete checkpoint documents…")
                 })
+                .when_some(brief_content, |reader, content| reader.child(content))
                 .when_some(load_error, |reader, error| {
                     reader
                         .child(div().text_color(theme::danger()).child(error))

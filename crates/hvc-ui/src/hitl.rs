@@ -1,4 +1,5 @@
 use gpui::{App, KeyBinding, actions};
+use hvc_core::orchestration::review_brief::ReviewBrief;
 use hvc_core::persistence_service::{
     ApplyHitlDecisionRequest, HitlCheckpoint, HitlDecision, HitlReviewDocument, Pulsation,
 };
@@ -60,6 +61,11 @@ pub(crate) struct HitlReviewState {
     pub(crate) show_feedback: bool,
     pub(crate) documents_loading: bool,
     pub(crate) documents_error: Option<String>,
+    /// Derived view of the same checkpoint (ADR-024). Never gates approval.
+    pub(crate) brief: Option<ReviewBrief>,
+    pub(crate) brief_error: Option<String>,
+    /// The Brief tab is showing instead of a document.
+    pub(crate) brief_selected: bool,
     pub(crate) busy: bool,
     pub(crate) error: Option<String>,
     load_generation: u64,
@@ -101,6 +107,9 @@ impl HitlReviewState {
             self.busy = false;
             self.documents_loading = false;
             self.documents_error = None;
+            self.brief = None;
+            self.brief_error = None;
+            self.brief_selected = false;
             self.error = None;
         }
         self.expected_checkpoint = checkpoint;
@@ -155,8 +164,44 @@ impl HitlReviewState {
         true
     }
 
+    /// Applies the brief read that followed `finish_documents` for the same
+    /// generation. A brief opens on its own tab; a failed brief read only
+    /// adds a tab that explains it, so the documents stay the default view.
+    pub(crate) fn finish_brief(
+        &mut self,
+        generation: u64,
+        checkpoint: &HitlCheckpoint,
+        result: Result<Option<ReviewBrief>, String>,
+    ) -> bool {
+        if generation != self.load_generation
+            || !same_checkpoint(self.expected_checkpoint.as_ref(), Some(checkpoint))
+        {
+            return false;
+        }
+        match result {
+            Ok(brief) => {
+                self.brief_selected = brief.is_some() && !self.documents.is_empty();
+                self.brief = brief;
+                self.brief_error = None;
+            }
+            Err(error) => {
+                self.brief = None;
+                self.brief_error = Some(error);
+                self.brief_selected = false;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn has_brief_tab(&self) -> bool {
+        self.brief.is_some() || self.brief_error.is_some()
+    }
+
     pub(crate) fn retry_documents(&mut self) {
         self.documents_error = None;
+        self.brief = None;
+        self.brief_error = None;
+        self.brief_selected = false;
     }
 
     pub(crate) fn can_approve(&self) -> bool {
@@ -286,6 +331,60 @@ mod tests {
         assert!(state.documents.is_empty());
         assert!(!state.show_source);
         assert!(!state.finish_documents(generation, &current, Ok(documents())));
+    }
+
+    fn brief() -> ReviewBrief {
+        ReviewBrief {
+            stage: PulsationStage::Specification,
+            next_stage: Some(PulsationStage::Contract),
+            objective: "Reject expired tokens.".into(),
+            facts: Default::default(),
+            judgement: Vec::new(),
+            verified: Vec::new(),
+            tasks: Vec::new(),
+            files: Vec::new(),
+            unattached_interfaces: Vec::new(),
+            units: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_brief_opens_first_but_never_replaces_the_documents_or_the_approval_gate() {
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));
+        let (generation, first) = state.begin_documents().unwrap();
+        assert!(state.finish_documents(generation, &first, Ok(documents())));
+        assert!(state.finish_brief(generation, &first, Ok(Some(brief()))));
+        assert!(state.brief_selected && state.has_brief_tab());
+        assert!(state.can_approve(), "approval still rests on the documents");
+
+        // A newer checkpoint drops the brief and its selection; a late
+        // brief of the old one is ignored.
+        state.load_checkpoint(Some(&pulse("second")), Some(checkpoint("second")));
+        assert!(state.brief.is_none() && !state.brief_selected);
+        assert!(!state.finish_brief(generation, &first, Ok(Some(brief()))));
+        assert!(!state.has_brief_tab());
+    }
+
+    #[test]
+    fn a_failed_brief_read_keeps_documents_in_front_and_explains_itself() {
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));
+        let (generation, first) = state.begin_documents().unwrap();
+        state.finish_documents(generation, &first, Ok(documents()));
+        state.finish_brief(generation, &first, Err("payload unreadable".into()));
+        assert!(!state.brief_selected);
+        assert!(state.has_brief_tab());
+        assert_eq!(state.brief_error.as_deref(), Some("payload unreadable"));
+        assert!(state.can_approve());
+
+        // Stages without a brief show no tab at all.
+        let mut legacy = HitlReviewState::default();
+        legacy.load_checkpoint(Some(&pulse("legacy")), Some(checkpoint("legacy")));
+        let (generation, current) = legacy.begin_documents().unwrap();
+        legacy.finish_documents(generation, &current, Ok(documents()));
+        legacy.finish_brief(generation, &current, Ok(None));
+        assert!(!legacy.has_brief_tab() && !legacy.brief_selected);
     }
 
     #[test]

@@ -32,6 +32,14 @@ pub(crate) trait PulsationsBackend: Send + Sync {
         &self,
         checkpoint: hvc_core::persistence_service::HitlCheckpoint,
     ) -> PulsationsFuture<Vec<hvc_core::persistence_service::HitlReviewDocument>>;
+    /// The derived brief of the same checkpoint (ADR-024). Backends without
+    /// one report `None`, and Review opens on the documents as before.
+    fn review_brief(
+        &self,
+        _checkpoint: hvc_core::persistence_service::HitlCheckpoint,
+    ) -> PulsationsFuture<Option<hvc_core::orchestration::review_brief::ReviewBrief>> {
+        Box::pin(async { Ok(None) })
+    }
     fn stage_failure_detail(
         &self,
         checkpoint_id: String,
@@ -104,6 +112,20 @@ impl PulsationsBackend for CorePulsationsBackend {
                 .spawn_blocking(move || core.persistence().read_hitl_review(&checkpoint))
                 .await
                 .map_err(|e| Self::worker_error("review", e))?
+                .map_err(|e| e.to_string())
+        })
+    }
+    fn review_brief(
+        &self,
+        checkpoint: hvc_core::persistence_service::HitlCheckpoint,
+    ) -> PulsationsFuture<Option<hvc_core::orchestration::review_brief::ReviewBrief>> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || core.persistence().read_checkpoint_brief(&checkpoint))
+                .await
+                .map_err(|e| Self::worker_error("review brief", e))?
                 .map_err(|e| e.to_string())
         })
     }

@@ -63,11 +63,25 @@ pub(crate) enum Icon {
     Clock,
     /// Embedding model pull.
     Download,
+    /// Review brief: a decision the agent took.
+    Signpost,
+    /// Review brief: an existing interface changes.
+    Plug,
+    /// Review brief: left out of scope.
+    Ban,
+    /// Review brief: acceptance criteria and their proof.
+    Target,
+    /// Review brief: what the host already verified.
+    ShieldCheck,
+    /// Review brief: the work-unit plan.
+    Network,
+    /// Review brief: a criterion proven by reading only.
+    CircleHelp,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 30] = [
+    pub(crate) const ALL: [Self; 37] = [
         Self::House,
         Self::Plus,
         Self::Hammer,
@@ -98,6 +112,13 @@ impl Icon {
         Self::Zap,
         Self::Clock,
         Self::Download,
+        Self::Signpost,
+        Self::Plug,
+        Self::Ban,
+        Self::Target,
+        Self::ShieldCheck,
+        Self::Network,
+        Self::CircleHelp,
     ];
 
     /// Asset path served by `HvcAssets`; `icons/<lucide-name>.svg`.
@@ -133,6 +154,13 @@ impl Icon {
             Self::Zap => "icons/zap.svg",
             Self::Clock => "icons/clock.svg",
             Self::Download => "icons/download.svg",
+            Self::Signpost => "icons/signpost.svg",
+            Self::Plug => "icons/plug.svg",
+            Self::Ban => "icons/ban.svg",
+            Self::Target => "icons/target.svg",
+            Self::ShieldCheck => "icons/shield-check.svg",
+            Self::Network => "icons/network.svg",
+            Self::CircleHelp => "icons/circle-help.svg",
         }
     }
 }

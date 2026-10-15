@@ -2174,12 +2174,24 @@ impl AppModel {
         let project_id = self.workspace.read(cx).project_id.clone();
         self.hitl_documents_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.review_documents(checkpoint.clone()).await;
+            // The brief is a derived view of the same checkpoint: read it only
+            // when the documents are there, and apply both together so the
+            // reader never flashes a document before switching to the brief.
+            let brief = if result.is_ok() {
+                Some(backend.review_brief(checkpoint.clone()).await)
+            } else {
+                None
+            };
             let _ = this.update(cx, |model, cx| {
                 if model.workspace.read(cx).project_id != project_id {
                     return;
                 }
                 model.pulsations.update(cx, |state, _| {
-                    state.hitl.finish_documents(generation, &checkpoint, result);
+                    if state.hitl.finish_documents(generation, &checkpoint, result)
+                        && let Some(brief) = brief
+                    {
+                        state.hitl.finish_brief(generation, &checkpoint, brief);
+                    }
                 });
                 cx.notify();
             });
