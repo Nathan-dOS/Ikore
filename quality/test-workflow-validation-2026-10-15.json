@@ -1,0 +1,1125 @@
+{
+  "schemaVersion": 1,
+  "validatedAt": "2026-10-15T20:26:47.2265338Z",
+  "baseRevision": "7ee6ef58273c0c379082020567aa015a09dd150d",
+  "sourceIdentification": "SHA-256 identifies bytes in the validation worktree. Git blob IDs identify normalized source across CRLF/LF checkouts; the containing Git commit preserves this report.",
+  "implementationFiles": [
+    {
+      "path": ".cargo/config.toml",
+      "sha256": "8b9d0e0abcb1ee66d21b3d0a38e1a0ea79fc26ed6f45f5e81a2c9ee547b4cac4",
+      "gitBlob": "795380fcafe89e601144ac6a7d4ae3faae5a40b3"
+    },
+    {
+      "path": "README.md",
+      "sha256": "5801c141f25d658d90598ea1df77921ac11db0c4e872578f1889fd3166e1054b",
+      "gitBlob": "d29bad4ec93f1ef7ed70c36edbd1d72f6a475907"
+    },
+    {
+      "path": "scripts/gate-stage7.ps1",
+      "sha256": "854999709787f503c32bdec31db6fe5c3873ba7052d340e717cee75986afa263",
+      "gitBlob": "38e286491ae076a4f41437805de6933ecd9a2a87"
+    },
+    {
+      "path": "crates/hvc-core/src/terminals.rs",
+      "sha256": "26e50156ce9cb4fc26ea72e79af050242476c21b8157812d0f6a3d546506e97e",
+      "gitBlob": "14d0088e9a2ec631e2a543ae6a0eb1866d9d6d2c"
+    },
+    {
+      "path": "crates/hvc-test-support/src/core_harness.rs",
+      "sha256": "80dc7709d8c04856a3a997e8c409f352230a53b77ab72de0f40c37bc47cfb4f5",
+      "gitBlob": "f5d015bf6a4cde995d18eb44c76d33e5dabd63b2"
+    }
+  ],
+  "benchmarkRustFiles": [
+    {
+      "path": "crates/hvc-core/src/terminals.rs",
+      "sha256": "26e50156ce9cb4fc26ea72e79af050242476c21b8157812d0f6a3d546506e97e"
+    },
+    {
+      "path": "crates/hvc-test-support/src/core_harness.rs",
+      "sha256": "80dc7709d8c04856a3a997e8c409f352230a53b77ab72de0f40c37bc47cfb4f5"
+    }
+  ],
+  "environment": {
+    "os": "Windows 11 Pro",
+    "osVersion": "10.0.26300",
+    "logicalProcessors": 12,
+    "physicalMemoryBytes": 34278871040,
+    "rustc": "1.98.0 (88d9e12ae 2026-08-18)",
+    "cargo": "1.98.0 (797e8a9bc 2026-08-05)",
+    "powershellGate": "5.1.26100.9549",
+    "powershellQa": "7.6.5",
+    "releaseTargetExistsBeforeReleaseStep": false,
+    "cargoAudit": "0.22.2",
+    "cargoAuditReportedBuildSeconds": 137,
+    "cargoAuditInstallProfile": "dev, no-default-features",
+    "target": "<repo>-test-workflow\\target"
+  },
+  "commands": {
+    "coldBuild": "cargo test --workspace --locked --offline --no-run --timings",
+    "warmBuild": "cargo test --workspace --locked --no-run",
+    "warmSuite": "cargo test-all (CARGO_NET_OFFLINE=true; three sequential runs)",
+    "ui": "cargo test-ui",
+    "gate": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/gate-stage7.ps1 -TimingOutputPath target/test-workflow-qa/final-gate-timings.json"
+  },
+  "coldBuildSeconds": 256.882,
+  "warmBuildSeconds": 5.224,
+  "firstClippySeconds": 105.551,
+  "warmSuites": [
+    {
+      "iteration": 1,
+      "durationSeconds": 460.293,
+      "cargoPreparationSeconds": 1.14,
+      "testReportedSeconds": 439.23,
+      "passed": 943,
+      "failed": 0,
+      "ignored": 2,
+      "filteredOut": 0,
+      "exitCode": 0
+    },
+    {
+      "iteration": 2,
+      "durationSeconds": 412.033,
+      "cargoPreparationSeconds": 1.27,
+      "testReportedSeconds": 405.8,
+      "passed": 943,
+      "failed": 0,
+      "ignored": 2,
+      "filteredOut": 0,
+      "exitCode": 0
+    },
+    {
+      "iteration": 3,
+      "durationSeconds": 390.592,
+      "cargoPreparationSeconds": 1.24,
+      "testReportedSeconds": 383.94,
+      "passed": 943,
+      "failed": 0,
+      "ignored": 2,
+      "filteredOut": 0,
+      "exitCode": 0
+    }
+  ],
+  "warmSuiteMedianSeconds": 412.033,
+  "runnerInventorySource": "warm-suite-1.log; per-target durations are from the first run, not medians",
+  "runnerInventory": [
+    {
+      "target": "hard_vibe_code",
+      "kind": "unittests src\\main.rs",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "hvc_core",
+      "kind": "unittests src\\lib.rs",
+      "passed": 613,
+      "failed": 0,
+      "ignored": 1,
+      "filteredOut": 0,
+      "durationSeconds": 186.33
+    },
+    {
+      "target": "hvc_editor",
+      "kind": "unittests src\\lib.rs",
+      "passed": 15,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.01
+    },
+    {
+      "target": "hvc_test_support",
+      "kind": "unittests src\\lib.rs",
+      "passed": 24,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 7.75
+    },
+    {
+      "target": "check_fixture",
+      "kind": "unittests src\\bin\\check_fixture.rs",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "cli_fixture",
+      "kind": "unittests src\\bin\\cli_fixture.rs",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "brownfield_bf5",
+      "kind": "tests\\brownfield_bf5.rs",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 9.99
+    },
+    {
+      "target": "cli_executor",
+      "kind": "tests\\cli_executor.rs",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 1,
+      "filteredOut": 0,
+      "durationSeconds": 23.41
+    },
+    {
+      "target": "composition_benchmark",
+      "kind": "tests\\composition_benchmark.rs",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 15.49
+    },
+    {
+      "target": "composition_checks",
+      "kind": "tests\\composition_checks.rs",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 15.35
+    },
+    {
+      "target": "composition_cli",
+      "kind": "tests\\composition_cli.rs",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 4.28
+    },
+    {
+      "target": "composition_failures",
+      "kind": "tests\\composition_failures.rs",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 5.46
+    },
+    {
+      "target": "composition_parallel",
+      "kind": "tests\\composition_parallel.rs",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 13.48
+    },
+    {
+      "target": "composition_path_confirmation",
+      "kind": "tests\\composition_path_confirmation.rs",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 2.69
+    },
+    {
+      "target": "composition_pipeline",
+      "kind": "tests\\composition_pipeline.rs",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 4.78
+    },
+    {
+      "target": "composition_recipes",
+      "kind": "tests\\composition_recipes.rs",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 8.64
+    },
+    {
+      "target": "composition_units",
+      "kind": "tests\\composition_units.rs",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 10.03
+    },
+    {
+      "target": "composition_validation",
+      "kind": "tests\\composition_validation.rs",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 3.17
+    },
+    {
+      "target": "coordination_upgrade",
+      "kind": "tests\\coordination_upgrade.rs",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 1.61
+    },
+    {
+      "target": "corrective_retry",
+      "kind": "tests\\corrective_retry.rs",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 6.28
+    },
+    {
+      "target": "learning_worker",
+      "kind": "tests\\learning_worker.rs",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 2.56
+    },
+    {
+      "target": "orchestration_baseline",
+      "kind": "tests\\orchestration_baseline.rs",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.65
+    },
+    {
+      "target": "preparation_workflow",
+      "kind": "tests\\preparation_workflow.rs",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 2.46
+    },
+    {
+      "target": "pulsation_m5",
+      "kind": "tests\\pulsation_m5.rs",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 50.59
+    },
+    {
+      "target": "review_brief",
+      "kind": "tests\\review_brief.rs",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 2.04
+    },
+    {
+      "target": "serial_upgrade",
+      "kind": "tests\\serial_upgrade.rs",
+      "passed": 13,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 4.09
+    },
+    {
+      "target": "serial_worker",
+      "kind": "tests\\serial_worker.rs",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 4.38
+    },
+    {
+      "target": "stage_failure_checkpoint",
+      "kind": "tests\\stage_failure_checkpoint.rs",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 11.67
+    },
+    {
+      "target": "token_usage",
+      "kind": "tests\\token_usage.rs",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 1.24
+    },
+    {
+      "target": "workspace_flow",
+      "kind": "tests\\workspace_flow.rs",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.03
+    },
+    {
+      "target": "pulsation_ui_fixture",
+      "kind": "unittests examples\\pulsation_ui_fixture.rs",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.72
+    },
+    {
+      "target": "hvc_ui",
+      "kind": "unittests src\\lib.rs",
+      "passed": 209,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 40.05
+    },
+    {
+      "target": "hvc_core",
+      "kind": "doctest",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "hvc_editor",
+      "kind": "doctest",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "hvc_test_support",
+      "kind": "doctest",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "hvc_ui",
+      "kind": "doctest",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    }
+  ],
+  "aliasInventory": [
+    {
+      "alias": "test-ui",
+      "listed": 209,
+      "exitCode": 0,
+      "targets": [
+        "     Running unittests src\\lib.rs (target\\debug\\deps\\hvc_ui-622d08c201253f20.exe)",
+        "   Doc-tests hvc_ui"
+      ]
+    },
+    {
+      "alias": "test-editor",
+      "listed": 224,
+      "exitCode": 0,
+      "targets": [
+        "     Running unittests src\\lib.rs (target\\debug\\deps\\hvc_editor-8b00cac0c378bc90.exe)",
+        "     Running unittests src\\lib.rs (target\\debug\\deps\\hvc_ui-622d08c201253f20.exe)",
+        "   Doc-tests hvc_editor",
+        "   Doc-tests hvc_ui"
+      ]
+    },
+    {
+      "alias": "test-support",
+      "listed": 316,
+      "exitCode": 0,
+      "targets": [
+        "     Running unittests src\\lib.rs (target\\debug\\deps\\hvc_test_support-79c9348e5f327a1a.exe)",
+        "     Running unittests src\\bin\\check_fixture.rs (target\\debug\\deps\\check_fixture-496e9a98ccb231ca.exe)",
+        "     Running unittests src\\bin\\cli_fixture.rs (target\\debug\\deps\\cli_fixture-a8eb943aa44d83e7.exe)",
+        "     Running tests\\brownfield_bf5.rs (target\\debug\\deps\\brownfield_bf5-e1caf8aa55cc3f58.exe)",
+        "     Running tests\\cli_executor.rs (target\\debug\\deps\\cli_executor-f9f5d3c21ab04a32.exe)",
+        "     Running tests\\composition_benchmark.rs (target\\debug\\deps\\composition_benchmark-614e4450f9010638.exe)",
+        "     Running tests\\composition_checks.rs (target\\debug\\deps\\composition_checks-419eb77ea3de1e35.exe)",
+        "     Running tests\\composition_cli.rs (target\\debug\\deps\\composition_cli-71d64266f8031692.exe)",
+        "     Running tests\\composition_failures.rs (target\\debug\\deps\\composition_failures-5cb66d8510d0a955.exe)",
+        "     Running tests\\composition_parallel.rs (target\\debug\\deps\\composition_parallel-9db7bbf2aa7a3e0f.exe)",
+        "     Running tests\\composition_path_confirmation.rs (target\\debug\\deps\\composition_path_confirmation-0827799b857d0348.exe)",
+        "     Running tests\\composition_pipeline.rs (target\\debug\\deps\\composition_pipeline-3f73ca170d32a164.exe)",
+        "     Running tests\\composition_recipes.rs (target\\debug\\deps\\composition_recipes-a0b1d7ba24e8d8be.exe)",
+        "     Running tests\\composition_units.rs (target\\debug\\deps\\composition_units-32fb2564c4aa4e5d.exe)",
+        "     Running tests\\composition_validation.rs (target\\debug\\deps\\composition_validation-e4e42e534175f202.exe)",
+        "     Running tests\\coordination_upgrade.rs (target\\debug\\deps\\coordination_upgrade-10fbd753293b78f0.exe)",
+        "     Running tests\\corrective_retry.rs (target\\debug\\deps\\corrective_retry-7b5db1cd6ef0d68a.exe)",
+        "     Running tests\\learning_worker.rs (target\\debug\\deps\\learning_worker-2dc07558bbfc7891.exe)",
+        "     Running tests\\orchestration_baseline.rs (target\\debug\\deps\\orchestration_baseline-261d7867158328d0.exe)",
+        "     Running tests\\preparation_workflow.rs (target\\debug\\deps\\preparation_workflow-eff4342ff467bba5.exe)",
+        "     Running tests\\pulsation_m5.rs (target\\debug\\deps\\pulsation_m5-c6247edc8e8cb17d.exe)",
+        "     Running tests\\review_brief.rs (target\\debug\\deps\\review_brief-a90e811314324fe2.exe)",
+        "     Running tests\\serial_upgrade.rs (target\\debug\\deps\\serial_upgrade-705012e13b99c21b.exe)",
+        "     Running tests\\serial_worker.rs (target\\debug\\deps\\serial_worker-ab0f2f52a3e353fd.exe)",
+        "     Running tests\\stage_failure_checkpoint.rs (target\\debug\\deps\\stage_failure_checkpoint-5e89f616900e5a19.exe)",
+        "     Running tests\\token_usage.rs (target\\debug\\deps\\token_usage-8e8569b99e35fba6.exe)",
+        "     Running tests\\workspace_flow.rs (target\\debug\\deps\\workspace_flow-05cda9ff8d65b8ba.exe)",
+        "     Running unittests examples\\pulsation_ui_fixture.rs (target\\debug\\examples\\pulsation_ui_fixture-6dc30dd1da2b6510.exe)",
+        "     Running unittests src\\lib.rs (target\\debug\\deps\\hvc_ui-622d08c201253f20.exe)",
+        "   Doc-tests hvc_test_support",
+        "   Doc-tests hvc_ui"
+      ]
+    },
+    {
+      "alias": "test-core",
+      "listed": 614,
+      "exitCode": 0,
+      "targets": [
+        "     Running unittests src\\lib.rs (target\\debug\\deps\\hvc_core-28caf7508d2b769a.exe)",
+        "   Doc-tests hvc_core"
+      ]
+    },
+    {
+      "alias": "test-all",
+      "listed": 945,
+      "exitCode": 0,
+      "targets": [
+        "     Running unittests src\\main.rs (target\\debug\\deps\\hard_vibe_code-a22fa55164b27ae5.exe)",
+        "     Running unittests src\\lib.rs (target\\debug\\deps\\hvc_core-15aa850eeb50762b.exe)",
+        "     Running unittests src\\lib.rs (target\\debug\\deps\\hvc_editor-8b00cac0c378bc90.exe)",
+        "     Running unittests src\\lib.rs (target\\debug\\deps\\hvc_test_support-79c9348e5f327a1a.exe)",
+        "     Running unittests src\\bin\\check_fixture.rs (target\\debug\\deps\\check_fixture-496e9a98ccb231ca.exe)",
+        "     Running unittests src\\bin\\cli_fixture.rs (target\\debug\\deps\\cli_fixture-a8eb943aa44d83e7.exe)",
+        "     Running tests\\brownfield_bf5.rs (target\\debug\\deps\\brownfield_bf5-e1caf8aa55cc3f58.exe)",
+        "     Running tests\\cli_executor.rs (target\\debug\\deps\\cli_executor-f9f5d3c21ab04a32.exe)",
+        "     Running tests\\composition_benchmark.rs (target\\debug\\deps\\composition_benchmark-614e4450f9010638.exe)",
+        "     Running tests\\composition_checks.rs (target\\debug\\deps\\composition_checks-419eb77ea3de1e35.exe)",
+        "     Running tests\\composition_cli.rs (target\\debug\\deps\\composition_cli-71d64266f8031692.exe)",
+        "     Running tests\\composition_failures.rs (target\\debug\\deps\\composition_failures-5cb66d8510d0a955.exe)",
+        "     Running tests\\composition_parallel.rs (target\\debug\\deps\\composition_parallel-9db7bbf2aa7a3e0f.exe)",
+        "     Running tests\\composition_path_confirmation.rs (target\\debug\\deps\\composition_path_confirmation-0827799b857d0348.exe)",
+        "     Running tests\\composition_pipeline.rs (target\\debug\\deps\\composition_pipeline-3f73ca170d32a164.exe)",
+        "     Running tests\\composition_recipes.rs (target\\debug\\deps\\composition_recipes-a0b1d7ba24e8d8be.exe)",
+        "     Running tests\\composition_units.rs (target\\debug\\deps\\composition_units-32fb2564c4aa4e5d.exe)",
+        "     Running tests\\composition_validation.rs (target\\debug\\deps\\composition_validation-e4e42e534175f202.exe)",
+        "     Running tests\\coordination_upgrade.rs (target\\debug\\deps\\coordination_upgrade-10fbd753293b78f0.exe)",
+        "     Running tests\\corrective_retry.rs (target\\debug\\deps\\corrective_retry-7b5db1cd6ef0d68a.exe)",
+        "     Running tests\\learning_worker.rs (target\\debug\\deps\\learning_worker-2dc07558bbfc7891.exe)",
+        "     Running tests\\orchestration_baseline.rs (target\\debug\\deps\\orchestration_baseline-261d7867158328d0.exe)",
+        "     Running tests\\preparation_workflow.rs (target\\debug\\deps\\preparation_workflow-eff4342ff467bba5.exe)",
+        "     Running tests\\pulsation_m5.rs (target\\debug\\deps\\pulsation_m5-c6247edc8e8cb17d.exe)",
+        "     Running tests\\review_brief.rs (target\\debug\\deps\\review_brief-a90e811314324fe2.exe)",
+        "     Running tests\\serial_upgrade.rs (target\\debug\\deps\\serial_upgrade-705012e13b99c21b.exe)",
+        "     Running tests\\serial_worker.rs (target\\debug\\deps\\serial_worker-ab0f2f52a3e353fd.exe)",
+        "     Running tests\\stage_failure_checkpoint.rs (target\\debug\\deps\\stage_failure_checkpoint-5e89f616900e5a19.exe)",
+        "     Running tests\\token_usage.rs (target\\debug\\deps\\token_usage-8e8569b99e35fba6.exe)",
+        "     Running tests\\workspace_flow.rs (target\\debug\\deps\\workspace_flow-05cda9ff8d65b8ba.exe)",
+        "     Running unittests examples\\pulsation_ui_fixture.rs (target\\debug\\examples\\pulsation_ui_fixture-6dc30dd1da2b6510.exe)",
+        "     Running unittests src\\lib.rs (target\\debug\\deps\\hvc_ui-622d08c201253f20.exe)",
+        "   Doc-tests hvc_core",
+        "   Doc-tests hvc_editor",
+        "   Doc-tests hvc_test_support",
+        "   Doc-tests hvc_ui"
+      ]
+    }
+  ],
+  "uiAlias": {
+    "durationSeconds": 42.135,
+    "testReportedSeconds": 40.11,
+    "cargoPreparationSeconds": 1.16,
+    "sampleCount": 1,
+    "passed": 209,
+    "failed": 0,
+    "ignored": 0,
+    "exitCode": 0
+  },
+  "deterministicDiscovery": {
+    "passed": 2,
+    "failed": 0,
+    "filteredOut": 612,
+    "testReportedSeconds": 0.61
+  },
+  "historicalConcurrencyChecks": {
+    "testCases": [
+      "llm::compression::tests::never_compresses_normative_content",
+      "persistence_service::forge_batches::tests::complete_six_stage_batch_requires_approved_integration"
+    ],
+    "integrationTarget": "pulsation_m5",
+    "completeRuns": 3,
+    "allPassed": true
+  },
+  "defaultIgnored": [
+    {
+      "test": "agent_runtime::prompt_tests::print_the_prompt_a_compact_model_receives",
+      "reason": "manual inspection aid",
+      "target": "hvc_core"
+    },
+    {
+      "test": "authenticated_codex_companion_smoke",
+      "reason": "requires local authentication and network; not enabled",
+      "target": "cli_executor"
+    }
+  ],
+  "gateControlQa": {
+    "powershellVersions": [
+      "5.1.26100.9549",
+      "7.6.5"
+    ],
+    "utf8Bom": true,
+    "success": true,
+    "nativeFailureExitCode": 7,
+    "powershellExceptionPreserved": true,
+    "jsonOnFailure": true,
+    "reportingFailureDoesNotMaskGateFailure": true
+  },
+  "finalGate": {
+    "schemaVersion": 1,
+    "startedAt": "2026-10-15T15:43:14.6635967Z",
+    "finishedAt": "2026-10-15T15:57:56.1110625Z",
+    "durationSeconds": 881.423,
+    "passed": false,
+    "steps": [
+      {
+        "name": "estrutura exclusivamente GPUI/Rust",
+        "durationSeconds": 0.693,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "cargo fmt",
+        "durationSeconds": 3.215,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "Clippy",
+        "durationSeconds": 1.266,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "testes Rust",
+        "durationSeconds": 381.949,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "build release GPUI",
+        "durationSeconds": 471.057,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "smoke Windows GPUI",
+        "durationSeconds": 1.309,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "licenças e fontes Rust",
+        "durationSeconds": 1.377,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "advisories Rust",
+        "durationSeconds": 20.448,
+        "passed": false,
+        "exitCode": 1
+      }
+    ]
+  },
+  "finalGateWallSeconds": 881.877,
+  "finalGateTests": {
+    "passed": 943,
+    "failed": 0,
+    "ignored": 2,
+    "cargoPreparationSeconds": 1.09
+  },
+  "resumedAdvisoryAudit": {
+    "schemaVersion": 1,
+    "auditedAt": "2026-10-15T20:11:06.0408696Z",
+    "cargoAuditExitCode": 1,
+    "cargoVulnerabilities": 7,
+    "cargoInformationalWarnings": {
+      "unmaintained": 11,
+      "unsound": 2,
+      "yanked": 1
+    },
+    "rustSecLastCommit": "edb58f5974b83eb8302332821cb6d389777aa351",
+    "passed": false
+  },
+  "warmGates": [
+    {
+      "run": 1,
+      "durationSeconds": 387.9661669,
+      "exitCode": 1,
+      "passed": 943,
+      "failed": 0,
+      "ignored": 2,
+      "filteredOut": 0,
+      "cargoTestPreparationSeconds": 1.09,
+      "testReportedSeconds": 373.14,
+      "gate": {
+        "schemaVersion": 1,
+        "startedAt": "2026-10-15T15:58:52.0546376Z",
+        "finishedAt": "2026-10-15T16:05:19.6490813Z",
+        "durationSeconds": 387.581,
+        "passed": false,
+        "steps": [
+          {
+            "name": "estrutura exclusivamente GPUI/Rust",
+            "durationSeconds": 0.623,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "cargo fmt",
+            "durationSeconds": 3.232,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "Clippy",
+            "durationSeconds": 1.263,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "testes Rust",
+            "durationSeconds": 378.759,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "build release GPUI",
+            "durationSeconds": 1.109,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "smoke Windows GPUI",
+            "durationSeconds": 1.001,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "licenças e fontes Rust",
+            "durationSeconds": 1.275,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "advisories Rust",
+            "durationSeconds": 0.202,
+            "passed": false,
+            "exitCode": -1
+          }
+        ]
+      },
+      "advisories": null,
+      "advisoryEnvironmentFailure": "Database fetch failed; the older on-disk audit summary is not evidence for this measurement."
+    },
+    {
+      "run": 2,
+      "durationSeconds": 471.8852486,
+      "exitCode": 1,
+      "passed": 943,
+      "failed": 0,
+      "ignored": 2,
+      "filteredOut": 0,
+      "cargoTestPreparationSeconds": 5.74,
+      "testReportedSeconds": 380.51,
+      "gate": {
+        "schemaVersion": 1,
+        "startedAt": "2026-10-15T20:11:43.521623Z",
+        "finishedAt": "2026-10-15T20:19:34.2787557Z",
+        "durationSeconds": 470.754,
+        "passed": false,
+        "steps": [
+          {
+            "name": "estrutura exclusivamente GPUI/Rust",
+            "durationSeconds": 7.032,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "cargo fmt",
+            "durationSeconds": 7.6,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "Clippy",
+            "durationSeconds": 10.856,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "testes Rust",
+            "durationSeconds": 413.699,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "build release GPUI",
+            "durationSeconds": 8.613,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "smoke Windows GPUI",
+            "durationSeconds": 1.259,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "licenças e fontes Rust",
+            "durationSeconds": 1.33,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "advisories Rust",
+            "durationSeconds": 20.206,
+            "passed": false,
+            "exitCode": 1
+          }
+        ]
+      },
+      "advisories": null,
+      "advisoryEnvironmentFailure": "Database fetch failed; the older on-disk audit summary is not evidence for this measurement."
+    },
+    {
+      "run": 3,
+      "durationSeconds": 162.9806925,
+      "exitCode": 1,
+      "passed": 612,
+      "failed": 1,
+      "ignored": 1,
+      "filteredOut": 0,
+      "cargoTestPreparationSeconds": 1.04,
+      "testReportedSeconds": 155.48,
+      "gate": {
+        "schemaVersion": 1,
+        "startedAt": "2026-10-15T20:19:35.4427569Z",
+        "finishedAt": "2026-10-15T20:22:17.2305195Z",
+        "durationSeconds": 161.785,
+        "passed": false,
+        "steps": [
+          {
+            "name": "estrutura exclusivamente GPUI/Rust",
+            "durationSeconds": 0.591,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "cargo fmt",
+            "durationSeconds": 3.123,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "Clippy",
+            "durationSeconds": 1.203,
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "name": "testes Rust",
+            "durationSeconds": 156.722,
+            "passed": false,
+            "exitCode": 101
+          }
+        ]
+      },
+      "advisories": null,
+      "advisoryNotReached": true
+    }
+  ],
+  "warmGateMedianWallSeconds": null,
+  "warmGateComparability": "No comparable whole-gate median: two audit-fetch failures and one early test failure. Unreached stages are null, not zero.",
+  "warmGateStepSummary": [
+    {
+      "name": "estrutura exclusivamente GPUI/Rust",
+      "sampleSeconds": [
+        0.623,
+        7.032,
+        0.591
+      ],
+      "results": [
+        "passed",
+        "passed",
+        "passed"
+      ],
+      "medianSeconds": 0.623
+    },
+    {
+      "name": "cargo fmt",
+      "sampleSeconds": [
+        3.232,
+        7.6,
+        3.123
+      ],
+      "results": [
+        "passed",
+        "passed",
+        "passed"
+      ],
+      "medianSeconds": 3.232
+    },
+    {
+      "name": "Clippy",
+      "sampleSeconds": [
+        1.263,
+        10.856,
+        1.203
+      ],
+      "results": [
+        "passed",
+        "passed",
+        "passed"
+      ],
+      "medianSeconds": 1.263
+    },
+    {
+      "name": "testes Rust",
+      "sampleSeconds": [
+        378.759,
+        413.699,
+        156.722
+      ],
+      "results": [
+        "passed",
+        "passed",
+        "failed"
+      ],
+      "medianSeconds": null
+    },
+    {
+      "name": "build release GPUI",
+      "sampleSeconds": [
+        1.109,
+        8.613,
+        null
+      ],
+      "results": [
+        "passed",
+        "passed",
+        "not reached"
+      ],
+      "medianSeconds": null
+    },
+    {
+      "name": "smoke Windows GPUI",
+      "sampleSeconds": [
+        1.001,
+        1.259,
+        null
+      ],
+      "results": [
+        "passed",
+        "passed",
+        "not reached"
+      ],
+      "medianSeconds": null
+    },
+    {
+      "name": "licenças e fontes Rust",
+      "sampleSeconds": [
+        1.275,
+        1.33,
+        null
+      ],
+      "results": [
+        "passed",
+        "passed",
+        "not reached"
+      ],
+      "medianSeconds": null
+    },
+    {
+      "name": "advisories Rust",
+      "sampleSeconds": [
+        0.202,
+        20.206,
+        null
+      ],
+      "results": [
+        "failed",
+        "failed",
+        "not reached"
+      ],
+      "medianSeconds": null
+    }
+  ],
+  "advisories": {
+    "schemaVersion": 1,
+    "auditedAt": "2026-10-15T15:57:56.0950603Z",
+    "cargoAuditExitCode": 1,
+    "cargoVulnerabilities": 7,
+    "cargoInformationalWarnings": {
+      "unmaintained": 11,
+      "unsound": 2,
+      "yanked": 1
+    },
+    "rustSecLastCommit": "edb58f5974b83eb8302332821cb6d389777aa351",
+    "passed": false
+  },
+  "advisoryFindings": [
+    {
+      "id": "RUSTSEC-2026-0338",
+      "package": "quinn-proto",
+      "version": "0.11.17",
+      "patched": [
+        ">=0.11.18"
+      ],
+      "date": "2026-09-14",
+      "title": "Remote peer can panic quinn-proto with zero-length STREAM frames during unordered reads",
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0338.html"
+    },
+    {
+      "id": "RUSTSEC-2026-0340",
+      "package": "quinn-proto",
+      "version": "0.11.17",
+      "patched": [
+        ">=0.11.18"
+      ],
+      "date": "2026-09-14",
+      "title": "Peer minimum ACK delay can panic quinn-proto when ACK_FREQUENCY transmission is enabled",
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0340.html"
+    },
+    {
+      "id": "RUSTSEC-2026-0343",
+      "package": "quinn-proto",
+      "version": "0.11.17",
+      "patched": [
+        ">=0.11.18"
+      ],
+      "date": "2026-09-14",
+      "title": "Outgoing datagram buffer accounting can panic the sender in quinn-proto",
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0343.html"
+    },
+    {
+      "id": "RUSTSEC-2026-0285",
+      "package": "rustls",
+      "version": "0.23.43",
+      "patched": [
+        ">=0.23.45"
+      ],
+      "date": "2026-09-14",
+      "title": "TLS 1.3 handshake messages incorrectly accepted across encryption level boundaries",
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0285.html"
+    },
+    {
+      "id": "RUSTSEC-2026-0346",
+      "package": "rustls",
+      "version": "0.23.43",
+      "patched": [
+        ">=0.23.46"
+      ],
+      "date": "2026-10-14",
+      "title": "`Debug` impls for client session values expose TLS secrets",
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0346.html"
+    },
+    {
+      "id": "RUSTSEC-2026-0348",
+      "package": "rustls",
+      "version": "0.23.43",
+      "patched": [
+        ">=0.23.46"
+      ],
+      "date": "2026-10-14",
+      "title": "Brotli certificate decompression can allocate up to 1 GiB before authentication",
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0348.html"
+    },
+    {
+      "id": "RUSTSEC-2026-0349",
+      "package": "rustls",
+      "version": "0.23.43",
+      "patched": [
+        ">=0.23.46"
+      ],
+      "date": "2026-10-14",
+      "title": "Unauthenticated ServerHello can downgrade later connections to classical key exchange",
+      "url": "https://rustsec.org/advisories/RUSTSEC-2026-0349.html"
+    }
+  ],
+  "dependencyBaseline": {
+    "lockfileBlob": "eb8c44c12925532e4219627b1fa43dcc9c002463",
+    "baseLockfileBlob": "eb8c44c12925532e4219627b1fa43dcc9c002463",
+    "unchanged": true,
+    "remediation": "Open dependency-security work; no ignored advisories or dependency changes in this test-workflow patch."
+  },
+  "preexistingLanguageDefect": {
+    "test": "persistence_service::forge_batches::tests::feature_prerequisites_can_share_a_complete_atomic_batch",
+    "source": "warm-gate-3.log",
+    "failure": "Validation: agent-authored feature plan must be English; detected non-English marker da+de",
+    "exampleUuid": "000000da-0000-4000-8000-000000de0000",
+    "previousCompletePasses": 6,
+    "failedAttempts": 1,
+    "baselineFiles": [
+      {
+        "path": "crates/hvc-core/src/feature_forge/tests.rs",
+        "blob": "694caeb32f4d11f9c29f42beccf975f4953c8fca",
+        "baseBlob": "694caeb32f4d11f9c29f42beccf975f4953c8fca",
+        "unchanged": true
+      },
+      {
+        "path": "crates/hvc-core/src/feature_forge/publication.rs",
+        "blob": "3e320ae14961976bf61a94a03b168e8354f4e490",
+        "baseBlob": "3e320ae14961976bf61a94a03b168e8354f4e490",
+        "unchanged": true
+      },
+      {
+        "path": "crates/hvc-core/src/feature_forge/service.rs",
+        "blob": "67e4d3459b3e7c1df69f6c24aa9ecbdb03b245c5",
+        "baseBlob": "67e4d3459b3e7c1df69f6c24aa9ecbdb03b245c5",
+        "unchanged": true
+      },
+      {
+        "path": "crates/hvc-core/src/agent_output_language.rs",
+        "blob": "24f937ac612cfee359e5c313e61843cb62405209",
+        "baseBlob": "24f937ac612cfee359e5c313e61843cb62405209",
+        "unchanged": true
+      }
+    ],
+    "remediation": "Exclude opaque metadata from prose validation and add a deterministic regression in separate production work."
+  },
+  "supplyChain": {
+    "resolvedPackages": 551,
+    "technicalPassed": true,
+    "distributionAllowed": false,
+    "legalBlockers": [
+      {
+        "id": "zed-55470",
+        "status": "open",
+        "disposition": "distribution_blocking"
+      }
+    ]
+  },
+  "notes": [
+    "No before/after timing claim for identical coverage: UI selection and full workspace have different scopes.",
+    "Build caches are specific to package/feature selection. All three warm runs used the same Rust files and test concurrency.",
+    "First gate attempt was interrupted to save the script as UTF-8 with BOM for Windows PowerShell 5.1. Clippy passed in that attempt; the complete final attempt is recorded separately.",
+    "Final gate starts with debug and Clippy caches warm and release target empty. Tool installation is outside all test measurements.",
+    "Default ignored tests were preserved; no new ignored tests or retries were added. Authenticated smoke was not enabled."
+  ]
+}

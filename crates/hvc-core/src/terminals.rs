@@ -3434,14 +3434,28 @@ impl TerminalService {
     }
 
     async fn discovery(&self, force: bool) -> Vec<CliAvailability> {
+        self.discovery_with(force, || async {
+            let handle = self.runtime.clone();
+            match handle.spawn(discover_clis_with_probes()).await {
+                Ok(items) => items,
+                Err(_) => discover_clis(),
+            }
+        })
+        .await
+    }
+
+    async fn discovery_with<F>(
+        &self,
+        force: bool,
+        discover: impl FnOnce() -> F,
+    ) -> Vec<CliAvailability>
+    where
+        F: std::future::Future<Output = Vec<CliAvailability>>,
+    {
         if !force && let Some(items) = self.cache_if_fresh() {
             return items;
         }
-        let handle = self.runtime.clone();
-        let mut items = match handle.spawn(discover_clis_with_probes()).await {
-            Ok(items) => items,
-            Err(_) => discover_clis(),
-        };
+        let mut items = discover().await;
         if cli_mode_disabled() {
             for availability in &mut items {
                 if availability.backend != CliBackend::Custom {
@@ -5794,6 +5808,8 @@ pub(crate) fn configure_hidden(command: &mut Command) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
 
     #[derive(Default)]
@@ -7587,6 +7603,19 @@ mod tests {
         assert_eq!(output.raw_output, "{\"a\":1,\"b\":2}");
     }
 
+    fn discovery_fixture(scan: usize) -> Vec<CliAvailability> {
+        vec![CliAvailability {
+            backend: CliBackend::Custom,
+            state: CliAvailabilityState::Available,
+            executable_path: None,
+            version: Some(format!("fixture-{scan}")),
+            diagnostic: None,
+            install_url: "",
+            install_command: "",
+            capabilities: adapters::capabilities(CliBackend::Custom, None),
+        }]
+    }
+
     #[tokio::test]
     async fn discovery_rescans_after_the_ttl_elapses_even_without_force() {
         use crate::persistence_service::PersistenceService;
@@ -7601,7 +7630,14 @@ mod tests {
         )
         .unwrap();
 
-        let _first = service.discovery(false).await;
+        let scans = AtomicUsize::new(0);
+        let discover = || {
+            let scan = scans.fetch_add(1, Ordering::SeqCst) + 1;
+            std::future::ready(discovery_fixture(scan))
+        };
+        let first = service.discovery_with(false, &discover).await;
+        assert_eq!(first, discovery_fixture(1));
+        assert_eq!(scans.load(Ordering::SeqCst), 1);
         let stale_at = Instant::now()
             .checked_sub(CLI_DISCOVERY_CACHE_TTL + Duration::from_secs(1))
             .expect("test clock should support subtracting the TTL");
@@ -7615,7 +7651,9 @@ mod tests {
                 .expect("first call must populate the cache")
                 .discovered_at = stale_at;
         }
-        let _second = service.discovery(false).await;
+        let second = service.discovery_with(false, &discover).await;
+        assert_eq!(second, discovery_fixture(2));
+        assert_eq!(scans.load(Ordering::SeqCst), 2);
         let refreshed_at = service
             .discovery_cache
             .lock()
@@ -7643,7 +7681,13 @@ mod tests {
         )
         .unwrap();
 
-        let _first = service.discovery(false).await;
+        let scans = AtomicUsize::new(0);
+        let discover = || {
+            let scan = scans.fetch_add(1, Ordering::SeqCst) + 1;
+            std::future::ready(discovery_fixture(scan))
+        };
+        let first = service.discovery_with(false, &discover).await;
+        assert_eq!(first, discovery_fixture(1));
         let first_stamp = service
             .discovery_cache
             .lock()
@@ -7651,7 +7695,9 @@ mod tests {
             .as_ref()
             .unwrap()
             .discovered_at;
-        let _second = service.discovery(false).await;
+        let second = service.discovery_with(false, &discover).await;
+        assert_eq!(second, first);
+        assert_eq!(scans.load(Ordering::SeqCst), 1);
         let second_stamp = service
             .discovery_cache
             .lock()

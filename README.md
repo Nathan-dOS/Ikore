@@ -49,6 +49,47 @@ powershell -ExecutionPolicy Bypass -File scripts/smoke-windows.ps1
 O artefato atual é o executável release. Instalador NSIS/WiX e Authenticode
 pertencem à etapa posterior de distribuição.
 
+## Testes durante o desenvolvimento
+
+Use os atalhos na raiz do workspace. Todos mantêm as dependências do lockfile
+(`--locked`) e executam até dois testes simultâneos por binário:
+
+| Comando | Abrangência |
+|---|---|
+| `cargo test-ui` | UI |
+| `cargo test-editor` | Editor e UI consumidora |
+| `cargo test-support` | Harnesses, integrações e UI consumidora |
+| `cargo test-core` | Core |
+| `cargo test-all` | Workspace completo, incluindo integrações, exemplos marcados como teste e doctests |
+
+Os atalhos servem para feedback local. Ao concluir uma alteração, execute
+`cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets -- -D warnings` e `cargo test-all`.
+Mudanças transversais, migrations e dependências exigem o workspace completo.
+`cargo test` sem seleção usa apenas o `default-members` (`hvc-app`).
+
+Para investigar uma área menor, confira os nomes com `--list` e aplique um filtro:
+
+```powershell
+cargo test --locked -p hvc-core --lib usage:: -- --list
+cargo test --locked -p hvc-core --lib usage:: -- --test-threads=2
+cargo test --locked -p hvc-test-support --test cli_executor -- --test-threads=2
+```
+
+Filtros reduzem a execução, mas ainda compilam o binário de testes da crate.
+O primeiro uso de uma seleção pode compilar variantes de dependências com
+features diferentes; compare tempos com o mesmo comando e cache aquecido.
+Testar um pacote não executa os testes de suas dependências. O nome de um teste
+pode diferir do diretório do arquivo (`#[path]`); não derive cobertura só de paths.
+Os aliases já contêm `--`: liste com `cargo test-ui --list`, sem outro delimitador.
+Para opções do Cargo como `--lib` e `--test`, use o comando explícito acima.
+Não passe `--ignored`/`--include-ignored` sem conferir os requisitos de cada caso.
+
+Cada worktree deve usar seu próprio `target/`, sem compartilhar `CARGO_TARGET_DIR`
+com outro checkout. `-j` controla jobs de compilação; `--test-threads` controla
+testes. A fixture `CoreTestHarness` limita seu runtime Tokio a dois workers;
+isso evita multiplicar o número de processadores por teste concorrente.
+
 ## Gate da Etapa 7
 
 ```powershell
@@ -58,6 +99,17 @@ powershell -ExecutionPolicy Bypass -File scripts/gate-stage7.ps1
 O gate comprova estrutura exclusivamente GPUI/Rust, formatação, Clippy com
 `-D warnings`, testes do workspace, build release, smoke Windows e auditorias
 Rust de licenças, fontes e advisories.
+
+Reserve esse gate completo para a validação final da entrega. Ele registra
+tempo e resultado de cada etapa no console e em `target/stage7/timings.json`,
+inclusive a etapa que falhar. Use `-TimingOutputPath` para guardar uma rodada
+separadamente. As opções `-SkipAdvisories` e `-EnforceDistribution` permanecem
+disponíveis; omitir uma auditoria não constitui o gate final completo.
+Compare execuções com cache aquecido e sem outra compilação concorrente;
+o primeiro build de uma worktree vazia inclui o custo de compilar dependências.
+
+A [validação desta organização de testes](quality/test-workflow-validation-2026-10-15.md)
+registra comandos, tempos, inventário e as pendências encontradas no gate.
 
 ## Paridade e desempenho
 
