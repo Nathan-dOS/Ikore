@@ -100,8 +100,8 @@ impl PersistenceService {
 mod tests {
     use super::*;
     use crate::feature_forge::{
-        id, AcceptanceCriterion, CreatePulsationFromTasksRequest, CreateTasksRequest, TaskDraft,
-        TaskKind, TaskSelection, TaskService,
+        AcceptanceCriterion, CreatePulsationFromTasksRequest, CreateTasksRequest, TaskDraft,
+        TaskKind, TaskSelection, TaskService, id,
     };
     use crate::orchestration::composition::settings::CompositionSettings;
 

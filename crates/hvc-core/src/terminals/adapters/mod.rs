@@ -188,7 +188,10 @@ fn version_supports_contract(backend: CliBackend, version: Option<&str>) -> bool
 /// `major.minor.patch` strings for display in diagnostics.
 pub(super) fn compatibility_range(backend: CliBackend) -> (String, String) {
     let rule = compatibility_rule(backend);
-    (format_version(rule.minimum), format_version(rule.maximum_exclusive))
+    (
+        format_version(rule.minimum),
+        format_version(rule.maximum_exclusive),
+    )
 }
 
 fn format_version(version: (u64, u64, u64)) -> String {

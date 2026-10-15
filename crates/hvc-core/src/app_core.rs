@@ -18,11 +18,11 @@ use crate::llm::{
     Clock, CredentialStore, JitterSource, KeyringCredentialStore, LlmEventSink, StableJitter,
     SystemClock,
 };
-use crate::orchestration::{CollectionBudget, IndexingEventSink};
 use crate::orchestration::brownfield::{
     BrownfieldOnboardingResult, BrownfieldOnboardingStatus, InventoryScanner,
     SetBrownfieldConsentRequest, SetBrownfieldIgnoredRequest,
 };
+use crate::orchestration::{CollectionBudget, IndexingEventSink};
 use crate::persistence_service::{
     PersistenceCommandError, PersistenceService, PersistenceServiceError,
 };

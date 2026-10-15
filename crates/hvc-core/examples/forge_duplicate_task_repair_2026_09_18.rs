@@ -32,7 +32,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut db = Connection::open(&path)?;
     db.pragma_update(None, "foreign_keys", true)?;
     let enforced: bool = db.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
-    assert!(enforced, "foreign key enforcement is off; refusing to write");
+    assert!(
+        enforced,
+        "foreign key enforcement is off; refusing to write"
+    );
 
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
@@ -51,7 +54,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(evidence, 0, "duplicate carries evidence; aborting");
     assert_eq!(own_deps, 0, "duplicate has its own dependencies; aborting");
     let done_state: String =
-        tx.query_row("SELECT state FROM work_tasks WHERE id=?1", [DONE], |r| r.get(0))?;
+        tx.query_row("SELECT state FROM work_tasks WHERE id=?1", [DONE], |r| {
+            r.get(0)
+        })?;
     assert_eq!(done_state, "done", "expected id is not done; aborting");
 
     // Repoint every dependent's edge and its own draft_json (the id is a
@@ -62,25 +67,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "UPDATE work_task_dependencies SET prerequisite_id=?2 WHERE task_id=?1 AND prerequisite_id=?3",
             params![dependent, DONE, DUPLICATE],
         )?;
-        assert_eq!(moved, 1, "expected exactly one edge to repoint for {dependent}");
+        assert_eq!(
+            moved, 1,
+            "expected exactly one edge to repoint for {dependent}"
+        );
 
         let updated_task = tx.execute(
             "UPDATE work_tasks SET draft_json=REPLACE(draft_json,?2,?3) WHERE id=?1 AND draft_json LIKE '%'||?2||'%'",
             params![dependent, DUPLICATE, DONE],
         )?;
-        assert_eq!(updated_task, 1, "expected exactly one draft_json rewrite in work_tasks for {dependent}");
+        assert_eq!(
+            updated_task, 1,
+            "expected exactly one draft_json rewrite in work_tasks for {dependent}"
+        );
 
         let updated_revision = tx.execute(
             "UPDATE work_task_revisions SET draft_json=REPLACE(draft_json,?2,?3) WHERE task_id=?1 AND draft_json LIKE '%'||?2||'%'",
             params![dependent, DUPLICATE, DONE],
         )?;
-        assert_eq!(updated_revision, 1, "expected exactly one draft_json rewrite in work_task_revisions for {dependent}");
+        assert_eq!(
+            updated_revision, 1,
+            "expected exactly one draft_json rewrite in work_task_revisions for {dependent}"
+        );
 
         println!("repointed {dependent} -> {DONE}");
     }
 
     let removed = tx.execute("DELETE FROM work_tasks WHERE id=?1", [DUPLICATE])?;
-    assert_eq!(removed, 1, "expected to delete exactly one row for the duplicate");
+    assert_eq!(
+        removed, 1,
+        "expected to delete exactly one row for the duplicate"
+    );
     println!("deleted {DUPLICATE}");
 
     // Post-state: exactly one task with this title, done, under its original id.
@@ -98,11 +115,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .prepare("SELECT prerequisite_id FROM work_task_dependencies WHERE task_id=?1 ORDER BY prerequisite_id")?
             .query_map([dependent], |r| r.get(0))?
             .collect::<Result<_, _>>()?;
-        assert!(deps.contains(&DONE.to_string()) && !deps.contains(&DUPLICATE.to_string()),
-            "{dependent} dependency edges still wrong: {deps:?}");
-        let draft_json: String =
-            tx.query_row("SELECT draft_json FROM work_tasks WHERE id=?1", [dependent], |r| r.get(0))?;
-        assert!(!draft_json.contains(DUPLICATE), "{dependent} draft_json still references the duplicate");
+        assert!(
+            deps.contains(&DONE.to_string()) && !deps.contains(&DUPLICATE.to_string()),
+            "{dependent} dependency edges still wrong: {deps:?}"
+        );
+        let draft_json: String = tx.query_row(
+            "SELECT draft_json FROM work_tasks WHERE id=?1",
+            [dependent],
+            |r| r.get(0),
+        )?;
+        assert!(
+            !draft_json.contains(DUPLICATE),
+            "{dependent} draft_json still references the duplicate"
+        );
     }
 
     let orphans: i64 = tx.query_row(

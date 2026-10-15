@@ -1543,12 +1543,14 @@ impl SqliteLlmRepository {
         let limit = limit.clamp(1, 50) as i64;
         let connection = self.connection()?;
         let (predicate, target_value) = match target {
-            AgentExecutionTarget::Canonical { agent_role } => {
-                ("agent_role=?2 AND free_form_slot_id IS NULL", agent_role.as_str())
-            }
-            AgentExecutionTarget::FreeForm { slot_id } => {
-                ("agent_role IS NULL AND free_form_slot_id=?2", slot_id.as_str())
-            }
+            AgentExecutionTarget::Canonical { agent_role } => (
+                "agent_role=?2 AND free_form_slot_id IS NULL",
+                agent_role.as_str(),
+            ),
+            AgentExecutionTarget::FreeForm { slot_id } => (
+                "agent_role IS NULL AND free_form_slot_id=?2",
+                slot_id.as_str(),
+            ),
         };
         let sql = format!(
             "SELECT id,generation_id,agent_role,free_form_slot_id,route_id,stage,status,

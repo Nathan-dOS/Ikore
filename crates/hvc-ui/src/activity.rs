@@ -122,7 +122,10 @@ mod tests {
         let mut feed = ActivityFeed::default();
         let base = SystemTime::UNIX_EPOCH;
         for index in 0..(ACTIVITY_CAP + 5) {
-            feed.push(entry(&format!("e{index}"), base + Duration::from_secs(index as u64)));
+            feed.push(entry(
+                &format!("e{index}"),
+                base + Duration::from_secs(index as u64),
+            ));
         }
         assert_eq!(feed.len(), ACTIVITY_CAP);
         let recent: Vec<&str> = feed.recent(3).map(|e| e.summary.as_ref()).collect();

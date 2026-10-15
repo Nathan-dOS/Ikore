@@ -455,15 +455,17 @@ impl AgentsBackend for CoreAgentsBackend {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
         Box::pin(async move {
-            runtime.spawn_blocking(move || {
-                core.persistence().export_agent_api_execution(
-                    hvc_core::persistence_service::GetAgentApiExecutionSnapshotRequest {
-                        project_id,
-                        target,
-                        execution_id,
-                    },
-                )
-            }).await
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence().export_agent_api_execution(
+                        hvc_core::persistence_service::GetAgentApiExecutionSnapshotRequest {
+                            project_id,
+                            target,
+                            execution_id,
+                        },
+                    )
+                })
+                .await
                 .map_err(|error| UiCommandError::worker(format!("export worker aborted: {error}")))?
                 .map(|path| path.to_string_lossy().into_owned())
                 .map_err(persistence_error)
@@ -1362,8 +1364,7 @@ mod tests {
             });
         }
 
-        let activity = &model.api_activity
-            [&AgentIdentifier::Canonical(AgentRole::BackendAgent)];
+        let activity = &model.api_activity[&AgentIdentifier::Canonical(AgentRole::BackendAgent)];
         assert_eq!(activity.len(), 200);
         assert!(activity.iter().all(|line| line.contains("[REDACTED]")));
         assert!(

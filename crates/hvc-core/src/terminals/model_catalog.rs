@@ -949,7 +949,10 @@ mod tests {
         for backend in [CliBackend::Codex, CliBackend::Claude, CliBackend::Gemini] {
             let snapshot = preset_snapshot("project-under-test", backend, None, None);
             let expected = declarative_models(backend);
-            assert!(!expected.is_empty(), "backend {backend:?} has no catalog entries");
+            assert!(
+                !expected.is_empty(),
+                "backend {backend:?} has no catalog entries"
+            );
             assert_eq!(
                 snapshot.models.len(),
                 expected.len() + 1,
@@ -966,9 +969,18 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
 
         // No config files yet: falls back to the plain "CLI default" label.
-        assert_eq!(detect_cli_default_model(CliBackend::Codex, home.path()), None);
-        assert_eq!(detect_cli_default_model(CliBackend::Claude, home.path()), None);
-        assert_eq!(detect_cli_default_model(CliBackend::Gemini, home.path()), None);
+        assert_eq!(
+            detect_cli_default_model(CliBackend::Codex, home.path()),
+            None
+        );
+        assert_eq!(
+            detect_cli_default_model(CliBackend::Claude, home.path()),
+            None
+        );
+        assert_eq!(
+            detect_cli_default_model(CliBackend::Gemini, home.path()),
+            None
+        );
 
         std::fs::create_dir_all(home.path().join(".codex")).unwrap();
         std::fs::write(
@@ -1000,7 +1012,10 @@ mod tests {
 
         // Malformed config fails closed to `None` instead of surfacing a parse error.
         std::fs::write(home.path().join(".codex/config.toml"), "not = [valid toml").unwrap();
-        assert_eq!(detect_cli_default_model(CliBackend::Codex, home.path()), None);
+        assert_eq!(
+            detect_cli_default_model(CliBackend::Codex, home.path()),
+            None
+        );
 
         // OpenCode/Custom never read local config.
         assert_eq!(

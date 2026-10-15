@@ -39,11 +39,14 @@ use hvc_core::{AppCore, AppEvent};
 use hvc_editor::{EditorSelection, EditorSnapshot, TextPosition};
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::activity::{ActivityEntry, ActivityKind};
 use crate::agents::{
     AgentIdentifier, AgentsBackend, AgentsDashboardSnapshot, AgentsModel, ApiActivityFilter,
     CliModelPickerState, CliModelPickerTarget, CoreAgentsBackend,
 };
 use crate::chat::{ChatBackend, ChatEventOutcome, ChatModel, CoreChatBackend};
+use crate::flow::FlowTarget;
+use crate::icons::Icon;
 use crate::lifecycle::LifecycleState;
 use crate::logs::{CoreLogsBackend, LogsBackend, LogsModel, SequenceClassification};
 use crate::pulsations::{
@@ -59,15 +62,12 @@ use crate::vault::{
     CONTEXT_DOCUMENTS_DEBOUNCE, CoreVaultBackend, VAULT_REFRESH_DEBOUNCE, VaultBackend, VaultModel,
     normalize_rename_target,
 };
-use crate::icons::Icon;
-use crate::activity::{ActivityEntry, ActivityKind};
-use hvc_core::embedding_service::ModelPullEvent;
-use crate::flow::FlowTarget;
 use crate::views::NavigationModel;
 use crate::workspace::{
     AUTOSAVE_DEBOUNCE, BrownfieldOnboardingState, CoreWorkspaceBackend, WorkspaceBackend,
     WorkspaceEditorModel, WorkspaceTabModel,
 };
+use hvc_core::embedding_service::ModelPullEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppView {
@@ -1685,29 +1685,36 @@ impl AppModel {
             .iter()
             .map(|pulsation| (pulsation.id.clone(), (pulsation.status, pulsation.stage)))
             .collect();
-        let transitions: Vec<(String, String, PulsationStatus, PulsationStage, Option<String>)> =
-            if previous_statuses.is_empty() {
-                Vec::new()
-            } else {
-                snapshot
-                    .pulsations
-                    .iter()
-                    .filter(|pulsation| {
-                        previous_statuses.get(&pulsation.id).is_some_and(|(status, stage)| {
+        let transitions: Vec<(
+            String,
+            String,
+            PulsationStatus,
+            PulsationStage,
+            Option<String>,
+        )> = if previous_statuses.is_empty() {
+            Vec::new()
+        } else {
+            snapshot
+                .pulsations
+                .iter()
+                .filter(|pulsation| {
+                    previous_statuses
+                        .get(&pulsation.id)
+                        .is_some_and(|(status, stage)| {
                             *status != pulsation.status || *stage != pulsation.stage
                         })
-                    })
-                    .map(|pulsation| {
-                        (
-                            pulsation.id.clone(),
-                            pulsation.feature_name.clone(),
-                            pulsation.status,
-                            pulsation.stage,
-                            pulsation.terminal_reason.clone(),
-                        )
-                    })
-                    .collect()
-            };
+                })
+                .map(|pulsation| {
+                    (
+                        pulsation.id.clone(),
+                        pulsation.feature_name.clone(),
+                        pulsation.status,
+                        pulsation.stage,
+                        pulsation.terminal_reason.clone(),
+                    )
+                })
+                .collect()
+        };
         let active_id = self.pulsations.update(cx, |pulsations, _| {
             pulsations.apply_snapshot(project_id, snapshot, preferred_id)
         });
@@ -1726,7 +1733,10 @@ impl AppModel {
                     crate::pulsations::status_label(status, terminal_reason.as_deref())
                 ),
                 Some(FlowTarget::PulsationSection(id, section)),
-                matches!(status, PulsationStatus::Failed | PulsationStatus::Checkpoint),
+                matches!(
+                    status,
+                    PulsationStatus::Failed | PulsationStatus::Checkpoint
+                ),
             );
         }
         let current_failure = &self.pulsations.read(cx).failure.checkpoint;
@@ -3477,7 +3487,10 @@ impl AppModel {
 
     pub(crate) fn cycle_agent_api_filter(&mut self, key: String, cx: &mut Context<Self>) {
         self.agents.update(cx, |agents, _| {
-            let filter = agents.api_filters.entry(key).or_insert(ApiActivityFilter::All);
+            let filter = agents
+                .api_filters
+                .entry(key)
+                .or_insert(ApiActivityFilter::All);
             *filter = filter.next();
         });
         cx.notify();
@@ -3490,7 +3503,8 @@ impl AppModel {
     ) {
         self.agents.update(cx, |agents, _| {
             agents.api_activity.remove(&target);
-            agents.notice = Some("Local API viewer cleared; persisted history was retained.".into());
+            agents.notice =
+                Some("Local API viewer cleared; persisted history was retained.".into());
         });
         cx.notify();
     }
@@ -3501,8 +3515,12 @@ impl AppModel {
         execution_id: String,
         cx: &mut Context<Self>,
     ) {
-        let Some(backend) = self.agents_backend.clone() else { return; };
-        let Some(project_id) = self.workspace.read(cx).project_id.clone() else { return; };
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let Some(project_id) = self.workspace.read(cx).project_id.clone() else {
+            return;
+        };
         let generation = self.agents.update(cx, |agents, _| agents.begin(false));
         cx.notify();
         self.agents_task = Some(cx.spawn(async move |this, cx| {
@@ -3515,7 +3533,8 @@ impl AppModel {
                         model.agents.update(cx, |agents, _| {
                             if agents.generation == generation {
                                 agents.busy = false;
-                                agents.notice = Some(format!("Redacted API execution exported to {path}"));
+                                agents.notice =
+                                    Some(format!("Redacted API execution exported to {path}"));
                             }
                         });
                         model.schedule_agents_notice_dismiss(cx);
@@ -3651,11 +3670,7 @@ impl AppModel {
         cx.notify();
     }
 
-    pub(crate) fn save_free_form_api_binding(
-        &mut self,
-        slot_id: String,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn save_free_form_api_binding(&mut self, slot_id: String, cx: &mut Context<Self>) {
         let Some(backend) = self.agents_backend.clone() else {
             return;
         };
@@ -4594,11 +4609,7 @@ impl AppModel {
         }));
     }
 
-    pub(crate) fn start_free_form_api_agent(
-        &mut self,
-        slot_id: String,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn start_free_form_api_agent(&mut self, slot_id: String, cx: &mut Context<Self>) {
         let Some(backend) = self.agents_backend.clone() else {
             return;
         };
@@ -4655,11 +4666,7 @@ impl AppModel {
         }));
     }
 
-    pub(crate) fn cancel_free_form_api_agent(
-        &mut self,
-        slot_id: String,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn cancel_free_form_api_agent(&mut self, slot_id: String, cx: &mut Context<Self>) {
         let Some(backend) = self.agents_backend.clone() else {
             return;
         };
@@ -7728,7 +7735,11 @@ mod tests {
             .iter()
             .flat_map(|tab| tab.sub_views().iter().copied())
             .collect();
-        assert_eq!(grouped.len(), AppView::ALL.len() - 2, "Home and Settings are ungrouped");
+        assert_eq!(
+            grouped.len(),
+            AppView::ALL.len() - 2,
+            "Home and Settings are ungrouped"
+        );
         grouped.sort_by_key(|view| view.id());
         grouped.dedup_by_key(|view| view.id());
         assert_eq!(grouped.len(), AppView::ALL.len() - 2);
@@ -8253,8 +8264,13 @@ mod tests {
         let restore_deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         loop {
             cx.run_until_parked();
-            if cx.read(|cx| !model.read(cx).hydrating) { break; }
-            assert!(std::time::Instant::now() < restore_deadline, "fixture session restore timed out");
+            if cx.read(|cx| !model.read(cx).hydrating) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < restore_deadline,
+                "fixture session restore timed out"
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         model.update(cx, |model, cx| {

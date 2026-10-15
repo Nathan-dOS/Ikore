@@ -381,13 +381,11 @@ pub(crate) fn icon_button(
         })
         .child(icon(glyph, ICON_SIZE, ink))
         .when_some(badge_count.filter(|count| *count > 0), |button, count| {
-            button.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .child(badge(count, theme::accent(), theme::canvas())),
-            )
+            button.child(div().absolute().top_0().right_0().child(badge(
+                count,
+                theme::accent(),
+                theme::canvas(),
+            )))
         })
         .into_any_element()
 }
