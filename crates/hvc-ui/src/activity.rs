@@ -66,10 +66,13 @@ impl ActivityFeed {
         self.entries.iter().take(limit)
     }
 
+    /// Home only reads `recent`; the size accessors exist for the bound and reset tests.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
