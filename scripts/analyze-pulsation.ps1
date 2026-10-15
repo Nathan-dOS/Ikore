@@ -13,6 +13,9 @@ powershell -ExecutionPolicy Bypass -File scripts/analyze-pulsation.ps1
 
 .EXAMPLE
 powershell -ExecutionPolicy Bypass -File scripts/analyze-pulsation.ps1 -Id 0de4fb85-c773-42f7-a35e-b5d7fc3381b8 -Json quality/pulsation-analysis.json
+
+.EXAMPLE
+powershell -ExecutionPolicy Bypass -File scripts/analyze-pulsation.ps1 -Latest -Html quality/pulsation-report.html
 #>
 [CmdletBinding()]
 param(
@@ -23,7 +26,9 @@ param(
     # Database path. Defaults to the same location the desktop app uses.
     [string]$Database,
     # Also write the full machine-readable report here.
-    [string]$Json
+    [string]$Json,
+    # Also write the self-contained HTML pulsation report (ADR-024) here.
+    [string]$Html
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +46,10 @@ if ($Database) { $arguments += @('--db', $Database) }
 if ($Json) {
     $resolved = if ([System.IO.Path]::IsPathRooted($Json)) { $Json } else { Join-Path $repositoryRoot $Json }
     $arguments += @('--json', $resolved)
+}
+if ($Html) {
+    $resolved = if ([System.IO.Path]::IsPathRooted($Html)) { $Html } else { Join-Path $repositoryRoot $Html }
+    $arguments += @('--html', $resolved)
 }
 
 Push-Location $repositoryRoot

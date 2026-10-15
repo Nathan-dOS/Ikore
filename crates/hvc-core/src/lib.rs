@@ -15,6 +15,7 @@ pub mod feature_forge;
 pub mod llm;
 pub mod orchestration;
 pub mod persistence_service;
+pub mod reports;
 pub mod repository_context;
 pub mod secret_redactor;
 pub mod stage_briefs;

@@ -13,6 +13,9 @@ use std::path::Path;
 use chrono::{DateTime, FixedOffset};
 use hvc_core::llm::AgentRole;
 use hvc_core::orchestration::catalog::STAGES;
+use hvc_core::reports::{
+    PulsationReport, RejectedOutput, ReportPulsation, ReportRun, ReportStage, ReportTokens,
+};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
 
@@ -684,6 +687,81 @@ pub fn analyze(database: &Path, selector: &Selector) -> Result<Value, AnalysisEr
     }))
 }
 
+/// Maps an [`analyze`] report onto the typed input of the HTML pulsation report
+/// (ADR-024). Telemetry carries no criteria, checks or files, so `outcome`
+/// stays `None` and the rendered report says so instead of guessing.
+pub fn to_html_report(report: &Value) -> Result<PulsationReport, AnalysisError> {
+    let text = |value: &Value, field: &str| -> Result<String, AnalysisError> {
+        value[field]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("analysis report is missing {field}").into())
+    };
+    let seconds = |value: &Value| value.as_f64().unwrap_or(0.0);
+    let count = |value: &Value| value.as_i64().unwrap_or(0);
+
+    let stages = report["stages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|stage| -> Result<ReportStage, AnalysisError> {
+            Ok(ReportStage {
+                stage: serde_json::from_value(stage["stage"].clone())?,
+                runs: count(&stage["cli_runs"]),
+                agent_seconds: seconds(&stage["cli_seconds"]),
+                discarded_seconds: seconds(&stage["cli_seconds_discarded"]),
+                input_tokens: count(&stage["tokens"]["input"]),
+                output_tokens: count(&stage["tokens"]["output"]),
+            })
+        })
+        .collect::<Result<Vec<_>, AnalysisError>>()?;
+    // Learning runs after the pipeline closes, so only stage time counts as
+    // agents working inside this pulsation's wall clock.
+    let agent_seconds: f64 = stages.iter().map(|stage| stage.agent_seconds).sum();
+
+    let pulsation = &report["pulsation"];
+    let totals = &report["totals"];
+    Ok(PulsationReport {
+        pulsation: ReportPulsation {
+            id: text(pulsation, "id")?,
+            feature_name: text(pulsation, "feature_name")?,
+            status: serde_json::from_value(pulsation["status"].clone())?,
+            stage: serde_json::from_value(pulsation["stage"].clone())?,
+            pipeline_version: count(&pulsation["pipeline_version"]),
+            created_at: text(pulsation, "created_at")?,
+            updated_at: text(pulsation, "updated_at")?,
+        },
+        outcome: None,
+        run: ReportRun {
+            wall_clock_seconds: seconds(&totals["wall_clock_seconds"]),
+            agent_seconds,
+            review_wait_seconds: seconds(&report["checkpoints"]["review_seconds"]),
+            unblock_wait_seconds: seconds(&report["checkpoints"]["unblock_failure_seconds"]),
+            tokens: ReportTokens {
+                input: count(&totals["tokens"]["input"]),
+                output: count(&totals["tokens"]["output"]),
+                cache_read: count(&totals["tokens"]["cache_read"]),
+                discarded_input: count(&totals["tokens_discarded"]["input"]),
+                discarded_output: count(&totals["tokens_discarded"]["output"]),
+            },
+            stages,
+        },
+        rejected_outputs: report["validation_errors"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|error| RejectedOutput {
+                agent: error["agent"].as_str().unwrap_or("-").to_owned(),
+                raw_output_bytes: count(&error["raw_output_bytes"]),
+                error: error["validation_error"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            })
+            .collect(),
+    })
+}
+
 fn duration(value: Option<f64>) -> String {
     match value {
         Some(value) if value >= 3600.0 => format!(
@@ -848,4 +926,64 @@ pub fn render_text(report: &Value) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hvc_core::persistence_service::{PulsationStage, PulsationStatus};
+    use hvc_core::reports::render_pulsation_report;
+
+    fn analysis() -> Value {
+        json!({
+            "pulsation": {
+                "id": "5d0c2a6e-8b1f-4c3a-9e27-61f0b4a9d2c8",
+                "feature_name": "Usage export to CSV",
+                "status": "done",
+                "stage": "Integrator",
+                "pipeline_version": 4,
+                "created_at": "2026-10-15T13:05:00Z",
+                "updated_at": "2026-10-15T14:32:00Z",
+            },
+            "totals": {
+                "wall_clock_seconds": 5220.0,
+                "tokens": {"input": 180000, "output": 39500, "cache_read": 92000},
+                "tokens_discarded": {"input": 1200, "output": 300},
+            },
+            "stages": [
+                {"stage": "Intake", "cli_runs": 1, "cli_seconds": 64.0, "cli_seconds_discarded": 0.0,
+                 "tokens": {"input": 7000, "output": 1400}},
+                {"stage": "SPECIFICATION", "cli_runs": 2, "cli_seconds": 220.0, "cli_seconds_discarded": 40.0,
+                 "tokens": {"input": 26000, "output": 5200}},
+            ],
+            "checkpoints": {"review_seconds": 3430.0, "unblock_failure_seconds": 120.0},
+            "validation_errors": [
+                {"agent": "Contract", "raw_output_bytes": 2048, "validation_error": "missing <groups>"},
+            ],
+        })
+    }
+
+    #[test]
+    fn maps_telemetry_onto_the_html_report_without_inventing_an_outcome() {
+        let report = to_html_report(&analysis()).unwrap();
+        assert_eq!(report.pulsation.status, PulsationStatus::Done);
+        assert_eq!(report.pulsation.stage, PulsationStage::Integrator);
+        assert_eq!(report.run.stages[1].stage, PulsationStage::Specification);
+        assert_eq!(report.run.agent_seconds, 284.0);
+        assert_eq!(report.run.unblock_wait_seconds, 120.0);
+        assert_eq!(report.run.tokens.discarded_input, 1200);
+        assert!(report.outcome.is_none());
+
+        let html = render_pulsation_report(&report);
+        assert!(html.contains("<h1>Usage export to CSV</h1>"));
+        assert!(html.contains("built from run telemetry only"));
+        assert!(html.contains("missing &lt;groups&gt;"));
+    }
+
+    #[test]
+    fn rejects_an_analysis_without_pulsation_identity() {
+        let mut value = analysis();
+        value["pulsation"]["id"] = Value::Null;
+        assert!(to_html_report(&value).is_err());
+    }
 }
