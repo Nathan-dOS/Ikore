@@ -4087,10 +4087,7 @@ impl TerminalService {
         }) {
             return Ok(None);
         }
-        let config = match self
-            .repository
-            .get_config(&request.project_id, agent_role)
-        {
+        let config = match self.repository.get_config(&request.project_id, agent_role) {
             Ok(config) => config,
             Err(TerminalError::NotFound(_)) => {
                 let discovery = self.discovery(false).await;
@@ -4127,9 +4124,7 @@ impl TerminalService {
         // A pulsation that already burned a backend on this role carries the
         // one the host elected next. Project configuration is left untouched.
         if let Some(pulsation_id) = request.pulsation_id.as_deref()
-            && let Some(elected) = self
-                .repository
-                .backend_override(pulsation_id, agent_role)?
+            && let Some(elected) = self.repository.backend_override(pulsation_id, agent_role)?
             && elected != config.backend
         {
             config.backend = elected;

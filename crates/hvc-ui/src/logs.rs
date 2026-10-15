@@ -19,7 +19,12 @@ pub(crate) type LogsFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, UiCommandError>> + Send + 'static>>;
 
 /// A pulsation group being accumulated in `grouped_runs`: `(pulsation_id, title, status, runs)`.
-type PulsationGroupEntry = (Option<String>, String, Option<String>, Vec<AgentRunListItem>);
+type PulsationGroupEntry = (
+    Option<String>,
+    String,
+    Option<String>,
+    Vec<AgentRunListItem>,
+);
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LogsSnapshot {
@@ -522,32 +527,39 @@ mod tests {
         use hvc_core::persistence_service::AgentRunListItem;
         let mut model = LogsModel::default();
 
-        let run = |id: &str, pulse: Option<(&str, &str)>, agent: &str, status: &str, created: &str| AgentRunListItem {
-            id: id.into(),
-            job_id: format!("job-{id}"),
-            agent_name: agent.into(),
-            status: status.into(),
-            input_tokens: Some(100),
-            output_tokens: Some(50),
-            provider: Some("anthropic".into()),
-            model: Some("claude-3-5".into()),
-            estimated_cost_usd: Some(0.001),
-            last_error: if status == "failed" { Some("syntax error".into()) } else { None },
-            started_at: Some(created.into()),
-            finished_at: Some(created.into()),
-            raw_output: Some("raw output".into()),
-            structured_output: None,
-            created_at: created.into(),
-            updated_at: created.into(),
-            pulsation_id: pulse.map(|p| p.0.into()),
-            pulsation_name: pulse.map(|p| p.1.into()),
-            pulsation_status: pulse.map(|_| "done".into()),
-            job_kind: Some("pipeline_stage".into()),
-            duration_ms: Some(1200),
-            cancellation_reason: None,
-            validation_error: None,
-            tool_trace: None,
-        };
+        let run =
+            |id: &str, pulse: Option<(&str, &str)>, agent: &str, status: &str, created: &str| {
+                AgentRunListItem {
+                    id: id.into(),
+                    job_id: format!("job-{id}"),
+                    agent_name: agent.into(),
+                    status: status.into(),
+                    input_tokens: Some(100),
+                    output_tokens: Some(50),
+                    provider: Some("anthropic".into()),
+                    model: Some("claude-3-5".into()),
+                    estimated_cost_usd: Some(0.001),
+                    last_error: if status == "failed" {
+                        Some("syntax error".into())
+                    } else {
+                        None
+                    },
+                    started_at: Some(created.into()),
+                    finished_at: Some(created.into()),
+                    raw_output: Some("raw output".into()),
+                    structured_output: None,
+                    created_at: created.into(),
+                    updated_at: created.into(),
+                    pulsation_id: pulse.map(|p| p.0.into()),
+                    pulsation_name: pulse.map(|p| p.1.into()),
+                    pulsation_status: pulse.map(|_| "done".into()),
+                    job_kind: Some("pipeline_stage".into()),
+                    duration_ms: Some(1200),
+                    cancellation_reason: None,
+                    validation_error: None,
+                    tool_trace: None,
+                }
+            };
 
         // Snapshot with 4 runs:
         // - run-4 in pulse-2 (created at 10:30)
@@ -555,10 +567,34 @@ mod tests {
         // - run-2 in pulse-1 (created at 10:10)
         // - run-1 standalone (created at 10:00)
         let runs = vec![
-            run("run-4", Some(("pulse-2", "Feature Two")), "Spec Agent", "completed", "2026-09-16T10:30:00Z"),
-            run("run-3", Some(("pulse-1", "Feature One")), "Task Specifier", "failed", "2026-09-16T10:20:00Z"),
-            run("run-2", Some(("pulse-1", "Feature One")), "Spec Agent", "completed", "2026-09-16T10:10:00Z"),
-            run("run-1", None, "Terminal Agent", "completed", "2026-09-16T10:00:00Z"),
+            run(
+                "run-4",
+                Some(("pulse-2", "Feature Two")),
+                "Spec Agent",
+                "completed",
+                "2026-09-16T10:30:00Z",
+            ),
+            run(
+                "run-3",
+                Some(("pulse-1", "Feature One")),
+                "Task Specifier",
+                "failed",
+                "2026-09-16T10:20:00Z",
+            ),
+            run(
+                "run-2",
+                Some(("pulse-1", "Feature One")),
+                "Spec Agent",
+                "completed",
+                "2026-09-16T10:10:00Z",
+            ),
+            run(
+                "run-1",
+                None,
+                "Terminal Agent",
+                "completed",
+                "2026-09-16T10:00:00Z",
+            ),
         ];
 
         let snapshot = super::LogsSnapshot {
@@ -612,10 +648,13 @@ mod tests {
 
         // Subsequent poll must NOT re-expand pulse-2
         let gen2 = model.begin_poll().unwrap();
-        assert!(model.apply_poll(gen2, super::LogsSnapshot {
-            runs: runs.clone(),
-            metrics: Vec::new(),
-        }));
+        assert!(model.apply_poll(
+            gen2,
+            super::LogsSnapshot {
+                runs: runs.clone(),
+                metrics: Vec::new(),
+            }
+        ));
         assert!(!model.is_group_expanded("pulse-1"));
         assert!(!model.is_group_expanded("pulse-2"));
     }

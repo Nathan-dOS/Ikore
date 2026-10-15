@@ -175,12 +175,17 @@ mod tests {
     #[test]
     fn active_generation_id_only_reports_an_in_flight_assistant_turn() {
         let mut conversation = ResolutionConversation::default();
-        conversation.messages.push(message("user", "completed", "hi", "gen-user"));
+        conversation
+            .messages
+            .push(message("user", "completed", "hi", "gen-user"));
         assert_eq!(conversation.active_generation_id(), None);
         conversation
             .messages
             .push(message("assistant", "streaming", "", "gen-1"));
-        assert_eq!(conversation.active_generation_id().as_deref(), Some("gen-1"));
+        assert_eq!(
+            conversation.active_generation_id().as_deref(),
+            Some("gen-1")
+        );
         assert!(conversation.is_streaming());
     }
 

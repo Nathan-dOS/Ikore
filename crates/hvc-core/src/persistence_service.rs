@@ -16,15 +16,15 @@ use crate::embedding_service::{
 use crate::llm::{
     AgentExecutionTarget, AgentRole, Clock, CompressionPreview, CompressionPreviewRequest,
     CredentialStore, DeleteProviderConnectionRequest, DeleteProviderRouteRequest, DispatchPolicy,
-    ExecutionId, FreeFormProviderRouteBinding, GenerationId, JitterSource,
-    KeyringCredentialStore, LlmError, LlmErrorKind, LlmEventSink, LlmExecutionListItem,
-    LlmExecutionSnapshot, LlmGateway, LlmRequest, LlmResilienceSnapshot, LlmRoutingMetric,
-    NoopEventSink, ProviderConnection, ProviderProfile, ProviderRoute, ProviderRouteBinding,
-    ProviderRouter, ResetLlmResilienceStateRequest, ResponseFormat, RoutingMode,
-    SqliteLlmRepository, StableJitter, SystemClock, TestProviderConnectionRequest,
-    TestProviderConnectionResponse, UpsertFreeFormProviderRouteBindingRequest,
-    UpsertProviderConnectionRequest, UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest,
-    preview_compression, provider_profiles,
+    ExecutionId, FreeFormProviderRouteBinding, GenerationId, JitterSource, KeyringCredentialStore,
+    LlmError, LlmErrorKind, LlmEventSink, LlmExecutionListItem, LlmExecutionSnapshot, LlmGateway,
+    LlmRequest, LlmResilienceSnapshot, LlmRoutingMetric, NoopEventSink, ProviderConnection,
+    ProviderProfile, ProviderRoute, ProviderRouteBinding, ProviderRouter,
+    ResetLlmResilienceStateRequest, ResponseFormat, RoutingMode, SqliteLlmRepository, StableJitter,
+    SystemClock, TestProviderConnectionRequest, TestProviderConnectionResponse,
+    UpsertFreeFormProviderRouteBindingRequest, UpsertProviderConnectionRequest,
+    UpsertProviderRouteBindingRequest, UpsertProviderRouteRequest, preview_compression,
+    provider_profiles,
 };
 use chrono::Utc;
 use reqwest::Client;
@@ -3837,7 +3837,9 @@ impl PersistenceService {
             ));
         }
         Ok(GetLlmExecutionSnapshotResponse {
-            snapshot: self.llm_repository.execution_snapshot(&request.execution_id)?,
+            snapshot: self
+                .llm_repository
+                .execution_snapshot(&request.execution_id)?,
         })
     }
 
@@ -3848,13 +3850,17 @@ impl PersistenceService {
         let snapshot = self
             .get_agent_api_execution_snapshot(request.clone())?
             .snapshot;
-        let workspace_path: String = self.connection()?.query_row(
-            "SELECT workspace_path FROM projects WHERE id=?1 AND is_archived=0",
-            params![request.project_id],
-            |row| row.get(0),
-        ).optional()?.ok_or_else(|| {
-            PersistenceServiceError::NotFound("Project workspace was not found.".into())
-        })?;
+        let workspace_path: String = self
+            .connection()?
+            .query_row(
+                "SELECT workspace_path FROM projects WHERE id=?1 AND is_archived=0",
+                params![request.project_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                PersistenceServiceError::NotFound("Project workspace was not found.".into())
+            })?;
         let directory = Path::new(&workspace_path)
             .join(".hard-vibe-code")
             .join("api-exports");
@@ -3866,12 +3872,17 @@ impl PersistenceService {
             "projectId": request.project_id,
             "target": request.target,
             "snapshot": snapshot,
-        })).map_err(|error| PersistenceServiceError::Runtime(
-            format!("Failed to serialize redacted API execution: {error}")
-        ))?;
+        }))
+        .map_err(|error| {
+            PersistenceServiceError::Runtime(format!(
+                "Failed to serialize redacted API execution: {error}"
+            ))
+        })?;
         let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
         std::io::Write::write_all(&mut temporary, &payload)?;
-        temporary.persist(&destination).map_err(|error| error.error)?;
+        temporary
+            .persist(&destination)
+            .map_err(|error| error.error)?;
         Ok(destination)
     }
 
@@ -3888,14 +3899,13 @@ impl PersistenceService {
             ));
         }
         let connection = self.connection()?;
-        let api_ready: bool = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM terminal_slots
+        let api_ready: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM terminal_slots
                  WHERE id=?1 AND project_id=?2 AND kind='free_form' AND archived=0
                    AND execution_mode='api_direct')",
-                params![slot_id, project_id],
-                |row| row.get(0),
-            )?;
+            params![slot_id, project_id],
+            |row| row.get(0),
+        )?;
         if !api_ready {
             return Err(PersistenceServiceError::Validation(
                 "FreeForm slot is missing, archived, or not in API Key Mode.".into(),
@@ -3940,7 +3950,10 @@ impl PersistenceService {
         let service = self.clone();
         let execution_for_task = execution_id.clone();
         tokio::spawn(async move {
-            let _ = service.llm_router.execute(&llm_request, &cancellation).await;
+            let _ = service
+                .llm_router
+                .execute(&llm_request, &cancellation)
+                .await;
             service
                 .runtime_control
                 .manual_api_cancellations
@@ -4122,40 +4135,43 @@ impl PersistenceService {
              ORDER BY ar.created_at DESC",
         )?;
 
-        let rows = statement.query_map(params![pulsation_id.as_deref(), project_id.as_deref()], |row| {
-            let provider = row.get::<_, Option<String>>("provider")?;
-            let structured_output_raw: Option<String> = row.get("structured_output")?;
-            let structured_output = structured_output_raw
-                .as_deref()
-                .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+        let rows = statement.query_map(
+            params![pulsation_id.as_deref(), project_id.as_deref()],
+            |row| {
+                let provider = row.get::<_, Option<String>>("provider")?;
+                let structured_output_raw: Option<String> = row.get("structured_output")?;
+                let structured_output = structured_output_raw
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
 
-            Ok(AgentRunListItem {
-                id: row.get("run_id")?,
-                job_id: row.get("job_id")?,
-                agent_name: row.get("agent_name")?,
-                status: row.get("run_status")?,
-                input_tokens: row.get("input_tokens")?,
-                output_tokens: row.get("output_tokens")?,
-                provider,
-                model: row.get("model")?,
-                estimated_cost_usd: row.get("estimated_cost_usd")?,
-                last_error: row.get("last_error")?,
-                started_at: row.get("started_at")?,
-                finished_at: row.get("finished_at")?,
-                raw_output: row.get("raw_output")?,
-                structured_output,
-                created_at: row.get("created_at")?,
-                updated_at: row.get("updated_at")?,
-                pulsation_id: row.get("pulsation_id")?,
-                pulsation_name: row.get("pulsation_name")?,
-                pulsation_status: row.get("pulsation_status")?,
-                job_kind: row.get("job_kind")?,
-                duration_ms: row.get("duration_ms")?,
-                cancellation_reason: row.get("cancellation_reason")?,
-                validation_error: row.get("validation_error")?,
-                tool_trace: row.get("tool_trace")?,
-            })
-        })?;
+                Ok(AgentRunListItem {
+                    id: row.get("run_id")?,
+                    job_id: row.get("job_id")?,
+                    agent_name: row.get("agent_name")?,
+                    status: row.get("run_status")?,
+                    input_tokens: row.get("input_tokens")?,
+                    output_tokens: row.get("output_tokens")?,
+                    provider,
+                    model: row.get("model")?,
+                    estimated_cost_usd: row.get("estimated_cost_usd")?,
+                    last_error: row.get("last_error")?,
+                    started_at: row.get("started_at")?,
+                    finished_at: row.get("finished_at")?,
+                    raw_output: row.get("raw_output")?,
+                    structured_output,
+                    created_at: row.get("created_at")?,
+                    updated_at: row.get("updated_at")?,
+                    pulsation_id: row.get("pulsation_id")?,
+                    pulsation_name: row.get("pulsation_name")?,
+                    pulsation_status: row.get("pulsation_status")?,
+                    job_kind: row.get("job_kind")?,
+                    duration_ms: row.get("duration_ms")?,
+                    cancellation_reason: row.get("cancellation_reason")?,
+                    validation_error: row.get("validation_error")?,
+                    tool_trace: row.get("tool_trace")?,
+                })
+            },
+        )?;
 
         let mut runs = Vec::new();
         for row in rows {
@@ -5966,53 +5982,65 @@ mod tests {
             .run(&mut connection)
             .expect("v1-v33 should apply");
         let now = Utc::now().to_rfc3339();
-        connection.execute(
-            "INSERT INTO projects(id,name,workspace_path,created_at,updated_at)
+        connection
+            .execute(
+                "INSERT INTO projects(id,name,workspace_path,created_at,updated_at)
              VALUES('project-v33','Project V33',?1,?2,?2)",
-            params![root.path().to_string_lossy(), now],
-        ).unwrap();
-        connection.execute(
-            "INSERT INTO provider_routes(id,name,strategy,max_attempts,attempt_timeout_ms,
+                params![root.path().to_string_lossy(), now],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO provider_routes(id,name,strategy,max_attempts,attempt_timeout_ms,
                     route_timeout_ms,enabled,version,created_at,updated_at)
              VALUES('route-v33','Route V33','priority',3,30000,45000,1,1,?1,?1)",
-            params![now],
-        ).unwrap();
-        connection.execute(
-            "INSERT INTO provider_route_bindings(project_id,agent_role,stage,route_id,
+                params![now],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO provider_route_bindings(project_id,agent_role,stage,route_id,
                     enabled,version,created_at,updated_at)
              VALUES('project-v33','backend_agent','Code','route-v33',1,4,?1,?1)",
-            params![now],
-        ).unwrap();
-        connection.execute(
-            "INSERT INTO llm_route_executions(id,generation_id,project_id,route_id,
+                params![now],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO llm_route_executions(id,generation_id,project_id,route_id,
                     agent_role,stage,strategy,mode,status,decision_json,started_at)
              VALUES('execution-v33','generation-v33','project-v33','route-v33',
                     'backend_agent','Code','priority','on','completed','{}',?1)",
-            params![now],
-        ).unwrap();
+                params![now],
+            )
+            .unwrap();
         drop(connection);
 
         let service = PersistenceService::initialize(root.path()).expect("v34 should upgrade");
         let db = service.connection().unwrap();
-        let identity: (Option<String>, Option<String>) = db.query_row(
-            "SELECT agent_role,free_form_slot_id FROM llm_route_executions
+        let identity: (Option<String>, Option<String>) = db
+            .query_row(
+                "SELECT agent_role,free_form_slot_id FROM llm_route_executions
              WHERE id='execution-v33'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(identity, (Some("backend_agent".into()), None));
-        let binding_version: u64 = db.query_row(
-            "SELECT version FROM provider_route_bindings
+        let binding_version: u64 = db
+            .query_row(
+                "SELECT version FROM provider_route_bindings
              WHERE project_id='project-v33' AND agent_role='backend_agent' AND stage='Code'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(binding_version, 4);
-        let violations: i64 = db.query_row(
-            "SELECT COUNT(*) FROM pragma_foreign_key_check",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let violations: i64 = db
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(violations, 0);
     }
 
@@ -6029,57 +6057,86 @@ mod tests {
                 "INSERT INTO projects(id,name,workspace_path,created_at,updated_at)
                  VALUES(?1,?1,?2,?3,?3)",
                 params![id, path.to_string_lossy(), now],
-            ).unwrap();
+            )
+            .unwrap();
         }
         drop(db);
         let terminals = crate::terminals::TerminalRepository::new(service.db_path.clone());
-        let slot_a = terminals.create_free_form_slot(crate::terminals::CreateFreeFormSlotRequest {
-            project_id: "project-a".into(),
-            label: "API A".into(),
-        }).unwrap();
-        let slot_b = terminals.create_free_form_slot(crate::terminals::CreateFreeFormSlotRequest {
-            project_id: "project-b".into(),
-            label: "API B".into(),
-        }).unwrap();
-        let target_a = AgentExecutionTarget::free_form(&slot_a.id);
-        assert!(service.llm_repository.resolve_route_for_target(
-            "project-a", &target_a, "FreeForm"
-        ).is_err());
-        assert!(service.llm_repository.upsert_free_form_binding(
-            UpsertFreeFormProviderRouteBindingRequest {
+        let slot_a = terminals
+            .create_free_form_slot(crate::terminals::CreateFreeFormSlotRequest {
                 project_id: "project-a".into(),
-                slot_id: slot_b.id.clone(),
-                route_id: "legacy-default".into(),
-                enabled: Some(true),
-                version: None,
-            }
-        ).is_err());
+                label: "API A".into(),
+            })
+            .unwrap();
+        let slot_b = terminals
+            .create_free_form_slot(crate::terminals::CreateFreeFormSlotRequest {
+                project_id: "project-b".into(),
+                label: "API B".into(),
+            })
+            .unwrap();
+        let target_a = AgentExecutionTarget::free_form(&slot_a.id);
+        assert!(
+            service
+                .llm_repository
+                .resolve_route_for_target("project-a", &target_a, "FreeForm")
+                .is_err()
+        );
+        assert!(
+            service
+                .llm_repository
+                .upsert_free_form_binding(UpsertFreeFormProviderRouteBindingRequest {
+                    project_id: "project-a".into(),
+                    slot_id: slot_b.id.clone(),
+                    route_id: "legacy-default".into(),
+                    enabled: Some(true),
+                    version: None,
+                })
+                .is_err()
+        );
 
-        let binding = service.llm_repository.upsert_free_form_binding(
-            UpsertFreeFormProviderRouteBindingRequest {
+        let binding = service
+            .llm_repository
+            .upsert_free_form_binding(UpsertFreeFormProviderRouteBindingRequest {
                 project_id: "project-a".into(),
                 slot_id: slot_a.id.clone(),
                 route_id: "legacy-default".into(),
                 enabled: Some(true),
                 version: None,
-            }
-        ).unwrap();
+            })
+            .unwrap();
         assert_eq!(binding.version, 1);
-        assert_eq!(service.llm_repository.list_free_form_bindings("project-a").unwrap().len(), 1);
-        assert!(service.llm_repository.list_free_form_bindings("project-b").unwrap().is_empty());
-        assert!(service.llm_repository.resolve_route_for_target(
-            "project-a", &target_a, "FreeForm"
-        ).is_ok());
+        assert_eq!(
+            service
+                .llm_repository
+                .list_free_form_bindings("project-a")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            service
+                .llm_repository
+                .list_free_form_bindings("project-b")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            service
+                .llm_repository
+                .resolve_route_for_target("project-a", &target_a, "FreeForm")
+                .is_ok()
+        );
 
-        let stale = service.llm_repository.upsert_free_form_binding(
-            UpsertFreeFormProviderRouteBindingRequest {
+        let stale = service
+            .llm_repository
+            .upsert_free_form_binding(UpsertFreeFormProviderRouteBindingRequest {
                 project_id: "project-a".into(),
                 slot_id: slot_a.id,
                 route_id: "legacy-default".into(),
                 enabled: Some(false),
                 version: Some(99),
-            }
-        ).unwrap_err();
+            })
+            .unwrap_err();
         assert_eq!(stale.kind, LlmErrorKind::RouteConflict);
     }
 
@@ -7253,8 +7310,14 @@ mod tests {
         assert!(runs.len() >= 2);
         assert!(runs.iter().any(|run| run.structured_output.is_some()));
         assert!(runs.iter().any(|run| run.raw_output.is_some()));
-        assert!(runs.iter().all(|run| run.pulsation_id.as_deref() == Some(&created.id)));
-        assert!(runs.iter().all(|run| run.pulsation_name.as_deref() == Some("Feat: Runtime Output")));
+        assert!(
+            runs.iter()
+                .all(|run| run.pulsation_id.as_deref() == Some(&created.id))
+        );
+        assert!(
+            runs.iter()
+                .all(|run| run.pulsation_name.as_deref() == Some("Feat: Runtime Output"))
+        );
         assert!(runs.iter().all(|run| run.job_kind.is_some()));
         let trace_count: i64 = service
             .connection()

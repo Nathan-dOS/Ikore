@@ -147,9 +147,16 @@ mod tests {
         assert_eq!(paths.len(), Icon::ALL.len());
         paths.sort_unstable();
         paths.dedup();
-        assert_eq!(paths.len(), Icon::ALL.len(), "two Icon variants share a path");
+        assert_eq!(
+            paths.len(),
+            Icon::ALL.len(),
+            "two Icon variants share a path"
+        );
         for path in paths {
-            assert!(path.starts_with("icons/") && path.ends_with(".svg"), "{path}");
+            assert!(
+                path.starts_with("icons/") && path.ends_with(".svg"),
+                "{path}"
+            );
         }
     }
 }

@@ -4,7 +4,9 @@
 //! collapsing to one icon on the 48px strip. Home does not render it: Home *is* the rail
 //! unfolded.
 
-use gpui::{AnyElement, App, Context, FontWeight, IntoElement, SharedString, Window, div, prelude::*, px};
+use gpui::{
+    AnyElement, App, Context, FontWeight, IntoElement, SharedString, Window, div, prelude::*, px,
+};
 use hvc_core::orchestration::IndexingEvent;
 use hvc_core::terminals::CliAvailabilityState;
 
@@ -12,7 +14,9 @@ use crate::app_model::{AppModel, AppView, TabBadges};
 use crate::flow::FlowTarget;
 use crate::icons::Icon;
 use crate::pipeline_status::PipelineStatus;
-use crate::sizing::{CONTEXT_RAIL_AUTO_COLLAPSE_BELOW, CONTEXT_RAIL_COLLAPSED_WIDTH, CONTEXT_RAIL_WIDTH};
+use crate::sizing::{
+    CONTEXT_RAIL_AUTO_COLLAPSE_BELOW, CONTEXT_RAIL_COLLAPSED_WIDTH, CONTEXT_RAIL_WIDTH,
+};
 use crate::theme;
 use crate::widgets::{badge, icon, icon_button, pipeline_stepper, status_dot};
 
@@ -221,7 +225,9 @@ pub(crate) fn waiting_rows(
     let fallbacks = model.agents.read(cx).fallbacks.len();
 
     let review_target = match active_id {
-        Some(id) => FlowTarget::PulsationSection(id, crate::pulsations::PulsationDetailSection::Review),
+        Some(id) => {
+            FlowTarget::PulsationSection(id, crate::pulsations::PulsationDetailSection::Review)
+        }
         None => FlowTarget::View(AppView::Pulsations),
     };
     let prefix = match density {
@@ -229,37 +235,38 @@ pub(crate) fn waiting_rows(
         Density::Hero => "home-waiting-",
     };
     let mut rows: Vec<AnyElement> = Vec::new();
-    let mut push = |id: &'static str, count: usize, label: &'static str, color, target: WaitingTarget| {
-        if count == 0 {
-            return;
-        }
-        let id = SharedString::from(format!("{prefix}{id}"));
-        let selector = id.clone();
-        let row = div()
-            .id(id)
-            .debug_selector(move || selector.to_string())
-            .flex()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .cursor_pointer()
-            .hover(|style| style.bg(theme::surface_raised()))
-            .on_click(cx.listener(move |model, _, window, cx| match &target {
-                WaitingTarget::Flow(target) => model.run_next_step(target.clone(), window, cx),
-                WaitingTarget::Chip(id) => model.toggle_resolution_chip(id.clone(), cx),
-            }))
-            .child(badge(count, theme::surface_raised(), color))
-            .child(
-                div()
-                    .text_color(theme::text())
-                    .when(density == Density::Compact, |label| label.text_xs())
-                    .when(density == Density::Hero, |label| label.text_sm())
-                    .child(label),
-            );
-        rows.push(row.into_any_element());
-    };
+    let mut push =
+        |id: &'static str, count: usize, label: &'static str, color, target: WaitingTarget| {
+            if count == 0 {
+                return;
+            }
+            let id = SharedString::from(format!("{prefix}{id}"));
+            let selector = id.clone();
+            let row = div()
+                .id(id)
+                .debug_selector(move || selector.to_string())
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::surface_raised()))
+                .on_click(cx.listener(move |model, _, window, cx| match &target {
+                    WaitingTarget::Flow(target) => model.run_next_step(target.clone(), window, cx),
+                    WaitingTarget::Chip(id) => model.toggle_resolution_chip(id.clone(), cx),
+                }))
+                .child(badge(count, theme::surface_raised(), color))
+                .child(
+                    div()
+                        .text_color(theme::text())
+                        .when(density == Density::Compact, |label| label.text_xs())
+                        .when(density == Density::Hero, |label| label.text_sm())
+                        .child(label),
+                );
+            rows.push(row.into_any_element());
+        };
     push(
         "hitl",
         hitl,
@@ -351,8 +358,12 @@ fn actions_card(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             .rounded_md()
             .cursor_pointer()
             .when(primary, |row| row.bg(theme::accent()))
-            .when(!primary, |row| row.hover(|style| style.bg(theme::surface_raised())))
-            .when(primary, |row| row.hover(|style| style.opacity(theme::HOVER_OPACITY)))
+            .when(!primary, |row| {
+                row.hover(|style| style.bg(theme::surface_raised()))
+            })
+            .when(primary, |row| {
+                row.hover(|style| style.opacity(theme::HOVER_OPACITY))
+            })
             .text_color(ink)
             .on_click(cx.listener(move |model, _, window, cx| {
                 model.run_next_step(target.clone(), window, cx);
@@ -438,7 +449,11 @@ pub(crate) fn health_lines(model: &AppModel, cx: &App) -> Vec<(Icon, gpui::Rgba,
                 },
             )
         }
-        (None, true) => (Icon::Database, theme::text_muted(), "EMB  not checked".into()),
+        (None, true) => (
+            Icon::Database,
+            theme::text_muted(),
+            "EMB  not checked".into(),
+        ),
     });
 
     match model.indexing_status() {
@@ -579,7 +594,8 @@ fn strip(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         ))
         .when_some(primary, |strip, step| {
             let target = step.target.clone();
-            let tooltip = crate::widgets::Tooltip::new(step.label.clone()).with_shortcut("ctrl-enter");
+            let tooltip =
+                crate::widgets::Tooltip::new(step.label.clone()).with_shortcut("ctrl-enter");
             strip.child(icon_button(
                 "rail-strip-actions",
                 step.icon,

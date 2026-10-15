@@ -38,7 +38,11 @@ pub(crate) fn settings_section_strip(
                     "Connections",
                 ),
                 (SettingsSection::Routes, "settings-section-routes", "Routes"),
-                (SettingsSection::Runtime, "settings-section-runtime", "Runtime"),
+                (
+                    SettingsSection::Runtime,
+                    "settings-section-runtime",
+                    "Runtime",
+                ),
                 (SettingsSection::Usage, "settings-section-usage", "Usage"),
             ]
             .into_iter()

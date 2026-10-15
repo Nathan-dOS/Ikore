@@ -37,7 +37,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // protect: the delete would silently orphan revisions and dependency edges.
     db.pragma_update(None, "foreign_keys", true)?;
     let enforced: bool = db.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
-    assert!(enforced, "foreign key enforcement is off; refusing to write");
+    assert!(
+        enforced,
+        "foreign key enforcement is off; refusing to write"
+    );
 
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
@@ -57,7 +60,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     for id in RESTORE {
         let state: String =
-            tx.query_row("SELECT state FROM work_tasks WHERE id=?1", [id], |r| r.get(0))?;
+            tx.query_row("SELECT state FROM work_tasks WHERE id=?1", [id], |r| {
+                r.get(0)
+            })?;
         assert_eq!(state, "superseded", "{id} is not superseded; aborting");
     }
 
@@ -80,7 +85,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "SELECT state, count(*) FROM work_tasks WHERE feature_id=?1 GROUP BY state ORDER BY state",
     )?;
     let summary = stmt
-        .query_map([FEATURE], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .query_map([FEATURE], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
     println!("post-state: {summary:?}");

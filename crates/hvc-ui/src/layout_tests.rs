@@ -1044,7 +1044,11 @@ fn home_is_the_default_view_and_its_primary_step_runs_the_flow(cx: &mut TestAppC
         assert!(visual.debug_bounds("home-hero-title").is_some());
         let pipeline = visual.debug_bounds("home-pipeline").unwrap();
         assert!(pipeline.left() >= hero.left() && pipeline.right() <= hero.right());
-        assert!(visual.debug_bounds("home-pipeline-stage-specification").is_some());
+        assert!(
+            visual
+                .debug_bounds("home-pipeline-stage-specification")
+                .is_some()
+        );
         let step = visual.debug_bounds("home-next-step").unwrap();
         assert!(step.top() >= hero.bottom());
         assert!(step.right() <= center.right());
@@ -1061,7 +1065,9 @@ fn home_is_the_default_view_and_its_primary_step_runs_the_flow(cx: &mut TestAppC
     // Without a project the hero gives way to a single call to action.
     let (_, fresh) = cx.add_window_view(|_, cx| {
         let model = fixture(cx);
-        model.workspace.update(cx, |workspace, _| workspace.project_id = None);
+        model
+            .workspace
+            .update(cx, |workspace, _| workspace.project_id = None);
         model
     });
     assert!(fresh.debug_bounds("home-open-project").is_some());
@@ -1114,7 +1120,11 @@ fn context_rail_is_absent_on_home_and_present_on_workbench_views(cx: &mut TestAp
         let center = visual.debug_bounds("shell-center").unwrap();
         let status_bar = visual.debug_bounds("status-bar").unwrap();
         assert_eq!(rail.right(), px(1440.0), "{view:?}");
-        assert_eq!(rail.size.width, crate::sizing::CONTEXT_RAIL_WIDTH, "{view:?}");
+        assert_eq!(
+            rail.size.width,
+            crate::sizing::CONTEXT_RAIL_WIDTH,
+            "{view:?}"
+        );
         assert_eq!(center.right(), rail.left(), "{view:?}");
         assert_eq!(rail.bottom(), status_bar.top(), "{view:?}");
         for selector in [
@@ -1131,7 +1141,9 @@ fn context_rail_is_absent_on_home_and_present_on_workbench_views(cx: &mut TestAp
             );
         }
         // The fixture's pulsation is at Specification: the vertical stepper stacks the stages.
-        let spec = visual.debug_bounds("rail-pipeline-stage-specification").unwrap();
+        let spec = visual
+            .debug_bounds("rail-pipeline-stage-specification")
+            .unwrap();
         let code = visual.debug_bounds("rail-pipeline-stage-code").unwrap();
         assert!(code.top() > spec.bottom(), "{view:?}");
     }
@@ -1150,9 +1162,16 @@ fn context_rail_auto_collapses_at_the_minimum_width(cx: &mut TestAppContext) {
     visual.run_until_parked();
     let rail = visual.debug_bounds("context-rail").unwrap();
     assert_eq!(rail.size.width, crate::sizing::CONTEXT_RAIL_COLLAPSED_WIDTH);
-    for selector in ["rail-strip-pipeline", "rail-strip-waiting", "rail-strip-health"] {
+    for selector in [
+        "rail-strip-pipeline",
+        "rail-strip-waiting",
+        "rail-strip-health",
+    ] {
         let item = visual.debug_bounds(selector).unwrap();
-        assert!(item.left() >= rail.left() && item.right() <= rail.right(), "{selector}");
+        assert!(
+            item.left() >= rail.left() && item.right() <= rail.right(),
+            "{selector}"
+        );
     }
     // Forced by the window width: the toggle is inert.
     click(visual, "context-rail-toggle");
@@ -1309,7 +1328,10 @@ fn home_activity_lists_recent_events_newest_first(cx: &mut TestAppContext) {
     );
     select(&model, visual, AppView::Home);
     click(visual, "home-open-logs");
-    assert_eq!(model.read_with(visual, |m, _| m.active_view()), AppView::Logs);
+    assert_eq!(
+        model.read_with(visual, |m, _| m.active_view()),
+        AppView::Logs
+    );
 }
 
 #[gpui::test]
@@ -1322,8 +1344,14 @@ fn home_stacks_its_cards_at_the_minimum_width(cx: &mut TestAppContext) {
     let health = visual.debug_bounds("home-health").unwrap();
     let activity = visual.debug_bounds("home-activity").unwrap();
     assert!(waiting.top() >= hero.bottom());
-    assert!(health.top() >= waiting.bottom(), "{health:?} vs {waiting:?}");
-    assert!(activity.top() >= health.bottom(), "{activity:?} vs {health:?}");
+    assert!(
+        health.top() >= waiting.bottom(),
+        "{health:?} vs {waiting:?}"
+    );
+    assert!(
+        activity.top() >= health.bottom(),
+        "{activity:?} vs {health:?}"
+    );
     assert!(activity.right() <= px(960.0));
 
     visual.simulate_resize(size(px(1440.0), px(900.0)));
@@ -1401,13 +1429,26 @@ fn vault_columns_resize_and_expanding_the_graph_drops_them(cx: &mut TestAppConte
         assert!(files_sash.right() <= graph.left(), "{width}");
         assert!(graph.right() <= detail_sash.left(), "{width}");
         assert!(detail_sash.right() <= inspector.left(), "{width}");
-        assert!(inspector.right() <= center.right(), "{width}: {inspector:?} vs {center:?}");
-        assert!(graph.size.width >= px(200.0), "{width}: graph squeezed to {graph:?}");
-        assert!(inspector.size.width >= px(180.0), "{width}: inspector squeezed to {inspector:?}");
+        assert!(
+            inspector.right() <= center.right(),
+            "{width}: {inspector:?} vs {center:?}"
+        );
+        assert!(
+            graph.size.width >= px(200.0),
+            "{width}: graph squeezed to {graph:?}"
+        );
+        assert!(
+            inspector.size.width >= px(180.0),
+            "{width}: inspector squeezed to {inspector:?}"
+        );
     }
     // Dragging the files sash widens the files column and the detail split follows.
     let sash = visual.debug_bounds("vault-columns-sash").unwrap().center();
-    let before = visual.debug_bounds("vault-columns-left").unwrap().size.width;
+    let before = visual
+        .debug_bounds("vault-columns-left")
+        .unwrap()
+        .size
+        .width;
     visual.simulate_mouse_down(sash, gpui::MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
         point(sash.x + px(80.0), sash.y),
@@ -1420,16 +1461,29 @@ fn vault_columns_resize_and_expanding_the_graph_drops_them(cx: &mut TestAppConte
         Modifiers::default(),
     );
     visual.run_until_parked();
-    let after = visual.debug_bounds("vault-columns-left").unwrap().size.width;
+    let after = visual
+        .debug_bounds("vault-columns-left")
+        .unwrap()
+        .size
+        .width;
     assert_eq!(after, before + px(80.0));
-    assert!(visual.debug_bounds("vault-detail-columns-right").unwrap().right() <= px(1440.0));
+    assert!(
+        visual
+            .debug_bounds("vault-detail-columns-right")
+            .unwrap()
+            .right()
+            <= px(1440.0)
+    );
     // Expanding the graph removes both side columns and their sashes (absence last: it opens a
     // second window).
     click(visual, "vault-expand-graph");
     assert!(model.read_with(visual, |m, cx| m.vault.read(cx).graph_expanded));
     let graph = visual.debug_bounds("vault-graph-scroll").unwrap();
     let center = visual.debug_bounds("shell-center").unwrap();
-    assert!(graph.size.width >= center.size.width - px(48.0), "{graph:?} vs {center:?}");
+    assert!(
+        graph.size.width >= center.size.width - px(48.0),
+        "{graph:?} vs {center:?}"
+    );
     assert_absent(&model, visual, "vault-columns-sash");
 }
 
@@ -1537,7 +1591,11 @@ fn agent_selection_and_modal_preserve_detail_geometry(cx: &mut TestAppContext) {
     visual.run_until_parked();
     assert!(visual.debug_bounds("agents-terminal-expanded").is_some());
     assert_eq!(
-        model.read_with(visual, |model, cx| model.agents.read(cx).selected_agent.clone()),
+        model.read_with(visual, |model, cx| model
+            .agents
+            .read(cx)
+            .selected_agent
+            .clone()),
         Some(AgentIdentifier::Canonical(AgentRole::TaskSpecifier))
     );
     // The visual harness does not consistently route synthetic Escape events

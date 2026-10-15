@@ -401,20 +401,13 @@ fn header_context(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
 /// facts that are about the app rather than the current pulsation.
 fn header_health(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let needs_resync = model.needs_resync();
-    let cli_ready = model
-        .agents
-        .read(cx)
-        .snapshot
-        .as_ref()
-        .map(|snapshot| {
-            snapshot
-                .discovery
-                .iter()
-                .filter(|cli| {
-                    cli.state == hvc_core::terminals::CliAvailabilityState::Available
-                })
-                .count()
-        });
+    let cli_ready = model.agents.read(cx).snapshot.as_ref().map(|snapshot| {
+        snapshot
+            .discovery
+            .iter()
+            .filter(|cli| cli.state == hvc_core::terminals::CliAvailabilityState::Available)
+            .count()
+    });
     let providers = model
         .settings
         .read(cx)
@@ -580,7 +573,11 @@ fn status_segment(
 }
 
 /// Passive footer readout in the monospace column on the right.
-fn status_readout(id: &'static str, glyph: Option<Icon>, text: impl Into<SharedString>) -> AnyElement {
+fn status_readout(
+    id: &'static str,
+    glyph: Option<Icon>,
+    text: impl Into<SharedString>,
+) -> AnyElement {
     div()
         .id(id)
         .debug_selector(move || id.into())

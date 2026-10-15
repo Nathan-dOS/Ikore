@@ -1,8 +1,7 @@
 //! Learning is an optional job after Done, never a seventh stage or project owner.
 use super::*;
 use crate::llm::{
-    AgentExecutionTarget, AgentRole, LlmError, LlmErrorKind, LlmGateway, LlmRequest,
-    ResponseFormat,
+    AgentExecutionTarget, AgentRole, LlmError, LlmErrorKind, LlmGateway, LlmRequest, ResponseFormat,
 };
 use crate::orchestration::{ContentSha256, LearningState, learning_report::*};
 use coordination::{invalid, model_output_invalid};
