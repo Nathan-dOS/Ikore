@@ -56,6 +56,12 @@ pub enum SchemaFlavor {
     /// at the top level. We wrap the canonical union inside a `response` property so
     /// the tool schema is accepted while omitting the meta-schema declaration.
     Claude,
+    /// Antigravity's `agy` (1.3.5) refuses a `--json-schema` whose root is not
+    /// `type: object`, and answers through a `finish` tool that adds its own
+    /// required `toolAction`/`toolSummary` keys to the root object. A bare union
+    /// with `additionalProperties: false` branches can never pass, so the schema
+    /// is Claude's `response` wrapper; only the prompt guidance differs.
+    Antigravity,
     Strict,
 }
 
@@ -77,13 +83,14 @@ impl SchemaFlavor {
         match backend {
             CliBackend::Codex => Self::Strict,
             CliBackend::Claude => Self::Claude,
-            // Antigravity takes the canonical schema natively through
-            // `--json-schema`, `$schema` key included.
-            CliBackend::Gemini
-            | CliBackend::Opencode
-            | CliBackend::Antigravity
-            | CliBackend::Custom => Self::Canonical,
+            CliBackend::Antigravity => Self::Antigravity,
+            CliBackend::Gemini | CliBackend::Opencode | CliBackend::Custom => Self::Canonical,
         }
+    }
+
+    /// Whether the unit response travels inside a `response` property.
+    pub const fn wraps_response(self) -> bool {
+        matches!(self, Self::Claude | Self::Antigravity)
     }
 }
 
@@ -207,7 +214,7 @@ pub fn executor_response_schema(kind: ExecutorKind, flavor: SchemaFlavor) -> Val
             "anyOf": [completed, needs_input, failed],
             "$defs": defs,
         }),
-        SchemaFlavor::Claude => json!({
+        SchemaFlavor::Claude | SchemaFlavor::Antigravity => json!({
             "title": RESPONSE_SCHEMA_NAME,
             "type": "object",
             "properties": {
@@ -328,6 +335,7 @@ mod tests {
         for flavor in [
             SchemaFlavor::Canonical,
             SchemaFlavor::Claude,
+            SchemaFlavor::Antigravity,
             SchemaFlavor::Strict,
         ] {
             for kind in ExecutorKind::ALL {
@@ -336,7 +344,9 @@ mod tests {
                 for example in &examples {
                     let instance = match flavor {
                         SchemaFlavor::Canonical => example.instance.clone(),
-                        SchemaFlavor::Claude => json!({ "response": example.instance.clone() }),
+                        SchemaFlavor::Claude | SchemaFlavor::Antigravity => {
+                            json!({ "response": example.instance.clone() })
+                        }
                         SchemaFlavor::Strict => lift_to_strict(&example.instance),
                     };
                     let expected = example.schema_valid
@@ -399,6 +409,7 @@ mod tests {
             for flavor in [
                 SchemaFlavor::Canonical,
                 SchemaFlavor::Claude,
+                SchemaFlavor::Antigravity,
                 SchemaFlavor::Strict,
             ] {
                 let text = executor_response_schema(kind, flavor).to_string();
@@ -432,5 +443,39 @@ mod tests {
             SchemaFlavor::for_cli_backend(CliBackend::Claude),
             SchemaFlavor::Claude
         );
+        assert_eq!(
+            SchemaFlavor::for_cli_backend(CliBackend::Antigravity),
+            SchemaFlavor::Antigravity
+        );
+        assert_eq!(
+            SchemaFlavor::for_cli_backend(CliBackend::Gemini),
+            SchemaFlavor::Canonical
+        );
+    }
+
+    /// `agy` 1.3.5, run for real on 2026-10-14: the canonical union root exits 1
+    /// with "schema root must specify \"type\": \"object\""; a union root typed
+    /// `object` is accepted, but its `finish` tool adds `toolAction`/`toolSummary`
+    /// to the root, which every `additionalProperties: false` branch rejects. Only
+    /// a plain object root whose single property holds the union passes.
+    #[test]
+    fn antigravity_flavor_is_an_object_root_whose_only_property_holds_the_union() {
+        for kind in ExecutorKind::ALL {
+            let schema = executor_response_schema(kind, SchemaFlavor::Antigravity);
+            assert_eq!(schema["type"], "object");
+            assert!(schema.get("anyOf").is_none() && schema.get("oneOf").is_none());
+            assert_eq!(schema["required"], json!(["response"]));
+            let properties = schema["properties"].as_object().unwrap();
+            assert_eq!(properties.keys().collect::<Vec<_>>(), ["response"]);
+            assert_eq!(
+                properties["response"]["anyOf"],
+                executor_response_schema(kind, SchemaFlavor::Canonical)["anyOf"]
+            );
+            assert_eq!(schema, executor_response_schema(kind, SchemaFlavor::Claude));
+        }
+        assert!(SchemaFlavor::Antigravity.wraps_response());
+        assert!(SchemaFlavor::Claude.wraps_response());
+        assert!(!SchemaFlavor::Canonical.wraps_response());
+        assert!(!SchemaFlavor::Strict.wraps_response());
     }
 }

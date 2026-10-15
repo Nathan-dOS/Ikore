@@ -858,6 +858,140 @@ async fn authenticated_antigravity_companion_smoke() {
     assert_eq!(credentials.0.load(Ordering::SeqCst), 0);
 }
 
+/// ADR-010/022 live qualification: each payload definition of the composed v4
+/// registry, in the flavor composed stages send to Antigravity, passes `agy`'s
+/// `--json-schema` and comes back as a unit response the host parses. One echo
+/// round per definition, through the adapter's argv and the pipeline hardening.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Requires local Antigravity (agy) authentication and network; sends six synthetic prompts"]
+async fn authenticated_antigravity_accepts_every_registry_payload_schema() {
+    use hvc_core::orchestration::composition::parse::parse_unit_response;
+    use hvc_core::orchestration::composition::projection::failure_envelope_guide;
+    use hvc_core::orchestration::composition::schema::{
+        RESPONSE_SCHEMA_NAME, SchemaFlavor, executor_response_schema, payload_definition,
+    };
+    use hvc_core::orchestration::composition::{ExecutorKind, UnitModelResponseV1};
+
+    // The registry's own documented instances, one per payload definition.
+    const EXAMPLES: &str = include_str!(
+        "../../hvc-core/src/orchestration/composition/fixtures/stage-composition-v1.examples.json"
+    );
+    let examples: serde_json::Value = serde_json::from_str(EXAMPLES).unwrap();
+    let instance = |name: &str| {
+        examples["examples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|example| example["name"] == name)
+            .map(|example| example["instance"].clone())
+            .unwrap()
+    };
+    let harness = harness(Vec::new());
+    harness.terminals.refresh_discovery().await;
+    harness
+        .terminals
+        .model_catalog(&harness.project_id, CliBackend::Antigravity, true)
+        .await
+        .unwrap();
+    let current = harness
+        .terminals
+        .repository()
+        .get_config(&harness.project_id, AgentRole::BackendAgent)
+        .unwrap();
+    harness
+        .terminals
+        .update_config(UpdateCliAgentConfigRequest {
+            project_id: harness.project_id.clone(),
+            agent_role: AgentRole::BackendAgent,
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: CliBackend::Antigravity,
+            model: Some("gemini-3.8-flash".into()),
+            model_profile: Some("low".into()),
+            model_source: CliModelSelectionSource::Catalog,
+            thinking_level: ThinkingLevel::Default,
+            custom_executable: None,
+            custom_args: Vec::new(),
+            custom_risk_ack: false,
+            expected_version: current.version,
+        })
+        .unwrap();
+
+    let flavor = SchemaFlavor::for_cli_backend(CliBackend::Antigravity);
+    let db = rusqlite::Connection::open(&harness.database_path).unwrap();
+    for (kind, example) in [
+        (ExecutorKind::IntakeClassifier, "intake_response"),
+        (ExecutorKind::SpecificationAuthor, "specification_response"),
+        (
+            ExecutorKind::ContractAuthor,
+            "contract_preservation_response",
+        ),
+        (ExecutorKind::CodeImplementer, "code_anchor_response"),
+        (ExecutorKind::TestAuthor, "test_author_response"),
+        (ExecutorKind::IntegrationReviewer, "integration_response"),
+    ] {
+        let definition = payload_definition(kind);
+        let mut stage = request(
+            &harness.project_id,
+            Instant::now() + Duration::from_secs(300),
+        );
+        stage.system_prompt = format!(
+            "You are the `{}` specialty of a read-only qualification run. Read no files and run no commands.\n{}",
+            kind.as_str(),
+            failure_envelope_guide(flavor)
+        );
+        stage.user_prompt = format!(
+            "Return this completed unit response unchanged:\n{}",
+            instance(example)
+        );
+        stage.response_format = ResponseFormat::JsonSchema {
+            name: RESPONSE_SCHEMA_NAME.into(),
+            schema: executor_response_schema(kind, flavor),
+        };
+        stage.max_output_tokens = 4_000;
+        let started = Instant::now();
+        let completion = harness
+            .terminals
+            .execute_llm_request(&stage, &CancellationToken::new())
+            .await
+            .unwrap_or_else(|error| panic!("{definition}: {error}"))
+            .unwrap();
+        let elapsed = started.elapsed();
+        // The prompt asks for the bare instance and carries no schema text, so a
+        // `response` wrapper can only come from `--json-schema`'s structured output.
+        let raw: serde_json::Value = serde_json::from_str(&completion.raw_output).unwrap();
+        assert!(
+            raw["response"].is_object(),
+            "{definition}: {}",
+            completion.raw_output
+        );
+        assert!(
+            !completion.request_payload["prompt"]
+                .as_str()
+                .unwrap()
+                .contains("satisfies this schema")
+        );
+        let parsed = parse_unit_response(&completion.raw_output, kind, flavor)
+            .unwrap_or_else(|error| panic!("{definition}: {error:?} in {}", completion.raw_output));
+        assert!(
+            matches!(parsed, UnitModelResponseV1::Completed { executor_kind, .. } if executor_kind == kind),
+            "{definition}: {}",
+            completion.raw_output
+        );
+        let (input, output, cache_read): (i64, i64, i64) = db
+            .query_row(
+                "SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cache_read_tokens),0)
+                 FROM token_usage_records WHERE source_kind='terminal_run' AND source_id=?1",
+                [&completion.terminal_run_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        eprintln!(
+            "{definition}: {:.1} s, input {input}, output {output}, cache read {cache_read}",
+            elapsed.as_secs_f64()
+        );
+    }
+}
+
 /// ADR-010/022 live qualification for Codex's model-less public item events.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "Requires local Codex authentication and network; sends one synthetic model identity probe"]

@@ -30,7 +30,7 @@ pub(crate) mod model_identity;
 mod model_catalog;
 mod observation_report;
 
-pub(crate) use model_catalog::validate_catalog_model_selection;
+pub(crate) use model_catalog::{validate_catalog_effort, validate_catalog_model_selection};
 pub use model_catalog::{
     CliModelCatalogEntry, CliModelCatalogService, CliModelCatalogSnapshot, CliModelCatalogSource,
     CliModelCatalogState, CliModelSelectionSource, cli_model_catalog_version,
@@ -1143,6 +1143,14 @@ impl TerminalRepository {
             request.model_profile.as_deref(),
             request.model_source,
         )?;
+        validate_catalog_effort(
+            &self.connection()?,
+            &request.project_id,
+            request.backend,
+            request.model.as_deref(),
+            request.model_profile.as_deref(),
+            request.thinking_level,
+        )?;
         let current = self
             .get_config(&request.project_id, request.agent_role)
             .ok();
@@ -1406,6 +1414,14 @@ impl TerminalRepository {
             request.model.as_deref(),
             request.model_profile.as_deref(),
             request.model_source,
+        )?;
+        validate_catalog_effort(
+            &self.connection()?,
+            &request.project_id,
+            request.backend,
+            request.model.as_deref(),
+            request.model_profile.as_deref(),
+            request.thinking_level,
         )?;
         let current = self.get_slot(
             &request.project_id,
@@ -5249,6 +5265,16 @@ impl TerminalService {
             return Ok(None);
         }
         require_verifiable_cli_selection(config.backend, config.model.as_deref())?;
+        // A specialty's level, or a catalog refreshed since the role was saved,
+        // must still be one the model offers; refuse before anything is spawned.
+        validate_catalog_effort(
+            &self.repository.connection()?,
+            &request.project_id,
+            config.backend,
+            config.model.as_deref(),
+            config.model_profile.as_deref(),
+            config.thinking_level,
+        )?;
         // A pulsation that already burned a backend on this role carries the
         // one the host elected next. Project configuration is left untouched.
         if let Some(pulsation_id) = request.pulsation_id.as_deref()

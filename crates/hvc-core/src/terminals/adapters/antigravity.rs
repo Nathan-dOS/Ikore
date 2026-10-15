@@ -53,7 +53,10 @@ impl CliAdapter for AntigravityAdapter {
         }
         if let Some(schema) = request.schema {
             // The structured object arrives as `result.structured_output`; 1.3.5
-            // accepts draft 2020-12's `$schema` key, unlike Claude Code.
+            // accepts draft 2020-12's `$schema` key, unlike Claude Code, but
+            // exits 1 unless the root is `type: object`, and its `finish` tool
+            // adds `toolAction`/`toolSummary` to that root (see
+            // `SchemaFlavor::Antigravity`).
             args.extend(["--json-schema".into(), serde_json::to_string(&schema)?]);
         }
         let mut stdin_payload = serde_json::to_vec(&serde_json::json!({

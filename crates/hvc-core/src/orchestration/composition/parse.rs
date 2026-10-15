@@ -191,8 +191,8 @@ pub fn parse_unit_response(
         return Err(shape("The response is empty."));
     }
     let mut value = parse_single_object(text)?;
-    let candidate = match (flavor, value.get("response")) {
-        (SchemaFlavor::Claude, Some(inner)) if inner.is_object() => inner,
+    let candidate = match value.get("response") {
+        Some(inner) if flavor.wraps_response() && inner.is_object() => inner,
         _ => &value,
     };
     if candidate["outcome"] == "completed"
@@ -208,12 +208,12 @@ pub fn parse_unit_response(
             ),
         ));
     }
-    let unwrapped = match (flavor, value.get("response")) {
-        (SchemaFlavor::Claude, Some(inner)) if inner.is_object() => {
+    let unwrapped = match value.get("response") {
+        Some(inner) if flavor.wraps_response() && inner.is_object() => {
             schema_check(kind, flavor, &value)?;
             value["response"].take()
         }
-        (SchemaFlavor::Claude, _) => {
+        _ if flavor.wraps_response() => {
             let wrapped = serde_json::json!({ "response": &value });
             schema_check(kind, flavor, &wrapped)?;
             value
@@ -383,6 +383,21 @@ mod tests {
                 result.is_ok(),
                 example.schema_valid,
                 "claude bare `{}`: {result:?}",
+                example.name
+            );
+            // `agy` returns `result.structured_output`, i.e. the wrapped object.
+            let result = parse_unit_response(&claude_wrapped, kind, SchemaFlavor::Antigravity);
+            assert_eq!(
+                result.is_ok(),
+                example.schema_valid,
+                "antigravity wrapped `{}`: {result:?}",
+                example.name
+            );
+            let result = parse_unit_response(&claude_bare, kind, SchemaFlavor::Antigravity);
+            assert_eq!(
+                result.is_ok(),
+                example.schema_valid,
+                "antigravity bare `{}`: {result:?}",
                 example.name
             );
         }

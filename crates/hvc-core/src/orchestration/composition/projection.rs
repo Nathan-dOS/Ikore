@@ -189,6 +189,12 @@ pub fn failure_envelope_guide(flavor: SchemaFlavor) -> &'static str {
 
 Deliver the response only by calling the StructuredOutput tool with its `response` argument set to that JSON object. Never wrap it in a second `response`, and keep file contents properly escaped JSON strings."#
         }
+        // `agy`'s structured answer is its `finish` tool, same `response` wrapper.
+        SchemaFlavor::Antigravity => {
+            r#"For any `failed` outcome, return exactly `{"schemaVersion":1,"outcome":"failed","code":"<code>","message":"short reason","relatedRefs":[...]}`, where `<code>` is exactly one of `contract_conflict`, `scope_insufficient`, `implementation_mismatch` or `unsupported_operation` and names the actual blocker. Do not include `executorKind`, `payload`, `missingRefs`, or `questions`.
+
+Deliver the response only by calling the finish tool with its `response` argument set to that JSON object. Put no other key next to the fields of that object, never wrap it in a second `response`, and keep file contents properly escaped JSON strings."#
+        }
         SchemaFlavor::Strict => {
             r#"For any `failed` outcome, return exactly `{"schemaVersion":1,"outcome":"failed","executorKind":null,"payload":null,"missingRefs":null,"questions":null,"code":"<code>","message":"short reason","relatedRefs":[...]}`, where `<code>` is exactly one of `contract_conflict`, `scope_insufficient`, `implementation_mismatch` or `unsupported_operation` and names the actual blocker. Do not put a non-null value in any inactive field."#
         }
@@ -933,11 +939,16 @@ mod tests {
         assert!(!canonical.contains("StructuredOutput"));
         assert!(claude.contains("Do not include `executorKind`"));
         assert!(!claude.contains("\"executorKind\":null"));
+        let antigravity = failure_envelope_guide(SchemaFlavor::Antigravity);
+        assert!(antigravity.contains("finish tool with its `response` argument"));
+        assert!(antigravity.contains("never wrap it in a second `response`"));
+        assert!(!antigravity.contains("StructuredOutput"));
+        assert!(!antigravity.contains("{\"response\":"));
         let strict = failure_envelope_guide(SchemaFlavor::Strict);
         assert!(strict.contains("\"executorKind\":null"));
         assert!(strict.contains("\"payload\":null"));
         // No concrete code is modelled for the worker to copy.
-        for guide in [canonical, claude, strict] {
+        for guide in [canonical, claude, antigravity, strict] {
             assert!(guide.contains("\"code\":\"<code>\""));
             assert!(!guide.contains("\"code\":\"scope_insufficient\""));
         }

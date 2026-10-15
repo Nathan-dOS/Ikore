@@ -95,6 +95,57 @@ impl AppModel {
                 .any(|a| a.slot.id == id && a.recent_runs.iter().any(|r| r.status.is_active()))
         })
     }
+    /// The levels an Antigravity specialty override can send as `--effort`: the
+    /// catalog's list for the model it runs (its own, else its role's). `None`
+    /// when nothing narrows the menu: another backend, a role catalog profile
+    /// (it wins over the level) or a model the catalog lacks. The core refuses
+    /// the same combinations on save.
+    fn override_effort_levels(&self, cx: &App) -> Option<(String, Vec<String>)> {
+        let settings = self.settings.read(cx);
+        if settings.composition_override_mode.as_ref() != "cli_process"
+            || settings.composition_override_backend.as_ref() != CliBackend::Antigravity.as_str()
+        {
+            return None;
+        }
+        let stage = hvc_core::orchestration::composition::ExecutorKind::parse(
+            settings.composition_override_kind.as_ref(),
+        )?
+        .stage()
+        .to_pulsation();
+        let role = hvc_core::orchestration::catalog::STAGES
+            .iter()
+            .find(|(candidate, _, _)| *candidate == stage)
+            .map(|(_, _, role)| *role)?;
+        let config = self
+            .current_agent_config(role, cx)
+            .filter(|config| config.backend == CliBackend::Antigravity);
+        if config
+            .as_ref()
+            .is_some_and(|config| config.model_profile.is_some())
+        {
+            return None;
+        }
+        let typed = self
+            .composition_override_model_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
+        let model = (!typed.is_empty())
+            .then_some(typed)
+            .or_else(|| config.and_then(|config| config.model))?;
+        let profiles = self
+            .agents
+            .read(cx)
+            .model_catalogs
+            .get(&CliBackend::Antigravity)?
+            .models
+            .iter()
+            .find(|entry| entry.model_id.as_deref() == Some(model.as_str()))?
+            .profiles
+            .clone();
+        Some((model, profiles))
+    }
     pub(crate) fn choice_options(&self, id: &str, cx: &App) -> Vec<Choice> {
         if id.starts_with("usage-") {
             return self.usage_choices(id, cx);
@@ -397,10 +448,24 @@ impl AppModel {
                     )
                 })
                 .collect(),
-            "composition-override-thinking" => ["default", "low", "medium", "high"]
-                .into_iter()
-                .map(|v| Choice::new(v, v, settings.composition_override_thinking.as_ref() == v))
-                .collect(),
+            "composition-override-thinking" => {
+                let offered = self.override_effort_levels(cx);
+                ["default", "low", "medium", "high"]
+                    .into_iter()
+                    .map(|v| {
+                        let mut choice =
+                            Choice::new(v, v, settings.composition_override_thinking.as_ref() == v);
+                        if let Some((model, levels)) = &offered
+                            && v != "default"
+                            && !levels.iter().any(|level| level == v)
+                        {
+                            choice.reason =
+                                Some(format!("{model} does not offer {v} through Antigravity."));
+                        }
+                        choice
+                    })
+                    .collect()
+            }
             "brownfield-llm-budget" => numbers(prep.brownfield_llm_budget, [0, 1, 2, 4, 8]),
             "brownfield-expansion-radius" => numbers(prep.brownfield_expansion_radius, [1, 2]),
             "settings-embedding-top-k" => numbers(config.embedding_top_k, [3, 5, 10, 20]),
@@ -979,6 +1044,84 @@ mod tests {
                 m.chat.read(cx).selected_cli_model.as_deref(),
                 Some("existing")
             );
+        });
+    }
+
+    #[gpui::test]
+    fn antigravity_override_levels_are_only_those_the_role_model_offers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let model = cx.new(crate::layout_tests::fixture);
+        model.update(cx, |m, cx| {
+            let set_role = |m: &mut AppModel, profile: Option<&str>, cx: &mut Context<AppModel>| {
+                m.agents.update(cx, |agents, _| {
+                    let agent = agents
+                        .snapshot
+                        .as_mut()
+                        .unwrap()
+                        .agents
+                        .iter_mut()
+                        .find(|agent| agent.config.agent_role == AgentRole::BackendAgent)
+                        .unwrap();
+                    agent.config.backend = CliBackend::Antigravity;
+                    agent.config.model = Some("gpt-oss-120b".into());
+                    agent.config.model_profile = profile.map(str::to_owned);
+                    agent.config.model_source = CliModelSelectionSource::Catalog;
+                });
+            };
+            set_role(m, None, cx);
+            m.agents.update(cx, |agents, _| {
+                agents.model_catalogs.insert(
+                    CliBackend::Antigravity,
+                    CliModelCatalogSnapshot {
+                        project_id: "layout-project".into(),
+                        backend: CliBackend::Antigravity,
+                        adapter_contract_version: 2,
+                        state: CliModelCatalogState::Ready,
+                        source: CliModelCatalogSource::Cli,
+                        cli_version: Some("1.3.5".into()),
+                        diagnostic: None,
+                        refreshed_at: "now".into(),
+                        models: vec![CliModelCatalogEntry {
+                            provider_id: Some("openai".into()),
+                            model_id: Some("gpt-oss-120b".into()),
+                            display_name: "GPT-OSS 120B".into(),
+                            context_window: None,
+                            input_cost_usd_per_million: None,
+                            output_cost_usd_per_million: None,
+                            capabilities: vec![],
+                            profiles: vec!["medium".into()],
+                            raw_metadata: Default::default(),
+                        }],
+                    },
+                );
+            });
+            m.settings.update(cx, |s, _| {
+                s.composition_override_kind = "code_implementer".into();
+                s.composition_override_mode = "cli_process".into();
+                s.composition_override_backend = "antigravity".into();
+            });
+            let blocked = |m: &AppModel, cx: &App| {
+                m.choice_options("composition-override-thinking", cx)
+                    .into_iter()
+                    .filter(|choice| choice.reason.is_some())
+                    .map(|choice| choice.value)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(blocked(m, cx), ["low", "high"]);
+            assert!(
+                m.choice_options("composition-override-thinking", cx)
+                    .iter()
+                    .any(|choice| choice.reason.as_deref()
+                        == Some("gpt-oss-120b does not offer low through Antigravity."))
+            );
+            // A role catalog profile wins over the level; other backends pass.
+            set_role(m, Some("medium"), cx);
+            assert!(blocked(m, cx).is_empty());
+            set_role(m, None, cx);
+            m.settings
+                .update(cx, |s, _| s.composition_override_backend = "codex".into());
+            assert!(blocked(m, cx).is_empty());
         });
     }
 }

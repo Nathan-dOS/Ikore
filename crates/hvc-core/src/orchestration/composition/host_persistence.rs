@@ -1122,6 +1122,36 @@ impl PersistenceService {
                 "Project not found to configure specialties.".into(),
             ));
         }
+        if let (AgentExecutionMode::CliProcess, Some(cli)) =
+            (setting.execution_mode, setting.backend)
+        {
+            // The specialty inherits its role's model and catalog profile.
+            let role = crate::llm::AgentRole::for_stage(
+                executor_kind.stage().to_pulsation().as_db_value(),
+            );
+            let (role_model, role_profile): (Option<String>, Option<String>) = db
+                .query_row(
+                    "SELECT model,model_profile FROM cli_agent_configs WHERE project_id=?1 AND agent_role=?2 AND backend=?3",
+                    params![project_id, role.as_str(), cli.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .unwrap_or_default();
+            let model = setting
+                .model
+                .as_deref()
+                .filter(|m| !m.trim().is_empty())
+                .or(role_model.as_deref());
+            crate::terminals::validate_catalog_effort(
+                &db,
+                &project_id,
+                cli,
+                model,
+                role_profile.as_deref(),
+                setting.thinking_level,
+            )
+            .map_err(|error| PersistenceServiceError::Validation(error.to_string()))?;
+        }
         db.execute(
             "INSERT INTO composition_specialty_overrides(project_id,executor_kind,execution_mode,backend,model,thinking_level,updated_at)
              VALUES(?1,?2,?3,?4,?5,?6,?7)

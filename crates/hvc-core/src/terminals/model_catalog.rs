@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use super::{
     CliAvailability, CliAvailabilityState, CliBackend, MAX_MODEL_CATALOG_OUTPUT_BYTES,
-    TerminalError, redact_secrets, run_bounded_probe_in_with_limit, sanitize_terminal_text_bounded,
-    secure_probe_spec,
+    TerminalError, ThinkingLevel, redact_secrets, run_bounded_probe_in_with_limit,
+    sanitize_terminal_text_bounded, secure_probe_spec,
 };
 
 const ADAPTER_CONTRACT_VERSION: u32 = 2;
@@ -639,6 +639,60 @@ pub(crate) fn validate_catalog_model_selection(
     Ok(())
 }
 
+/// `agy` sends a role's or specialty's thinking level as `--effort`, and each
+/// model offers its own levels (`gpt-oss-120b` only `medium` on 1.3.5); any
+/// other level fails the run inside the CLI. Without a catalog profile, which
+/// wins over the level, a level the project's catalog does not list for the
+/// model is refused here. A model the catalog lacks (manual) is left to the CLI.
+pub(crate) fn validate_catalog_effort(
+    connection: &Connection,
+    project_id: &str,
+    backend: CliBackend,
+    model: Option<&str>,
+    profile: Option<&str>,
+    thinking_level: ThinkingLevel,
+) -> Result<(), TerminalError> {
+    if backend != CliBackend::Antigravity
+        || profile.is_some()
+        || thinking_level == ThinkingLevel::Default
+    {
+        return Ok(());
+    }
+    let Some(model) = model else {
+        return Ok(());
+    };
+    let Some(profiles_json) = connection
+        .query_row(
+            "SELECT e.profiles_json
+             FROM cli_model_catalog_entries e
+             JOIN cli_model_catalog_snapshots s ON s.id=e.snapshot_id
+             WHERE s.project_id=?1 AND s.backend=?2 AND e.model_id=?3
+             LIMIT 1",
+            params![project_id, backend.as_str(), model],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(());
+    };
+    let offered = serde_json::from_str::<Vec<String>>(&profiles_json).map_err(|_| {
+        TerminalError::Validation("the cached model profile metadata is invalid".into())
+    })?;
+    if offered.iter().any(|level| level == thinking_level.as_str()) {
+        return Ok(());
+    }
+    let level = thinking_level.as_str();
+    let cli = backend.label();
+    Err(TerminalError::Validation(if offered.is_empty() {
+        format!("{model} offers no thinking level through {cli}; use Default, not {level}")
+    } else {
+        format!(
+            "{model} offers only {} through {cli}; thinking level {level} is not available",
+            offered.join(", ")
+        )
+    }))
+}
+
 fn sanitize_redacted(bytes: &[u8]) -> Result<String, TerminalError> {
     redact_secrets(&sanitize_terminal_text_bounded(
         bytes,
@@ -1245,5 +1299,195 @@ mod tests {
             .to_string()
             .contains("unverified manual")
         );
+    }
+
+    /// Project with the Antigravity catalog `agy models` listed on 2026-10-14.
+    fn antigravity_catalog_project() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        PersistenceService,
+        String,
+    ) {
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Antigravity effort".into()),
+            })
+            .unwrap()
+            .project;
+        CliModelCatalogService::new(persistence.database_path())
+            .save_snapshot(&CliModelCatalogSnapshot {
+                project_id: project.id.clone(),
+                backend: CliBackend::Antigravity,
+                adapter_contract_version: ADAPTER_CONTRACT_VERSION,
+                state: CliModelCatalogState::Ready,
+                source: CliModelCatalogSource::Cli,
+                cli_version: Some("1.3.5".into()),
+                diagnostic: None,
+                refreshed_at: Utc::now().to_rfc3339(),
+                models: vec![
+                    preset("google", "gemini-3.8-flash", "Flash", &["low", "high"]),
+                    preset("openai", "gpt-oss-120b", "GPT-OSS 120B", &["medium"]),
+                    preset("google", "unsuffixed-model", "Unsuffixed", &[]),
+                ],
+            })
+            .unwrap();
+        (data, workspace, persistence, project.id)
+    }
+
+    #[test]
+    fn antigravity_effort_must_be_a_level_the_catalog_lists_for_the_model() {
+        let (_data, _workspace, persistence, project) = antigravity_catalog_project();
+        let connection = Connection::open(persistence.database_path()).unwrap();
+        let check = |backend, model, profile, level| {
+            validate_catalog_effort(&connection, &project, backend, Some(model), profile, level)
+        };
+        let (agy, oss) = (CliBackend::Antigravity, "gpt-oss-120b");
+        let refused = check(agy, oss, None, ThinkingLevel::Low).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "invalid Agents configuration: gpt-oss-120b offers only medium through \
+             Antigravity; thinking level low is not available"
+        );
+        assert!(check(agy, oss, None, ThinkingLevel::High).is_err());
+        assert!(check(agy, "gemini-3.8-flash", None, ThinkingLevel::Medium).is_err());
+        let none = check(agy, "unsuffixed-model", None, ThinkingLevel::Low).unwrap_err();
+        assert!(none.to_string().contains("offers no thinking level"));
+        // Offered, Default (no `--effort`), a catalog profile (it wins over the
+        // level), a model the catalog lacks, and other backends all pass.
+        for (backend, model, profile, level) in [
+            (agy, oss, None, ThinkingLevel::Medium),
+            (agy, "gemini-3.8-flash", None, ThinkingLevel::High),
+            (agy, oss, None, ThinkingLevel::Default),
+            (agy, oss, Some("medium"), ThinkingLevel::Low),
+            (agy, "manual-model", None, ThinkingLevel::Low),
+            (CliBackend::Opencode, oss, None, ThinkingLevel::Low),
+        ] {
+            check(backend, model, profile, level).unwrap();
+        }
+    }
+
+    struct NoEvents;
+
+    impl super::super::TerminalEventSink for NoEvents {
+        fn emit(&self, _envelope: &super::super::TerminalEventEnvelope) {}
+    }
+
+    /// Roles and specialties cannot save a level the model lacks; a specialty
+    /// saved before its role moved to such a model is refused before any spawn.
+    #[tokio::test]
+    async fn antigravity_effort_the_model_lacks_is_refused_on_save_and_before_launch() {
+        use crate::llm::{
+            AgentExecutionTarget, AgentRole, DispatchPolicy, LlmRequest, ResponseFormat,
+            UnitDispatch,
+        };
+        use crate::orchestration::composition::ExecutorKind;
+        use crate::terminals::{
+            AgentExecutionMode, SpecialtyOverride, TerminalService, UpdateCliAgentConfigRequest,
+        };
+
+        let (_data, _workspace, persistence, project) = antigravity_catalog_project();
+        let terminals = std::sync::Arc::new(
+            TerminalService::new(
+                persistence.database_path(),
+                tokio::runtime::Handle::current(),
+                std::sync::Arc::new(NoEvents),
+            )
+            .unwrap(),
+        );
+        terminals
+            .repository()
+            .ensure_project_configs(&project, false)
+            .unwrap();
+        let kind = ExecutorKind::CodeImplementer;
+        let role = AgentRole::for_stage(kind.stage().to_pulsation().as_db_value());
+        let save_role = |model: &str, level: ThinkingLevel| {
+            let current = terminals.repository().get_config(&project, role).unwrap();
+            terminals.update_config(UpdateCliAgentConfigRequest {
+                project_id: project.clone(),
+                agent_role: role,
+                execution_mode: AgentExecutionMode::CliProcess,
+                backend: CliBackend::Antigravity,
+                model: Some(model.into()),
+                model_profile: None,
+                model_source: CliModelSelectionSource::Catalog,
+                thinking_level: level,
+                custom_executable: None,
+                custom_args: Vec::new(),
+                custom_risk_ack: false,
+                expected_version: current.version,
+            })
+        };
+        let specialty = |level| SpecialtyOverride {
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: Some(CliBackend::Antigravity),
+            model: None,
+            thinking_level: level,
+        };
+
+        let refused = save_role("gpt-oss-120b", ThinkingLevel::Low).unwrap_err();
+        assert_eq!(refused.code(), "cli_configuration_invalid");
+        save_role("gemini-3.8-flash", ThinkingLevel::Default).unwrap();
+        persistence
+            .upsert_specialty_override(&project, kind, specialty(ThinkingLevel::Low))
+            .unwrap();
+        save_role("gpt-oss-120b", ThinkingLevel::Default).unwrap();
+        let refused = persistence
+            .upsert_specialty_override(&project, kind, specialty(ThinkingLevel::High))
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("offers only medium"), "{refused}");
+
+        // The `low` specialty saved while the role was on Gemini still exists.
+        let request = LlmRequest {
+            execution_id: "effort-execution".to_string().into(),
+            generation_id: "effort-generation".to_string().into(),
+            project_id: project.clone(),
+            pulsation_id: None,
+            job_id: None,
+            agent_run_id: None,
+            job_chain: "effort".into(),
+            target: AgentExecutionTarget::canonical(role),
+            stage: "Code".into(),
+            system_prompt: "Read-only".into(),
+            user_prompt: "unused".into(),
+            response_format: ResponseFormat::Text,
+            max_output_tokens: 100,
+            temperature: 0.0,
+            deadline: std::time::Instant::now() + Duration::from_secs(30),
+            stream: true,
+            legacy_provider: "fixture".into(),
+            legacy_model: "fixture".into(),
+            dispatch: DispatchPolicy {
+                unit: Some(UnitDispatch {
+                    stage_execution_id: "execution".into(),
+                    unit_id: "unit".into(),
+                    attempt_id: "attempt".into(),
+                    executor_kind: kind.as_str().into(),
+                    frozen_transport: "cli".into(),
+                    frozen_backend: Some("antigravity".into()),
+                    frozen_model: "gpt-oss-120b".into(),
+                }),
+                ..DispatchPolicy::default()
+            },
+        };
+        let error = terminals
+            .execute_llm_request(&request, &tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "cli_configuration_invalid");
+        let message = error.to_string();
+        assert!(
+            message.contains("thinking level low is not available"),
+            "{message}"
+        );
+        let runs: i64 = Connection::open(persistence.database_path())
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM terminal_runs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(runs, 0, "nothing was spawned or recorded");
     }
 }
