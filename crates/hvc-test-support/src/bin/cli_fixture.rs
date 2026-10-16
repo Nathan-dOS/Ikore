@@ -19,9 +19,19 @@ fn main() {
                 .map(|name| name.to_string_lossy().to_ascii_lowercase())
         })
         .unwrap_or_default();
-    let official_backend = ["codex", "claude", "gemini", "opencode"]
-        .into_iter()
-        .find(|backend| executable_name == *backend);
+    // Antigravity's CLI ships as `agy`; every other backend's file stem is its id.
+    let official_backend = [
+        ("codex", "codex"),
+        ("claude", "claude"),
+        ("gemini", "gemini"),
+        ("opencode", "opencode"),
+        ("agy", "antigravity"),
+    ]
+    .into_iter()
+    .find(|(stem, _)| executable_name == *stem)
+    .map(|(_, backend)| backend);
+    // The state comes from the environment or, because the host launches CLIs with a scrubbed
+    // environment, from a `<backend>.fixture-state` file next to the executable.
     let fixture_state = official_backend
         .and_then(|backend| {
             env::var(format!(
@@ -29,6 +39,14 @@ fn main() {
                 backend.to_ascii_uppercase()
             ))
             .ok()
+            .or_else(|| {
+                let sibling = env::current_exe()
+                    .ok()?
+                    .with_file_name(format!("{backend}.fixture-state"));
+                std::fs::read_to_string(sibling)
+                    .ok()
+                    .map(|state| state.trim().to_string())
+            })
         })
         .unwrap_or_default();
     if args.iter().any(|arg| arg == "--version") {
@@ -38,6 +56,9 @@ fn main() {
         }
         if fixture_state == "unsupported" {
             println!("0.0.0-fixture");
+        } else if fixture_state == "newer" || fixture_state == "newer_broken" {
+            // Above every adapter's validated ceiling.
+            println!("99.0.0");
         } else {
             println!(
                 "{}",
@@ -46,6 +67,7 @@ fn main() {
                     "claude" => "2.1.81 (Claude Code)",
                     "gemini" => "0.59.0",
                     "opencode" => "1.18.17",
+                    "antigravity" => "1.3.5",
                     _ => unreachable!(),
                 }
             );
@@ -64,6 +86,35 @@ fn main() {
         println!("authenticated fixture");
         return;
     }
+    // `agy -p /usage --output-format json`: the login check that also reports quota.
+    if official_backend == Some("antigravity")
+        && args
+            .windows(2)
+            .any(|pair| pair[0] == "-p" && pair[1] == "/usage")
+    {
+        if fixture_state == "auth_required" {
+            eprintln!("error: You are not logged into Antigravity.");
+            std::process::exit(1);
+        }
+        println!(
+            "{}",
+            include_str!("../../fixtures/cli/antigravity/current/usage.json").trim()
+        );
+        return;
+    }
+    if official_backend == Some("antigravity")
+        && args.first().is_some_and(|argument| argument == "models")
+    {
+        if fixture_state == "catalog_failed" {
+            eprintln!("fixture model catalog failed");
+            std::process::exit(3);
+        }
+        print!(
+            "{}",
+            include_str!("../../fixtures/cli/antigravity/current/models.txt")
+        );
+        return;
+    }
     if official_backend == Some("opencode")
         && args.first().is_some_and(|argument| argument == "models")
     {
@@ -76,6 +127,15 @@ fn main() {
             include_str!("../../fixtures/cli/opencode/current/models-verbose.txt")
         );
         return;
+    }
+    // A self-updated CLI whose stream no longer matches the adapter contract: the prompt run
+    // prints prose instead of frames and fails, so a contract validation must reject it.
+    if fixture_state == "newer_broken" && official_backend.is_some() {
+        let mut ignored = String::new();
+        let _ = std::io::stdin().read_to_string(&mut ignored);
+        println!("Welcome to the new CLI! Run `init` to get started.");
+        eprintln!("unknown option: --output-format");
+        std::process::exit(7);
     }
     let mode = value_after(&args, "--mode").unwrap_or("success");
     let heartbeat = value_after(&args, "--heartbeat").map(PathBuf::from);
@@ -102,6 +162,20 @@ fn main() {
             Some("gemini") => assert!(env::var_os("GEMINI_CLI_SYSTEM_SETTINGS_PATH").is_some()),
             Some("opencode") => {
                 assert_eq!(env::var("OPENCODE_PERMISSION").unwrap(), r#"{"*":"deny"}"#)
+            }
+            Some("antigravity") => {
+                let directory = args
+                    .iter()
+                    .find_map(|arg| arg.strip_prefix("--gemini_dir="))
+                    .expect("Antigravity discovery needs a private config directory");
+                let settings = std::fs::read_to_string(
+                    std::path::Path::new(directory).join("antigravity-cli/settings.json"),
+                )
+                .unwrap();
+                assert!(
+                    settings.contains("read_file(*)"),
+                    "Discovery must deny reads"
+                );
             }
             _ => panic!("Discovery cannot use Custom"),
         }
@@ -132,6 +206,18 @@ fn main() {
             emit_official_success(backend, &args);
         }
         return;
+    }
+
+    if let Some(model) = value_after(&args, "--fixture-model") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "type": "hvc_model_attestation_v1",
+                "model": model,
+                "messageId": "custom-fixture-generation",
+                "agentId": "custom-fixture-agent"
+            })
+        );
     }
 
     match mode {
@@ -182,6 +268,15 @@ fn main() {
                 thread::sleep(Duration::from_millis(100));
             }
             println!("fixture completed after initial budget");
+        }
+        // A worker that computes silently - no byte on either pipe for
+        // `--quiet-ms` - and then answers (ADR-025 observation trial).
+        "quiet" => {
+            let quiet = value_after(&args, "--quiet-ms")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(1_000);
+            thread::sleep(Duration::from_millis(quiet));
+            println!("fixture completed after silence");
         }
         "hang" => loop {
             thread::sleep(Duration::from_secs(1));
@@ -238,6 +333,14 @@ fn emit_companion_success(backend: &str) {
         ),
         "gemini" => println!(r#"{{"type":"message","content":"{envelope}"}}"#),
         "opencode" => println!(r#"{{"type":"text","part":{{"text":"{envelope}"}}}}"#),
+        "antigravity" => {
+            println!(
+                r#"{{"event":"init","conversation_id":"fixture-companion","init":{{"model":"gemini-fixture","permission_mode":"request-review"}}}}"#
+            );
+            println!(
+                r#"{{"event":"result","result":{{"conversation_id":"fixture-companion","status":"SUCCESS","response":"{envelope}","usage":{{"input_tokens":8,"output_tokens":5,"thinking_tokens":0,"cache_read_tokens":12,"total_tokens":13}}}}}}"#
+            );
+        }
         _ => unreachable!(),
     }
     if backend == "codex" {
@@ -248,7 +351,8 @@ fn emit_companion_success(backend: &str) {
 }
 
 fn emit_official_success(backend: &str, args: &[String]) {
-    let session = ["resume", "--resume", "--session"]
+    let requested_model = value_after(args, "--model").unwrap_or("fixture-model");
+    let session = ["resume", "--resume", "--session", "--conversation"]
         .into_iter()
         .find_map(|flag| value_after(args, flag))
         .unwrap_or("fixture-native-session");
@@ -256,20 +360,94 @@ fn emit_official_success(backend: &str, args: &[String]) {
         "codex" => {
             println!(r#"{{"type":"thread.started","thread_id":"{session}"}}"#);
             println!(
-                r#"{{"type":"item.completed","item":{{"type":"agent_message","text":"ok codex fixture"}}}}"#
+                r#"{{"type":"item.completed","model":"{requested_model}","item":{{"id":"codex-message-1","type":"agent_message","text":"ok codex fixture"}}}}"#
             );
             println!(
                 r#"{{"type":"turn.completed","usage":{{"input_tokens":20,"output_tokens":5,"cached_input_tokens":12}}}}"#
             );
         }
         "claude" => {
-            println!(r#"{{"type":"system","subtype":"init","session_id":"{session}"}}"#);
+            let observed_model = if fixture_model_mismatch() {
+                "claude-sonnet-5"
+            } else {
+                "claude-haiku-4-5-20251001"
+            };
             println!(
-                r#"{{"type":"result","result":"ok claude fixture","session_id":"{session}","modelUsage":{{"claude-fixture":{{"inputTokens":8,"outputTokens":5,"cacheReadInputTokens":12}}}}}}"#
+                r#"{{"type":"system","subtype":"init","session_id":"{session}","model":"{requested_model}"}}"#
+            );
+            if fixture_model_unverified() {
+                println!(
+                    r#"{{"type":"stream_event","agent_id":"subagent-1","event":{{"type":"message_start","parent_tool_use_id":"tool-parent-1","message":{{"id":"claude-message-1"}}}}}}"#
+                );
+                thread::sleep(Duration::from_secs(2));
+                if let Ok(path) = env::current_exe() {
+                    let _ = std::fs::write(
+                        path.with_file_name("claude.fixture-after-mismatch"),
+                        b"still-running",
+                    );
+                }
+                return;
+            }
+            if fixture_subagent_mismatch() {
+                println!(
+                    r#"{{"type":"stream_event","agent_id":"subagent-1","event":{{"type":"message_start","parent_tool_use_id":"tool-parent-1","message":{{"id":"claude-message-1","model":"{observed_model}"}}}}}}"#
+                );
+                thread::sleep(Duration::from_secs(2));
+                if let Ok(path) = env::current_exe() {
+                    let _ = std::fs::write(
+                        path.with_file_name("claude.fixture-after-mismatch"),
+                        b"still-running",
+                    );
+                }
+                return;
+            }
+            println!(
+                r#"{{"type":"stream_event","event":{{"type":"message_start","message":{{"id":"claude-message-1","model":"{observed_model}"}}}}}}"#
+            );
+            if fixture_output_runaway() {
+                // Two 20,000-token messages, then a long pause: a host that
+                // does not stop the run at its output ceiling lets the marker appear.
+                println!(
+                    r#"{{"type":"stream_event","event":{{"type":"message_delta","usage":{{"output_tokens":20000}}}}}}"#
+                );
+                println!(
+                    r#"{{"type":"stream_event","event":{{"type":"message_start","message":{{"id":"claude-message-2","model":"{observed_model}"}}}}}}"#
+                );
+                println!(
+                    r#"{{"type":"stream_event","event":{{"type":"message_delta","usage":{{"output_tokens":20000}}}}}}"#
+                );
+                std::io::stdout().flush().unwrap();
+                thread::sleep(Duration::from_secs(3));
+                if let Ok(path) = env::current_exe() {
+                    let _ = std::fs::write(
+                        path.with_file_name("claude.fixture-after-mismatch"),
+                        b"still-running",
+                    );
+                }
+                return;
+            }
+            if fixture_model_mismatch() {
+                thread::sleep(Duration::from_secs(2));
+                if let Ok(path) = env::current_exe() {
+                    let _ = std::fs::write(
+                        path.with_file_name("claude.fixture-after-mismatch"),
+                        b"still-running",
+                    );
+                }
+                return;
+            }
+            println!(
+                r#"{{"type":"assistant","message":{{"id":"claude-message-1","model":"{observed_model}","content":[{{"type":"text","text":"ok claude fixture"}}]}}}}"#
+            );
+            println!(
+                r#"{{"type":"result","result":"ok claude fixture","session_id":"{session}","model":"{observed_model}","modelUsage":{{"claude-fixture":{{"inputTokens":8,"outputTokens":5,"cacheReadInputTokens":12}}}}}}"#
             );
         }
         "gemini" => {
             println!(r#"{{"type":"init","session_id":"{session}"}}"#);
+            println!(
+                r#"{{"type":"message","model":"{requested_model}","content":"ok gemini fixture"}}"#
+            );
             println!(
                 r#"{{"type":"result","result":"ok gemini fixture","stats":{{"models":{{"gemini-fixture":{{"input_tokens":20,"output_tokens":5,"total_tokens":25,"cached":12}}}}}}}}"#
             );
@@ -277,14 +455,56 @@ fn emit_official_success(backend: &str, args: &[String]) {
         "opencode" => {
             println!(r#"{{"type":"session.created","sessionID":"{session}"}}"#);
             println!(
+                r#"{{"type":"text","model":"{requested_model}","part":{{"id":"opencode-message-1","text":"ok opencode fixture"}}}}"#
+            );
+            println!(
                 r#"{{"type":"step_finish","part":{{"id":"fixture-step","tokens":{{"input":8,"output":3,"reasoning":2,"cache":{{"read":12,"write":0}}}}}}}}"#
             );
             println!(
                 r#"{{"type":"session.idle","sessionID":"{session}","result":"ok opencode fixture"}}"#
             );
         }
+        "antigravity" => {
+            println!(
+                r#"{{"event":"init","conversation_id":"{session}","init":{{"model":"{requested_model}","permission_mode":"request-review"}}}}"#
+            );
+            println!(
+                r#"{{"event":"step_update","step_update":{{"conversation_id":"{session}","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"ok antigravity fixture","usage":{{"input_tokens":8,"output_tokens":5,"thinking_tokens":0,"cache_read_tokens":12,"total_tokens":13}}}}}}"#
+            );
+            println!(
+                r#"{{"event":"result","result":{{"conversation_id":"{session}","status":"SUCCESS","response":"ok antigravity fixture","num_turns":1,"usage":{{"input_tokens":8,"output_tokens":5,"thinking_tokens":0,"cache_read_tokens":12,"total_tokens":13}}}}}}"#
+            );
+        }
         _ => unreachable!(),
     }
+}
+
+fn fixture_model_mismatch() -> bool {
+    env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path.with_file_name("claude.fixture-state")).ok())
+        .is_some_and(|state| matches!(state.trim(), "sonnet_mismatch" | "subagent_sonnet_mismatch"))
+}
+
+fn fixture_model_unverified() -> bool {
+    env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path.with_file_name("claude.fixture-state")).ok())
+        .is_some_and(|state| state.trim() == "missing_generation_identity")
+}
+
+fn fixture_output_runaway() -> bool {
+    env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path.with_file_name("claude.fixture-state")).ok())
+        .is_some_and(|state| state.trim() == "output_runaway")
+}
+
+fn fixture_subagent_mismatch() -> bool {
+    env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path.with_file_name("claude.fixture-state")).ok())
+        .is_some_and(|state| state.trim() == "subagent_sonnet_mismatch")
 }
 
 fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {

@@ -8,8 +8,9 @@ use gpui::{
 use crate::theme;
 
 const SASH_WIDTH: f32 = 6.0;
-/// Painted width of the handle inside the gutter; the whole gutter stays the hit target.
-const SASH_HANDLE_WIDTH: f32 = 2.0;
+/// Painted width of the handle inside the gutter; the whole gutter stays the hit target. At rest
+/// it is the hairline between two frameless panes.
+const SASH_HANDLE_WIDTH: f32 = 1.0;
 /// Keeps the handle clear of the panes' `rounded_lg` corners (8px radius).
 const SASH_HANDLE_INSET: f32 = 10.0;
 
@@ -188,9 +189,9 @@ pub(crate) fn split_pane(
         )
         .child(
             // The sash is a transparent gutter the width of the hit area; only a thin handle,
-            // inset from the panes' rounded corners, is painted — and only while the pointer is
-            // over the gutter or a drag is in progress. A solid full-height bar used to sit
-            // flush against the corner radii and read as a notch between the two cards.
+            // inset from the top and bottom, is painted. Panes are frameless inside the shell's
+            // centre container, so at rest the handle is their dividing hairline; it turns accent
+            // while the pointer is over the gutter or a drag is in progress.
             div()
                 .id(SharedString::from(sash_id.clone()))
                 .debug_selector(move || sash_id.clone())
@@ -210,9 +211,13 @@ pub(crate) fn split_pane(
                         .w(px(SASH_HANDLE_WIDTH))
                         .h_full()
                         .rounded_full()
+                        // At rest the handle is the hairline between two frameless panes; it
+                        // lights up while the pointer is over the gutter or a drag runs.
                         .when(dragging, |handle| handle.bg(theme::accent()))
                         .when(!dragging, |handle| {
-                            handle.group_hover("split-sash", |hovered| hovered.bg(theme::accent()))
+                            handle
+                                .bg(theme::border())
+                                .group_hover("split-sash", |hovered| hovered.bg(theme::accent()))
                         }),
                 )
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {

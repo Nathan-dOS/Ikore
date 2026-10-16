@@ -319,7 +319,7 @@ impl SqliteLlmRepository {
         if !matches!(mode, "off" | "shadow" | "on") {
             return Err(LlmError::new(
                 LlmErrorKind::InvalidRequest,
-                "routingV2Mode deve ser off, shadow ou on.",
+                "routingV2Mode must be off, shadow or on.",
             ));
         }
         self.connection()?.execute(
@@ -390,8 +390,12 @@ impl SqliteLlmRepository {
                 && profile
                     .as_ref()
                     .is_some_and(|profile| profile.capabilities.tool_calling)
-                && model_entry(&provider_id, &default_model)
-                    .is_some_and(|model| model.tool_calling);
+                // Only OpenRouter's per-model gate is locally curated. Other API providers may
+                // publish a model through their explicit per-connection catalog without a
+                // duplicate entry in the static pricing/capability asset.
+                && (provider_id != "openrouter"
+                    || model_entry(&provider_id, &default_model)
+                        .is_some_and(|model| model.tool_calling));
             items.push(ProviderConnection {
                 id,
                 provider_id,
@@ -428,7 +432,7 @@ impl SqliteLlmRepository {
         {
             return Err(LlmError::new(
                 LlmErrorKind::InvalidRequest,
-                "OpenAI legado é reservado à conexão legacy-openai.",
+                "Legacy OpenAI is reserved for the legacy-openai connection.",
             ));
         }
         let display_name = non_empty(&request.display_name, "displayName")?;
@@ -473,7 +477,7 @@ impl SqliteLlmRepository {
         }
 
         let connection = self.connection()?;
-        if let Some((actual_version, _, _)) = existing {
+        if let Some((actual_version, previous_provider_id, _)) = existing {
             let expected = request
                 .version
                 .ok_or_else(|| version_conflict(0, actual_version))?;
@@ -502,6 +506,15 @@ impl SqliteLlmRepository {
             if changed == 0 {
                 return Err(version_conflict(expected, actual_version));
             }
+            // A snapshot is valid only for the provider adapter that published it.
+            if previous_provider_id != profile.id {
+                connection
+                    .execute(
+                        "DELETE FROM api_model_catalog_snapshots WHERE connection_id=?1",
+                        params![id],
+                    )
+                    .map_err(db_error)?;
+            }
         } else {
             connection
                 .execute(
@@ -529,7 +542,7 @@ impl SqliteLlmRepository {
             .ok_or_else(|| {
                 LlmError::new(
                     LlmErrorKind::Persistence,
-                    "Conexão salva não foi encontrada.",
+                    "The saved connection was not found.",
                 )
             })
     }
@@ -542,14 +555,12 @@ impl SqliteLlmRepository {
         if request.connection_id.starts_with("legacy-") {
             return Err(LlmError::new(
                 LlmErrorKind::RouteConflict,
-                "Conexões legadas não podem ser excluídas.",
+                "Legacy connections cannot be deleted.",
             ));
         }
         let (actual_version, _, credential_ref) = self
             .find_raw_connection(&request.connection_id)?
-            .ok_or_else(|| {
-                LlmError::new(LlmErrorKind::InvalidRequest, "Conexão não encontrada.")
-            })?;
+            .ok_or_else(|| LlmError::new(LlmErrorKind::InvalidRequest, "Connection not found."))?;
         if actual_version != request.version {
             return Err(version_conflict(request.version, actual_version));
         }
@@ -564,7 +575,7 @@ impl SqliteLlmRepository {
         if references > 0 {
             return Err(LlmError::new(
                 LlmErrorKind::RouteConflict,
-                "Remova a conexão das rotas antes de excluí-la.",
+                "Remove the connection from its routes before deleting it.",
             ));
         }
         credentials.delete(&credential_ref)?;
@@ -644,13 +655,13 @@ impl SqliteLlmRepository {
         if !matches!(request.strategy.as_str(), "priority" | "lkgp" | "score") {
             return Err(LlmError::new(
                 LlmErrorKind::InvalidRequest,
-                "strategy deve ser priority, lkgp ou score.",
+                "strategy must be priority, lkgp or score.",
             ));
         }
         if request.targets.is_empty() {
             return Err(LlmError::new(
                 LlmErrorKind::InvalidRequest,
-                "A rota precisa de ao menos um alvo.",
+                "The route needs at least one target.",
             ));
         }
         let mut targets = request.targets;
@@ -659,7 +670,7 @@ impl SqliteLlmRepository {
             if target.position != expected as u32 {
                 return Err(LlmError::new(
                     LlmErrorKind::InvalidRequest,
-                    "Posições da rota devem ser contíguas a partir de zero.",
+                    "Route positions must be contiguous from zero.",
                 ));
             }
         }
@@ -685,7 +696,7 @@ impl SqliteLlmRepository {
             if id == "legacy-default" && request.name != "Legacy default" {
                 return Err(LlmError::new(
                     LlmErrorKind::RouteConflict,
-                    "A rota legacy-default não pode ser renomeada.",
+                    "The legacy-default route cannot be renamed.",
                 ));
             }
             let expected = request.version.ok_or_else(|| version_conflict(0, actual))?;
@@ -734,14 +745,14 @@ impl SqliteLlmRepository {
                 "INSERT INTO provider_route_targets (route_id,position,connection_id,model_id,enabled,created_at,updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?6)",
                 params![id,target.position,target.connection_id,non_empty(&target.model_id,"modelId")?,target.enabled,now]
-            ).map_err(|error| foreign_key_or_db(error, "Alvo referencia uma conexão inexistente."))?;
+            ).map_err(|error| foreign_key_or_db(error, "A target references a connection that does not exist."))?;
         }
         transaction.commit().map_err(db_error)?;
         self.list_routes()?
             .into_iter()
             .find(|route| route.id == id)
             .ok_or_else(|| {
-                LlmError::new(LlmErrorKind::Persistence, "Rota salva não foi encontrada.")
+                LlmError::new(LlmErrorKind::Persistence, "The saved route was not found.")
             })
     }
 
@@ -749,7 +760,7 @@ impl SqliteLlmRepository {
         if request.route_id == "legacy-default" {
             return Err(LlmError::new(
                 LlmErrorKind::RouteConflict,
-                "A rota legacy-default não pode ser excluída.",
+                "The legacy-default route cannot be deleted.",
             ));
         }
         let connection = self.connection()?;
@@ -761,7 +772,7 @@ impl SqliteLlmRepository {
             )
             .optional()
             .map_err(db_error)?
-            .ok_or_else(|| LlmError::new(LlmErrorKind::InvalidRequest, "Rota não encontrada."))?;
+            .ok_or_else(|| LlmError::new(LlmErrorKind::InvalidRequest, "Route not found."))?;
         if actual != request.version {
             return Err(version_conflict(request.version, actual));
         }
@@ -775,7 +786,7 @@ impl SqliteLlmRepository {
         if references > 0 {
             return Err(LlmError::new(
                 LlmErrorKind::RouteConflict,
-                "Remova os vínculos antes de excluir a rota.",
+                "Remove the bindings before deleting the route.",
             ));
         }
         connection
@@ -845,13 +856,13 @@ impl SqliteLlmRepository {
                 "UPDATE provider_route_bindings SET route_id=?1,enabled=?2,version=version+1,updated_at=?3
                  WHERE project_id=?4 AND agent_role=?5 AND stage=?6 AND version=?7",
                 params![request.route_id,request.enabled.unwrap_or(true),now,request.project_id,request.agent_role,request.stage,expected]
-            ).map_err(|error|foreign_key_or_db(error,"Vínculo referencia projeto ou rota inexistente."))?;
+            ).map_err(|error|foreign_key_or_db(error,"The binding references a project or route that does not exist."))?;
         } else {
             connection.execute(
                 "INSERT INTO provider_route_bindings (project_id,agent_role,stage,route_id,enabled,version,created_at,updated_at)
                  VALUES (?1,?2,?3,?4,?5,1,?6,?6)",
                 params![request.project_id,request.agent_role,request.stage,request.route_id,request.enabled.unwrap_or(true),now]
-            ).map_err(|error|foreign_key_or_db(error,"Vínculo referencia projeto ou rota inexistente."))?;
+            ).map_err(|error|foreign_key_or_db(error,"The binding references a project or route that does not exist."))?;
         }
         if request.stage == "SPECIFICATION" {
             // An explicit versioned save is the human resolution of a migrated alias collision.
@@ -868,7 +879,7 @@ impl SqliteLlmRepository {
             .ok_or_else(|| {
                 LlmError::new(
                     LlmErrorKind::Persistence,
-                    "Vínculo salvo não foi encontrado.",
+                    "The saved binding was not found.",
                 )
             })
     }
@@ -1016,10 +1027,10 @@ impl SqliteLlmRepository {
                 Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,Option<String>>(3)?,row.get::<_,String>(4)?,row.get::<_,bool>(5)?,row.get::<_,String>(6)?,row.get::<_,Option<String>>(7)?,row.get::<_,u32>(8)?,row.get::<_,u32>(9)?))
             }
         ).optional().map_err(db_error)?.map(|(id,provider_id,credential_ref,endpoint_url,default_model,enabled,state,cooldown_until,backoff_level,max_concurrency)|{
-            let profile=profile_by_id(&provider_id).ok_or_else(||LlmError::new(LlmErrorKind::InvalidRequest,"Provider profile da conexão não existe."))?;
+            let profile=profile_by_id(&provider_id).ok_or_else(||LlmError::new(LlmErrorKind::InvalidRequest,"The connection provider profile does not exist."))?;
             let endpoint=profile.resolved_endpoint(endpoint_url.as_deref())?;
             Ok(ResolvedConnection{id:id.into(),provider_id:provider_id.into(),credential_ref,endpoint_url:endpoint,default_model,enabled,state,cooldown_until,backoff_level,max_concurrency})
-        }).transpose()?.ok_or_else(||LlmError::new(LlmErrorKind::InvalidRequest,"Conexão não encontrada."))
+        }).transpose()?.ok_or_else(||LlmError::new(LlmErrorKind::InvalidRequest,"Connection not found."))
     }
 
     pub fn create_execution(
@@ -1075,6 +1086,49 @@ impl SqliteLlmRepository {
             "UPDATE llm_attempts SET outcome=?1,error_kind=?2,http_status=?3,provider_code=?4,latency_ms=?5,input_tokens=?6,output_tokens=?7,estimated_cost_usd=?8,finished_at=?9 WHERE id=?10",
             params![outcome,error_kind,http_status,provider_code,latency_ms,input_tokens,output_tokens,cost,Utc::now().to_rfc3339(),id]
         ).map_err(db_error)?;
+        Ok(())
+    }
+
+    pub fn record_model_observation(
+        &self,
+        attempt_id: &str,
+        ordinal: u32,
+        generation_id: &str,
+        agent_role: Option<AgentRole>,
+        agent_target: &str,
+        parent_invocation_id: Option<&str>,
+        provider_id: &str,
+        requested_model: &str,
+        observed_model: Option<&str>,
+    ) -> Result<(), LlmError> {
+        self.connection()?
+            .execute(
+                "INSERT INTO llm_model_observations(
+               attempt_id,ordinal,generation_id,agent_role,agent_target,parent_invocation_id,
+               provider_id,requested_model,observed_model,created_at
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![
+                    attempt_id,
+                    ordinal,
+                    generation_id,
+                    agent_role.map(AgentRole::as_str),
+                    agent_target,
+                    parent_invocation_id,
+                    provider_id,
+                    requested_model,
+                    observed_model,
+                    Utc::now().to_rfc3339(),
+                ],
+            )
+            .map_err(db_error)?;
+        if let Some(model) = observed_model {
+            self.connection()?
+                .execute(
+                    "UPDATE llm_attempts SET observed_model=?1 WHERE id=?2",
+                    params![model, attempt_id],
+                )
+                .map_err(db_error)?;
+        }
         Ok(())
     }
 
@@ -1408,7 +1462,7 @@ impl SqliteLlmRepository {
         let base=connection.query_row(
             "SELECT generation_id,route_id,status,decision_json,next_eligible_at,visible_output,visible_output_complete FROM llm_route_executions WHERE id=?1",params![id],
             |row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,Option<String>>(5)?,row.get::<_,bool>(6)?))
-        ).optional().map_err(db_error)?.ok_or_else(||LlmError::new(LlmErrorKind::InvalidRequest,"Execução LLM não encontrada."))?;
+        ).optional().map_err(db_error)?.ok_or_else(||LlmError::new(LlmErrorKind::InvalidRequest,"LLM execution not found."))?;
         let mut statement=connection.prepare("SELECT ordinal,connection_id,provider_id,model_id,outcome,error_kind,http_status,latency_ms,input_tokens,output_tokens,estimated_cost_usd,started_at,finished_at FROM llm_attempts WHERE execution_id=?1 ORDER BY ordinal").map_err(db_error)?;
         let rows=statement.query_map(params![id],|row|Ok(json!({"ordinal":row.get::<_,u32>(0)?,"connectionId":row.get::<_,String>(1)?,"providerId":row.get::<_,String>(2)?,"modelId":row.get::<_,String>(3)?,"outcome":row.get::<_,String>(4)?,"errorKind":row.get::<_,Option<String>>(5)?,"httpStatus":row.get::<_,Option<u16>>(6)?,"latencyMs":row.get::<_,Option<u64>>(7)?,"inputTokens":row.get::<_,Option<i64>>(8)?,"outputTokens":row.get::<_,Option<i64>>(9)?,"estimatedCostUsd":row.get::<_,Option<f64>>(10)?,"startedAt":row.get::<_,String>(11)?,"finishedAt":row.get::<_,Option<String>>(12)?}))).map_err(db_error)?;
         let attempts = rows.collect::<Result<Vec<_>, _>>().map_err(db_error)?;
@@ -1489,6 +1543,9 @@ impl SqliteLlmRepository {
             AgentExecutionTarget::Canonical { agent_role } => {
                 <Self as LlmRepository>::resolve_route(self, project_id, *agent_role, stage)
             }
+            AgentExecutionTarget::Ephemeral { agent_role, .. } => {
+                <Self as LlmRepository>::resolve_route(self, project_id, *agent_role, stage)
+            }
             AgentExecutionTarget::FreeForm { slot_id } => {
                 let connection = self.connection()?;
                 let valid_slot: bool = connection
@@ -1547,6 +1604,9 @@ impl SqliteLlmRepository {
                 "agent_role=?2 AND free_form_slot_id IS NULL",
                 agent_role.as_str(),
             ),
+            AgentExecutionTarget::Ephemeral { .. } => {
+                return Ok(Vec::new());
+            }
             AgentExecutionTarget::FreeForm { slot_id } => (
                 "agent_role IS NULL AND free_form_slot_id=?2",
                 slot_id.as_str(),
@@ -1603,6 +1663,7 @@ impl SqliteLlmRepository {
                 params![execution_id, project_id, agent_role.as_str()],
                 |row| row.get(0),
             ),
+            AgentExecutionTarget::Ephemeral { .. } => return Ok(false),
             AgentExecutionTarget::FreeForm { slot_id } => connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM llm_route_executions
                  WHERE id=?1 AND project_id=?2 AND agent_role IS NULL
@@ -1630,7 +1691,7 @@ impl LlmRepository for SqliteLlmRepository {
             if conflict {
                 return Err(LlmError::new(
                     LlmErrorKind::RouteConflict,
-                    "Bindings Specification/SPECIFICATION conflitantes. Corrija os vínculos nas configurações.",
+                    "Conflicting Specification/SPECIFICATION bindings. Fix the bindings in Settings.",
                 ));
             }
         }
@@ -1641,9 +1702,7 @@ impl LlmRepository for SqliteLlmRepository {
         self.list_routes()?
             .into_iter()
             .find(|route| route.id == route_id && route.enabled)
-            .ok_or_else(|| {
-                LlmError::new(LlmErrorKind::InvalidRequest, "Rota ativa não encontrada.")
-            })
+            .ok_or_else(|| LlmError::new(LlmErrorKind::InvalidRequest, "Active route not found."))
     }
 
     fn resolved_targets(&self, route_id: &str) -> Result<Vec<ResolvedRouteTarget>, LlmError> {
@@ -1847,7 +1906,7 @@ fn non_empty<'a>(value: &'a str, field: &str) -> Result<&'a str, LlmError> {
     if value.is_empty() {
         Err(LlmError::new(
             LlmErrorKind::InvalidRequest,
-            format!("{field} não pode ser vazio."),
+            format!("{field} cannot be empty."),
         ))
     } else {
         Ok(value)
@@ -1856,7 +1915,7 @@ fn non_empty<'a>(value: &'a str, field: &str) -> Result<&'a str, LlmError> {
 fn version_conflict(expected: u64, actual: u64) -> LlmError {
     let mut error = LlmError::new(
         LlmErrorKind::RouteConflict,
-        format!("Conflito de versão: esperado {expected}, atual {actual}."),
+        format!("Version conflict: expected {expected}, current {actual}."),
     );
     error.causes.push(format!("expectedVersion={expected}"));
     error.causes.push(format!("actualVersion={actual}"));
@@ -1865,7 +1924,7 @@ fn version_conflict(expected: u64, actual: u64) -> LlmError {
 fn db_error(error: rusqlite::Error) -> LlmError {
     LlmError::new(
         LlmErrorKind::Persistence,
-        format!("Falha de persistência LLM: {error}"),
+        format!("LLM persistence failure: {error}"),
     )
 }
 fn foreign_key_or_db(error: rusqlite::Error, message: &str) -> LlmError {

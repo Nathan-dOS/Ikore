@@ -1,27 +1,22 @@
 use gpui::{AnyElement, Context, IntoElement, PathBuilder, canvas, div, point, prelude::*, px};
-use hvc_core::workspace_service::{FileNode, FileNodeKind, SearchMatch, SearchMode};
+use hvc_core::workspace_service::{SearchMatch, SearchMode};
 use hvc_editor::parse_markdown;
 
 use crate::app_model::{AppModel, AppView};
+use crate::sizing::StyledExt;
 use crate::theme;
-use crate::vault::{VaultGraphLayout, build_vault_graph_layout};
+use crate::vault::VaultGraphLayout;
 use crate::workspace_view::render_markdown_block;
-
-#[derive(Clone)]
-struct VaultTreeRow {
-    depth: usize,
-    node: FileNode,
-}
 
 pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let search_input = model.vault_search_input.clone();
     let rename_input = model.vault_rename_input.clone();
     let (
         root,
-        tree,
+        (tree_rows, tree_capped),
         index,
         selected_path,
-        selected_document,
+        (selected_document, preview_loading),
         search_mode,
         case_sensitive,
         search_results,
@@ -34,11 +29,23 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
     ) = {
         let vault = model.vault.read(cx);
         (
-            vault.workspace_root.as_ref().map(ToString::to_string),
-            vault.tree.clone(),
+            vault
+                .workspace_root
+                .as_ref()
+                .map(|root| crate::widgets::display_path(root)),
+            (
+                crate::file_tree::flatten(&vault.tree, &vault.folders),
+                crate::file_tree::is_capped(&vault.tree),
+            ),
             vault.index.clone(),
             vault.selected_path.as_ref().map(ToString::to_string),
-            vault.selected_document().map(str::to_owned),
+            (
+                vault.selected_document().map(str::to_owned),
+                vault
+                    .selected_path
+                    .as_ref()
+                    .is_some_and(|path| vault.loading_documents.contains(path.as_ref())),
+            ),
             vault.search_mode,
             vault.search_case_sensitive,
             vault.search_response.as_ref().map(|response| {
@@ -74,9 +81,10 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
             })
             .cloned()
     });
-    let graph = build_vault_graph_layout(index.as_ref());
-    let mut tree_rows = Vec::new();
-    flatten_tree(&tree, 0, &mut tree_rows);
+    let graph = {
+        let vault = model.vault.read(cx);
+        vault.graph_layout(vault.selected_path.as_ref().map(AsRef::as_ref))
+    };
     let note_count = index.as_ref().map_or(0, |index| index.notes.len());
     let edge_count = index.as_ref().map_or(0, |index| index.edges.len());
     let broken_links = index
@@ -94,9 +102,6 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         .min_h_0()
         .p_3()
         .rounded_lg()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
         .flex()
         .flex_col()
         .gap_3()
@@ -117,9 +122,8 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
             crate::sizing::INPUT_MEDIUM,
         ))
         .child(
-            div()
-                .flex()
-                .gap_2()
+            crate::widgets::segment_track(div())
+                .self_start()
                 .child(search_mode_button(
                     "vault-substring",
                     "Substring",
@@ -166,46 +170,27 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                 .flex()
                 .gap_2()
                 .child(
-                    div()
-                        .id("vault-search")
-                        .flex_1()
-                        .h(px(34.0))
-                        .rounded_md()
-                        .bg(if searching {
-                            theme::surface_raised()
-                        } else {
-                            theme::accent()
-                        })
-                        .text_color(if searching {
-                            theme::text_muted()
-                        } else {
-                            theme::canvas()
-                        })
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(!searching, |button| {
-                            button
-                                .cursor_pointer()
-                                .on_click(cx.listener(|model, _, _, cx| model.search_vault(cx)))
-                        })
-                        .child(if searching { "Searching…" } else { "Search" }),
+                    crate::widgets::button_frame(
+                        div().id("vault-search"),
+                        crate::widgets::ButtonVariant::Tinted,
+                        !searching,
+                    )
+                    .when(!searching, |button| {
+                        button.on_click(cx.listener(|model, _, _, cx| model.search_vault(cx)))
+                    })
+                    .child(if searching { "Searching…" } else { "Search" }),
                 )
                 .when(search_results.is_some(), |row| {
                     row.child(
-                        div()
-                            .id("vault-clear-search")
-                            .px_3()
-                            .h(px(34.0))
-                            .rounded_md()
-                            .bg(theme::surface_raised())
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .on_click(cx.listener(|model, _, _, cx| {
-                                model.clear_vault_search(cx);
-                            }))
-                            .child("Clear"),
+                        crate::widgets::button_frame(
+                            div().id("vault-clear-search"),
+                            crate::widgets::ButtonVariant::Ghost,
+                            true,
+                        )
+                        .on_click(cx.listener(|model, _, _, cx| {
+                            model.clear_vault_search(cx);
+                        }))
+                        .child("Clear"),
                     )
                 }),
         )
@@ -219,11 +204,15 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                     browser.child(search_results_panel(results, cx))
                 })
                 .when(search_results.is_none(), |browser| {
-                    browser.children(
-                        tree_rows
-                            .into_iter()
-                            .map(|row| vault_tree_row(row, selected_path.as_deref(), cx)),
-                    )
+                    browser
+                        .children(
+                            tree_rows
+                                .into_iter()
+                                .map(|row| vault_tree_row(row, selected_path.as_deref(), cx)),
+                        )
+                        .when(tree_capped, |browser| {
+                            browser.child(crate::widgets::tree_capped_notice())
+                        })
                 }),
         )
         .into_any_element();
@@ -236,9 +225,6 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         .min_h_0()
         .p_3()
         .rounded_lg()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
         .flex()
         .flex_col()
         .gap_3()
@@ -267,7 +253,10 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                         .child(if graph_expanded { "Collapse" } else { "Expand" }),
                 ),
         )
-        .child(vault_graph(graph, selected_path.as_deref(), cx))
+        .child({
+            let camera = model.vault.read(cx).camera.snapshot();
+            vault_graph(graph, selected_path.as_deref(), camera, cx)
+        })
         .when(broken_links.is_empty(), |panel| {
             panel.child(
                 div()
@@ -318,17 +307,22 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                     .bg(theme::warning_soft())
                     .child(
                         div()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(theme::warning())
-                            .child(format!(
-                                "File reference issues ({})",
-                                broken_file_references.len()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(theme::warning())
+                                    .child(format!(
+                                        "File reference issues ({})",
+                                        broken_file_references.len()
+                                    )),
+                            )
+                            .child(crate::widgets::info_tip(
+                                "broken-file-references",
+                                "Checks referenced files, not test execution.",
                             )),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .child("Checks referenced files, not test execution."),
                     )
                     .children(broken_file_references.into_iter().map(|reference| {
                         let source = reference.source_path.clone();
@@ -362,6 +356,7 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
             selected_path,
             selected_note,
             selected_document,
+            preview_loading,
             rename_input,
             renaming,
             _notice,
@@ -394,48 +389,51 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         .into_any_element()
 }
 
-fn flatten_tree(nodes: &[FileNode], depth: usize, rows: &mut Vec<VaultTreeRow>) {
-    for node in nodes {
-        rows.push(VaultTreeRow {
-            depth,
-            node: node.clone(),
-        });
-        flatten_tree(&node.children, depth.saturating_add(1), rows);
-    }
-}
-
 fn vault_tree_row(
-    row: VaultTreeRow,
+    row: crate::file_tree::TreeRow,
     selected_path: Option<&str>,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
-    let path = row.node.relative_path.clone();
-    let selectable = matches!(row.node.kind, FileNodeKind::File);
-    let selected = selected_path == Some(path.as_str());
+    let path = row.relative_path.clone();
+    let selected = !row.is_dir && selected_path == Some(path.as_str());
+    let is_dir = row.is_dir;
     div()
         .id(gpui::SharedString::from(format!(
-            "vault-tree:{:?}:{path}",
-            row.node.kind
+            "vault-tree:{}:{path}",
+            if is_dir { "Directory" } else { "File" }
         )))
-        .ml(px(row.depth as f32 * 12.0))
-        .px_2()
+        .tooltip(crate::widgets::text_tooltip(path.clone()))
+        .pl(px(4.0 + row.depth as f32 * 12.0))
+        .pr_2()
         .py_1()
-        .rounded_sm()
+        .rounded_md()
         .flex()
         .items_center()
-        .gap_2()
+        .text_sm()
+        .cursor_pointer()
         .when(selected, |item| {
             item.bg(theme::accent_soft()).text_color(theme::accent())
         })
-        .when(selectable, |item| {
-            item.cursor_pointer()
-                .on_click(cx.listener(move |model, _, _, cx| {
-                    model.select_vault_path(path.clone(), cx);
-                }))
+        .when(!selected, |item| {
+            item.hover(|style| style.bg(theme::surface_raised()))
         })
-        .when(!selectable, |item| item.text_color(theme::text_muted()))
-        .child(if selectable { "◇" } else { "▾" })
-        .child(row.node.name)
+        .when(is_dir, |item| item.text_color(theme::text_muted()))
+        .on_click(cx.listener(move |model, _, _, cx| {
+            if is_dir {
+                model.toggle_vault_folder(&path, cx);
+            } else {
+                model.select_vault_path(path.clone(), cx);
+            }
+        }))
+        .child(crate::widgets::tree_row_label(
+            is_dir.then_some(row.expanded),
+            row.name,
+            if selected {
+                theme::accent()
+            } else {
+                theme::text_muted()
+            },
+        ))
         .into_any_element()
 }
 
@@ -499,32 +497,21 @@ fn search_mode_button(
     mode: SearchMode,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .flex_1()
-        .px_2()
-        .py_1()
-        .rounded_sm()
-        .cursor_pointer()
-        .bg(if selected {
-            theme::accent_soft()
-        } else {
-            theme::surface_raised()
-        })
-        .text_color(if selected {
-            theme::accent()
-        } else {
-            theme::text_muted()
-        })
+    crate::widgets::segment(div().id(id), selected)
         .on_click(cx.listener(move |model, _, _, cx| {
             model.set_vault_search_mode(mode, cx);
         }))
         .child(label)
 }
 
+/// The wikilink graph as a pannable, zoomable canvas. Until the developer drags or zooms, the
+/// camera fits the whole layout (a larger vault is simply shown further out). Dragging the
+/// background pans (hand tool); only a click on a node's dot selects it; the wheel zooms around
+/// the pointer. Nodes outside the panel are not built at all.
 fn vault_graph(
     graph: VaultGraphLayout,
     selected_path: Option<&str>,
+    camera: crate::vault::GraphCamera,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
     if graph.nodes.is_empty() {
@@ -538,81 +525,166 @@ fn vault_graph(
             .child("Open a Markdown Vault to render the graph.")
             .into_any_element();
     }
-    let edges = graph.edges.clone();
+    let measured = camera.bounds.clone();
+    let panel = measured.get().size;
+    // First frame: nothing measured yet; fit to a nominal panel and correct on the next frame.
+    let (width, height) = if panel.width > px(0.0) && panel.height > px(0.0) {
+        (f32::from(panel.width), f32::from(panel.height))
+    } else {
+        (600.0, 460.0)
+    };
+    let transform = camera.transform(&graph, width, height);
+    camera.last.set(Some((transform, graph.nodes.len())));
+    let dragging = camera.drag.is_some();
+    let radius = crate::vault::graph_node_radius(transform.zoom);
+    // Labels crowd a far-out view; keep them for the selection only.
+    let labels = transform.zoom >= 0.55;
+    let hidden = graph.hidden;
+    let shown = graph.nodes.len();
+    let edges: Vec<((f32, f32), (f32, f32))> = graph
+        .edges
+        .iter()
+        .map(|edge| {
+            (
+                transform.to_panel(edge.source.x, edge.source.y),
+                transform.to_panel(edge.target.x, edge.target.y),
+            )
+        })
+        .collect();
+    let visible = |x: f32, y: f32| x > -90.0 && x < width + 90.0 && y > -50.0 && y < height + 50.0;
+    // The hovered note's file name, drawn after every node so no neighbouring dot covers it.
+    let hover_chip = camera.hovered.as_ref().and_then(|path| {
+        let node = graph
+            .nodes
+            .iter()
+            .find(|node| &node.relative_path == path)?;
+        let (x, y) = transform.to_panel(node.layout.x, node.layout.y);
+        let size = if selected_path == Some(path.as_str()) {
+            radius * 2.6
+        } else {
+            radius * 2.0
+        };
+        let name = path.rsplit('/').next().unwrap_or(path).to_owned();
+        Some((x, y - size / 2.0, name))
+    });
+
     div()
         .id("vault-graph")
+        .debug_selector(|| "vault-graph".into())
+        .relative()
         .flex_1()
-        .min_h(px(460.0))
-        .overflow_scroll()
+        .min_h(px(360.0))
+        .overflow_hidden()
+        .rounded_lg()
+        .bg(theme::canvas())
+        .cursor(if dragging {
+            gpui::CursorStyle::ClosedHand
+        } else {
+            gpui::CursorStyle::OpenHand
+        })
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|model, event: &gpui::MouseDownEvent, _, cx| {
+                model.vault_graph_press(event.position, cx);
+            }),
+        )
+        .on_mouse_move(cx.listener(|model, event: &gpui::MouseMoveEvent, _, cx| {
+            if event.pressed_button == Some(gpui::MouseButton::Left) {
+                model.vault_graph_drag(event.position, cx);
+            }
+        }))
+        .on_mouse_up(
+            gpui::MouseButton::Left,
+            cx.listener(|model, _: &gpui::MouseUpEvent, _, cx| model.vault_graph_release(cx)),
+        )
+        .on_mouse_up_out(
+            gpui::MouseButton::Left,
+            cx.listener(|model, _: &gpui::MouseUpEvent, _, cx| model.vault_graph_release(cx)),
+        )
+        .on_scroll_wheel(cx.listener(|model, event: &gpui::ScrollWheelEvent, window, cx| {
+            let delta = f32::from(event.delta.pixel_delta(window.line_height()).y);
+            model.vault_graph_zoom((delta * 0.002).exp(), Some(event.position), cx);
+            // The panel around the graph scrolls too; the wheel belongs to the graph here.
+            cx.stop_propagation();
+        }))
         .child(
-            div()
-                .relative()
-                .w(px(760.0))
-                .h(px(460.0))
-                .child(
-                    canvas(
-                        move |_, _, _| edges,
-                        |bounds, edges, window, _| {
-                            for edge in edges {
-                                let mut path = PathBuilder::stroke(px(1.5));
-                                path.move_to(point(
-                                    bounds.left() + px(edge.source.x),
-                                    bounds.top() + px(edge.source.y),
-                                ));
-                                path.line_to(point(
-                                    bounds.left() + px(edge.target.x),
-                                    bounds.top() + px(edge.target.y),
-                                ));
-                                if let Ok(path) = path.build() {
-                                    window.paint_path(path, theme::border());
-                                }
-                            }
-                        },
-                    )
+            canvas(
+                move |bounds, _, _| {
+                    measured.set(bounds);
+                    edges
+                },
+                |bounds, edges, window, _| {
+                    for ((sx, sy), (tx, ty)) in edges {
+                        let mut path = PathBuilder::stroke(px(1.0));
+                        path.move_to(point(bounds.left() + px(sx), bounds.top() + px(sy)));
+                        path.line_to(point(bounds.left() + px(tx), bounds.top() + px(ty)));
+                        if let Ok(path) = path.build() {
+                            window.paint_path(path, theme::border_strong());
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .size_full(),
+        )
+        .children(graph.nodes.into_iter().filter_map(|node| {
+            let (x, y) = transform.to_panel(node.layout.x, node.layout.y);
+            if !visible(x, y) {
+                return None;
+            }
+            let selected = selected_path == Some(node.relative_path.as_str());
+            let path = node.relative_path.clone();
+            let hover_path = node.relative_path.clone();
+            let selector = format!("vault-node:{}", node.relative_path);
+            let size = if selected { radius * 2.6 } else { radius * 2.0 };
+            let label_width = 120.0;
+            let label = if node.title.chars().count() > 22 {
+                format!("{}…", node.title.chars().take(22).collect::<String>())
+            } else {
+                node.title
+            };
+            Some(
+                div()
                     .absolute()
-                    .size_full(),
-                )
-                .children(graph.nodes.into_iter().map(|node| {
-                    let selected = selected_path == Some(node.relative_path.as_str());
-                    let path = node.relative_path.clone();
-                    let label = if node.title.chars().count() > 24 {
-                        format!("{}…", node.title.chars().take(24).collect::<String>())
-                    } else {
-                        node.title
-                    };
-                    div()
-                        .id(gpui::SharedString::from(format!("vault-node:{path}")))
-                        .absolute()
-                        .left(px(node.layout.x - 50.0))
-                        .top(px(node.layout.y - 14.0))
-                        .w(px(100.0))
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap_1()
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |model, _, _, cx| {
-                            model.select_vault_path(path.clone(), cx);
-                        }))
-                        .child(
-                            div()
-                                .size(if selected { px(28.0) } else { px(20.0) })
-                                .rounded_full()
-                                .border_1()
-                                .border_color(if selected {
-                                    theme::accent()
-                                } else {
-                                    theme::border()
-                                })
-                                .bg(if selected {
-                                    theme::accent_soft()
-                                } else {
-                                    theme::surface_raised()
-                                }),
-                        )
-                        .child(
+                    .left(px(x - label_width / 2.0))
+                    .top(px(y - size / 2.0))
+                    .w(px(label_width))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        // Only the dot is the click target: the label never steals a pan.
+                        div()
+                            .id(gpui::SharedString::from(format!("vault-node:{path}")))
+                            .debug_selector(move || selector.clone())
+                            .size(px(size))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(if selected {
+                                theme::accent()
+                            } else {
+                                theme::border_strong()
+                            })
+                            .bg(if selected {
+                                theme::accent_soft()
+                            } else {
+                                theme::surface_raised()
+                            })
+                            .cursor_pointer()
+                            .hover(|style| style.border_color(theme::accent()))
+                            .on_hover(cx.listener(move |model, hovered: &bool, _, cx| {
+                                model.vault_graph_hover(hover_path.clone(), *hovered, cx);
+                            }))
+                            .on_click(cx.listener(move |model, _, _, cx| {
+                                model.select_vault_path(path.clone(), cx);
+                            })),
+                    )
+                    .when(labels || selected, |node_view| {
+                        node_view.child(
                             div()
                                 .text_xs()
+                                .text_center()
                                 .text_color(if selected {
                                     theme::accent()
                                 } else {
@@ -620,8 +692,98 @@ fn vault_graph(
                                 })
                                 .child(label),
                         )
-                })),
+                    }),
+            )
+        }))
+        .when_some(hover_chip, |graph_view, (x, dot_top, name)| {
+            graph_view.child(
+                div()
+                    .absolute()
+                    .left(px(x - 160.0))
+                    .top(px(dot_top - 30.0))
+                    .w(px(320.0))
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .debug_selector(|| "vault-node-hover".into())
+                            .px_2()
+                            .py_0p5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(theme::border_strong())
+                            .bg(theme::surface_raised())
+                            .shadow_md()
+                            .text_xs()
+                            .text_color(theme::text())
+                            .whitespace_nowrap()
+                            .child(name),
+                    ),
+            )
+        })
+        .child(
+            div()
+                .absolute()
+                .top_2()
+                .right_2()
+                .flex()
+                .items_center()
+                .gap_1()
+                .p_1()
+                .rounded_lg()
+                .bg(theme::surface())
+                .border_1()
+                .border_color(theme::border())
+                .child(crate::widgets::info_tip(
+                    "vault-graph",
+                    "Drag the background to pan and scroll to zoom around the pointer. Hover a dot to see its file name; click it to open the note.",
+                ))
+                .child(crate::widgets::icon_button(
+                    "vault-graph-zoom-in",
+                    crate::icons::Icon::Plus,
+                    "Zoom in",
+                    false,
+                    None,
+                    true,
+                    cx,
+                    |model, _, cx| model.vault_graph_zoom(1.25, None, cx),
+                ))
+                .child(crate::widgets::icon_button(
+                    "vault-graph-zoom-out",
+                    crate::icons::Icon::Minus,
+                    "Zoom out",
+                    false,
+                    None,
+                    true,
+                    cx,
+                    |model, _, cx| model.vault_graph_zoom(0.8, None, cx),
+                ))
+                .child(crate::widgets::icon_button(
+                    "vault-graph-fit",
+                    crate::icons::Icon::Maximize,
+                    "Fit graph",
+                    false,
+                    None,
+                    true,
+                    cx,
+                    |model, _, cx| model.vault_graph_fit(cx),
+                )),
         )
+        // How to use the canvas lives in the toolbar's "i"; only the cap is worth a line.
+        .when(hidden > 0, |graph_view| {
+            graph_view.child(
+                div()
+                    .absolute()
+                    .bottom_2()
+                    .left_3()
+                    .text_xs()
+                    .text_color(theme::text_subtle())
+                    .child(format!(
+                        "Showing the {shown} most connected of {} notes",
+                        shown + hidden
+                    )),
+            )
+        })
         .into_any_element()
 }
 
@@ -630,6 +792,7 @@ fn inspector(
     selected_path: Option<String>,
     note: Option<hvc_core::workspace_service::VaultNoteSummary>,
     document: Option<String>,
+    preview_loading: bool,
     rename_input: gpui::Entity<crate::text_input::NativeTextInput>,
     renaming: bool,
     _notice: Option<String>,
@@ -650,9 +813,6 @@ fn inspector(
         .min_h_0()
         .p_3()
         .rounded_lg()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
         .overflow_y_scroll()
         .child(
             div()
@@ -722,29 +882,21 @@ fn inspector(
                             crate::sizing::INPUT_MEDIUM,
                         ))
                         .child(
-                            div()
-                                .id("rename-vault-note")
-                                .h(px(34.0))
-                                .rounded_md()
-                                .bg(if renaming {
-                                    theme::surface_raised()
-                                } else {
-                                    theme::accent_soft()
-                                })
-                                .text_color(if renaming {
-                                    theme::text_muted()
-                                } else {
-                                    theme::accent()
-                                })
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .when(!renaming, |button| {
-                                    button.cursor_pointer().on_click(cx.listener(
-                                        |model, _, _, cx| model.rename_selected_vault_note(cx),
-                                    ))
-                                })
-                                .child(if renaming { "Renaming…" } else { "Rename" }),
+                            crate::widgets::button_frame(
+                                div().id("rename-vault-note"),
+                                crate::widgets::ButtonVariant::Tinted,
+                                !renaming,
+                            )
+                            .when(!renaming, |button| {
+                                button.on_click(cx.listener(|model, _, _, cx| {
+                                    model.rename_selected_vault_note(cx)
+                                }))
+                            })
+                            .child(if renaming {
+                                "Renaming…"
+                            } else {
+                                "Rename"
+                            }),
                         ),
                 )
             },
@@ -808,11 +960,18 @@ fn inspector(
             )
         })
         .when(selected_path.is_some() && !has_document, |panel| {
+            // A failed read (too large, not UTF-8) already raised a notice; say so here instead
+            // of promising a preview that will never arrive.
             panel.child(
                 div()
                     .mt_4()
+                    .text_sm()
                     .text_color(theme::text_muted())
-                    .child("Loading preview…"),
+                    .child(if preview_loading {
+                        "Loading preview…"
+                    } else {
+                        "Preview unavailable for this file."
+                    }),
             )
         })
 }
@@ -827,59 +986,9 @@ fn stat(label: &'static str, value: usize) -> impl IntoElement {
 }
 
 fn section_heading(eyebrow: &'static str, title: &'static str, count: usize) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .gap_3()
-        .child(
-            div()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child(eyebrow),
-                )
-                .child(
-                    div()
-                        .text_lg()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(title),
-                ),
-        )
-        .child(
-            div()
-                .min_w(px(24.0))
-                .h(px(24.0))
-                .px_2()
-                .rounded_full()
-                .bg(theme::surface_raised())
-                .text_xs()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(count.to_string()),
-        )
+    crate::widgets::section_header(eyebrow, title, count)
 }
 
 fn empty_panel(title: &'static str, description: &'static str) -> impl IntoElement {
-    div()
-        .flex_1()
-        .p_5()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap_2()
-        .child(
-            div()
-                .text_lg()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(title),
-        )
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::text_muted())
-                .child(description),
-        )
+    crate::widgets::empty_panel(crate::icons::Icon::Vault, title, description)
 }

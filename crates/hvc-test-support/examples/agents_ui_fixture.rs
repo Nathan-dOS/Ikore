@@ -86,8 +86,8 @@ fn seed_profile(root: &Path) {
         ),
         (
             AgentRole::Integrator,
-            AgentExecutionMode::ApiDirect,
-            CliBackend::Codex,
+            AgentExecutionMode::CliProcess,
+            CliBackend::Antigravity,
         ),
         (
             AgentRole::LearningAgent,
@@ -355,6 +355,7 @@ fn seed_free_form_run(repository: &TerminalRepository, project_id: &str, slot_id
             llm_execution_id: None,
             parent_run_id: None,
             continuation_reason: None,
+            observation_trial_id: None,
         })
         .unwrap();
     repository

@@ -103,7 +103,7 @@ impl RevisePulsationDescriptionRequest {
             || self.description.trim().is_empty()
             || self.description.chars().count() > MAX_DESCRIPTION_CHARS
         {
-            return Err(ContractError::Invalid("descrição/revisão da pulsação"));
+            return Err(ContractError::Invalid("pulsation description/revision"));
         }
         Ok(())
     }
@@ -143,7 +143,7 @@ impl ExecutionFence {
                 .is_some_and(|id| id.trim().is_empty())
             || self.input_revision == Some(0)
         {
-            return Err(ContractError::Invalid("identidade da execução"));
+            return Err(ContractError::Invalid("run identity"));
         }
         Ok(())
     }
@@ -728,7 +728,7 @@ impl StageOutcome {
             }
             Self::Failed { code, message } => {
                 if code.trim().is_empty() || message.trim().is_empty() {
-                    return Err(ContractError::Invalid("falha sem diagnóstico"));
+                    return Err(ContractError::Invalid("failure without a diagnostic"));
                 }
             }
         }

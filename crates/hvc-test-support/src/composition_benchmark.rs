@@ -502,6 +502,9 @@ fn scripted_reply(
     log: &Mutex<ProviderLog>,
 ) -> ScriptedResponse {
     let body: Value = serde_json::from_str(&request.body).expect("provider request JSON");
+    let model = body["model"]
+        .as_str()
+        .expect("provider request model identity");
     let system = body["messages"][0]["content"].as_str().unwrap_or_default();
     let user = body["messages"][1]["content"].as_str().unwrap_or_default();
     let prompt_chars = system.chars().count() + user.chars().count();
@@ -541,7 +544,7 @@ fn scripted_reply(
                 };
                 return ScriptedResponse::json(
                     200,
-                    json!({"choices":[{"message":{"content":content.to_string()},"finish_reason":"stop"}],
+                    json!({"model":model,"choices":[{"message":{"content":content.to_string()},"finish_reason":"stop"}],
                            "usage": simulated_usage(prompt_chars, &content.to_string())})
                     .to_string(),
                 );
@@ -571,7 +574,7 @@ fn scripted_reply(
     };
     ScriptedResponse::json(
         200,
-        json!({"choices":[{"message":{"content":content.to_string()},"finish_reason":"stop"}],
+        json!({"model":model,"choices":[{"message":{"content":content.to_string()},"finish_reason":"stop"}],
                "usage": simulated_usage(prompt_chars, &content.to_string())})
         .to_string(),
     )

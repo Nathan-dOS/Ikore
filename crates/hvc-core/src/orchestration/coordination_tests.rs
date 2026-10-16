@@ -285,6 +285,70 @@ fn optional_background_reservation_cannot_block_integration_or_next_specificatio
 }
 
 #[test]
+fn runtime_snapshot_names_the_work_holding_each_slot() {
+    let f = Fixture::new(PulsationStage::Code);
+    let db = f.service.connection().unwrap();
+    assert!(
+        PersistenceService::reserve_slot(
+            &db,
+            JobClass::Background,
+            "learning-publish:0f1e",
+            Some(&f.pulse.project_id),
+            None
+        )
+        .unwrap()
+    );
+    let snapshot = f
+        .service
+        .get_pulsation_runtime_snapshot(GetPulsationRuntimeSnapshotRequest {
+            project_id: f.pulse.project_id.clone(),
+        })
+        .unwrap()
+        .snapshot;
+    assert_eq!(snapshot.main_agents_count, 1);
+    assert_eq!(snapshot.background_agents_count, 1);
+    let named: Vec<_> = snapshot
+        .active_jobs
+        .iter()
+        .map(|job| {
+            (
+                job.job_class.as_str(),
+                job.kind.as_str(),
+                job.pulsation_id.as_deref(),
+                job.feature_name.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        named,
+        vec![
+            (
+                "main",
+                "run_stage::Code",
+                Some(f.pulse.id.as_str()),
+                Some("Implement a validated contract")
+            ),
+            ("background", "learning-publish", None, None),
+        ]
+    );
+
+    f.service
+        .release_runtime_slot("learning-publish:0f1e")
+        .unwrap();
+    f.service
+        .release_runtime_slot(&PersistenceService::job_slot_token(&f.job))
+        .unwrap();
+    let idle = f
+        .service
+        .get_pulsation_runtime_snapshot(GetPulsationRuntimeSnapshotRequest {
+            project_id: f.pulse.project_id.clone(),
+        })
+        .unwrap()
+        .snapshot;
+    assert!(idle.active_jobs.is_empty());
+}
+
+#[test]
 fn publication_waits_for_main_slot_but_not_for_optional_background() {
     let f = Fixture::new(PulsationStage::Integrator);
     f.accept(&f.output("advance", Some("integrated.md"), "final"))

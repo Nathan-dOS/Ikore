@@ -22,11 +22,13 @@ fn reject_link(path: &Path) -> Result<(), Error> {
     {
         use std::os::windows::fs::MetadataExt;
         if metadata.file_attributes() & 0x400 != 0 {
-            return Err(forbidden("Publicação não permite junction/reparse point."));
+            return Err(forbidden(
+                "Publication does not allow junctions or reparse points.",
+            ));
         }
     }
     if metadata.file_type().is_symlink() {
-        return Err(forbidden("Publicação não permite symlinks."));
+        return Err(forbidden("Publication does not allow symlinks."));
     }
     Ok(())
 }
@@ -45,7 +47,7 @@ pub(crate) fn safe_target(
     }
     let root = root.canonicalize()?;
     if !root.is_dir() {
-        return Err(forbidden("Workspace inválido."));
+        return Err(forbidden("Invalid workspace."));
     }
     let segments: Vec<_> = relative.as_str().split('/').collect();
     let mut target = root.clone();
@@ -65,7 +67,7 @@ pub(crate) fn safe_target(
             || lower.starts_with("id_rsa")
             || lower.starts_with("id_ed25519")
         {
-            return Err(forbidden("Destino de publicação protegido."));
+            return Err(forbidden("Protected publication target."));
         }
         target.push(segment);
         match fs::symlink_metadata(&target) {
@@ -95,13 +97,13 @@ fn hash_file(path: &Path) -> Result<Option<ContentSha256>, Error> {
     };
     if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_ARTIFACT_BYTES {
         return Err(forbidden(
-            "Destino não é arquivo de texto dentro do limite de 1 MiB.",
+            "The target is not a text file within the 1 MiB limit.",
         ));
     }
     let mut bytes = Vec::new();
     file.take(MAX_ARTIFACT_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_ARTIFACT_BYTES || bytes.contains(&0) {
-        return Err(forbidden("Destino binário ou acima do limite."));
+        return Err(forbidden("The target is binary or over the limit."));
     }
     Ok(Some(ContentSha256::of(&bytes)))
 }
@@ -117,7 +119,7 @@ pub(crate) fn publish(
     content: &str,
 ) -> Result<(), Error> {
     if content.len() as u64 > MAX_ARTIFACT_BYTES || content.as_bytes().contains(&0) {
-        return Err(forbidden("Artifact binário ou acima do limite de 1 MiB."));
+        return Err(forbidden("The artifact is binary or over the 1 MiB limit."));
     }
     let desired = ContentSha256::of(content.as_bytes());
     let target = safe_target(root, relative, false)?;
@@ -125,7 +127,7 @@ pub(crate) fn publish(
         PublicationReplayDecision::AcknowledgeAlreadyApplied => return Ok(()),
         PublicationReplayDecision::Conflict => {
             return Err(forbidden(
-                "Conflito de publicação: arquivo mudou fora desta execução; conteúdo humano preservado.",
+                "Publication conflict: the file changed outside this run; human content kept.",
             ));
         }
         PublicationReplayDecision::Apply => {}
@@ -133,7 +135,7 @@ pub(crate) fn publish(
     let target = safe_target(root, relative, true)?;
     let parent = target
         .parent()
-        .ok_or_else(|| forbidden("Destino inválido."))?;
+        .ok_or_else(|| forbidden("Invalid target."))?;
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     temp.write_all(content.as_bytes())?;
     temp.as_file().sync_all()?;
@@ -143,9 +145,7 @@ pub(crate) fn publish(
     match publication_replay_decision(expected, &desired, hash_file(&target)?.as_ref()) {
         PublicationReplayDecision::AcknowledgeAlreadyApplied => return Ok(()),
         PublicationReplayDecision::Conflict => {
-            return Err(forbidden(
-                "Conflito detectado antes da substituição atômica.",
-            ));
+            return Err(forbidden("Conflict detected before the atomic replace."));
         }
         PublicationReplayDecision::Apply => {}
     }

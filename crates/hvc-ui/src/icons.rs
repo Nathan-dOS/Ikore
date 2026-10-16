@@ -65,8 +65,6 @@ pub(crate) enum Icon {
     Download,
     /// Review brief: a decision the agent took.
     Signpost,
-    /// Review brief: an existing interface changes.
-    Plug,
     /// Review brief: left out of scope.
     Ban,
     /// Review brief: acceptance criteria and their proof.
@@ -77,11 +75,59 @@ pub(crate) enum Icon {
     Network,
     /// Review brief: a criterion proven by reading only.
     CircleHelp,
+    /// Select triggers; expanded disclosure groups.
+    ChevronDown,
+    /// Collapsed disclosure groups.
+    ChevronRight,
+    /// A file row in the Workspace and Vault trees.
+    FileText,
+    /// A directory row in the Workspace and Vault trees.
+    Folder,
+    /// Save a form or document.
+    Save,
+    /// Send a message or prompt.
+    Send,
+    /// Stop a running process.
+    Square,
+    /// Delete.
+    Trash,
+    /// Copy to the clipboard.
+    Copy,
+    /// Zoom out.
+    Minus,
+    /// Fit the graph to its panel.
+    Maximize,
+    /// Search settings.
+    Search,
+    /// Keyboard shortcuts page.
+    Keyboard,
+    /// About page.
+    Info,
+    /// Labs (experimental settings).
+    FlaskConical,
+    /// LLM provider connections.
+    Plug,
+    /// LLM routes.
+    Route,
+    /// Second Brain navigation.
+    Brain,
+    /// Token usage.
+    ChartColumn,
+    /// General settings.
+    SlidersHorizontal,
+    /// Stage composition.
+    Workflow,
+    /// Back to a list from its detail.
+    ChevronLeft,
+    /// Expand a docked panel (terminal) upwards.
+    ChevronUp,
+    /// Durations (runs, pulsations).
+    Timer,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 37] = [
+    pub(crate) const ALL: [Self; 60] = [
         Self::House,
         Self::Plus,
         Self::Hammer,
@@ -119,6 +165,29 @@ impl Icon {
         Self::ShieldCheck,
         Self::Network,
         Self::CircleHelp,
+        Self::ChevronDown,
+        Self::ChevronRight,
+        Self::FileText,
+        Self::Folder,
+        Self::Save,
+        Self::Send,
+        Self::Square,
+        Self::Trash,
+        Self::Copy,
+        Self::Minus,
+        Self::Maximize,
+        Self::Search,
+        Self::Keyboard,
+        Self::Info,
+        Self::FlaskConical,
+        Self::Route,
+        Self::Brain,
+        Self::ChartColumn,
+        Self::SlidersHorizontal,
+        Self::Workflow,
+        Self::ChevronLeft,
+        Self::ChevronUp,
+        Self::Timer,
     ];
 
     /// Asset path served by `HvcAssets`; `icons/<lucide-name>.svg`.
@@ -161,6 +230,29 @@ impl Icon {
             Self::ShieldCheck => "icons/shield-check.svg",
             Self::Network => "icons/network.svg",
             Self::CircleHelp => "icons/circle-help.svg",
+            Self::ChevronDown => "icons/chevron-down.svg",
+            Self::ChevronRight => "icons/chevron-right.svg",
+            Self::FileText => "icons/file-text.svg",
+            Self::Folder => "icons/folder.svg",
+            Self::Timer => "icons/timer.svg",
+            Self::ChevronUp => "icons/chevron-up.svg",
+            Self::ChevronLeft => "icons/chevron-left.svg",
+            Self::Workflow => "icons/workflow.svg",
+            Self::SlidersHorizontal => "icons/sliders-horizontal.svg",
+            Self::ChartColumn => "icons/chart-column.svg",
+            Self::Brain => "icons/brain.svg",
+            Self::Route => "icons/route.svg",
+            Self::FlaskConical => "icons/flask-conical.svg",
+            Self::Info => "icons/info.svg",
+            Self::Keyboard => "icons/keyboard.svg",
+            Self::Search => "icons/search.svg",
+            Self::Maximize => "icons/maximize.svg",
+            Self::Minus => "icons/minus.svg",
+            Self::Copy => "icons/copy.svg",
+            Self::Trash => "icons/trash-2.svg",
+            Self::Square => "icons/square.svg",
+            Self::Send => "icons/send.svg",
+            Self::Save => "icons/save.svg",
         }
     }
 }

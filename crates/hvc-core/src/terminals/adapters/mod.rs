@@ -2,9 +2,11 @@ use serde_json::Value;
 
 use super::{
     CliBackend, CliCapabilities, CliInvocationRequest, CliOutputFormat, CliProcessSpec,
-    TerminalError, TerminalEventKind, ThinkingLevel, extract_visible_text, sanitize_terminal_text,
+    CliQuotaBucket, TerminalError, TerminalEventKind, ThinkingLevel, extract_visible_text,
+    sanitize_terminal_text,
 };
 
+mod antigravity;
 mod claude;
 mod codex;
 mod custom;
@@ -16,6 +18,10 @@ pub(super) struct NormalizedCliFrame {
     pub content: String,
     pub native_session_id: Option<String>,
     pub observed_model: Option<String>,
+    pub message_id: Option<String>,
+    pub parent_invocation_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub is_model_generation: bool,
     pub is_text: bool,
     /// True when `content` is an incremental fragment of the assistant's
     /// message (streamed token-by-token) rather than the complete text -
@@ -39,6 +45,9 @@ pub(super) enum CliFailureKind {
     ProcessFailed,
 }
 
+/// Only the minimum is a gate. A version above the last one this adapter was validated against
+/// is `UnknownNewer`: it runs with the full contract and merely carries an advisory diagnostic,
+/// so a CLI auto-update never blocks a pulsation while the ceiling waits to be bumped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CliVersionCompatibility {
     Supported,
@@ -49,6 +58,7 @@ pub(super) enum CliVersionCompatibility {
 #[derive(Debug, Clone, Copy)]
 struct CliCompatibilityRule {
     minimum: (u64, u64, u64),
+    /// First version not yet validated; advisory, never blocking.
     maximum_exclusive: (u64, u64, u64),
 }
 
@@ -71,6 +81,10 @@ pub(super) trait CliAdapter: Sync {
     ) -> Result<CliProcessSpec, TerminalError>;
     fn normalize_frame(&self, stream: &str, bytes: &[u8]) -> NormalizedCliFrame;
     fn auth_probe_args(&self) -> Option<&'static [&'static str]>;
+    /// Usage allowance the auth probe printed on its way, for CLIs billed by quota.
+    fn quota_from_auth_probe(&self, _stdout: &[u8]) -> Vec<CliQuotaBucket> {
+        Vec::new()
+    }
     fn classify_failure(&self, exit_code: Option<i32>, stderr: &str) -> CliFailureKind;
 }
 
@@ -78,6 +92,7 @@ static CODEX: codex::CodexAdapter = codex::CodexAdapter;
 static CLAUDE: claude::ClaudeAdapter = claude::ClaudeAdapter;
 static GEMINI: gemini::GeminiAdapter = gemini::GeminiAdapter;
 static OPENCODE: opencode::OpenCodeAdapter = opencode::OpenCodeAdapter;
+static ANTIGRAVITY: antigravity::AntigravityAdapter = antigravity::AntigravityAdapter;
 static CUSTOM: custom::CustomAdapter = custom::CustomAdapter;
 
 fn adapter(backend: CliBackend) -> &'static dyn CliAdapter {
@@ -86,6 +101,7 @@ fn adapter(backend: CliBackend) -> &'static dyn CliAdapter {
         CliBackend::Claude => &CLAUDE,
         CliBackend::Gemini => &GEMINI,
         CliBackend::Opencode => &OPENCODE,
+        CliBackend::Antigravity => &ANTIGRAVITY,
         CliBackend::Custom => &CUSTOM,
     }
 }
@@ -98,12 +114,16 @@ pub(super) fn auth_probe_args(backend: CliBackend) -> Option<&'static [&'static 
     adapter(backend).auth_probe_args()
 }
 
+pub(super) fn quota_from_auth_probe(backend: CliBackend, stdout: &[u8]) -> Vec<CliQuotaBucket> {
+    adapter(backend).quota_from_auth_probe(stdout)
+}
+
 pub(super) fn build_process_spec(
     request: CliInvocationRequest,
 ) -> Result<CliProcessSpec, TerminalError> {
     if !request.executable.is_absolute() {
         return Err(TerminalError::Validation(
-            "o executável CLI deve ter caminho absoluto".into(),
+            "the CLI executable needs an absolute path".into(),
         ));
     }
     validate_resume_session(request.resume_session_id.as_deref())?;
@@ -137,7 +157,7 @@ fn validate_resume_session(session_id: Option<&str>) -> Result<(), TerminalError
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.'))
     {
         return Err(TerminalError::Validation(
-            "identificador de sessão CLI inválido".into(),
+            "invalid CLI session identifier".into(),
         ));
     }
     Ok(())
@@ -180,8 +200,14 @@ pub(super) fn version_compatibility(
     }
 }
 
+/// Whether the adapter's full contract (structured output, native resume) applies. Newer
+/// versions keep it: the CLIs have only added to their stream-json contracts so far, and losing
+/// resume on every auto-update cost more than the rare regression it guarded against.
 fn version_supports_contract(backend: CliBackend, version: Option<&str>) -> bool {
-    version_compatibility(backend, version) == CliVersionCompatibility::Supported
+    matches!(
+        version_compatibility(backend, version),
+        CliVersionCompatibility::Supported | CliVersionCompatibility::UnknownNewer
+    )
 }
 
 /// The validated `[minimum, maximum_exclusive)` version range for a backend, formatted as
@@ -215,6 +241,10 @@ fn compatibility_rule(backend: CliBackend) -> CliCompatibilityRule {
         CliBackend::Opencode => CliCompatibilityRule {
             minimum: (1, 18, 0),
             maximum_exclusive: (1, 19, 0),
+        },
+        CliBackend::Antigravity => CliCompatibilityRule {
+            minimum: (1, 3, 0),
+            maximum_exclusive: (1, 4, 0),
         },
         CliBackend::Custom => CliCompatibilityRule {
             minimum: (0, 0, 0),
@@ -273,6 +303,10 @@ fn normalize_json_frame(
             content: sanitized,
             native_session_id: None,
             observed_model: None,
+            message_id: None,
+            parent_invocation_id: None,
+            agent_id: None,
+            is_model_generation: false,
             is_text: false,
             is_delta: false,
             finish_reason: None,
@@ -285,6 +319,10 @@ fn normalize_json_frame(
             content: sanitized,
             native_session_id: None,
             observed_model: None,
+            message_id: None,
+            parent_invocation_id: None,
+            agent_id: None,
+            is_model_generation: false,
             is_text: true,
             is_delta: false,
             finish_reason: None,
@@ -292,6 +330,7 @@ fn normalize_json_frame(
         };
     };
     let kind = classify(&value);
+    let is_model_generation = is_model_generation(backend, &value, kind);
     let visible = extract_visible_text(&value);
     let is_text = visible.is_some();
     let content = visible.unwrap_or_else(|| format!("{}: {sanitized}", backend.label()));
@@ -305,6 +344,13 @@ fn normalize_json_frame(
         content: sanitize_terminal_text(content.as_bytes()),
         native_session_id: find_session_id(&value),
         observed_model: find_model_id(&value),
+        message_id: find_message_id(&value),
+        parent_invocation_id: find_string_for_keys(
+            &value,
+            &["parent_tool_use_id", "parentInvocationId"],
+        ),
+        agent_id: find_string_for_keys(&value, &["agent_id", "agentId"]),
+        is_model_generation,
         is_text,
         is_delta,
         finish_reason: find_finish_reason(&value),
@@ -368,6 +414,64 @@ fn event_type(value: &Value) -> &str {
         .unwrap_or_default()
 }
 
+fn is_model_generation(backend: CliBackend, value: &Value, kind: TerminalEventKind) -> bool {
+    match backend {
+        CliBackend::Claude => {
+            event_type(value) == "assistant"
+                || value.pointer("/event/type").and_then(Value::as_str) == Some("message_start")
+        }
+        CliBackend::Codex => {
+            let event = event_type(value);
+            event.starts_with("item.")
+                && value.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
+                && (event.ends_with("added") || event.ends_with("completed"))
+        }
+        // `agy` names the model only in `init`: the one it resolved from
+        // `--model`, failing the run when it cannot. No later frame repeats it.
+        CliBackend::Antigravity => {
+            value.get("event").and_then(Value::as_str) == Some("init")
+                && value
+                    .pointer("/init/model")
+                    .and_then(Value::as_str)
+                    .is_some()
+        }
+        CliBackend::Gemini | CliBackend::Opencode | CliBackend::Custom => {
+            kind == TerminalEventKind::Message && find_model_id(value).is_some()
+        }
+    }
+}
+
+fn find_message_id(value: &Value) -> Option<String> {
+    [
+        "/event/message/id",
+        "/message/id",
+        "/item/id",
+        "/message_id",
+    ]
+    .into_iter()
+    .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
+    .map(str::to_owned)
+}
+
+fn find_string_for_keys(value: &Value, keys: &[&str]) -> Option<String> {
+    match value {
+        Value::Object(object) => {
+            for key in keys {
+                if let Some(value) = object.get(*key).and_then(Value::as_str) {
+                    return Some(value.to_owned());
+                }
+            }
+            object
+                .values()
+                .find_map(|value| find_string_for_keys(value, keys))
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|value| find_string_for_keys(value, keys)),
+        _ => None,
+    }
+}
+
 fn find_session_id(value: &Value) -> Option<String> {
     if let Value::Object(values) = value {
         for key in [
@@ -376,6 +480,8 @@ fn find_session_id(value: &Value) -> Option<String> {
             "sessionID",
             "thread_id",
             "threadId",
+            "conversation_id",
+            "conversationId",
         ] {
             if let Some(session_id) = values
                 .get(key)
@@ -459,6 +565,18 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn codex_public_item_event_needs_turn_context_model_evidence() {
+        let frame = normalize_frame(
+            CliBackend::Codex,
+            "stdout",
+            br#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}"#,
+        );
+        assert!(frame.is_model_generation);
+        assert_eq!(frame.message_id.as_deref(), Some("item_0"));
+        assert_eq!(frame.observed_model, None);
+    }
+
     const FIXTURES: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../hvc-test-support/fixtures/cli"
@@ -479,6 +597,7 @@ mod tests {
             (CliBackend::Claude, "claude"),
             (CliBackend::Gemini, "gemini"),
             (CliBackend::Opencode, "opencode"),
+            (CliBackend::Antigravity, "antigravity"),
         ] {
             let lines = fixture_lines(name, "success.jsonl");
             let normalized = lines
@@ -507,6 +626,11 @@ mod tests {
             (CliBackend::Claude, "claude", "claude-sonnet-4-6"),
             (CliBackend::Gemini, "gemini", "gemini-3-pro"),
             (CliBackend::Opencode, "opencode", "openai/gpt-5.4"),
+            (
+                CliBackend::Antigravity,
+                "antigravity",
+                "gemini-3.8-flash-low",
+            ),
         ] {
             let observed = fixture_lines(name, "success.jsonl")
                 .iter()
@@ -525,6 +649,7 @@ mod tests {
             (CliBackend::Gemini, "v0.55.1"),
             (CliBackend::Gemini, "0.59.5"),
             (CliBackend::Opencode, "opencode 1.18.17"),
+            (CliBackend::Antigravity, "1.3.5"),
         ] {
             assert_eq!(
                 version_compatibility(backend, Some(version)),
@@ -549,6 +674,14 @@ mod tests {
             CliVersionCompatibility::UnknownNewer
         );
         assert_eq!(
+            version_compatibility(CliBackend::Antigravity, Some("1.2.15")),
+            CliVersionCompatibility::Unsupported
+        );
+        assert_eq!(
+            version_compatibility(CliBackend::Antigravity, Some("1.4.0")),
+            CliVersionCompatibility::UnknownNewer
+        );
+        assert_eq!(
             version_compatibility(CliBackend::Codex, Some("0.154.0")),
             CliVersionCompatibility::Supported,
             "0.154.0 is installed and working; the ceiling must cover it"
@@ -557,7 +690,10 @@ mod tests {
             version_compatibility(CliBackend::Codex, Some("0.155.0")),
             CliVersionCompatibility::UnknownNewer
         );
-        assert!(!capabilities(CliBackend::Claude, Some("2.2.0")).native_resume);
+        // Above the validated ceiling the contract stays on; below the floor it is off.
+        assert!(capabilities(CliBackend::Claude, Some("2.2.0")).native_resume);
+        assert!(capabilities(CliBackend::Gemini, Some("0.60.0")).native_resume);
+        assert!(!capabilities(CliBackend::Gemini, Some("0.54.9")).native_resume);
     }
 
     #[test]
@@ -574,6 +710,7 @@ mod tests {
             (CliBackend::Claude, "claude"),
             (CliBackend::Gemini, "gemini"),
             (CliBackend::Opencode, "opencode"),
+            (CliBackend::Antigravity, "antigravity"),
         ] {
             let kinds = fixture_lines(name, "tools.jsonl")
                 .iter()
@@ -594,6 +731,7 @@ mod tests {
             (CliBackend::Claude, "--resume"),
             (CliBackend::Gemini, "--resume"),
             (CliBackend::Opencode, "--session"),
+            (CliBackend::Antigravity, "--conversation"),
         ] {
             let spec = build_process_spec(CliInvocationRequest {
                 executable: PathBuf::from(r"C:\Tools\agent.exe"),
@@ -610,10 +748,48 @@ mod tests {
             .unwrap();
             assert!(spec.args.iter().any(|arg| arg == resume_flag));
             assert!(spec.args.iter().any(|arg| arg == "session-fixture-1"));
-            assert_eq!(spec.stdin_payload, b"follow-up");
+            if backend == CliBackend::Antigravity {
+                // `agy` reads its prompt as one NDJSON stream message.
+                let message: Value = serde_json::from_slice(&spec.stdin_payload).unwrap();
+                assert_eq!(message["message"]["content"], "follow-up");
+            } else {
+                assert_eq!(spec.stdin_payload, b"follow-up");
+            }
             assert!(!spec.args.iter().any(|arg| arg == "--last"));
             assert!(!spec.args.iter().any(|arg| arg == "--continue"));
         }
+    }
+
+    #[test]
+    fn claude_json_schema_omits_only_the_unsupported_meta_reference() {
+        let schema = serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "unit-response",
+            "type": "object",
+            "properties": { "outcome": { "type": "string" } }
+        });
+        let spec = build_process_spec(CliInvocationRequest {
+            executable: PathBuf::from(r"C:\Tools\claude.exe"),
+            backend: CliBackend::Claude,
+            model: None,
+            model_profile: None,
+            thinking_level: ThinkingLevel::Default,
+            prompt: "reply".into(),
+            schema_file: None,
+            schema: Some(schema),
+            custom_args: Vec::new(),
+            resume_session_id: None,
+        })
+        .unwrap();
+        let index = spec
+            .args
+            .iter()
+            .position(|arg| arg == "--json-schema")
+            .unwrap();
+        let delivered: Value = serde_json::from_str(&spec.args[index + 1]).unwrap();
+        assert!(delivered.get("$schema").is_none());
+        assert_eq!(delivered["title"], "unit-response");
+        assert_eq!(delivered["properties"]["outcome"]["type"], "string");
     }
 
     #[test]
@@ -623,6 +799,7 @@ mod tests {
             (CliBackend::Claude, "claude"),
             (CliBackend::Gemini, "gemini"),
             (CliBackend::Opencode, "opencode"),
+            (CliBackend::Antigravity, "antigravity"),
         ] {
             let unknown = fixture_lines(name, "unknown.jsonl").remove(0);
             let event = normalize_frame(backend, "stdout", unknown.as_bytes());
@@ -708,6 +885,53 @@ mod tests {
             );
             assert!(is_output_truncation(expected), "{backend:?}");
         }
+    }
+
+    #[test]
+    fn antigravity_fixtures_yield_the_answer_the_host_parses() {
+        // The last text frame becomes the run's raw output (see the stream
+        // writer): deltas append, a complete frame replaces them.
+        let final_text = |name: &str| {
+            fixture_lines("antigravity", name)
+                .iter()
+                .map(|line| normalize_frame(CliBackend::Antigravity, "stdout", line.as_bytes()))
+                .rfind(|frame| frame.is_text)
+                .map(|frame| frame.content)
+                .unwrap()
+        };
+        assert_eq!(final_text("success.jsonl").trim(), "PONG");
+        assert_eq!(final_text("resume.jsonl").trim(), "PONG");
+        let structured: Value = serde_json::from_str(&final_text("structured.jsonl")).unwrap();
+        assert_eq!(structured["answer"], "The capital of France is Paris.");
+
+        // A headless turn refused a tool: the run still completes, empty.
+        let denied = fixture_lines("antigravity", "denied.jsonl")
+            .iter()
+            .map(|line| normalize_frame(CliBackend::Antigravity, "stdout", line.as_bytes()))
+            .collect::<Vec<_>>();
+        assert!(
+            denied
+                .iter()
+                .any(|frame| frame.kind == TerminalEventKind::Completed)
+        );
+        assert!(
+            denied
+                .iter()
+                .any(|frame| frame.kind == TerminalEventKind::ToolUse)
+        );
+    }
+
+    #[test]
+    fn antigravity_error_fixtures_classify_as_failures() {
+        for line in fixture_lines("antigravity", "errors.jsonl") {
+            let frame = normalize_frame(CliBackend::Antigravity, "stdout", line.as_bytes());
+            assert_eq!(frame.kind, TerminalEventKind::Error);
+        }
+        let stderr = fixture_lines("antigravity", "stderr-nonzero.txt").join("\n");
+        assert_eq!(
+            classify_failure(CliBackend::Antigravity, Some(1), &stderr),
+            CliFailureKind::ProcessFailed
+        );
     }
 
     #[test]

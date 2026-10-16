@@ -867,6 +867,9 @@ pub struct Window {
     pub(crate) activation_observers: SubscriberSet<(), AnyObserver>,
     pub(crate) focus: Option<FocusId>,
     focus_enabled: bool,
+    /// HVC-GPUI-005: the current focus was reached with the keyboard (Tab), so focus rings
+    /// and focus tooltips should show. Cleared by any mouse press or programmatic focus.
+    pub(crate) focus_visible: bool,
     pending_input: Option<PendingInput>,
     pending_modifier: ModifierState,
     pub(crate) pending_input_observers: SubscriberSet<(), AnyObserver>,
@@ -1250,6 +1253,7 @@ impl Window {
             activation_observers: SubscriberSet::new(),
             focus: None,
             focus_enabled: true,
+            focus_visible: false,
             pending_input: None,
             pending_modifier: ModifierState::default(),
             pending_input_observers: SubscriberSet::new(),
@@ -1388,6 +1392,7 @@ impl Window {
             return;
         }
 
+        self.focus_visible = false;
         self.focus = Some(handle.id);
         self.clear_pending_keystrokes();
         self.refresh();
@@ -1400,7 +1405,14 @@ impl Window {
         }
 
         self.focus = None;
+        self.focus_visible = false;
         self.refresh();
+    }
+
+    /// HVC-GPUI-005: whether the focused element was reached with the keyboard
+    /// ([`Self::focus_next`] / [`Self::focus_prev`]) rather than a click or code.
+    pub fn focus_visible(&self) -> bool {
+        self.focus_visible
     }
 
     /// Blur the window and don't allow anything in it to be focused again.
@@ -1416,7 +1428,9 @@ impl Window {
         }
 
         if let Some(handle) = self.rendered_frame.tab_stops.next(self.focus.as_ref()) {
-            self.focus(&handle)
+            self.focus(&handle);
+            self.focus_visible = true;
+            self.refresh();
         }
     }
 
@@ -1427,7 +1441,9 @@ impl Window {
         }
 
         if let Some(handle) = self.rendered_frame.tab_stops.prev(self.focus.as_ref()) {
-            self.focus(&handle)
+            self.focus(&handle);
+            self.focus_visible = true;
+            self.refresh();
         }
     }
 
@@ -3675,6 +3691,11 @@ impl Window {
     }
 
     fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
+        // HVC-GPUI-005: pointing again hides keyboard focus rings and focus tooltips.
+        if self.focus_visible && event.downcast_ref::<crate::MouseDownEvent>().is_some() {
+            self.focus_visible = false;
+            self.refresh();
+        }
         let hit_test = self.rendered_frame.hit_test(self.mouse_position());
         if hit_test != self.mouse_hit_test {
             self.mouse_hit_test = hit_test;

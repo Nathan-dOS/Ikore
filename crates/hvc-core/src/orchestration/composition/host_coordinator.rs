@@ -77,14 +77,54 @@ struct UnitFailure {
     /// The worker could plausibly fix this with a bounded correction.
     repairable: bool,
     correction: Option<CorrectionContext>,
+    /// The model's own answer was rejected (parse, validation, truncation):
+    /// Test and the Integrator then revise themselves, not the Code.
+    rejected_answer: bool,
+}
+
+/// A rejection of the worker's own response (parse or `validate_child`).
+/// Every reference conflict there is the model citing a handle it may not
+/// cite - a task, input, proposal key, anchor or check - and gets the bounded
+/// correction; only a reference-table identity conflict (SC-003) is a host
+/// invariant. Restricting the correction to SC-002/SC-004 turned an
+/// Integrator's `checkRefs` slip into a forced Code revision ("Teste Haiku
+/// Only 1", 2026-09-24). Host-side paths keep `classify_composition_error`.
+fn classify_worker_rejection(error: &CompositionError) -> UnitFailure {
+    let mut failure = classify_composition_error(error);
+    failure.rejected_answer = true;
+    if error.code == ErrorCode::ReferenceConflict && error.sc != Invariant::Sc003 {
+        failure.class = FailureClass::BudgetExhausted;
+        failure.repairable = true;
+        failure.correction = Some(correction_for(error));
+    }
+    failure
+}
+
+fn correction_for(error: &CompositionError) -> CorrectionContext {
+    CorrectionContext {
+        diagnostics: vec![error.message.clone()],
+        rejected_artifact_keys: error
+            .related
+            .iter()
+            .filter(|handle| comp::references::Namespace::of(handle).is_none())
+            .cloned()
+            .collect(),
+    }
 }
 
 fn classify_composition_error(error: &CompositionError) -> UnitFailure {
     let (class, repairable) = match error.code {
-        ErrorCode::InvalidShape
-        | ErrorCode::InvalidLanguage
-        | ErrorCode::EvidenceUnresolved
-        | ErrorCode::ReferenceConflict => (FailureClass::BudgetExhausted, true),
+        ErrorCode::InvalidShape | ErrorCode::InvalidLanguage | ErrorCode::EvidenceUnresolved => {
+            (FailureClass::BudgetExhausted, true)
+        }
+        ErrorCode::ReferenceConflict if matches!(error.sc, Invariant::Sc002 | Invariant::Sc004) => {
+            // A model that cites an unassigned task or an undelivered input
+            // can correct its own malformed envelope within the bounded
+            // allowance. Path, candidate, ownership and content identity
+            // conflicts are host invariants and remain non-repairable below.
+            (FailureClass::BudgetExhausted, true)
+        }
+        ErrorCode::ReferenceConflict => (FailureClass::HostContract, false),
         ErrorCode::OwnershipViolation => (FailureClass::OwnershipViolation, true),
         ErrorCode::UnsupportedOperation => (FailureClass::HostContract, true),
         ErrorCode::OutputTruncated => (FailureClass::OutputTruncated, false),
@@ -116,15 +156,8 @@ fn classify_composition_error(error: &CompositionError) -> UnitFailure {
             error.message
         ),
         repairable,
-        correction: repairable.then(|| CorrectionContext {
-            diagnostics: vec![error.message.clone()],
-            rejected_artifact_keys: error
-                .related
-                .iter()
-                .filter(|handle| comp::references::Namespace::of(handle).is_none())
-                .cloned()
-                .collect(),
-        }),
+        correction: repairable.then(|| correction_for(error)),
+        rejected_answer: false,
     }
 }
 
@@ -168,6 +201,20 @@ fn transport_diagnostic(error: &PersistenceServiceError) -> String {
 fn classify_transport_error(error: &PersistenceServiceError) -> Option<UnitFailure> {
     if matches!(
         error,
+        PersistenceServiceError::Cli { code, .. }
+            if matches!(code.as_str(), "model_mismatch" | "model_unverified")
+    ) {
+        return Some(UnitFailure {
+            class: FailureClass::HostContract,
+            code: crate::orchestration::stage_failure_error_code(error),
+            diagnostic: transport_diagnostic(error),
+            repairable: false,
+            correction: None,
+            rejected_answer: false,
+        });
+    }
+    if matches!(
+        error,
         PersistenceServiceError::Cli { code, .. } if code == "cli_output_truncated"
     ) {
         return Some(UnitFailure {
@@ -176,6 +223,23 @@ fn classify_transport_error(error: &PersistenceServiceError) -> Option<UnitFailu
             diagnostic: error.to_string(),
             repairable: false,
             correction: None,
+            rejected_answer: true,
+        });
+    }
+    // The host stopped a run that kept producing past its ceiling. Like a
+    // truncation, the same prompt against the same ceiling spends it again, so
+    // it is neither retried in place nor switched to another backend.
+    if matches!(
+        error,
+        PersistenceServiceError::Cli { code, .. } if code == "cli_output_budget_exceeded"
+    ) {
+        return Some(UnitFailure {
+            class: FailureClass::OutputTruncated,
+            code: "output_budget_exceeded".into(),
+            diagnostic: error.to_string(),
+            repairable: false,
+            correction: None,
+            rejected_answer: true,
         });
     }
     let class = match error {
@@ -192,6 +256,7 @@ fn classify_transport_error(error: &PersistenceServiceError) -> Option<UnitFailu
             FailureClass::ProviderTransport | FailureClass::RetryBudgetExhausted
         ),
         correction: None,
+        rejected_answer: false,
     })
 }
 
@@ -210,6 +275,131 @@ fn receipt_status_label(status: comp::ReceiptStatus) -> &'static str {
         comp::ReceiptStatus::NotRun => "did not run",
         comp::ReceiptStatus::Error => "hit a runner error",
     }
+}
+
+#[derive(serde::Deserialize)]
+struct ContractedLiteralEntry {
+    key: String,
+    value: String,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct ContractFrontmatterFields {
+    #[serde(rename = "type")]
+    note_type: Option<String>,
+    #[serde(rename = "contracted-literals", default)]
+    contracted_literals: Vec<ContractedLiteralEntry>,
+}
+
+/// The YAML frontmatter block of a rendered vault note (between the two
+/// `---` fences), if any. Not a general Markdown parser - just enough to
+/// read the fixed shape `workspace_service`'s templates emit.
+fn frontmatter_yaml(content: &str) -> Option<serde_yaml::Value> {
+    let rest = content.strip_prefix("---")?;
+    let end = rest.find("\n---")?;
+    serde_yaml::from_str(&rest[..end]).ok()
+}
+
+/// Best-effort literal-value diff (recipes §Integrator): if a delivered
+/// source is a rendered contract note (frontmatter `type: contract`), every
+/// literal it lists under `contracted-literals` must appear verbatim in some
+/// other delivered source. Contract-drift bugs on this project (wrong
+/// localStorage keys, an inverted priority scale) went undetected because
+/// nothing ever compared the contract's literal values against the code; a
+/// contract note that documents none, or was never published as a file,
+/// yields no findings here - this is additive to the reviewer's own reading,
+/// never a blocker on its own.
+fn contracted_literal_findings(sources: &[SourceFile]) -> Vec<String> {
+    let mut findings = Vec::new();
+    for (index, note) in sources.iter().enumerate() {
+        let Some(yaml) = frontmatter_yaml(&note.content) else {
+            continue;
+        };
+        let Ok(fields) = serde_yaml::from_value::<ContractFrontmatterFields>(yaml) else {
+            continue;
+        };
+        if fields.note_type.as_deref() != Some("contract") {
+            continue;
+        }
+        for literal in &fields.contracted_literals {
+            if literal.value.is_empty() {
+                continue;
+            }
+            let found_elsewhere = sources.iter().enumerate().any(|(other_index, other)| {
+                other_index != index && other.content.contains(&literal.value)
+            });
+            if !found_elsewhere {
+                findings.push(format!(
+                    "Contracted literal `{}` = `{}` (from `{}`) was not found in any other delivered file.",
+                    literal.key, literal.value, note.path
+                ));
+            }
+        }
+    }
+    findings
+}
+
+/// `<script src="...">` targets named by one HTML source, in document order,
+/// duplicates included. Not a general HTML parser - only reads the literal
+/// `src="..."`/`src='...'` attribute of a `<script>` start tag.
+fn extract_script_srcs(html: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = html;
+    while let Some(tag_start) = rest.find("<script") {
+        let tail = &rest[tag_start..];
+        let Some(tag_end) = tail.find('>') else {
+            break;
+        };
+        let tag = &tail[..tag_end];
+        if let Some(after_src) = tag.split("src=").nth(1)
+            && let Some(quote) = after_src.chars().next().filter(|c| *c == '"' || *c == '\'')
+            && let Some(end) = after_src[1..].find(quote)
+        {
+            out.push(after_src[1..1 + end].to_string());
+        }
+        rest = &tail[tag_end + 1..];
+    }
+    out
+}
+
+/// Best-effort dead-code detection (recipes §Integrator), deliberately
+/// narrow: for a simple no-bundler web project (an HTML entrypoint loading
+/// plain `<script src="...">` files), a delivered `.js` source no HTML
+/// entrypoint reaches is flagged as possibly unused. Only runs when at least
+/// one `.html` source is present, so it never applies to a project with a
+/// build step or that isn't browser-served at all - a real orphan (like
+/// pulsation-2's `task.js`/`calendarSettings.js`, superseded in practice but
+/// never wired up or removed) went unreported because the Integrator only
+/// ever compares its own pulsation's files against each other.
+fn unreachable_script_findings(sources: &[SourceFile]) -> Vec<String> {
+    let html_sources: Vec<&SourceFile> = sources
+        .iter()
+        .filter(|s| s.path.as_str().to_ascii_lowercase().ends_with(".html"))
+        .collect();
+    if html_sources.is_empty() {
+        return Vec::new();
+    }
+    let referenced: HashSet<String> = html_sources
+        .iter()
+        .flat_map(|html| extract_script_srcs(&html.content))
+        .map(|src| src.trim_start_matches("./").to_ascii_lowercase())
+        .collect();
+    let html_paths = html_sources
+        .iter()
+        .map(|h| h.path.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    sources
+        .iter()
+        .filter(|s| s.path.as_str().to_ascii_lowercase().ends_with(".js"))
+        .filter(|s| !referenced.contains(&s.path.as_str().to_ascii_lowercase()))
+        .map(|s| {
+            format!(
+                "`{}` is delivered but no `<script src>` in {html_paths} reaches it - verify it is intentionally unused.",
+                s.path
+            )
+        })
+        .collect()
 }
 
 /// Build caches live under the data directory, keyed by toolchain, so a
@@ -310,7 +500,7 @@ impl PersistenceService {
             let findings = self.integrator_prechecks(&current.id, &inputs, root)?;
             if !findings.is_empty() {
                 let mut extra = preparation.extra_instructions.take().unwrap_or_default();
-                extra.push_str("\n## Host pre-checks\n\nThe host verified these deterministically; address only what they leave open and never contradict them:\n");
+                extra.push_str("\n## Host pre-checks\n\nThe host verified these deterministically; address only what they leave open and never contradict them. They describe checks of earlier stages by name for context only: cite no check handle that is not listed under Host checks.\n");
                 for finding in &findings {
                     extra.push_str("- ");
                     extra.push_str(finding);
@@ -339,7 +529,7 @@ impl PersistenceService {
         if cancellation.is_cancelled() {
             self.cancel_execution(&execution.id)?;
             return Err(PersistenceServiceError::Cancelled(
-                "Execução composta cancelada antes do despacho.".into(),
+                "Composed run cancelled before dispatch.".into(),
             ));
         }
 
@@ -360,7 +550,7 @@ impl PersistenceService {
                     break;
                 }
                 return Err(PersistenceServiceError::Runtime(
-                    "Execução composta sem unidade elegível para prosseguir.".into(),
+                    "Composed run has no unit eligible to proceed.".into(),
                 ));
             }
             let round = ready.into_iter().map(|unit| {
@@ -399,6 +589,10 @@ impl PersistenceService {
                 self.park_execution(job, parent_run_id, &execution, Some(unit), failure)?;
                 return Ok(());
             }
+        }
+        if let Some(failure) = Self::uncovered_criteria_failure(&self.connection()?, &execution)? {
+            self.park_execution(job, parent_run_id, &execution, None, &failure)?;
+            return Ok(());
         }
         // Every unit validated: run the host checks on the assembled
         // candidate (M4). A required failure either gets one bounded repair
@@ -492,7 +686,7 @@ impl PersistenceService {
                 .iter()
                 .find(|u| u.id == unit.id)
                 .cloned()
-                .ok_or_else(|| PersistenceServiceError::Runtime("Unit ausente.".into()))?;
+                .ok_or_else(|| PersistenceServiceError::Runtime("Missing unit.".into()))?;
             let key = reuse_key(
                 &execution.plan,
                 &unit.spec,
@@ -517,6 +711,8 @@ impl PersistenceService {
         root: &Path,
     ) -> Result<Vec<String>, PersistenceServiceError> {
         let mut findings = recipes::criterion_representation_findings(inputs);
+        findings.extend(contracted_literal_findings(&inputs.sources));
+        findings.extend(unreachable_script_findings(&inputs.sources));
         let db = self.connection()?;
         let Some(data_dir) = self.database_path().parent().map(Path::to_path_buf) else {
             return Ok(findings);
@@ -535,14 +731,14 @@ impl PersistenceService {
                 let receipts = Self::latest_validation_receipts(&db, &execution.id)?;
                 let Some(receipt) = receipts.iter().find(|r| &r.check_ref == check) else {
                     findings.push(format!(
-                        "Check `{check}` of stage {} has no receipt (not run).",
+                        "The {} check named {check} has no receipt (not run).",
                         stage.as_db_value()
                     ));
                     continue;
                 };
                 if receipt.status != comp::ReceiptStatus::Passed {
                     findings.push(format!(
-                        "Check `{check}` of stage {} did not pass ({}).",
+                        "The {} check named {check} did not pass ({}).",
                         stage.as_db_value(),
                         receipt_status_label(receipt.status)
                     ));
@@ -576,7 +772,7 @@ impl PersistenceService {
                     .map_err(|e| composition_invalid(&e))?;
                 if current != receipt.input_manifest_sha256 {
                     findings.push(format!(
-                        "Check `{check}` of stage {} is stale: its inputs changed after the receipt.",
+                        "The {} check named {check} is stale: its inputs changed after the receipt.",
                         stage.as_db_value()
                     ));
                 }
@@ -723,7 +919,7 @@ impl PersistenceService {
         drop(db);
         let Some(data_dir) = self.database_path().parent().map(Path::to_path_buf) else {
             return Err(PersistenceServiceError::Runtime(
-                "Diretório de dados indisponível para materializar o candidato.".into(),
+                "Data directory unavailable to materialize the candidate.".into(),
             ));
         };
         let root = Path::new(&project.workspace_path);
@@ -734,7 +930,7 @@ impl PersistenceService {
             if cancellation.is_cancelled() {
                 self.cancel_execution(&execution.id)?;
                 return Err(PersistenceServiceError::Cancelled(
-                    "Execução composta cancelada antes da validação.".into(),
+                    "Composed run cancelled before validation.".into(),
                 ));
             }
             let staged = self.staged_outputs(execution, index, preparation)?;
@@ -778,7 +974,7 @@ impl PersistenceService {
             {
                 self.cancel_execution(&execution.id)?;
                 return Err(PersistenceServiceError::Cancelled(
-                    "Execução composta cancelada durante a validação.".into(),
+                    "Composed run cancelled during validation.".into(),
                 ));
             }
             // A missing toolchain is not a model fault and no prose fixes it.
@@ -803,6 +999,7 @@ impl PersistenceService {
                     ),
                     repairable: false,
                     correction: None,
+                    rejected_answer: false,
                 };
                 self.park_execution(job, parent_run_id, execution, None, &failure)?;
                 return Ok(None);
@@ -893,6 +1090,7 @@ impl PersistenceService {
                 ),
                 repairable: false,
                 correction: None,
+                rejected_answer: false,
             };
             self.park_execution(job, parent_run_id, execution, owner.as_ref(), &failure)?;
             return Ok(None);
@@ -1000,6 +1198,7 @@ impl PersistenceService {
                         .into(),
                 repairable: false,
                 correction: None,
+                rejected_answer: false,
             }),
             Ok(AttemptResult::Failed(mut failure)) => {
                 failure.repairable = false;
@@ -1174,12 +1373,12 @@ impl PersistenceService {
                 .filter(|unit| unit.state == UnitState::Validated)
                 .ok_or_else(|| {
                     PersistenceServiceError::Validation(format!(
-                        "SC-004: o candidato `{handle}` cita um produtor ainda não validado."
+                        "SC-004: candidate `{handle}` cites a producer that is not validated yet."
                     ))
                 })?;
             let json = producer.validated_result_json.as_deref().ok_or_else(|| {
                 PersistenceServiceError::Validation(format!(
-                    "SC-004: o produtor de `{handle}` não tem resultado validado."
+                    "SC-004: the producer of `{handle}` has no validated result."
                 ))
             })?;
             let response: UnitModelResponseV1 = serde_json::from_str(json)
@@ -1200,7 +1399,7 @@ impl PersistenceService {
                 .map(|artifact| artifact.content)
                 .ok_or_else(|| {
                     PersistenceServiceError::Validation(format!(
-                        "SC-004: o produtor de `{handle}` não escreveu `{relative_path}`."
+                        "SC-004: the producer of `{handle}` did not write `{relative_path}`."
                     ))
                 })?;
             delivered.push((handle.clone(), content));
@@ -1283,7 +1482,7 @@ impl PersistenceService {
     ) -> Result<StageInputs, PersistenceServiceError> {
         let manifest = handoff.batch_manifest.clone().ok_or_else(|| {
             PersistenceServiceError::Validation(
-                "SC-002: uma pulsação v4 exige um lote de tarefas congelado.".into(),
+                "SC-002: a v4 pulsation requires a frozen task batch.".into(),
             )
         })?;
         let rows = handoff
@@ -1397,9 +1596,8 @@ impl PersistenceService {
         })
     }
 
-    /// Resolves the transport/model a specialty will use, in the documented
-    /// order: pulsation recovery override, specialty override, stage role
-    /// configuration, API default. Never returns credentials.
+    /// Resolves a role's frozen transport/model. A specialty may tune effort,
+    /// but it cannot replace the canonical role's model or backend.
     fn resolve_effective_profile(
         db: &Connection,
         project_id: &str,
@@ -1425,9 +1623,6 @@ impl PersistenceService {
             attempt_limit: 1,
             source: source.to_owned(),
         };
-        if api_override {
-            return Ok(api_profile("recovery_override"));
-        }
         let specialty: Option<(String, Option<String>, Option<String>, String)> = db
             .query_row(
                 "SELECT execution_mode,backend,model,thinking_level FROM composition_specialty_overrides WHERE project_id=?1 AND executor_kind=?2",
@@ -1450,27 +1645,122 @@ impl PersistenceService {
             )
             .optional()?
             .flatten();
-        let (mode, backend, model, thinking, source) = match (specialty, configured) {
-            (Some((mode, backend, model, thinking)), _) => (
-                mode,
-                backend,
-                model,
-                thinking,
-                "specialty_override".to_owned(),
-            ),
-            (None, Some((mode, backend, model, thinking))) => (
-                mode,
-                Some(elected_backend.unwrap_or(backend)),
-                model,
-                thinking,
-                "stage_role".to_owned(),
-            ),
-            (None, None) => return Ok(api_profile("stage_role_default")),
+        if api_override {
+            if configured
+                .as_ref()
+                .is_some_and(|(mode, _, _, _)| mode != "api_direct")
+            {
+                return Err(PersistenceServiceError::Cli {
+                    code: "model_mismatch".into(),
+                    message: format!(
+                        "API recovery override attempted to switch role `{}` away from its frozen CLI backend/model.",
+                        role.as_str()
+                    ),
+                });
+            }
+            return Ok(api_profile("recovery_override"));
+        }
+        let Some((mode, backend, model, thinking)) = configured else {
+            if specialty.is_some() {
+                return Err(PersistenceServiceError::Cli {
+                    code: "model_mismatch".into(),
+                    message: format!(
+                        "Specialty `{}` defines a transport/model without a canonical selection for role `{}`.",
+                        kind.as_str(),
+                        role.as_str()
+                    ),
+                });
+            }
+            return Ok(api_profile("stage_role_default"));
         };
+        if elected_backend
+            .as_deref()
+            .is_some_and(|elected| elected != backend)
+        {
+            return Err(PersistenceServiceError::Cli {
+                code: "model_mismatch".into(),
+                message: format!(
+                    "Pulsation fallback attempted to switch role `{}` from its frozen backend `{backend}` to `{}`.",
+                    role.as_str(),
+                    elected_backend.as_deref().unwrap_or_default()
+                ),
+            });
+        }
+        if let Some((specialty_mode, specialty_backend, specialty_model, specialty_thinking)) =
+            specialty
+        {
+            let selected_backend = elected_backend.as_deref().unwrap_or(&backend);
+            if specialty_mode != mode
+                || specialty_backend
+                    .as_deref()
+                    .is_some_and(|value| value != selected_backend)
+            {
+                return Err(PersistenceServiceError::Cli {
+                    code: "model_mismatch".into(),
+                    message: format!(
+                        "Specialty `{}` attempted to replace role `{}` transport/backend `{}/{};` its frozen selection must be inherited.",
+                        kind.as_str(),
+                        role.as_str(),
+                        mode,
+                        selected_backend
+                    ),
+                });
+            }
+            if let Some(specialty_model) = specialty_model {
+                match crate::terminals::model_identity::verify_model(
+                    Some(selected_backend),
+                    model.as_deref(),
+                    Some(&specialty_model),
+                ) {
+                    crate::terminals::model_identity::ModelVerification::Verified => {}
+                    crate::terminals::model_identity::ModelVerification::Mismatch => {
+                        return Err(PersistenceServiceError::Cli {
+                            code: "model_mismatch".into(),
+                            message: format!(
+                                "Specialty `{}` selected `{}` but canonical role `{}` is frozen to `{}`.",
+                                kind.as_str(),
+                                specialty_model,
+                                role.as_str(),
+                                model.as_deref().unwrap_or("default")
+                            ),
+                        });
+                    }
+                    crate::terminals::model_identity::ModelVerification::Unverified => {
+                        return Err(PersistenceServiceError::Cli {
+                            code: "model_unverified".into(),
+                            message: format!(
+                                "Specialty `{}` cannot prove its model is the frozen selection for role `{}`.",
+                                kind.as_str(),
+                                role.as_str()
+                            ),
+                        });
+                    }
+                }
+            }
+            // Keep the selected canonical transport/model and allow only the
+            // specialty's effort setting to vary.
+            let backend = elected_backend.unwrap_or(backend);
+            let flavor = crate::terminals::CliBackend::parse(&backend)
+                .map(SchemaFlavor::for_cli_backend)
+                .unwrap_or(SchemaFlavor::Canonical);
+            return Ok(EffectiveProfile {
+                executor_kind: kind.as_str().to_owned(),
+                transport: if mode == "cli_process" { "cli" } else { "api" }.into(),
+                backend: (mode == "cli_process").then_some(backend),
+                requested_model: model
+                    .filter(|m| !m.trim().is_empty())
+                    .unwrap_or_else(|| runtime_config.model.clone()),
+                thinking_level: Some(specialty_thinking),
+                schema_flavor: flavor,
+                attempt_limit: 1,
+                source: "stage_role_with_specialty_effort".into(),
+            });
+        }
+        let source = "stage_role".to_owned();
+        let backend = elected_backend.unwrap_or(backend);
         if mode != "cli_process" {
             return Ok(api_profile(&source));
         }
-        let backend = backend.unwrap_or_else(|| "codex".to_owned());
         let flavor = crate::terminals::CliBackend::parse(&backend)
             .map(SchemaFlavor::for_cli_backend)
             .unwrap_or(SchemaFlavor::Canonical);
@@ -1505,10 +1795,9 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::check_execution(&tx, fence)?;
-        let pulse = fence
-            .pulsation_id
-            .as_deref()
-            .ok_or_else(|| PersistenceServiceError::Validation("Estágio sem pulsação.".into()))?;
+        let pulse = fence.pulsation_id.as_deref().ok_or_else(|| {
+            PersistenceServiceError::Validation("Stage without a pulsation.".into())
+        })?;
         let input_revision = fence.input_revision.unwrap_or(1);
         if let Some(existing) = Self::find_execution_for_job(&tx, &job.id, fence.generation)? {
             if existing.status == ExecutionStatus::Accepted {
@@ -1516,7 +1805,7 @@ impl PersistenceService {
                 return Ok(None);
             }
             return Err(PersistenceServiceError::Validation(
-                "SC-015: já existe uma execução composta para esta geração do job.".into(),
+                "SC-015: a composed run already exists for this job generation.".into(),
             ));
         }
         let predecessor = Self::find_reusable_predecessor(&tx, pulse, stage, input_revision)?;
@@ -1742,7 +2031,7 @@ impl PersistenceService {
         }
         let execution =
             Self::find_execution(&tx, plan.stage_execution_id.as_str())?.ok_or_else(|| {
-                PersistenceServiceError::Runtime("Execução composta não persistida.".into())
+                PersistenceServiceError::Runtime("Composed run not persisted.".into())
             })?;
         tx.commit()?;
         Ok(Some(execution))
@@ -1757,12 +2046,11 @@ impl PersistenceService {
     ) -> Result<(), PersistenceServiceError> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let pulse = job
-            .pulsation_id
-            .as_deref()
-            .ok_or_else(|| PersistenceServiceError::Validation("Job sem pulsação.".into()))?;
+        let pulse = job.pulsation_id.as_deref().ok_or_else(|| {
+            PersistenceServiceError::Validation("Job without a pulsation.".into())
+        })?;
         let current = Self::find_pulsation_by_id(&tx, pulse)?
-            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação ausente.".into()))?;
+            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsation missing.".into()))?;
         Self::park_in_tx_without_execution(&tx, job, parent_run_id, stage, &current, failure)?;
         tx.commit()?;
         self.wake_scheduler();
@@ -1841,7 +2129,7 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = Self::find_pulsation_by_id(&tx, &execution.pulsation_id)?
-            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação ausente.".into()))?;
+            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsation missing.".into()))?;
         let ledger = Self::load_ledger(&tx, &execution.budget_account_id)?;
         let mut remaining = ledger.remaining();
         if let Some(unit) = unit {
@@ -1854,8 +2142,12 @@ impl PersistenceService {
             Some(unit) => format!("Unit `{}`: {}", unit.logical_unit_key, failure.diagnostic),
             None => failure.diagnostic.clone(),
         };
-        let offered =
-            offered_decisions_v4(failure.class, execution.stage, remaining.extra_invocations);
+        let offered = offered_decisions_v4(
+            failure.class,
+            execution.stage,
+            remaining.extra_invocations,
+            failure.rejected_answer,
+        );
         let parked = match &offered {
             Some(offered) => Self::record_stage_failure_checkpoint_v4(
                 &tx,
@@ -1895,6 +2187,7 @@ impl PersistenceService {
                 diagnostic,
                 repairable: false,
                 correction: None,
+                rejected_answer: failure.rejected_answer,
             };
             Self::finalize_composed_failure(&tx, job, parent_run_id, &current, &terminal)?;
         }
@@ -1920,6 +2213,86 @@ impl PersistenceService {
         Ok(())
     }
 
+    /// A unit evidences only the criteria no sibling shares
+    /// (`validate::exclusive_criteria`); the stage still owes evidence for
+    /// every criterion. A shared criterion none of its units evidenced parks
+    /// the stage before any host check runs.
+    fn uncovered_criteria_failure(
+        db: &Connection,
+        execution: &ExecutionRow,
+    ) -> Result<Option<UnitFailure>, PersistenceServiceError> {
+        if execution.plan.units.len() < 2 {
+            return Ok(None);
+        }
+        let responses = Self::load_units(db, &execution.id)?
+            .into_iter()
+            .filter_map(|unit| unit.validated_result_json)
+            .filter_map(|json| serde_json::from_str::<UnitModelResponseV1>(&json).ok())
+            .collect::<Vec<_>>();
+        let mut evidenced = HashSet::new();
+        for response in &responses {
+            let UnitModelResponseV1::Completed { payload, .. } = response else {
+                continue;
+            };
+            // Other stages judge their criteria per unit only.
+            let Some(settled) = comp::validate::settled_criteria(payload) else {
+                return Ok(None);
+            };
+            evidenced.extend(settled);
+        }
+        let uncovered = comp::validate::uncovered_stage_criteria(&execution.plan, &evidenced);
+        if uncovered.is_empty() {
+            return Ok(None);
+        }
+        let listed = uncovered
+            .iter()
+            .map(|(criterion, units)| {
+                format!(
+                    "`{criterion}` (units {})",
+                    units
+                        .iter()
+                        .map(|unit| format!("`{unit}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        Ok(Some(UnitFailure {
+            class: FailureClass::HostContract,
+            code: ErrorCode::EvidenceUnresolved.as_str().to_owned(),
+            diagnostic: format!(
+                "{} {}: no unit evidenced {listed}. A shared criterion needs evidence from at least one unit whose edits contribute to it.",
+                Invariant::Sc010.as_str(),
+                ErrorCode::EvidenceUnresolved.as_str()
+            ),
+            repairable: false,
+            correction: None,
+            rejected_answer: false,
+        }))
+    }
+
+    /// Why the predecessor execution (a parked stage the user retried)
+    /// rejected the last answer of this logical unit. Only rejections of the
+    /// answer itself qualify; a transport fault says nothing to the model.
+    fn carried_rejection(
+        db: &Connection,
+        execution: &ExecutionRow,
+        unit: &UnitRow,
+    ) -> Result<Option<CorrectionContext>, PersistenceServiceError> {
+        let diagnostic: Option<String> = db
+            .query_row(
+                "SELECT a.diagnostic FROM stage_work_unit_attempts a JOIN stage_work_units u ON u.id=a.unit_id WHERE u.execution_id=(SELECT predecessor_execution_id FROM stage_executions WHERE id=?1) AND u.logical_unit_key=?2 AND a.state='rejected' AND a.diagnostic IS NOT NULL AND a.error_code IN ('invalid_shape','invalid_language','output_truncated','output_budget_exceeded','reference_conflict','ownership_violation','evidence_unresolved') ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1",
+                params![execution.id, unit.logical_unit_key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(diagnostic.map(|diagnostic| CorrectionContext {
+            diagnostics: vec![diagnostic],
+            rejected_artifact_keys: Vec::new(),
+        }))
+    }
+
     /// Runs one unit: initial attempt, then at most one bounded correction or
     /// transport retry within the shared allowance. Never parks: the driver
     /// does, once per execution, after the round settles.
@@ -1936,12 +2309,20 @@ impl PersistenceService {
     ) -> Result<UnitOutcome, PersistenceServiceError> {
         let mut unit = unit.clone();
         let mut correction: Option<CorrectionContext> = None;
+        // A Retry of a parked stage re-runs this unit in a fresh execution:
+        // the first attempt carries why its last answer was rejected (never
+        // the answer), or the Retry would resend the same prompt.
+        let mut carried = if unit.generation == 1 {
+            Self::carried_rejection(&self.connection()?, execution, &unit)?
+        } else {
+            None
+        };
         let mut kind = unit.executor_kind;
         loop {
             if cancellation.is_cancelled() {
                 self.cancel_execution(&execution.id)?;
                 return Err(PersistenceServiceError::Cancelled(
-                    "Execução composta cancelada.".into(),
+                    "Composed run cancelled.".into(),
                 ));
             }
             // The first attempt of a unit draws an initial permit while the
@@ -1963,7 +2344,7 @@ impl PersistenceService {
                     &unit,
                     kind,
                     pool,
-                    correction.as_ref(),
+                    correction.as_ref().or(carried.as_ref()),
                     project,
                     runtime_config,
                     cancellation,
@@ -1981,6 +2362,7 @@ impl PersistenceService {
                 }
                 Err(error) => return Err(error),
             };
+            carried = None;
             // One bounded correction/retry per unit, only for repairable
             // faults and only while the shared allowance permits it.
             let can_repair = attempt.repairable && unit.generation == 1;
@@ -1998,7 +2380,7 @@ impl PersistenceService {
                     let fresh = Self::load_units(&tx, &execution.id)?
                         .into_iter()
                         .find(|u| u.id == unit.id)
-                        .ok_or_else(|| PersistenceServiceError::Runtime("Unit ausente.".into()))?;
+                        .ok_or_else(|| PersistenceServiceError::Runtime("Missing unit.".into()))?;
                     let next = Self::next_unit_generation(&tx, &fresh)?;
                     tx.commit()?;
                     unit = next;
@@ -2052,17 +2434,6 @@ impl PersistenceService {
                 replaceable: false,
             })
             .collect();
-        let prompt = render_unit_prompt(
-            &execution.plan,
-            &unit.spec,
-            &preparation.table,
-            policy,
-            &prompt_inputs,
-        );
-        let canonical = executor_response_schema(kind, SchemaFlavor::Canonical);
-        let strict = executor_response_schema(kind, SchemaFlavor::Strict);
-        let prompt_chars =
-            (prompt.chars + canonical.to_string().chars().count()).min(u32::MAX as usize) as u32;
         let profile_binding = execution
             .plan
             .profile_bindings
@@ -2070,7 +2441,7 @@ impl PersistenceService {
             .find(|binding| binding.unit_id.as_str() == unit.id && binding.executor_kind == kind)
             .ok_or_else(|| {
                 PersistenceServiceError::Validation(format!(
-                    "SC-014: nenhum perfil congelado para `{}` nesta execução.",
+                    "SC-014: no frozen profile for `{}` in this run.",
                     kind.as_str()
                 ))
             })?;
@@ -2079,6 +2450,18 @@ impl PersistenceService {
             profile_binding.profile_snapshot_id.as_str(),
         )?)
         .map_err(|e| PersistenceServiceError::Runtime(e.to_string()))?;
+        let prompt = render_unit_prompt(
+            &execution.plan,
+            &unit.spec,
+            &preparation.table,
+            policy,
+            &prompt_inputs,
+            profile.schema_flavor,
+        );
+        let response_schema = executor_response_schema(kind, profile.schema_flavor);
+        let strict = executor_response_schema(kind, SchemaFlavor::Strict);
+        let prompt_chars = (prompt.chars + response_schema.to_string().chars().count())
+            .min(u32::MAX as usize) as u32;
 
         // Reservation + attempt in one transaction; nothing external yet.
         let (attempt, unit) = {
@@ -2119,6 +2502,7 @@ impl PersistenceService {
                         diagnostic: message,
                         repairable: false,
                         correction: None,
+                        rejected_answer: false,
                     }));
                 }
                 Err(error) => return Err(error),
@@ -2137,12 +2521,12 @@ impl PersistenceService {
             let fresh = Self::load_units(&tx, &execution.id)?
                 .into_iter()
                 .find(|u| u.id == unit.id)
-                .ok_or_else(|| PersistenceServiceError::Runtime("Unit ausente.".into()))?;
+                .ok_or_else(|| PersistenceServiceError::Runtime("Missing unit.".into()))?;
             Self::transition_unit(&tx, &fresh, UnitState::Running, None)?;
             let running = Self::load_units(&tx, &execution.id)?
                 .into_iter()
                 .find(|u| u.id == unit.id)
-                .ok_or_else(|| PersistenceServiceError::Runtime("Unit ausente.".into()))?;
+                .ok_or_else(|| PersistenceServiceError::Runtime("Missing unit.".into()))?;
             tx.commit()?;
             (attempt, running)
         };
@@ -2156,13 +2540,16 @@ impl PersistenceService {
             job_id: Some(job.id.clone()),
             agent_run_id: Some(attempt.agent_run_id.clone()),
             job_chain: execution.pulsation_id.clone(),
-            target: AgentExecutionTarget::canonical(role),
+            target: AgentExecutionTarget::ephemeral(
+                format!("ephemeral:{}:{}", execution.id, unit.id),
+                role,
+            ),
             stage: execution.stage.as_db_value().to_string(),
             system_prompt: prompt.system.clone(),
             user_prompt: prompt.user.clone(),
             response_format: crate::llm::ResponseFormat::JsonSchema {
                 name: RESPONSE_SCHEMA_NAME.to_string(),
-                schema: canonical.clone(),
+                schema: response_schema.clone(),
             },
             max_output_tokens: unit.spec.max_output_tokens,
             temperature: runtime_config.temperature,
@@ -2184,6 +2571,9 @@ impl PersistenceService {
                     unit_id: unit.id.clone(),
                     attempt_id: attempt.id.clone(),
                     executor_kind: kind.as_str().to_owned(),
+                    frozen_transport: profile.transport.clone(),
+                    frozen_backend: profile.backend.clone(),
+                    frozen_model: profile.requested_model.clone(),
                 }),
                 strict_schema: Some(strict),
                 host_validated: true,
@@ -2269,7 +2659,7 @@ impl PersistenceService {
                         Some(("cancelled", "Cancelled.")),
                     );
                     return Err(PersistenceServiceError::Cancelled(
-                        "Execução composta cancelada durante a chamada.".into(),
+                        "Composed run cancelled during the call.".into(),
                     ));
                 }
                 let failure = classify_transport_error(&error).unwrap_or(UnitFailure {
@@ -2278,6 +2668,7 @@ impl PersistenceService {
                     diagnostic: error.to_string(),
                     repairable: false,
                     correction: None,
+                    rejected_answer: false,
                 });
                 // Release the budget reservation for provider-configuration
                 // errors (MissingApiKey, Authentication, Billing, Permission,
@@ -2310,14 +2701,22 @@ impl PersistenceService {
                 return Ok(AttemptResult::Failed(failure));
             }
         };
-        Self::persist_attempt_output(&db, &attempt, job, &output, &canonical, None)?;
+        Self::persist_attempt_output(&db, &attempt, job, &output, &response_schema, None)?;
         let flavor = flavor_for_provider(&output.provider);
+        let mut host_notes = Vec::new();
         let parsed = comp::parse::parse_unit_response(&output.raw_output, kind, flavor).and_then(
-            |response| {
+            |mut response| {
+                // A stage without host checks has nothing a check citation
+                // could name: the host clears such citations (with an audit
+                // note) instead of failing the answer over them.
+                if index.plan().check_refs.is_empty() {
+                    host_notes = comp::validate::normalize_without_checks(&mut response);
+                }
                 validate_child(index, &unit.spec, &preparation.approved, &response)?;
                 Ok(response)
             },
         );
+        let host_note = (!host_notes.is_empty()).then(|| host_notes.join("; "));
         match parsed {
             Ok(response) => {
                 if let UnitModelResponseV1::NeedsInput { questions, .. } = &response {
@@ -2336,7 +2735,14 @@ impl PersistenceService {
                         UnitState::Failed,
                         Some(("needs_input", "The worker requested human input.")),
                     )?;
-                    Self::persist_attempt_output(&db, &attempt, job, &output, &canonical, None)?;
+                    Self::persist_attempt_output(
+                        &db,
+                        &attempt,
+                        job,
+                        &output,
+                        &response_schema,
+                        None,
+                    )?;
                     return Ok(AttemptResult::NeedsInput(questions.clone()));
                 }
                 if let UnitModelResponseV1::Failed {
@@ -2393,7 +2799,7 @@ impl PersistenceService {
                     .iter()
                     .find(|u| u.id == unit.id)
                     .cloned()
-                    .ok_or_else(|| PersistenceServiceError::Runtime("Unit ausente.".into()))?;
+                    .ok_or_else(|| PersistenceServiceError::Runtime("Missing unit.".into()))?;
                 let key = reuse_key(
                     &execution.plan,
                     &unit.spec,
@@ -2413,7 +2819,7 @@ impl PersistenceService {
                     &attempt,
                     AttemptState::Succeeded,
                     None,
-                    None,
+                    host_note.as_deref(),
                     Some(&output.model),
                     Some(sha.as_str()),
                 )?;
@@ -2434,7 +2840,7 @@ impl PersistenceService {
                 Ok(AttemptResult::Validated)
             }
             Err(error) => {
-                let failure = classify_composition_error(&error);
+                let failure = classify_worker_rejection(&error);
                 Self::finish_attempt(
                     &db,
                     &attempt,
@@ -2455,7 +2861,7 @@ impl PersistenceService {
                     &attempt,
                     job,
                     &output,
-                    &canonical,
+                    &response_schema,
                     Some(&failure.diagnostic),
                 )?;
                 Ok(AttemptResult::Failed(failure))
@@ -2532,10 +2938,10 @@ impl PersistenceService {
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::check_execution(&tx, &handoff.recipient)?;
         let current = Self::find_pulsation_by_id(&tx, &execution.pulsation_id)?
-            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação ausente.".into()))?;
+            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsation missing.".into()))?;
         if current.status != PulsationStatus::Running || current.stage != execution.stage {
             return Err(PersistenceServiceError::Validation(
-                "SC-015: execução obsoleta.".into(),
+                "SC-015: stale run.".into(),
             ));
         }
         crate::feature_forge::pipeline::accept_evidence_rows(
@@ -2602,7 +3008,7 @@ impl PersistenceService {
         for unit in &units {
             let json = unit.validated_result_json.as_deref().ok_or_else(|| {
                 PersistenceServiceError::Validation(format!(
-                    "SC-010: unit `{}` não tem resultado validado.",
+                    "SC-010: unit `{}` has no validated result.",
                     unit.logical_unit_key
                 ))
             })?;
@@ -2702,10 +3108,10 @@ impl PersistenceService {
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::check_execution(&tx, &handoff.recipient)?;
         let current = Self::find_pulsation_by_id(&tx, &execution.pulsation_id)?
-            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsação ausente.".into()))?;
+            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsation missing.".into()))?;
         if current.status != PulsationStatus::Running || current.stage != execution.stage {
             return Err(PersistenceServiceError::Validation(
-                "SC-015: execução obsoleta na aceitação.".into(),
+                "SC-015: stale run at acceptance.".into(),
             ));
         }
         crate::feature_forge::pipeline::accept_evidence_rows(
@@ -2855,9 +3261,80 @@ mod tests {
     use crate::orchestration::composition::plan::{PlanInputs, UnitDraft, freeze_plan};
     use crate::orchestration::composition::references::ReferenceTable;
     use crate::orchestration::composition::{RelPath, SourceRole};
+    use rusqlite::Connection;
 
     fn h(text: &str) -> comp::Handle {
         comp::Handle::new(text).unwrap()
+    }
+
+    fn source(path: &str, content: &str) -> SourceFile {
+        SourceFile {
+            path: RelPath::new(path).unwrap(),
+            role: SourceRole::Source,
+            content: content.into(),
+        }
+    }
+
+    /// "Local Browser Architecture" / "Haiku CLI teste 1" (2026-09-09,
+    /// 2026-09-26): the contract fixed `hvc_tasks` as the storage key, but a
+    /// later, unrelated pulsation shipped `tasks_data` instead - nothing
+    /// compared the two, so the divergence went unnoticed until a human read
+    /// both documents side by side.
+    #[test]
+    fn contracted_literal_findings_flag_a_value_missing_from_every_other_file() {
+        let contract = source(
+            "knowledge/obsidian/contracts/local-browser.md",
+            "---\ntype: contract\nproducers: []\nconsumers: []\naffects-features: []\nstatus: approved\ncontracted-literals:\n  - key: \"storage.tasks.key\"\n    value: \"hvc_tasks\"\n---\n\n# Local Browser\n",
+        );
+        let matching_code = source(
+            "src/js/storage/localStore.js",
+            "const STORAGE_KEY = 'hvc_tasks';\n",
+        );
+        let drifted_code = source(
+            "src/js/storage/localStore.js",
+            "const STORAGE_KEY = 'tasks_data';\n",
+        );
+
+        assert!(contracted_literal_findings(&[contract.clone(), matching_code]).is_empty());
+
+        let findings = contracted_literal_findings(&[contract, drifted_code]);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].contains("hvc_tasks"));
+    }
+
+    #[test]
+    fn contracted_literal_findings_are_empty_without_a_published_contract_note() {
+        let code = source(
+            "src/js/app.js",
+            "console.log('no contract note in context');\n",
+        );
+        assert!(contracted_literal_findings(&[code]).is_empty());
+    }
+
+    /// "Haiku CLI teste 1" (2026-09-26): `task.js`/`calendarSettings.js`
+    /// (pulsation 2's deliverables) stayed on disk, fully accepted, but
+    /// `index.html` never loaded them - the Integrator only ever compared its
+    /// own pulsation's files against each other and never noticed.
+    #[test]
+    fn unreachable_script_findings_flag_a_js_file_no_entrypoint_loads() {
+        let html = source(
+            "index.html",
+            "<html><body><script src=\"src/js/app.js\"></script></body></html>",
+        );
+        let wired = source("src/js/app.js", "// wired\n");
+        let orphan = source("src/js/models/task.js", "// never loaded by index.html\n");
+
+        assert!(unreachable_script_findings(&[html.clone(), wired.clone()]).is_empty());
+
+        let findings = unreachable_script_findings(&[html, wired, orphan]);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].contains("src/js/models/task.js"));
+    }
+
+    #[test]
+    fn unreachable_script_findings_are_empty_without_any_html_entrypoint() {
+        let js = source("src/lib.js", "// a library, not a browser entrypoint\n");
+        assert!(unreachable_script_findings(&[js]).is_empty());
     }
 
     fn two_unit_plan() -> comp::StageExecutionPlanV1 {
@@ -2942,6 +3419,235 @@ mod tests {
             reused_from_attempt_id: None,
             reuse_key_sha256: None,
         }
+    }
+
+    fn profile_test_db(specialty_model: Option<&str>) -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE pulse_execution_overrides(
+               pulsation_id TEXT,agent_role TEXT,execution_mode TEXT,backend TEXT);
+             CREATE TABLE composition_specialty_overrides(
+               project_id TEXT,executor_kind TEXT,execution_mode TEXT,backend TEXT,model TEXT,thinking_level TEXT);
+             CREATE TABLE cli_agent_configs(
+               project_id TEXT,agent_role TEXT,execution_mode TEXT,backend TEXT,model TEXT,thinking_level TEXT);",
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO cli_agent_configs VALUES('project','backend_agent','cli_process','claude','haiku','medium')",
+            [],
+        )
+        .unwrap();
+        if let Some(model) = specialty_model {
+            db.execute(
+                "INSERT INTO composition_specialty_overrides VALUES('project','code_implementer','cli_process','claude',?1,'high')",
+                [model],
+            )
+            .unwrap();
+        }
+        db
+    }
+
+    #[test]
+    fn specialty_inherits_canonical_model_and_rejects_conflicting_model() {
+        let runtime = crate::agent_runtime::AgentRuntimeConfig::default();
+        let role = crate::llm::AgentRole::BackendAgent;
+        let same = profile_test_db(Some("haiku"));
+        let profile = PersistenceService::resolve_effective_profile(
+            &same,
+            "project",
+            "pulsation",
+            role,
+            ExecutorKind::CodeImplementer,
+            &runtime,
+        )
+        .unwrap();
+        assert_eq!(profile.backend.as_deref(), Some("claude"));
+        assert_eq!(profile.requested_model, "haiku");
+        assert_eq!(profile.source, "stage_role_with_specialty_effort");
+
+        let conflicting = profile_test_db(Some("sonnet"));
+        let error = PersistenceService::resolve_effective_profile(
+            &conflicting,
+            "project",
+            "pulsation",
+            role,
+            ExecutorKind::CodeImplementer,
+            &runtime,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            PersistenceServiceError::Cli { ref code, .. } if code == "model_mismatch"
+        ));
+
+        let repair = PersistenceService::resolve_effective_profile(
+            &same,
+            "project",
+            "pulsation",
+            role,
+            ExecutorKind::CodeRepairer,
+            &runtime,
+        )
+        .unwrap();
+        assert_eq!(repair.backend.as_deref(), Some("claude"));
+        assert_eq!(repair.requested_model, "haiku");
+    }
+
+    #[test]
+    fn canonical_roles_keep_independent_model_selections_for_code_and_intake() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE pulse_execution_overrides(
+               pulsation_id TEXT,agent_role TEXT,execution_mode TEXT,backend TEXT);
+             CREATE TABLE composition_specialty_overrides(
+               project_id TEXT,executor_kind TEXT,execution_mode TEXT,backend TEXT,model TEXT,thinking_level TEXT);
+             CREATE TABLE cli_agent_configs(
+               project_id TEXT,agent_role TEXT,execution_mode TEXT,backend TEXT,model TEXT,thinking_level TEXT);
+             INSERT INTO cli_agent_configs VALUES
+               ('project','backend_agent','cli_process','codex','gpt-5.6-luna','medium'),
+               ('project','intake_router','cli_process','claude','haiku','low');",
+        )
+        .unwrap();
+        let runtime = crate::agent_runtime::AgentRuntimeConfig::default();
+        let code = PersistenceService::resolve_effective_profile(
+            &db,
+            "project",
+            "pulsation",
+            crate::llm::AgentRole::BackendAgent,
+            ExecutorKind::CodeImplementer,
+            &runtime,
+        )
+        .unwrap();
+        let repair = PersistenceService::resolve_effective_profile(
+            &db,
+            "project",
+            "pulsation",
+            crate::llm::AgentRole::BackendAgent,
+            ExecutorKind::CodeRepairer,
+            &runtime,
+        )
+        .unwrap();
+        let intake = PersistenceService::resolve_effective_profile(
+            &db,
+            "project",
+            "pulsation",
+            crate::llm::AgentRole::IntakeRouter,
+            ExecutorKind::IntakeClassifier,
+            &runtime,
+        )
+        .unwrap();
+        assert_eq!(
+            (code.backend.as_deref(), code.requested_model.as_str()),
+            (Some("codex"), "gpt-5.6-luna")
+        );
+        assert_eq!(
+            (repair.backend.as_deref(), repair.requested_model.as_str()),
+            (Some("codex"), "gpt-5.6-luna")
+        );
+        assert_eq!(
+            (intake.backend.as_deref(), intake.requested_model.as_str()),
+            (Some("claude"), "haiku")
+        );
+    }
+
+    #[test]
+    fn a_run_stopped_for_its_output_ceiling_rejects_the_answer_without_a_retry() {
+        let error = PersistenceServiceError::Cli {
+            code: "cli_output_budget_exceeded".into(),
+            message: "the CLI was stopped after producing 32624 output tokens".into(),
+        };
+        let failure = classify_transport_error(&error).unwrap();
+        assert_eq!(failure.class, FailureClass::OutputTruncated);
+        assert_eq!(failure.code, "output_budget_exceeded");
+        // The same prompt against the same ceiling spends it again.
+        assert!(!failure.repairable);
+        assert!(failure.rejected_answer);
+    }
+
+    #[test]
+    fn real_reference_conflicts_are_host_contract_failures_not_budget_exhaustion() {
+        let error = CompositionError::new(
+            Invariant::Sc003,
+            ErrorCode::ReferenceConflict,
+            "same candidate path has different producer identity",
+        );
+        let failure = classify_composition_error(&error);
+        assert_eq!(failure.class, FailureClass::HostContract);
+        assert_eq!(failure.code, "reference_conflict");
+        assert!(!failure.repairable);
+        assert!(failure.correction.is_none());
+    }
+
+    #[test]
+    fn model_citations_outside_the_unit_keep_the_bounded_correction_path() {
+        let error = CompositionError::new(
+            Invariant::Sc002,
+            ErrorCode::ReferenceConflict,
+            "Task `task_9` is not assigned to this unit.",
+        );
+        let failure = classify_composition_error(&error);
+        assert_eq!(failure.class, FailureClass::BudgetExhausted);
+        assert_eq!(failure.code, "reference_conflict");
+        assert!(failure.repairable);
+        assert!(failure.correction.is_some());
+    }
+
+    /// "Teste Haiku Only 1" (2026-09-24): an Integrator citing the test file
+    /// `src_7` in `checkRefs` (SC-011) became a non-repairable host failure
+    /// and forced a Code revision. A worker's citation of the wrong handle is
+    /// correctable whatever the invariant; the table identity (SC-003) and
+    /// host-side paths are not.
+    #[test]
+    fn a_worker_citation_error_of_any_invariant_gets_the_bounded_correction() {
+        for (invariant, message) in [
+            (
+                Invariant::Sc011,
+                "`assessment.checkRefs` cites unknown check `src_7`.",
+            ),
+            (
+                Invariant::Sc006,
+                "Proposal `view` depends on `plan_4`, which is not another proposal.",
+            ),
+            (
+                Invariant::Sc009,
+                "Anchor `anchor_9` was not issued in this plan.",
+            ),
+            (
+                Invariant::Sc002,
+                "Task `task_9` is not assigned to this unit.",
+            ),
+        ] {
+            let error = CompositionError::new(invariant, ErrorCode::ReferenceConflict, message);
+            let failure = classify_worker_rejection(&error);
+            assert_eq!(
+                failure.class,
+                FailureClass::BudgetExhausted,
+                "{invariant:?}"
+            );
+            assert!(failure.repairable, "{invariant:?}");
+            let correction = failure.correction.expect("a correction");
+            assert_eq!(correction.diagnostics, vec![message.to_string()]);
+            assert!(failure.diagnostic.starts_with(invariant.as_str()));
+        }
+        let identity = CompositionError::new(
+            Invariant::Sc003,
+            ErrorCode::ReferenceConflict,
+            "same candidate path has different producer identity",
+        );
+        let failure = classify_worker_rejection(&identity);
+        assert_eq!(failure.class, FailureClass::HostContract);
+        assert!(!failure.repairable && failure.correction.is_none());
+        // Host-side paths are unchanged: an SC-011 raised outside a worker
+        // response stays a host contract failure.
+        let host = CompositionError::new(
+            Invariant::Sc011,
+            ErrorCode::ReferenceConflict,
+            "Unit `review_batch` requires unknown check `cargo_check`.",
+        );
+        assert_eq!(
+            classify_composition_error(&host).class,
+            FailureClass::HostContract
+        );
     }
 
     #[test]

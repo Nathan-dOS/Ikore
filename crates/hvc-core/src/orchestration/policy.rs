@@ -60,7 +60,7 @@ pub fn stage_disposition_with(
         StageOutcome::Completed { .. } => StageDisposition::Advance(
             stage
                 .next()
-                .ok_or(ContractError::Invalid("estágio sem sucessor"))?,
+                .ok_or(ContractError::Invalid("stage without a successor"))?,
         ),
     })
 }
@@ -170,7 +170,7 @@ impl StageHandoffV1 {
         for base in &self.publication_bases {
             if base.project_id != recipient.project_id || !paths.insert(&base.relative_path) {
                 return Err(ContractError::Invalid(
-                    "bases de publicação duplicadas ou de outro projeto",
+                    "duplicate publication bases or from another project",
                 ));
             }
         }
@@ -220,7 +220,7 @@ impl StageHandoffV1 {
             .map_or(0, |s| s.chars().count());
         if !self.clarifications.is_empty() {
             used_chars += serde_json::to_string(&self.clarifications)
-                .map_err(|_| ContractError::Invalid("histórico de esclarecimentos"))?
+                .map_err(|_| ContractError::Invalid("clarification history"))?
                 .chars()
                 .count();
         }
@@ -254,7 +254,7 @@ impl StageHandoffV1 {
                 ))
             {
                 return Err(ContractError::Invalid(
-                    "artefato não aceito/publicado/íntegro",
+                    "artifact not accepted, published or intact",
                 ));
             }
             let mut applicable_stage = Some(artifact.producer_stage);
@@ -263,7 +263,7 @@ impl StageHandoffV1 {
             }
             if applicable_stage.is_none() {
                 return Err(ContractError::Invalid(
-                    "artefato de estágio posterior ao destinatário",
+                    "artifact from a stage after the recipient",
                 ));
             }
             used_chars = used_chars

@@ -1,4 +1,4 @@
-//! The derived review brief of a developer checkpoint (ADR-024).
+//! The derived review brief of a developer checkpoint (ADR-027).
 //!
 //! A brief is built from the same validated typed payload that produced the
 //! checkpoint's Markdown, never from the Markdown itself. It is a view model:

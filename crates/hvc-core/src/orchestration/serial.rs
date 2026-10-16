@@ -32,7 +32,7 @@ fn require_current_review(
         Ok(())
     } else {
         Err(invalid(
-            "Checkpoint/versão obsoleto ou ambíguo. Atualize antes de revisar.",
+            "Checkpoint or version stale or ambiguous. Refresh before reviewing.",
         ))
     }
 }
@@ -58,7 +58,7 @@ impl PersistenceService {
         let db = self.connection()?;
         let entries=db.prepare("SELECT p.id,c.id,p.state_version FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.id=?1 AND p.status='checkpoint' AND c.status='waiting' AND c.purpose='artifact_review'")?.query_map([pulse],|r|Ok(HitlCheckpoint{pulsation_id:r.get(0)?,checkpoint_id:r.get(1)?,state_version:r.get(2)?}))?.collect::<Result<Vec<_>,_>>()?;
         if entries.len() != 1 {
-            return Err(invalid("Checkpoint ausente ou ambíguo."));
+            return Err(invalid("Checkpoint missing or ambiguous."));
         }
         Ok(entries.into_iter().next().expect("one checkpoint"))
     }
@@ -83,7 +83,7 @@ impl PersistenceService {
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let pulse = &request.pulsation_id;
         let current = Self::find_pulsation_by_id(&tx, pulse)?
-            .ok_or_else(|| invalid("Pulsação não encontrada."))?;
+            .ok_or_else(|| invalid("Pulsation not found."))?;
         if !matches!(request.decision, HitlDecision::Reject) {
             Self::check_project_admission(&tx, pulse)?;
         }
@@ -95,7 +95,7 @@ impl PersistenceService {
         )?;
         if !valid || waiting != 1 {
             return Err(invalid(
-                "Checkpoint/versão obsoleto ou ambíguo. Atualize antes de decidir.",
+                "Checkpoint or version stale or ambiguous. Refresh before deciding.",
             ));
         }
         let now = Self::now_iso();
@@ -116,7 +116,7 @@ impl PersistenceService {
                     PulsationStatus::Failed,
                     current.stage,
                     "hitl_rejected",
-                    Some("Checkpoint rejeitado pelo usuário."),
+                    Some("Checkpoint rejected by the user."),
                 )?;
                 tx.execute(
                     "UPDATE pulsations SET terminal_reason='hitl_rejected' WHERE id=?1",
@@ -129,7 +129,7 @@ impl PersistenceService {
             HitlDecision::RequestRevision => {
                 tx.execute("UPDATE pulsations SET integration_checkpoint_id=NULL,integration_state_version=NULL WHERE id=?1", [pulse])?;
                 let target = revision_target(current.stage)
-                    .ok_or_else(|| invalid("Este estágio não oferece revisão HITL."))?;
+                    .ok_or_else(|| invalid("This stage has no HITL review."))?;
                 Self::supersede_stage_executions(&tx, pulse, target)?;
                 let target_index = catalog::STAGES
                     .iter()
@@ -149,7 +149,7 @@ impl PersistenceService {
                     PulsationStatus::Planning,
                     target,
                     "hitl_revision_requested",
-                    Some("Revisão solicitada; artifacts posteriores foram superados."),
+                    Some("Revision requested; later artifacts were superseded."),
                 )?;
                 Self::enqueue_stage_job(&tx, &updated.id, target)?;
             }
@@ -169,7 +169,7 @@ impl PersistenceService {
                         PulsationStatus::Running,
                         current.stage,
                         "integration_publication_pending",
-                        Some("Aprovação registrada; reconciliando publicações."),
+                        Some("Approval recorded; reconciling publications."),
                     )?;
                     tx.execute("UPDATE pulsations SET integration_checkpoint_id=?2,integration_state_version=state_version WHERE id=?1",params![pulse,request.checkpoint_id])?;
                     tx.execute("UPDATE project_pipeline_state SET base_state='publishing',state_version=state_version+1 WHERE active_pulsation_id=?1",[pulse])?;
@@ -177,14 +177,14 @@ impl PersistenceService {
                     let next = current
                         .stage
                         .next()
-                        .ok_or_else(|| invalid("Sem próximo estágio"))?;
+                        .ok_or_else(|| invalid("No next stage"))?;
                     let updated = Self::transition_pulsation(
                         &tx,
                         &current,
                         PulsationStatus::Planning,
                         next,
                         "hitl_approved",
-                        Some("Aprovação registrada."),
+                        Some("Approval recorded."),
                     )?;
                     Self::enqueue_stage_job(&tx, &updated.id, next)?;
                 }
@@ -194,10 +194,10 @@ impl PersistenceService {
         self.wake_scheduler();
         self.reconcile_publications()?;
         let result = Self::find_pulsation_by_id(&self.connection()?, pulse)?
-            .ok_or_else(|| invalid("Pulsação ausente"))?;
+            .ok_or_else(|| invalid("Pulsation missing"))?;
         if result.terminal_reason.as_deref() == Some("publication_conflict") {
             return Err(invalid(
-                "Aprovação registrada, mas a publicação encontrou conflito. Os arquivos humanos foram preservados; consulte os artifacts e eventos da pulsação.",
+                "Approval recorded, but publication hit a conflict. Human files were kept; see the pulsation's artifacts and events.",
             ));
         }
         Ok(ApplyHitlDecisionResponse { pulsation: result })
@@ -234,7 +234,7 @@ impl PersistenceService {
         validate_result_acceptance(
             fence,
             &current,
-            JobStatus::from_db_value(&status).ok_or_else(|| invalid("Job inválido"))?,
+            JobStatus::from_db_value(&status).ok_or_else(|| invalid("Invalid job"))?,
             None,
         )
         .map_err(invalid)
@@ -253,7 +253,7 @@ impl PersistenceService {
                 |r| r.get::<_, Option<String>>(0),
             )?
             .ok_or_else(|| {
-                invalid("Conteúdo legado indisponível/ambíguo; nenhuma reconstrução foi inventada.")
+                invalid("Legacy content unavailable or ambiguous; nothing was reconstructed.")
             })
     }
 
@@ -289,7 +289,7 @@ impl PersistenceService {
             .collect::<Result<Vec<_>, _>>()?;
         if documents.is_empty() || documents.iter().any(|document| document.4.is_none()) {
             return Err(invalid(
-                "Conteúdo do checkpoint indisponível/ambíguo; nenhuma reconstrução foi inventada.",
+                "Checkpoint content unavailable or ambiguous; nothing was reconstructed.",
             ));
         }
         Ok(documents
@@ -306,7 +306,7 @@ impl PersistenceService {
             .collect())
     }
 
-    /// The derived brief of a still-current review checkpoint (ADR-024),
+    /// The derived brief of a still-current review checkpoint (ADR-027),
     /// built from the typed `stage_payload_v1` record of the exact candidate
     /// output and the frozen batch, in the same snapshot as the admission
     /// check. `None` when the stage keeps no typed payload (pipelines before
@@ -358,11 +358,11 @@ impl PersistenceService {
         let pulse = fence
             .pulsation_id
             .as_deref()
-            .ok_or_else(|| invalid("Estágio sem pulsação"))?;
+            .ok_or_else(|| invalid("Stage without a pulsation"))?;
         let unavailable:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM artifacts WHERE pulsation_id=?1 AND legacy_adaptation='unavailable_or_ambiguous')",[pulse],|r|r.get(0))?;
         if unavailable {
             return Err(invalid(
-                "Handoff legado indisponível ou ambíguo. Revise a etapa de origem antes de continuar.",
+                "Legacy handoff unavailable or ambiguous. Review the source stage before continuing.",
             ));
         }
         let rows=db.prepare("SELECT id,producer_job_id,producer_stage,generation,input_revision,producer_state_version,output_position,name,kind,content,content_sha256,publication_state,source_revisions_json FROM artifacts WHERE pulsation_id=?1 AND input_revision=?2 AND acceptance='accepted' AND kind NOT IN ('code_context','learning_report','component_proposal','component') ORDER BY created_at,id")?
@@ -379,12 +379,12 @@ impl PersistenceService {
         let mut artifacts = Vec::new();
         for (producer_stage, hash, publication, sources, mut artifact) in rows {
             artifact.producer_stage = catalog::parse_stage(&producer_stage)
-                .ok_or_else(|| invalid("Estágio produtor inválido"))?;
+                .ok_or_else(|| invalid("Invalid producing stage"))?;
             artifact.content_sha256 = ContentSha256::try_from(hash).map_err(invalid)?;
             artifact.publication = match publication.as_str() {
                 "applied" => PublicationState::Applied,
                 "not_required" => PublicationState::NotRequired,
-                _ => return Err(invalid("Publicações obrigatórias ainda não reconciliadas.")),
+                _ => return Err(invalid("Required publications are not reconciled yet.")),
             };
             artifact.source_revisions = serde_json::from_str(&sources).map_err(invalid)?;
             artifacts.push(artifact);
@@ -462,9 +462,9 @@ impl PersistenceService {
             .recipient
             .pulsation_id
             .as_deref()
-            .ok_or_else(|| invalid("Sem pulsação"))?;
+            .ok_or_else(|| invalid("No pulsation"))?;
         let current =
-            Self::find_pulsation_by_id(&tx, pulse)?.ok_or_else(|| invalid("Pulsação ausente"))?;
+            Self::find_pulsation_by_id(&tx, pulse)?.ok_or_else(|| invalid("Pulsation missing"))?;
         if current.status != PulsationStatus::Running || current.stage != handoff.stage {
             return Err(invalid(ContractError::StaleExecution));
         }
@@ -512,7 +512,7 @@ impl PersistenceService {
             .recipient
             .pulsation_id
             .as_deref()
-            .ok_or_else(|| invalid("Sem pulsação"))?;
+            .ok_or_else(|| invalid("No pulsation"))?;
         let now = Self::now_iso();
         tx.execute("INSERT INTO stage_acceptances(job_id,generation,agent_run_id,fence_json,outcome_json,handoff_json,accepted_at,stage_execution_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![job.id,handoff.recipient.generation,run_id,serde_json::to_string(&handoff.recipient).map_err(invalid)?,serde_json::to_string(outcome).map_err(invalid)?,serde_json::to_string(handoff).map_err(invalid)?,now,provenance.stage_execution_id])?;
         let disposition = stage_disposition_with(current.stage, outcome, provenance.language_guard)
@@ -528,7 +528,7 @@ impl PersistenceService {
                 if artifact.content.len() > 1024 * 1024 || artifact.content.as_bytes().contains(&0)
                 {
                     return Err(PersistenceServiceError::ModelOutputInvalid(
-                        "Artifact acima de 1 MiB ou binário.".to_string(),
+                        "Artifact over 1 MiB or binary.".to_string(),
                     ));
                 }
                 let path = artifact
@@ -546,7 +546,7 @@ impl PersistenceService {
                     "code_context" | "learning_report" | "component"
                 ) {
                     return Err(PersistenceServiceError::ModelOutputInvalid(
-                        "Tipo de artifact reservado ao coletor do host.".to_string(),
+                        "Artifact kind reserved for the host collector.".to_string(),
                     ));
                 }
                 if let Some(path) = path {
@@ -563,7 +563,7 @@ impl PersistenceService {
                     })?;
                     if !paths.insert(path.to_ascii_lowercase()) {
                         return Err(PersistenceServiceError::ModelOutputInvalid(
-                            "Artifacts têm destinos duplicados.".to_string(),
+                            "Artifacts have duplicate targets.".to_string(),
                         ));
                     }
                 }
@@ -605,7 +605,7 @@ impl PersistenceService {
                     PulsationStatus::Checkpoint,
                     current.stage,
                     "checkpoint_ready",
-                    Some("Checkpoint pronto para revisão HITL."),
+                    Some("Checkpoint ready for HITL review."),
                 )?;
                 Self::open_checkpoint(tx, &updated.id, updated.stage)?;
                 tx.execute("UPDATE checkpoints SET state_version=(SELECT state_version FROM pulsations WHERE id=?1),input_revision=?2,producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting' AND purpose='artifact_review'",params![pulse,handoff.recipient.input_revision,job.id,handoff.recipient.generation])?;
@@ -648,7 +648,7 @@ impl PersistenceService {
                         PulsationStatus::Planning,
                         next,
                         "stage_auto_advanced",
-                        Some("Resultado aceito; aguardando publicações obrigatórias."),
+                        Some("Result accepted; waiting for required publications."),
                     )?;
                     Self::enqueue_stage_job(tx, &updated.id, updated.stage)?;
                 }
@@ -656,7 +656,7 @@ impl PersistenceService {
             StageDisposition::Fail => {
                 let (code, message) = match outcome {
                     StageOutcome::Failed { code, message } => (code.as_str(), message.as_str()),
-                    _ => ("model_reported_failure", "O agente reportou falha."),
+                    _ => ("model_reported_failure", "The agent reported a failure."),
                 };
                 // The acceptance row is durable, so this failure is never retryable;
                 // it opens a checkpoint only where a revision target exists (i.e. not
@@ -678,7 +678,7 @@ impl PersistenceService {
                         PulsationStatus::Failed,
                         current.stage,
                         "stage_failed",
-                        Some("O agente reportou falha; nenhum artifact foi publicado."),
+                        Some("The agent reported a failure; no artifact was published."),
                     )?;
                     tx.execute(
                         "UPDATE pulsations SET terminal_reason='model_reported_failure' WHERE id=?1",
@@ -774,9 +774,9 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = Self::find_pulsation_by_id(&tx, &request.pulsation_id)?
-            .ok_or_else(|| invalid("Pulsação ausente."))?;
+            .ok_or_else(|| invalid("Pulsation missing."))?;
         if current.stage != PulsationStage::Intake {
-            return Err(invalid("Esclarecimento de caminho fora do Intake."));
+            return Err(invalid("Path clarification outside Intake."));
         }
         let (stored_checkpoint_id, state_version, purpose): (String, u64, String) = tx
             .query_row(
@@ -784,12 +784,12 @@ impl PersistenceService {
                 [&request.pulsation_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
-            .map_err(|_| invalid("Checkpoint ausente ou ambíguo."))?;
+            .map_err(|_| invalid("Checkpoint missing or ambiguous."))?;
         if stored_checkpoint_id != request.checkpoint_id
             || purpose != "path_confirmation"
             || state_version != request.expected_state_version
         {
-            return Err(invalid("Checkpoint obsoleto ou de outro tipo."));
+            return Err(invalid("Checkpoint stale or of another kind."));
         }
         let manifest_json: String = tx.query_row(
             "SELECT manifest_json FROM pulsation_batches WHERE pulsation_id=?1",
@@ -969,7 +969,7 @@ impl PersistenceService {
             || desired != artifact_hash
         {
             Err(invalid(
-                "Hash/conteúdo durável inconsistente; publicação recusada.",
+                "Durable hash/content mismatch; publication refused.",
             ))
         } else {
             publication::publish(Path::new(&root), &path, &expected, &content)
@@ -1033,7 +1033,7 @@ impl PersistenceService {
                     return Err(error);
                 }
                 let current = Self::find_pulsation_by_id(&tx, &pulse)?
-                    .ok_or_else(|| invalid("Pulsação ausente"))?;
+                    .ok_or_else(|| invalid("Pulsation missing"))?;
                 if !matches!(
                     current.status,
                     PulsationStatus::Done | PulsationStatus::Failed

@@ -31,6 +31,73 @@ use crate::usage::{UsageContext, UsageTransport, api::UsageRecorder};
 
 const CONNECTION_TEST_MAX_OUTPUT_TOKENS: u32 = 16;
 
+fn verify_api_models(provider: &str, requested: &str, observed: &[String]) -> Result<(), LlmError> {
+    if observed.is_empty() {
+        return Err(LlmError::new(
+            LlmErrorKind::ModelUnverified,
+            format!("Provider `{provider}` did not report the generated model identity."),
+        )
+        .with_target(provider, "", requested));
+    }
+    for model in observed {
+        match crate::terminals::model_identity::verify_model(
+            Some(provider),
+            Some(requested),
+            Some(model),
+        ) {
+            crate::terminals::model_identity::ModelVerification::Verified => {}
+            crate::terminals::model_identity::ModelVerification::Mismatch => {
+                return Err(LlmError::new(
+                    LlmErrorKind::ModelMismatch,
+                    format!("Provider `{provider}` reported `{model}`; expected `{requested}`."),
+                )
+                .with_target(provider, "", requested));
+            }
+            crate::terminals::model_identity::ModelVerification::Unverified => {
+                return Err(LlmError::new(
+                    LlmErrorKind::ModelUnverified,
+                    format!("Provider `{provider}` cannot verify requested model `{requested}`."),
+                )
+                .with_target(provider, "", requested));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn persist_api_model_observations(
+    repository: &SqliteLlmRepository,
+    attempt_id: &str,
+    request: &LlmRequest,
+    provider: &str,
+    requested: &str,
+    observed: &[String],
+) -> Result<(), LlmError> {
+    let models = if observed.is_empty() {
+        vec![None]
+    } else {
+        observed.iter().map(|model| Some(model.as_str())).collect()
+    };
+    for (index, model) in models.into_iter().enumerate() {
+        repository.record_model_observation(
+            attempt_id,
+            index as u32 + 1,
+            request.generation_id.as_str(),
+            request.target.agent_role(),
+            &request.target.stable_key(),
+            request
+                .dispatch
+                .unit
+                .as_ref()
+                .map(|unit| unit.attempt_id.as_str()),
+            provider,
+            requested,
+            model,
+        )?;
+    }
+    Ok(())
+}
+
 fn connection_test_request(provider_id: &str, model: &str) -> LlmRequest {
     LlmRequest {
         execution_id: uuid::Uuid::new_v4().to_string().into(),
@@ -106,7 +173,7 @@ impl ProviderRouter {
         let profile = profile_by_id(connection.provider_id.as_str()).ok_or_else(|| {
             LlmError::new(
                 LlmErrorKind::InvalidRequest,
-                "Profile da conexão não existe.",
+                "The connection profile does not exist.",
             )
         })?;
         let credential = if matches!(profile.auth_style, super::profiles::AuthStyle::None) {
@@ -115,19 +182,21 @@ impl ProviderRouter {
             self.credentials.get(&connection.credential_ref)?
         };
         if credential.is_none() && !matches!(profile.auth_style, super::profiles::AuthStyle::None) {
-            return Err(
-                LlmError::new(LlmErrorKind::MissingApiKey, "Conexão sem API key.").with_target(
-                    &profile.id,
-                    connection.id.as_str(),
-                    &connection.default_model,
-                ),
-            );
+            return Err(LlmError::new(
+                LlmErrorKind::MissingApiKey,
+                "The connection has no API key.",
+            )
+            .with_target(
+                &profile.id,
+                connection.id.as_str(),
+                &connection.default_model,
+            ));
         }
         let request = connection_test_request(&profile.id, &connection.default_model);
         let adapter = self.adapters.get(&profile.protocol).ok_or_else(|| {
             LlmError::new(
                 LlmErrorKind::InvalidRequest,
-                "Adapter de protocolo não registrado.",
+                "No protocol adapter is registered.",
             )
         })?;
         let started = Instant::now();
@@ -173,7 +242,7 @@ impl ProviderRouter {
         let output = outcome.map_err(|_| {
             LlmError::new(
                 LlmErrorKind::Timeout,
-                "Teste da conexão excedeu 30 segundos.",
+                "The connection test took longer than 30 seconds.",
             )
         })??;
         Ok(TestProviderConnectionResponse {
@@ -182,7 +251,7 @@ impl ProviderRouter {
             provider_id: profile.id,
             model: connection.default_model,
             latency_ms: started.elapsed().as_millis() as u64,
-            message: "Conexão respondeu com sucesso.".to_string(),
+            message: "The connection answered successfully.".to_string(),
         })
     }
 
@@ -194,7 +263,7 @@ impl ProviderRouter {
         if cancellation.is_cancelled() {
             return Err(LlmError::new(
                 LlmErrorKind::Cancelled,
-                "Execução LLM cancelada.",
+                "LLM execution cancelled.",
             ));
         }
         let mode = if matches!(&request.target, AgentExecutionTarget::FreeForm { .. }) {
@@ -247,7 +316,10 @@ impl ProviderRouter {
                     .into_iter()
                     .find(|route| route.id == "legacy-default")
                     .ok_or_else(|| {
-                        LlmError::new(LlmErrorKind::Persistence, "Rota legacy-default ausente.")
+                        LlmError::new(
+                            LlmErrorKind::Persistence,
+                            "The legacy-default route is missing.",
+                        )
                     })?;
                 let targets = self.repository.resolved_targets(&legacy_route.id)?;
                 let legacy_decision = self.repository.decide(
@@ -278,7 +350,11 @@ impl ProviderRouter {
                 .get(&runtime_target_key(target))
                 .is_some_and(|reason| reason == "missing_api_key"))
             .then(|| {
-                LlmError::new(LlmErrorKind::MissingApiKey, "Conexão sem API key.").with_target(
+                LlmError::new(
+                    LlmErrorKind::MissingApiKey,
+                    "The connection has no API key.",
+                )
+                .with_target(
                     target.connection.provider_id.as_str(),
                     target.connection.id.as_str(),
                     if target.target.model_id.trim().is_empty() {
@@ -333,13 +409,13 @@ impl ProviderRouter {
                 missing_credential_error.unwrap_or_else(|| {
                     LlmError::new(
                         LlmErrorKind::AllTargetsExhausted,
-                        "Nenhum alvo LLM está elegível nesta rota.",
+                        "No LLM target on this route is eligible.",
                     )
                 })
             } else {
                 let mut error = LlmError::new(
                     LlmErrorKind::AllTargetsExhausted,
-                    "Nenhum alvo LLM está elegível nesta rota.",
+                    "No LLM target on this route is eligible.",
                 );
                 if let Some(missing) = missing_credential_error {
                     error.causes.push(missing.safe_cause());
@@ -387,6 +463,7 @@ impl ProviderRouter {
         let mut causes = Vec::new();
         let mut schema_failovers = 0_u8;
         let mut next_eligible_at: Option<String> = None;
+        let mut frozen_api_selection: Option<(String, String)> = None;
 
         for (index, target) in attempt_targets.into_iter().enumerate() {
             if index >= max_attempts || Instant::now() >= route_deadline {
@@ -400,6 +477,42 @@ impl ProviderRouter {
                     target.target.model_id.as_str()
                 })
                 .to_string();
+            let selected_provider = target.connection.provider_id.0.clone();
+            if let Some((frozen_provider, frozen_model)) = frozen_api_selection.as_ref() {
+                let same_provider = selected_provider == *frozen_provider;
+                let same_model = same_provider
+                    && matches!(
+                        crate::terminals::model_identity::verify_model(
+                            Some(frozen_provider),
+                            Some(frozen_model),
+                            Some(&model),
+                        ),
+                        crate::terminals::model_identity::ModelVerification::Verified
+                    );
+                if !same_model {
+                    let error = LlmError::new(
+                        LlmErrorKind::ModelMismatch,
+                        format!(
+                            "A fallback attempted to change the frozen selection from `{frozen_provider}/{frozen_model}` to `{selected_provider}/{model}`."
+                        ),
+                    )
+                    .with_target(&selected_provider, target.connection.id.as_str(), &model);
+                    self.repository.finish_execution(
+                        request.execution_id.as_str(),
+                        "failed",
+                        None,
+                        None,
+                        false,
+                    )?;
+                    emitter.emit(LlmStreamEvent::RouteFailed {
+                        error_code: error.kind.code().into(),
+                        next_eligible_at: None,
+                    });
+                    return Err(error);
+                }
+            } else {
+                frozen_api_selection = Some((selected_provider.clone(), model.clone()));
+            }
             if !attempted.insert((target.connection.id.0.clone(), model.clone())) {
                 continue;
             }
@@ -408,7 +521,7 @@ impl ProviderRouter {
                 profile_by_id(target.connection.provider_id.as_str()).ok_or_else(|| {
                     LlmError::new(
                         LlmErrorKind::InvalidRequest,
-                        "Profile da conexão não existe.",
+                        "The connection profile does not exist.",
                     )
                 })?;
             let credential = if matches!(profile.auth_style, super::profiles::AuthStyle::None) {
@@ -419,8 +532,11 @@ impl ProviderRouter {
             if credential.is_none()
                 && !matches!(profile.auth_style, super::profiles::AuthStyle::None)
             {
-                let error = LlmError::new(LlmErrorKind::MissingApiKey, "Conexão sem API key.")
-                    .with_target(&profile.id, target.connection.id.as_str(), &model);
+                let error = LlmError::new(
+                    LlmErrorKind::MissingApiKey,
+                    "The connection has no API key.",
+                )
+                .with_target(&profile.id, target.connection.id.as_str(), &model);
                 causes.push(error.safe_cause());
                 continue;
             }
@@ -449,7 +565,7 @@ impl ProviderRouter {
                     });
                     return Err(LlmError::new(
                         LlmErrorKind::BackgroundDeferred,
-                        "Learning aguarda 5 s sem demanda principal pela conexão.",
+                        "Learning waits 5 s with no main demand on the connection.",
                     ));
                 };
                 guard
@@ -461,13 +577,13 @@ impl ProviderRouter {
                 &target.connection.endpoint_url,
                 self.clock.now(),
             )? {
-                causes.push(format!("{}: breaker indisponível", target.connection.id));
+                causes.push(format!("{}: breaker unavailable", target.connection.id));
                 continue;
             }
 
             let permit = tokio::select! {
                 _ = call_cancellation.cancelled() => return self.cancel_execution(request, &emitter),
-                result = semaphore.acquire_owned() => result.map_err(|_| LlmError::new(LlmErrorKind::Persistence,"Semáforo da conexão foi fechado."))?,
+                result = semaphore.acquire_owned() => result.map_err(|_| LlmError::new(LlmErrorKind::Persistence,"The connection semaphore was closed."))?,
             };
             let ordinal = index as u32 + 1;
             let attempt_id = self.repository.start_attempt(
@@ -490,7 +606,7 @@ impl ProviderRouter {
             let adapter = self.adapters.get(&profile.protocol).ok_or_else(|| {
                 LlmError::new(
                     LlmErrorKind::InvalidRequest,
-                    "Adapter de protocolo não registrado.",
+                    "No protocol adapter is registered.",
                 )
             })?;
             let mut effective_request = request.clone();
@@ -550,11 +666,12 @@ impl ProviderRouter {
 
             let mut result = match outcome {
                 Ok(result) => result,
-                Err(_) => Err(LlmError::new(
-                    LlmErrorKind::Timeout,
-                    "Tentativa LLM excedeu o timeout.",
-                )
-                .with_target(&profile.id, target.connection.id.as_str(), &model)),
+                Err(_) => {
+                    Err(
+                        LlmError::new(LlmErrorKind::Timeout, "The LLM attempt timed out.")
+                            .with_target(&profile.id, target.connection.id.as_str(), &model),
+                    )
+                }
             };
             if call_cancellation.is_cancelled() {
                 result = Err(LlmError::new(
@@ -570,6 +687,46 @@ impl ProviderRouter {
             }
             match result {
                 Ok(output) => {
+                    persist_api_model_observations(
+                        &self.repository,
+                        &attempt_id,
+                        request,
+                        &profile.id,
+                        &model,
+                        &output.observed_models,
+                    )?;
+                    let identity = verify_api_models(&profile.id, &model, &output.observed_models);
+                    if let Err(mut error) = identity {
+                        error.observed_models = output.observed_models.clone();
+                        self.repository.finish_attempt(
+                            &attempt_id,
+                            "failed",
+                            Some(error.kind.code()),
+                            None,
+                            None,
+                            latency_ms,
+                            output.usage.input_tokens,
+                            output.usage.output_tokens,
+                            None,
+                        )?;
+                        emitter.emit(LlmStreamEvent::AttemptFailed {
+                            ordinal,
+                            error_code: error.kind.code().to_string(),
+                        });
+                        self.repository.finish_execution(
+                            request.execution_id.as_str(),
+                            "failed",
+                            None,
+                            None,
+                            false,
+                        )?;
+                        emitter.emit(LlmStreamEvent::RouteFailed {
+                            error_code: error.kind.code().to_string(),
+                            next_eligible_at: None,
+                        });
+                        error.connection_id = Some(target.connection.id.0.clone());
+                        return Err(error);
+                    }
                     let gate = if request.dispatch.host_validated {
                         Ok(())
                     } else {
@@ -682,13 +839,18 @@ impl ProviderRouter {
                         connection_id: target.connection.id.0.clone(),
                         model: model.clone(),
                     });
+                    let reported_model = output
+                        .observed_models
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| model.clone());
                     return Ok(LlmResponse {
                         execution_id: request.execution_id.clone(),
                         generation_id: request.generation_id.clone(),
                         route_id: execution_route.id.clone().into(),
                         connection_id: target.connection.id.clone(),
                         provider_id: target.connection.provider_id.clone(),
-                        model,
+                        model: reported_model,
                         request_payload: output.request_payload,
                         response_payload: output.response_payload,
                         content: output.content,
@@ -697,7 +859,23 @@ impl ProviderRouter {
                         finish_reason: output.finish_reason,
                     });
                 }
-                Err(error) => {
+                Err(mut error) => {
+                    if matches!(
+                        error.kind,
+                        LlmErrorKind::ModelMismatch | LlmErrorKind::ModelUnverified
+                    ) {
+                        error.provider_id = Some(profile.id.clone());
+                        error.connection_id = Some(target.connection.id.0.clone());
+                        error.model_id = Some(model.clone());
+                    }
+                    persist_api_model_observations(
+                        &self.repository,
+                        &attempt_id,
+                        request,
+                        &profile.id,
+                        &model,
+                        &error.observed_models,
+                    )?;
                     let visible = error.visible_partial.clone();
                     self.repository.finish_attempt(
                         &attempt_id,
@@ -716,6 +894,23 @@ impl ProviderRouter {
                     });
                     if error.kind == LlmErrorKind::Cancelled {
                         return self.cancel_execution(request, &emitter);
+                    }
+                    if matches!(
+                        error.kind,
+                        LlmErrorKind::ModelMismatch | LlmErrorKind::ModelUnverified
+                    ) {
+                        self.repository.finish_execution(
+                            request.execution_id.as_str(),
+                            "failed",
+                            None,
+                            None,
+                            false,
+                        )?;
+                        emitter.emit(LlmStreamEvent::RouteFailed {
+                            error_code: error.kind.code().into(),
+                            next_eligible_at: None,
+                        });
+                        return Err(error);
                     }
                     self.apply_resilience(
                         &target,
@@ -772,7 +967,7 @@ impl ProviderRouter {
         }
         let mut error = LlmError::new(
             LlmErrorKind::AllTargetsExhausted,
-            "Todos os alvos elegíveis da rota foram esgotados.",
+            "Every eligible target on the route was exhausted.",
         );
         error.causes = causes;
         error.next_eligible_at = next_eligible_at.clone();
@@ -856,7 +1051,7 @@ impl ProviderRouter {
             .into_iter()
             .find(|target| target.connection.id.as_str() == connection_id)
             .ok_or_else(|| {
-                LlmError::new(LlmErrorKind::Persistence, "Conexão legada não encontrada.")
+                LlmError::new(LlmErrorKind::Persistence, "Legacy connection not found.")
             })?;
         Ok((vec![target], request.legacy_model.clone()))
     }
@@ -1012,7 +1207,7 @@ impl ProviderRouter {
         request: &LlmRequest,
         emitter: &ExecutionEmitter,
     ) -> Result<T, LlmError> {
-        let error = LlmError::new(LlmErrorKind::Cancelled, "Execução LLM cancelada.");
+        let error = LlmError::new(LlmErrorKind::Cancelled, "LLM execution cancelled.");
         self.repository.finish_execution(
             request.execution_id.as_str(),
             "cancelled",
@@ -1168,7 +1363,7 @@ fn validate_output(format: &ResponseFormat, content: &str) -> Result<(), LlmErro
             let parsed: Value = serde_json::from_str(content).map_err(|_| {
                 LlmError::new(
                     LlmErrorKind::InvalidResponse,
-                    "Provider não retornou JSON válido.",
+                    "The provider did not return valid JSON.",
                 )
             })?;
             if parsed.is_object() {
@@ -1176,7 +1371,7 @@ fn validate_output(format: &ResponseFormat, content: &str) -> Result<(), LlmErro
             } else {
                 Err(LlmError::new(
                     LlmErrorKind::InvalidResponse,
-                    "Output JSON não é um objeto.",
+                    "The JSON output is not an object.",
                 ))
             }
         }
@@ -1184,11 +1379,11 @@ fn validate_output(format: &ResponseFormat, content: &str) -> Result<(), LlmErro
             let parsed: Value = serde_json::from_str(content).map_err(|_| {
                 LlmError::new(
                     LlmErrorKind::InvalidResponse,
-                    "Provider não retornou JSON válido.",
+                    "The provider did not return valid JSON.",
                 )
             })?;
             let validator = validator_for(schema).map_err(|_| {
-                LlmError::new(LlmErrorKind::OutputSchema, "Schema de output é inválido.")
+                LlmError::new(LlmErrorKind::OutputSchema, "The output schema is invalid.")
             })?;
             validator.validate(&parsed).map_err(|error| {
                 LlmError::new(
@@ -1353,6 +1548,22 @@ fn flush_delta_state(
 mod tests {
     use super::*;
     use crate::llm::domain::{AgentRole, ExecutionId, GenerationId};
+
+    #[test]
+    fn api_model_identity_accepts_only_the_selected_haiku_family() {
+        assert!(verify_api_models("anthropic", "haiku", &["claude-haiku-4-5".to_string()]).is_ok());
+
+        let mismatch = verify_api_models("anthropic", "haiku", &["claude-sonnet-5".to_string()])
+            .expect_err("Sonnet must not satisfy a Haiku selection");
+        assert_eq!(mismatch.kind.code(), "model_mismatch");
+    }
+
+    #[test]
+    fn api_model_identity_fails_closed_when_generation_is_unreported() {
+        let error = verify_api_models("anthropic", "haiku", &[])
+            .expect_err("a response without model identity cannot be accepted");
+        assert_eq!(error.kind.code(), "model_unverified");
+    }
 
     #[test]
     fn connection_test_request_preserves_the_openai_minimum_contract() {

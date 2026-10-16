@@ -8,7 +8,8 @@ use hvc_core::AppCore;
 use hvc_core::workspace_service::{
     FileNode, GetWorkspaceVaultIndexRequest, GetWorkspaceVaultIndexResponse,
     ReadWorkspaceFileRequest, RenameWorkspaceNoteRequest, RenameWorkspaceNoteResponse, SearchMode,
-    SearchWorkspaceTextRequest, SearchWorkspaceTextResponse, VaultEdge, WorkspaceTreeResponse,
+    SearchWorkspaceTextRequest, SearchWorkspaceTextResponse, VaultEdge, VaultNoteSummary,
+    WorkspaceTreeResponse,
 };
 
 pub(crate) const VAULT_REFRESH_DEBOUNCE: std::time::Duration =
@@ -54,7 +55,7 @@ impl VaultBackend for CoreVaultBackend {
             runtime
                 .spawn_blocking(move || {
                     core.list_workspace_tree()
-                        .map(|WorkspaceTreeResponse { tree }| tree)
+                        .map(|WorkspaceTreeResponse { tree, .. }| tree)
                         .map_err(|error| error.message)
                 })
                 .await
@@ -149,11 +150,186 @@ pub(crate) struct VaultGraphConnection {
 pub(crate) struct VaultGraphLayout {
     pub(crate) nodes: Vec<VaultGraphNode>,
     pub(crate) edges: Vec<VaultGraphConnection>,
+    /// Notes left out because the vault is larger than `MAX_GRAPH_NODES`.
+    pub(crate) hidden: usize,
+    /// Extent of the layout in world units; it grows with the node count and the camera fits it
+    /// to the panel, so a larger graph is shown further out instead of being crammed.
+    pub(crate) world_width: f32,
+    pub(crate) world_height: f32,
 }
+
+/// Grid cell of the graph layout, in world units.
+const GRAPH_CELL_WIDTH: f32 = 150.0;
+const GRAPH_CELL_HEIGHT: f32 = 110.0;
+/// Space kept around the relaxed layout so edge nodes and their labels are not flush.
+const GRAPH_LAYOUT_MARGIN: f32 = 70.0;
+/// Force-directed passes; with at most `MAX_GRAPH_NODES` nodes this is ~1.7M pair visits, run
+/// once per index change (the layout is cached), never per frame.
+const GRAPH_RELAX_PASSES: usize = 150;
+pub(crate) const GRAPH_MIN_ZOOM: f32 = 0.1;
+pub(crate) const GRAPH_MAX_ZOOM: f32 = 3.0;
+/// The automatic fit never magnifies a small graph past this.
+const GRAPH_FIT_MAX_ZOOM: f32 = 1.25;
+const GRAPH_FIT_MARGIN: f32 = 48.0;
+
+/// World-to-panel transform of the graph: `panel = world * zoom + pan`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GraphTransform {
+    pub zoom: f32,
+    pub pan_x: f32,
+    pub pan_y: f32,
+}
+
+impl GraphTransform {
+    /// The whole layout centred in a `width` x `height` panel.
+    pub(crate) fn fit(layout: &VaultGraphLayout, width: f32, height: f32) -> Self {
+        let usable_w = (width - 2.0 * GRAPH_FIT_MARGIN).max(1.0);
+        let usable_h = (height - 2.0 * GRAPH_FIT_MARGIN).max(1.0);
+        let zoom = (usable_w / layout.world_width.max(1.0))
+            .min(usable_h / layout.world_height.max(1.0))
+            .clamp(GRAPH_MIN_ZOOM, GRAPH_FIT_MAX_ZOOM);
+        Self {
+            zoom,
+            pan_x: (width - layout.world_width * zoom) / 2.0,
+            pan_y: (height - layout.world_height * zoom) / 2.0,
+        }
+    }
+
+    pub(crate) fn to_panel(self, x: f32, y: f32) -> (f32, f32) {
+        (x * self.zoom + self.pan_x, y * self.zoom + self.pan_y)
+    }
+
+    /// Zoom by `factor` keeping the panel point (`anchor_x`, `anchor_y`) fixed under the cursor.
+    pub(crate) fn zoomed(self, factor: f32, anchor_x: f32, anchor_y: f32) -> Self {
+        let zoom = (self.zoom * factor).clamp(GRAPH_MIN_ZOOM, GRAPH_MAX_ZOOM);
+        let ratio = zoom / self.zoom;
+        Self {
+            zoom,
+            pan_x: anchor_x - (anchor_x - self.pan_x) * ratio,
+            pan_y: anchor_y - (anchor_y - self.pan_y) * ratio,
+        }
+    }
+}
+
+/// Camera of the Vault graph. Until the developer pans or zooms, the view is recomputed as a fit
+/// every frame (`adjusted == None`), so it follows window resizes and a growing vault.
+#[derive(Debug, Default)]
+pub(crate) struct GraphCamera {
+    /// The developer's own transform, and the node count it was made for: a graph of a
+    /// different size fits again.
+    pub adjusted: Option<(GraphTransform, usize)>,
+    /// Drag in progress: pointer and pan where it started, in panel coordinates.
+    pub drag: Option<((f32, f32), (f32, f32))>,
+    /// Panel bounds measured by the last paint; read by the next frame and by input handlers.
+    pub bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    /// Transform the last frame was drawn with (the fit, unless adjusted) and its node count.
+    pub last: std::rc::Rc<std::cell::Cell<Option<(GraphTransform, usize)>>>,
+    /// Note whose dot the pointer rests on; its file name floats above the dot.
+    pub hovered: Option<String>,
+}
+
+/// Fruchterman–Reingold relaxation of `points` inside a `width` x `height` area. Deterministic:
+/// the same seed positions and links always give the same layout.
+fn relax_layout(points: &mut [(f32, f32)], links: &[(usize, usize)], width: f32, height: f32) {
+    let count = points.len();
+    if count < 2 {
+        return;
+    }
+    let ideal = ((width * height) / count as f32).sqrt() * 0.8;
+    let (center_x, center_y) = (width / 2.0, height / 2.0);
+    let mut temperature = width.max(height) / 8.0;
+    let mut shift = vec![(0.0f32, 0.0f32); count];
+    // Unlinked notes feel only the repulsion; a stronger pull keeps them in orbit around the
+    // clusters instead of at the far edge, where they would force the fit to zoom far out.
+    let mut linked = vec![false; count];
+    for &(a, b) in links {
+        linked[a] = true;
+        linked[b] = true;
+    }
+    for _ in 0..GRAPH_RELAX_PASSES {
+        shift.iter_mut().for_each(|value| *value = (0.0, 0.0));
+        for a in 0..count {
+            for b in a + 1..count {
+                let dx = points[a].0 - points[b].0;
+                let dy = points[a].1 - points[b].1;
+                let distance = (dx * dx + dy * dy).sqrt().max(0.5);
+                let push = ideal * ideal / distance;
+                let (ux, uy) = (dx / distance, dy / distance);
+                shift[a].0 += ux * push;
+                shift[a].1 += uy * push;
+                shift[b].0 -= ux * push;
+                shift[b].1 -= uy * push;
+            }
+        }
+        for &(a, b) in links {
+            let dx = points[a].0 - points[b].0;
+            let dy = points[a].1 - points[b].1;
+            let distance = (dx * dx + dy * dy).sqrt().max(0.5);
+            let pull = distance * distance / ideal;
+            let (ux, uy) = (dx / distance, dy / distance);
+            shift[a].0 -= ux * pull;
+            shift[a].1 -= uy * pull;
+            shift[b].0 += ux * pull;
+            shift[b].1 += uy * pull;
+        }
+        for ((point, (sx, sy)), linked) in points.iter_mut().zip(&shift).zip(&linked) {
+            let gravity = if *linked { 0.05 } else { 0.25 } * ideal / 10.0;
+            let gx = sx + (center_x - point.0) * gravity;
+            let gy = sy + (center_y - point.1) * gravity;
+            let length = (gx * gx + gy * gy).sqrt().max(0.001);
+            let step = length.min(temperature);
+            point.0 += gx / length * step;
+            point.1 += gy / length * step;
+        }
+        temperature *= 0.96;
+    }
+}
+
+/// Radius of a node dot on screen: it scales with the zoom within readable bounds.
+pub(crate) fn graph_node_radius(zoom: f32) -> f32 {
+    8.0 * zoom.clamp(0.7, 1.3)
+}
+
+impl GraphCamera {
+    pub(crate) fn transform(
+        &self,
+        layout: &VaultGraphLayout,
+        width: f32,
+        height: f32,
+    ) -> GraphTransform {
+        match self.adjusted {
+            Some((transform, nodes)) if nodes == layout.nodes.len() => transform,
+            _ => GraphTransform::fit(layout, width, height),
+        }
+    }
+
+    /// What one frame needs, detached from the model borrow (two `Rc`s and plain values).
+    pub(crate) fn snapshot(&self) -> GraphCamera {
+        GraphCamera {
+            adjusted: self.adjusted,
+            drag: self.drag,
+            bounds: self.bounds.clone(),
+            last: self.last.clone(),
+            hovered: self.hovered.clone(),
+        }
+    }
+}
+
+/// Nodes the graph draws. Past this the fixed 760×460 canvas is unreadable anyway and every
+/// frame would lay out thousands of elements; the most connected notes (and the selected one)
+/// are kept.
+pub(crate) const MAX_GRAPH_NODES: usize = 150;
+/// Note bodies kept for the inspector and context panels; older ones reload on demand.
+const MAX_CACHED_DOCUMENTS: usize = 64;
 
 pub struct VaultModel {
     pub workspace_root: Option<SharedString>,
     pub tree: Vec<FileNode>,
+    pub(crate) folders: crate::file_tree::FolderState,
+    pub(crate) camera: GraphCamera,
+    /// The relaxed layout and what it was built from; rebuilt only when the index (or, for a
+    /// capped vault, the selection) changes.
+    graph_cache: std::cell::RefCell<Option<(GraphCacheKey, VaultGraphLayout)>>,
     pub index: Option<GetWorkspaceVaultIndexResponse>,
     pub documents: HashMap<String, String>,
     pub loading_documents: HashSet<String>,
@@ -177,6 +353,9 @@ impl Default for VaultModel {
         Self {
             workspace_root: None,
             tree: Vec::new(),
+            folders: crate::file_tree::FolderState::default(),
+            camera: GraphCamera::default(),
+            graph_cache: Default::default(),
             index: None,
             documents: HashMap::new(),
             loading_documents: HashSet::new(),
@@ -197,7 +376,39 @@ impl Default for VaultModel {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GraphCacheKey {
+    indexed_at: String,
+    notes: usize,
+    edges: usize,
+    /// Only a capped vault's node set depends on the selection.
+    selected: Option<String>,
+}
+
 impl VaultModel {
+    /// The graph layout for the current index, from the cache when nothing it depends on changed.
+    pub(crate) fn graph_layout(&self, selected: Option<&str>) -> VaultGraphLayout {
+        let key = self.index.as_ref().map(|index| GraphCacheKey {
+            indexed_at: index.indexed_at.clone(),
+            notes: index.notes.len(),
+            edges: index.edges.len(),
+            selected: (index.notes.len() > MAX_GRAPH_NODES)
+                .then(|| selected.map(str::to_owned))
+                .flatten(),
+        });
+        let Some(key) = key else {
+            return VaultGraphLayout::default();
+        };
+        if let Some((cached_key, layout)) = self.graph_cache.borrow().as_ref()
+            && *cached_key == key
+        {
+            return layout.clone();
+        }
+        let layout = build_vault_graph_layout(self.index.as_ref(), selected);
+        *self.graph_cache.borrow_mut() = Some((key, layout.clone()));
+        layout
+    }
+
     pub(crate) fn hydrate_workspace(
         &mut self,
         workspace_root: String,
@@ -285,6 +496,17 @@ impl VaultModel {
         self.loading_documents.remove(&relative_path);
         match result {
             Ok(content) => {
+                if self.documents.len() >= MAX_CACHED_DOCUMENTS {
+                    let selected = self.selected_path.clone();
+                    let evict = self
+                        .documents
+                        .keys()
+                        .find(|path| selected.as_ref().map(AsRef::as_ref) != Some(path.as_str()))
+                        .cloned();
+                    if let Some(evict) = evict {
+                        self.documents.remove(&evict);
+                    }
+                }
                 self.documents.insert(relative_path, content);
             }
             Err(error) => self.error = Some(error),
@@ -377,17 +599,44 @@ pub(crate) fn select_context_panel_paths(
 
 pub(crate) fn build_vault_graph_layout(
     index: Option<&GetWorkspaceVaultIndexResponse>,
+    selected: Option<&str>,
 ) -> VaultGraphLayout {
     let Some(index) = index.filter(|index| !index.notes.is_empty()) else {
         return VaultGraphLayout::default();
     };
-    let width = 760.0;
-    let height = 460.0;
-    let columns = (index.notes.len() as f32).sqrt().ceil().max(1.0) as usize;
-    let rows = index.notes.len().div_ceil(columns);
-    let nodes = index
-        .notes
-        .iter()
+    let shown: Vec<&VaultNoteSummary> = if index.notes.len() <= MAX_GRAPH_NODES {
+        index.notes.iter().collect()
+    } else {
+        let mut degree: HashMap<&str, usize> = HashMap::new();
+        for edge in &index.edges {
+            *degree.entry(edge.source_path.as_str()).or_default() += 1;
+            *degree.entry(edge.target_path.as_str()).or_default() += 1;
+        }
+        let mut ranked: Vec<usize> = (0..index.notes.len()).collect();
+        ranked.sort_by_key(|position| {
+            let path = index.notes[*position].relative_path.as_str();
+            (
+                Some(path) != selected,
+                std::cmp::Reverse(degree.get(path).copied().unwrap_or(0)),
+                *position,
+            )
+        });
+        ranked.truncate(MAX_GRAPH_NODES);
+        // Back to index order so the grid is stable as notes gain or lose links.
+        ranked.sort_unstable();
+        ranked
+            .into_iter()
+            .map(|position| &index.notes[position])
+            .collect()
+    };
+    let hidden = index.notes.len() - shown.len();
+    // A landscape grid whose extent grows with the node count; the camera fits it to the panel.
+    let columns = ((shown.len() as f32 * 1.6).sqrt().ceil() as usize).clamp(1, shown.len().max(1));
+    let rows = shown.len().div_ceil(columns);
+    let world_width = columns as f32 * GRAPH_CELL_WIDTH;
+    let world_height = rows.max(1) as f32 * GRAPH_CELL_HEIGHT;
+    let nodes = shown
+        .into_iter()
         .enumerate()
         .map(|(position, note)| VaultGraphNode {
             relative_path: note.relative_path.clone(),
@@ -400,11 +649,47 @@ pub(crate) fn build_vault_graph_layout(
                 note.title.trim().to_owned()
             },
             layout: VaultGraphNodeLayout {
-                x: ((position % columns) as f32 + 0.5) * (width / columns as f32),
-                y: ((position / columns) as f32 + 0.5) * (height / rows as f32),
+                x: ((position % columns) as f32 + 0.5) * GRAPH_CELL_WIDTH,
+                y: ((position / columns) as f32 + 0.5) * GRAPH_CELL_HEIGHT,
             },
         })
         .collect::<Vec<_>>();
+    // Grid positions seed a force-directed relaxation: linked notes pull together, every pair
+    // pushes apart, so clusters read as clusters instead of a mesh of crossing lines.
+    let mut nodes = nodes;
+    {
+        let slot: HashMap<&str, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(position, node)| (node.relative_path.as_str(), position))
+            .collect();
+        let links: Vec<(usize, usize)> = index
+            .edges
+            .iter()
+            .filter_map(|edge| {
+                Some((
+                    *slot.get(edge.source_path.as_str())?,
+                    *slot.get(edge.target_path.as_str())?,
+                ))
+            })
+            .filter(|(a, b)| a != b)
+            .collect();
+        let mut points: Vec<(f32, f32)> = nodes
+            .iter()
+            .map(|node| (node.layout.x, node.layout.y))
+            .collect();
+        relax_layout(&mut points, &links, world_width, world_height);
+        let min_x = points.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
+        let min_y = points.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+        for (node, (x, y)) in nodes.iter_mut().zip(points) {
+            node.layout = VaultGraphNodeLayout {
+                x: x - min_x + GRAPH_LAYOUT_MARGIN,
+                y: y - min_y + GRAPH_LAYOUT_MARGIN,
+            };
+        }
+    }
+    let world_width = nodes.iter().map(|n| n.layout.x).fold(0.0, f32::max) + GRAPH_LAYOUT_MARGIN;
+    let world_height = nodes.iter().map(|n| n.layout.y).fold(0.0, f32::max) + GRAPH_LAYOUT_MARGIN;
     let nodes_by_path = nodes
         .iter()
         .map(|node| (node.relative_path.as_str(), node.layout))
@@ -424,12 +709,18 @@ pub(crate) fn build_vault_graph_layout(
             },
         )
         .collect();
-    VaultGraphLayout { nodes, edges }
+    VaultGraphLayout {
+        nodes,
+        edges,
+        hidden,
+        world_width,
+        world_height,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use hvc_core::workspace_service::{SearchMatch, VaultBrokenLink, VaultNoteSummary};
+    use hvc_core::workspace_service::{SearchMatch, VaultBrokenLink};
 
     use super::*;
 
@@ -474,14 +765,102 @@ mod tests {
     }
 
     #[test]
+    fn a_large_vault_draws_its_most_connected_notes_and_keeps_the_selected_one() {
+        let mut large = index();
+        let template = large.notes[0].clone();
+        large.notes = (0..MAX_GRAPH_NODES + 50)
+            .map(|position| VaultNoteSummary {
+                relative_path: format!("n{position}.md"),
+                title: format!("n{position}"),
+                ..template.clone()
+            })
+            .collect();
+        // n199 is the hub: linked from 10 notes. n5 is linked once.
+        large.edges = (0..10)
+            .map(|source| VaultEdge {
+                source_path: format!("n{source}.md"),
+                target_path: format!("n{}.md", MAX_GRAPH_NODES + 49),
+            })
+            .collect();
+        let last = format!("n{}.md", MAX_GRAPH_NODES + 48);
+        let graph = build_vault_graph_layout(Some(&large), Some(last.as_str()));
+        assert_eq!(graph.nodes.len(), MAX_GRAPH_NODES);
+        assert_eq!(graph.hidden, 50);
+        let shown: Vec<&str> = graph
+            .nodes
+            .iter()
+            .map(|n| n.relative_path.as_str())
+            .collect();
+        assert!(
+            shown.contains(&format!("n{}.md", MAX_GRAPH_NODES + 49).as_str()),
+            "hub kept"
+        );
+        assert!(shown.contains(&last.as_str()), "selection kept");
+        assert_eq!(graph.edges.len(), 10);
+        // Index order is preserved for a stable grid.
+        assert!(shown.windows(2).all(|pair| {
+            let key = |p: &str| p[1..p.len() - 3].parse::<usize>().unwrap();
+            key(pair[0]) < key(pair[1])
+        }));
+    }
+
+    #[test]
+    fn a_growing_graph_is_fitted_further_out_and_zoom_keeps_the_cursor_point() {
+        let mut small = index();
+        let template = small.notes[0].clone();
+        let layout_for = |count: usize, index: &mut GetWorkspaceVaultIndexResponse| {
+            index.notes = (0..count)
+                .map(|position| VaultNoteSummary {
+                    relative_path: format!("n{position}.md"),
+                    ..template.clone()
+                })
+                .collect();
+            index.edges.clear();
+            build_vault_graph_layout(Some(index), None)
+        };
+        let few = layout_for(4, &mut small);
+        let many = layout_for(120, &mut small);
+        let fit_few = GraphTransform::fit(&few, 600.0, 500.0);
+        let fit_many = GraphTransform::fit(&many, 600.0, 500.0);
+        assert!(fit_many.zoom < fit_few.zoom, "{fit_many:?} vs {fit_few:?}");
+        assert!(fit_few.zoom <= GRAPH_FIT_MAX_ZOOM);
+        // The fitted graph sits inside the panel.
+        let (left, top) = fit_many.to_panel(0.0, 0.0);
+        let (right, bottom) = fit_many.to_panel(many.world_width, many.world_height);
+        assert!(left >= 0.0 && top >= 0.0 && right <= 600.0 && bottom <= 500.0);
+
+        // Zooming around a point keeps that point under the cursor.
+        let world = (200.0, 150.0);
+        let before = fit_many.to_panel(world.0, world.1);
+        let zoomed = fit_many.zoomed(1.5, before.0, before.1);
+        let after = zoomed.to_panel(world.0, world.1);
+        assert!((after.0 - before.0).abs() < 0.01 && (after.1 - before.1).abs() < 0.01);
+        assert!(fit_many.zoomed(1000.0, 0.0, 0.0).zoom <= GRAPH_MAX_ZOOM);
+    }
+
+    #[test]
+    fn the_note_cache_is_bounded_and_keeps_the_selected_note() {
+        let mut model = VaultModel {
+            selected_path: Some("keep.md".into()),
+            ..VaultModel::default()
+        };
+        model.finish_document_load("keep.md".into(), Ok("selected".into()));
+        for position in 0..MAX_CACHED_DOCUMENTS + 20 {
+            model.finish_document_load(format!("n{position}.md"), Ok("body".into()));
+        }
+        assert_eq!(model.documents.len(), MAX_CACHED_DOCUMENTS);
+        assert!(model.documents.contains_key("keep.md"));
+    }
+
+    #[test]
     fn derives_deterministic_graph_and_context_layouts() {
         let index = index();
         assert_eq!(
             select_context_panel_paths(Some(&index), Some("Features/Login.md")),
             vec!["Features/Login.md", "Architecture/Auth.md"]
         );
-        let first = build_vault_graph_layout(Some(&index));
-        let second = build_vault_graph_layout(Some(&index));
+        let first = build_vault_graph_layout(Some(&index), None);
+        let second = build_vault_graph_layout(Some(&index), None);
         assert_eq!(first, second);
         assert_eq!(first.nodes.len(), 2);
         assert_eq!(first.edges.len(), 1);

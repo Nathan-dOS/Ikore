@@ -61,7 +61,7 @@ pub(crate) struct HitlReviewState {
     pub(crate) show_feedback: bool,
     pub(crate) documents_loading: bool,
     pub(crate) documents_error: Option<String>,
-    /// Derived view of the same checkpoint (ADR-024). Never gates approval.
+    /// Derived view of the same checkpoint (ADR-027). Never gates approval.
     pub(crate) brief: Option<ReviewBrief>,
     pub(crate) brief_error: Option<String>,
     /// The Brief tab is showing instead of a document.

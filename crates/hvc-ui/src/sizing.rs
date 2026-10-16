@@ -47,6 +47,12 @@ pub(crate) trait StyledExt: Styled + Sized {
         self.style().align_self = Some(AlignSelf::FlexStart);
         self
     }
+
+    /// Centres the element on the cross axis at its content size (`align-self: center`).
+    fn self_center(mut self) -> Self {
+        self.style().align_self = Some(AlignSelf::Center);
+        self
+    }
 }
 
 impl<T: Styled> StyledExt for T {}

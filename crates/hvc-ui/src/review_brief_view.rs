@@ -1,4 +1,4 @@
-//! The derived review brief of a checkpoint (ADR-024 M1).
+//! The derived review brief of a checkpoint (ADR-027 M1).
 //!
 //! A native rendering of `hvc_core::orchestration::review_brief::ReviewBrief`. The host
 //! decided every count, status and rule; this module only draws them. Text an agent wrote

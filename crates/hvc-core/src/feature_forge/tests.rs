@@ -327,6 +327,92 @@ fn dispatch_freezes_mixed_sources_and_rejects_duplicate_reservations() {
     assert!(manifest.features.iter().any(|x| x.id == a.id));
     assert!(manifest.features.iter().any(|x| x.id == b.id));
 }
+/// "Haiku Teste 1" (2026-09-26): the legacy connection had become Gemini and
+/// the route still sent it `gpt-4.1-mini`. The Contract failed with HTTP 404
+/// after Intake, Specification and an 11-minute review.
+#[test]
+fn a_stage_that_cannot_reach_its_model_blocks_the_dispatch() {
+    let f = Fixture::new();
+    let task = f.add("Fix validation");
+    let db = rusqlite::Connection::open(f.service.database_path()).unwrap();
+    // Nathan's route had this one target; a fresh database also seeds Anthropic.
+    db.execute(
+        "DELETE FROM provider_route_targets WHERE route_id='legacy-default' AND connection_id='legacy-anthropic'",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE provider_connections SET provider_id='gemini',display_name='Gemini',default_model='gemini-2.5-flash-lite' WHERE id='legacy-openai'",
+        [],
+    )
+    .unwrap();
+    let error = f
+        .tasks()
+        .dispatch(f.dispatch(std::slice::from_ref(&task)))
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("Pulsation not started"), "{message}");
+    assert!(
+        message.contains(
+            "Contract (contract_agent): the API route `Legacy default` has no usable target: it sends the openai model `gpt-4.1-mini` to the gemini connection `Gemini`."
+        ),
+        "{message}"
+    );
+    let pulsations: i64 = db
+        .query_row("SELECT COUNT(*) FROM pulsations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(pulsations, 0);
+    assert_eq!(f.tasks().list(&f.project).unwrap()[0].state, "ready");
+
+    // A second, compatible target makes the first a warning on the pulsation.
+    db.execute(
+        "INSERT INTO provider_route_targets(route_id,position,connection_id,model_id,enabled,created_at,updated_at) VALUES('legacy-default',1,'legacy-anthropic','claude-3-5-sonnet-latest',1,'now','now')",
+        [],
+    )
+    .unwrap();
+    let pulse = f
+        .tasks()
+        .dispatch(f.dispatch(std::slice::from_ref(&task)))
+        .unwrap();
+    let warnings: Vec<String> = db
+        .prepare("SELECT message FROM pulse_events WHERE pulsation_id=?1 AND event_type='route_preflight_warning'")
+        .unwrap()
+        .query_map([&pulse.id], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(warnings.len(), 6, "{warnings:?}");
+    assert!(
+        warnings
+            .iter()
+            .all(|w| w.contains("will fail and fall back"))
+    );
+}
+
+#[test]
+fn a_cli_stage_without_its_executable_blocks_the_dispatch() {
+    let f = Fixture::new();
+    let task = f.add("Fix validation");
+    let db = rusqlite::Connection::open(f.service.database_path()).unwrap();
+    crate::terminals::TerminalRepository::new(f.service.database_path())
+        .ensure_project_configs(&f.project, false)
+        .unwrap();
+    db.execute(
+        "UPDATE cli_agent_configs SET execution_mode='cli_process',backend='custom',custom_executable=NULL WHERE project_id=?1 AND agent_role='test_agent'",
+        [&f.project],
+    )
+    .unwrap();
+    let message = f
+        .tasks()
+        .dispatch(f.dispatch(&[task]))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains("Test (test_agent): the custom CLI has no executable."),
+        "{message}"
+    );
+}
+
 #[test]
 fn foreign_project_ids_are_rejected() {
     let f = Fixture::new();
@@ -903,6 +989,13 @@ fn restarting_recovers_interrupted_discovery_without_creating_a_second_turn() {
     assert_eq!(
         agent.history(&f.project, &feature.id).unwrap()[0].status,
         "interrupted"
+    );
+    assert_eq!(
+        agent.history(&f.project, &feature.id).unwrap()[0]
+            .failure
+            .as_ref()
+            .map(|failure| failure.kind),
+        Some(TurnFailureKind::Interrupted)
     );
     assert_eq!(
         agent
@@ -1924,5 +2017,441 @@ fn request_path_clarification_reopens_incubation_and_blocks_reapproval() {
             .approve(&f.project, &feature.id, reopened.revision)
             .is_err(),
         "pending_decisions must block reapproval until answered"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Failure explanation and host repair (ADR-016, 2026-09-29)
+// ---------------------------------------------------------------------------
+
+/// Answers with the next scripted reply (the last one repeats) and keeps every
+/// prompt it was sent, so a test can read what the agent was told.
+struct ScriptedGateway {
+    responses: std::sync::Mutex<std::collections::VecDeque<String>>,
+    prompts: std::sync::Mutex<Vec<String>>,
+}
+impl ScriptedGateway {
+    fn new(responses: Vec<String>) -> Arc<Self> {
+        Arc::new(Self {
+            responses: std::sync::Mutex::new(responses.into()),
+            prompts: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+    fn prompts(&self) -> Vec<String> {
+        self.prompts.lock().unwrap().clone()
+    }
+}
+impl crate::llm::LlmGateway for ScriptedGateway {
+    fn execute<'a>(
+        &'a self,
+        request: &'a crate::llm::LlmRequest,
+        _cancellation: &'a CancellationToken,
+    ) -> crate::llm::GatewayFuture<'a> {
+        Box::pin(async move {
+            use crate::llm::*;
+            self.prompts
+                .lock()
+                .unwrap()
+                .push(request.user_prompt.clone());
+            let content = {
+                let mut queue = self.responses.lock().unwrap();
+                if queue.len() > 1 {
+                    queue.pop_front().unwrap()
+                } else {
+                    queue.front().cloned().unwrap_or_default()
+                }
+            };
+            Ok(LlmResponse {
+                execution_id: request.execution_id.clone(),
+                generation_id: request.generation_id.clone(),
+                route_id: RouteId::new("fixture"),
+                connection_id: ConnectionId::new("fixture"),
+                provider_id: ProviderId::new("fixture"),
+                model: "fixture".into(),
+                request_payload: json!({}),
+                response_payload: json!({}),
+                content,
+                usage: LlmUsage::default(),
+                finish_reason: None,
+                estimated_cost_usd: None,
+            })
+        })
+    }
+}
+
+/// Fails every request the way a provider would.
+struct FailingGateway(crate::llm::LlmErrorKind);
+impl crate::llm::LlmGateway for FailingGateway {
+    fn execute<'a>(
+        &'a self,
+        _request: &'a crate::llm::LlmRequest,
+        _cancellation: &'a CancellationToken,
+    ) -> crate::llm::GatewayFuture<'a> {
+        Box::pin(async move {
+            Err(
+                crate::llm::LlmError::new(self.0, "the provider refused the request")
+                    .with_target("fixture", "fixture", "fixture"),
+            )
+        })
+    }
+}
+
+fn runtime_with(f: &Fixture, gateway: Arc<dyn crate::llm::LlmGateway>) -> Arc<FeatureAgentRuntime> {
+    let mut runtime = FeatureAgentRuntime::new(
+        f.service.clone(),
+        Arc::new(crate::AppEventBus::default()),
+        tokio::runtime::Handle::current(),
+    )
+    .unwrap();
+    runtime.gateway_override = Some(gateway);
+    Arc::new(runtime)
+}
+
+fn discovery_reply(feature: &Feature, message: &str, suggested: Vec<FeatureDependency>) -> String {
+    let mut brief = feature.brief.clone();
+    brief.pending_decisions.clear();
+    let mut reply: serde_json::Value = serde_json::from_str(
+        &json(&FeatureAgentResponse {
+            output_language: "en".into(),
+            message: message.into(),
+            questions: vec![],
+            brief,
+            evaluation: Default::default(),
+            suggested_dependencies: suggested,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    // The model's schema has no `origin`: the host stamps it when it stores an edge.
+    for dependency in reply["suggestedDependencies"].as_array_mut().unwrap() {
+        dependency.as_object_mut().unwrap().remove("origin");
+    }
+    reply.to_string()
+}
+
+fn suggestion(feature: &str, prerequisite: &str) -> FeatureDependency {
+    FeatureDependency {
+        feature_id: feature.into(),
+        prerequisite_id: prerequisite.into(),
+        rationale: "The interface work builds on the delivered workflow".into(),
+        origin: DependencyOrigin::Agent,
+    }
+}
+
+fn feature_task(f: &Fixture, feature: &Feature) -> WorkTask {
+    f.tasks()
+        .list(&f.project)
+        .unwrap()
+        .into_iter()
+        .find(|task| task.draft.feature_id.as_ref() == Some(&feature.id))
+        .unwrap()
+}
+
+async fn only_turn(
+    runtime: &Arc<FeatureAgentRuntime>,
+    f: &Fixture,
+    feature: &Feature,
+) -> FeatureTurn {
+    runtime.wait_for_idle().await;
+    runtime
+        .history(&f.project, &feature.id)
+        .unwrap()
+        .into_iter()
+        .next_back()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_task_id_named_as_prerequisite_becomes_its_feature_instead_of_failing_the_reply() {
+    let f = Fixture::new();
+    let delivered = f.approved("ToDo list");
+    let task = feature_task(&f, &delivered);
+    let feature = f.feature("Interface update");
+    let gateway = ScriptedGateway::new(vec![discovery_reply(
+        &feature,
+        "Vamos seguir com a interface.",
+        vec![suggestion(&feature.id, &task.id)],
+    )]);
+    let runtime = runtime_with(&f, gateway);
+    runtime
+        .start(&f.project, &feature.id, feature.revision, &id(), "Sim")
+        .unwrap();
+
+    let turn = only_turn(&runtime, &f, &feature).await;
+    assert_eq!(turn.status, "completed", "{:?}", turn.error);
+    assert!(turn.failure.is_none());
+    assert_eq!(turn.suggested_dependencies.len(), 1);
+    assert_eq!(turn.suggested_dependencies[0].prerequisite_id, delivered.id);
+    assert_eq!(turn.notices.len(), 1);
+    assert!(turn.notices[0].contains("ToDo list"), "{:?}", turn.notices);
+    assert!(
+        !turn.notices[0].contains(&task.id) && !turn.notices[0].contains(&delivered.id),
+        "notes name features by title, never by id"
+    );
+    assert!(
+        turn.assistant_message.unwrap().contains("Vamos seguir"),
+        "the agent's reply is kept"
+    );
+    let stored = f.forge().get(&f.project, &feature.id).unwrap();
+    assert_eq!(stored.revision, feature.revision + 1, "the brief was saved");
+}
+
+#[tokio::test]
+async fn unresolvable_dependency_suggestions_are_dropped_with_notes_and_the_reply_is_kept() {
+    let f = Fixture::new();
+    let delivered = f.approved("ToDo list");
+    let own_task = f.feature("Interface update");
+    let feature = f.forge().get(&f.project, &own_task.id).unwrap();
+    let gateway = ScriptedGateway::new(vec![discovery_reply(
+        &feature,
+        "Segue o plano.",
+        vec![
+            suggestion(&feature.id, "no-such-identifier"),
+            suggestion(&feature.id, &feature.id),
+            suggestion(&delivered.id, &delivered.id),
+            suggestion(&feature.id, &delivered.id),
+            suggestion(&feature.id, &delivered.id),
+        ],
+    )]);
+    let runtime = runtime_with(&f, gateway);
+    runtime
+        .start(&f.project, &feature.id, feature.revision, &id(), "Continue")
+        .unwrap();
+
+    let turn = only_turn(&runtime, &f, &feature).await;
+    assert_eq!(turn.status, "completed", "{:?}", turn.error);
+    assert_eq!(
+        turn.suggested_dependencies.len(),
+        1,
+        "the valid suggestion survives once, duplicates collapse"
+    );
+    assert_eq!(turn.suggested_dependencies[0].prerequisite_id, delivered.id);
+    assert_eq!(turn.notices.len(), 3, "{:?}", turn.notices);
+    assert!(
+        turn.notices
+            .iter()
+            .all(|note| !note.contains("no-such-identifier"))
+    );
+}
+
+#[tokio::test]
+async fn dependency_analysis_repairs_a_task_id_to_its_feature() {
+    let f = Fixture::new();
+    let storage = f.approved("Storage layer");
+    let task = feature_task(&f, &storage);
+    let export = f.feature("Export workflow");
+    let triage = analysis_runtime(&f, triage_payload("archive"));
+    triage
+        .start_triage_analysis(&f.project, &export.id, export.revision, &id())
+        .unwrap();
+    triage.wait_for_idle().await;
+
+    let export = f.forge().get(&f.project, &export.id).unwrap();
+    let runtime = analysis_runtime(
+        &f,
+        json!({
+            "outputLanguage": "en",
+            "message": "Export builds on storage.",
+            "dependencies": [{"prerequisiteId": task.id, "rationale": "Export reads what storage keeps"}]
+        }),
+    );
+    runtime
+        .start_dependency_analysis(&f.project, &export.id, export.revision, &id())
+        .unwrap();
+    runtime.wait_for_idle().await;
+
+    let turn = runtime
+        .history(&f.project, &export.id)
+        .unwrap()
+        .into_iter()
+        .find(|turn| turn.kind == TurnKind::Dependencies)
+        .unwrap();
+    assert_eq!(turn.status, "completed", "{:?}", turn.error);
+    assert_eq!(turn.notices.len(), 1, "{:?}", turn.notices);
+    let edges = f.forge().snapshot(&f.project).unwrap().dependencies;
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge.feature_id == export.id && edge.prerequisite_id == storage.id),
+        "the repaired edge is applied against the owning feature"
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_reply_records_a_typed_failure_and_the_next_prompt_reports_it() {
+    let f = Fixture::new();
+    let delivered = f.approved("ToDo list");
+    let feature = f.feature("Interface update");
+    let mut portuguese = serde_json::from_str::<serde_json::Value>(&discovery_reply(
+        &feature,
+        "Segue o plano.",
+        vec![],
+    ))
+    .unwrap();
+    portuguese["brief"]["objective"] =
+        json!("Esta funcionalidade deve permitir que o usuário atualize toda a interface");
+    let gateway = ScriptedGateway::new(vec![
+        portuguese.to_string(),
+        discovery_reply(
+            &feature,
+            "Desculpe, refiz a especificação em inglês.",
+            vec![],
+        ),
+    ]);
+    let runtime = runtime_with(&f, gateway.clone());
+    runtime
+        .start(&f.project, &feature.id, feature.revision, &id(), "Continue")
+        .unwrap();
+    let failed = only_turn(&runtime, &f, &feature).await;
+    assert_eq!(failed.status, "failed");
+    let failure = failed.failure.clone().expect("failure is recorded");
+    assert_eq!(failure.kind, TurnFailureKind::ReplyLanguage);
+    assert!(!failure.technical.is_empty());
+    assert_eq!(failed.error.as_deref(), Some(failure.technical.as_str()));
+    let history = runtime.history(&f.project, &feature.id).unwrap();
+    let (turn_id, actions) = failure_actions(&history, TurnKind::Discovery).unwrap();
+    assert_eq!(turn_id, failed.id);
+    assert!(actions.retry && actions.ask_agent);
+
+    // The developer asks the agent about it: the prompt tells the agent what
+    // the host could not accept, in words, with no raw error and no ids.
+    runtime
+        .start(
+            &f.project,
+            &feature.id,
+            feature.revision,
+            &id(),
+            "Your last reply could not be applied. Explain what went wrong.",
+        )
+        .unwrap();
+    runtime.wait_for_idle().await;
+    let prompts = gateway.prompts();
+    assert_eq!(prompts.len(), 2);
+    assert!(
+        !prompts[0].contains("hostNotice\":"),
+        "nothing had failed yet"
+    );
+    let asked = &prompts[1];
+    assert!(asked.contains("\"hostNotice\""), "{asked}");
+    assert!(asked.contains("English-only rule"));
+    assert!(!asked.contains(&failure.technical));
+    assert!(
+        asked.contains(&format!("\"featureId\":\"{}\"", delivered.id)),
+        "knownTasks names the feature that owns each task"
+    );
+
+    // Once the agent has answered, the failure is history, not news.
+    runtime
+        .start(
+            &f.project,
+            &feature.id,
+            feature.revision + 1,
+            &id(),
+            "Thanks",
+        )
+        .unwrap();
+    runtime.wait_for_idle().await;
+    let later = gateway.prompts();
+    assert_eq!(later.len(), 3);
+    assert!(!later[2].contains("\"hostNotice\":"), "{}", later[2]);
+    let history = runtime.history(&f.project, &feature.id).unwrap();
+    assert!(failure_actions(&history, TurnKind::Discovery).is_none());
+}
+
+#[tokio::test]
+async fn unreadable_and_provider_failures_are_typed_where_they_happen() {
+    let f = Fixture::new();
+    let feature = f.feature("Interface update");
+    let runtime = runtime_with(
+        &f,
+        ScriptedGateway::new(vec!["this is not json at all".into()]),
+    );
+    runtime
+        .start(&f.project, &feature.id, feature.revision, &id(), "Continue")
+        .unwrap();
+    let turn = only_turn(&runtime, &f, &feature).await;
+    assert_eq!(turn.status, "failed");
+    assert_eq!(turn.failure.unwrap().kind, TurnFailureKind::ReplyUnreadable);
+
+    for (kind, expected, ask_agent) in [
+        (
+            crate::llm::LlmErrorKind::Authentication,
+            TurnFailureKind::ProviderSetup,
+            false,
+        ),
+        (
+            crate::llm::LlmErrorKind::Timeout,
+            TurnFailureKind::ProviderTransient,
+            false,
+        ),
+    ] {
+        let f = Fixture::new();
+        let feature = f.feature("Interface update");
+        let runtime = runtime_with(&f, Arc::new(FailingGateway(kind)));
+        runtime
+            .start(&f.project, &feature.id, feature.revision, &id(), "Continue")
+            .unwrap();
+        let turn = only_turn(&runtime, &f, &feature).await;
+        assert_eq!(turn.status, "failed");
+        let failure = turn.failure.clone().unwrap();
+        assert_eq!(failure.kind, expected);
+        assert_eq!(failure.subject.as_deref(), Some("fixture"));
+        let history = runtime.history(&f.project, &feature.id).unwrap();
+        let (_, actions) = failure_actions(&history, TurnKind::Discovery).unwrap();
+        assert!(actions.retry);
+        assert_eq!(
+            actions.ask_agent, ask_agent,
+            "the agent is only asked about replies it wrote"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_is_not_an_error() {
+    let f = Fixture::new();
+    let feature = f.feature("Export records");
+    let (runtime, gateway) = planning_runtime(&f, &feature);
+    let turn = runtime
+        .start(
+            &f.project,
+            &feature.id,
+            feature.revision,
+            &id(),
+            "Discuss export",
+        )
+        .unwrap();
+    gateway.entered.acquire().await.unwrap().forget();
+    assert!(runtime.cancel(&turn));
+    runtime.wait_for_idle().await;
+    let history = runtime.history(&f.project, &feature.id).unwrap();
+    assert_eq!(history[0].status, "cancelled");
+    assert_eq!(
+        history[0].failure.as_ref().unwrap().kind,
+        TurnFailureKind::Cancelled
+    );
+    assert!(failure_actions(&history, TurnKind::Discovery).is_none());
+}
+
+#[test]
+fn turns_written_before_typed_failures_are_classified_when_read() {
+    let f = Fixture::new();
+    let feature = f.feature("Plan export");
+    let db = f.service.connection().unwrap();
+    db.execute("INSERT INTO forge_turns(id,feature_id,feature_revision,ordinal,request_id,status,user_message,error,created_at,updated_at) VALUES('old',?1,?2,1,'r1','failed','Answers','Suggested dependency was not supplied by the host','now','now')", params![feature.id, feature.revision]).unwrap();
+    db.execute("INSERT INTO forge_turns(id,feature_id,feature_revision,ordinal,request_id,status,user_message,error,created_at,updated_at) VALUES('older',?1,?2,2,'r2','failed','Continue','expected value at line 1 column 1','now','now')", params![feature.id, feature.revision]).unwrap();
+    let history =
+        FeatureAgentRuntime::history_from_connection(&db, &f.project, &feature.id).unwrap();
+    assert_eq!(
+        history[0].failure.as_ref().unwrap().kind,
+        TurnFailureKind::DependencyUnresolved
+    );
+    assert_eq!(
+        history[1].failure.as_ref().unwrap().kind,
+        TurnFailureKind::ReplyUnreadable
+    );
+    assert_eq!(
+        history[0].error.as_deref(),
+        Some("Suggested dependency was not supplied by the host"),
+        "the stored text is untouched"
     );
 }

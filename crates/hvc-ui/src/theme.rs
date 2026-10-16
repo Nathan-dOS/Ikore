@@ -1,36 +1,77 @@
 use gpui::{Rgba, rgb};
 use hvc_core::llm::AgentRole;
 
+// Elevation, darkest first. The shell chrome (header, rails, footer) sits directly on `canvas`
+// with no borders of its own; `surface` is the one framed container around the centre view;
+// `surface_raised` is a card, row or input inside it.
+
+/// Raw values shared with the native caption (`title_bar.rs`).
+pub const CANVAS_RGB: u32 = 0x06080b;
+pub const TEXT_MUTED_RGB: u32 = 0x8b97a7;
+pub const BORDER_RGB: u32 = 0x1d242e;
+
 pub fn canvas() -> Rgba {
-    rgb(0x0b0f14)
+    rgb(CANVAS_RGB)
 }
 
 pub fn surface() -> Rgba {
-    rgb(0x111820)
+    rgb(0x0d1117)
 }
 
 pub fn surface_raised() -> Rgba {
-    rgb(0x18212b)
+    rgb(0x151b23)
 }
 
+/// Hover fill for rows and secondary controls; one step above `surface_raised`.
+pub fn surface_hover() -> Rgba {
+    rgb(0x1c232d)
+}
+
+/// Hairline between regions inside the centre container. Kept close to `surface` on purpose:
+/// separation comes from elevation first, lines second.
 pub fn border() -> Rgba {
-    rgb(0x263341)
+    rgb(BORDER_RGB)
+}
+
+/// Outline of inputs and secondary buttons, which must read as controls.
+pub fn border_strong() -> Rgba {
+    rgb(0x2c3643)
 }
 
 pub fn text() -> Rgba {
-    rgb(0xe8edf2)
+    rgb(0xe6ebf1)
 }
 
 pub fn text_muted() -> Rgba {
-    rgb(0x8fa0b2)
+    rgb(TEXT_MUTED_RGB)
+}
+
+/// Eyebrows and tertiary labels.
+pub fn text_subtle() -> Rgba {
+    rgb(0x5f6b7b)
 }
 
 pub fn accent() -> Rgba {
     rgb(0x22d3ee)
 }
 
+/// Primary-button hover: the accent one step lighter.
+pub fn accent_hover() -> Rgba {
+    rgb(0x67e8f9)
+}
+
 pub fn accent_soft() -> Rgba {
-    rgb(0x0c2a36)
+    rgb(0x0a2630)
+}
+
+/// In-flight work (a running stage, a held runtime slot). Distinct from the brand accent so
+/// "running" and "done" never share a colour.
+pub fn running() -> Rgba {
+    rgb(0x73b7ff)
+}
+
+pub fn running_soft() -> Rgba {
+    rgb(0x10233a)
 }
 
 // Reserved for the Review-section and status-badge work (see the UI flow plan, Parts 3-4).
@@ -48,9 +89,8 @@ pub fn success() -> Rgba {
     rgb(0x4ade80)
 }
 
-#[allow(dead_code)]
 pub fn success_soft() -> Rgba {
-    rgb(0x0f2d1a)
+    rgb(0x0e2a19)
 }
 
 pub fn danger() -> Rgba {
@@ -72,7 +112,7 @@ pub fn danger_soft() -> Rgba {
 pub const HOVER_OPACITY: f32 = 0.85;
 
 pub fn hover_bg() -> Rgba {
-    surface_raised()
+    surface_hover()
 }
 
 // Reserved for the shared widgets introduced alongside the UI flow work (see widgets.rs).

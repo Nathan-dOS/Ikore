@@ -1,4 +1,4 @@
-//! ADR-024 M1: the Specification brief of a real v4 pulsation is read from the
+//! ADR-027 M1: the Specification brief of a real v4 pulsation is read from the
 //! exact waiting checkpoint, labelled from the frozen batch, and refused once
 //! the checkpoint is stale.
 mod composition_support;

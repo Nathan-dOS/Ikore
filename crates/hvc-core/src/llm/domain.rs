@@ -120,8 +120,18 @@ impl AgentRole {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentExecutionTarget {
-    Canonical { agent_role: AgentRole },
-    FreeForm { slot_id: String },
+    Canonical {
+        agent_role: AgentRole,
+    },
+    /// Internal durable slot for one composed work unit. It inherits routing
+    /// and configuration from `agent_role`, but has its own terminal lifecycle.
+    Ephemeral {
+        slot_id: String,
+        agent_role: AgentRole,
+    },
+    FreeForm {
+        slot_id: String,
+    },
 }
 
 impl AgentExecutionTarget {
@@ -135,16 +145,24 @@ impl AgentExecutionTarget {
         }
     }
 
+    pub fn ephemeral(slot_id: impl Into<String>, agent_role: AgentRole) -> Self {
+        Self::Ephemeral {
+            slot_id: slot_id.into(),
+            agent_role,
+        }
+    }
+
     pub fn agent_role(&self) -> Option<AgentRole> {
         match self {
             Self::Canonical { agent_role } => Some(*agent_role),
+            Self::Ephemeral { agent_role, .. } => Some(*agent_role),
             Self::FreeForm { .. } => None,
         }
     }
 
     pub fn free_form_slot_id(&self) -> Option<&str> {
         match self {
-            Self::Canonical { .. } => None,
+            Self::Canonical { .. } | Self::Ephemeral { .. } => None,
             Self::FreeForm { slot_id } => Some(slot_id),
         }
     }
@@ -152,6 +170,7 @@ impl AgentExecutionTarget {
     pub fn stable_key(&self) -> String {
         match self {
             Self::Canonical { agent_role } => format!("canonical:{}", agent_role.as_str()),
+            Self::Ephemeral { slot_id, .. } => format!("ephemeral:{slot_id}"),
             Self::FreeForm { slot_id } => format!("free_form:{slot_id}"),
         }
     }
@@ -239,6 +258,10 @@ pub struct UnitDispatch {
     pub unit_id: String,
     pub attempt_id: String,
     pub executor_kind: String,
+    /// Transport and model persisted in the stage profile before this attempt.
+    pub frozen_transport: String,
+    pub frozen_backend: Option<String>,
+    pub frozen_model: String,
 }
 
 /// Per-request dispatch controls that the router and transports must honour.

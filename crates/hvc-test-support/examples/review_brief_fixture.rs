@@ -1,4 +1,4 @@
-//! Development fixture for ADR-024: a v4 pulsation parked at its Specification
+//! Development fixture for ADR-027: a v4 pulsation parked at its Specification
 //! checkpoint, so the real GUI can be opened on the Review Brief tab.
 //!
 //! Usage: `review_brief_fixture NEW_DIRECTORY`, then start `hvc-app` with
@@ -138,10 +138,14 @@ fn main() {
         if request.body.trim().is_empty() {
             return ScriptedResponse::json(400, r#"{"error":"empty request"}"#);
         }
+        let body: Value = serde_json::from_str(&request.body).expect("provider request JSON");
+        let model = body["model"]
+            .as_str()
+            .expect("provider request model identity");
         let content = reply(&parse_prompt(request));
         ScriptedResponse::json(
             200,
-            json!({"choices":[{"message":{"content":content.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":60}}).to_string(),
+            json!({"model":model,"choices":[{"message":{"content":content.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":60}}).to_string(),
         )
     });
     let data = root.join("data");

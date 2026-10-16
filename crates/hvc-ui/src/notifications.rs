@@ -128,14 +128,25 @@ impl AppModel {
             ("Vault", self.vault.update(cx, |m, _| m.notice.take())),
             ("Forge", self.forge.notice.take()),
         ];
+        // The Settings modal shows its own outcome in a status line; its notices still reach the
+        // history, just without a toast over the modal.
+        let settings_open = self.settings_modal.open;
         for (source, message) in notices {
             if let Some(message) = message {
-                self.notifications.queue.push_from(
-                    source.into(),
-                    HeaderNoticeKind::Notice,
-                    message,
-                    None,
-                );
+                if settings_open && source == "Settings" {
+                    self.notifications.queue.push_quiet(
+                        source.into(),
+                        HeaderNoticeKind::Notice,
+                        message,
+                    );
+                } else {
+                    self.notifications.queue.push_from(
+                        source.into(),
+                        HeaderNoticeKind::Notice,
+                        message,
+                        None,
+                    );
+                }
             }
         }
         let errors = [
@@ -178,8 +189,14 @@ impl AppModel {
         for (source, error) in errors {
             if let Some(error) = error {
                 if self.notifications.errors.get(source) != Some(&error) {
+                    if settings_open && source == "Settings" {
+                        self.notifications.queue.push_quiet(
+                            source.into(),
+                            HeaderNoticeKind::Error,
+                            error.clone(),
+                        );
                     // Some command handlers also publish this error globally. Keep a single card.
-                    if !self.notifications.queue.has_pending_global_error(&error) {
+                    } else if !self.notifications.queue.has_pending_global_error(&error) {
                         self.notifications.queue.push_from(
                             source.into(),
                             HeaderNoticeKind::Error,
@@ -273,6 +290,7 @@ impl AppModel {
         );
         let blocked = self.active_dropdown.is_some()
             || self.forge.new_open
+            || self.settings_modal.open
             || self.agents.read(cx).active_model_picker.is_some();
         if self.notifications.history_open && !blocked {
             let focus = self
@@ -311,27 +329,16 @@ impl AppModel {
                         .justify_between()
                         .items_center()
                         .child("Notifications")
-                        .child(
-                            div()
-                                .id("notifications-close")
-                                .tab_index(0)
-                                .cursor_pointer()
-                                .px_2()
-                                .py_1()
-                                .child("Close")
-                                .on_key_down(cx.listener(
-                                    |m, event: &gpui::KeyDownEvent, window, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                        {
-                                            m.toggle_notification_history(window, cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                ))
-                                .on_click(cx.listener(|m, _, window, cx| {
-                                    m.toggle_notification_history(window, cx)
-                                })),
-                        ),
+                        .child(crate::widgets::icon_button(
+                            "notifications-close",
+                            crate::icons::Icon::X,
+                            crate::widgets::Tooltip::new("Close").with_shortcut("escape"),
+                            false,
+                            None,
+                            true,
+                            cx,
+                            |m, window, cx| m.toggle_notification_history(window, cx),
+                        )),
                 )
                 .when(history.is_empty(), |d| {
                     d.child(
@@ -455,13 +462,15 @@ fn notification_card(
                     }
                 )))
                 .when(!history, |d| {
-                    d.child(crate::widgets::btn(
+                    d.child(crate::widgets::icon_button(
                         format!("notice-close-{id}"),
-                        "Close",
-                        crate::widgets::ButtonVariant::Ghost,
+                        crate::icons::Icon::X,
+                        "Dismiss",
+                        false,
+                        None,
                         true,
                         cx,
-                        |m, cx| {
+                        |m, _, cx| {
                             m.notifications.clock.dismiss();
                             cx.notify();
                         },

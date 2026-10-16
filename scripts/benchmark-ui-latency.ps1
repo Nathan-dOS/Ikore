@@ -81,6 +81,21 @@ $previousReport = $env:HVC_BENCHMARK_UI_REPORT
 $previousSamples = $env:HVC_BENCHMARK_UI_SAMPLES
 $previousWarmup = $env:HVC_BENCHMARK_UI_WARMUP
 $process = $null
+$processMetrics = [System.Collections.Generic.List[object]]::new()
+
+function Get-NearestRankPercentile {
+    param(
+        [double[]]$Values,
+        [ValidateRange(0, 100)]
+        [int]$Percentile
+    )
+    if ($Values.Count -eq 0) {
+        return $null
+    }
+    $sorted = @($Values | Sort-Object)
+    $index = [Math]::Ceiling(($Percentile / 100.0) * $sorted.Count) - 1
+    return $sorted[[Math]::Max(0, [Math]::Min($index, $sorted.Count - 1))]
+}
 
 try {
     $env:HVC_DATA_DIR = $runtimeDirectory
@@ -90,13 +105,31 @@ try {
     # Uma janela oculta/minimizada deixa de receber animation frames no backend Win32.
     $process = Start-Process -FilePath $resolvedBinary -PassThru -WindowStyle Normal
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $lastSampleAt = [DateTime]::UtcNow
+    $process.Refresh()
+    $lastCpu = $process.TotalProcessorTime
     $report = $null
     while ([DateTime]::UtcNow -lt $deadline) {
         Start-Sleep -Milliseconds 100
+        $sampledAt = [DateTime]::UtcNow
         $process.Refresh()
         if ($process.HasExited) {
             throw "O binário encerrou antes de produzir o relatório de latência (exit code $($process.ExitCode))."
         }
+        $elapsedMilliseconds = ($sampledAt - $lastSampleAt).TotalMilliseconds
+        $cpuMilliseconds = ($process.TotalProcessorTime - $lastCpu).TotalMilliseconds
+        if ($elapsedMilliseconds -gt 0) {
+            $processMetrics.Add([pscustomobject]@{
+                cpuPercentAllCores = [Math]::Round(
+                    100.0 * $cpuMilliseconds / ($elapsedMilliseconds * [Environment]::ProcessorCount),
+                    3
+                )
+                workingSetBytes = [int64]$process.WorkingSet64
+                privateMemoryBytes = [int64]$process.PrivateMemorySize64
+            })
+        }
+        $lastSampleAt = $sampledAt
+        $lastCpu = $process.TotalProcessorTime
         if (Test-Path -LiteralPath $resolvedOutput -PathType Leaf) {
             try {
                 $report = Get-Content -LiteralPath $resolvedOutput -Raw | ConvertFrom-Json
@@ -124,6 +157,26 @@ try {
         @()
     }
     $report | Add-Member -NotePropertyName displayRefreshRatesHz -NotePropertyValue $displayRefreshRates -Force
+    $cpu = @($processMetrics | ForEach-Object { [double]$_.cpuPercentAllCores })
+    $workingSet = @($processMetrics | ForEach-Object { [double]$_.workingSetBytes })
+    $privateMemory = @($processMetrics | ForEach-Object { [double]$_.privateMemoryBytes })
+    $report | Add-Member -NotePropertyName scenario -NotePropertyValue 'idle' -Force
+    $report | Add-Member -NotePropertyName processMetrics -NotePropertyValue ([pscustomobject]@{
+        sampleIntervalMs = 100
+        samples = $processMetrics.Count
+        cpuPercentAllCores = [pscustomobject]@{
+            p50 = Get-NearestRankPercentile -Values $cpu -Percentile 50
+            p95 = Get-NearestRankPercentile -Values $cpu -Percentile 95
+        }
+        workingSetBytes = [pscustomobject]@{
+            p50 = Get-NearestRankPercentile -Values $workingSet -Percentile 50
+            p95 = Get-NearestRankPercentile -Values $workingSet -Percentile 95
+        }
+        privateMemoryBytes = [pscustomobject]@{
+            p50 = Get-NearestRankPercentile -Values $privateMemory -Percentile 50
+            p95 = Get-NearestRankPercentile -Values $privateMemory -Percentile 95
+        }
+    }) -Force
     $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $resolvedOutput -Encoding utf8
 
     $window = [HvcUiBenchmark.NativeWindow]::FindVisibleForProcess($process.Id)

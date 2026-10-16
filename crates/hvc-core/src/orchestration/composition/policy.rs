@@ -89,7 +89,7 @@ DELIVER: `tasks` with one entry per listed task handle, `issues` naming missing 
 
 const SPECIFICATION_BRIEF: &str = "ROLE: Turn the approved intent for the listed tasks into ONE specification: an objective, exclusions, decisions, one requirement per listed criterion with its verification mode, which delivered files are involved, which planned destinations are needed, explicit interface intent (preserve, change, new or none) and cohesive unit proposals for Code and Test.
 DO NOT: implement code, return edits, invent files outside the delivered existing/planned handles, or fill a missing human decision with an assumption - when a decision is missing return outcome `needs_input` with bounded questions that name the affected task handles. If `needs_input` is the only viable outcome because too few planned-destination handles exist to anchor this specification, you may suggest candidate file paths in prose inside the `question` text itself - this is a suggestion for a human to confirm, never a handle citation, and must not appear in `usedRefs` or any other handle-typed field.
-DELIVER: a `SpecificationContractV1` payload. Every criterion handle appears in exactly one requirement. `not_applicable` verification requires a reason. Unit proposals reference only listed task/criterion/file handles and use local keys for `dependsOn`.";
+DELIVER: a `SpecificationContractV1` payload. Every criterion handle appears in exactly one requirement. `not_applicable` verification requires a reason. Unit proposals reference only listed task/criterion/file handles and use local keys for `dependsOn`. A proposal's `inputRefs` holds delivered sources or a planned file another proposal writes (the host then orders the two and delivers that file); `dependsOn` holds proposal `unitKey` values only, never file handles. An interface intent may cite a planned file in `sourceRefs` only when its intent is `new`.";
 
 const CONTRACT_BRIEF: &str = "ROLE: Define only the NEW or CHANGED interfaces the approved specification requires - signatures, payloads, events, invariants - and bind each proposed unit to the interface groups it depends on.
 DO NOT: restate interfaces marked preserve (the host already holds them), implement logic, author tests, add requirements, or widen destinations beyond the delivered handles.
@@ -99,17 +99,17 @@ const CODE_BRIEF: &str = "ROLE: Implement exactly the assigned operation against
 DO NOT: change an approved interface (return outcome `failed` with code `contract_conflict` instead), touch files you do not own, author tests, delete or rename files, or describe tests as executed.
 DELIVER: an `EditSetV1` payload. Use `create_file` with complete content for a planned destination, `replace_file` with complete content only for a small owned file the prompt marks as replaceable, and `replace_anchor` with the exact replacement for a delivered anchor. Every edit carries an `artifactKey`; `evidence` links each assigned task and criterion to the artifact keys that satisfy it.";
 
-const CODE_REPAIR_BRIEF: &str = "ROLE: Correct the specific diagnostics listed for this unit's own output, and nothing else.
-DO NOT: change approved interfaces, widen scope, touch other units' files, weaken behavior to silence a diagnostic, or re-author work that was not rejected.
-DELIVER: an `EditSetV1` payload containing only the corrected edits for the owned destinations named in the diagnostics, with evidence for the criteria those edits still satisfy.";
+const CODE_REPAIR_BRIEF: &str = "ROLE: Correct the diagnostics listed for this unit's own output and return the unit's complete result again; it replaces the rejected one whole.
+DO NOT: change approved interfaces, widen scope, touch other units' files, weaken behavior to silence a diagnostic, or change behavior the diagnostics do not concern.
+DELIVER: a complete `EditSetV1` payload, exactly as the implementer would: edits for every owned destination this unit delivers (corrected where diagnosed) and evidence for every criterion the unit must evidence.";
 
 const TEST_BRIEF: &str = "ROLE: Author the tests that prove the assigned criteria against the approved interfaces and the delivered production candidate, and declare coverage per criterion.
 DO NOT: modify production code (report a defect through outcome `failed` with code `implementation_mismatch`), claim a test ran or passed, or mark a criterion `not_applicable` unless the approved specification already did.
 DELIVER: a `TestPayloadV1` payload: test edits for owned test destinations, one `coverage` entry per assigned criterion (`authored`, `existing` or `not_applicable`), evidence and `usedRefs`.";
 
-const TEST_REPAIR_BRIEF: &str = "ROLE: Fix the listed syntactic or import diagnostics in this unit's own unpublished tests.
+const TEST_REPAIR_BRIEF: &str = "ROLE: Fix the listed diagnostics in this unit's own unpublished tests and return the unit's complete result again; it replaces the rejected one whole.
 DO NOT: change what a test asserts, remove assertions, touch production code, or alter coverage declarations to obtain a green result.
-DELIVER: a `TestPayloadV1` payload with only the corrected owned test edits and unchanged coverage declarations.";
+DELIVER: a complete `TestPayloadV1` payload, exactly as the test author would: edits for every owned test destination (corrected where diagnosed), one `coverage` entry per assigned criterion, evidence and `usedRefs`.";
 
 const INTEGRATOR_BRIEF: &str = "ROLE: Assess, per listed criterion, whether the delivered final artifacts, contracts and host check results support it (`supported`), contradict it (`contradicted`) or leave it unverified (`unverified`), citing the handles you relied on.
 DO NOT: state that compilation or tests passed unless a delivered check handle reports it, rewrite code or tests, or invent a check result.

@@ -126,6 +126,17 @@ pub fn apply_destination_edits(
     match first {
         EditOperationV1::CreateFile { content, .. } => {
             if operations.len() != 1 {
+                if operations
+                    .iter()
+                    .filter(|operation| matches!(operation, EditOperationV1::CreateFile { .. }))
+                    .count()
+                    > 1
+                {
+                    return Err(reject(
+                        ErrorCode::ReferenceConflict,
+                        "Multiple `create_file` edits target the same destination; the host cannot choose between their contents.",
+                    ));
+                }
                 return Err(reject(
                     ErrorCode::UnsupportedOperation,
                     "`create_file` must be the only operation for its destination.",
@@ -383,6 +394,18 @@ mod tests {
         };
         let out = apply_destination_edits(None, &[], &[&create]).unwrap();
         assert_eq!(out.content, "// new\n");
+        let conflicting_create = EditOperationV1::CreateFile {
+            destination_ref: handle("plan_1"),
+            content: "// conflicting\n".into(),
+        };
+        let conflict =
+            apply_destination_edits(None, &[], &[&create, &conflicting_create]).unwrap_err();
+        assert_eq!(conflict.code, ErrorCode::ReferenceConflict);
+        assert!(
+            conflict
+                .message
+                .contains("cannot choose between their contents")
+        );
         assert_eq!(
             apply_destination_edits(Some(b"exists"), &[], &[&create])
                 .unwrap_err()

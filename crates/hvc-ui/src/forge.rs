@@ -238,10 +238,28 @@ pub(crate) struct ForgeUi {
     /// agent's verdict, so it opens on request and stays out of the way until
     /// there is something to read.
     pub triage_aside_open: bool,
+    /// Width of the dependency graph panel measured by its last paint; the columns follow it.
+    pub(crate) graph_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     /// Collapsed/expanded state per feature-state group in the list, keyed by
     /// [`feature_state_group_id`].
     pub group_expansion: HashMap<&'static str, bool>,
+    /// Failed turns whose technical detail is open. Collapsed by default: the
+    /// explanation above it is what the developer acts on.
+    pub expanded_failures: HashSet<String>,
 }
+
+/// Which message a failure card's button sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureFollowUp {
+    Retry,
+    Ask,
+}
+
+/// Sent as the developer's own message, so the exchange reads as a
+/// conversation and the agent answers it in the developer's language.
+const RETRY_MESSAGE: &str = "Please try that reply again.";
+const ASK_AGENT_MESSAGE: &str = "Your last reply could not be applied. Explain in plain language what went wrong and tell me what you need from me to continue.";
+
 impl ForgeUi {
     pub fn new(cx: &mut Context<AppModel>) -> Self {
         let message = cx
@@ -268,7 +286,7 @@ impl ForgeUi {
                     .multiline()
                     .max_rows(6)
             }),
-            wave_limit: cx.new(|cx| NativeTextInput::new("Current Wave capacity (default: 3)", cx)),
+            wave_limit: cx.new(|cx| NativeTextInput::new("3", cx)),
             filters: [
                 "Value and need",
                 "Product alignment",
@@ -303,9 +321,45 @@ impl ForgeUi {
             pending_triage_overwrite: false,
             awaiting_triage_analysis: false,
             triage_aside_open: false,
+            graph_bounds: Default::default(),
             group_expansion: HashMap::new(),
+            expanded_failures: HashSet::new(),
         }
     }
+
+    pub fn clear_batch_composer(&mut self, cx: &mut Context<AppModel>) {
+        self.selected_tasks.clear();
+        self.path_hint_inputs.clear();
+        self.batch_title
+            .update(cx, |input, cx| input.set_value(String::new(), cx));
+    }
+
+    pub fn is_task_selectable(&self, task: &WorkTask, failed_pulsations: &HashSet<String>) -> bool {
+        task.state == "ready"
+            || (task.state == "queued"
+                && task
+                    .active_pulsation_id
+                    .as_ref()
+                    .is_some_and(|id| failed_pulsations.contains(id)))
+    }
+
+    pub fn reconcile_selected_tasks(&mut self, failed_pulsations: &HashSet<String>) {
+        let eligible: HashSet<String> = self
+            .snapshot
+            .tasks
+            .iter()
+            .filter(|t| self.is_task_selectable(t, failed_pulsations))
+            .map(|t| t.id.clone())
+            .collect();
+        self.selected_tasks.retain(|id| eligible.contains(id));
+        self.path_hint_inputs.retain(|id, _| eligible.contains(id));
+    }
+
+    pub fn apply_snapshot(&mut self, snapshot: ForgeSnapshot, failed_pulsations: &HashSet<String>) {
+        self.snapshot = snapshot;
+        self.reconcile_selected_tasks(failed_pulsations);
+    }
+
     pub fn feature(&self) -> Option<&Feature> {
         self.selected_feature
             .as_ref()
@@ -336,6 +390,38 @@ impl ForgeUi {
             feature.revision,
             message.into(),
         ))
+    }
+
+    /// The message behind a failure card's button.
+    ///
+    /// Same gates as the composer, and only while the newest discovery turn is
+    /// a failure that allows it: a button for an older failure would resend a
+    /// stale request, and one for a running turn would queue a second reply.
+    fn failure_operation(
+        &self,
+        project: Option<&str>,
+        follow_up: FailureFollowUp,
+    ) -> Option<Operation> {
+        let feature = self.feature()?;
+        if self.busy
+            || project != self.project_id.as_deref()
+            || project != Some(feature.project_id.as_str())
+            || feature.state == FeatureState::Archived
+        {
+            return None;
+        }
+        let history: Vec<FeatureTurn> = self
+            .history
+            .iter()
+            .filter(|turn| turn.feature_id == feature.id)
+            .cloned()
+            .collect();
+        let (_, actions) = failure_actions(&history, TurnKind::Discovery)?;
+        let (allowed, message) = match follow_up {
+            FailureFollowUp::Retry => (actions.retry, RETRY_MESSAGE),
+            FailureFollowUp::Ask => (actions.ask_agent, ASK_AGENT_MESSAGE),
+        };
+        allowed.then(|| Operation::Send(feature.id.clone(), feature.revision, message.into()))
     }
 
     fn clear_accepted_message(&self, feature: &str, message: &str, cx: &mut Context<AppModel>) {
@@ -455,9 +541,18 @@ pub(crate) enum ForgeAction {
     CreateFeature,
     SelectFeature(String),
     ToggleTask(String),
+    ClearSelectedTasks,
     Dispatch,
     Send,
     CancelTurn(String),
+    /// Send the same kind of reply request again after a Feature Agent reply
+    /// the host could not apply (Incubation chat).
+    RetryTurn,
+    /// Tell the Feature Agent its last reply could not be applied and ask what
+    /// it needs from the developer to continue.
+    AskAgentAboutFailure,
+    /// Show or hide a failed turn's raw technical detail.
+    ToggleFailureDetail(String),
     Approve,
     Archive,
     Reopen,
@@ -693,18 +788,43 @@ impl AppModel {
             }
             ForgeAction::ToggleTask(id) => {
                 if !self.forge.selected_tasks.remove(&id) {
-                    self.forge
-                        .path_hint_inputs
-                        .entry(id.clone())
-                        .or_insert_with(|| {
-                            cx.new(|cx| {
-                                NativeTextInput::new("Optional: path this task touches", cx)
-                            })
-                        });
-                    self.forge.selected_tasks.insert(id);
+                    let failed_pulsations: HashSet<String> = self
+                        .pulsations
+                        .read(cx)
+                        .pulsations
+                        .iter()
+                        .filter(|p| {
+                            p.status == hvc_core::persistence_service::PulsationStatus::Failed
+                        })
+                        .map(|p| p.id.clone())
+                        .collect();
+                    let can_select = self
+                        .forge
+                        .snapshot
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == id)
+                        .is_some_and(|t| self.forge.is_task_selectable(t, &failed_pulsations));
+                    if can_select {
+                        self.forge
+                            .path_hint_inputs
+                            .entry(id.clone())
+                            .or_insert_with(|| {
+                                cx.new(|cx| {
+                                    NativeTextInput::new("Optional: path this task touches", cx)
+                                })
+                            });
+                        self.forge.selected_tasks.insert(id);
+                    }
                 } else {
                     self.forge.path_hint_inputs.remove(&id);
                 }
+                cx.notify();
+                return;
+            }
+            ForgeAction::ClearSelectedTasks => {
+                self.forge.selected_tasks.clear();
+                self.forge.path_hint_inputs.clear();
                 cx.notify();
                 return;
             }
@@ -805,6 +925,13 @@ impl AppModel {
             }
             ForgeAction::CloseTriageAside => {
                 self.forge.triage_aside_open = false;
+                cx.notify();
+                return;
+            }
+            ForgeAction::ToggleFailureDetail(id) => {
+                if !self.forge.expanded_failures.remove(&id) {
+                    self.forge.expanded_failures.insert(id);
+                }
                 cx.notify();
                 return;
             }
@@ -910,6 +1037,18 @@ impl AppModel {
                 };
                 operation
             }
+            ForgeAction::RetryTurn => {
+                let Some(operation) = self.failure_follow_up(FailureFollowUp::Retry, cx) else {
+                    return;
+                };
+                operation
+            }
+            ForgeAction::AskAgentAboutFailure => {
+                let Some(operation) = self.failure_follow_up(FailureFollowUp::Ask, cx) else {
+                    return;
+                };
+                operation
+            }
             ForgeAction::Approve => {
                 let Some(f) = f else {
                     return;
@@ -947,7 +1086,8 @@ impl AppModel {
             }
             ForgeAction::SetLimit => {
                 let Ok(limit) = self.forge.wave_limit.read(cx).value().parse() else {
-                    self.forge.error = Some("Informe uma capacidade inteira positiva.".into());
+                    self.forge.error =
+                        Some("Enter a positive whole number for the capacity.".into());
                     cx.notify();
                     return;
                 };
@@ -975,6 +1115,19 @@ impl AppModel {
             _ => return,
         };
         self.run_forge(operation, cx);
+    }
+    fn failure_follow_up(
+        &self,
+        follow_up: FailureFollowUp,
+        cx: &Context<Self>,
+    ) -> Option<Operation> {
+        let project = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .map(ToString::to_string);
+        self.forge.failure_operation(project.as_deref(), follow_up)
     }
     fn run_forge(&mut self, operation: Operation, cx: &mut Context<Self>) {
         let Some(core) = self.core.clone() else {
@@ -1018,6 +1171,7 @@ impl AppModel {
                     let mut navigate = None;
                     let mut clear_capture = false;
                     let mut accepted_message = None;
+                    let mut clear_batch_composer = false;
                     let outcome: Result<
                         (),
                         hvc_core::persistence_service::PersistenceServiceError,
@@ -1094,6 +1248,7 @@ impl AppModel {
                                     p.feature_name
                                 ));
                                 navigate = Some(AppView::Pulsations);
+                                clear_batch_composer = true;
                             }
                             Operation::Send(id, revision, message) => {
                                 core.feature_agent()
@@ -1179,6 +1334,7 @@ impl AppModel {
                         navigate,
                         clear_capture,
                         accepted_message,
+                        clear_batch_composer,
                         error,
                     ))
                 })
@@ -1207,8 +1363,12 @@ impl AppModel {
                         navigate,
                         clear_capture,
                         accepted_message,
+                        clear_batch_composer,
                         error,
                     )) => {
+                        if clear_batch_composer {
+                            model.forge.clear_batch_composer(cx);
+                        }
                         // Backlog is UI-only and has no core equivalent, so a background refresh
                         // must never bounce the user out of it into a persisted feature section.
                         if model.forge.selected_feature.is_none()
@@ -1217,7 +1377,17 @@ impl AppModel {
                             model.forge.section =
                                 ForgeSection::from_core_index(snapshot.navigation.section);
                         }
-                        model.forge.snapshot = snapshot;
+                        let failed_pulsations: HashSet<String> = model
+                            .pulsations
+                            .read(cx)
+                            .pulsations
+                            .iter()
+                            .filter(|p| {
+                                p.status == hvc_core::persistence_service::PulsationStatus::Failed
+                            })
+                            .map(|p| p.id.clone())
+                            .collect();
+                        model.forge.apply_snapshot(snapshot, &failed_pulsations);
                         if model.forge.selected_feature == original_selection {
                             model.forge.selected_feature = selected;
                             model.forge.history = history;
@@ -1310,7 +1480,7 @@ mod tests {
             forge.busy = true;
             assert!(forge.message_operation(Some("project"), cx).is_none());
             forge.busy = false;
-            forge.history.push(FeatureTurn { id: "turn".into(), feature_id: "feature".into(), feature_revision: 1, status: "running".into(), user_message: "Previous message".into(), assistant_message: None, error: None, suggested_dependencies: vec![], kind: TurnKind::Discovery });
+            forge.history.push(FeatureTurn { id: "turn".into(), feature_id: "feature".into(), feature_revision: 1, status: "running".into(), user_message: "Previous message".into(), assistant_message: None, error: None, suggested_dependencies: vec![], kind: TurnKind::Discovery, failure: None, notices: vec![] });
             assert!(forge.message_operation(Some("project"), cx).is_none());
             forge.history[0].status = "failed".into();
             assert!(forge.message_operation(Some("project"), cx).is_some());
@@ -1322,6 +1492,70 @@ mod tests {
             assert_eq!(forge.message.read(cx).value(), draft);
             forge.clear_accepted_message("feature", draft, cx);
             assert_eq!(forge.message.read(cx).value(), "");
+        });
+    }
+
+    fn failed_turn(id: &str, kind: TurnFailureKind) -> FeatureTurn {
+        FeatureTurn {
+            id: id.into(),
+            feature_id: "feature".into(),
+            feature_revision: 1,
+            status: "failed".into(),
+            user_message: "Answers".into(),
+            assistant_message: None,
+            error: Some("raw".into()),
+            suggested_dependencies: vec![],
+            kind: TurnKind::Discovery,
+            failure: Some(TurnFailure::new(kind, "raw")),
+            notices: vec![],
+        }
+    }
+
+    #[gpui::test]
+    fn failure_follow_ups_exist_only_for_the_newest_failed_reply(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, _| {
+            let forge = &mut model.forge;
+            forge.project_id = Some("project".into());
+            forge.snapshot.features = vec![feature()];
+            forge.selected_feature = Some("feature".into());
+            let retry = |forge: &ForgeUi| forge.failure_operation(Some("project"), FailureFollowUp::Retry);
+            let ask = |forge: &ForgeUi| forge.failure_operation(Some("project"), FailureFollowUp::Ask);
+
+            assert!(retry(forge).is_none() && ask(forge).is_none(), "nothing failed yet");
+
+            forge.history = vec![failed_turn("t1", TurnFailureKind::ReplyUnreadable)];
+            assert!(matches!(retry(forge), Some(Operation::Send(id, 1, text)) if id == "feature" && text == RETRY_MESSAGE));
+            assert!(matches!(ask(forge), Some(Operation::Send(id, 1, text)) if id == "feature" && text == ASK_AGENT_MESSAGE));
+            assert!(forge.failure_operation(Some("other-project"), FailureFollowUp::Retry).is_none());
+
+            forge.busy = true;
+            assert!(retry(forge).is_none(), "the same gate as the composer");
+            forge.busy = false;
+
+            let mut running = failed_turn("t2", TurnFailureKind::Unclassified);
+            running.status = "running".into();
+            running.failure = None;
+            forge.history.push(running);
+            assert!(retry(forge).is_none(), "a newer running turn owns the conversation");
+
+            forge.history = vec![failed_turn("t1", TurnFailureKind::ProviderSetup)];
+            assert!(retry(forge).is_some());
+            assert!(ask(forge).is_none(), "the agent is not asked about a route it cannot use");
+
+            forge.history = vec![failed_turn("t1", TurnFailureKind::ContextTooLarge)];
+            assert!(retry(forge).is_none() && ask(forge).is_none());
+
+            forge.history = vec![
+                failed_turn("t1", TurnFailureKind::ReplyLanguage),
+                failed_turn("t2", TurnFailureKind::ReplyLanguage),
+            ];
+            assert!(retry(forge).is_some());
+            assert!(ask(forge).is_none(), "the second identical failure stops the paid follow-up");
+
+            forge.history = vec![failed_turn("t1", TurnFailureKind::ReplyLanguage)];
+            forge.snapshot.features[0].state = FeatureState::Archived;
+            assert!(retry(forge).is_none(), "an archived feature takes no messages");
         });
     }
 
@@ -1498,5 +1732,191 @@ mod tests {
         ));
         next.status = PulsationStatus::Failed;
         assert!(task_runtime_changed(&[pulse], &[next]));
+    }
+
+    fn test_task(id: &str, state: &str, active_pulse: Option<&str>) -> WorkTask {
+        WorkTask {
+            id: id.into(),
+            project_id: "project".into(),
+            revision: 1,
+            draft: TaskDraft {
+                title: format!("Task {id}"),
+                kind: TaskKind::Feature,
+                description: "Test description".into(),
+                criteria: vec![],
+                dependencies: vec![],
+                feature_id: None,
+            },
+            feature_revision: None,
+            state: state.into(),
+            active_pulsation_id: active_pulse.map(Into::into),
+            completed_pulsation_id: None,
+        }
+    }
+
+    #[gpui::test]
+    fn reconcile_selected_tasks_evicts_done_and_ineligible_tasks(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            let forge = &mut model.forge;
+            forge.snapshot.tasks = vec![
+                test_task("task-ready", "ready", None),
+                test_task("task-done", "done", None),
+                test_task("task-queued-failed", "queued", Some("pulse-failed")),
+                test_task("task-queued-running", "queued", Some("pulse-running")),
+            ];
+            for id in [
+                "task-ready",
+                "task-done",
+                "task-queued-failed",
+                "task-queued-running",
+            ] {
+                forge.selected_tasks.insert(id.into());
+                forge
+                    .path_hint_inputs
+                    .insert(id.into(), cx.new(|cx| NativeTextInput::new("hint", cx)));
+            }
+            let mut failed_pulsations = HashSet::new();
+            failed_pulsations.insert("pulse-failed".into());
+
+            forge.reconcile_selected_tasks(&failed_pulsations);
+
+            assert!(forge.selected_tasks.contains("task-ready"));
+            assert!(forge.path_hint_inputs.contains_key("task-ready"));
+
+            assert!(forge.selected_tasks.contains("task-queued-failed"));
+            assert!(forge.path_hint_inputs.contains_key("task-queued-failed"));
+
+            assert!(!forge.selected_tasks.contains("task-done"));
+            assert!(!forge.path_hint_inputs.contains_key("task-done"));
+
+            assert!(!forge.selected_tasks.contains("task-queued-running"));
+            assert!(!forge.path_hint_inputs.contains_key("task-queued-running"));
+        });
+    }
+
+    #[gpui::test]
+    fn clear_batch_composer_resets_selection_hints_and_title(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            let forge = &mut model.forge;
+            forge.selected_tasks.insert("task-1".into());
+            forge.path_hint_inputs.insert(
+                "task-1".into(),
+                cx.new(|cx| NativeTextInput::new("hint", cx)),
+            );
+            forge
+                .batch_title
+                .update(cx, |input, cx| input.set_value("Batch Title", cx));
+
+            forge.clear_batch_composer(cx);
+
+            assert!(forge.selected_tasks.is_empty());
+            assert!(forge.path_hint_inputs.is_empty());
+            assert_eq!(forge.batch_title.read(cx).value(), "");
+        });
+    }
+
+    #[gpui::test]
+    fn toggle_task_rejects_ineligible_tasks_and_allows_deselection(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            model.forge.snapshot.tasks = vec![
+                test_task("task-ready", "ready", None),
+                test_task("task-done", "done", None),
+            ];
+
+            // Toggling ready task selects it
+            model.forge_action(ForgeAction::ToggleTask("task-ready".into()), cx);
+            assert!(model.forge.selected_tasks.contains("task-ready"));
+
+            // Toggling done task does NOT select it
+            model.forge_action(ForgeAction::ToggleTask("task-done".into()), cx);
+            assert!(!model.forge.selected_tasks.contains("task-done"));
+
+            // If a done task was already selected (e.g. transient state), toggle deselects it
+            model.forge.selected_tasks.insert("task-done".into());
+            model.forge_action(ForgeAction::ToggleTask("task-done".into()), cx);
+            assert!(!model.forge.selected_tasks.contains("task-done"));
+        });
+    }
+
+    #[gpui::test]
+    fn clear_selected_tasks_action_clears_selection_and_hints(cx: &mut TestAppContext) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            model.forge.selected_tasks.insert("task-1".into());
+            model.forge.path_hint_inputs.insert(
+                "task-1".into(),
+                cx.new(|cx| NativeTextInput::new("hint", cx)),
+            );
+            model.forge_action(ForgeAction::ClearSelectedTasks, cx);
+            assert!(model.forge.selected_tasks.is_empty());
+            assert!(model.forge.path_hint_inputs.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn selected_done_task_retains_deselection_button_and_composer_remove_button(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::text_input::register_text_input_keybindings);
+        let (model, visual) = cx.add_window_view(|_, cx| AppModel::new_for_test(cx));
+        visual.simulate_resize(size(px(1440.0), px(900.0)));
+        model.update(visual, |m, cx| {
+            m.workspace
+                .update(cx, |w, _| w.project_id = Some("test-project".into()));
+            m.forge.project_id = Some("test-project".into());
+            m.select_view(AppView::Forge, cx);
+            m.forge.section = ForgeSection::Backlog;
+            m.forge.snapshot.tasks = vec![test_task("task-done-1", "done", None)];
+            m.forge.selected_tasks.insert("task-done-1".into());
+            cx.notify();
+        });
+        visual.run_until_parked();
+
+        // The backlog card still displays "select-task-task-done-1" because selected == true
+        assert!(visual.debug_bounds("select-task-task-done-1").is_some());
+        // The composer card displays "remove-selected-task-task-done-1"
+        assert!(
+            visual
+                .debug_bounds("remove-selected-task-task-done-1")
+                .is_some()
+        );
+        // The composer card displays "clear-selected-tasks"
+        assert!(visual.debug_bounds("clear-selected-tasks").is_some());
+
+        // Clicking the ✕ button in composer removes it
+        let remove_btn = visual
+            .debug_bounds("remove-selected-task-task-done-1")
+            .unwrap();
+        visual.simulate_click(remove_btn.center(), Modifiers::default());
+        visual.run_until_parked();
+
+        model.read_with(visual, |m, _| {
+            assert!(m.forge.selected_tasks.is_empty());
+        });
+
+        // A non-selected done task in a fresh window renders neither the backlog select button nor composer remove button
+        let (model2, visual2) = cx.add_window_view(|_, cx| AppModel::new_for_test(cx));
+        visual2.simulate_resize(size(px(1440.0), px(900.0)));
+        model2.update(visual2, |m, cx| {
+            m.workspace
+                .update(cx, |w, _| w.project_id = Some("test-project".into()));
+            m.forge.project_id = Some("test-project".into());
+            m.select_view(AppView::Forge, cx);
+            m.forge.section = ForgeSection::Backlog;
+            m.forge.snapshot.tasks = vec![test_task("task-done-2", "done", None)];
+            cx.notify();
+        });
+        visual2.run_until_parked();
+
+        assert!(visual2.debug_bounds("select-task-task-done-2").is_none());
+        assert!(
+            visual2
+                .debug_bounds("remove-selected-task-task-done-2")
+                .is_none()
+        );
+        assert!(visual2.debug_bounds("clear-selected-tasks").is_none());
     }
 }

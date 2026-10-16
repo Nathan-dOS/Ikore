@@ -1,10 +1,12 @@
 //! Product planning and task backlogs. Only the pulsation host integrates code.
+mod failure;
 pub mod pipeline;
 mod publication;
 mod runtime;
 pub(crate) mod service;
 
 use crate::orchestration::SourceRevision;
+pub use failure::*;
 pub use runtime::*;
 use serde::{Deserialize, Serialize};
 pub use service::*;

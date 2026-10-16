@@ -116,7 +116,12 @@ impl NativeEditor {
         snapshot: EditorSnapshot,
     ) -> Result<(), EditorError> {
         self.restore_session_snapshot(snapshot)?;
-        self.syntax = if relative_path.to_ascii_lowercase().ends_with(".md") {
+        // Highlighting re-reads the whole text on every edit; past this size the editor stays
+        // plain so typing in a large note never stalls on a full-document reparse.
+        const SYNTAX_MAX_CHARS: usize = 1024 * 1024;
+        self.syntax = if relative_path.to_ascii_lowercase().ends_with(".md")
+            && self.buffer.len_chars() <= SYNTAX_MAX_CHARS
+        {
             MarkdownSyntax::new(self.buffer.text()).ok()
         } else {
             None
@@ -564,14 +569,14 @@ impl Element for EditorElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let editor = self.editor.read(cx);
-        let snapshot = editor.buffer.snapshot();
         let line_height = window.line_height().max(px(1.0));
         let reveal_cursor = editor.reveal_cursor
             || editor
                 .last_bounds
                 .is_some_and(|previous| previous.size != bounds.size);
-        let mut scroll_top = snapshot.scroll_top;
-        let caret = snapshot.selection.head;
+        let mut scroll_top = editor.buffer.scroll_top();
+        let selection = editor.buffer.selection();
+        let caret = selection.head;
         if reveal_cursor {
             let caret_top = caret.line as f32 * f32::from(line_height);
             let viewport_height = f32::from(bounds.size.height);
@@ -591,14 +596,12 @@ impl Element for EditorElement {
         let font_size = style.font_size.to_pixels(window.rem_size());
         let mut lines = Vec::new();
 
-        for (visible_index, text) in snapshot
-            .text
-            .split('\n')
-            .skip(visible_start)
-            .take(visible_count)
-            .enumerate()
-        {
-            let display = text.strip_suffix('\r').unwrap_or(text);
+        for visible_index in 0..visible_count {
+            let line_number = visible_start + visible_index;
+            if line_number >= editor.buffer.line_count() {
+                break;
+            }
+            let display = editor.buffer.line_content(line_number);
             let run = TextRun {
                 len: display.len(),
                 font: style.font(),
@@ -608,12 +611,9 @@ impl Element for EditorElement {
                 strikethrough: None,
             };
             lines.push((
-                window.text_system().shape_line(
-                    display.to_string().into(),
-                    font_size,
-                    &[run],
-                    None,
-                ),
+                window
+                    .text_system()
+                    .shape_line(display.into(), font_size, &[run], None),
                 first_line_y + line_height * visible_index,
             ));
         }
@@ -658,7 +658,7 @@ impl Element for EditorElement {
             None
         };
 
-        let (selection_start, selection_end) = snapshot.selection.ordered();
+        let (selection_start, selection_end) = selection.ordered();
         let mut selections = Vec::new();
         if selection_start != selection_end {
             for line_number in selection_start.line..=selection_end.line {

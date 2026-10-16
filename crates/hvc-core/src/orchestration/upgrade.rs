@@ -33,7 +33,7 @@ pub(crate) fn backup_before_upgrade(db: &Connection, directory: &Path) -> Result
         let integrity: String = check.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
         if integrity != "ok" {
             return Err(Error::Validation(format!(
-                "Backup anterior à V24 não passou na verificação de integridade: {integrity}"
+                "The pre-V24 backup failed the integrity check: {integrity}"
             )));
         }
     }

@@ -5,11 +5,124 @@
 mod composition_support;
 
 use composition_support::*;
+use hvc_core::orchestration::{ClarificationAnswerV1, SubmitSpecificationAnswersRequest};
 use hvc_core::persistence_service::{
     PersistenceServiceError, PulsationStage, ResolveStageFailureRequest, StageFailureDecision,
 };
 use hvc_test_support::ScriptedResponse;
 use serde_json::json;
+
+/// Answers the open clarification checkpoint of the harness pulsation.
+fn answer_clarification(harness: &Harness, text: &str) {
+    wait_until(&harness.service, &harness.pulse, |db| {
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM checkpoints WHERE pulsation_id=?1 AND status='waiting' AND purpose='clarification')",
+            [&harness.pulse],
+            |r| r.get(0),
+        )
+        .unwrap()
+    });
+    let pending = harness
+        .service
+        .list_open_specification_checkpoints(&harness.project)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("an open clarification");
+    harness
+        .service
+        .submit_specification_answers(SubmitSpecificationAnswersRequest {
+            pulsation_id: harness.pulse.clone(),
+            question_set_id: pending.id,
+            checkpoint_id: pending.checkpoint_id,
+            expected_input_revision: pending.fence.input_revision.unwrap(),
+            expected_state_version: pending.fence.state_version,
+            answers: pending
+                .questions
+                .iter()
+                .map(|question| ClarificationAnswerV1 {
+                    question_id: question.id.clone(),
+                    text_answer: text.into(),
+                    planned_paths: Vec::new(),
+                    modified_paths: Vec::new(),
+                })
+                .collect(),
+        })
+        .unwrap();
+}
+
+#[test]
+fn clarification_rounds_open_a_fresh_allowance_and_keep_the_specification_repair() {
+    // ToDoListWebView, 2026-09-22: every answered round re-ran Specification
+    // from the extra pool, so the second round ended in `budget_exhausted`
+    // with no call at all and a malformed draft after one round had no
+    // correction left. Each answer now opens a fresh account.
+    let harness = Harness::start(
+        |facts, ordinal, _| match (facts.executor.as_str(), ordinal) {
+            ("specification_author", 2 | 3) => provider_reply(json!({
+                "schemaVersion": 1, "outcome": "needs_input", "missingRefs": [],
+                "questions": [{"key": "token_clock", "taskRefs": [facts.tasks[0]],
+                    "question": "Which clock source should validate_token use?",
+                    "rationale": "The expiry check needs a time source."}]
+            })),
+            ("specification_author", 4) => provider_reply(json!({
+                "schemaVersion": 1, "outcome": "completed",
+                "executorKind": "specification_author", "payload": {}
+            })),
+            _ => completed_reply(facts),
+        },
+    );
+    answer_clarification(&harness, "Use the caller-supplied `now` argument.");
+    answer_clarification(&harness, "Seconds since the Unix epoch.");
+    harness.wait_for_checkpoint("SPECIFICATION");
+    assert_eq!(
+        harness.calls(),
+        [
+            "intake_classifier",
+            "specification_author",
+            "specification_author",
+            "specification_author",
+            "specification_author",
+        ],
+        "two answered rounds, then one malformed draft and its correction"
+    );
+    let db = harness.db();
+    let failures: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM stage_failure_requests WHERE pulsation_id=?1",
+            [&harness.pulse],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(failures, 0, "no budget_exhausted checkpoint");
+    let accounts: Vec<(String, Option<String>)> = db
+        .prepare("SELECT state,predecessor_account_id FROM stage_budget_accounts WHERE pulsation_id=?1 AND stage='SPECIFICATION' ORDER BY created_at")
+        .unwrap()
+        .query_map([&harness.pulse], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(accounts.len(), 3, "one account per answered round");
+    assert_eq!(accounts[0].0, "closed");
+    assert_eq!(accounts[1].0, "closed");
+    assert_eq!(accounts[2].0, "open");
+    assert!(
+        accounts[1].1.is_some() && accounts[2].1.is_some(),
+        "every successor links its spent predecessor"
+    );
+    let pools: Vec<String> = db
+        .prepare("SELECT r.pool FROM stage_invocation_reservations r JOIN stage_budget_accounts a ON a.id=r.budget_account_id WHERE a.pulsation_id=?1 AND a.stage='SPECIFICATION' ORDER BY r.created_at")
+        .unwrap()
+        .query_map([&harness.pulse], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        pools,
+        ["initial", "initial", "initial", "extra"],
+        "answers ride initial permits; only the correction uses the extra pool"
+    );
+}
 
 #[test]
 fn a_transport_fault_is_retried_once_from_the_extra_pool_and_the_stage_completes() {
@@ -279,4 +392,194 @@ fn a_worker_diagnosed_contract_conflict_parks_with_gated_targets_and_supersedes_
         )
         .unwrap();
     assert_eq!(closed, 3, "human revision closes the superseded accounts");
+}
+
+/// A reply cut off mid-document: the host reads it as a truncated answer.
+fn truncated_reply() -> ScriptedResponse {
+    ScriptedResponse::json(
+        200,
+        json!({"model":"gpt-4.1-mini","choices":[{"message":{"content":"{\"schemaVersion\": 1, \"outcome\": \"completed\", \"payload\": {\"assessments\": ["},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":60}}).to_string(),
+    )
+}
+
+/// The parked Integrator failure: (allow_retry, primary target, targets).
+fn integrator_offer(harness: &Harness, checkpoint: &str) -> (bool, Option<String>, String) {
+    harness
+        .db()
+        .query_row(
+            "SELECT allow_retry,revision_stage,allowed_revision_targets_json FROM stage_failure_requests WHERE checkpoint_id=?1 AND stage='Integrator'",
+            [checkpoint],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+}
+
+/// Code and Test each ran once and stayed accepted.
+fn assert_code_and_test_untouched(harness: &Harness) {
+    let statuses: Vec<(String, String)> = harness
+        .db()
+        .prepare("SELECT stage,status FROM stage_executions WHERE pulsation_id=?1 AND stage IN ('Code','Test') ORDER BY created_at")
+        .unwrap()
+        .query_map([&harness.pulse], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        statuses,
+        vec![
+            ("Code".into(), "accepted".into()),
+            ("Test".into(), "accepted".into())
+        ]
+    );
+}
+
+#[test]
+fn a_rejected_integrator_answer_is_retried_with_its_diagnostic_without_touching_code() {
+    let harness = Harness::start(|facts, ordinal, request| {
+        if facts.executor != "integration_reviewer" {
+            return completed_reply(facts);
+        }
+        if ordinal == 6 {
+            return truncated_reply();
+        }
+        let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+        let user = body["messages"][1]["content"].as_str().unwrap();
+        assert!(user.contains("## Correction"), "the Retry says why");
+        assert!(
+            user.contains("ended before it was closed"),
+            "the carried diagnostic reaches the model"
+        );
+        completed_reply(facts)
+    });
+    for stage in ["SPECIFICATION", "Contract", "Test"] {
+        harness.wait_for_checkpoint(stage);
+        harness.approve();
+    }
+    let checkpoint = harness.wait_for_failure_checkpoint();
+    let (allow_retry, primary, targets) = integrator_offer(&harness, &checkpoint);
+    assert!(allow_retry, "the unit still holds its extra permit");
+    assert_eq!(primary.as_deref(), Some("Integrator"));
+    assert_eq!(targets, r#"["Integrator","Code"]"#);
+    harness
+        .service
+        .resolve_stage_failure_with_target(
+            ResolveStageFailureRequest {
+                checkpoint_id: checkpoint,
+                expected_state_version: harness.state_version(),
+                decision: StageFailureDecision::RetryStage,
+                feedback: None,
+            },
+            None,
+        )
+        .unwrap();
+    harness.wait_for_checkpoint("Integrator");
+    assert_eq!(
+        harness.calls(),
+        [
+            "intake_classifier",
+            "specification_author",
+            "contract_author",
+            "code_implementer",
+            "test_author",
+            "integration_reviewer",
+            "integration_reviewer",
+        ]
+    );
+    assert_code_and_test_untouched(&harness);
+}
+
+#[test]
+fn an_integrator_revision_reruns_only_the_integrator() {
+    let harness = Harness::start(|facts, ordinal, _| {
+        if facts.executor == "integration_reviewer" && ordinal == 6 {
+            truncated_reply()
+        } else {
+            completed_reply(facts)
+        }
+    });
+    for stage in ["SPECIFICATION", "Contract", "Test"] {
+        harness.wait_for_checkpoint(stage);
+        harness.approve();
+    }
+    let checkpoint = harness.wait_for_failure_checkpoint();
+    harness
+        .service
+        .resolve_stage_failure_with_target(
+            ResolveStageFailureRequest {
+                checkpoint_id: checkpoint,
+                expected_state_version: harness.state_version(),
+                decision: StageFailureDecision::RequestRevision,
+                feedback: Some("Keep each explanation to one sentence.".into()),
+            },
+            None,
+        )
+        .unwrap();
+    harness.wait_for_checkpoint("Integrator");
+    assert_eq!(
+        harness.calls().last().map(String::as_str),
+        Some("integration_reviewer")
+    );
+    assert_eq!(harness.calls().len(), 7, "Code and Test are not re-run");
+    assert_code_and_test_untouched(&harness);
+}
+
+#[test]
+fn a_check_citation_without_configured_checks_is_cleared_not_charged() {
+    // "Teste Haiku Only 1" (ToDoListWebView, 2026-09-24): with no host check
+    // configured, the Integrator cited the test file as a check. The host
+    // classified it as its own contract error, parked without Retry and
+    // forced a Code revision. The citation is now cleared by the host with
+    // an audited note, and the stage completes with its single call.
+    let harness = Harness::start(|facts, _, _| {
+        if facts.executor == "integration_reviewer" {
+            let mut reply = unit_response(facts);
+            let source = reply["payload"]["usedRefs"][0].clone();
+            for assessment in reply["payload"]["assessments"].as_array_mut().unwrap() {
+                assessment["checkRefs"] = json!([source]);
+            }
+            provider_reply(reply)
+        } else {
+            completed_reply(facts)
+        }
+    });
+    for stage in ["SPECIFICATION", "Contract", "Test"] {
+        harness.wait_for_checkpoint(stage);
+        harness.approve();
+    }
+    harness.wait_for_checkpoint("Integrator");
+    assert_eq!(
+        harness.calls(),
+        [
+            "intake_classifier",
+            "specification_author",
+            "contract_author",
+            "code_implementer",
+            "test_author",
+            "integration_reviewer",
+        ],
+        "no correction call and no revision of Code"
+    );
+    let db = harness.db();
+    let failures: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM stage_failure_requests WHERE pulsation_id=?1",
+            [&harness.pulse],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(failures, 0);
+    let (state, diagnostic): (String, Option<String>) = db
+        .query_row(
+            "SELECT a.state,a.diagnostic FROM stage_work_unit_attempts a JOIN stage_executions e ON e.id=a.execution_id WHERE e.pulsation_id=?1 AND e.stage='Integrator'",
+            [&harness.pulse],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "succeeded");
+    let diagnostic = diagnostic.expect("the accepted attempt records the host's normalization");
+    assert!(
+        diagnostic.contains("assessment.checkRefs")
+            && diagnostic.contains("no host check is configured"),
+        "{diagnostic}"
+    );
 }

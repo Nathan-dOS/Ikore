@@ -11,6 +11,7 @@ use hvc_core::chat_service::{
     CreateChatConversationRequest, DeleteChatConversationRequest, GetChatConversationRequest,
     GetChatConversationResponse, GetChatTurnSnapshotRequest, GetChatTurnSnapshotResponse,
     ListChatConversationsRequest, SendChatMessageRequest, SendChatMessageResponse,
+    UpdateChatConversationTargetRequest,
 };
 use hvc_core::llm::ProviderConnection;
 use hvc_core::terminals::{
@@ -33,6 +34,9 @@ pub(crate) struct ChatHydration {
     pub(crate) cli_availability: Vec<CliAvailability>,
     pub(crate) conversations: Vec<ChatConversation>,
     pub(crate) selected: Option<GetChatConversationResponse>,
+    /// The project's last chosen Companion target, restored into the panel
+    /// when no conversation is open.
+    pub(crate) default_target: Option<ChatExecutionTargetRequest>,
 }
 
 pub(crate) trait ChatBackend: Send + Sync {
@@ -53,9 +57,22 @@ pub(crate) trait ChatBackend: Send + Sync {
         &self,
         conversation_id: String,
         content: String,
+        expected_target: Option<ChatExecutionTargetRequest>,
     ) -> ChatFuture<(SendChatMessageResponse, GetChatConversationResponse)>;
     fn cancel_turn(&self, execution_id: String) -> ChatFuture<bool>;
     fn turn_snapshot(&self, generation_id: String) -> ChatFuture<GetChatTurnSnapshotResponse>;
+    /// Applies the panel's target to an open conversation (and remembers it).
+    fn update_conversation_target(
+        &self,
+        conversation_id: String,
+        target: ChatExecutionTargetRequest,
+    ) -> ChatFuture<GetChatConversationResponse>;
+    /// Remembers the panel's target for the project when no conversation is open.
+    fn save_default_target(
+        &self,
+        project_id: String,
+        target: ChatExecutionTargetRequest,
+    ) -> ChatFuture<()>;
 }
 
 pub(crate) struct CoreChatBackend {
@@ -117,12 +134,14 @@ impl ChatBackend for CoreChatBackend {
                         })
                         .transpose()
                         .map_err(UiCommandError::from)?;
+                    let default_target = chat.default_target(&project_id).ok().flatten();
                     Ok(ChatHydration {
                         project_id,
                         connections,
                         cli_availability,
                         conversations,
                         selected,
+                        default_target,
                     })
                 })
                 .await
@@ -201,6 +220,7 @@ impl ChatBackend for CoreChatBackend {
         &self,
         conversation_id: String,
         content: String,
+        expected_target: Option<ChatExecutionTargetRequest>,
     ) -> ChatFuture<(SendChatMessageResponse, GetChatConversationResponse)> {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
@@ -214,6 +234,7 @@ impl ChatBackend for CoreChatBackend {
                             SendChatMessageRequest {
                                 conversation_id: conversation_id.clone(),
                                 content,
+                                expected_target,
                             },
                             &workspace_root,
                         )
@@ -266,6 +287,51 @@ impl ChatBackend for CoreChatBackend {
                 })?
         })
     }
+
+    fn update_conversation_target(
+        &self,
+        conversation_id: String,
+        target: ChatExecutionTargetRequest,
+    ) -> ChatFuture<GetChatConversationResponse> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.chat()
+                        .update_conversation_target(UpdateChatConversationTargetRequest {
+                            conversation_id,
+                            target,
+                        })
+                        .map_err(UiCommandError::from)
+                })
+                .await
+                .map_err(|error| {
+                    UiCommandError::worker(format!("Chat target worker interrupted: {error}"))
+                })?
+        })
+    }
+
+    fn save_default_target(
+        &self,
+        project_id: String,
+        target: ChatExecutionTargetRequest,
+    ) -> ChatFuture<()> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.chat()
+                        .save_default_target(&project_id, target)
+                        .map_err(UiCommandError::from)
+                })
+                .await
+                .map_err(|error| {
+                    UiCommandError::worker(format!("Chat target worker interrupted: {error}"))
+                })?
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,9 +351,19 @@ pub(crate) enum ChatEventOutcome {
     },
 }
 
+/// Messages of the open conversation rendered by default.
+pub(crate) const CHAT_RENDER_WINDOW: usize = 40;
+
 #[derive(Debug, Default)]
 pub struct ChatModel {
     pub(crate) tool_activity_open: bool,
+    /// The conversation whose full history the developer asked to see; every other
+    /// conversation renders only its last `CHAT_RENDER_WINDOW` messages.
+    pub(crate) history_expanded: Option<SharedString>,
+    /// Collapses the transport/connection picker so the sidebar has room to
+    /// show conversations instead; the CLI form (backend + model + profile +
+    /// explanatory text) is tall enough to crowd out the list entirely.
+    pub(crate) config_collapsed: bool,
     pub(crate) project_id: Option<SharedString>,
     pub(crate) connections: Vec<ProviderConnection>,
     pub(crate) cli_availability: Vec<CliAvailability>,
@@ -301,6 +377,8 @@ pub struct ChatModel {
     pub(crate) selected_cli_model: Option<String>,
     pub(crate) selected_cli_model_profile: Option<String>,
     pub(crate) selected_cli_model_source: CliModelSelectionSource,
+    pub(crate) target_change_pending: bool,
+    pub(crate) target_change_generation: u64,
     pub streaming: bool,
     pub(crate) loading: bool,
     pub(crate) busy: bool,
@@ -345,6 +423,8 @@ impl ChatModel {
         self.selected_cli_model = None;
         self.selected_cli_model_profile = None;
         self.selected_cli_model_source = CliModelSelectionSource::Default;
+        self.target_change_pending = false;
+        self.target_change_generation = self.target_change_generation.saturating_add(1);
         self.pending_delete_conversation_id = None;
         self.loading = true;
         self.busy = false;
@@ -371,9 +451,13 @@ impl ChatModel {
             .selected
             .as_ref()
             .map(|snapshot| SharedString::from(snapshot.conversation.id.clone()));
+        if let Some(target) = &hydration.default_target {
+            self.apply_target_to_panel(target);
+        }
         if let Some(snapshot) = hydration.selected {
             self.store_conversation_snapshot(snapshot);
         }
+        self.sync_panel_with_active_conversation();
         self.loading = false;
         self.error = None;
         self.recompute_streaming();
@@ -418,6 +502,21 @@ impl ChatModel {
             .find(|conversation| conversation.id == active.as_ref())
     }
 
+    /// The tail of the active conversation that is rendered, and how many earlier messages it
+    /// hides. Every frame re-parses each rendered message (markdown, diffs), and streaming
+    /// notifies on every token batch, so a long conversation renders a bounded window.
+    pub(crate) fn rendered_messages(&self) -> (&[ChatMessage], usize) {
+        let messages = self.active_messages();
+        let expanded =
+            self.history_expanded.is_some() && self.history_expanded == self.active_conversation;
+        let hidden = if expanded {
+            0
+        } else {
+            messages.len().saturating_sub(CHAT_RENDER_WINDOW)
+        };
+        (&messages[hidden..], hidden)
+    }
+
     pub(crate) fn active_messages(&self) -> &[ChatMessage] {
         self.active_conversation
             .as_ref()
@@ -435,7 +534,9 @@ impl ChatModel {
     }
 
     pub(crate) fn composer_available(&self) -> bool {
-        self.project_id.is_some() && self.active_conversation_record().is_some()
+        self.project_id.is_some()
+            && self.active_conversation_record().is_some()
+            && !self.target_change_pending
     }
 
     pub(crate) fn disclosure_required(&self) -> bool {
@@ -477,6 +578,8 @@ impl ChatModel {
             return false;
         }
         self.active_conversation = Some(conversation_id.to_string().into());
+        self.target_change_generation = self.target_change_generation.saturating_add(1);
+        self.target_change_pending = false;
         self.pending_delete_conversation_id = None;
         self.loading = true;
         self.error = None;
@@ -496,10 +599,91 @@ impl ChatModel {
             return false;
         }
         self.store_conversation_snapshot(snapshot);
+        self.sync_panel_with_active_conversation();
         self.loading = false;
         self.error = None;
         self.recompute_streaming();
         true
+    }
+
+    /// The panel's current selection as a target, when it names one.
+    pub(crate) fn panel_target(&self) -> Option<ChatExecutionTargetRequest> {
+        match self.selected_transport {
+            ChatTransportKind::Api => self.selected_connection_id.as_ref().map(|connection_id| {
+                ChatExecutionTargetRequest::Api {
+                    connection_id: connection_id.to_string(),
+                }
+            }),
+            ChatTransportKind::Cli => Some(ChatExecutionTargetRequest::Cli {
+                backend: self.selected_cli_backend,
+                model: self.selected_cli_model.clone(),
+                model_profile: self.selected_cli_model_profile.clone(),
+            }),
+        }
+    }
+
+    pub(crate) fn apply_target_to_panel(&mut self, target: &ChatExecutionTargetRequest) {
+        match target {
+            ChatExecutionTargetRequest::Api { connection_id } => {
+                self.selected_transport = ChatTransportKind::Api;
+                if self
+                    .eligible_connections()
+                    .any(|connection| &connection.id == connection_id)
+                {
+                    self.selected_connection_id = Some(connection_id.clone().into());
+                }
+            }
+            ChatExecutionTargetRequest::Cli {
+                backend,
+                model,
+                model_profile,
+            } => {
+                self.selected_transport = ChatTransportKind::Cli;
+                self.selected_cli_backend = *backend;
+                self.selected_cli_model = model.clone();
+                self.selected_cli_model_profile = model_profile.clone();
+                self.selected_cli_model_source = if model.is_some() {
+                    CliModelSelectionSource::Catalog
+                } else {
+                    CliModelSelectionSource::Default
+                };
+            }
+        }
+    }
+
+    /// The panel always shows the open conversation's real target: before,
+    /// it reset to API/Codex on every visit while the conversation kept
+    /// sending to its own stored backend (ToDoListWebView, 2026-09-22).
+    pub(crate) fn sync_panel_with_active_conversation(&mut self) {
+        let Some(conversation) = self.active_conversation_record().cloned() else {
+            return;
+        };
+        match conversation.transport {
+            ChatTransportKind::Api => {
+                self.selected_transport = ChatTransportKind::Api;
+                if let Some(connection_id) = conversation.connection_id {
+                    self.selected_connection_id = Some(connection_id.into());
+                }
+            }
+            ChatTransportKind::Cli => {
+                let Some(backend) = conversation.cli_backend else {
+                    return;
+                };
+                self.selected_transport = ChatTransportKind::Cli;
+                self.selected_cli_backend = backend;
+                self.selected_cli_model =
+                    (conversation.model_id != "default").then_some(conversation.model_id);
+                self.selected_cli_model_profile = conversation.model_profile;
+                self.selected_cli_model_source = conversation.model_source;
+            }
+        }
+    }
+
+    /// Stores a retargeted conversation; the panel already shows its target.
+    pub(crate) fn apply_retargeted(&mut self, snapshot: GetChatConversationResponse) {
+        self.store_conversation_snapshot(snapshot);
+        self.sync_panel_with_active_conversation();
+        self.error = None;
     }
 
     pub(crate) fn begin_busy(&mut self) -> bool {
@@ -780,6 +964,7 @@ mod tests {
             estimated_cost_usd: None,
             error_code: None,
             error_message: None,
+            target_label: None,
             created_at: "now".into(),
             updated_at: "now".into(),
         }
@@ -796,7 +981,115 @@ mod tests {
                 messages: vec![message(content, sequence)],
                 tool_calls: Vec::new(),
             }),
+            default_target: None,
         }
+    }
+
+    #[test]
+    fn a_long_conversation_renders_its_tail_until_the_history_is_expanded() {
+        let mut model = ChatModel {
+            active_conversation: Some("conversation-1".into()),
+            ..Default::default()
+        };
+        let messages: Vec<_> = (0..CHAT_RENDER_WINDOW as u64 + 25)
+            .map(|index| message(&format!("m{index}"), index))
+            .collect();
+        model
+            .messages_by_conversation
+            .insert("conversation-1".into(), messages);
+
+        let (rendered, hidden) = model.rendered_messages();
+        assert_eq!(hidden, 25);
+        assert_eq!(rendered.len(), CHAT_RENDER_WINDOW);
+        assert_eq!(
+            rendered.last().unwrap().content,
+            format!("m{}", CHAT_RENDER_WINDOW + 24)
+        );
+
+        model.history_expanded = Some("conversation-1".into());
+        assert_eq!(model.rendered_messages().1, 0);
+        // Expanding one conversation does not expand another.
+        model.active_conversation = Some("conversation-2".into());
+        model.messages_by_conversation.insert(
+            "conversation-2".into(),
+            (0..60).map(|i| message("x", i)).collect(),
+        );
+        assert_eq!(model.rendered_messages().1, 60 - CHAT_RENDER_WINDOW);
+    }
+
+    /// ToDoListWebView, 2026-09-22: the panel showed "Codex" after every visit
+    /// while the open conversation kept sending to Claude. The panel now shows
+    /// the open conversation's target, and the remembered project target
+    /// when none is open.
+    #[test]
+    fn the_panel_mirrors_the_open_conversation_and_restores_the_saved_target() {
+        let mut claude = conversation("conversation-1", "project-1");
+        claude.transport = ChatTransportKind::Cli;
+        claude.connection_id = None;
+        claude.cli_backend = Some(CliBackend::Claude);
+        claude.provider_id = "claude".into();
+        claude.model_id = "haiku".into();
+        claude.model_source = CliModelSelectionSource::Catalog;
+        let mut hydration = snapshot("project-1", "", 0);
+        hydration.conversations = vec![claude.clone()];
+        hydration.selected.as_mut().unwrap().conversation = claude.clone();
+        hydration.default_target = Some(ChatExecutionTargetRequest::Cli {
+            backend: CliBackend::Codex,
+            model: None,
+            model_profile: None,
+        });
+        let mut model = ChatModel::default();
+        let generation = model.begin_hydration("project-1".into(), None);
+        assert!(model.apply_hydration(generation, hydration));
+        assert_eq!(model.selected_transport, ChatTransportKind::Cli);
+        assert_eq!(model.selected_cli_backend, CliBackend::Claude);
+        assert_eq!(model.selected_cli_model.as_deref(), Some("haiku"));
+        assert_eq!(
+            model.panel_target(),
+            Some(ChatExecutionTargetRequest::Cli {
+                backend: CliBackend::Claude,
+                model: Some("haiku".into()),
+                model_profile: None,
+            })
+        );
+
+        // No conversation open: the remembered target, not the API/Codex default.
+        let mut empty = snapshot("project-1", "", 0);
+        empty.conversations.clear();
+        empty.selected = None;
+        empty.default_target = Some(ChatExecutionTargetRequest::Cli {
+            backend: CliBackend::Codex,
+            model: Some("gpt-5.6-terra".into()),
+            model_profile: None,
+        });
+        let generation = model.begin_hydration("project-1".into(), None);
+        assert!(model.apply_hydration(generation, empty));
+        assert_eq!(model.selected_transport, ChatTransportKind::Cli);
+        assert_eq!(model.selected_cli_backend, CliBackend::Codex);
+        assert_eq!(model.selected_cli_model.as_deref(), Some("gpt-5.6-terra"));
+
+        // A retargeted snapshot updates the list row and the panel together.
+        let generation = model.begin_hydration("project-1".into(), None);
+        let mut hydration = snapshot("project-1", "", 0);
+        hydration.conversations = vec![claude.clone()];
+        hydration.selected.as_mut().unwrap().conversation = claude.clone();
+        assert!(model.apply_hydration(generation, hydration));
+        let mut codex = claude;
+        codex.cli_backend = Some(CliBackend::Codex);
+        codex.provider_id = "codex".into();
+        codex.model_id = "default".into();
+        codex.model_source = CliModelSelectionSource::Default;
+        model.apply_retargeted(GetChatConversationResponse {
+            conversation: codex,
+            messages: Vec::new(),
+            tool_calls: Vec::new(),
+        });
+        assert_eq!(model.selected_cli_backend, CliBackend::Codex);
+        assert_eq!(model.selected_cli_model, None);
+        assert_eq!(
+            model.active_conversation_record().unwrap().cli_backend,
+            Some(CliBackend::Codex)
+        );
     }
 
     fn delta(sequence: u64, text: &str) -> ChatEventEnvelope {
@@ -834,6 +1127,10 @@ mod tests {
         let generation = model.begin_hydration("project-1".into(), None);
         assert!(model.apply_hydration(generation, snapshot("project-1", "", 0)));
         assert!(model.composer_available());
+        model.target_change_pending = true;
+        assert!(!model.composer_available());
+        model.target_change_pending = false;
+        assert!(model.composer_available());
     }
 
     #[test]
@@ -849,6 +1146,7 @@ mod tests {
                 diagnostic: Some("Authentication required".into()),
                 install_url: "https://example.invalid/claude",
                 install_command: "install claude",
+                quota: Vec::new(),
                 capabilities: hvc_core::terminals::CliCapabilities {
                     output_format: hvc_core::terminals::CliOutputFormat::JsonLines,
                     structured_output: true,
@@ -969,7 +1267,9 @@ mod tests {
     #[derive(Default)]
     struct RecordingChatBackend {
         sent: Mutex<Vec<(String, String)>>,
+        sent_targets: Mutex<Vec<Option<ChatExecutionTargetRequest>>>,
         cancelled: Mutex<Vec<String>>,
+        retargeted: Mutex<Vec<(String, ChatExecutionTargetRequest)>>,
     }
 
     impl RecordingChatBackend {
@@ -1003,7 +1303,12 @@ mod tests {
             &self,
             conversation_id: String,
             content: String,
+            expected_target: Option<ChatExecutionTargetRequest>,
         ) -> ChatFuture<(SendChatMessageResponse, GetChatConversationResponse)> {
+            self.sent_targets
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(expected_target);
             self.sent
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1040,6 +1345,84 @@ mod tests {
         fn turn_snapshot(&self, _: String) -> ChatFuture<GetChatTurnSnapshotResponse> {
             Self::unavailable()
         }
+
+        fn update_conversation_target(
+            &self,
+            conversation_id: String,
+            target: ChatExecutionTargetRequest,
+        ) -> ChatFuture<GetChatConversationResponse> {
+            self.retargeted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((conversation_id.clone(), target.clone()));
+            let mut retargeted = conversation(&conversation_id, "project-1");
+            if let ChatExecutionTargetRequest::Cli { backend, model, .. } = target {
+                retargeted.transport = ChatTransportKind::Cli;
+                retargeted.connection_id = None;
+                retargeted.cli_backend = Some(backend);
+                retargeted.provider_id = backend.as_str().into();
+                retargeted.model_id = model.unwrap_or_else(|| "default".into());
+            }
+            Box::pin(async move {
+                Ok(GetChatConversationResponse {
+                    conversation: retargeted,
+                    messages: Vec::new(),
+                    tool_calls: Vec::new(),
+                })
+            })
+        }
+
+        fn save_default_target(&self, _: String, _: ChatExecutionTargetRequest) -> ChatFuture<()> {
+            Self::unavailable()
+        }
+    }
+
+    /// Changing the panel with a conversation open retargets that
+    /// conversation, so its next message uses what the panel shows.
+    #[gpui::test]
+    fn changing_the_panel_retargets_the_open_conversation(cx: &mut TestAppContext) {
+        let backend = Arc::new(RecordingChatBackend::default());
+        let model_backend: Arc<dyn ChatBackend> = backend.clone();
+        let model = cx.new(|cx| AppModel::new_for_test_with_chat_backend(model_backend, cx));
+        model.update(cx, |model, cx| {
+            let generation = model
+                .chat
+                .update(cx, |chat, _| chat.begin_hydration("project-1".into(), None));
+            model.chat.update(cx, |chat, _| {
+                chat.apply_hydration(generation, snapshot("project-1", "history", 1));
+            });
+            model.set_chat_transport(ChatTransportKind::Cli, cx);
+            model.set_chat_cli_backend(CliBackend::Claude, cx);
+            assert_eq!(model.chat.read(cx).selected_cli_backend, CliBackend::Codex);
+        });
+        cx.run_until_parked();
+        model.update(cx, |model, cx| {
+            model.set_chat_cli_backend(CliBackend::Claude, cx)
+        });
+        cx.run_until_parked();
+        let calls = backend
+            .retargeted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(
+            calls.last(),
+            Some(&(
+                "conversation-1".to_string(),
+                ChatExecutionTargetRequest::Cli {
+                    backend: CliBackend::Claude,
+                    model: None,
+                    model_profile: None,
+                }
+            ))
+        );
+        model.update(cx, |model, cx| {
+            let chat = model.chat.read(cx);
+            let active = chat.active_conversation_record().unwrap();
+            assert_eq!(active.cli_backend, Some(CliBackend::Claude));
+            assert_eq!(chat.selected_cli_backend, CliBackend::Claude);
+            assert_eq!(chat.selected_transport, ChatTransportKind::Cli);
+        });
     }
 
     #[gpui::test]
@@ -1070,6 +1453,12 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_slice(),
             &[("conversation-1".into(), "Explain the architecture".into())]
+        );
+        assert_eq!(
+            backend.sent_targets.lock().unwrap().as_slice(),
+            &[Some(ChatExecutionTargetRequest::Api {
+                connection_id: "eligible".into(),
+            })]
         );
 
         model.update(cx, |model, cx| model.cancel_chat_turn(cx));

@@ -14,6 +14,8 @@ pub enum LlmErrorKind {
     Network,
     ProviderUnavailable,
     InvalidResponse,
+    ModelMismatch,
+    ModelUnverified,
     OutputSchema,
     Cancelled,
     BackgroundDeferred,
@@ -33,6 +35,8 @@ impl LlmErrorKind {
             Self::OutputSchema => "schema_violation",
             Self::StreamFailed => "stream_failed",
             Self::RouteConflict => "route_conflict",
+            Self::ModelMismatch => "model_mismatch",
+            Self::ModelUnverified => "model_unverified",
             Self::BackgroundDeferred => "background_deferred",
             Self::InvalidRequest => "validation_error",
             Self::Persistence => "db_error",
@@ -80,6 +84,9 @@ pub struct LlmError {
     pub next_eligible_at: Option<String>,
     pub visible_partial: Option<String>,
     pub causes: Vec<String>,
+    /// Provider-reported identities observed before a rejected generation.
+    #[serde(default)]
+    pub observed_models: Vec<String>,
 }
 
 impl LlmError {
@@ -96,6 +103,7 @@ impl LlmError {
             next_eligible_at: None,
             visible_partial: None,
             causes: Vec::new(),
+            observed_models: Vec::new(),
         }
     }
 
@@ -103,6 +111,11 @@ impl LlmError {
         self.provider_id = Some(provider.to_string());
         self.connection_id = Some(connection.to_string());
         self.model_id = Some(model.to_string());
+        self
+    }
+
+    pub fn with_observed_models(mut self, models: Vec<String>) -> Self {
+        self.observed_models = models;
         self
     }
 

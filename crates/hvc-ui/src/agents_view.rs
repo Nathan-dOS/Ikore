@@ -5,7 +5,9 @@ use gpui::{
     px, uniform_list,
 };
 use hvc_core::llm::AgentRole;
-use hvc_core::persistence_service::{CliFallbackCheckpoint, CliFallbackDecision};
+use hvc_core::persistence_service::{
+    CLI_VALIDATION_FAILED, CLI_VERSION_UNVALIDATED, CliFallbackCheckpoint, CliFallbackDecision,
+};
 use hvc_core::terminals::{
     AgentExecutionMode, CanonicalAgentDescriptor, CliAvailabilityState, CliBackend,
     CliModelCatalogEntry, CliModelCatalogState, CliModelSelectionSource, TerminalEventKind,
@@ -17,6 +19,7 @@ use crate::agents::{
     TerminalEventFilter,
 };
 use crate::app_model::AppModel;
+use crate::icons::Icon;
 use crate::pipeline_status::PipelineStatus;
 use crate::theme;
 
@@ -223,7 +226,11 @@ pub(crate) fn cli_model_picker_panel(
             picker.backend.label(),
             catalog.cli_version.as_deref().unwrap_or("—")
         );
-        let catalog_version_label = if picker.backend == CliBackend::Opencode {
+        // Live catalogs come from the CLI itself, not from the embedded preset.
+        let catalog_version_label = if matches!(
+            picker.backend,
+            CliBackend::Opencode | CliBackend::Antigravity
+        ) {
             String::new()
         } else {
             format!(
@@ -254,8 +261,8 @@ pub(crate) fn cli_model_picker_panel(
         .p_3()
         .rounded_lg()
         .border_1()
-        .border_color(theme::accent())
-        .bg(theme::surface())
+        .border_color(theme::border_strong())
+        .bg(theme::surface_raised())
         .flex()
         .flex_col()
         .gap_2()
@@ -294,11 +301,11 @@ pub(crate) fn cli_model_picker_panel(
                     cx,
                     |model, cx| model.refresh_cli_model_catalog(cx),
                 ))
-                .child(action_button(
+                .child(icon_action(
                     "cli-model-close".into(),
-                    "Close".into(),
+                    Icon::X,
+                    "Close",
                     true,
-                    false,
                     cx,
                     |model, cx| model.close_cli_model_picker(cx),
                 )),
@@ -471,12 +478,10 @@ pub(crate) fn cli_model_picker_panel(
                     cx,
                     |model, cx| model.select_manual_cli_model(cx),
                 ))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child("Manual IDs are sent directly via --model. No profile verification."),
-                )
+                .child(crate::widgets::info_tip(
+                    "cli-model-manual",
+                    "Manual IDs are sent directly via --model. No profile verification.",
+                ))
         })
         .into_any_element();
     deferred(
@@ -546,21 +551,68 @@ fn fallback_panel(
 ) -> AnyElement {
     let checkpoint_id = fallback.checkpoint_id.clone();
     let checkpoint_for_retry = checkpoint_id.clone();
+    let checkpoint_for_validate = checkpoint_id.clone();
     let checkpoint_for_cancel = checkpoint_id.clone();
     let state_version = fallback.state_version;
     let descriptor = hvc_core::terminals::canonical_agent(fallback.agent_role);
+    // Three shapes: an updated CLI awaiting validation (validate / switch / abort), a CLI that
+    // failed validation (switch / abort), and every other transport failure (API / retry /
+    // cancel).
+    let unvalidated = fallback.error_code == CLI_VERSION_UNVALIDATED;
+    let validation_failed = fallback.error_code == CLI_VALIDATION_FAILED;
+    let (title, provider_label, is_error) = if unvalidated {
+        (
+            format!(
+                "CLI updated — validation required · {} · {}",
+                descriptor.name, fallback.feature_name
+            ),
+            "Switch provider (API)",
+            false,
+        )
+    } else if validation_failed {
+        (
+            format!(
+                "CLI failed validation · {} · {}",
+                descriptor.name, fallback.feature_name
+            ),
+            "Switch provider (API)",
+            true,
+        )
+    } else {
+        (
+            format!(
+                "Fallback awaiting decision · {} · {}",
+                descriptor.name, fallback.feature_name
+            ),
+            "Use API",
+            false,
+        )
+    };
+    let tone = if is_error {
+        theme::danger()
+    } else {
+        theme::warning()
+    };
     div()
         .id(SharedString::from(format!(
             "cli-fallback:{}",
             fallback.checkpoint_id
         )))
+        .debug_selector({
+            let id = fallback.checkpoint_id.clone();
+            move || format!("cli-fallback:{id}")
+        })
         .mx_4()
         .mt_3()
         .p_3()
         .rounded_lg()
         .border_1()
-        .border_color(theme::warning())
-        .bg(theme::warning_soft())
+        .border_color(tone)
+        .bg(if is_error {
+            theme::danger_soft()
+        } else {
+            theme::warning_soft()
+        })
         .flex()
         .items_center()
         .flex_wrap()
@@ -571,11 +623,8 @@ fn fallback_panel(
                 .child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::warning())
-                        .child(format!(
-                            "Fallback awaiting decision · {} · {}",
-                            descriptor.name, fallback.feature_name
-                        )),
+                        .text_color(tone)
+                        .child(title),
                 )
                 .child(
                     div()
@@ -585,9 +634,25 @@ fn fallback_panel(
                         .child(format!("{} · {}", fallback.error_code, fallback.diagnostic)),
                 ),
         )
+        .when(unvalidated, |card| {
+            card.child(action_button(
+                SharedString::from(format!("fallback-validate:{checkpoint_for_validate}")),
+                "Update & validate CLI".into(),
+                !busy,
+                false,
+                cx,
+                move |model, cx| {
+                    model.validate_agent_cli_fallback(
+                        checkpoint_for_validate.clone(),
+                        state_version,
+                        cx,
+                    )
+                },
+            ))
+        })
         .child(action_button(
             SharedString::from(format!("fallback-api:{checkpoint_id}")),
-            "Use API".into(),
+            provider_label.into(),
             !busy,
             false,
             cx,
@@ -600,25 +665,29 @@ fn fallback_panel(
                 )
             },
         ))
-        .child(action_button(
-            SharedString::from(format!("fallback-retry:{checkpoint_for_retry}")),
-            "Retry CLI".into(),
-            !busy,
-            false,
-            cx,
-            move |model, cx| {
-                model.resolve_agent_cli_fallback(
-                    checkpoint_for_retry.clone(),
-                    state_version,
-                    CliFallbackDecision::RetryCli,
-                    cx,
-                )
-            },
-        ))
+        .when(!unvalidated && !validation_failed, |card| {
+            card.child(action_button(
+                SharedString::from(format!("fallback-retry:{checkpoint_for_retry}")),
+                "Retry CLI".into(),
+                !busy,
+                false,
+                cx,
+                move |model, cx| {
+                    model.resolve_agent_cli_fallback(
+                        checkpoint_for_retry.clone(),
+                        state_version,
+                        CliFallbackDecision::RetryCli,
+                        cx,
+                    )
+                },
+            ))
+        })
         .child(action_button(
             SharedString::from(format!("fallback-cancel:{checkpoint_for_cancel}")),
             if cancel_armed {
-                "Confirm cancellation"
+                "Confirm abort"
+            } else if unvalidated || validation_failed {
+                "Abort pulsation"
             } else {
                 "Cancel pulse"
             }
@@ -691,7 +760,7 @@ fn agents_sidebar(
         )
         .child(action_button(
             "free-form-create".into(),
-            "+ Novo agente livre".into(),
+            "New freeform agent".into(),
             !busy && snapshot.free_form_slots.len() < 8,
             false,
             cx,
@@ -933,11 +1002,7 @@ fn agent_detail_panel(
                                 .flex()
                                 .items_center()
                                 .gap_3()
-                                .child(
-                                    div()
-                                        .text_color(theme::agent_color(role))
-                                        .child(descriptor.glyph),
-                                )
+                                .child(crate::widgets::status_dot(theme::agent_color(role)))
                                 .child(
                                     div()
                                         .min_w_0()
@@ -993,7 +1058,7 @@ fn agent_detail_panel(
                         .into_any_element()
                 }
                 None => panel
-                    .child(empty_state("Selecione ou crie um agente."))
+                    .child(empty_state("Select or create an agent."))
                     .into_any_element(),
             }
         }
@@ -1155,12 +1220,12 @@ fn agent_detail_panel(
                         .into_any_element()
                 }
                 None => panel
-                    .child(empty_state("Selecione ou crie um agente."))
+                    .child(empty_state("Select or create an agent."))
                     .into_any_element(),
             }
         }
         None => panel
-            .child(empty_state("Selecione ou crie um agente."))
+            .child(empty_state("Select or create an agent."))
             .into_any_element(),
     }
 }
@@ -1240,11 +1305,7 @@ fn expanded_cli_detail_panel(
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .text_color(theme::agent_color(role))
-                            .child(descriptor.glyph),
-                    )
+                    .child(crate::widgets::status_dot(theme::agent_color(role)))
                     .child(
                         div()
                             .flex_1()
@@ -1258,11 +1319,11 @@ fn expanded_cli_detail_panel(
                         None,
                         cx,
                     ))
-                    .child(action_button(
+                    .child(icon_action(
                         SharedString::from(format!("agent-collapse:{}", role.as_str())),
-                        "Collapse".into(),
+                        Icon::ChevronDown,
+                        "Collapse terminal",
                         true,
-                        false,
                         cx,
                         |model, cx| model.toggle_agents_terminal_expanded(cx),
                     )),
@@ -1329,16 +1390,9 @@ fn expanded_cli_detail_panel(
                                 model.cycle_agent_event_filter(role.as_str().to_string(), cx)
                             },
                         ))
-                        .child(action_button(
+                        .child(follow_button(
                             SharedString::from(format!("agent-expanded-follow:{}", role.as_str())),
-                            if follow {
-                                "Follow active"
-                            } else {
-                                "Follow paused"
-                            }
-                            .into(),
-                            true,
-                            false,
+                            follow,
                             cx,
                             move |model, cx| {
                                 model.toggle_agent_follow_tail(role.as_str().to_string(), cx)
@@ -1398,11 +1452,11 @@ fn expanded_cli_detail_panel(
                         None,
                         cx,
                     ))
-                    .child(action_button(
+                    .child(icon_action(
                         SharedString::from(format!("free-form-collapse:{slot_id}")),
-                        "Collapse".into(),
+                        Icon::ChevronDown,
+                        "Collapse terminal",
                         true,
-                        false,
                         cx,
                         |model, cx| model.toggle_agents_terminal_expanded(cx),
                     )),
@@ -1467,16 +1521,9 @@ fn expanded_cli_detail_panel(
                                 model.cycle_agent_event_filter(filter_for_action.clone(), cx)
                             },
                         ))
-                        .child(action_button(
+                        .child(follow_button(
                             SharedString::from(format!("free-form-expanded-follow:{slot_id}")),
-                            if follow {
-                                "Follow active"
-                            } else {
-                                "Follow paused"
-                            }
-                            .into(),
-                            true,
-                            false,
+                            follow,
                             cx,
                             move |model, cx| {
                                 model.toggle_agent_follow_tail(follow_for_action.clone(), cx)
@@ -1510,9 +1557,7 @@ fn archived_free_form_card(
         .flex_1()
         .p_3()
         .rounded_lg()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
+        .bg(theme::surface_raised())
         .flex()
         .items_center()
         .gap_3()
@@ -1665,7 +1710,7 @@ fn free_form_card(
         .p_4()
         .rounded_lg()
         .border_1()
-        .border_color(theme::accent())
+        .border_color(theme::border())
         .bg(theme::surface())
         .flex()
         .flex_col()
@@ -1795,45 +1840,38 @@ fn free_form_card(
                             .text_color(theme::text_muted())
                             .child(run_metadata(run)),
                     )
-                    .child(action_button(
-                        SharedString::from(format!("free-form-newer:{}", slot.id)),
-                        "Mais nova".into(),
-                        !busy && index > 0,
-                        false,
-                        cx,
-                        {
-                            let slot_id = slot_id.clone();
-                            move |model, cx| model.select_free_form_history(slot_id.clone(), -1, cx)
-                        },
-                    ))
-                    .child(action_button(
-                        SharedString::from(format!("free-form-follow:{}", slot.id)),
-                        if follow_tail {
-                            "Follow ativo"
-                        } else {
-                            "Follow pausado"
-                        }
-                        .into(),
-                        true,
-                        false,
-                        cx,
-                        {
-                            let key = format!("free-form:{}", slot.id);
-                            move |model, cx| model.toggle_agent_follow_tail(key.clone(), cx)
-                        },
-                    ))
-                    .child(action_button(
+                    .child(icon_action(
                         SharedString::from(format!("free-form-older:{}", slot.id)),
-                        "Mais antiga".into(),
+                        Icon::ChevronLeft,
+                        "Older run",
                         !busy && index + 1 < free_form.recent_runs.len(),
-                        false,
                         cx,
                         {
                             let slot_id = slot_id.clone();
                             move |model, cx| model.select_free_form_history(slot_id.clone(), 1, cx)
                         },
                     ))
-                    .child(crate::select_menu::control(
+                    .child(icon_action(
+                        SharedString::from(format!("free-form-newer:{}", slot.id)),
+                        Icon::ChevronRight,
+                        "Newer run",
+                        !busy && index > 0,
+                        cx,
+                        {
+                            let slot_id = slot_id.clone();
+                            move |model, cx| model.select_free_form_history(slot_id.clone(), -1, cx)
+                        },
+                    ))
+                    .child(follow_button(
+                        SharedString::from(format!("free-form-follow:{}", slot.id)),
+                        follow_tail,
+                        cx,
+                        {
+                            let key = format!("free-form:{}", slot.id);
+                            move |model, cx| model.toggle_agent_follow_tail(key.clone(), cx)
+                        },
+                    ))
+                    .child(crate::select_menu::compact_control(
                         (SharedString::from(format!("free-form-filter:{}", slot.id))).to_string(),
                         "Filter",
                         event_filter.label(),
@@ -2040,7 +2078,7 @@ fn agent_card(
         .p_4()
         .rounded_lg()
         .border_1()
-        .border_color(color)
+        .border_color(theme::border())
         .bg(theme::surface())
         .flex()
         .flex_col()
@@ -2051,6 +2089,8 @@ fn agent_card(
                 .flex_wrap()
                 .items_center()
                 .gap_2()
+                // The agent's colour marks the title instead of outlining the whole card.
+                .child(crate::widgets::status_dot(color))
                 .child(
                     div()
                         .flex_1()
@@ -2074,16 +2114,14 @@ fn agent_card(
                     profile_value,
                     !busy && !running && thinking_available,
                     cx,
-                )),
+                ))
+                .when(!thinking_available, |row| {
+                    row.child(crate::widgets::info_tip(
+                        format!("agent-thinking:{}", role.as_str()),
+                        "This adapter does not declare stable thinking control.",
+                    ))
+                }),
         )
-        .when(!thinking_available, |card| {
-            card.child(
-                div()
-                    .text_xs()
-                    .text_color(theme::text_muted())
-                    .child("This adapter does not declare stable thinking control."),
-            )
-        })
         .when(agent.config.backend != CliBackend::Custom, |card| {
             let model_value =
                 cli_model_label(agent.config.model_source, agent.config.model.as_deref());
@@ -2164,6 +2202,23 @@ fn agent_card(
                 )
             },
         )
+        // An available CLI may still carry an advisory (e.g. newer than the last validated
+        // version): worth a muted line, not a warning box.
+        .when_some(
+            availability.and_then(|availability| {
+                (availability.state == CliAvailabilityState::Available)
+                    .then(|| availability.diagnostic.clone())
+                    .flatten()
+            }),
+            |card, note| {
+                card.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(note),
+                )
+            },
+        )
         .when_some(cli_identity, |card, identity| {
             card.child(
                 div()
@@ -2172,6 +2227,21 @@ fn agent_card(
                     .child(identity),
             )
         })
+        .when_some(
+            availability.and_then(|availability| quota_line(&availability.quota)),
+            |card, (line, low)| {
+                card.child(
+                    div()
+                        .text_xs()
+                        .text_color(if low {
+                            theme::warning()
+                        } else {
+                            theme::text_muted()
+                        })
+                        .child(line),
+                )
+            },
+        )
         .when_some(install_guidance, |card, (command, url)| {
             let command_for_copy = command.clone();
             let url_for_copy = url.clone();
@@ -2237,21 +2307,21 @@ fn agent_card(
                                 run_metadata(selected_run)
                             )),
                     )
-                    .child(action_button(
-                        SharedString::from(format!("agent-history-newer:{}", role.as_str())),
-                        "Newer".into(),
-                        !busy && index > 0,
-                        false,
-                        cx,
-                        move |model, cx| model.select_agent_history(role, -1, cx),
-                    ))
-                    .child(action_button(
+                    .child(icon_action(
                         SharedString::from(format!("agent-history-older:{}", role.as_str())),
-                        "Older".into(),
+                        Icon::ChevronLeft,
+                        "Older run",
                         !busy && index + 1 < agent.recent_runs.len(),
-                        false,
                         cx,
                         move |model, cx| model.select_agent_history(role, 1, cx),
+                    ))
+                    .child(icon_action(
+                        SharedString::from(format!("agent-history-newer:{}", role.as_str())),
+                        Icon::ChevronRight,
+                        "Newer run",
+                        !busy && index > 0,
+                        cx,
+                        move |model, cx| model.select_agent_history(role, -1, cx),
                     ))
                     .child(action_button(
                         SharedString::from(format!("agent-history-clear:{}", role.as_str())),
@@ -2266,23 +2336,16 @@ fn agent_card(
                         cx,
                         move |model, cx| model.request_clear_agent_history(role, cx),
                     ))
-                    .child(crate::select_menu::control(
+                    .child(crate::select_menu::compact_control(
                         (SharedString::from(format!("agent-filter:{}", role.as_str()))).to_string(),
                         "Filter",
                         event_filter.label(),
                         true,
                         cx,
                     ))
-                    .child(action_button(
+                    .child(follow_button(
                         SharedString::from(format!("agent-follow:{}", role.as_str())),
-                        if follow_tail {
-                            "Follow ativo"
-                        } else {
-                            "Follow pausado"
-                        }
-                        .into(),
-                        true,
-                        false,
+                        follow_tail,
                         cx,
                         move |model, cx| {
                             model.toggle_agent_follow_tail(role.as_str().to_string(), cx)
@@ -2340,7 +2403,7 @@ fn agent_card(
                         row.child(action_button(
                             SharedString::from(format!("agent-stop:{}", role.as_str())),
                             if pulsation_id.is_some() && pipeline_cancel_armed {
-                                "Confirmar Stop"
+                                "Confirm stop"
                             } else {
                                 "Stop"
                             }
@@ -2387,17 +2450,21 @@ fn agent_card(
                     .child(
                         div()
                             .flex_1()
+                            .flex()
                             .text_xs()
                             .text_color(theme::text_muted())
-                            .child(
+                            .map(|status| {
                                 if agent.config.execution_mode == AgentExecutionMode::ApiDirect {
-                                    "Manual execution blocked while agent uses API."
+                                    status.child("Manual execution blocked while agent uses API.")
                                 } else if running {
-                                    "Input blocked during execution."
+                                    status.child("Input blocked during execution.")
                                 } else {
-                                    "Prompt will be sent via stdin; this is not a PTY terminal."
-                                },
-                            ),
+                                    status.child(crate::widgets::info_tip(
+                                        format!("agent-stdin:{}", role.as_str()),
+                                        "Prompt will be sent via stdin; this is not a PTY terminal.",
+                                    ))
+                                }
+                            }),
                     ),
             )
         })
@@ -2433,6 +2500,26 @@ fn field(
                 .child(label),
         )
         .child(crate::sizing::sized_input(input, width))
+}
+
+/// A labelled input that fills its grid cell (the cell, not the content type, sets the width).
+fn grid_field(
+    label: &'static str,
+    input: gpui::Entity<crate::text_input::NativeTextInput>,
+) -> impl IntoElement {
+    div()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::text_muted())
+                .child(label),
+        )
+        .child(div().w_full().child(input))
 }
 
 fn api_detail_panel(
@@ -2476,11 +2563,7 @@ fn api_detail_panel(
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(
-                        div()
-                            .text_color(theme::agent_color(role))
-                            .child(descriptor.glyph),
-                    )
+                    .child(crate::widgets::status_dot(theme::agent_color(role)))
                     .child(
                         div()
                             .min_w_0()
@@ -2688,7 +2771,7 @@ fn api_inline_editor(
         .p_4()
         .rounded_lg()
         .border_1()
-        .border_color(theme::agent_color(role))
+        .border_color(theme::border())
         .bg(theme::surface())
         .flex()
         .flex_col()
@@ -2699,6 +2782,8 @@ fn api_inline_editor(
                 .flex_wrap()
                 .items_center()
                 .gap_2()
+                // Same marker as the CLI card: the agent colour beside the title, not the outline.
+                .child(crate::widgets::status_dot(theme::agent_color(role)))
                 .child(
                     div()
                         .flex_1()
@@ -2708,13 +2793,11 @@ fn api_inline_editor(
                 .child(crate::select_menu::control(
                     (SharedString::from(format!("api-cycle-route:{}", role.as_str()))).to_string(),
                     "Route",
-                    format!(
-                        "Route: {}",
-                        selected_route
-                            .as_ref()
-                            .map(|route| route.name.as_str())
-                            .unwrap_or("none")
-                    ),
+                    selected_route
+                        .as_ref()
+                        .map(|route| route.name.as_str())
+                        .unwrap_or("none")
+                        .to_string(),
                     !busy,
                     cx,
                 ))
@@ -2722,13 +2805,11 @@ fn api_inline_editor(
                     (SharedString::from(format!("api-cycle-connection:{}", role.as_str())))
                         .to_string(),
                     "Connection",
-                    format!(
-                        "Connection: {}",
-                        selected_connection
-                            .as_ref()
-                            .map(|connection| connection.display_name.as_str())
-                            .unwrap_or("none")
-                    ),
+                    selected_connection
+                        .as_ref()
+                        .map(|connection| connection.display_name.as_str())
+                        .unwrap_or("none")
+                        .to_string(),
                     !busy,
                     cx,
                 ))
@@ -2742,38 +2823,28 @@ fn api_inline_editor(
                 )),
         )
         .child(
+            // Two even columns, every field filling its cell, capped so a wide window does not
+            // stretch a model id across the screen.
             div()
+                .debug_selector(|| "api-form-grid".into())
+                .w_full()
+                .max_w(px(920.0))
                 .grid()
                 .grid_cols(2)
-                .gap_2()
-                .child(field(
-                    "CONNECTION NAME",
-                    connection_name,
-                    crate::sizing::INPUT_MEDIUM,
-                ))
-                .child(crate::select_menu::control(
-                    (format!("api-provider:{}", role.as_str())).to_string(),
+                .gap_x_4()
+                .gap_y_3()
+                .child(grid_field("CONNECTION NAME", connection_name))
+                .child(crate::select_menu::field_control(
+                    format!("api-provider:{}", role.as_str()),
                     "PROVIDER",
                     provider_id,
                     !busy,
                     cx,
                 ))
-                .child(field(
-                    "MODEL",
-                    connection_model,
-                    crate::sizing::INPUT_MEDIUM,
-                ))
-                .child(field(
-                    "ENDPOINT (WHEN ALLOWED)",
-                    connection_endpoint,
-                    crate::sizing::INPUT_LONG,
-                ))
-                .child(field(
-                    "API KEY · KEYRING",
-                    connection_secret,
-                    crate::sizing::INPUT_LONG,
-                ))
-                .child(field("ROUTE NAME", route_name, crate::sizing::INPUT_MEDIUM)),
+                .child(grid_field("MODEL", connection_model))
+                .child(grid_field("ENDPOINT (WHEN ALLOWED)", connection_endpoint))
+                .child(grid_field("API KEY · KEYRING", connection_secret))
+                .child(grid_field("ROUTE NAME", route_name)),
         )
         .child(
             div()
@@ -2828,11 +2899,6 @@ fn api_inline_editor(
                     cx,
                     move |model, cx| model.save_agent_api_binding(role, cx),
                 )),
-        )
-        .child(
-            div().text_xs().text_color(theme::text_muted()).child(
-                "Displays visible events and output only; internal reasoning is not captured.",
-            ),
         )
         .child(api_activity_viewer(
             model,
@@ -2919,7 +2985,7 @@ fn free_form_api_inline_editor(
         .p_4()
         .rounded_lg()
         .border_1()
-        .border_color(theme::accent())
+        .border_color(theme::border())
         .bg(theme::surface())
         .flex()
         .flex_col()
@@ -2969,13 +3035,11 @@ fn free_form_api_inline_editor(
                     .child(crate::select_menu::control(
                         format!("api-cycle-route:free-form:{slot_id}"),
                         "Route",
-                        format!(
-                            "Route: {}",
-                            selected_route
-                                .as_ref()
-                                .map(|route| route.name.as_str())
-                                .unwrap_or("none")
-                        ),
+                        selected_route
+                            .as_ref()
+                            .map(|route| route.name.as_str())
+                            .unwrap_or("none")
+                            .to_string(),
                         !busy,
                         cx,
                     ))
@@ -3046,12 +3110,10 @@ fn free_form_api_inline_editor(
                             },
                         ))
                     })
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_muted())
-                            .child("One stateless API round; no CLI session or resume."),
-                    ),
+                    .child(crate::widgets::info_tip(
+                        format!("api-free-form:{slot_id}"),
+                        "One stateless API round; no CLI session or resume.",
+                    )),
             )
         })
         .into_any_element()
@@ -3110,8 +3172,14 @@ fn api_activity_viewer(
                 .child(
                     div()
                         .flex_1()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("ACTIVITY AND OUTPUT"),
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child("ACTIVITY AND OUTPUT"))
+                        .child(crate::widgets::info_tip(
+                            format!("api-activity:{key}"),
+                            "Displays visible events and output only; internal reasoning is not captured.",
+                        )),
                 )
                 .child(action_button(
                     SharedString::from(format!("api-viewer-toggle:{key}")),
@@ -3134,16 +3202,9 @@ fn api_activity_viewer(
                     cx,
                     move |model, cx| model.cycle_agent_api_filter(key_for_filter.clone(), cx),
                 ))
-                .child(action_button(
+                .child(follow_button(
                     SharedString::from(format!("api-follow:{key}")),
-                    if follow_tail {
-                        "Follow active"
-                    } else {
-                        "Follow paused"
-                    }
-                    .into(),
-                    true,
-                    false,
+                    follow_tail,
                     cx,
                     move |model, cx| model.toggle_agent_follow_tail(key_for_follow.clone(), cx),
                 ))
@@ -3181,11 +3242,19 @@ fn api_activity_viewer(
                     cx,
                     move |model, cx| model.clear_agent_api_activity(target_for_clear.clone(), cx),
                 ))
-                .child(action_button(
+                .child(icon_action(
                     SharedString::from(format!("api-expand:{key}")),
-                    if expanded { "Collapse" } else { "Expand" }.into(),
+                    if expanded {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronUp
+                    },
+                    if expanded {
+                        "Collapse viewer"
+                    } else {
+                        "Expand viewer"
+                    },
                     true,
-                    false,
                     cx,
                     |model, cx| model.toggle_agents_terminal_expanded(cx),
                 )),
@@ -3197,6 +3266,9 @@ fn api_activity_viewer(
                 .min_h_0()
                 .when(expanded, |viewer| viewer.flex_1())
                 .when(!expanded, |viewer| viewer.h(px(250.0)))
+                // Own the wheel: the page around this viewer scrolls too, and wheel events reach every
+                // scrollable ancestor under the pointer. Scrolling up here used to lift the whole page.
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .overflow_y_scroll()
                 .p_2()
                 .rounded_md()
@@ -3325,6 +3397,9 @@ fn activity_panel_for_key(
         .min_h_0()
         .when(expanded, |panel| panel.flex_1())
         .when(!expanded, |panel| panel.h(px(250.0)))
+        // Own the wheel: the page around this viewer scrolls too, and wheel events reach every
+        // scrollable ancestor under the pointer. Scrolling up here used to lift the whole page.
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
         .p_2()
         .rounded_md()
         .bg(theme::canvas())
@@ -3356,11 +3431,11 @@ fn activity_panel_for_key(
                     }
                 )))
                 .when(!expanded, |header| {
-                    header.child(action_button(
+                    header.child(icon_action(
                         SharedString::from(expand_id),
-                        "Expand".into(),
+                        Icon::ChevronUp,
+                        "Expand terminal",
                         true,
-                        false,
                         cx,
                         |model, cx| model.toggle_agents_terminal_expanded(cx),
                     ))
@@ -3510,25 +3585,108 @@ fn config_button(
     handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
 ) -> impl IntoElement {
     let value = value.into();
+    // A picker (MODEL) reads like the selects beside it; a toggle (EXECUTABLE RISK) has no chevron.
+    let opens_list = label != "EXECUTABLE RISK";
     div()
         .id(SharedString::from(id))
-        // Label-over-value toggles read at a fixed width; they no longer fill the row.
+        // Label-over-value controls read at a fixed width; they no longer fill the row.
         .flex_shrink_0()
         .min_w(px(160.0))
         .max_w(px(360.0))
-        .p_2()
+        .px_3()
+        .py_2()
         .rounded_md()
         .border_1()
-        .border_color(theme::border())
+        .border_color(theme::border_strong())
         .bg(theme::surface_raised())
+        .opacity(if enabled { 1.0 } else { 0.55 })
         .when(enabled, |button| {
             button
                 .cursor_pointer()
-                .hover(|style| style.border_color(theme::accent()))
+                .hover(|style| style.bg(theme::surface_hover()))
                 .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
         })
         .child(div().text_xs().text_color(theme::text_muted()).child(label))
-        .child(div().text_sm().child(value))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .text_sm()
+                .child(div().min_w_0().text_ellipsis().child(value))
+                .when(opens_list, |row| {
+                    row.child(crate::widgets::icon(
+                        crate::icons::Icon::ChevronDown,
+                        px(14.0),
+                        theme::text_muted(),
+                    ))
+                }),
+        )
+}
+
+/// An arrow or an X in place of a worded button; the tooltip names the action.
+fn icon_action(
+    id: SharedString,
+    glyph: Icon,
+    tooltip: &'static str,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+    handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
+) -> AnyElement {
+    crate::widgets::icon_button(
+        id,
+        glyph,
+        tooltip,
+        false,
+        None,
+        enabled,
+        cx,
+        move |model, _, cx| handler(model, cx),
+    )
+}
+
+/// Follow keeps its words — they report a state — and explains what it does once the pointer
+/// has rested on it for a moment (or Tab reaches it).
+fn follow_button(
+    id: SharedString,
+    follow: bool,
+    cx: &mut Context<AppModel>,
+    handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
+) -> AnyElement {
+    let explanation = if follow {
+        "Following: the viewer keeps scrolling to the newest output as it arrives. Click to pause and read earlier lines."
+    } else {
+        "Paused: the viewer stays where you scrolled while new output keeps arriving. Click to follow the newest output again."
+    };
+    let selector = id.clone();
+    crate::widgets::button_frame(
+        div()
+            .id(id)
+            .debug_selector(move || selector.to_string())
+            .tab_index(0),
+        crate::widgets::ButtonVariant::Secondary,
+        true,
+    )
+    .tooltip(move |_, cx| {
+        cx.new(|_| {
+            crate::widgets::Tooltip::new(explanation).after_rest(crate::widgets::EXPLAIN_REST)
+        })
+        .into()
+    })
+    .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
+    .gap_2()
+    .child(crate::widgets::status_dot(if follow {
+        theme::success()
+    } else {
+        theme::text_subtle()
+    }))
+    .child(if follow {
+        "Follow active"
+    } else {
+        "Follow paused"
+    })
+    .into_any_element()
 }
 
 fn action_button(
@@ -3539,36 +3697,54 @@ fn action_button(
     cx: &mut Context<AppModel>,
     handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
 ) -> impl IntoElement {
-    let foreground = if enabled {
-        theme::canvas()
-    } else {
-        theme::text_muted()
-    };
     let is_copy = id.starts_with("agent-copy:") || id.starts_with("free-form-copy:");
-    div()
-        .id(id.clone())
-        .flex_shrink_0()
-        .when(is_copy, |d| d.w(px(84.0)))
-        .debug_selector(move || id.to_string())
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .bg(if enabled {
-            if danger {
-                theme::danger()
-            } else {
-                theme::accent()
-            }
-        } else {
-            theme::surface_raised()
-        })
-        .text_color(foreground)
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
-        })
-        .child(label)
+    // Starting, resuming, sending, validating and saving are the panel's primary acts; refresh,
+    // copy, filter, paging and layout controls stay secondary so one button leads at a time. In
+    // the API form only binding leads: saving a connection or a route are intermediate steps.
+    const PRIMARY: [&str; 13] = [
+        "agent-start:",
+        "agent-expanded-start:",
+        "agent-resume:",
+        "agent-save-fields:",
+        "free-form-start:",
+        "free-form-expanded-start:",
+        "free-form-resume:",
+        "free-form-save:",
+        "api-send-free-form:",
+        "api-save-binding:",
+        "api-bind-free-form:",
+        "fallback-validate:",
+        "fallback-retry:",
+    ];
+    let primary = PRIMARY.iter().any(|prefix| id.starts_with(prefix));
+    let variant = if danger {
+        crate::widgets::ButtonVariant::Danger
+    } else if primary {
+        crate::widgets::ButtonVariant::Primary
+    } else {
+        crate::widgets::ButtonVariant::Secondary
+    };
+    let glyph = crate::widgets::action_icon(&id);
+    crate::widgets::button_frame(
+        div()
+            .id(id.clone())
+            .when(is_copy, |d| d.w(px(84.0)))
+            .debug_selector(move || id.to_string()),
+        variant,
+        enabled,
+    )
+    .when(enabled, |button| {
+        button.on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
+    })
+    .gap_2()
+    .when_some(glyph, |button, glyph| {
+        button.child(crate::widgets::icon(
+            glyph,
+            px(14.0),
+            crate::widgets::button_ink(variant, enabled),
+        ))
+    })
+    .child(label)
 }
 
 fn chip(label: &'static str, color: Rgba) -> gpui::Div {
@@ -3584,14 +3760,39 @@ fn chip(label: &'static str, color: Rgba) -> gpui::Div {
 }
 
 fn empty_state(message: &'static str) -> AnyElement {
-    div()
-        .flex_1()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_color(theme::text_muted())
-        .child(message)
-        .into_any_element()
+    crate::widgets::empty_state(message)
+}
+
+/// Windows the quota line shows at most; the core already sorts them lowest first.
+const MAX_QUOTA_WINDOWS_SHOWN: usize = 4;
+/// Below this share left, a quota window is worth the warning colour.
+const LOW_QUOTA_PERCENT: u8 = 10;
+
+/// One muted line with what is left of a quota-billed CLI's allowance, e.g.
+/// `Quota · Claude and GPT models 2% (5h, resets 14/10/2026 18:11:40) · Gemini Models 92% (5h)`.
+/// Only the tightest window names its reset, the one that decides when work can resume.
+fn quota_line(quota: &[hvc_core::terminals::CliQuotaBucket]) -> Option<(String, bool)> {
+    let first = quota.first()?;
+    let parts = quota
+        .iter()
+        .take(MAX_QUOTA_WINDOWS_SHOWN)
+        .enumerate()
+        .map(|(index, bucket)| {
+            let reset = (index == 0)
+                .then_some(bucket.reset_time.as_deref())
+                .flatten()
+                .map(|reset| format!(", resets {}", crate::time::format_timestamp(reset)))
+                .unwrap_or_default();
+            format!(
+                "{} {}% ({}{reset})",
+                bucket.group, bucket.remaining_percent, bucket.window
+            )
+        })
+        .collect::<Vec<_>>();
+    Some((
+        format!("Quota · {}", parts.join(" · ")),
+        first.remaining_percent < LOW_QUOTA_PERCENT,
+    ))
 }
 
 fn availability_status(
@@ -3634,6 +3835,32 @@ fn status_color(status: Option<TerminalRunStatus>) -> Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_quota_line_is_bounded_and_warns_only_when_the_tightest_window_is_low() {
+        let bucket = |group: &str, percent: u8| hvc_core::terminals::CliQuotaBucket {
+            group: group.into(),
+            window: "5h".into(),
+            remaining_percent: percent,
+            reset_time: Some("not a timestamp".into()),
+        };
+        assert_eq!(quota_line(&[]), None);
+        let (line, low) = quota_line(&[
+            bucket("Claude and GPT models", 2),
+            bucket("Gemini Models", 92),
+            bucket("Gemini Models", 95),
+            bucket("Claude and GPT models", 96),
+            bucket("Hidden", 99),
+        ])
+        .unwrap();
+        assert!(low);
+        assert!(line.starts_with("Quota · Claude and GPT models 2% (5h, resets not a timestamp)"));
+        assert!(line.contains("Gemini Models 92% (5h)"));
+        assert!(!line.contains("Hidden"), "at most four windows are shown");
+        assert_eq!(line.matches("resets").count(), 1);
+        let (_, low) = quota_line(&[bucket("Gemini Models", 40)]).unwrap();
+        assert!(!low);
+    }
 
     #[test]
     fn searchable_model_picker_filters_a_thousand_entries_by_all_supported_fields() {

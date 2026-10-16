@@ -1,29 +1,51 @@
 use std::path::Path;
 
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
-use hvc_core::workspace_service::{FileNode, FileNodeKind};
 use hvc_editor::{MarkdownBlock, parse_markdown};
 
 use crate::app_model::AppModel;
+use crate::file_tree::TreeRow;
 use crate::theme;
-use crate::workspace::{BrownfieldOnboardingModel, BrownfieldOnboardingState, WorkspaceTabModel};
-
-#[derive(Clone)]
-struct WorkspaceTreeRow {
-    depth: usize,
-    node: FileNode,
-}
+use crate::workspace::{
+    BrownfieldOnboardingModel, BrownfieldOnboardingState, TabSummary, WorkspaceTabModel,
+};
 
 pub(crate) fn workspace_content_panel(
     model: &AppModel,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
-    let (root_path, tree, tabs, active_path, editor, context_drawer_open, brownfield) = {
+    // Only summaries leave the model: cloning every tab's text (twice) and the whole tree on
+    // every frame used to cost tens of megabytes per frame with a few large files open.
+    let (
+        root_path,
+        tree_rows,
+        tree_capped,
+        tabs,
+        active_tab,
+        preview,
+        preview_mode,
+        active_path,
+        editor,
+        context_drawer_open,
+        brownfield,
+    ) = {
         let workspace = model.workspace.read(cx);
+        let active = workspace.active_tab();
         (
             workspace.root_path.clone(),
-            workspace.tree.clone(),
-            workspace.tabs.clone(),
+            crate::file_tree::flatten(&workspace.tree, &workspace.folders),
+            crate::file_tree::is_capped(&workspace.tree),
+            workspace
+                .tabs
+                .iter()
+                .map(WorkspaceTabModel::summary)
+                .collect::<Vec<_>>(),
+            active.map(WorkspaceTabModel::summary),
+            // Parsed only while the preview is what the developer is looking at.
+            active
+                .filter(|_| workspace.preview_mode)
+                .map(|tab| parse_markdown(&tab.content)),
+            workspace.preview_mode,
             workspace
                 .active_relative_path
                 .as_ref()
@@ -33,16 +55,10 @@ pub(crate) fn workspace_content_panel(
             workspace.brownfield.clone(),
         )
     };
-    let active_tab = active_path
-        .as_deref()
-        .and_then(|path| tabs.iter().find(|tab| tab.relative_path.as_ref() == path))
-        .cloned();
-    let mut tree_rows = Vec::new();
-    flatten_workspace_tree(&tree, 0, &mut tree_rows);
     let root_label = root_path
         .as_ref()
-        .map(ToString::to_string)
-        .unwrap_or_else(|| "Nenhum workspace selecionado".into());
+        .map(|root| crate::widgets::display_path(root))
+        .unwrap_or_else(|| "No workspace selected".into());
     let active_for_conflict = active_path.clone();
     let context_documents = {
         let vault = model.vault.read(cx);
@@ -63,20 +79,19 @@ pub(crate) fn workspace_content_panel(
         .min_w_0()
         .min_h_0()
         .rounded_lg()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
         .overflow_hidden()
         .child(workspace_editor_surface(
-            tabs.clone(),
+            tabs,
             active_path.clone(),
             active_tab.clone(),
+            preview,
+            preview_mode,
             editor,
-            &model.workspace_preview_split,
             cx,
         ))
         .into_any_element();
-    let tree_panel = workspace_tree_panel(tree_rows, active_path.as_deref(), cx).into_any_element();
+    let tree_panel =
+        workspace_tree_panel(tree_rows, tree_capped, active_path.as_deref(), cx).into_any_element();
     let columns = crate::split_pane::split_pane(
         "workspace-columns",
         &model.workspace_tree_split,
@@ -129,19 +144,21 @@ pub(crate) fn workspace_content_panel(
                 )
                 .child(
                     div().flex().items_center().gap_2().child(
-                        div()
-                            .id("choose-workspace")
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .bg(theme::accent())
-                            .text_color(theme::canvas())
-                            .cursor_pointer()
-                            .hover(|style| style.opacity(0.88))
-                            .on_click(cx.listener(|model, _, window, cx| {
-                                model.choose_workspace(window, cx);
-                            }))
-                            .child("Abrir workspace"),
+                        crate::widgets::button_frame(
+                            div().id("choose-workspace"),
+                            crate::widgets::ButtonVariant::Secondary,
+                            true,
+                        )
+                        .on_click(cx.listener(|model, _, window, cx| {
+                            model.choose_workspace(window, cx);
+                        }))
+                        .child(crate::widgets::icon(
+                            crate::icons::Icon::FolderOpen,
+                            px(14.0),
+                            theme::text_muted(),
+                        ))
+                        .gap_2()
+                        .child("Open workspace"),
                     ),
                 ),
         )
@@ -238,21 +255,23 @@ pub(crate) fn workspace_content_panel(
                 )
             },
         )
-        .child(
-            div()
-                .id("workspace-save-feedback")
-                .h(px(40.0))
-                .flex_shrink_0()
-                .overflow_y_scroll()
-                .px_2()
-                .text_sm()
-                .text_color(theme::danger())
-                .child(
-                    active_tab
-                        .as_ref()
-                        .and_then(|tab| tab.save_error.clone())
-                        .unwrap_or_default(),
-                ),
+        // Only takes room when a save failed; an always-reserved slot left a blank band above
+        // the tree.
+        .when_some(
+            active_tab.as_ref().and_then(|tab| tab.save_error.clone()),
+            |panel, save_error| {
+                panel.child(
+                    div()
+                        .id("workspace-save-feedback")
+                        .max_h(px(40.0))
+                        .flex_shrink_0()
+                        .overflow_y_scroll()
+                        .px_2()
+                        .text_sm()
+                        .text_color(theme::danger())
+                        .child(save_error),
+                )
+            },
         )
         .child(
             div()
@@ -309,6 +328,7 @@ fn brownfield_onboarding_card(
             }
         )
     });
+    let consent_pending = onboarding.state == BrownfieldOnboardingState::Pending;
     let active_source = active_path.filter(|path| is_brownfield_source_path(path));
     let active_is_ignored = active_source
         .as_ref()
@@ -323,13 +343,28 @@ fn brownfield_onboarding_card(
         .flex()
         .flex_col()
         .gap_2()
-        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title))
         .child(
             div()
-                .text_sm()
-                .text_color(theme::text_muted())
-                .child(description),
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title))
+                .when(!consent_pending, |row| {
+                    row.child(crate::widgets::info_tip(
+                        "brownfield-onboarding",
+                        description,
+                    ))
+                }),
         )
+        // What the user is consenting to stays readable before they answer.
+        .when(consent_pending, |card| {
+            card.child(
+                div()
+                    .text_sm()
+                    .text_color(theme::text_muted())
+                    .child(description),
+            )
+        })
         .when_some(inventory_summary, |card, summary| {
             card.child(div().text_sm().child(summary))
         })
@@ -478,28 +513,22 @@ fn brownfield_ignore_button(
     disabled: bool,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
-    div()
-        .id("brownfield-ignore-source")
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .bg(theme::surface())
-        .text_color(theme::text())
-        .opacity(if disabled { 0.55 } else { 1.0 })
-        .when(!disabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.opacity(0.88))
-                .on_click(cx.listener(move |model, _, _, cx| {
-                    model.set_active_brownfield_ignored(!ignored, cx);
-                }))
-        })
-        .child(if ignored {
-            "Reativar no mapa"
-        } else {
-            "Ignorar no mapa"
-        })
-        .into_any_element()
+    crate::widgets::button_frame(
+        div().id("brownfield-ignore-source"),
+        crate::widgets::ButtonVariant::Secondary,
+        !disabled,
+    )
+    .when(!disabled, |button| {
+        button.on_click(cx.listener(move |model, _, _, cx| {
+            model.set_active_brownfield_ignored(!ignored, cx);
+        }))
+    })
+    .child(if ignored {
+        "Map it again"
+    } else {
+        "Ignore in map"
+    })
+    .into_any_element()
 }
 
 fn brownfield_action_button(
@@ -509,33 +538,23 @@ fn brownfield_action_button(
     disabled: bool,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
-    div()
-        .id(id)
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .bg(if consent {
-            theme::accent()
+    crate::widgets::button_frame(
+        div().id(id),
+        if consent {
+            crate::widgets::ButtonVariant::Primary
         } else {
-            theme::surface()
-        })
-        .text_color(if consent {
-            theme::canvas()
-        } else {
-            theme::text()
-        })
-        .opacity(if disabled { 0.55 } else { 1.0 })
-        .when(!disabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.opacity(0.88))
-                .on_click(cx.listener(move |model, _, _, cx| {
-                    model.set_confirm_brownfield_revoke(false, cx);
-                    model.set_brownfield_mapping_enabled(consent, cx);
-                }))
-        })
-        .child(label)
-        .into_any_element()
+            crate::widgets::ButtonVariant::Secondary
+        },
+        !disabled,
+    )
+    .when(!disabled, |button| {
+        button.on_click(cx.listener(move |model, _, _, cx| {
+            model.set_confirm_brownfield_revoke(false, cx);
+            model.set_brownfield_mapping_enabled(consent, cx);
+        }))
+    })
+    .child(label)
+    .into_any_element()
 }
 
 fn brownfield_revoke_button(
@@ -543,55 +562,37 @@ fn brownfield_revoke_button(
     disabled: bool,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
-    div()
-        .id("brownfield-revoke")
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .tab_index(0)
-        .bg(if confirming {
-            theme::danger()
-        } else {
-            theme::surface()
-        })
-        .text_color(if confirming {
-            theme::canvas()
-        } else {
-            theme::text()
-        })
-        .opacity(if disabled { 0.55 } else { 1.0 })
-        .when(!disabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.opacity(theme::HOVER_OPACITY))
-                .on_click(cx.listener(move |model, _, _, cx| {
-                    if confirming {
-                        model.set_brownfield_mapping_enabled(false, cx);
-                    } else {
-                        model.set_confirm_brownfield_revoke(true, cx);
-                    }
-                }))
-        })
-        .child(if confirming {
-            "Confirm revocation"
-        } else {
-            "Revoke consent"
-        })
-        .into_any_element()
-}
-
-fn flatten_workspace_tree(nodes: &[FileNode], depth: usize, rows: &mut Vec<WorkspaceTreeRow>) {
-    for node in nodes {
-        rows.push(WorkspaceTreeRow {
-            depth,
-            node: node.clone(),
-        });
-        flatten_workspace_tree(&node.children, depth.saturating_add(1), rows);
-    }
+    crate::widgets::button_frame(
+        div().id("brownfield-revoke").tab_index(0),
+        crate::widgets::ButtonVariant::Danger,
+        !disabled,
+    )
+    .when(!disabled && confirming, |button| {
+        button
+            .bg(theme::danger())
+            .border_color(theme::danger())
+            .text_color(theme::canvas())
+    })
+    .when(!disabled, |button| {
+        button.on_click(cx.listener(move |model, _, _, cx| {
+            if confirming {
+                model.set_brownfield_mapping_enabled(false, cx);
+            } else {
+                model.set_confirm_brownfield_revoke(true, cx);
+            }
+        }))
+    })
+    .child(if confirming {
+        "Confirm revocation"
+    } else {
+        "Revoke consent"
+    })
+    .into_any_element()
 }
 
 fn workspace_tree_panel(
-    rows: Vec<WorkspaceTreeRow>,
+    rows: Vec<TreeRow>,
+    capped: bool,
     active_path: Option<&str>,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
@@ -602,75 +603,82 @@ fn workspace_tree_panel(
         .min_h_0()
         .p_2()
         .rounded_lg()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
         .overflow_y_scroll()
         .child(
             div()
                 .px_2()
                 .pb_2()
                 .text_xs()
-                .text_color(theme::text_muted())
-                .child("ARQUIVOS"),
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(theme::text_subtle())
+                .child("FILES"),
         )
         .children(rows.into_iter().enumerate().map(|(index, row)| {
-            let is_file = matches!(row.node.kind, FileNodeKind::File);
-            let path = row.node.relative_path.clone();
-            let is_active = is_file && active_path == Some(path.as_str());
+            let path = row.relative_path.clone();
+            let is_active = !row.is_dir && active_path == Some(path.as_str());
             div()
                 .id(SharedString::from(format!("workspace-tree-{index}")))
-                .pl(px(8.0 + row.depth as f32 * 14.0))
+                .debug_selector({
+                    let path = path.clone();
+                    move || format!("workspace-tree:{path}")
+                })
+                .tooltip(crate::widgets::text_tooltip(path.clone()))
+                .pl(px(4.0 + row.depth as f32 * 14.0))
                 .pr_2()
                 .py_1()
-                .rounded_sm()
+                .rounded_md()
+                .flex()
+                .items_center()
                 .text_sm()
+                .cursor_pointer()
                 .text_color(if is_active {
                     theme::accent()
-                } else if is_file {
-                    theme::text()
-                } else {
+                } else if row.is_dir {
                     theme::text_muted()
+                } else {
+                    theme::text()
                 })
                 .when(is_active, |item| {
                     item.bg(theme::accent_soft())
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .border_l_2()
-                        .border_color(theme::accent())
+                        .font_weight(gpui::FontWeight::MEDIUM)
                 })
-                .when(is_file, |item| {
-                    item.cursor_pointer()
-                        .hover(|style| style.bg(theme::surface_raised()))
-                        .on_click(cx.listener(move |model, _, _, cx| {
-                            model.open_workspace_file(path.clone(), cx);
-                        }))
+                .when(!is_active, |item| {
+                    item.hover(|style| style.bg(theme::surface_raised()))
                 })
-                .child(format!(
-                    "{} {}",
-                    if is_active {
-                        "▶"
-                    } else if is_file {
-                        "·"
+                .on_click(cx.listener(move |model, _, _, cx| {
+                    if row.is_dir {
+                        model.toggle_workspace_folder(&path, cx);
                     } else {
-                        "▾"
+                        model.open_workspace_file(path.clone(), cx);
+                    }
+                }))
+                .child(crate::widgets::tree_row_label(
+                    row.is_dir.then_some(row.expanded),
+                    row.name,
+                    if is_active {
+                        theme::accent()
+                    } else {
+                        theme::text_muted()
                     },
-                    row.node.name
                 ))
         }))
+        .when(capped, |panel| {
+            panel.child(crate::widgets::tree_capped_notice())
+        })
 }
 
+// Every piece is a plain value handed down from the panel's single read of the model.
+#[allow(clippy::too_many_arguments)]
 fn workspace_editor_surface(
-    tabs: Vec<WorkspaceTabModel>,
+    tabs: Vec<TabSummary>,
     active_path: Option<String>,
-    active_tab: Option<WorkspaceTabModel>,
+    active_tab: Option<TabSummary>,
+    preview: Option<Vec<MarkdownBlock>>,
+    preview_mode: bool,
     editor: gpui::Entity<crate::NativeEditor>,
-    split: &gpui::Entity<crate::split_pane::SplitPaneState>,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
-    let preview = active_tab
-        .as_ref()
-        .map(|tab| parse_markdown(&tab.content))
-        .unwrap_or_default();
+    let has_file = active_tab.is_some();
     div()
         .size_full()
         .min_h_0()
@@ -710,13 +718,13 @@ fn workspace_editor_surface(
                         .on_click(cx.listener(move |model, _, _, cx| {
                             model.select_workspace_tab(&path, cx);
                         }))
-                        .child(tab.file_name().to_owned())
+                        .child(tab.file_name.clone())
                         .when(tab.saving, |item| {
                             item.child(
                                 div()
                                     .text_xs()
-                                    .text_color(theme::accent())
-                                    .child("salvando"),
+                                    .text_color(theme::text_muted())
+                                    .child("saving"),
                             )
                         })
                         .when(tab.dirty && !tab.saving, |item| {
@@ -740,52 +748,90 @@ fn workspace_editor_surface(
                 })),
         )
         .when(active_tab.is_none(), |surface| {
+            surface.child(crate::widgets::empty_panel(
+                crate::icons::Icon::FileText,
+                "No file open",
+                "Open a Markdown or text file in the tree to get started.",
+            ))
+        })
+        .when(has_file, |surface| {
             surface.child(
                 div()
-                    .flex_1()
+                    .flex_shrink_0()
                     .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(theme::text_muted())
-                    .child("Open a Markdown or text file in the tree to get started."),
+                    .justify_end()
+                    .px_3()
+                    .pt_2()
+                    .child(
+                        crate::widgets::segment_track(
+                            div()
+                                .id("workspace-view-mode")
+                                .debug_selector(|| "workspace-view-mode".into()),
+                        )
+                        .child(
+                            crate::widgets::segment(
+                                div()
+                                    .id("workspace-mode-edit")
+                                    .debug_selector(|| "workspace-mode-edit".into()),
+                                !preview_mode,
+                            )
+                            .on_click(
+                                cx.listener(|model, _, _, cx| {
+                                    model.set_workspace_preview(false, cx)
+                                }),
+                            )
+                            .child("Edit"),
+                        )
+                        .child(
+                            crate::widgets::segment(
+                                div()
+                                    .id("workspace-mode-preview")
+                                    .debug_selector(|| "workspace-mode-preview".into()),
+                                preview_mode,
+                            )
+                            .on_click(
+                                cx.listener(|model, _, _, cx| {
+                                    model.set_workspace_preview(true, cx)
+                                }),
+                            )
+                            .child("Preview"),
+                        ),
+                    ),
             )
         })
-        .when(active_tab.is_some(), |surface| {
+        .when(has_file && !preview_mode, |surface| {
             surface.child(
-                div().flex_1().min_h_0().min_w_0().overflow_hidden().child(
-                    crate::split_pane::split_pane(
-                        "workspace-editor-columns",
-                        split,
-                        div()
-                            .id("workspace-editor-viewport")
-                            .debug_selector(|| "workspace-editor-viewport".into())
-                            .size_full()
-                            .min_w_0()
-                            .min_h_0()
-                            .overflow_hidden()
-                            .p_3()
-                            .child(editor)
-                            .into_any_element(),
-                        div()
-                            .id("workspace-markdown-preview")
-                            .debug_selector(|| "workspace-markdown-preview".into())
-                            .size_full()
-                            .min_w_0()
-                            .min_h_0()
-                            .p_4()
-                            .overflow_scroll()
-                            .child(
-                                div()
-                                    .pb_3()
-                                    .text_sm()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("Markdown Preview"),
-                            )
-                            .children(preview.into_iter().map(render_markdown_block))
-                            .into_any_element(),
-                        cx,
+                div()
+                    .id("workspace-editor-viewport")
+                    .debug_selector(|| "workspace-editor-viewport".into())
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .p_3()
+                    .child(editor),
+            )
+        })
+        .when(has_file && preview_mode, |surface| {
+            surface.child(
+                div()
+                    .id("workspace-markdown-preview")
+                    .debug_selector(|| "workspace-markdown-preview".into())
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px_6()
+                    .py_4()
+                    .child(
+                        // Prose reads best at a bounded measure on wide windows.
+                        div().max_w(px(820.0)).children(
+                            preview
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(render_markdown_block),
+                        ),
                     ),
-                ),
             )
         })
 }
@@ -866,23 +912,23 @@ pub(crate) fn render_markdown_block(block: MarkdownBlock) -> AnyElement {
 }
 
 fn context_drawer(
-    active_tab: Option<&WorkspaceTabModel>,
+    active_tab: Option<&TabSummary>,
     documents: Vec<(String, String)>,
 ) -> impl IntoElement {
     let (path, revision, state) = active_tab.map_or_else(
-        || ("Nenhum arquivo".into(), "—".into(), "ocioso".into()),
+        || ("No file".into(), "—".into(), "idle".into()),
         |tab| {
             (
                 tab.relative_path.to_string(),
                 tab.revision.clone(),
                 if tab.conflict.is_some() {
-                    "conflito"
+                    "conflict"
                 } else if tab.saving {
-                    "salvando"
+                    "saving"
                 } else if tab.dirty {
-                    "alterado"
+                    "modified"
                 } else {
-                    "sincronizado"
+                    "in sync"
                 }
                 .into(),
             )
@@ -900,9 +946,6 @@ fn context_drawer(
         .overflow_y_scroll()
         .p_3()
         .rounded_lg()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
         .flex()
         .flex_col()
         .gap_3()

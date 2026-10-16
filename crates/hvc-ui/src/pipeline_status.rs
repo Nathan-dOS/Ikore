@@ -1,7 +1,7 @@
 //! "Where is the active pulsation right now" — shared by the flow-bar status pill
 //! (`shell.rs`, visible in every view) and the Agents header stepper (`agents_view.rs`).
 
-use gpui::{Rgba, rgb};
+use gpui::Rgba;
 use hvc_core::llm::AgentRole;
 use hvc_core::persistence_service::{Pulsation, PulsationStage, PulsationStatus};
 use hvc_core::terminals::{TerminalRunStatus, TerminalsSnapshot, canonical_agent};
@@ -46,8 +46,7 @@ impl StatusTone {
 
     pub(crate) fn color(self) -> Rgba {
         match self {
-            // Same blue the Pulsations view uses for in-flight states.
-            Self::Active => rgb(0x73b7ff),
+            Self::Active => theme::running(),
             Self::Attention => theme::warning(),
             Self::Failure => theme::danger(),
             Self::Success => theme::success(),
@@ -76,8 +75,14 @@ impl PipelineStatus {
             .position(|candidate| *candidate == stage)
             .unwrap_or_default();
         let role = AgentRole::for_stage(stage_label(stage));
+        // A settled pulsation speaks for itself: its last run may have completed before the
+        // pulsation was cancelled or failed, and "Completed" on a failed pulsation misleads.
+        let settled = matches!(
+            active.status,
+            PulsationStatus::Done | PulsationStatus::Failed | PulsationStatus::Checkpoint
+        );
         // Prefer the run still in flight for this pulsation; otherwise the latest one for it.
-        let run = snapshot.and_then(|snapshot| {
+        let run = snapshot.filter(|_| !settled).and_then(|snapshot| {
             let agent = snapshot
                 .agents
                 .iter()
@@ -109,16 +114,6 @@ impl PipelineStatus {
         }
     }
 
-    /// e.g. "Code · BackendAgent · Running"
-    pub(crate) fn summary(&self) -> String {
-        format!(
-            "{} · {} · {}",
-            compact_stage_label(self.stage),
-            self.agent_name,
-            self.state
-        )
-    }
-
     pub(crate) fn stage_complete(&self, index: usize) -> bool {
         index < self.stage_index
             || (self.pulsation_status == PulsationStatus::Done && index == self.stage_index)
@@ -129,20 +124,141 @@ impl PipelineStatus {
         match self.pulsation_status {
             PulsationStatus::Failed => theme::danger(),
             PulsationStatus::Checkpoint => theme::warning(),
-            _ => theme::accent(),
+            PulsationStatus::Done => theme::success(),
+            _ => theme::running(),
         }
     }
 }
 
-pub(crate) fn compact_stage_label(stage: PulsationStage) -> &'static str {
-    match stage {
-        PulsationStage::Intake => "Int",
-        PulsationStage::Specification => "Spec",
-        PulsationStage::Contract => "Ctr",
-        PulsationStage::Code => "Code",
-        PulsationStage::Test => "Test",
-        PulsationStage::Integrator => "Intg",
+/// The header's centre readout: who is executing right now, or — when no runtime slot is held —
+/// the selected pulsation's settled state.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NowRunning {
+    pub dot: Rgba,
+    pub text: String,
+    /// `true` while some job holds a runtime slot; the header tints its pill only then.
+    pub busy: bool,
+    /// The other slot's work when both a stage and a background job run.
+    pub also: Option<String>,
+}
+
+impl NowRunning {
+    pub(crate) fn derive(
+        pulsations: &crate::pulsations::PulsationsModel,
+        snapshot: Option<&TerminalsSnapshot>,
+        now: chrono::DateTime<chrono::Local>,
+    ) -> Self {
+        let mut jobs = pulsations.active_jobs.iter();
+        if let Some(job) = jobs.next() {
+            let feature = job
+                .feature_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty());
+            let stage_run = job
+                .kind
+                .strip_prefix("run_stage::")
+                .and(job.pulsation_id.as_deref())
+                .and_then(|id| pulsations.pulsations.iter().find(|p| p.id == id));
+            let mut text = match stage_run {
+                Some(pulsation) => {
+                    let status = PipelineStatus::derive(pulsation, snapshot);
+                    format!(
+                        "{} · {} · {}",
+                        step_label(status.stage),
+                        status.agent_name,
+                        status.state
+                    )
+                }
+                None => {
+                    let (actor, activity) = job_activity(&job.kind);
+                    format!("{activity} · {actor}")
+                }
+            };
+            if let Some(feature) = feature {
+                text = format!("{feature} · {text}");
+            }
+            if let Some(elapsed) = elapsed_since(&job.acquired_at, now) {
+                text = format!("{text} · {elapsed}");
+            }
+            return Self {
+                dot: theme::running(),
+                text,
+                busy: true,
+                also: jobs
+                    .next()
+                    .map(|other| job_activity(&other.kind).1.to_string()),
+            };
+        }
+        match pulsations.active() {
+            Some(active) => {
+                let status = PipelineStatus::derive(active, snapshot);
+                let feature = active.feature_name.trim();
+                let settled = format!("{} · {}", step_label(status.stage), status.state);
+                Self {
+                    dot: status.tone.color(),
+                    text: if feature.is_empty() {
+                        format!("Idle · last: {settled}")
+                    } else {
+                        format!("Idle · last: {feature} · {settled}")
+                    },
+                    busy: false,
+                    also: None,
+                }
+            }
+            None => Self {
+                dot: theme::text_muted(),
+                text: "Idle · no pulsation yet".into(),
+                busy: false,
+                also: None,
+            },
+        }
     }
+}
+
+/// `(actor, activity)` for a held slot's `kind`: a `jobs.kind`, or a slot token prefix for work
+/// without a job row (see `ActiveRuntimeJob`).
+pub(crate) fn job_activity(kind: &str) -> (&'static str, &'static str) {
+    if let Some(stage) = kind.strip_prefix("run_stage::")
+        && let Some(stage) = PIPELINE_STAGES
+            .into_iter()
+            .find(|candidate| stage_label(*candidate).eq_ignore_ascii_case(stage))
+    {
+        return (
+            canonical_agent(AgentRole::for_stage(stage_label(stage))).name,
+            step_label(stage),
+        );
+    }
+    match kind {
+        "learning_report" => ("LearningAgent", "Learning report"),
+        "learning-publish" => ("LearningAgent", "Publishing learning notes"),
+        "index_embedding" | "index-scan" => ("Embeddings", "Indexing knowledge"),
+        "prepare_context" => ("Preparation", "Preparing context"),
+        "brownfield_map" => ("Brownfield", "Mapping the codebase"),
+        "brownfield_enrich" => ("Brownfield", "Enriching component notes"),
+        "brownfield_resolve" => ("Brownfield", "Resolving references"),
+        "component-publish" => ("Brownfield", "Publishing component notes"),
+        "user_task" => ("Brownfield", "Running a task"),
+        "publication" => ("Publisher", "Publishing artifacts"),
+        "busy" => ("Cleanup", "Removing leftover files"),
+        _ => ("Runtime", "Background work"),
+    }
+}
+
+/// `m:ss` since `acquired_at`, or `None` when the timestamp does not parse.
+fn elapsed_since(acquired_at: &str, now: chrono::DateTime<chrono::Local>) -> Option<String> {
+    let started = crate::time::parse_to_local(acquired_at)?;
+    let seconds = (now - started).num_seconds().max(0);
+    Some(if seconds >= 3600 {
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    } else {
+        format!("{}:{:02}", seconds / 60, seconds % 60)
+    })
 }
 
 pub(crate) fn step_label(stage: PulsationStage) -> &'static str {
@@ -159,6 +275,7 @@ pub(crate) fn step_label(stage: PulsationStage) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hvc_core::persistence_service::ActiveRuntimeJob;
 
     fn pulsation(
         stage: PulsationStage,
@@ -183,7 +300,10 @@ mod tests {
             &pulsation(PulsationStage::Code, PulsationStatus::Running, None),
             None,
         );
-        assert_eq!(running.summary(), "Code · BackendAgent · Running");
+        assert_eq!(
+            format!("{} · {}", running.agent_name, running.state),
+            "BackendAgent · Running"
+        );
         assert_eq!(running.tone, StatusTone::Active);
         assert_eq!(running.stage_index, 3);
         assert!(running.stage_complete(2));
@@ -195,7 +315,7 @@ mod tests {
         );
         assert!(done.stage_complete(5));
         assert_eq!(done.tone, StatusTone::Success);
-        assert_eq!(done.current_fill(), theme::accent());
+        assert_eq!(done.current_fill(), theme::success());
 
         let cancelled = PipelineStatus::derive(
             &pulsation(
@@ -208,6 +328,85 @@ mod tests {
         assert_eq!(cancelled.state, "Cancelled");
         assert_eq!(cancelled.tone, StatusTone::Failure);
         assert_eq!(cancelled.current_fill(), theme::danger());
+    }
+
+    fn job(class: &str, kind: &str, pulse: Option<&str>) -> ActiveRuntimeJob {
+        ActiveRuntimeJob {
+            job_class: class.into(),
+            kind: kind.into(),
+            pulsation_id: pulse.map(str::to_string),
+            feature_name: pulse.map(|_| "Feature".to_string()),
+            acquired_at: "2026-09-24T12:00:00Z".into(),
+        }
+    }
+
+    fn at(offset_seconds: i64) -> chrono::DateTime<chrono::Local> {
+        chrono::DateTime::parse_from_rfc3339("2026-09-24T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            + chrono::Duration::seconds(offset_seconds)
+    }
+
+    #[test]
+    fn header_names_the_background_job_that_outlives_its_pulsation() {
+        let mut model = crate::pulsations::PulsationsModel {
+            pulsations: vec![pulsation(
+                PulsationStage::Integrator,
+                PulsationStatus::Done,
+                None,
+            )],
+            ..Default::default()
+        };
+
+        // Nothing holds a slot: the readout says so and shows the settled state in green.
+        let idle = NowRunning::derive(&model, None, at(0));
+        assert!(!idle.busy);
+        assert_eq!(idle.text, "Idle · last: Feature · Integrator · Done");
+        assert_eq!(idle.dot, theme::success());
+
+        // The Learning report that runs after the pulsation finished is named, with its age.
+        model.active_jobs = vec![job("background", "learning_report", Some("pulse"))];
+        let learning = NowRunning::derive(&model, None, at(42));
+        assert!(learning.busy);
+        assert_eq!(learning.dot, theme::running());
+        assert_eq!(
+            learning.text,
+            "Feature · Learning report · LearningAgent · 0:42"
+        );
+        assert_eq!(learning.also, None);
+    }
+
+    #[test]
+    fn header_prefers_the_stage_run_and_mentions_the_background_one() {
+        let model = crate::pulsations::PulsationsModel {
+            pulsations: vec![pulsation(
+                PulsationStage::Code,
+                PulsationStatus::Running,
+                None,
+            )],
+            active_jobs: vec![
+                job("main", "run_stage::Code", Some("pulse")),
+                job("background", "index_embedding", None),
+            ],
+            ..Default::default()
+        };
+        let now = NowRunning::derive(&model, None, at(3_725));
+        assert_eq!(
+            now.text,
+            "Feature · Code · BackendAgent · Running · 1:02:05"
+        );
+        assert_eq!(now.also.as_deref(), Some("Indexing knowledge"));
+    }
+
+    #[test]
+    fn slot_kinds_without_a_job_row_still_have_a_name() {
+        assert_eq!(job_activity("run_stage::SPECIFICATION").1, "Spec");
+        assert_eq!(
+            job_activity("publication"),
+            ("Publisher", "Publishing artifacts")
+        );
+        assert_eq!(job_activity("busy").1, "Removing leftover files");
+        assert_eq!(job_activity("something-new").1, "Background work");
     }
 
     #[test]

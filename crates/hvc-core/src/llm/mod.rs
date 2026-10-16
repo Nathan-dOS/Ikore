@@ -1,4 +1,5 @@
 pub mod adapter;
+pub mod api_model_catalog;
 pub mod catalog;
 pub mod compression;
 pub mod credentials;
@@ -13,6 +14,7 @@ pub mod router;
 pub mod scoring;
 pub mod streaming;
 
+pub use api_model_catalog::*;
 pub use catalog::*;
 pub use compression::*;
 pub use credentials::*;

@@ -86,7 +86,7 @@ impl PersistenceService {
                 params![job,current.id,now,current.project_id,input_revision,state_version,format!("brownfield-enrich:{}",current.id),serde_json::json!({"budgetCalls":0,"state":"budget_exhausted"}).to_string()],
             )?;
             db.execute(
-                "INSERT INTO brownfield_enrichment_runs(job_id,project_id,pulsation_id,state,expansion_radius,budget_limit,budget_calls,max_proposals,max_tokens_per_note,seed_paths_json,diagnostic,created_at,updated_at) VALUES(?1,?2,?3,'budget_exhausted',?4,0,0,2,1200,?5,'Orçamento configurado como zero; nenhuma chamada LLM realizada.',?6,?6)",
+                "INSERT INTO brownfield_enrichment_runs(job_id,project_id,pulsation_id,state,expansion_radius,budget_limit,budget_calls,max_proposals,max_tokens_per_note,seed_paths_json,diagnostic,created_at,updated_at) VALUES(?1,?2,?3,'budget_exhausted',?4,0,0,2,1200,?5,'Budget set to zero; no LLM call made.',?6,?6)",
                 params![job,current.project_id,current.id,settings.brownfield_expansion_radius,seed_json,now],
             )?;
         } else {
@@ -152,7 +152,7 @@ impl PersistenceService {
                     params![claim.job.id,now],
                 )?;
                 self.connection()?.execute(
-                    "UPDATE brownfield_enrichment_runs SET state='pending',diagnostic='Execução interrompida; orçamento consumido foi preservado.',updated_at=?2 WHERE job_id=?1 AND state='running'",
+                    "UPDATE brownfield_enrichment_runs SET state='pending',diagnostic='Run interrupted; the budget already spent was kept.',updated_at=?2 WHERE job_id=?1 AND state='running'",
                     params![claim.job.id,now],
                 )?;
             } else {
@@ -274,7 +274,7 @@ impl PersistenceService {
             |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
         )?;
         if budget_limit == 0 || budget_calls >= budget_limit {
-            return Err(invalid("Orçamento brownfield esgotado antes da chamada."));
+            return Err(invalid("Brownfield budget exhausted before the call."));
         }
         let seed_paths: Vec<RelativeSourcePath> =
             serde_json::from_str(&seed_json).map_err(|error| invalid(error.to_string()))?;
@@ -287,7 +287,7 @@ impl PersistenceService {
                 params![job_id,now,serde_json::json!({"budgetCalls":budget_calls,"proposalCount":0,"state":"completed","diagnostic":"no_candidates"}).to_string(),generation],
             )?;
             db.execute(
-                "UPDATE brownfield_enrichment_runs SET state='completed',candidate_paths_json='[]',proposal_count=0,diagnostic='Nenhum vizinho estrutural elegível; nenhuma chamada LLM realizada.',updated_at=?2 WHERE job_id=?1",
+                "UPDATE brownfield_enrichment_runs SET state='completed',candidate_paths_json='[]',proposal_count=0,diagnostic='No eligible structural neighbour; no LLM call made.',updated_at=?2 WHERE job_id=?1",
                 params![job_id,now],
             )?;
             return Ok(None);
@@ -324,7 +324,7 @@ impl PersistenceService {
             params![job_id,generation,candidate_json,input_json,now],
         )?;
         if charged != 1 {
-            return Err(invalid("Orçamento ou geração de enriquecimento obsoleta."));
+            return Err(invalid("Enrichment budget or generation is stale."));
         }
         Self::charge_brownfield_frontier_budget_tx(&tx, &project_id, &candidate_paths)?;
         tx.commit()?;
@@ -434,7 +434,7 @@ impl PersistenceService {
             |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
         )?;
         let current = Self::find_pulsation_by_id(&tx, &pulse)?
-            .ok_or_else(|| invalid("Pulsação do enriquecimento ausente."))?;
+            .ok_or_else(|| invalid("The enrichment pulsation is missing."))?;
         let now = Self::now_iso();
         let mut fresh = HashSet::new();
         for (position, proposal) in valid.iter().enumerate() {
@@ -465,7 +465,7 @@ impl PersistenceService {
         )?;
         tx.execute(
             "UPDATE brownfield_enrichment_runs SET state=?2,output_json=?3,proposal_count=?4,diagnostic=?5,updated_at=?6 WHERE job_id=?1 AND state='running'",
-            params![job_id,if omitted>0{"partial"}else{"completed"},raw_output,valid.len(),if omitted>0{Some("Propostas sem proveniência exata foram descartadas.")}else{None},now],
+            params![job_id,if omitted>0{"partial"}else{"completed"},raw_output,valid.len(),if omitted>0{Some("Proposals without exact provenance were discarded.")}else{None},now],
         )?;
         Self::materialize_component_proposals(&tx, &current, &fresh)?;
         tx.commit()?;

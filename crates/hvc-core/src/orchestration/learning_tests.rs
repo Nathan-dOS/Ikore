@@ -125,6 +125,121 @@ fn learning_v2_rejects_invented_candidates_and_selection_without_operational_evi
     ));
 }
 
+/// "Teste Haiku Only 1" (2026-09-24): a report over its list limits cost a
+/// whole extra Learning call. The host trims it with a note; what it cannot
+/// fix (unknown evidence) is still rejected, with a message that names it.
+#[test]
+fn learning_v2_trims_an_over_limit_report_instead_of_rejecting_it() {
+    let input = LearningInputV2 {
+        pulsation_id: "pulse".into(),
+        integration_epoch: 1,
+        report_version: 1,
+        refinement_mode: LearningRefinementMode::Observe,
+        evidence: vec![LearningEvidence {
+            id: "evidence:1".into(),
+            pulsation_id: "pulse".into(),
+            kind: "stage_outcome".into(),
+            text: "Integrator accepted".into(),
+        }],
+        context_runs: vec![],
+        graph_candidates: vec![],
+        omitted: 0,
+    };
+    let finding = |text: String| LearningFinding {
+        text,
+        evidence_ids: vec!["evidence:1".into(), "evidence:1".into()],
+        recurring: false,
+    };
+    let mut report = LearningReportV2 {
+        schema_version: 2,
+        observations: (0..10)
+            .map(|n| finding(format!("The stage reran step {n} after a review.")))
+            .collect(),
+        recommendations: vec![finding("Keep the review short. ".repeat(60))],
+        context_assessments: vec![],
+        graph_selections: vec![],
+        limitations: (0..8)
+            .map(|n| format!("Local evidence only {n}."))
+            .collect(),
+    };
+    assert!(report.validate(&input).is_err());
+    let trimmed = report.clamp_to_limits(&input);
+    // 2 observations, 1 long text, 9 repeated ids, 1 limitation for the note.
+    assert_eq!(trimmed, 13);
+    report.validate(&input).unwrap();
+    assert_eq!(report.observations.len(), 8);
+    let text = &report.recommendations[0].text;
+    assert_eq!(text.chars().count(), 1000);
+    assert!(text.ends_with('…'));
+    assert_eq!(report.limitations.len(), 8);
+    assert_eq!(
+        report.limitations.last().unwrap(),
+        "Host trimmed 13 items to the report limits."
+    );
+    let markdown = report.markdown(&input).unwrap();
+    assert!(markdown.contains("Host trimmed 13 items"));
+
+    // A report within its limits is untouched.
+    let mut clean = report.clone();
+    assert_eq!(clean.clamp_to_limits(&input), 0);
+    assert_eq!(clean.limitations, report.limitations);
+
+    // Unknown evidence is a wrong answer, not a length: still rejected.
+    report.observations[0].evidence_ids = vec!["evidence:9".into()];
+    assert_eq!(report.clamp_to_limits(&input), 0);
+    assert!(matches!(
+        report.validate(&input),
+        Err(ContractError::Invalid(
+            "a Learning finding cites an evidence_id that was not supplied"
+        ))
+    ));
+}
+
+/// ToDoListWebView, 2026-09-22: an English report that quotes the developer's
+/// pulsation titles (`teste 3`, `Teste 2`) was rejected as Portuguese. Titles
+/// the host supplied as evidence are exempt; Portuguese prose still is not.
+#[test]
+fn quoting_host_supplied_pulsation_titles_is_not_non_english_prose() {
+    let evidence = |id: &str, kind: &str, text: &str| LearningEvidence {
+        id: id.into(),
+        pulsation_id: "pulse".into(),
+        kind: kind.into(),
+        text: text.into(),
+    };
+    let input = LearningInputV2 {
+        pulsation_id: "pulse".into(),
+        integration_epoch: 1,
+        report_version: 2,
+        refinement_mode: LearningRefinementMode::Observe,
+        evidence: vec![
+            evidence("pulse:current", "completed_request", "Teste 4"),
+            evidence("pulse:a", "historical_summary", "failed: teste 3"),
+            evidence("pulse:b", "historical_summary", "failed: Teste 2"),
+        ],
+        context_runs: vec![],
+        graph_candidates: vec![],
+        omitted: 0,
+    };
+    let mut output = LearningReportV2 {
+        schema_version: 2,
+        observations: vec![],
+        recommendations: vec![],
+        context_assessments: vec![],
+        graph_selections: vec![],
+        limitations: vec![
+            "Most failed runs carry terse titles such as 'teste 3', 'Teste 2' and 'Teste 4', so intent is hard to recover.".into(),
+        ],
+    };
+    output.validate(&input).unwrap();
+    output
+        .limitations
+        .push("Este teste falhou porque a tarefa ainda nao existe".into());
+    assert!(matches!(
+        output.validate(&input),
+        Err(ContractError::Invalid("Learning report must be English"))
+    ));
+}
+
 #[test]
 fn switching_to_observe_during_learning_keeps_the_audit_but_discards_new_proposals() {
     let (f, learning_id, _) = done();
