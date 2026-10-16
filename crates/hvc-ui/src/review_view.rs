@@ -442,6 +442,7 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
             hitl.brief_cursor,
         )
     });
+    let visualization = hitl.visualization.clone();
     let (confirmed, flagged, open) = hitl.mark_counts();
     let has_marks = has_brief_tab && !hitl.marks.is_empty();
     let active_document = documents.get(selected).cloned().filter(|_| !showing_brief);
@@ -472,6 +473,7 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                 notes: &notes,
                 interactive: can_decide,
             },
+            visualization.as_ref(),
             cx,
         ),
         (None, Some(error)) => crate::review_brief_view::brief_error_panel(&error),

@@ -40,6 +40,15 @@ pub(crate) trait PulsationsBackend: Send + Sync {
     ) -> PulsationsFuture<Option<hvc_core::orchestration::review_brief::ReviewBrief>> {
         Box::pin(async { Ok(None) })
     }
+    /// The Visualizer's note on the same checkpoint (ADR-027 M5). Backends
+    /// without one report `None`.
+    fn checkpoint_visualization(
+        &self,
+        _checkpoint: hvc_core::persistence_service::HitlCheckpoint,
+    ) -> PulsationsFuture<Option<hvc_core::orchestration::review_brief::CheckpointVisualization>>
+    {
+        Box::pin(async { Ok(None) })
+    }
     fn stage_failure_detail(
         &self,
         checkpoint_id: String,
@@ -130,6 +139,24 @@ impl PulsationsBackend for CorePulsationsBackend {
                 .spawn_blocking(move || core.persistence().read_checkpoint_brief(&checkpoint))
                 .await
                 .map_err(|e| Self::worker_error("review brief", e))?
+                .map_err(|e| e.to_string())
+        })
+    }
+    fn checkpoint_visualization(
+        &self,
+        checkpoint: hvc_core::persistence_service::HitlCheckpoint,
+    ) -> PulsationsFuture<Option<hvc_core::orchestration::review_brief::CheckpointVisualization>>
+    {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .read_checkpoint_visualization(&checkpoint)
+                })
+                .await
+                .map_err(|e| Self::worker_error("visualizer note", e))?
                 .map_err(|e| e.to_string())
         })
     }

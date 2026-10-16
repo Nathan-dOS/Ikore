@@ -114,6 +114,14 @@ impl AppModel {
         );
     }
 
+    pub(crate) fn toggle_composition_visualizer(&mut self, cx: &mut Context<Self>) {
+        self.save_composition(
+            |settings| settings.visualizer_enabled = !settings.visualizer_enabled,
+            "Visualizer notes updated; they apply to the next checkpoint that opens.",
+            cx,
+        );
+    }
+
     pub(crate) fn toggle_composition_validation(&mut self, cx: &mut Context<Self>) {
         self.save_composition(
             |settings| settings.validation_enabled = !settings.validation_enabled,
@@ -589,6 +597,24 @@ pub(crate) fn composition_page(
                     ),
                     stacked_row("composition-checks", hl, checks),
                 ],
+            ),
+        )
+        .section(
+            "Review brief",
+            section(
+                "Review brief",
+                None,
+                vec![row(
+                    "composition-visualizer",
+                    hl,
+                    switch(
+                        "composition-visualizer",
+                        project.settings.visualizer_enabled,
+                        !busy,
+                        cx,
+                        |model, cx| model.toggle_composition_visualizer(cx),
+                    ),
+                )],
             ),
         )
         .section(

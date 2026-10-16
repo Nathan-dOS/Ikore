@@ -27,10 +27,11 @@ mod specification;
 mod test_stage;
 #[cfg(test)]
 mod tests;
+mod visualizer;
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::PublicationState;
 use super::composition::recipes::{StagePayloadRecord, specification_of, task_table};
@@ -45,6 +46,12 @@ use crate::persistence_service::PulsationStage;
 pub(crate) use diff::compare_records;
 pub use diff::{BriefChange, ChangeKind, ChangeSubject, RevisionDiff, compare};
 pub use failure::{FailureChoice, FailureDecisionKind, failure_choices};
+pub use visualizer::{
+    CheckpointVisualization, DeliveredItem, DeliveredReference, HEADLINE_MAX_CHARS, NOTE_MAX_CHARS,
+    NOTES_MAX, ResolvedNote, ResolvedVisualization, ReviewBriefV1, VisualizationState,
+    VisualizerInputV1, VisualizerNoteV1, resolve_visualization, validate_visualization,
+    visualizer_input, visualizer_schema, visualizer_system_prompt,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ReviewBrief {
@@ -90,7 +97,7 @@ pub struct BriefFacts {
     pub units: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JudgementKind {
     Decision,
@@ -332,6 +339,27 @@ pub(crate) fn decode_record(content: &str) -> Result<StagePayloadRecord, serde_j
 
 /// The approved specification and the record that resolves its handles.
 type Approved<'a> = Option<(&'a SpecificationContractV1, &'a StagePayloadRecord)>;
+
+/// A stage as the developer reads it.
+fn stage_label(stage: PulsationStage) -> &'static str {
+    match stage {
+        PulsationStage::Intake => "Intake",
+        PulsationStage::Specification => "Specification",
+        PulsationStage::Contract => "Contract",
+        PulsationStage::Code => "Code",
+        PulsationStage::Test => "Test",
+        PulsationStage::Integrator => "Integrator",
+    }
+}
+
+/// A path from its file group's root and its path inside it.
+fn full_path(root: &str, path: &str) -> String {
+    if root.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{root}/{path}")
+    }
+}
 
 fn plural(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })

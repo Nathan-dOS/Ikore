@@ -79,10 +79,14 @@ pub enum AgentRole {
     TestAgent,
     Integrator,
     LearningAgent,
+    /// ADR-027 M5: optional notes on a checkpoint's Review Brief, written
+    /// through a closed, host-validated contract. Off unless a project
+    /// enables it.
+    Visualizer,
 }
 
 impl AgentRole {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::IntakeRouter,
         Self::TaskSpecifier,
         Self::ContractAgent,
@@ -91,6 +95,7 @@ impl AgentRole {
         Self::Integrator,
         Self::LearningAgent,
         Self::FeatureAgent,
+        Self::Visualizer,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -103,6 +108,7 @@ impl AgentRole {
             Self::TestAgent => "test_agent",
             Self::Integrator => "integrator",
             Self::LearningAgent => "learning_agent",
+            Self::Visualizer => "visualizer",
         }
     }
 

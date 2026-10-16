@@ -13,7 +13,7 @@ use serde::Serialize;
 use super::{
     BriefCheck, BriefContext, BriefCoverage, BriefCriterion, BriefFileGroup, BriefInterface,
     BriefInterfaceGroup, BriefUnit, BriefVerdict, JudgementKind, ReviewBrief, SpecificationVisual,
-    StageVisual, check_words, stage_brief,
+    StageVisual, check_words, full_path, stage_brief,
 };
 use crate::orchestration::composition::recipes::{
     StagePayloadRecord, specification_of, task_table,
@@ -566,14 +566,6 @@ fn compare_criteria(
                 .before(old.requirement.clone()),
             );
         }
-    }
-}
-
-fn full_path(root: &str, path: &str) -> String {
-    if root.is_empty() {
-        path.to_owned()
-    } else {
-        format!("{root}/{path}")
     }
 }
 

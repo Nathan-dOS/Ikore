@@ -4861,3 +4861,118 @@ fn a_keyboard_focus_ring_never_resizes_its_control(cx: &mut TestAppContext) {
     assert_eq!(visual.debug_bounds("forge-section-triage").unwrap(), tab);
     assert_eq!(visual.debug_bounds("info:forge-section").unwrap(), tip);
 }
+
+// ---------------------------------------------------------------------------
+// ADR-027 M5: the Visualizer's note on the Brief
+// ---------------------------------------------------------------------------
+
+fn visualizer_window(
+    cx: &mut TestAppContext,
+    visualization: hvc_core::orchestration::review_brief::CheckpointVisualization,
+) -> (Entity<AppModel>, &mut VisualTestContext) {
+    let (model, visual) = open_specification_brief(cx);
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |state, _| {
+            state.hitl.visualization = Some(visualization);
+        });
+    });
+    (model, visual)
+}
+
+#[gpui::test]
+fn the_visualizer_note_sits_under_the_decision_line_and_marks_its_emphasis(
+    cx: &mut TestAppContext,
+) {
+    use hvc_core::orchestration::review_brief::{
+        CheckpointVisualization, ResolvedNote, ResolvedVisualization, VisualizationState,
+    };
+    let note = CheckpointVisualization {
+        state: VisualizationState::Validated,
+        note: Some(ResolvedVisualization {
+            headline: "AC-4 rests on reading alone; confirm the header-only early return before approving.".into(),
+            notes: vec![
+                ResolvedNote {
+                    text: "The empty-range criterion is proven only by reading write_usage_csv; no host check executes it.".into(),
+                    refs: vec!["AC-4".into(), "crates/hvc-core/src/usage/export.rs".into()],
+                },
+                ResolvedNote {
+                    text: "The Usage view gains an Export button, the only interface you already own that changes.".into(),
+                    refs: vec!["crates/hvc-ui/src/usage.rs".into()],
+                },
+            ],
+            emphasis: vec![1],
+        }),
+        diagnostic: None,
+    };
+    let (model, visual) = visualizer_window(cx, note);
+    for width in [960.0, 1440.0] {
+        visual.simulate_resize(size(px(width), px(2400.0)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let decision = visual.debug_bounds("brief-decision").unwrap();
+        let card = visual.debug_bounds("brief-visualizer").unwrap();
+        let judgement = visual.debug_bounds("brief-judgement").unwrap();
+        assert!(
+            decision.bottom() <= card.top() && card.bottom() <= judgement.top(),
+            "the note sits between the decision line and the judgement at {width}"
+        );
+        assert!(
+            card.left() >= reader.left() && card.right() <= reader.right() + px(1.0),
+            "the note overflows the reader at {width}: {card:?} vs {reader:?}"
+        );
+        for selector in [
+            "brief-visualizer-headline",
+            "brief-visualizer-note-0",
+            "brief-visualizer-note-1",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap();
+            assert!(
+                bounds.left() >= card.left() && bounds.right() <= card.right() + px(1.0),
+                "{selector} overflows at {width}"
+            );
+        }
+        // The emphasis badge is inside the item it points at, and only there.
+        let item = visual.debug_bounds("brief-item-1").unwrap();
+        let badge = visual.debug_bounds("brief-emphasis-1").unwrap();
+        assert!(badge.top() >= item.top() && badge.bottom() <= item.bottom());
+        assert!(badge.right() <= item.right() + px(1.0));
+    }
+    assert!(visual.debug_bounds("brief-emphasis-0").is_none());
+    model.read_with(visual, |model, cx| {
+        assert!(model.pulsations.read(cx).hitl.can_approve());
+    });
+}
+
+#[gpui::test]
+fn a_pending_or_omitted_visualizer_note_is_one_quiet_line(cx: &mut TestAppContext) {
+    use hvc_core::orchestration::review_brief::{CheckpointVisualization, VisualizationState};
+    let (model, visual) = visualizer_window(
+        cx,
+        CheckpointVisualization {
+            state: VisualizationState::Pending,
+            note: None,
+            diagnostic: None,
+        },
+    );
+    visual.simulate_resize(size(px(1440.0), px(1800.0)));
+    select(&model, visual, AppView::Pulsations);
+    let line = visual.debug_bounds("brief-visualizer-pending").unwrap();
+    assert!(line.size.height <= px(40.0), "{line:?}");
+    assert!(visual.debug_bounds("brief-visualizer").is_none());
+
+    let (model, visual) = visualizer_window(
+        cx,
+        CheckpointVisualization {
+            state: VisualizationState::Omitted,
+            note: None,
+            diagnostic: Some("The Visualizer's answer was rejected twice: Note 1 cites `R99`, which is not in the input.".into()),
+        },
+    );
+    visual.simulate_resize(size(px(960.0), px(1800.0)));
+    select(&model, visual, AppView::Pulsations);
+    let reader = visual.debug_bounds("review-document-reader").unwrap();
+    let line = visual.debug_bounds("brief-visualizer-omitted").unwrap();
+    assert!(line.left() >= reader.left() && line.right() <= reader.right() + px(1.0));
+    assert!(visual.debug_bounds("brief-visualizer").is_none());
+    assert!(visual.debug_bounds("brief-visualizer-pending").is_none());
+}

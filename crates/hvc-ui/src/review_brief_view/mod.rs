@@ -10,6 +10,7 @@
 //! failure lists what each permitted decision does (M4, `stages`).
 
 mod stages;
+mod visualizer;
 
 pub(crate) use stages::failure_choices_card;
 
@@ -42,11 +43,20 @@ pub(crate) struct BriefMarks<'a> {
     pub(crate) interactive: bool,
 }
 
+/// The Visualizer's note on the same checkpoint, when the project asked for one.
+pub(crate) type BriefVisualization<'a> =
+    Option<&'a hvc_core::orchestration::review_brief::CheckpointVisualization>;
+
 pub(crate) fn brief_panel(
     brief: &ReviewBrief,
     marks: &BriefMarks<'_>,
+    visualization: BriefVisualization<'_>,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
+    let emphasis: Vec<usize> = visualization
+        .and_then(|visualization| visualization.note.as_ref())
+        .map(|note| note.emphasis.clone())
+        .unwrap_or_default();
     div()
         .debug_selector(|| "review-brief".into())
         .w_full()
@@ -55,12 +65,15 @@ pub(crate) fn brief_panel(
         .flex_col()
         .gap_4()
         .child(decision_card(brief))
+        .when_some(visualization, |panel, visualization| {
+            panel.child(visualizer::visualizer_card(visualization))
+        })
         .when_some(brief.revision.as_ref(), |panel, diff| {
             panel.child(revision_card(diff))
         })
         .child(
             row()
-                .child(judgement_card(&brief.judgement, marks, cx))
+                .child(judgement_card(&brief.judgement, marks, &emphasis, cx))
                 .child(verified_card(&brief.verified)),
         )
         .children(stage_visual(brief))
@@ -625,6 +638,7 @@ fn judgement_look(kind: JudgementKind) -> (Icon, gpui::Rgba, &'static str) {
 fn judgement_card(
     items: &[JudgementItem],
     marks: &BriefMarks<'_>,
+    emphasis: &[usize],
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     let header = card_header(
@@ -648,7 +662,7 @@ fn judgement_card(
     let rows: Vec<AnyElement> = items
         .iter()
         .enumerate()
-        .map(|(index, item)| judgement_item(index, item, marks, cx))
+        .map(|(index, item)| judgement_item(index, item, marks, emphasis.contains(&index), cx))
         .collect();
     card.child(
         div()
@@ -700,6 +714,7 @@ fn judgement_item(
     index: usize,
     item: &JudgementItem,
     marks: &BriefMarks<'_>,
+    emphasized: bool,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     let (glyph, ink, why) = judgement_look(item.kind);
@@ -783,6 +798,22 @@ fn judgement_item(
                                 .child(SharedString::from(item.label.clone())),
                         )
                         .child(div().flex_1())
+                        .when(emphasized, |row| {
+                            row.child(
+                                div()
+                                    .debug_selector(move || format!("brief-emphasis-{index}"))
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .px_2()
+                                    .rounded_full()
+                                    .bg(theme::purple_soft())
+                                    .text_color(theme::purple())
+                                    .child(icon(Icon::Sparkles, px(12.0), theme::purple()))
+                                    .child("Visualizer: look here first"),
+                            )
+                        })
                         .when_some(state, |row, (glyph, ink, label)| {
                             row.child(
                                 div()

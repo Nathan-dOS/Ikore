@@ -71,6 +71,10 @@ impl PersistenceService {
         {
             return Ok(true);
         }
+        // A developer is waiting at the checkpoint the note is about.
+        if self.process_visualization(shutdown).await? {
+            return Ok(true);
+        }
         if self.process_learning(shutdown).await? {
             return Ok(true);
         }

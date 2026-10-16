@@ -147,6 +147,10 @@ pub(crate) struct HitlReviewState {
     /// Derived view of the same checkpoint (ADR-027). Never gates approval.
     pub(crate) brief: Option<ReviewBrief>,
     pub(crate) brief_error: Option<String>,
+    /// The Visualizer's note on the same checkpoint (ADR-027 M5). Never a
+    /// gate: an error or an absent note leaves the brief as it is.
+    pub(crate) visualization:
+        Option<hvc_core::orchestration::review_brief::CheckpointVisualization>,
     /// The Brief tab is showing instead of a document.
     pub(crate) brief_selected: bool,
     /// One mark per judgement item of `brief`, in its order.
@@ -196,6 +200,7 @@ impl HitlReviewState {
             self.documents_error = None;
             self.brief = None;
             self.brief_error = None;
+            self.visualization = None;
             self.brief_selected = false;
             self.marks.clear();
             self.brief_cursor = 0;
@@ -286,6 +291,57 @@ impl HitlReviewState {
         true
     }
 
+    /// The Visualizer's note read with the brief of this load.
+    pub(crate) fn finish_visualization(
+        &mut self,
+        generation: u64,
+        checkpoint: &HitlCheckpoint,
+        result: Result<
+            Option<hvc_core::orchestration::review_brief::CheckpointVisualization>,
+            String,
+        >,
+    ) -> bool {
+        if generation != self.load_generation
+            || !same_checkpoint(self.expected_checkpoint.as_ref(), Some(checkpoint))
+        {
+            return false;
+        }
+        self.visualization = result.ok().flatten();
+        true
+    }
+
+    /// A later read of a pending note; ignored once the checkpoint changed.
+    pub(crate) fn update_visualization(
+        &mut self,
+        checkpoint: &HitlCheckpoint,
+        result: Result<
+            Option<hvc_core::orchestration::review_brief::CheckpointVisualization>,
+            String,
+        >,
+    ) -> bool {
+        if self.brief.is_none()
+            || !same_checkpoint(self.expected_checkpoint.as_ref(), Some(checkpoint))
+        {
+            return false;
+        }
+        if let Ok(visualization) = result {
+            self.visualization = visualization;
+        }
+        true
+    }
+
+    /// The checkpoint whose note is still being written, if any.
+    pub(crate) fn pending_visualization(&self) -> Option<HitlCheckpoint> {
+        self.visualization
+            .as_ref()
+            .is_some_and(|visualization| {
+                visualization.state
+                    == hvc_core::orchestration::review_brief::VisualizationState::Pending
+            })
+            .then(|| self.expected_checkpoint.clone())
+            .flatten()
+    }
+
     pub(crate) fn has_brief_tab(&self) -> bool {
         self.brief.is_some() || self.brief_error.is_some()
     }
@@ -294,6 +350,7 @@ impl HitlReviewState {
         self.documents_error = None;
         self.brief = None;
         self.brief_error = None;
+        self.visualization = None;
         self.brief_selected = false;
         self.marks.clear();
         self.brief_cursor = 0;
@@ -491,6 +548,65 @@ mod tests {
                 units: Vec::new(),
             }),
         }
+    }
+
+    fn visualization(
+        state: hvc_core::orchestration::review_brief::VisualizationState,
+    ) -> hvc_core::orchestration::review_brief::CheckpointVisualization {
+        hvc_core::orchestration::review_brief::CheckpointVisualization {
+            state,
+            note: None,
+            diagnostic: None,
+        }
+    }
+
+    #[test]
+    fn a_visualizer_note_belongs_to_its_checkpoint_and_never_gates_approval() {
+        use hvc_core::orchestration::review_brief::VisualizationState;
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));
+        let (generation, first) = state.begin_documents().unwrap();
+        state.finish_documents(generation, &first, Ok(documents()));
+        state.finish_brief(generation, &first, Ok(Some(brief())));
+        assert!(state.finish_visualization(
+            generation,
+            &first,
+            Ok(Some(visualization(VisualizationState::Pending)))
+        ));
+        assert_eq!(
+            state
+                .pending_visualization()
+                .map(|checkpoint| checkpoint.checkpoint_id),
+            Some(first.checkpoint_id.clone())
+        );
+        assert!(state.can_approve(), "a pending note never blocks approval");
+
+        // A poll result for the same checkpoint replaces the note; an error
+        // keeps what was there.
+        assert!(
+            state
+                .update_visualization(&first, Ok(Some(visualization(VisualizationState::Omitted))))
+        );
+        assert!(state.update_visualization(&first, Err("read failed".into())));
+        assert_eq!(
+            state.visualization.as_ref().unwrap().state,
+            VisualizationState::Omitted
+        );
+        assert!(state.pending_visualization().is_none());
+
+        // A newer checkpoint drops the note; late answers for the old one are ignored.
+        state.load_checkpoint(Some(&pulse("second")), Some(checkpoint("second")));
+        assert!(state.visualization.is_none());
+        assert!(
+            !state
+                .update_visualization(&first, Ok(Some(visualization(VisualizationState::Pending))))
+        );
+        assert!(!state.finish_visualization(
+            generation,
+            &first,
+            Ok(Some(visualization(VisualizationState::Pending)))
+        ));
+        assert!(state.visualization.is_none());
     }
 
     #[test]

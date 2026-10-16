@@ -255,6 +255,8 @@ struct RestoredSession {
 
 /// Repeated Forge/watcher events inside this window collapse into one activity line.
 const ACTIVITY_COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+/// How often Review re-reads a Visualizer note still being written (ADR-027 M5).
+const VISUALIZER_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Per-tab attention counters shown as header badges and, unfolded, in the status bar. See the UI
 /// flow plan Part 4.4.
@@ -406,6 +408,8 @@ pub struct AppModel {
     snapshot_pending: Option<Option<String>>,
     snapshot_revision: u64,
     hitl_documents_task: Option<Task<()>>,
+    /// Re-reads a pending Visualizer note until it is written or omitted.
+    visualizer_poll_task: Option<Task<()>>,
     failure_task: Option<Task<()>>,
     failure_detail_task: Option<Task<()>>,
     backend_override_task: Option<Task<()>>,
@@ -849,6 +853,7 @@ impl AppModel {
             snapshot_pending: None,
             snapshot_revision: 0,
             hitl_documents_task: None,
+            visualizer_poll_task: None,
             failure_task: None,
             failure_detail_task: None,
             backend_override_task: None,
@@ -2270,6 +2275,12 @@ impl AppModel {
             } else {
                 None
             };
+            // The Visualizer's note only exists next to a brief.
+            let visualization = if matches!(brief, Some(Ok(Some(_)))) {
+                Some(backend.checkpoint_visualization(checkpoint.clone()).await)
+            } else {
+                None
+            };
             let _ = this.update(cx, |model, cx| {
                 if model.workspace.read(cx).project_id != project_id {
                     return;
@@ -2279,9 +2290,41 @@ impl AppModel {
                         && let Some(brief) = brief
                     {
                         state.hitl.finish_brief(generation, &checkpoint, brief);
+                        if let Some(visualization) = visualization {
+                            state
+                                .hitl
+                                .finish_visualization(generation, &checkpoint, visualization);
+                        }
                     }
                 });
+                model.schedule_visualizer_poll(cx);
                 cx.notify();
+            });
+        }));
+    }
+
+    /// While the Visualizer is writing the open checkpoint's note, reads it
+    /// again every few seconds; the brief never waits for it.
+    pub(crate) fn schedule_visualizer_poll(&mut self, cx: &mut Context<Self>) {
+        let Some(checkpoint) = self.pulsations.read(cx).hitl.pending_visualization() else {
+            self.visualizer_poll_task = None;
+            return;
+        };
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let timer = cx.background_executor().clone();
+        self.visualizer_poll_task = Some(cx.spawn(async move |this, cx| {
+            timer.timer(VISUALIZER_POLL_INTERVAL).await;
+            let result = backend.checkpoint_visualization(checkpoint.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                let applied = model.pulsations.update(cx, |state, _| {
+                    state.hitl.update_visualization(&checkpoint, result)
+                });
+                if applied {
+                    model.schedule_visualizer_poll(cx);
+                    cx.notify();
+                }
             });
         }));
     }

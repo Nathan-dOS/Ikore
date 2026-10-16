@@ -13,12 +13,14 @@ use hvc_core::orchestration::composition::{
 };
 use hvc_core::orchestration::review_brief::{
     BriefChange, ChangeKind, ChangeSubject, FailureDecisionKind, JudgementKind, ReviewBrief,
-    StageVisual, failure_choices,
+    StageVisual, VisualizationState, failure_choices,
 };
 use hvc_core::persistence_service::{
     ApplyHitlDecisionRequest, GetPulsationRuntimeSnapshotRequest, HitlDecision, PulsationStage,
 };
+use hvc_test_support::{RecordedRequest, ScriptedResponse};
 use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
 
 #[test]
 fn specification_checkpoint_brief_comes_from_the_typed_payload() {
@@ -501,4 +503,173 @@ fn a_contract_conflict_failure_lists_every_permitted_choice() {
         ],
         "a diagnosis is never retried; the approved earlier stages are targets"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ADR-027 M5: the Visualizer
+// ---------------------------------------------------------------------------
+
+fn visualizer_harness(
+    responder: impl Fn(&PromptFacts, usize, &RecordedRequest) -> ScriptedResponse
+    + Send
+    + Sync
+    + 'static,
+) -> Harness {
+    let env = hvc_test_support::IsolatedTestEnvironment::new();
+    std::fs::create_dir_all(env.workspace_dir().join("src")).unwrap();
+    std::fs::write(env.workspace_dir().join("src/auth.rs"), ORIGINAL_SOURCE).unwrap();
+    Harness::start_with(
+        env,
+        vec![expiry_task()],
+        CompositionSettings {
+            enabled: true,
+            visualizer_enabled: true,
+            ..CompositionSettings::default()
+        },
+        responder,
+    )
+}
+
+fn wait_for_visualization(harness: &Harness, state: &str) {
+    let checkpoint = harness.service.get_hitl_checkpoint(&harness.pulse).unwrap();
+    wait_until(&harness.service, &harness.pulse, |db| {
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM checkpoint_visualizations WHERE checkpoint_id=?1 AND state=?2)",
+            [&checkpoint.checkpoint_id, state],
+            |r| r.get(0),
+        )
+        .unwrap()
+    });
+}
+
+/// The note is validated against the delivered input, resolved to the labels
+/// the brief shows, attributed to its own role in the usage ledger and kept
+/// with the decision.
+#[test]
+fn the_visualizer_writes_a_validated_note_kept_with_the_decision() {
+    let harness = visualizer_harness(|facts, _, _| completed_reply(facts));
+    harness.wait_for_checkpoint("SPECIFICATION");
+    wait_for_visualization(&harness, "validated");
+    let checkpoint = harness.service.get_hitl_checkpoint(&harness.pulse).unwrap();
+    let visualization = harness
+        .service
+        .read_checkpoint_visualization(&checkpoint)
+        .unwrap()
+        .expect("the project enabled the Visualizer");
+    assert_eq!(visualization.state, VisualizationState::Validated);
+    let note = visualization.note.unwrap();
+    assert_eq!(
+        note.headline,
+        "One point needs your judgement before this stage can move on."
+    );
+    // `J1` is the brief's first judgement item, the decision `D1`.
+    assert_eq!(note.notes[0].refs, ["D1"]);
+    assert_eq!(note.emphasis, [0]);
+    assert_eq!(
+        harness
+            .calls()
+            .iter()
+            .filter(|executor| executor.as_str() == VISUALIZER)
+            .count(),
+        1
+    );
+    let db = harness.db();
+    let attributed: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM token_usage_records u
+             JOIN llm_attempts a ON a.id=u.source_id
+             JOIN llm_route_executions e ON e.id=a.execution_id
+             WHERE u.source_kind='llm_attempt' AND e.agent_role='visualizer'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(attributed, 1, "the call is billed to the Visualizer role");
+
+    harness.approve();
+    let kept: Option<String> = db
+        .query_row(
+            "SELECT visualizer_brief_json FROM checkpoints WHERE id=?1",
+            [&checkpoint.checkpoint_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let kept: Value = serde_json::from_str(&kept.expect("the shown note is kept")).unwrap();
+    assert_eq!(
+        kept["headline"],
+        "One point needs your judgement before this stage can move on."
+    );
+    // The next checkpoint asks for its own note.
+    harness.wait_for_checkpoint("Contract");
+    wait_for_visualization(&harness, "validated");
+}
+
+/// An answer that breaks the contract gets one corrective call naming the
+/// reason; a second failure omits the note with an activity line, and the
+/// brief is unaffected.
+#[test]
+fn a_rejected_visualizer_answer_is_corrected_once_then_omitted() {
+    let prompts: Arc<Mutex<Vec<String>>> = Arc::default();
+    let seen = prompts.clone();
+    let harness = visualizer_harness(move |facts, _, request| {
+        if facts.executor == VISUALIZER {
+            let body: Value = serde_json::from_str(&request.body).unwrap();
+            seen.lock()
+                .unwrap()
+                .push(body["messages"][0]["content"].as_str().unwrap().to_owned());
+            return provider_reply(json!({
+                "headline": "x".repeat(200),
+                "notes": [],
+                "emphasis": []
+            }));
+        }
+        completed_reply(facts)
+    });
+    harness.wait_for_checkpoint("SPECIFICATION");
+    wait_for_visualization(&harness, "omitted");
+    let checkpoint = harness.service.get_hitl_checkpoint(&harness.pulse).unwrap();
+    let visualization = harness
+        .service
+        .read_checkpoint_visualization(&checkpoint)
+        .unwrap()
+        .unwrap();
+    assert_eq!(visualization.state, VisualizationState::Omitted);
+    assert!(
+        visualization
+            .diagnostic
+            .as_deref()
+            .unwrap()
+            .contains("rejected twice")
+    );
+    let prompts = prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 2, "one answer and one correction");
+    assert!(!prompts[0].contains("previous answer was rejected"));
+    assert!(prompts[1].contains("The headline has 200 characters; the limit is 140."));
+    let events: i64 = harness
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM pulse_events WHERE pulsation_id=?1 AND event_type='visualizer_omitted'",
+            [&harness.pulse],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(events, 1);
+    assert!(
+        harness
+            .service
+            .read_checkpoint_brief(&checkpoint)
+            .unwrap()
+            .is_some(),
+        "the deterministic brief never depends on the note"
+    );
+    harness.approve();
+    let kept: Option<String> = harness
+        .db()
+        .query_row(
+            "SELECT visualizer_brief_json FROM checkpoints WHERE id=?1",
+            [&checkpoint.checkpoint_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, None, "nothing was shown, so nothing is kept");
 }

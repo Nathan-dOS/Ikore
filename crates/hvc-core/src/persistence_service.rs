@@ -87,6 +87,8 @@ mod resolution;
 mod serial;
 #[path = "orchestration/supervisor.rs"]
 mod supervisor;
+#[path = "orchestration/visualizer.rs"]
+mod visualizer;
 
 mod embedded {
     use refinery::embed_migrations;

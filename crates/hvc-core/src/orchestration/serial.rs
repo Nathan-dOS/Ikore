@@ -14,7 +14,7 @@ fn invalid(error: impl std::fmt::Display) -> PersistenceServiceError {
 /// Fails unless `checkpoint` is its pulsation's only waiting artifact review,
 /// at the expected state version and input revision. Every Review read
 /// (documents and brief) passes through it inside its own snapshot.
-fn require_current_review(
+pub(super) fn require_current_review(
     db: &Connection,
     checkpoint: &HitlCheckpoint,
 ) -> Result<(), PersistenceServiceError> {
@@ -281,6 +281,7 @@ impl PersistenceService {
             "UPDATE checkpoints SET status=?2,updated_at=?3 WHERE id=?1",
             params![request.checkpoint_id, resolution, now],
         )?;
+        let visualizer_job = Self::close_visualization(&tx, &request.checkpoint_id)?;
         match request.decision {
             HitlDecision::Reject => {
                 Self::transition_pulsation(
@@ -364,6 +365,9 @@ impl PersistenceService {
             }
         }
         tx.commit()?;
+        if let Some(job) = visualizer_job {
+            self.request_job_cancellation(&job);
+        }
         self.wake_scheduler();
         self.reconcile_publications()?;
         let result = Self::find_pulsation_by_id(&self.connection()?, pulse)?
@@ -787,6 +791,7 @@ impl PersistenceService {
                 )?;
                 Self::open_checkpoint(tx, &updated.id, updated.stage)?;
                 tx.execute("UPDATE checkpoints SET state_version=(SELECT state_version FROM pulsations WHERE id=?1),input_revision=?2,producer_job_id=?3,generation=?4 WHERE pulsation_id=?1 AND status='waiting' AND purpose='artifact_review'",params![pulse,handoff.recipient.input_revision,job.id,handoff.recipient.generation])?;
+                Self::enqueue_visualization(tx, pulse)?;
             }
             StageDisposition::Advance(next) => {
                 if current.stage == PulsationStage::Intake
@@ -890,7 +895,7 @@ impl PersistenceService {
     /// covers both V3 and V4), so the preventive HITL gate (P5/A5.2) -- a
     /// v4-only concept -- cannot use the manifest's presence alone to scope
     /// itself to composed pulsations.
-    fn composed_pulsation(
+    pub(super) fn composed_pulsation(
         conn: &Connection,
         pulsation_id: &str,
     ) -> Result<bool, PersistenceServiceError> {

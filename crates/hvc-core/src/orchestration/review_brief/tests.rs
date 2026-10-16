@@ -1350,3 +1350,134 @@ fn coverage_and_verdicts_keep_duplicate_criterion_ids_with_their_task() {
         ["Removed Criterion Task B · ac-1 - | supported: Reviewed. -> -"]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Visualizer contract (ADR-027 M5)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_visualizer_input_names_every_judgement_item_and_reference_once() {
+    let brief = brief_of(spec());
+    let input = visualizer_input(&brief);
+    assert_eq!(input.stage, "Specification");
+    assert_eq!(
+        input.objective.as_deref(),
+        Some("Export token usage to CSV.")
+    );
+    let items: Vec<(&str, &str)> = input
+        .judgement
+        .iter()
+        .map(|item| (item.reference.as_str(), item.label.as_str()))
+        .collect();
+    assert_eq!(
+        items,
+        [
+            ("J1", "D1"),
+            ("J2", "AC-2"),
+            ("J3", "AC-3"),
+            ("J4", "crates/hvc-ui/src/usage.rs"),
+            ("J5", "2"),
+        ]
+    );
+    let references: Vec<(&str, &str, &str)> = input
+        .references
+        .iter()
+        .map(|item| {
+            (
+                item.reference.as_str(),
+                item.names.as_str(),
+                item.label.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        references,
+        [
+            ("R1", "criterion", "AC-1"),
+            ("R2", "criterion", "AC-2"),
+            ("R3", "criterion", "AC-3"),
+            ("R4", "file", "README.md"),
+            ("R5", "file", "crates/hvc-core/src/usage.rs"),
+            ("R6", "file", "crates/hvc-core/src/usage/export.rs"),
+            ("R7", "file", "crates/hvc-ui/src/usage.rs"),
+            ("R8", "unit", "core_export"),
+            ("R9", "unit", "ui_export"),
+        ]
+    );
+    assert!(input.changes.is_empty() && input.feedback.is_none());
+}
+
+fn visualizer_reply(value: serde_json::Value) -> String {
+    value.to_string()
+}
+
+#[test]
+fn a_valid_visualization_resolves_its_references_to_brief_labels() {
+    let brief = brief_of(spec());
+    let input = visualizer_input(&brief);
+    let raw = visualizer_reply(serde_json::json!({
+        "headline": "Two criteria rest on reading and an exemption; check AC-2 first.",
+        "notes": [
+            {"text": "AC-2 is proven only by reading the early return.", "refs": ["J2", "R6"]},
+            {"text": "The Usage view changes shape for the export button.", "refs": ["J4"]}
+        ],
+        "emphasis": ["J2"]
+    }));
+    let validated = validate_visualization(&raw, &input).unwrap();
+    let resolved = resolve_visualization(&validated, &input);
+    assert_eq!(
+        resolved.notes[0].refs,
+        ["AC-2", "crates/hvc-core/src/usage/export.rs"]
+    );
+    assert_eq!(resolved.notes[1].refs, ["crates/hvc-ui/src/usage.rs"]);
+    assert_eq!(resolved.emphasis, [1]);
+    // A fenced answer is accepted; the fence is not content.
+    let fenced = format!("```json\n{raw}\n```");
+    assert_eq!(validate_visualization(&fenced, &input).unwrap(), validated);
+}
+
+#[test]
+fn the_host_rejects_a_visualization_that_breaks_the_contract() {
+    let input = visualizer_input(&brief_of(spec()));
+    let reject =
+        |value: serde_json::Value| validate_visualization(&value.to_string(), &input).unwrap_err();
+    let note = |text: &str, refs: &[&str]| serde_json::json!({"text": text, "refs": refs});
+    assert!(
+        reject(serde_json::json!({"headline": "x".repeat(141), "notes": [], "emphasis": []}))
+            .contains("limit is 140")
+    );
+    assert!(
+        reject(serde_json::json!({"headline": "Fine.", "notes": [note(&"y".repeat(221), &["J1"])], "emphasis": []}))
+            .contains("limit is 220")
+    );
+    assert!(
+        reject(serde_json::json!({"headline": "Fine.", "notes": [note("A.", &["J1"]), note("B.", &["J1"]), note("C.", &["J1"]), note("D.", &["J1"])], "emphasis": []}))
+            .contains("limit is 3")
+    );
+    assert!(
+        reject(serde_json::json!({"headline": "Fine.", "notes": [note("Cites nothing.", &[])], "emphasis": []}))
+            .contains("cites no reference")
+    );
+    assert!(
+        reject(serde_json::json!({"headline": "Fine.", "notes": [note("Unknown.", &["R99"])], "emphasis": []}))
+            .contains("`R99`, which is not in the input")
+    );
+    assert!(
+        reject(serde_json::json!({"headline": "Fine.", "notes": [], "emphasis": ["R1"]}))
+            .contains("not a judgement item")
+    );
+    assert!(
+        reject(serde_json::json!({"headline": "**Bold** headline", "notes": [], "emphasis": []}))
+            .contains("without markup")
+    );
+    assert!(
+        reject(
+            serde_json::json!({"headline": "Revise a especificação.", "notes": [], "emphasis": []})
+        )
+        .contains("headline")
+    );
+    assert!(
+        reject(serde_json::json!({"headline": "Fine.", "notes": [], "emphasis": [], "verdict": "approve"}))
+            .contains("unknown field")
+    );
+}

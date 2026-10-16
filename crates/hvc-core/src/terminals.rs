@@ -456,6 +456,8 @@ pub enum ExecutionOrigin {
     Pipeline,
     Learning,
     Manual,
+    /// The Visualizer's notes on a checkpoint's Review Brief (ADR-027 M5).
+    Review,
 }
 
 impl ExecutionOrigin {
@@ -465,6 +467,7 @@ impl ExecutionOrigin {
             Self::Pipeline => "pipeline",
             Self::Learning => "learning",
             Self::Manual => "manual",
+            Self::Review => "review",
         }
     }
 
@@ -474,6 +477,7 @@ impl ExecutionOrigin {
             "pipeline" => Some(Self::Pipeline),
             "learning" => Some(Self::Learning),
             "manual" => Some(Self::Manual),
+            "review" => Some(Self::Review),
             _ => None,
         }
     }
@@ -612,7 +616,7 @@ pub struct CanonicalAgentDescriptor {
     pub color_key: &'static str,
 }
 
-pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 8] = [
+pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 9] = [
     CanonicalAgentDescriptor {
         role: AgentRole::FeatureAgent,
         name: "FeatureAgent",
@@ -668,6 +672,13 @@ pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 8] = [
         glyph: "*",
         stage: "Learning",
         color_key: "magenta",
+    },
+    CanonicalAgentDescriptor {
+        role: AgentRole::Visualizer,
+        name: "Visualizer",
+        glyph: "~",
+        stage: "Review",
+        color_key: "violet",
     },
 ];
 
@@ -5482,6 +5493,8 @@ impl TerminalService {
             ExecutionOrigin::Feature
         } else if agent_role == AgentRole::LearningAgent {
             ExecutionOrigin::Learning
+        } else if agent_role == AgentRole::Visualizer {
+            ExecutionOrigin::Review
         } else {
             ExecutionOrigin::Pipeline
         };

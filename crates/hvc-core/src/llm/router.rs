@@ -448,8 +448,14 @@ impl ProviderRouter {
         let route_deadline = request
             .deadline
             .min(Instant::now() + Duration::from_millis(execution_route.route_timeout_ms));
-        let is_learning = request.target.agent_role() == Some(super::AgentRole::LearningAgent);
-        let mut max_attempts = if mode == RoutingMode::On && !is_learning {
+        // Background agents get one route attempt: Learning retries a rejected
+        // report itself, and the Visualizer is allowed one corrective call
+        // before its note is omitted.
+        let is_background = matches!(
+            request.target.agent_role(),
+            Some(super::AgentRole::LearningAgent | super::AgentRole::Visualizer)
+        );
+        let mut max_attempts = if mode == RoutingMode::On && !is_background {
             execution_route.max_attempts.min(3) as usize
         } else {
             1
@@ -546,7 +552,7 @@ impl ProviderRouter {
                 target.connection.max_concurrency,
             );
             let call_cancellation = cancellation.child_token();
-            let _priority = if is_learning {
+            let _priority = if is_background {
                 let Some(guard) = self.priority.learning(
                     target.connection.id.as_str(),
                     request.execution_id.as_str(),
@@ -920,11 +926,11 @@ impl ProviderRouter {
                         &mut next_eligible_at,
                         &emitter,
                     )?;
-                    // A single-attempt dispatch (Learning, or a composed unit
+                    // A single-attempt dispatch (Learning, the Visualizer, or a composed unit
                     // holding one permit) gets the attempt's own error back:
                     // the caller classifies it, and "all targets exhausted"
                     // would only hide the cause.
-                    if is_learning || request.dispatch.attempt_limit == Some(1) {
+                    if is_background || request.dispatch.attempt_limit == Some(1) {
                         self.repository.finish_execution(
                             request.execution_id.as_str(),
                             "failed",
@@ -1026,13 +1032,25 @@ impl ProviderRouter {
     }
 
     pub(crate) fn learning_ready(&self, project: &str, provider: &str) -> Result<bool, LlmError> {
+        self.background_ready(
+            project,
+            super::AgentRole::LearningAgent,
+            "Learning",
+            provider,
+        )
+    }
+
+    /// Whether every connection a background role would use is free of
+    /// foreground demand (Learning, the Visualizer).
+    pub(crate) fn background_ready(
+        &self,
+        project: &str,
+        role: super::AgentRole,
+        stage: &str,
+        provider: &str,
+    ) -> Result<bool, LlmError> {
         Ok(self
-            .priority_connections(
-                project,
-                super::AgentRole::LearningAgent,
-                "Learning",
-                provider,
-            )?
+            .priority_connections(project, role, stage, provider)?
             .iter()
             .all(|id| self.priority.ready(id)))
     }

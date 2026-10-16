@@ -17,6 +17,9 @@
 //! parks a stage failure with three revision targets (ADR-027 M4). When the
 //! `check_fixture` binary sits next to the examples folder, a required compile
 //! check runs, so the Test brief carries a host receipt.
+//!
+//! `--visualizer` enables the Visualizer (ADR-027 M5) and waits for the note
+//! of the parked checkpoint before the worker stops.
 use hvc_core::{
     AppCoreDependencies,
     feature_forge::{
@@ -34,7 +37,7 @@ use hvc_core::{
     workspace_service::bootstrap_greenfield_workspace,
 };
 use hvc_test_support::composition_replies::{
-    PromptFacts, ReplyOptions, parse_prompt, unit_response, unit_response_with,
+    PromptFacts, ReplyOptions, VISUALIZER, parse_prompt, unit_response, unit_response_with,
 };
 use hvc_test_support::pulsation_benchmark::{configure_loopback, force_api_direct};
 use hvc_test_support::{
@@ -93,7 +96,43 @@ fn tasks() -> Vec<TaskDraft> {
 /// The default scripted reply, except that the Specification proposes one
 /// code unit and one test unit after it, each covering every criterion, as
 /// the host requires for a multi-task batch to plan Code and Test.
+/// A realistic Visualizer note: a headline, one note per judgement item
+/// (at most two) citing it, and the first item emphasised.
+fn visualizer_reply(user_prompt: &str) -> Value {
+    let input: Value = serde_json::from_str(user_prompt).expect("Visualizer input JSON");
+    let items = input["judgement"].as_array().cloned().unwrap_or_default();
+    let notes: Vec<Value> = items
+        .iter()
+        .take(2)
+        .map(|item| {
+            let reference = item["ref"].as_str().unwrap_or("J1");
+            let text = match item["kind"].as_str() {
+                Some("decision") => "This decision changes scope without a criterion of its own; confirm it matches what you asked for.",
+                Some("reading_only_proof") => "Nothing will execute this proof; check that reading the code is enough for this criterion.",
+                Some("interface_change") => "Code you already own changes shape here; check its callers before approving.",
+                Some("unverified") => "The reviewer could not show this criterion holds; decide whether that is acceptable now.",
+                _ => "Look at this item first; it is the one the host cannot settle for you.",
+            };
+            json!({"text": text, "refs": [reference]})
+        })
+        .collect();
+    let headline = match items.len() {
+        0 => "Nothing here needs your judgement beyond what the host already verified.".to_owned(),
+        1 => "One point needs your judgement before this stage moves on.".to_owned(),
+        count => format!("{count} points need your judgement; start with the first one."),
+    };
+    let emphasis: Vec<&str> = items
+        .first()
+        .and_then(|item| item["ref"].as_str())
+        .into_iter()
+        .collect();
+    json!({"headline": headline, "notes": notes, "emphasis": emphasis})
+}
+
 fn reply(facts: &PromptFacts, fail_code: bool) -> Value {
+    if facts.executor == VISUALIZER {
+        return visualizer_reply(&facts.user_prompt);
+    }
     if fail_code && facts.executor == "code_implementer" {
         return json!({
             "schemaVersion": 1, "outcome": "failed", "code": "contract_conflict",
@@ -250,16 +289,18 @@ fn passing_check() -> Option<ValidationCommandProfileV1> {
     })
 }
 
-const USAGE: &str = "usage: review_brief_fixture NEW_DIRECTORY [--revised] [--stage contract|test|integrator|failure]";
+const USAGE: &str = "usage: review_brief_fixture NEW_DIRECTORY [--revised] [--visualizer] [--stage contract|test|integrator|failure]";
 
 fn main() {
     let root = PathBuf::from(std::env::args_os().nth(1).expect(USAGE));
     let mut revised = false;
+    let mut visualizer = false;
     let mut target = "specification".to_owned();
     let mut options = std::env::args().skip(2);
     while let Some(option) = options.next() {
         match option.as_str() {
             "--revised" => revised = true,
+            "--visualizer" => visualizer = true,
             "--stage" => target = options.next().expect(USAGE),
             other => panic!("unknown option {other}; {USAGE}"),
         }
@@ -347,6 +388,7 @@ fn main() {
             CompositionSettings {
                 enabled: true,
                 validation_enabled: check.is_some(),
+                visualizer_enabled: visualizer,
                 ..CompositionSettings::default()
             }
             .with_all_recipes_qualified(),
@@ -414,6 +456,28 @@ fn main() {
     if fail_code {
         approve(&service, &pulse);
         wait_for_checkpoint(&database, &pulse, "stage_failure", "", None);
+    }
+    if visualizer && !fail_code {
+        // Let the note of the parked checkpoint be written before the worker
+        // stops; the GUI only reads it.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let done: bool = database
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM checkpoint_visualizations v JOIN checkpoints c ON c.id=v.checkpoint_id WHERE c.pulsation_id=?1 AND c.status='waiting' AND v.state IN ('validated','omitted'))",
+                    [&pulse],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if done {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the Visualizer note did not arrive"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
     stop.cancel();
     runtime.shutdown_timeout(Duration::from_secs(5));

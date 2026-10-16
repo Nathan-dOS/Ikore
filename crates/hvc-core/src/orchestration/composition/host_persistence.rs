@@ -208,7 +208,7 @@ impl PersistenceService {
         Ok(match row {
             Some((enabled, max_in_flight_units, validation_enabled, extra)) => {
                 // The typed columns are authoritative; `settings_json` carries
-                // the fields added after V32 (qualified recipes).
+                // the fields added after V32 (qualified recipes, Visualizer).
                 let extra: serde_json::Value =
                     serde_json::from_str(&extra).unwrap_or(serde_json::Value::Null);
                 let qualified_recipes = extra["qualifiedRecipes"]
@@ -225,6 +225,7 @@ impl PersistenceService {
                     max_in_flight_units,
                     validation_enabled,
                     qualified_recipes,
+                    visualizer_enabled: extra["visualizerEnabled"].as_bool().unwrap_or(false),
                 }
             }
             None => CompositionSettings::default(),
@@ -253,7 +254,11 @@ impl PersistenceService {
                 "Project not found to configure composition.".into(),
             ));
         }
-        let extra = serde_json::json!({"qualifiedRecipes": settings.qualified_recipes}).to_string();
+        let extra = serde_json::json!({
+            "qualifiedRecipes": settings.qualified_recipes,
+            "visualizerEnabled": settings.visualizer_enabled,
+        })
+        .to_string();
         db.execute(
             "INSERT INTO project_composition_settings(project_id,enabled,max_in_flight_units,validation_enabled,settings_json,updated_at)
              VALUES(?1,?2,?3,?4,?5,?6)

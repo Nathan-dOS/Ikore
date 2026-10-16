@@ -127,7 +127,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        46
+        47
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -290,7 +290,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        46
+        47
     );
     assert_eq!(
         db.query_row(
@@ -831,7 +831,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        46
+        47
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -987,7 +987,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        46
+        47
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1084,7 +1084,7 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        46
+        47
     );
     let (error, failure, notices): (String, Option<String>, Option<String>) = db
         .query_row(
@@ -1153,7 +1153,7 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        46
+        47
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1186,6 +1186,111 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
         [],
     )
     .expect_err("an unknown backend is still rejected");
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+/// V47 rebuilds the role-constrained configuration, slot and run tables to
+/// admit the Visualizer and the `review` run origin, and adds the storage for
+/// its notes. Existing rows and the events hanging off a run must survive, an
+/// unknown role must still be rejected, and no reference may dangle.
+#[test]
+fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(46))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V46 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version) VALUES('pulse','p','Work','Code','running','now','now',4)",[]).unwrap();
+    db.execute("INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,thinking_level,custom_args_json,version,created_at,updated_at) VALUES('p','backend_agent','cli_process','claude','high','[]',2,'now','now')",[]).unwrap();
+    db.execute("INSERT INTO terminal_slots(id,project_id,kind,agent_role,label,created_at,updated_at) VALUES('slot','p','canonical','backend_agent','Backend','now','now')",[]).unwrap();
+    db.execute("INSERT INTO terminal_runs(id,project_id,slot_kind,agent_role,origin,execution_mode,backend,pulsation_id,status,created_at,updated_at,slot_id) VALUES('run','p','canonical','backend_agent','pipeline','cli_process','claude','pulse','completed','now','now','slot')",[]).unwrap();
+    db.execute("INSERT INTO terminal_events(id,run_id,sequence,kind,stream,content,created_at) VALUES('event','run',1,'stdout','stdout','done','now')",[]).unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        47
+    );
+    let (backend, version): (String, u32) = db
+        .query_row(
+            "SELECT backend,version FROM cli_agent_configs WHERE project_id='p' AND agent_role='backend_agent'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((backend.as_str(), version), ("claude", 2));
+    let (slot, pulsation, events): (String, String, u32) = db
+        .query_row(
+            "SELECT r.slot_id,r.pulsation_id,(SELECT count(*) FROM terminal_events WHERE run_id=r.id) FROM terminal_runs r WHERE r.id='run'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (slot.as_str(), pulsation.as_str(), events),
+        ("slot", "pulse", 1)
+    );
+
+    db.execute("INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,thinking_level,custom_args_json,version,created_at,updated_at) VALUES('p','visualizer','api_direct','codex','default','[]',1,'now','now')",[])
+        .expect("the Visualizer can be configured");
+    db.execute("INSERT INTO terminal_slots(id,project_id,kind,agent_role,label,created_at,updated_at) VALUES('visualizer-slot','p','canonical','visualizer','Visualizer','now','now')",[])
+        .expect("the Visualizer has a canonical slot");
+    db.execute("INSERT INTO terminal_runs(id,project_id,slot_kind,agent_role,origin,execution_mode,backend,pulsation_id,status,created_at,updated_at,slot_id) VALUES('review-run','p','canonical','visualizer','review','cli_process','codex','pulse','queued','now','now','visualizer-slot')",[])
+        .expect("a Visualizer run carries the review origin");
+    db.execute(
+        "UPDATE cli_agent_configs SET agent_role='narrator' WHERE agent_role='visualizer'",
+        [],
+    )
+    .expect_err("an unknown role is still rejected");
+    db.execute(
+        "UPDATE terminal_runs SET origin='narration' WHERE id='review-run'",
+        [],
+    )
+    .expect_err("an unknown origin is still rejected");
+
+    let columns = |table: &str| -> Vec<String> {
+        db.prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert!(columns("checkpoints").contains(&"visualizer_brief_json".to_string()));
+    assert_eq!(
+        columns("checkpoint_visualizations"),
+        [
+            "checkpoint_id",
+            "pulsation_id",
+            "job_id",
+            "state",
+            "calls",
+            "input_json",
+            "brief_json",
+            "diagnostic",
+            "created_at",
+            "updated_at"
+        ]
+    );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
             .get::<_, u32>(

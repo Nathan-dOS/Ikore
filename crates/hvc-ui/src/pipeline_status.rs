@@ -231,6 +231,7 @@ pub(crate) fn job_activity(kind: &str) -> (&'static str, &'static str) {
     }
     match kind {
         "learning_report" => ("LearningAgent", "Learning report"),
+        "visualize_checkpoint" => ("Visualizer", "Writing review brief notes"),
         "learning-publish" => ("LearningAgent", "Publishing learning notes"),
         "index_embedding" | "index-scan" => ("Embeddings", "Indexing knowledge"),
         "prepare_context" => ("Preparation", "Preparing context"),
