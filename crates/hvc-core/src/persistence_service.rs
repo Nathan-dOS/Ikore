@@ -79,6 +79,8 @@ mod integration;
 mod learning;
 #[path = "orchestration/preparation.rs"]
 mod preparation;
+#[path = "orchestration/pulsation_report.rs"]
+mod pulsation_report;
 #[path = "orchestration/reconciliation.rs"]
 mod reconciliation;
 #[path = "orchestration/resolution.rs"]
@@ -1427,6 +1429,10 @@ impl PersistenceService {
             ));
         }
         crate::project_deletion::recover_project_deletions(&connection, app_data_dir)?;
+        // A report outlives its pulsation only until the next start.
+        if let Err(error) = crate::reports::store::sweep_orphan_reports(&connection, app_data_dir) {
+            eprintln!("pulsation report cleanup deferred: {error}");
+        }
         crate::orchestration::upgrade::adapt_legacy(&mut connection)?;
 
         let llm_repository = SqliteLlmRepository::new(&db_path);

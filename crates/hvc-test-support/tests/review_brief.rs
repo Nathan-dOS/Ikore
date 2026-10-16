@@ -2,6 +2,7 @@
 //! pulsation is read from the exact waiting checkpoint, labelled from the
 //! frozen batch, refused once the checkpoint is stale, and compared with the
 //! previous candidate after a revision; a stage failure lists its choices.
+//! M5 adds the Visualizer's note; M6 the pulsation report.
 mod composition_support;
 
 use composition_support::*;
@@ -17,7 +18,9 @@ use hvc_core::orchestration::review_brief::{
 };
 use hvc_core::persistence_service::{
     ApplyHitlDecisionRequest, GetPulsationRuntimeSnapshotRequest, HitlDecision, PulsationStage,
+    PulsationStatus,
 };
+use hvc_core::reports::{FileChange, LineCounts};
 use hvc_test_support::{RecordedRequest, ScriptedResponse};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -672,4 +675,142 @@ fn a_rejected_visualizer_answer_is_corrected_once_then_omitted() {
         )
         .unwrap();
     assert_eq!(kept, None, "nothing was shown, so nothing is kept");
+}
+
+/// ADR-027 M6: the pulsation report is refused before the Integrator. From
+/// its checkpoint on, and after its approval ends the pulsation, the report
+/// carries the Integrator's verdicts, the host checks of every stage with
+/// their receipts, the files and each stage's API usage. It is written under
+/// the data directory and replaces itself.
+#[test]
+fn the_pulsation_report_carries_the_outcome_and_run_from_the_integrator_on() {
+    let harness = Harness::start(|facts, _, _| completed_reply(facts));
+    enable_passing_check(&harness);
+    harness.wait_for_checkpoint("SPECIFICATION");
+    let refused = harness
+        .service
+        .write_pulsation_report(&harness.pulse)
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("once the Integrator checkpoint opens"),
+        "{refused}"
+    );
+    for stage in ["Contract", "Test", "Integrator"] {
+        harness.approve();
+        harness.wait_for_checkpoint(stage);
+    }
+
+    let report = harness
+        .service
+        .build_pulsation_report(&harness.pulse)
+        .unwrap();
+    let outcome = report.outcome.as_ref().expect("the Integrator is briefed");
+    let criteria: Vec<(&str, Verdict)> = outcome
+        .criteria
+        .iter()
+        .map(|criterion| (criterion.criterion_id.as_str(), criterion.verdict))
+        .collect();
+    assert_eq!(criteria, [("ac-1", Verdict::Supported)]);
+    assert!(outcome.blockers.is_empty());
+    // The Integrator runs no check; the receipt is the one Code and Test got.
+    assert_eq!(outcome.checks.len(), 1, "{:?}", outcome.checks);
+    let check = &outcome.checks[0];
+    assert_eq!(
+        (check.check_ref.as_str(), check.required, check.status),
+        ("fixture_compile", true, CheckStatus::Passed)
+    );
+    assert!(check.receipt_id.is_some());
+    assert_eq!(check.exit_code, Some(0));
+    assert!(check.duration_seconds.is_some());
+    let command = check.command.as_deref().unwrap_or_default();
+    assert!(
+        command.contains("check_fixture") && command.ends_with(" pass"),
+        "{command}"
+    );
+    let files: Vec<(&str, FileChange, Option<LineCounts>)> = outcome
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file.change, file.lines))
+        .collect();
+    assert!(
+        outcome
+            .files
+            .iter()
+            .all(|file| file.publication == PublicationState::Applied),
+        "{files:?}"
+    );
+    let auth = files
+        .iter()
+        .find(|(path, ..)| *path == "src/auth.rs")
+        .expect("the code file");
+    assert_eq!(
+        (auth.1, auth.2),
+        (FileChange::Modified, None),
+        "a modified file has no line counts"
+    );
+    let test = files
+        .iter()
+        .find(|(path, ..)| *path == "tests/auth_test.rs")
+        .expect("the test file");
+    assert_eq!(test.1, FileChange::Added);
+    assert!(
+        test.2
+            .is_some_and(|lines| lines.added > 0 && lines.removed == 0)
+    );
+    // Every stage made its call through the API, and its usage counts.
+    assert_eq!(report.run.stages.len(), 6);
+    for stage in &report.run.stages {
+        assert!(stage.runs >= 1, "{stage:?}");
+        assert!(
+            stage.input_tokens > 0 && stage.output_tokens > 0,
+            "{stage:?}"
+        );
+    }
+
+    let path = harness
+        .service
+        .write_pulsation_report(&harness.pulse)
+        .unwrap();
+    let data = harness.service.database_path().parent().unwrap();
+    assert_eq!(
+        path,
+        data.join("reports")
+            .join(&harness.pulse)
+            .join("pulsation-report.html")
+    );
+    let html = std::fs::read_to_string(&path).unwrap();
+    assert!(html.contains("<code>fixture_compile</code>"));
+    assert!(html.contains("Content-Security-Policy"));
+    assert!(!html.to_ascii_lowercase().contains("<script"));
+    assert_eq!(
+        harness
+            .service
+            .write_pulsation_report(&harness.pulse)
+            .unwrap(),
+        path
+    );
+    assert_eq!(
+        std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+        1
+    );
+
+    // Approving the Integrator ends the pulsation; the report keeps the
+    // outcome of the approved output.
+    harness.approve();
+    wait_until(&harness.service, &harness.pulse, |db| {
+        db.query_row(
+            "SELECT status FROM pulsations WHERE id=?1",
+            [&harness.pulse],
+            |row| row.get::<_, String>(0),
+        )
+        .is_ok_and(|status| status == "done")
+    });
+    let done = harness
+        .service
+        .build_pulsation_report(&harness.pulse)
+        .unwrap();
+    assert_eq!(done.pulsation.status, PulsationStatus::Done);
+    assert_eq!(done.outcome.map(|outcome| outcome.criteria.len()), Some(1));
 }

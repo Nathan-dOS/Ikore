@@ -95,7 +95,7 @@ fn approved_specification(
 
 /// The host checks of the execution that produced a checkpoint's candidate,
 /// with their latest receipts. Empty for a legacy stage.
-fn checkpoint_checks(
+pub(super) fn checkpoint_checks(
     db: &Connection,
     checkpoint_id: &str,
 ) -> Result<Vec<composition::CheckSummaryV1>, PersistenceServiceError> {
@@ -151,6 +151,63 @@ fn checkpoint_publications(
             Some(review_brief::BriefPublication { path, stage, state })
         })
         .collect())
+}
+
+/// What a checkpoint's brief is built from, read by the host in one snapshot.
+pub(super) struct BriefInputs {
+    pub(super) record: composition::recipes::StagePayloadRecord,
+    manifest: crate::feature_forge::BatchManifest,
+    specification: Option<composition::recipes::StagePayloadRecord>,
+    checks: Vec<composition::CheckSummaryV1>,
+    publications: Vec<review_brief::BriefPublication>,
+}
+
+impl BriefInputs {
+    pub(super) fn context(&self) -> review_brief::BriefContext<'_> {
+        review_brief::BriefContext {
+            manifest: &self.manifest,
+            specification: self.specification.as_ref(),
+            checks: &self.checks,
+            publications: &self.publications,
+        }
+    }
+}
+
+/// The typed `stage_payload_v1` record behind a checkpoint and the context
+/// its brief needs: the frozen batch, the approved specification, the
+/// producing execution's host checks and, at the Integrator, the files to
+/// publish. `candidate` as in [`stage_payload_behind`]. `None` when the stage
+/// keeps no typed payload (pipelines before v4).
+pub(super) fn brief_inputs(
+    db: &Connection,
+    checkpoint_id: &str,
+    pulsation_id: &str,
+    candidate: bool,
+) -> Result<Option<BriefInputs>, PersistenceServiceError> {
+    let Some(content) = stage_payload_behind(db, checkpoint_id, candidate)? else {
+        return Ok(None);
+    };
+    let Some(manifest) = crate::feature_forge::pipeline::manifest(db, pulsation_id)? else {
+        return Ok(None);
+    };
+    let record = review_brief::decode_record(&content)
+        .map_err(|error| invalid(format!("The stage payload is unreadable: {error}")))?;
+    let specification = match record.stage {
+        composition::Stage::Specification => None,
+        _ => approved_specification(db, checkpoint_id)?,
+    };
+    let checks = checkpoint_checks(db, checkpoint_id)?;
+    let publications = match record.stage {
+        composition::Stage::Integrator => checkpoint_publications(db, checkpoint_id)?,
+        _ => Vec::new(),
+    };
+    Ok(Some(BriefInputs {
+        record,
+        manifest,
+        specification,
+        checks,
+        publications,
+    }))
 }
 
 /// ADR-027 part 3. When an earlier review of the same stage and input
@@ -497,36 +554,17 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let tx = db.transaction()?;
         require_current_review(&tx, checkpoint)?;
-        let Some(content) = stage_payload_behind(&tx, &checkpoint.checkpoint_id, true)? else {
+        let id = checkpoint.checkpoint_id.as_str();
+        let Some(inputs) = brief_inputs(&tx, id, &checkpoint.pulsation_id, true)? else {
             return Ok(None);
         };
-        let Some(manifest) =
-            crate::feature_forge::pipeline::manifest(&tx, &checkpoint.pulsation_id)?
+        let context = inputs.context();
+        let Some(mut brief) =
+            review_brief::stage_brief(&inputs.record, &context).map_err(invalid)?
         else {
             return Ok(None);
         };
-        let record = review_brief::decode_record(&content)
-            .map_err(|error| invalid(format!("The stage payload is unreadable: {error}")))?;
-        let id = checkpoint.checkpoint_id.as_str();
-        let specification = match record.stage {
-            composition::Stage::Specification => None,
-            _ => approved_specification(&tx, id)?,
-        };
-        let checks = checkpoint_checks(&tx, id)?;
-        let publications = match record.stage {
-            composition::Stage::Integrator => checkpoint_publications(&tx, id)?,
-            _ => Vec::new(),
-        };
-        let context = review_brief::BriefContext {
-            manifest: &manifest,
-            specification: specification.as_ref(),
-            checks: &checks,
-            publications: &publications,
-        };
-        let Some(mut brief) = review_brief::stage_brief(&record, &context).map_err(invalid)? else {
-            return Ok(None);
-        };
-        brief.revision = revision_diff(&tx, id, &record, &context)?;
+        brief.revision = revision_diff(&tx, id, &inputs.record, &context)?;
         Ok(Some(brief))
     }
 

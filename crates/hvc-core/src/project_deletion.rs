@@ -517,6 +517,8 @@ fn finish_purged(db: &Connection, data_dir: &Path, id: &str) -> Result<(), Error
         }
         fs::remove_dir_all(&quarantine)?;
     }
+    // Pulsation reports quote the removed project's criteria and paths.
+    crate::reports::store::sweep_orphan_reports(db, data_dir)?;
     db.pragma_update(None, "secure_delete", "ON")?;
     // Compact pages freed by the project graph and FTS before creating a survivor backup.
     db.execute_batch("VACUUM")?;
@@ -637,6 +639,19 @@ mod tests {
             })
             .unwrap();
         drop(db);
+        // Pulsation reports quote criteria and paths; only the kept
+        // project's may survive.
+        let kept_pulse = service
+            .create_pulsation(CreatePulsationRequest {
+                project_id: kept.id.clone(),
+                feature_name: "Kept pulse".into(),
+            })
+            .unwrap()
+            .pulsation;
+        let deleted_report =
+            crate::reports::store::write_report(&data, &pulse.id, "private report").unwrap();
+        let kept_report =
+            crate::reports::store::write_report(&data, &kept_pulse.id, "kept report").unwrap();
         let old_backup = data.join(format!("hard-vibe-code.pre-v13.{}.db", Uuid::new_v4()));
         fs::copy(service.database_path(), &old_backup).unwrap();
 
@@ -650,6 +665,8 @@ mod tests {
         assert!(!removed.exists());
         assert!(!old_backup.exists());
         assert!(survivor.join("keep.md").exists());
+        assert!(!deleted_report.parent().unwrap().exists());
+        assert_eq!(fs::read_to_string(&kept_report).unwrap(), "kept report");
         let clean_backups = fs::read_dir(&data)
             .unwrap()
             .filter_map(Result::ok)
@@ -953,6 +970,18 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn startup_removes_reports_whose_pulsation_no_longer_exists() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data = fixture.path().join("data");
+        let service = PersistenceService::initialize(&data).unwrap();
+        let orphan = crate::reports::store::write_report(&data, "gone", "orphan").unwrap();
+        drop(service);
+        PersistenceService::initialize(&data).unwrap();
+        assert!(!orphan.parent().unwrap().exists());
+        assert!(data.join(crate::reports::store::REPORTS_DIR).exists());
     }
 
     #[test]

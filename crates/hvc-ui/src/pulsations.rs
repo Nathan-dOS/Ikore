@@ -1,6 +1,7 @@
 #[cfg(test)]
 use hvc_core::persistence_service::CreatePulsationRequest;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -87,6 +88,16 @@ pub(crate) trait PulsationsBackend: Send + Sync {
         &self,
         request: CleanupFailedPulsationFilesRequest,
     ) -> PulsationsFuture<FailedPulsationCleanupReport>;
+    /// Writes the pulsation report (ADR-027 M6) under the data directory and,
+    /// when `copy_to` is given, copies it there. Returns the copy's path, or
+    /// the report's own. Backends without one say so.
+    fn write_report(
+        &self,
+        _pulsation_id: String,
+        _copy_to: Option<PathBuf>,
+    ) -> PulsationsFuture<PathBuf> {
+        Box::pin(async { Err("The pulsation report is not available here.".to_owned()) })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -382,6 +393,31 @@ impl PulsationsBackend for CorePulsationsBackend {
                 .map_err(|error| Self::worker_error("cleanup", error))?
         })
     }
+    fn write_report(
+        &self,
+        pulsation_id: String,
+        copy_to: Option<PathBuf>,
+    ) -> PulsationsFuture<PathBuf> {
+        let core = Arc::clone(&self.core);
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    let written = core
+                        .persistence()
+                        .write_pulsation_report(&pulsation_id)
+                        .map_err(|error| error.to_string())?;
+                    match copy_to {
+                        Some(target) => std::fs::copy(&written, &target)
+                            .map(|_| target)
+                            .map_err(|error| format!("The copy could not be saved: {error}")),
+                        None => Ok(written),
+                    }
+                })
+                .await
+                .map_err(|error| Self::worker_error("pulsation report", error))?
+        })
+    }
 }
 
 /// The "Leftover files" card of a failed pulsation: the preview the operator
@@ -400,6 +436,33 @@ impl CleanupState {
     pub(crate) fn can_remove(&self) -> bool {
         !self.busy && !self.loading && self.plan.as_ref().is_some_and(|plan| !plan.is_noop())
     }
+}
+
+/// The Pulsation report card (ADR-027 M6): one request at a time, and what
+/// the last one did for the active pulsation.
+#[derive(Debug, Default)]
+pub(crate) struct ReportState {
+    pub busy: bool,
+    pub notice: Option<ReportNotice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReportNotice {
+    /// Written and handed to the system's default application for HTML.
+    Opened(PathBuf),
+    /// Written and copied where the developer asked.
+    Saved(PathBuf),
+    Failed(String),
+}
+
+/// The report exists once the Integrator checkpoint has opened, and when a
+/// pulsation ended (ADR-027 §5). The host refuses the same cases.
+pub(crate) fn report_available(pulsation: &Pulsation) -> bool {
+    matches!(
+        pulsation.status,
+        PulsationStatus::Done | PulsationStatus::Failed
+    ) || (pulsation.stage == PulsationStage::Integrator
+        && pulsation.status == PulsationStatus::Checkpoint)
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -459,6 +522,7 @@ pub struct PulsationsModel {
     pub backend_override: Option<hvc_core::terminals::BackendOverrideStatus>,
     pub backend_override_busy: bool,
     pub(crate) cleanup: CleanupState,
+    pub(crate) report: ReportState,
 }
 
 impl PulsationsModel {
@@ -545,6 +609,7 @@ impl PulsationsModel {
             self.artifact_preview = None;
             self.backend_override = None;
             self.cleanup = CleanupState::default();
+            self.report = ReportState::default();
         }
         let had_checkpoint = self.hitl.pulsation_id.is_some() || self.failure.checkpoint.is_some();
         self.project_id = Some(project_id.into());
@@ -606,6 +671,7 @@ impl PulsationsModel {
             self.validation_error = None;
             self.detail_section = PulsationDetailSection::Overview;
             self.cleanup = CleanupState::default();
+            self.report = ReportState::default();
         }
         self.active_pulsation_id = Some(pulsation_id.to_owned().into());
         self.artifacts.clear();

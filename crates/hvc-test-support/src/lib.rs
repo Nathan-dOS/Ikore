@@ -9,7 +9,6 @@ mod core_harness;
 mod doubles;
 mod http_fixture;
 mod parity;
-pub mod pulsation_analysis;
 pub mod pulsation_benchmark;
 mod pulsation_fixture;
 
@@ -20,5 +19,7 @@ pub use doubles::{
     ScriptedPathPicker,
 };
 pub use http_fixture::{RecordedRequest, ScriptedHttpServer, ScriptedResponse};
+/// Moved to `hvc-core` so the app's pulsation report shares it (ADR-027 M6).
+pub use hvc_core::reports::analysis as pulsation_analysis;
 pub use parity::{ParityArea, ParityCase, ParityLedger, ParityStatus};
 pub use pulsation_fixture::{LegacyPulseLayout, PulsationFixture};

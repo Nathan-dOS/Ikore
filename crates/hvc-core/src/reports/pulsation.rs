@@ -80,9 +80,16 @@ pub enum FileChange {
 pub struct ReportFile {
     pub path: String,
     pub change: FileChange,
-    pub lines_added: u32,
-    pub lines_removed: u32,
+    /// `None` when the host cannot count them: it keeps no copy of a modified
+    /// file's previous version, so the report says so instead of guessing.
+    pub lines: Option<LineCounts>,
     pub publication: PublicationState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineCounts {
+    pub added: u32,
+    pub removed: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -584,8 +591,20 @@ fn tiles(outcome: &ReportOutcome) -> SafeHtml {
         .iter()
         .filter(|check| check_look(check.status).0 == Tone::Neutral)
         .count();
-    let added: u32 = outcome.files.iter().map(|file| file.lines_added).sum();
-    let removed: u32 = outcome.files.iter().map(|file| file.lines_removed).sum();
+    let counted: Vec<LineCounts> = outcome.files.iter().filter_map(|file| file.lines).collect();
+    let added: u32 = counted.iter().map(|lines| lines.added).sum();
+    let removed: u32 = counted.iter().map(|lines| lines.removed).sum();
+    let lines = if counted.len() == outcome.files.len() {
+        format!("+{added} −{removed} lines")
+    } else if counted.is_empty() {
+        "Line counts unavailable".to_owned()
+    } else {
+        format!(
+            "+{added} −{removed} lines in {} of {}",
+            counted.len(),
+            outcome.files.len()
+        )
+    };
 
     let blocker_tone = if outcome.blockers.is_empty() {
         Tone::Good
@@ -640,7 +659,7 @@ fn tiles(outcome: &ReportOutcome) -> SafeHtml {
         Icon::File,
         "Files",
         &outcome.files.len().to_string(),
-        &format!("+{added} −{removed} lines"),
+        &lines,
     ))
     .push_markup("</div>");
     html
@@ -854,7 +873,8 @@ fn checks(checks: &[ReportCheck]) -> SafeHtml {
     );
     for check in checks {
         let (tone, glyph, label) = check_look(check.status);
-        html.push_markup("<tr><td><code>")
+        // A check name stays whole; a long command breaks instead.
+        html.push_markup("<tr><td class=\"nowrap\"><code>")
             .push_text(&check.check_ref)
             .push_markup("</code></td><td>")
             .push_markup(if check.required {
@@ -918,7 +938,8 @@ fn files(files: &[ReportFile]) -> SafeHtml {
     }
     let largest = files
         .iter()
-        .map(|file| file.lines_added + file.lines_removed)
+        .filter_map(|file| file.lines)
+        .map(|lines| lines.added + lines.removed)
         .max()
         .unwrap_or(0)
         .max(1) as f64;
@@ -931,34 +952,42 @@ fn files(files: &[ReportFile]) -> SafeHtml {
             .push_text(&file.path)
             .push_markup("</code></td><td><span class=\"tag\">")
             .push_markup(change_label(file.change))
-            .push_markup("</span></td><td><span class=\"diff\"")
-            .push_attr(
-                "title",
-                &format!("{} added, {} removed", file.lines_added, file.lines_removed),
-            )
-            .push_markup("><span class=\"n\">")
-            .push_text(&format!("+{} −{}", file.lines_added, file.lines_removed))
-            .push_markup("</span><span class=\"dbar\">");
-        if file.lines_added > 0 {
-            html.push_markup("<i class=\"a\"")
-                .push_attr(
-                    "style",
-                    &format!("width:{:.1}%", share(f64::from(file.lines_added), largest)),
-                )
-                .push_markup("></i>");
+            .push_markup("</span></td><td>");
+        match file.lines {
+            Some(lines) => {
+                html.push_markup("<span class=\"diff\"")
+                    .push_attr(
+                        "title",
+                        &format!("{} added, {} removed", lines.added, lines.removed),
+                    )
+                    .push_markup("><span class=\"n\">")
+                    .push_text(&format!("+{} −{}", lines.added, lines.removed))
+                    .push_markup("</span><span class=\"dbar\">");
+                if lines.added > 0 {
+                    html.push_markup("<i class=\"a\"")
+                        .push_attr(
+                            "style",
+                            &format!("width:{:.1}%", share(f64::from(lines.added), largest)),
+                        )
+                        .push_markup("></i>");
+                }
+                if lines.removed > 0 {
+                    html.push_markup("<i class=\"d\"")
+                        .push_attr(
+                            "style",
+                            &format!("width:{:.1}%", share(f64::from(lines.removed), largest)),
+                        )
+                        .push_markup("></i>");
+                }
+                html.push_markup("</span></span>");
+            }
+            None => {
+                html.push_markup(
+                    "<span class=\"dim\" title=\"The host keeps no copy of the previous version, so it cannot count the changed lines.\">Not counted</span>",
+                );
+            }
         }
-        if file.lines_removed > 0 {
-            html.push_markup("<i class=\"d\"")
-                .push_attr(
-                    "style",
-                    &format!(
-                        "width:{:.1}%",
-                        share(f64::from(file.lines_removed), largest)
-                    ),
-                )
-                .push_markup("></i>");
-        }
-        html.push_markup("</span></span></td><td>")
+        html.push_markup("</td><td>")
             .push(&status_label(tone, glyph, publication))
             .push_markup("</td></tr>");
     }
@@ -1266,15 +1295,19 @@ mod tests {
                     ReportFile {
                         path: "crates/hvc-core/src/usage/export.rs".into(),
                         change: FileChange::Added,
-                        lines_added: 164,
-                        lines_removed: 0,
+                        lines: Some(LineCounts {
+                            added: 164,
+                            removed: 0,
+                        }),
                         publication: PublicationState::Pending,
                     },
                     ReportFile {
                         path: "crates/hvc-ui/src/usage.rs".into(),
                         change: FileChange::Modified,
-                        lines_added: 38,
-                        lines_removed: 6,
+                        lines: Some(LineCounts {
+                            added: 38,
+                            removed: 6,
+                        }),
                         publication: PublicationState::Conflict,
                     },
                 ],
@@ -1388,6 +1421,24 @@ mod tests {
         let contradicted = out.find("Contradicted · 1").unwrap();
         let supported = out.find("Supported · 3").unwrap();
         assert!(contradicted < supported);
+    }
+
+    #[test]
+    fn a_file_without_line_counts_says_why_instead_of_showing_zero() {
+        let mut report = sample();
+        let outcome = report.outcome.as_mut().unwrap();
+        outcome.files[1].lines = None;
+        let out = render_pulsation_report(&report);
+        assert!(out.contains("+164 −0 lines in 1 of 2"));
+        assert!(out.contains(">Not counted</span>"));
+        assert!(out.contains("cannot count the changed lines"));
+        assert!(!out.contains("+0 −0"));
+
+        for file in &mut report.outcome.as_mut().unwrap().files {
+            file.lines = None;
+        }
+        let out = render_pulsation_report(&report);
+        assert!(out.contains("Line counts unavailable"));
     }
 
     #[test]

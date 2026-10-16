@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[path = "preparation_ui.rs"]
@@ -52,6 +54,7 @@ use crate::lifecycle::LifecycleState;
 use crate::logs::{CoreLogsBackend, LogsBackend, LogsModel, SequenceClassification};
 use crate::pulsations::{
     CorePulsationsBackend, PulsationDetailSection, PulsationsBackend, PulsationsModel,
+    ReportNotice, report_available,
 };
 use crate::session::{
     CoreSessionPersistence, HeaderNoticeAction, HeaderNoticeKind, SESSION_DEBOUNCE,
@@ -416,6 +419,10 @@ pub struct AppModel {
     backend_override_mutation_task: Option<Task<()>>,
     cleanup_preview_task: Option<Task<()>>,
     cleanup_mutation_task: Option<Task<()>>,
+    report_task: Option<Task<()>>,
+    /// Hands a written pulsation report to the system's default application
+    /// for HTML. Tests replace it: their platform cannot open files.
+    report_opener: ReportOpener,
     artifact_read: crate::lifecycle::RevisionRead,
     backend_read: crate::lifecycle::RevisionRead,
     cleanup_read: crate::lifecycle::RevisionRead,
@@ -860,6 +867,8 @@ impl AppModel {
             backend_override_mutation_task: None,
             cleanup_preview_task: None,
             cleanup_mutation_task: None,
+            report_task: None,
+            report_opener: Rc::new(|path, cx| cx.open_with_system(path)),
             artifact_read: Default::default(),
             backend_read: Default::default(),
             cleanup_read: Default::default(),
@@ -2246,6 +2255,92 @@ impl AppModel {
                         model.push_header_notice(HeaderNoticeKind::Error, error, cx);
                     }
                 }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Writes the active pulsation's report and hands it to the system's
+    /// default application for HTML (ADR-027 M6). The file lives under the
+    /// data directory and is rewritten on each request.
+    pub(crate) fn open_pulsation_report(&mut self, cx: &mut Context<Self>) {
+        self.request_pulsation_report(None, cx);
+    }
+
+    /// Asks where to keep a copy of the active pulsation's report, then writes
+    /// the report afresh and copies it there. The copy is the developer's; the
+    /// app never touches it again.
+    pub(crate) fn save_pulsation_report(&mut self, cx: &mut Context<Self>) {
+        let state = self.pulsations.read(cx);
+        if state.report.busy {
+            return;
+        }
+        let Some(pulsation_id) = state
+            .active()
+            .filter(|pulsation| report_available(pulsation))
+            .map(|pulsation| pulsation.id.clone())
+        else {
+            return;
+        };
+        let suggested = format!(
+            "pulsation-report-{}.html",
+            pulsation_id.chars().take(8).collect::<String>()
+        );
+        let chosen = cx.prompt_for_new_path(&report_save_directory(), Some(&suggested));
+        self.report_task = Some(cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(target))) = chosen.await else {
+                return;
+            };
+            let _ = this.update(cx, |model, cx| {
+                // The developer may have moved to another pulsation meanwhile.
+                if model.pulsations.read(cx).active_id().as_deref() == Some(pulsation_id.as_str()) {
+                    model.request_pulsation_report(Some(target), cx);
+                }
+            });
+        }));
+    }
+
+    fn request_pulsation_report(&mut self, copy_to: Option<PathBuf>, cx: &mut Context<Self>) {
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let pulsation_id = self.pulsations.update(cx, |state, _| {
+            if state.report.busy {
+                return None;
+            }
+            let id = state
+                .active()
+                .filter(|pulsation| report_available(pulsation))?
+                .id
+                .clone();
+            state.report.busy = true;
+            state.report.notice = None;
+            Some(id)
+        });
+        let Some(pulsation_id) = pulsation_id else {
+            return;
+        };
+        cx.notify();
+        let saving = copy_to.is_some();
+        self.report_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.write_report(pulsation_id.clone(), copy_to).await;
+            let _ = this.update(cx, |model, cx| {
+                let notice = match result {
+                    Ok(path) if saving => ReportNotice::Saved(path),
+                    Ok(path) => {
+                        let opener = Rc::clone(&model.report_opener);
+                        opener(&path, cx);
+                        ReportNotice::Opened(path)
+                    }
+                    Err(error) => ReportNotice::Failed(error),
+                };
+                model.pulsations.update(cx, |state, _| {
+                    // Leaving the pulsation already reset its card.
+                    if state.active_id().as_deref() == Some(pulsation_id.as_str()) {
+                        state.report.busy = false;
+                        state.report.notice = Some(notice);
+                    }
+                });
                 cx.notify();
             });
         }));
@@ -8187,6 +8282,18 @@ fn load_tab(core: &AppCore, snapshot: UiTabSnapshot) -> LoadedTab {
     }
 }
 
+/// Opens a written pulsation report.
+type ReportOpener = Rc<dyn Fn(&Path, &mut gpui::App)>;
+
+/// Where "Save as…" starts for a pulsation report: the developer's home
+/// folder, never the project, whose repository the report must not enter.
+fn report_save_directory() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -8354,6 +8461,8 @@ mod tests {
         cleanup_preview_calls: Arc<Mutex<Vec<String>>>,
         cleanup_calls: Arc<Mutex<Vec<hvc_core::orchestration::CleanupFailedPulsationFilesRequest>>>,
         cleanup_plan: Arc<Mutex<Option<hvc_core::orchestration::FailedPulsationCleanupPlan>>>,
+        report_calls: Arc<Mutex<Vec<ReportCall>>>,
+        report_error: Arc<Mutex<Option<String>>>,
         snapshot: Arc<Mutex<PulsationRuntimeSnapshot>>,
         artifacts: Arc<Mutex<Vec<Artifact>>>,
         resolution_chips: Arc<Mutex<Vec<hvc_core::orchestration::SpecificationQuestionSet>>>,
@@ -8372,6 +8481,8 @@ mod tests {
                 cleanup_preview_calls: Arc::new(Mutex::new(Vec::new())),
                 cleanup_calls: Arc::new(Mutex::new(Vec::new())),
                 cleanup_plan: Arc::new(Mutex::new(None)),
+                report_calls: Arc::new(Mutex::new(Vec::new())),
+                report_error: Arc::new(Mutex::new(None)),
                 snapshot: Arc::new(Mutex::new(PulsationRuntimeSnapshot {
                     details: Vec::new(),
                     coordination: None,
@@ -8540,6 +8651,38 @@ mod tests {
                 })
             })
         }
+
+        fn write_report(
+            &self,
+            pulsation_id: String,
+            copy_to: Option<PathBuf>,
+        ) -> PulsationsFuture<PathBuf> {
+            self.report_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((pulsation_id.clone(), copy_to.clone()));
+            let error = self
+                .report_error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            Box::pin(async move {
+                match error {
+                    Some(error) => Err(error),
+                    None => Ok(copy_to.unwrap_or_else(|| written_report(&pulsation_id))),
+                }
+            })
+        }
+    }
+
+    /// A pulsation id and the copy target of one `write_report` call.
+    type ReportCall = (String, Option<PathBuf>);
+
+    fn written_report(pulsation_id: &str) -> PathBuf {
+        PathBuf::from("data")
+            .join("reports")
+            .join(pulsation_id)
+            .join("pulsation-report.html")
     }
 
     struct RecordingVaultBackend {
@@ -10384,6 +10527,99 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .len(),
             2
+        );
+    }
+
+    /// ADR-027 M6: the report card does nothing before the report exists,
+    /// opens the written file, saves a copy only where the developer chose,
+    /// and shows a failure on the card.
+    #[gpui::test]
+    fn the_pulsation_report_opens_or_saves_only_once_available(cx: &mut TestAppContext) {
+        use crate::pulsations::ReportNotice;
+        let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
+        let report_calls = Arc::clone(&pulsations_backend.report_calls);
+        let report_error = Arc::clone(&pulsations_backend.report_error);
+        let snapshot = Arc::clone(&pulsations_backend.snapshot);
+        let opened: Rc<std::cell::RefCell<Vec<PathBuf>>> = Rc::default();
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                pulsations_backend,
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |model, cx| {
+            let opened = Rc::clone(&opened);
+            model.report_opener = Rc::new(move |path, _| opened.borrow_mut().push(path.into()));
+            configure_domain_workspace(model, cx);
+            model.select_view(AppView::Pulsations, cx);
+            model.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        let notice = |cx: &mut TestAppContext| {
+            cx.read(|cx| {
+                let report = &model.read(cx).pulsations.read(cx).report;
+                assert!(!report.busy);
+                report.notice.clone()
+            })
+        };
+
+        // Running at Code: neither action reaches the host or asks for a path.
+        model.update(cx, |model, cx| {
+            model.open_pulsation_report(cx);
+            model.save_pulsation_report(cx);
+        });
+        cx.run_until_parked();
+        assert!(report_calls.lock().unwrap().is_empty());
+        assert!(!cx.did_prompt_for_new_path());
+        assert_eq!(notice(cx), None);
+
+        {
+            let mut snapshot = snapshot.lock().unwrap();
+            snapshot.pulsations[0].stage = PulsationStage::Integrator;
+            snapshot.pulsations[0].status = PulsationStatus::Checkpoint;
+        }
+        model.update(cx, |model, cx| model.refresh_pulsations(cx));
+        cx.run_until_parked();
+        model.update(cx, |model, cx| model.open_pulsation_report(cx));
+        cx.run_until_parked();
+        let written = written_report("pulse-1");
+        assert_eq!(
+            *report_calls.lock().unwrap(),
+            [("pulse-1".to_owned(), None)]
+        );
+        assert_eq!(*opened.borrow(), std::slice::from_ref(&written));
+        assert_eq!(notice(cx), Some(ReportNotice::Opened(written)));
+
+        // A cancelled "Save as…" writes nothing; a chosen path gets a copy
+        // and nothing opens.
+        model.update(cx, |model, cx| model.save_pulsation_report(cx));
+        cx.simulate_new_path_selection(|_| None);
+        cx.run_until_parked();
+        assert_eq!(report_calls.lock().unwrap().len(), 1);
+        let copy = PathBuf::from("copies").join("report.html");
+        model.update(cx, |model, cx| model.save_pulsation_report(cx));
+        cx.simulate_new_path_selection({
+            let copy = copy.clone();
+            move |_| Some(copy)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            report_calls.lock().unwrap()[1],
+            ("pulse-1".to_owned(), Some(copy.clone()))
+        );
+        assert_eq!(opened.borrow().len(), 1);
+        assert_eq!(notice(cx), Some(ReportNotice::Saved(copy)));
+
+        *report_error.lock().unwrap() = Some("The report could not be written.".into());
+        model.update(cx, |model, cx| model.open_pulsation_report(cx));
+        cx.run_until_parked();
+        assert_eq!(opened.borrow().len(), 1);
+        assert_eq!(
+            notice(cx),
+            Some(ReportNotice::Failed(
+                "The report could not be written.".into()
+            ))
         );
     }
 

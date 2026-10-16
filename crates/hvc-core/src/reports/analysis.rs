@@ -1,21 +1,22 @@
 //! Post-run analysis of a persisted pulsation.
 //!
-//! Nothing else in the workspace reads the execution database to produce a
-//! report - the GPUI panels are the only consumers, and they answer "what is
-//! happening now", not "where did this run spend its time". Without this, a
-//! pipeline change can only be argued about, never measured.
+//! The GPUI panels answer "what is happening now"; this answers "where did
+//! this run spend its time". It backs `analyze-pulsation` in
+//! `hvc-test-support` and the run context of the in-app pulsation report
+//! (ADR-027 §5). Without it, a pipeline change can only be argued about,
+//! never measured.
 //!
 //! The database is opened read-only so this never disturbs a running app.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
-use chrono::{DateTime, FixedOffset};
-use hvc_core::llm::AgentRole;
-use hvc_core::orchestration::catalog::STAGES;
-use hvc_core::reports::{
+use crate::llm::AgentRole;
+use crate::orchestration::catalog::STAGES;
+use crate::reports::{
     PulsationReport, RejectedOutput, ReportPulsation, ReportRun, ReportStage, ReportTokens,
 };
+use chrono::{DateTime, FixedOffset};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
 
@@ -60,8 +61,36 @@ fn ratio(part: f64, whole: f64) -> Option<f64> {
     (whole > 0.0).then(|| (part / whole * 1000.0).round() / 10.0)
 }
 
+/// How an agent run reached its model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Transport {
+    /// A CLI process (`terminal_runs`).
+    Cli,
+    /// A provider API call made through the router (`llm_attempts`).
+    Api,
+}
+
+impl Transport {
+    /// The `token_usage_records.source_kind` of this transport's usage.
+    fn source_kind(self) -> &'static str {
+        match self {
+            Self::Cli => "terminal_run",
+            Self::Api => "llm_attempt",
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Api => "api",
+        }
+    }
+}
+
+/// One model call of an agent: a CLI process or a provider API call.
 #[derive(Debug, Clone)]
-struct TerminalRun {
+struct AgentRun {
+    transport: Transport,
     id: String,
     job_id: Option<String>,
     agent_role: Option<String>,
@@ -80,7 +109,7 @@ struct TerminalRun {
     agent_run_id: Option<String>,
 }
 
-impl TerminalRun {
+impl AgentRun {
     fn duration_seconds(&self) -> Option<f64> {
         optional_elapsed(self.started_at.as_ref(), self.finished_at.as_ref())
     }
@@ -128,6 +157,29 @@ impl Tokens {
     }
 }
 
+/// Runs of agents outside the six stages: counted in the totals, never in a
+/// stage.
+#[derive(Default)]
+struct BackgroundUsage {
+    runs: usize,
+    tokens: Tokens,
+    cli_seconds: f64,
+    api_seconds: f64,
+}
+
+impl BackgroundUsage {
+    fn add(&mut self, run: &AgentRun, tokens: &HashMap<String, Tokens>) {
+        self.runs += 1;
+        self.tokens
+            .add(&tokens.get(&run.id).cloned().unwrap_or_default());
+        let seconds = run.duration_seconds().unwrap_or(0.0);
+        match run.transport {
+            Transport::Cli => self.cli_seconds += seconds,
+            Transport::Api => self.api_seconds += seconds,
+        }
+    }
+}
+
 /// Resolves the pulsation id for the requested selector.
 fn resolve_pulsation(
     connection: &Connection,
@@ -160,13 +212,14 @@ fn resolve_pulsation(
 fn load_terminal_runs(
     connection: &Connection,
     pulsation: &str,
-) -> Result<Vec<TerminalRun>, AnalysisError> {
+) -> Result<Vec<AgentRun>, AnalysisError> {
     let mut statement = connection.prepare(
         "SELECT id,job_id,agent_role,backend,model,observed_model,status,exit_code,error_code,termination_reason,output_bytes,event_count,started_at,finished_at,deadline_at,agent_run_id FROM terminal_runs WHERE pulsation_id=?1 ORDER BY created_at",
     )?;
     let runs = statement
         .query_map([pulsation], |row| {
-            Ok(TerminalRun {
+            Ok(AgentRun {
+                transport: Transport::Cli,
                 id: row.get(0)?,
                 job_id: row.get(1)?,
                 agent_role: row.get(2)?,
@@ -189,19 +242,64 @@ fn load_terminal_runs(
     Ok(runs)
 }
 
-/// Token usage keyed by `terminal_run` id. A single run can hold several
-/// records: one per model call the CLI made internally.
+/// Provider API calls of the pulsation's agents, as runs. A route execution
+/// that a CLI process served is left out: that process is already a run.
+fn load_api_attempts(
+    connection: &Connection,
+    pulsation: &str,
+) -> Result<Vec<AgentRun>, AnalysisError> {
+    let mut statement = connection.prepare(
+        "SELECT a.id,e.job_id,e.agent_role,a.provider_id,a.model_id,a.observed_model,a.outcome,a.error_kind,a.started_at,a.finished_at
+         FROM llm_attempts a JOIN llm_route_executions e ON e.id=a.execution_id
+         WHERE e.pulsation_id=?1
+           AND NOT EXISTS(SELECT 1 FROM terminal_runs t WHERE t.llm_execution_id=e.id)
+         ORDER BY a.started_at,a.ordinal",
+    )?;
+    let attempts = statement
+        .query_map([pulsation], |row| {
+            let outcome: String = row.get(6)?;
+            Ok(AgentRun {
+                transport: Transport::Api,
+                id: row.get(0)?,
+                job_id: row.get(1)?,
+                agent_role: row.get(2)?,
+                backend: row.get(3)?,
+                model: row.get(4)?,
+                observed_model: row.get(5)?,
+                status: if outcome == "success" {
+                    "completed"
+                } else {
+                    "failed"
+                }
+                .to_owned(),
+                exit_code: None,
+                error_code: row.get(7)?,
+                termination_reason: None,
+                output_bytes: 0,
+                event_count: 0,
+                started_at: row.get(8)?,
+                finished_at: row.get(9)?,
+                deadline_at: None,
+                agent_run_id: None,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(attempts)
+}
+
+/// Token usage keyed by run id. A single CLI run can hold several records:
+/// one per model call the CLI made internally.
 fn load_tokens(
     connection: &Connection,
-    runs: &[TerminalRun],
+    runs: &[AgentRun],
 ) -> Result<HashMap<String, Tokens>, AnalysisError> {
     let mut by_run: HashMap<String, Tokens> = HashMap::new();
     let mut statement = connection.prepare(
-        "SELECT input_tokens,output_tokens,reasoning_tokens,cache_read_tokens,cache_write_tokens,quality FROM token_usage_records WHERE source_kind='terminal_run' AND source_id=?1",
+        "SELECT input_tokens,output_tokens,reasoning_tokens,cache_read_tokens,cache_write_tokens,quality FROM token_usage_records WHERE source_kind=?1 AND source_id=?2",
     )?;
     for run in runs {
         let entry = by_run.entry(run.id.clone()).or_default();
-        let rows = statement.query_map([&run.id], |row| {
+        let rows = statement.query_map([run.transport.source_kind(), &run.id], |row| {
             Ok((
                 row.get::<_, Option<i64>>(0)?,
                 row.get::<_, Option<i64>>(1)?,
@@ -297,7 +395,7 @@ fn load_stage_jobs(
 /// Maps every CLI process to the agent run attempt it served, preferring the
 /// persisted link and falling back to attempt order within the same job.
 fn resolve_agent_runs(
-    runs: &[TerminalRun],
+    runs: &[AgentRun],
     order: &HashMap<String, Vec<String>>,
 ) -> (HashMap<String, String>, usize) {
     let mut resolved = HashMap::new();
@@ -325,10 +423,12 @@ struct StageTotals {
     discarded_tokens: Tokens,
     cli_seconds: f64,
     discarded_cli_seconds: f64,
+    api_seconds: f64,
+    discarded_api_seconds: f64,
 }
 
 fn analyze_stages(
-    runs: &[TerminalRun],
+    runs: &[AgentRun],
     tokens: &HashMap<String, Tokens>,
     rejected: &HashSet<String>,
     resolved: &HashMap<String, String>,
@@ -341,6 +441,8 @@ fn analyze_stages(
         discarded_tokens: Tokens::default(),
         cli_seconds: 0.0,
         discarded_cli_seconds: 0.0,
+        api_seconds: 0.0,
+        discarded_api_seconds: 0.0,
     };
 
     for (index, (_stage, name, role)) in STAGES.iter().enumerate() {
@@ -359,7 +461,7 @@ fn analyze_stages(
             .unwrap_or(pulsation_end);
         let wall_seconds = elapsed_seconds(created_at, ends_at);
 
-        let stage_runs: Vec<&TerminalRun> = runs
+        let stage_runs: Vec<&AgentRun> = runs
             .iter()
             .filter(|run| run.agent_role.as_deref() == Some(role.as_str()))
             .collect();
@@ -368,11 +470,12 @@ fn analyze_stages(
         let mut discarded_tokens = Tokens::default();
         let mut stage_cli = 0.0;
         let mut discarded_cli = 0.0;
+        let mut stage_api = 0.0;
+        let mut discarded_api = 0.0;
         let mut attempt_rows = Vec::new();
 
         for run in &stage_runs {
             let duration = run.duration_seconds().unwrap_or(0.0);
-            stage_cli += duration;
             let run_tokens = tokens.get(&run.id).cloned().unwrap_or_default();
             stage_tokens.add(&run_tokens);
             let output_rejected = resolved
@@ -381,9 +484,23 @@ fn analyze_stages(
             let discarded = run.status == "failed" || output_rejected;
             if discarded {
                 discarded_tokens.add(&run_tokens);
-                discarded_cli += duration;
+            }
+            match run.transport {
+                Transport::Cli => {
+                    stage_cli += duration;
+                    if discarded {
+                        discarded_cli += duration;
+                    }
+                }
+                Transport::Api => {
+                    stage_api += duration;
+                    if discarded {
+                        discarded_api += duration;
+                    }
+                }
             }
             attempt_rows.push(json!({
+                "transport": run.transport.as_str(),
                 "started_at": run.started_at,
                 "backend": run.backend,
                 "requested_model": run.model,
@@ -407,6 +524,12 @@ fn analyze_stages(
         totals.discarded_tokens.add(&discarded_tokens);
         totals.cli_seconds += stage_cli;
         totals.discarded_cli_seconds += discarded_cli;
+        totals.api_seconds += stage_api;
+        totals.discarded_api_seconds += discarded_api;
+        let cli_runs = stage_runs
+            .iter()
+            .filter(|run| run.transport == Transport::Cli)
+            .count();
 
         totals.stages.push(json!({
             "position": index + 1,
@@ -414,11 +537,14 @@ fn analyze_stages(
             "agent_role": role.as_str(),
             "job_attempts": attempts,
             "job_last_error": last_error,
-            "cli_runs": stage_runs.len(),
+            "cli_runs": cli_runs,
+            "api_calls": stage_runs.len() - cli_runs,
             "wall_seconds": wall_seconds,
             "cli_seconds": stage_cli,
             "cli_seconds_discarded": discarded_cli,
             "cli_waste_percent": ratio(discarded_cli, stage_cli),
+            "api_seconds": stage_api,
+            "api_seconds_discarded": discarded_api,
             "tokens": stage_tokens.to_json(),
             "tokens_discarded": discarded_tokens.to_json(),
             "attempts": attempt_rows,
@@ -430,7 +556,7 @@ fn analyze_stages(
 
 /// A requested model the provider silently replaced is a cost and behaviour
 /// surprise, so it is reported rather than left for someone to notice.
-fn model_divergence(run: &TerminalRun) -> Option<String> {
+fn model_divergence(run: &AgentRun) -> Option<String> {
     let requested = run.model.as_deref()?;
     let observed = run.observed_model.as_deref()?;
     (!observed.contains(requested)).then(|| format!("requested {requested}, observed {observed}"))
@@ -596,12 +722,17 @@ pub fn analyze(database: &Path, selector: &Selector) -> Result<Value, AnalysisEr
             },
         )?;
 
-    let runs = load_terminal_runs(&connection, &pulsation)?;
+    let mut runs = load_terminal_runs(&connection, &pulsation)?;
+    // Only CLI processes are matched to agent run attempts; API calls follow.
+    let cli_runs = runs.len();
+    runs.extend(load_api_attempts(&connection, &pulsation)?);
     let tokens_by_run = load_tokens(&connection, &runs)?;
     let rejected = load_rejected_agent_runs(&connection, &pulsation)?;
     let jobs = load_stage_jobs(&connection, &pulsation)?;
-    let (resolved, inferred_links) =
-        resolve_agent_runs(&runs, &load_agent_run_order(&connection, &pulsation)?);
+    let (resolved, inferred_links) = resolve_agent_runs(
+        &runs[..cli_runs],
+        &load_agent_run_order(&connection, &pulsation)?,
+    );
     let staged = analyze_stages(
         &runs,
         &tokens_by_run,
@@ -616,16 +747,25 @@ pub fn analyze(database: &Path, selector: &Selector) -> Result<Value, AnalysisEr
     let checkpoint_seconds = checkpoints["total_seconds"].as_f64().unwrap_or(0.0);
 
     // The learning job runs on the background lane after the pipeline closes,
-    // so its runs belong in the totals but never in a stage.
-    let mut learning_tokens = Tokens::default();
-    let mut learning_cli = 0.0;
-    for run in runs
-        .iter()
-        .filter(|run| run.agent_role.as_deref() == Some(AgentRole::LearningAgent.as_str()))
-    {
-        learning_tokens.add(&tokens_by_run.get(&run.id).cloned().unwrap_or_default());
-        learning_cli += run.duration_seconds().unwrap_or(0.0);
+    // and the Visualizer beside a checkpoint, so their runs belong in the
+    // totals but never in a stage.
+    let stage_roles: HashSet<&str> = STAGES.iter().map(|(_, _, role)| role.as_str()).collect();
+    let mut learning = BackgroundUsage::default();
+    let mut background = BackgroundUsage::default();
+    for run in &runs {
+        let Some(role) = run.agent_role.as_deref() else {
+            continue;
+        };
+        let usage = if role == AgentRole::LearningAgent.as_str() {
+            &mut learning
+        } else if !stage_roles.contains(role) {
+            &mut background
+        } else {
+            continue;
+        };
+        usage.add(run, &tokens_by_run);
     }
+    let learning_usage = learning;
     let learning = analyze_learning(&connection, &pulsation)?;
     // A learning report that never published is spend with no product, even
     // though the pulsation itself is `done`.
@@ -635,14 +775,18 @@ pub fn analyze(database: &Path, selector: &Selector) -> Result<Value, AnalysisEr
         .is_some_and(|state| state != "published");
 
     let mut overall_tokens = staged.tokens.clone();
-    overall_tokens.add(&learning_tokens);
+    overall_tokens.add(&learning_usage.tokens);
+    overall_tokens.add(&background.tokens);
     let mut discarded_tokens = staged.discarded_tokens.clone();
     let mut discarded_cli = staged.discarded_cli_seconds;
+    let mut discarded_api = staged.discarded_api_seconds;
     if learning_discarded {
-        discarded_tokens.add(&learning_tokens);
-        discarded_cli += learning_cli;
+        discarded_tokens.add(&learning_usage.tokens);
+        discarded_cli += learning_usage.cli_seconds;
+        discarded_api += learning_usage.api_seconds;
     }
-    let overall_cli = staged.cli_seconds + learning_cli;
+    let overall_cli = staged.cli_seconds + learning_usage.cli_seconds + background.cli_seconds;
+    let overall_api = staged.api_seconds + learning_usage.api_seconds + background.api_seconds;
 
     Ok(json!({
         "schema_version": 1,
@@ -663,10 +807,14 @@ pub fn analyze(database: &Path, selector: &Selector) -> Result<Value, AnalysisEr
             "cli_share_percent": ratio(overall_cli, wall_seconds),
             "checkpoint_seconds": checkpoint_seconds,
             "checkpoint_share_percent": ratio(checkpoint_seconds, wall_seconds),
-            "cli_runs": runs.len(),
+            "cli_runs": cli_runs,
             "cli_runs_linked_by_inference": inferred_links,
             "cli_seconds_discarded": discarded_cli,
             "cli_waste_percent": ratio(discarded_cli, overall_cli),
+            "api_seconds": overall_api,
+            "api_share_percent": ratio(overall_api, wall_seconds),
+            "api_calls": runs.len() - cli_runs,
+            "api_seconds_discarded": discarded_api,
             "tokens": overall_tokens.to_json(),
             "tokens_discarded": discarded_tokens.to_json(),
             "token_waste_percent": ratio(
@@ -677,9 +825,16 @@ pub fn analyze(database: &Path, selector: &Selector) -> Result<Value, AnalysisEr
         "stages": staged.stages,
         "learning": {
             "run": learning,
-            "cli_seconds": learning_cli,
-            "tokens": learning_tokens.to_json(),
+            "cli_seconds": learning_usage.cli_seconds,
+            "api_seconds": learning_usage.api_seconds,
+            "tokens": learning_usage.tokens.to_json(),
             "discarded": learning_discarded,
+        },
+        "background": {
+            "runs": background.runs,
+            "cli_seconds": background.cli_seconds,
+            "api_seconds": background.api_seconds,
+            "tokens": background.tokens.to_json(),
         },
         "checkpoints": checkpoints,
         "retrieval": analyze_retrieval(&connection, &pulsation)?,
@@ -688,8 +843,9 @@ pub fn analyze(database: &Path, selector: &Selector) -> Result<Value, AnalysisEr
 }
 
 /// Maps an [`analyze`] report onto the typed input of the HTML pulsation report
-/// (ADR-024). Telemetry carries no criteria, checks or files, so `outcome`
-/// stays `None` and the rendered report says so instead of guessing.
+/// (ADR-027 §5). Telemetry carries no criteria, checks or files, so `outcome`
+/// stays `None` and the rendered report says so instead of guessing. The app's
+/// report adds the outcome from the typed Integrator payload.
 pub fn to_html_report(report: &Value) -> Result<PulsationReport, AnalysisError> {
     let text = |value: &Value, field: &str| -> Result<String, AnalysisError> {
         value[field]
@@ -707,9 +863,10 @@ pub fn to_html_report(report: &Value) -> Result<PulsationReport, AnalysisError> 
         .map(|stage| -> Result<ReportStage, AnalysisError> {
             Ok(ReportStage {
                 stage: serde_json::from_value(stage["stage"].clone())?,
-                runs: count(&stage["cli_runs"]),
-                agent_seconds: seconds(&stage["cli_seconds"]),
-                discarded_seconds: seconds(&stage["cli_seconds_discarded"]),
+                runs: count(&stage["cli_runs"]) + count(&stage["api_calls"]),
+                agent_seconds: seconds(&stage["cli_seconds"]) + seconds(&stage["api_seconds"]),
+                discarded_seconds: seconds(&stage["cli_seconds_discarded"])
+                    + seconds(&stage["api_seconds_discarded"]),
                 input_tokens: count(&stage["tokens"]["input"]),
                 output_tokens: count(&stage["tokens"]["output"]),
             })
@@ -801,15 +958,19 @@ pub fn render_text(report: &Value) -> String {
 
     out.push_str("== Totals ==\n");
     out.push_str(&format!(
-        "  wall clock           {}\n  CLI time             {} ({} of wall clock)\n  parked at checkpoint {} ({} of wall clock)\n  CLI runs             {}\n  CLI time discarded   {} ({})\n",
+        "  wall clock           {}\n  CLI time             {} ({} of wall clock)\n  API time             {} ({} of wall clock)\n  parked at checkpoint {} ({} of wall clock)\n  CLI runs             {}\n  API calls            {}\n  CLI time discarded   {} ({})\n  API time discarded   {}\n",
         duration(totals["wall_clock_seconds"].as_f64()),
         duration(totals["cli_seconds"].as_f64()),
         percent(&totals["cli_share_percent"]),
+        duration(totals["api_seconds"].as_f64()),
+        percent(&totals["api_share_percent"]),
         duration(totals["checkpoint_seconds"].as_f64()),
         percent(&totals["checkpoint_share_percent"]),
         totals["cli_runs"],
+        totals["api_calls"],
         duration(totals["cli_seconds_discarded"].as_f64()),
         percent(&totals["cli_waste_percent"]),
+        duration(totals["api_seconds_discarded"].as_f64()),
     ));
     out.push_str(&format!(
         "  tokens               {} in / {} out ({} reasoning)\n  cache read           {} ({} of input)\n  tokens discarded     {} in / {} out ({} of all tokens)\n",
@@ -840,12 +1001,14 @@ pub fn render_text(report: &Value) -> String {
     out.push_str("\n== Stages ==\n");
     for stage in report["stages"].as_array().into_iter().flatten() {
         out.push_str(&format!(
-            "  {}. {:<14} runs={:<2} wall={:<7} cli={:<7} discarded={:<7} ({})\n",
+            "  {}. {:<14} cli_runs={:<2} api_calls={:<2} wall={:<7} cli_time={:<7} api_time={:<7} discarded={:<7} ({})\n",
             stage["position"],
             stage["stage"].as_str().unwrap_or("-"),
             stage["cli_runs"],
+            stage["api_calls"],
             duration(stage["wall_seconds"].as_f64()),
             duration(stage["cli_seconds"].as_f64()),
+            duration(stage["api_seconds"].as_f64()),
             duration(stage["cli_seconds_discarded"].as_f64()),
             percent(&stage["cli_waste_percent"]),
         ));
@@ -856,8 +1019,9 @@ pub fn render_text(report: &Value) -> String {
                 "."
             };
             out.push_str(&format!(
-                "       {} {:<9} {:<10} {:>6} out={:<6} {}\n",
+                "       {} {:<3} {:<9} {:<10} {:>6} out={:<6} {}\n",
                 marker,
+                attempt["transport"].as_str().unwrap_or("-"),
                 attempt["backend"].as_str().unwrap_or("-"),
                 attempt["status"].as_str().unwrap_or("-"),
                 duration(attempt["duration_seconds"].as_f64()),
@@ -931,8 +1095,8 @@ pub fn render_text(report: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hvc_core::persistence_service::{PulsationStage, PulsationStatus};
-    use hvc_core::reports::render_pulsation_report;
+    use crate::persistence_service::{PulsationStage, PulsationStatus};
+    use crate::reports::render_pulsation_report;
 
     fn analysis() -> Value {
         json!({

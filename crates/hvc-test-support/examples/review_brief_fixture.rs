@@ -20,6 +20,9 @@
 //!
 //! `--visualizer` enables the Visualizer (ADR-027 M5) and waits for the note
 //! of the parked checkpoint before the worker stops.
+//!
+//! `--report` writes the pulsation report (ADR-027 M6) and prints its path;
+//! it needs `--stage integrator`, where the report becomes available.
 use hvc_core::{
     AppCoreDependencies,
     feature_forge::{
@@ -289,18 +292,20 @@ fn passing_check() -> Option<ValidationCommandProfileV1> {
     })
 }
 
-const USAGE: &str = "usage: review_brief_fixture NEW_DIRECTORY [--revised] [--visualizer] [--stage contract|test|integrator|failure]";
+const USAGE: &str = "usage: review_brief_fixture NEW_DIRECTORY [--revised] [--visualizer] [--report] [--stage contract|test|integrator|failure]";
 
 fn main() {
     let root = PathBuf::from(std::env::args_os().nth(1).expect(USAGE));
     let mut revised = false;
     let mut visualizer = false;
+    let mut report = false;
     let mut target = "specification".to_owned();
     let mut options = std::env::args().skip(2);
     while let Some(option) = options.next() {
         match option.as_str() {
             "--revised" => revised = true,
             "--visualizer" => visualizer = true,
+            "--report" => report = true,
             "--stage" => target = options.next().expect(USAGE),
             other => panic!("unknown option {other}; {USAGE}"),
         }
@@ -538,5 +543,9 @@ fn main() {
             "none (build check_fixture first)"
         }
     );
+    if report {
+        let path = service.write_pulsation_report(&pulse).unwrap();
+        println!("Report: {}", path.display());
+    }
     println!("HVC_DATA_DIR={}", data.display());
 }

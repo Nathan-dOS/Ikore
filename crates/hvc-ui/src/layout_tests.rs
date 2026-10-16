@@ -1351,6 +1351,108 @@ fn leftover_files_card_shows_only_for_failed_pulsations(cx: &mut TestAppContext)
     assert!(refresh.left() > remove.right(), "controls sit side by side");
 }
 
+/// The active pulsation at `status` in `section`, with the report card's last
+/// notice set, in a window of its own.
+fn report_window(
+    cx: &mut TestAppContext,
+    section: PulsationDetailSection,
+    status: PulsationStatus,
+    notice: Option<crate::pulsations::ReportNotice>,
+    window: (f32, f32),
+) -> (Entity<AppModel>, &mut VisualTestContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            state.pulsations[0].stage = PulsationStage::Integrator;
+            state.pulsations[0].status = status;
+            state.detail_section = section;
+            state.report.notice = notice;
+        });
+        m.select_view(AppView::Pulsations, cx);
+    });
+    visual.simulate_resize(size(px(window.0), px(window.1)));
+    visual.run_until_parked();
+    (model, visual)
+}
+
+/// ADR-027 M6: the report card sits in Overview and Artifacts, inside the
+/// reading column at the minimum and the common window, with its two actions
+/// side by side and a long written path wrapping inside the card.
+#[gpui::test]
+fn the_report_card_fits_overview_and_artifacts(cx: &mut TestAppContext) {
+    use crate::pulsations::ReportNotice;
+    let written = std::path::PathBuf::from("C:")
+        .join("Users")
+        .join("developer")
+        .join("AppData")
+        .join("Roaming")
+        .join("com.hardvibecode.desktop")
+        .join("reports")
+        .join("5d0c2a6e-8b1f-4c3a-9e27-61f0b4a9d2c8")
+        .join("pulsation-report.html");
+    for window in [(960.0, 640.0), (1440.0, 900.0)] {
+        for section in [
+            PulsationDetailSection::Overview,
+            PulsationDetailSection::Artifacts,
+        ] {
+            let (_, visual) = report_window(
+                cx,
+                section,
+                PulsationStatus::Done,
+                Some(ReportNotice::Opened(written.clone())),
+                window,
+            );
+            let scroll = visual.debug_bounds("pulsation-section-scroll").unwrap();
+            let card = visual.debug_bounds("pulsation-report").unwrap();
+            let status = visual.debug_bounds("pulsation-report-status").unwrap();
+            let open = visual.debug_bounds("pulsation-report-open").unwrap();
+            let save = visual.debug_bounds("pulsation-report-save").unwrap();
+            let at = format!("{section:?} at {window:?}");
+            assert!(
+                card.left() >= scroll.left() && card.right() <= scroll.right(),
+                "{at}: the card leaves the reading column: {card:?} in {scroll:?}"
+            );
+            assert!(
+                status.right() <= card.right() && status.size.width > card.size.width / 2.0,
+                "{at}: the written path overflows or collapses: {status:?} in {card:?}"
+            );
+            assert!(
+                save.left() > open.right() && open.top() == save.top(),
+                "{at}: the actions sit side by side"
+            );
+            assert!(
+                open.size.width < card.size.width / 2.0,
+                "{at}: the open action sizes to its label"
+            );
+            assert!(
+                status.bottom() <= open.top(),
+                "{at}: status above the actions"
+            );
+        }
+    }
+}
+
+/// Before the Integrator checkpoint the card only says when the report
+/// becomes available; its actions do nothing.
+#[gpui::test]
+fn the_report_card_waits_for_the_integrator(cx: &mut TestAppContext) {
+    let (model, visual) = report_window(
+        cx,
+        PulsationDetailSection::Overview,
+        PulsationStatus::Running,
+        None,
+        (1440.0, 900.0),
+    );
+    assert!(visual.debug_bounds("pulsation-report-status").is_some());
+    click(visual, "pulsation-report-open");
+    click(visual, "pulsation-report-save");
+    model.update(visual, |m, cx| {
+        let report = &m.pulsations.read(cx).report;
+        assert!(!report.busy);
+        assert_eq!(report.notice, None);
+    });
+}
+
 #[gpui::test]
 fn removing_leftover_files_takes_two_clicks_and_never_moves_the_button(cx: &mut TestAppContext) {
     let (model, visual) = failed_with_leftovers_window(cx, (1280.0, 820.0));
