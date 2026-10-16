@@ -10,12 +10,34 @@ use super::*;
 use coordination::invalid;
 use rusqlite::OptionalExtension;
 
+/// A snapshot of whichever provider/model identity a Companion turn should
+/// currently use, for either transport. Mirrors the columns `chat_conversations`
+/// stores for each: `connection_id`/`provider_id`/`model_id` for API,
+/// `cli_backend`/`model_profile`/`model_source` for CLI.
+struct CompanionTarget {
+    connection_id: Option<String>,
+    provider_id: String,
+    model_id: String,
+    transport_kind: String,
+    cli_backend: Option<String>,
+    model_profile: Option<String>,
+    model_source: String,
+}
+
 impl PersistenceService {
     /// Returns the conversation_id for `question_set_id`'s resolution
     /// conversation, creating one the first time it is opened. The
     /// conversation carries a real provider/model snapshot (never the
     /// `'specification'`/`'host-presented'` pair the rendered questions use),
     /// so it can run ordinary chat turns.
+    ///
+    /// Every call -- not just the first -- resyncs that snapshot to whatever
+    /// the developer is currently using for the Companion. There is no "start
+    /// a new one" escape hatch for a resolution conversation the way there is
+    /// for an ordinary chat, so if it stayed pinned to whatever was current
+    /// the moment it was first opened, a conversation created before a
+    /// working connection existed would stay stuck on that stale/broken
+    /// snapshot forever.
     pub fn ensure_resolution_conversation(
         &self,
         project_id: &str,
@@ -23,7 +45,9 @@ impl PersistenceService {
     ) -> Result<String, PersistenceServiceError> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some(id) = tx
+        let target = Self::companion_default_target(&tx, project_id)?;
+        let now = Self::now_iso();
+        if let Some(conversation_id) = tx
             .query_row(
                 "SELECT conversation_id FROM specification_resolution_conversations WHERE question_set_id=?1",
                 [question_set_id],
@@ -31,20 +55,36 @@ impl PersistenceService {
             )
             .optional()?
         {
-            return Ok(id);
+            tx.execute(
+                "UPDATE chat_conversations SET connection_id=?2,provider_id_snapshot=?3,model_id_snapshot=?4,transport_kind=?5,cli_backend=?6,model_profile=?7,model_source=?8,updated_at=?9 WHERE id=?1",
+                params![
+                    conversation_id,
+                    target.connection_id,
+                    target.provider_id,
+                    target.model_id,
+                    target.transport_kind,
+                    target.cli_backend,
+                    target.model_profile,
+                    target.model_source,
+                    now
+                ],
+            )?;
+            tx.commit()?;
+            return Ok(conversation_id);
         }
-        let (connection_id, provider_id, model_id) =
-            Self::companion_default_connection(&tx, project_id)?;
         let conversation_id = Uuid::new_v4().to_string();
-        let now = Self::now_iso();
         tx.execute(
-            "INSERT INTO chat_conversations(id,project_id,connection_id,provider_id_snapshot,model_id_snapshot,title,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?7)",
+            "INSERT INTO chat_conversations(id,project_id,connection_id,provider_id_snapshot,model_id_snapshot,transport_kind,cli_backend,model_profile,model_source,title,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)",
             params![
                 conversation_id,
                 project_id,
-                connection_id,
-                provider_id,
-                model_id,
+                target.connection_id,
+                target.provider_id,
+                target.model_id,
+                target.transport_kind,
+                target.cli_backend,
+                target.model_profile,
+                target.model_source,
                 "Specification clarification",
                 now
             ],
@@ -58,40 +98,142 @@ impl PersistenceService {
     }
 
     /// The Companion has no per-project routing the way agent roles do (see
-    /// `provider_route_bindings`): a developer always picks a connection by
-    /// hand when starting an ordinary chat. For a resolution conversation
-    /// opened automatically (no such moment exists), this reuses the
-    /// connection of the project's most recently touched API conversation --
-    /// whatever the developer already has working -- falling back to the
-    /// first enabled, active provider connection if the Companion has never
+    /// `provider_route_bindings`): a developer always picks a connection or
+    /// CLI backend by hand when starting an ordinary chat. For a resolution
+    /// conversation, this reuses the identity of the project's most recently
+    /// touched Companion conversation of either transport -- whatever the
+    /// developer already has working right now -- falling back to the first
+    /// enabled, active API provider connection if the Companion has never
     /// been opened for this project yet. The `legacy-openai`/`legacy-anthropic`
     /// placeholders `ensure_legacy_configuration` seeds into every database are
     /// excluded from that fallback: they exist unconditionally regardless of
     /// whether real credentials are configured, so treating them as "active"
     /// would make this fallback pick them ahead of any connection the
-    /// developer actually set up.
-    fn companion_default_connection(
+    /// developer actually set up. A candidate whose API connection was since
+    /// removed or disabled is skipped rather than copied forward broken, and
+    /// another resolution conversation is never itself a candidate -- this
+    /// always traces back to a conversation the developer actually picked.
+    fn companion_default_target(
         db: &Connection,
         project_id: &str,
-    ) -> Result<(String, String, String), PersistenceServiceError> {
-        if let Some(row) = db
+    ) -> Result<CompanionTarget, PersistenceServiceError> {
+        if let Some(target) = Self::saved_companion_target(db, project_id)? {
+            return Ok(target);
+        }
+        if let Some(target) = db
             .query_row(
-                "SELECT connection_id,provider_id_snapshot,model_id_snapshot FROM chat_conversations WHERE project_id=?1 AND connection_id IS NOT NULL AND transport_kind='api' ORDER BY updated_at DESC LIMIT 1",
+                "SELECT c.connection_id,c.provider_id_snapshot,c.model_id_snapshot,c.transport_kind,c.cli_backend,c.model_profile,c.model_source
+                 FROM chat_conversations c
+                 WHERE c.project_id=?1
+                   AND NOT EXISTS(SELECT 1 FROM specification_resolution_conversations r WHERE r.conversation_id=c.id)
+                   AND (
+                     c.transport_kind='cli'
+                     OR (c.connection_id IS NOT NULL AND EXISTS(SELECT 1 FROM provider_connections p WHERE p.id=c.connection_id AND p.enabled=1))
+                   )
+                 ORDER BY c.updated_at DESC LIMIT 1",
                 [project_id],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+                |r| {
+                    Ok(CompanionTarget {
+                        connection_id: r.get(0)?,
+                        provider_id: r.get(1)?,
+                        model_id: r.get(2)?,
+                        transport_kind: r.get(3)?,
+                        cli_backend: r.get(4)?,
+                        model_profile: r.get(5)?,
+                        model_source: r.get(6)?,
+                    })
+                },
             )
             .optional()?
         {
-            return Ok(row);
+            return Ok(target);
         }
-        db.query_row(
-            "SELECT id,provider_id,default_model FROM provider_connections WHERE enabled=1 AND state='active' AND id NOT IN ('legacy-openai','legacy-anthropic') ORDER BY created_at LIMIT 1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()?
-        .ok_or_else(|| {
-            invalid("No active provider connection is configured for the Companion.")
+        let (connection_id, provider_id, model_id) = db
+            .query_row(
+                "SELECT id,provider_id,default_model FROM provider_connections WHERE enabled=1 AND state='active' AND id NOT IN ('legacy-openai','legacy-anthropic') ORDER BY created_at LIMIT 1",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                invalid("No active provider connection is configured for the Companion.")
+            })?;
+        Ok(CompanionTarget {
+            connection_id: Some(connection_id),
+            provider_id,
+            model_id,
+            transport_kind: "api".into(),
+            cli_backend: None,
+            model_profile: None,
+            model_source: "catalog".into(),
+        })
+    }
+
+    /// The target the developer last chose in the Companion panel for this
+    /// project (`ChatService::save_default_target`). Before it existed, the
+    /// Teste 4 resolution conversation inherited `claude/haiku` from an older
+    /// chat while the panel showed Codex. An API connection since disabled
+    /// falls through to the older rules instead of being copied forward.
+    fn saved_companion_target(
+        db: &Connection,
+        project_id: &str,
+    ) -> Result<Option<CompanionTarget>, PersistenceServiceError> {
+        use crate::chat_service::{ChatExecutionTargetRequest, companion_target_setting_key};
+        let saved: Option<String> = db
+            .query_row(
+                "SELECT value FROM runtime_settings WHERE key=?1",
+                [companion_target_setting_key(project_id)],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(target) =
+            saved.and_then(|value| serde_json::from_str::<ChatExecutionTargetRequest>(&value).ok())
+        else {
+            return Ok(None);
+        };
+        Ok(match target {
+            ChatExecutionTargetRequest::Api { connection_id } => db
+                .query_row(
+                    "SELECT provider_id,default_model FROM provider_connections WHERE id=?1 AND enabled=1",
+                    [&connection_id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .optional()?
+                .map(|(provider_id, model_id)| CompanionTarget {
+                    connection_id: Some(connection_id),
+                    provider_id,
+                    model_id,
+                    transport_kind: "api".into(),
+                    cli_backend: None,
+                    model_profile: None,
+                    model_source: "catalog".into(),
+                }),
+            ChatExecutionTargetRequest::Cli {
+                backend,
+                model,
+                model_profile,
+            } => {
+                let model_source = match model.as_deref() {
+                    None => "default",
+                    Some(model_id) => {
+                        let in_catalog: bool = db.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM cli_model_catalog_entries e JOIN cli_model_catalog_snapshots s ON s.id=e.snapshot_id WHERE s.project_id=?1 AND s.backend=?2 AND e.model_id=?3)",
+                            params![project_id, backend.as_str(), model_id],
+                            |r| r.get(0),
+                        )?;
+                        if in_catalog { "catalog" } else { "manual" }
+                    }
+                };
+                Some(CompanionTarget {
+                    connection_id: None,
+                    provider_id: backend.as_str().into(),
+                    model_id: model.unwrap_or_else(|| "default".into()),
+                    transport_kind: "cli".into(),
+                    cli_backend: Some(backend.as_str().into()),
+                    model_profile,
+                    model_source: model_source.into(),
+                })
+            }
         })
     }
 }
@@ -292,6 +434,140 @@ mod tests {
     }
 
     #[test]
+    fn prefers_a_cli_conversation_over_an_active_api_connection_when_more_recent() {
+        let f = Fixture::new();
+        provider_connection(&f.service, "connection-a");
+        let db = f.service.connection().unwrap();
+        db.execute(
+            "INSERT INTO chat_conversations(id,project_id,provider_id_snapshot,model_id_snapshot,transport_kind,cli_backend,model_profile,model_source,title,created_at,updated_at) VALUES('conv-cli',?1,'codex','gpt-5.6-terra','cli','codex',NULL,'catalog','CLI chat','2020-01-02T00:00:00Z','2020-01-02T00:00:00Z')",
+            [&f.project],
+        )
+        .unwrap();
+        drop(db);
+        bare_question_set(&f.service, &f.project, "set-a");
+        let conversation_id = f
+            .service
+            .ensure_resolution_conversation(&f.project, "set-a")
+            .unwrap();
+        let (transport, cli_backend, connection): (String, Option<String>, Option<String>) = f
+            .service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT transport_kind,cli_backend,connection_id FROM chat_conversations WHERE id=?1",
+                [&conversation_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(transport, "cli");
+        assert_eq!(cli_backend.as_deref(), Some("codex"));
+        assert!(connection.is_none());
+    }
+
+    #[test]
+    fn reopening_resyncs_a_stale_snapshot_to_the_now_current_conversation() {
+        let f = Fixture::new();
+        provider_connection(&f.service, "connection-old");
+        let db = f.service.connection().unwrap();
+        db.execute(
+            "INSERT INTO chat_conversations(id,project_id,connection_id,provider_id_snapshot,model_id_snapshot,title,created_at,updated_at) VALUES('conv-old',?1,'connection-old','openai','gpt-old','Old chat','2020-01-01T00:00:00Z','2020-01-01T00:00:00Z')",
+            [&f.project],
+        )
+        .unwrap();
+        drop(db);
+        bare_question_set(&f.service, &f.project, "set-a");
+        let first = f
+            .service
+            .ensure_resolution_conversation(&f.project, "set-a")
+            .unwrap();
+        let model_after_first: String = f
+            .service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT model_id_snapshot FROM chat_conversations WHERE id=?1",
+                [&first],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(model_after_first, "gpt-old");
+
+        // The developer switches to CLI/Codex after this resolution
+        // conversation already existed -- reopening it must pick that up,
+        // not stay pinned to whatever was current the first time.
+        let db = f.service.connection().unwrap();
+        db.execute(
+            "INSERT INTO chat_conversations(id,project_id,provider_id_snapshot,model_id_snapshot,transport_kind,cli_backend,model_profile,model_source,title,created_at,updated_at) VALUES('conv-cli',?1,'codex','gpt-5.6-terra','cli','codex',NULL,'catalog','CLI chat','2020-01-02T00:00:00Z','2020-01-02T00:00:00Z')",
+            [&f.project],
+        )
+        .unwrap();
+        drop(db);
+        let second = f
+            .service
+            .ensure_resolution_conversation(&f.project, "set-a")
+            .unwrap();
+        assert_eq!(first, second, "same conversation identity/history");
+        let (transport, cli_backend): (String, Option<String>) = f
+            .service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT transport_kind,cli_backend FROM chat_conversations WHERE id=?1",
+                [&second],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(transport, "cli");
+        assert_eq!(cli_backend.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn a_disabled_connections_conversation_is_skipped_for_an_older_still_valid_one() {
+        let f = Fixture::new();
+        provider_connection(&f.service, "connection-old");
+        provider_connection(&f.service, "connection-disabled");
+        let db = f.service.connection().unwrap();
+        db.execute(
+            "UPDATE provider_connections SET enabled=0 WHERE id='connection-disabled'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO chat_conversations(id,project_id,connection_id,provider_id_snapshot,model_id_snapshot,title,created_at,updated_at) VALUES('conv-old',?1,'connection-old','openai','gpt-old','Old chat','2020-01-01T00:00:00Z','2020-01-01T00:00:00Z')",
+            [&f.project],
+        )
+        .unwrap();
+        // A more-recent conversation whose connection has since been disabled
+        // (not deleted -- `ON DELETE SET NULL` would already exclude a
+        // deleted one via the plain `connection_id IS NOT NULL` check).
+        db.execute(
+            "INSERT INTO chat_conversations(id,project_id,connection_id,provider_id_snapshot,model_id_snapshot,title,created_at,updated_at) VALUES('conv-disabled',?1,'connection-disabled','openai','gpt-disabled','Disabled chat','2020-01-02T00:00:00Z','2020-01-02T00:00:00Z')",
+            [&f.project],
+        )
+        .unwrap();
+        drop(db);
+        bare_question_set(&f.service, &f.project, "set-a");
+        let conversation_id = f
+            .service
+            .ensure_resolution_conversation(&f.project, "set-a")
+            .unwrap();
+        let model: String = f
+            .service
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT model_id_snapshot FROM chat_conversations WHERE id=?1",
+                [&conversation_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            model, "gpt-old",
+            "must skip the more-recent conversation whose connection is now disabled"
+        );
+    }
+
+    #[test]
     fn with_no_prior_conversation_and_no_active_connection_fails_clearly() {
         let f = Fixture::new();
         let error = f
@@ -414,5 +690,43 @@ mod tests {
         let mut expected = pulses.clone();
         expected.sort();
         assert_eq!(pulsation_ids, expected);
+    }
+
+    /// Teste 4 (2026-09-22): the resolution conversation inherited
+    /// `claude/haiku` from an older chat while the panel showed Codex. The
+    /// target the developer last chose in the Companion panel now wins.
+    #[test]
+    fn the_saved_companion_target_wins_over_the_latest_conversation() {
+        let f = Fixture::new();
+        bare_question_set(&f.service, &f.project, "set-saved");
+        let db = f.service.connection().unwrap();
+        db.execute(
+            "INSERT INTO chat_conversations(id,project_id,provider_id_snapshot,model_id_snapshot,transport_kind,cli_backend,model_source,title,created_at,updated_at) VALUES('older',?1,'claude','haiku','cli','claude','catalog','Older','2026-09-22T18:00:00Z','2026-09-22T18:00:00Z')",
+            [&f.project],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO runtime_settings(key,value,updated_at) VALUES(?1,?2,'now')",
+            params![
+                crate::chat_service::companion_target_setting_key(&f.project),
+                r#"{"transport":"cli","backend":"codex","model":null,"model_profile":null}"#
+            ],
+        )
+        .unwrap();
+        let conversation = f
+            .service
+            .ensure_resolution_conversation(&f.project, "set-saved")
+            .unwrap();
+        let (transport, backend, model): (String, Option<String>, String) = db
+            .query_row(
+                "SELECT transport_kind,cli_backend,model_id_snapshot FROM chat_conversations WHERE id=?1",
+                [&conversation],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (transport.as_str(), backend.as_deref(), model.as_str()),
+            ("cli", Some("codex"), "default")
+        );
     }
 }

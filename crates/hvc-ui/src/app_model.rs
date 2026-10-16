@@ -11,7 +11,7 @@ use gpui::{
     Task, Window,
 };
 use hvc_core::agent_runtime::{AdaptiveContextMode, ContextStrategy, DynamicContextPolicy};
-use hvc_core::chat_service::{ChatEventEnvelope, ChatExecutionTargetRequest, ChatTransportKind};
+use hvc_core::chat_service::{ChatEventEnvelope, ChatTransportKind};
 use hvc_core::llm::{
     DeleteProviderConnectionRequest, DeleteProviderRouteRequest, ResetLlmResilienceStateRequest,
     RouteTarget, RoutingMode, TestProviderConnectionRequest,
@@ -45,6 +45,7 @@ use crate::agents::{
     CliModelPickerState, CliModelPickerTarget, CoreAgentsBackend,
 };
 use crate::chat::{ChatBackend, ChatEventOutcome, ChatModel, CoreChatBackend};
+use crate::errors::UiCommandError;
 use crate::flow::FlowTarget;
 use crate::icons::Icon;
 use crate::lifecycle::LifecycleState;
@@ -286,7 +287,6 @@ pub struct AppModel {
     pub(crate) agents_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) pulsations_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) workspace_tree_split: Entity<crate::split_pane::SplitPaneState>,
-    pub(crate) workspace_preview_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) workspace_context_split: Entity<crate::split_pane::SplitPaneState>,
     /// Feature list against the section body, shared by every Forge section.
     pub(crate) forge_feature_split: Entity<crate::split_pane::SplitPaneState>,
@@ -332,6 +332,7 @@ pub struct AppModel {
     pub(crate) settings_connection_endpoint_input: Entity<NativeTextInput>,
     pub(crate) settings_connection_secret_input: Entity<NativeTextInput>,
     pub(crate) settings_route_name_input: Entity<NativeTextInput>,
+    pub(crate) settings_project_delete_input: Entity<NativeTextInput>,
     pub(crate) settings_embedding_model_input: Entity<NativeTextInput>,
     pub(crate) chat_draft_input: Entity<NativeTextInput>,
     pub(crate) cli_model_search_input: Entity<NativeTextInput>,
@@ -357,6 +358,10 @@ pub struct AppModel {
     resolution_turn_task: Option<Task<()>>,
     pub(crate) agents: Entity<AgentsModel>,
     pub(crate) settings: Entity<SettingsModel>,
+    /// The Settings modal (search, focus, scroll); page and drill-in state live in `settings`.
+    pub(crate) settings_modal: crate::settings_modal::SettingsModalState,
+    /// Home's seven-day usage read (the charts' other data come from existing snapshots).
+    pub(crate) home_stats: crate::home_stats::HomeStatsState,
     pub(crate) logs: Entity<LogsModel>,
     active_view: AppView,
     /// Wall-clock `HH:MM` shown in the status bar; refreshed by the lifecycle poll.
@@ -375,7 +380,15 @@ pub struct AppModel {
     session_dirty: bool,
     workspace_save_generations: HashMap<String, u64>,
     suppress_editor_sync: bool,
+    /// The editor's edit generation last copied into the active tab. Cursor moves, scrolling
+    /// and focus changes also notify the editor; only a new generation is worth materializing
+    /// the whole document for.
+    synced_edit_generation: u64,
     event_task: Option<Task<()>>,
+    /// Token deltas are durable before they reach this model. We only coalesce their visual
+    /// projection, leaving state changes, failures, and cancellation immediate.
+    llm_delta_task: Option<Task<()>>,
+    pending_llm_deltas: Vec<hvc_core::llm::LlmEventEnvelope>,
     polling_task: Option<Task<()>>,
     workspace_task: Option<Task<()>>,
     brownfield_task: Option<Task<()>>,
@@ -403,22 +416,33 @@ pub struct AppModel {
     backend_read: crate::lifecycle::RevisionRead,
     cleanup_read: crate::lifecycle::RevisionRead,
     event_resync_pending: bool,
+    /// A terminal/agents sequence gap raised `needs_resync`; the next applied Agents snapshot
+    /// is the resync that clears it. Without this the header stayed red for the whole session.
+    agents_resync_pending: bool,
     vault_refresh_task: Option<Task<()>>,
     vault_search_task: Option<Task<()>>,
     vault_rename_task: Option<Task<()>>,
     vault_context_task: Option<Task<()>>,
     vault_document_tasks: HashMap<String, Task<()>>,
     settings_task: Option<Task<()>>,
+    /// A connection test in flight; separate from `settings_task` so a refresh never drops it.
+    settings_test_task: Option<Task<()>>,
     /// A quiet Settings refresh is already scheduled (see `schedule_settings_quiet_refresh`).
     settings_quiet_refresh_pending: bool,
     embedding_readiness_task: Option<Task<()>>,
     model_pull_task: Option<Task<()>>,
     agents_task: Option<Task<()>>,
+    /// At most one snapshot request may follow the current Agents read. `false` means the panel
+    /// needs a loud refresh; quiet chrome refreshes never displace it.
+    agents_refresh_pending: Option<(bool, bool)>,
     agents_notice_timer: Option<Task<()>>,
     model_catalog_task: Option<Task<()>>,
     logs_task: Option<Task<()>>,
     logs_resync_tasks: HashMap<String, Task<()>>,
     chat_task: Option<Task<()>>,
+    /// Applying or remembering the Companion panel's target; separate from
+    /// `chat_task` so a conversation load is never cancelled by it.
+    chat_target_task: Option<Task<()>>,
     chat_resync_tasks: HashMap<String, Task<()>>,
     session_task: Option<Task<()>>,
     performance_probe: Option<crate::performance::FrameLatencyProbe>,
@@ -575,6 +599,8 @@ impl AppModel {
         let settings_connection_secret_input = cx
             .new(|cx| NativeTextInput::new("API key (will not be displayed again)", cx).obscured());
         let settings_route_name_input = cx.new(|cx| NativeTextInput::new("Route name", cx));
+        let settings_project_delete_input =
+            cx.new(|cx| NativeTextInput::new("Type the exact project name", cx));
         let settings_embedding_model_input =
             cx.new(|cx| NativeTextInput::new("Embedding model", cx));
         let chat_draft_input =
@@ -586,6 +612,7 @@ impl AppModel {
         });
         let cli_model_search_input =
             cx.new(|cx| NativeTextInput::new("Search model ID, name, provider or capability", cx));
+        let settings_modal = crate::settings_modal::SettingsModalState::new(cx);
         let agent_prompt_inputs = hvc_core::llm::AgentRole::ALL
             .into_iter()
             .map(|role| {
@@ -631,8 +658,6 @@ impl AppModel {
             cx.new(|_| crate::split_pane::SplitPaneState::new(292.0, 220.0, 480.0, 420.0));
         let workspace_tree_split =
             cx.new(|_| crate::split_pane::SplitPaneState::new(220.0, 160.0, 400.0, 480.0));
-        let workspace_preview_split =
-            cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.6, 240.0, 220.0));
         let workspace_context_split =
             cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.78, 480.0, 180.0));
         let forge_feature_split =
@@ -651,7 +676,6 @@ impl AppModel {
             cx.observe(&agents_split, |_, _, cx| cx.notify()),
             cx.observe(&pulsations_split, |_, _, cx| cx.notify()),
             cx.observe(&workspace_tree_split, |_, _, cx| cx.notify()),
-            cx.observe(&workspace_preview_split, |_, _, cx| cx.notify()),
             cx.observe(&workspace_context_split, |_, _, cx| cx.notify()),
             cx.observe(&forge_feature_split, |_, _, cx| cx.notify()),
             cx.observe(&forge_incubation_split, |_, _, cx| cx.notify()),
@@ -678,6 +702,7 @@ impl AppModel {
             cx.observe(&settings_connection_endpoint_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_connection_secret_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_route_name_input, |_, _, cx| cx.notify()),
+            cx.observe(&settings_project_delete_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_embedding_model_input, |_, _, cx| cx.notify()),
             cx.observe(&chat_draft_input, |_, _, cx| cx.notify()),
             cx.subscribe(
@@ -694,6 +719,9 @@ impl AppModel {
                 cx.notify()
             }),
             cx.observe(&cli_model_search_input, |_, _, cx| cx.notify()),
+            cx.observe(&settings_modal.search, |model, _, cx| {
+                model.settings_search_changed(cx)
+            }),
         ];
         subscriptions.extend(
             agent_prompt_inputs
@@ -724,7 +752,6 @@ impl AppModel {
             agents_split,
             pulsations_split,
             workspace_tree_split,
-            workspace_preview_split,
             workspace_context_split,
             forge_feature_split,
             forge_incubation_split,
@@ -758,6 +785,7 @@ impl AppModel {
             settings_connection_endpoint_input,
             settings_connection_secret_input,
             settings_route_name_input,
+            settings_project_delete_input,
             settings_embedding_model_input,
             chat_draft_input,
             cli_model_search_input,
@@ -782,6 +810,8 @@ impl AppModel {
             resolution_turn_task: None,
             agents: cx.new(|_| AgentsModel::default()),
             settings: cx.new(|_| SettingsModel::default()),
+            settings_modal,
+            home_stats: Default::default(),
             logs: cx.new(|_| LogsModel::default()),
             active_view,
             footer_clock: crate::time::current_clock_hhmm().into(),
@@ -798,7 +828,10 @@ impl AppModel {
             session_dirty: false,
             workspace_save_generations: HashMap::new(),
             suppress_editor_sync: false,
+            synced_edit_generation: 0,
             event_task: None,
+            llm_delta_task: None,
+            pending_llm_deltas: Vec::new(),
             polling_task: None,
             workspace_task: None,
             brownfield_task: None,
@@ -826,21 +859,25 @@ impl AppModel {
             backend_read: Default::default(),
             cleanup_read: Default::default(),
             event_resync_pending: false,
+            agents_resync_pending: false,
             vault_refresh_task: None,
             vault_search_task: None,
             vault_rename_task: None,
             vault_context_task: None,
             vault_document_tasks: HashMap::new(),
             settings_task: None,
+            settings_test_task: None,
             settings_quiet_refresh_pending: false,
             embedding_readiness_task: None,
             model_pull_task: None,
             agents_task: None,
+            agents_refresh_pending: None,
             agents_notice_timer: None,
             model_catalog_task: None,
             logs_task: None,
             logs_resync_tasks: HashMap::new(),
             chat_task: None,
+            chat_target_task: None,
             chat_resync_tasks: HashMap::new(),
             session_task: None,
             performance_probe: None,
@@ -873,9 +910,10 @@ impl AppModel {
         }
     }
 
-    /// `ctrl-shift-[` / `ctrl-shift-]`: cycles the current view's own section strip. Each view keeps
-    /// its own section enum (Pulsations/Forge/Settings), so this is a small per-view dispatch rather
-    /// than a single shared cursor — see the UI flow plan Part 4.5.
+    /// `ctrl-shift-[` / `ctrl-shift-]`: cycles the current view's own section strip, or the Settings
+    /// pages while the Settings modal is open. Each view keeps its own section enum
+    /// (Pulsations/Forge), so this is a small per-view dispatch rather than a single shared
+    /// cursor — see the UI flow plan Part 4.5.
     pub(crate) fn cycle_current_section(&mut self, direction: i32, cx: &mut Context<Self>) {
         fn cycle<T: Copy + PartialEq>(all: &[T], current: T, direction: i32) -> T {
             let position = all.iter().position(|item| *item == current).unwrap_or(0) as i32;
@@ -883,6 +921,15 @@ impl AppModel {
             all[(position + direction).rem_euclid(len) as usize]
         }
 
+        if self.settings_modal.open {
+            let page = cycle(
+                &crate::settings::SettingsPage::ALL,
+                self.settings.read(cx).page,
+                direction,
+            );
+            self.select_settings_nav(page, cx);
+            return;
+        }
         match self.active_view {
             AppView::Pulsations => {
                 self.pulsations.update(cx, |pulsations, _| {
@@ -905,26 +952,6 @@ impl AppModel {
                     self.forge.section,
                     direction,
                 );
-                cx.notify();
-            }
-            AppView::Settings => {
-                self.settings.update(cx, |settings, _| {
-                    settings.settings_section = cycle(
-                        &[
-                            crate::settings::SettingsSection::Connections,
-                            crate::settings::SettingsSection::Routes,
-                            crate::settings::SettingsSection::Runtime,
-                            crate::settings::SettingsSection::Usage,
-                        ],
-                        settings.settings_section,
-                        direction,
-                    );
-                });
-                if self.settings.read(cx).settings_section
-                    == crate::settings::SettingsSection::Usage
-                {
-                    self.refresh_usage(cx);
-                }
                 cx.notify();
             }
             _ => {}
@@ -991,6 +1018,12 @@ impl AppModel {
     }
 
     pub fn select_view(&mut self, view: AppView, cx: &mut Context<Self>) {
+        // Settings is a modal over the current view, not a view of its own.
+        if view == AppView::Settings {
+            self.open_settings(None, cx);
+            return;
+        }
+        self.close_settings(false, cx);
         if self.active_view != view {
             self.close_cli_model_picker(cx);
         }
@@ -1037,9 +1070,13 @@ impl AppModel {
                 }
             }
             AppView::Forge => self.refresh_forge(cx),
+            // Both explorers show the same tree; either one opening consumes the stale marker.
+            AppView::Vault | AppView::Workspace if self.vault.read(cx).stale => {
+                self.schedule_vault_refresh(cx)
+            }
             AppView::Agents => self.refresh_agents(cx),
-            AppView::Settings => self.refresh_settings(cx),
             AppView::Logs => self.refresh_logs(cx),
+            AppView::Home => self.refresh_home_stats(false, cx),
             _ => {}
         }
         self.schedule_session_persistence(cx);
@@ -1067,8 +1104,8 @@ impl AppModel {
         cx.notify();
     }
 
-    /// Settings > Runtime > "Auto-open review" (default off; recommended on). See the UI flow
-    /// plan Part 4.3.
+    /// Settings > General > "Open reviews automatically" (default off; recommended on). See the
+    /// UI flow plan Part 4.3.
     pub fn set_auto_open_review(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.auto_open_review = enabled;
         self.schedule_session_persistence(cx);
@@ -1347,6 +1384,19 @@ impl AppModel {
             self.select_view(AppView::Workspace, cx);
             return;
         }
+        // Refuse before reading: at the tab cap with every tab holding unsaved work, the file
+        // would be read only to be dropped.
+        if !self.workspace.read(cx).can_open(&relative_path) {
+            self.push_header_notice(
+                HeaderNoticeKind::Warning,
+                format!(
+                    "{} tabs are open with unsaved changes. Save or close one to open {relative_path}.",
+                    crate::workspace::MAX_OPEN_TABS
+                ),
+                cx,
+            );
+            return;
+        }
         let Some(backend) = self.workspace_backend.clone() else {
             self.status = "File reading unavailable in test environment".into();
             cx.notify();
@@ -1361,19 +1411,28 @@ impl AppModel {
             let _ = this.update(cx, |model, cx| match result {
                 Ok(snapshot) => {
                     model.sync_active_editor(cx);
-                    model.workspace.update(cx, |workspace, _| {
-                        workspace.open_tab(
-                            requested_path.clone(),
-                            snapshot.content,
-                            snapshot.revision,
-                        );
+                    let evicted = model.workspace.update(cx, |workspace, _| {
+                        workspace
+                            .open_tab_evicting(
+                                requested_path.clone(),
+                                snapshot.content,
+                                snapshot.revision,
+                            )
+                            .1
                     });
                     model.restore_editor_for_active(cx);
                     if let Some(cursor) = cursor {
                         model.apply_workspace_cursor(cursor, cx);
                     }
                     model.select_view(AppView::Workspace, cx);
-                    model.status = format!("File opened: {requested_path}").into();
+                    model.status = match evicted {
+                        Some(closed) => format!(
+                            "File opened: {requested_path} · closed {closed} (tab limit {})",
+                            crate::workspace::MAX_OPEN_TABS
+                        ),
+                        None => format!("File opened: {requested_path}"),
+                    }
+                    .into();
                     model.schedule_session_persistence(cx);
                     cx.notify();
                 }
@@ -1471,7 +1530,7 @@ impl AppModel {
                     if model.active_workspace_path(cx).as_deref() == Some(relative_path.as_str()) {
                         model.restore_editor_for_active(cx);
                     }
-                    model.status = format!("Arquivo recarregado: {relative_path}").into();
+                    model.status = format!("File reloaded: {relative_path}").into();
                     model.schedule_session_persistence(cx);
                     cx.notify();
                 }
@@ -1611,7 +1670,9 @@ impl AppModel {
             state.error = None;
         });
         self.pulsation_snapshot_task = Some(cx.spawn(async move |this, cx| {
-            let result = backend.runtime_snapshot(project_id.clone()).await;
+            let result = backend
+                .runtime_snapshot(project_id.clone(), selected.clone())
+                .await;
             let _ = this.update(cx, |model, cx| {
                 model.snapshot_in_flight = false;
                 model.lifecycle.finish_poll();
@@ -1735,6 +1796,14 @@ impl AppModel {
         let active_id = self.pulsations.update(cx, |pulsations, _| {
             pulsations.apply_snapshot(project_id, snapshot, preferred_id)
         });
+        if transitions
+            .iter()
+            .any(|(_, _, status, _, _)| *status == PulsationStatus::Checkpoint)
+            && self.active_view != AppView::Agents
+        {
+            // A checkpoint may be a CLI fallback, which only the agents snapshot carries.
+            self.refresh_agents_quiet(cx);
+        }
         for (id, feature, status, stage, terminal_reason) in transitions {
             let section = match status {
                 PulsationStatus::Checkpoint => PulsationDetailSection::Review,
@@ -1884,6 +1953,7 @@ impl AppModel {
     /// background poll callback doesn't have.
     fn auto_open_review_blocked(&self, cx: &Context<Self>) -> bool {
         self.forge.new_open
+            || self.settings_modal.open
             || self.active_dropdown.is_some()
             || self.notifications.history_open
             || self.agents.read(cx).active_model_picker.is_some()
@@ -2404,7 +2474,7 @@ impl AppModel {
                 .await
             {
                 Ok(created) => backend
-                    .runtime_snapshot(project_id.clone())
+                    .runtime_snapshot(project_id.clone(), Some(created.id.clone()))
                     .await
                     .map(|snapshot| (created, snapshot)),
                 Err(error) => Err(error),
@@ -2516,7 +2586,7 @@ impl AppModel {
         self.pulsations_task = Some(cx.spawn(async move |this, cx| {
             let result = match backend.cancel_jobs(pulsation_id.clone()).await {
                 Ok(cancelled) => backend
-                    .runtime_snapshot(project_id.clone())
+                    .runtime_snapshot(project_id.clone(), Some(pulsation_id.clone()))
                     .await
                     .map(|snapshot| (cancelled, snapshot)),
                 Err(error) => Err(error),
@@ -2565,6 +2635,13 @@ impl AppModel {
         self.vault_refresh_task = Some(cx.spawn(async move |this, cx| {
             let (tree, index) = tokio::join!(backend.tree(), backend.index(force_rebuild));
             let _ = this.update(cx, |model, cx| {
+                if let Ok(nodes) = &tree {
+                    // The Workspace explorer lists the same files; keep it in step.
+                    let nodes = nodes.clone();
+                    model
+                        .workspace
+                        .update(cx, |workspace, _| workspace.tree = nodes);
+                }
                 let selected = model.vault.update(cx, |vault, _| {
                     vault.apply_tree(tree);
                     vault.apply_index(index);
@@ -2591,6 +2668,20 @@ impl AppModel {
             let _ = this.update(cx, |model, cx| model.refresh_vault(false, cx));
         }));
         cx.notify();
+    }
+
+    /// Workspace changes always invalidate the Vault model, but filesystem/index work is only
+    /// useful while its surface is visible. Opening Vault consumes the retained `stale` marker.
+    fn mark_vault_stale(&mut self, cx: &mut Context<Self>) {
+        if self.vault.read(cx).workspace_root.is_none() {
+            return;
+        }
+        self.vault.update(cx, |vault, _| vault.stale = true);
+        if matches!(self.active_view, AppView::Vault | AppView::Workspace) {
+            self.schedule_vault_refresh(cx);
+        } else {
+            cx.notify();
+        }
     }
 
     pub(crate) fn set_vault_search_mode(
@@ -2652,6 +2743,158 @@ impl AppModel {
             vault.search_response = None;
             vault.searching = false;
         });
+        cx.notify();
+    }
+
+    /// Opens or closes one folder of the Workspace explorer.
+    pub(crate) fn toggle_workspace_folder(&mut self, relative_path: &str, cx: &mut Context<Self>) {
+        self.workspace
+            .update(cx, |workspace, _| workspace.folders.toggle(relative_path));
+        cx.notify();
+    }
+
+    /// Opens or closes one folder of the Vault explorer.
+    pub(crate) fn toggle_vault_folder(&mut self, relative_path: &str, cx: &mut Context<Self>) {
+        self.vault
+            .update(cx, |vault, _| vault.folders.toggle(relative_path));
+        cx.notify();
+    }
+
+    /// Hand tool: a press on the graph background starts panning; a press on a node does not
+    /// (the node's own click selects it).
+    pub(crate) fn vault_graph_press(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let start = {
+            let vault = self.vault.read(cx);
+            let Some((transform, nodes)) = vault.camera.last.get() else {
+                return;
+            };
+            let bounds = vault.camera.bounds.get();
+            let local = (
+                f32::from(position.x - bounds.left()),
+                f32::from(position.y - bounds.top()),
+            );
+            let layout = vault.graph_layout(vault.selected_path.as_ref().map(AsRef::as_ref));
+            let reach = crate::vault::graph_node_radius(transform.zoom) + 6.0;
+            let on_node = layout.nodes.iter().any(|node| {
+                let (x, y) = transform.to_panel(node.layout.x, node.layout.y);
+                (x - local.0).hypot(y - local.1) <= reach
+            });
+            (!on_node).then_some((local, transform, nodes))
+        };
+        if let Some((local, transform, nodes)) = start {
+            self.vault.update(cx, |vault, _| {
+                vault.camera.adjusted = Some((transform, nodes));
+                vault.camera.drag = Some((local, (transform.pan_x, transform.pan_y)));
+            });
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn vault_graph_drag(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let moved = self.vault.update(cx, |vault, _| {
+            let ((start_x, start_y), (pan_x, pan_y)) = vault.camera.drag?;
+            let (mut transform, nodes) = vault.camera.adjusted?;
+            let bounds = vault.camera.bounds.get();
+            transform.pan_x = pan_x + f32::from(position.x - bounds.left()) - start_x;
+            transform.pan_y = pan_y + f32::from(position.y - bounds.top()) - start_y;
+            vault.camera.adjusted = Some((transform, nodes));
+            Some(())
+        });
+        if moved.is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Pointer entered or left a node's dot.
+    pub(crate) fn vault_graph_hover(
+        &mut self,
+        path: String,
+        hovered: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self.vault.update(cx, |vault, _| {
+            let camera = &mut vault.camera;
+            let next = if hovered {
+                Some(path)
+            } else if camera.hovered.as_deref() == Some(path.as_str()) {
+                None
+            } else {
+                return false;
+            };
+            let changed = camera.hovered != next;
+            camera.hovered = next;
+            changed
+        });
+        if changed {
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn vault_graph_release(&mut self, cx: &mut Context<Self>) {
+        if self.vault.read(cx).camera.drag.is_some() {
+            self.vault.update(cx, |vault, _| vault.camera.drag = None);
+            cx.notify();
+        }
+    }
+
+    /// Zooms by `factor` around `anchor` (window coordinates) or the panel centre.
+    pub(crate) fn vault_graph_zoom(
+        &mut self,
+        factor: f32,
+        anchor: Option<gpui::Point<gpui::Pixels>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.vault.update(cx, |vault, _| {
+            let Some((base, nodes)) = vault.camera.last.get() else {
+                return;
+            };
+            let base = vault
+                .camera
+                .adjusted
+                .filter(|(_, count)| *count == nodes)
+                .map_or(base, |(transform, _)| transform);
+            let bounds = vault.camera.bounds.get();
+            let (anchor_x, anchor_y) = match anchor {
+                Some(point) => (
+                    f32::from(point.x - bounds.left()),
+                    f32::from(point.y - bounds.top()),
+                ),
+                None => (
+                    f32::from(bounds.size.width) / 2.0,
+                    f32::from(bounds.size.height) / 2.0,
+                ),
+            };
+            vault.camera.adjusted = Some((base.zoomed(factor, anchor_x, anchor_y), nodes));
+        });
+        cx.notify();
+    }
+
+    /// Back to the automatic fit.
+    pub(crate) fn vault_graph_fit(&mut self, cx: &mut Context<Self>) {
+        self.vault.update(cx, |vault, _| {
+            vault.camera.adjusted = None;
+            vault.camera.drag = None;
+        });
+        cx.notify();
+    }
+
+    /// Switches the Workspace between the editor and the rendered Markdown. The editor keeps its
+    /// buffer, caret and scroll while the preview shows.
+    pub(crate) fn set_workspace_preview(&mut self, preview: bool, cx: &mut Context<Self>) {
+        if preview {
+            // The preview renders the tab's copy of the text; bring it up to date first.
+            self.sync_active_editor(cx);
+        }
+        self.workspace
+            .update(cx, |workspace, _| workspace.preview_mode = preview);
         cx.notify();
     }
 
@@ -3035,6 +3278,23 @@ impl AppModel {
                 return;
             }
         }
+        let (generation, selection, scroll_top) = {
+            let editor = self.workspace.read(cx).editor.read(cx);
+            (
+                editor.edit_generation(),
+                editor.buffer.selection(),
+                editor.buffer.scroll_top(),
+            )
+        };
+        if generation == self.synced_edit_generation {
+            // No edit since the last sync: keep the caret and scroll for tab restore without
+            // copying the document.
+            self.workspace.update(cx, |workspace, _| {
+                workspace.sync_active_cursor(selection, scroll_top)
+            });
+            return;
+        }
+        self.synced_edit_generation = generation;
         let content_changed = self.sync_active_editor(cx);
         if content_changed {
             self.schedule_workspace_autosave(cx);
@@ -3065,6 +3325,8 @@ impl AppModel {
             dirty: false,
         });
         self.suppress_editor_sync = true;
+        // A restore resets the editor's generation to 0 and loads exactly the tab's content.
+        self.synced_edit_generation = 0;
         editor.update(cx, |editor, cx| {
             let mut snapshot = snapshot;
             if editor
@@ -3304,14 +3566,21 @@ impl AppModel {
         transport: ChatTransportKind,
         cx: &mut Context<Self>,
     ) {
+        if self.chat.read(cx).target_change_pending {
+            return;
+        }
         self.chat.update(cx, |chat, _| {
             chat.selected_transport = transport;
         });
         self.close_cli_model_picker(cx);
         self.close_dropdown(cx);
+        self.apply_chat_target_change(cx);
     }
 
     pub(crate) fn set_chat_cli_backend(&mut self, backend: CliBackend, cx: &mut Context<Self>) {
+        if self.chat.read(cx).target_change_pending {
+            return;
+        }
         if self.chat.read(cx).selected_cli_backend == backend {
             self.close_dropdown(cx);
             return;
@@ -3327,20 +3596,104 @@ impl AppModel {
         if !self.agents.read(cx).model_catalogs.contains_key(&backend) {
             self.load_cli_model_catalog(backend, false, cx);
         }
+        self.apply_chat_target_change(cx);
     }
 
     pub(crate) fn set_chat_cli_profile(&mut self, profile: Option<String>, cx: &mut Context<Self>) {
+        if self.chat.read(cx).target_change_pending {
+            return;
+        }
         self.chat.update(cx, |chat, _| {
             chat.selected_cli_model_profile = profile;
         });
         self.close_dropdown(cx);
+        self.apply_chat_target_change(cx);
     }
 
     pub(crate) fn set_chat_connection(&mut self, connection_id: String, cx: &mut Context<Self>) {
+        if self.chat.read(cx).target_change_pending {
+            return;
+        }
         self.chat.update(cx, |chat, _| {
             chat.selected_connection_id = Some(connection_id.into());
         });
         self.close_dropdown(cx);
+        self.apply_chat_target_change(cx);
+    }
+
+    /// The Companion panel applies to the open conversation from its next
+    /// message and is remembered per project (ADR-014 amendment,
+    /// 2026-09-22). Without an open conversation it is only remembered. A
+    /// refused change (a reply still running, an invalid model) puts the
+    /// panel back on the conversation's real target.
+    fn apply_chat_target_change(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.chat_backend.clone() else {
+            return;
+        };
+        let (project_id, conversation_id, target) = {
+            let chat = self.chat.read(cx);
+            let Some(project_id) = chat.project_id.as_ref().map(ToString::to_string) else {
+                return;
+            };
+            let Some(target) = chat.panel_target() else {
+                return;
+            };
+            (
+                project_id,
+                chat.active_conversation.as_ref().map(ToString::to_string),
+                target,
+            )
+        };
+        let generation = self.chat.update(cx, |chat, _| {
+            chat.target_change_generation = chat.target_change_generation.saturating_add(1);
+            chat.target_change_pending = true;
+            chat.target_change_generation
+        });
+        cx.notify();
+        self.chat_target_task = Some(cx.spawn(async move |this, cx| match conversation_id {
+            Some(conversation_id) => {
+                let result = backend
+                    .update_conversation_target(conversation_id.clone(), target)
+                    .await;
+                let _ = this.update(cx, |model, cx| {
+                    model.chat.update(cx, |chat, _| match result {
+                        _ if chat.target_change_generation != generation => (),
+                        Ok(snapshot)
+                            if chat.active_conversation.as_ref().map(AsRef::as_ref)
+                                == Some(conversation_id.as_str()) =>
+                        {
+                            chat.target_change_pending = false;
+                            chat.apply_retargeted(snapshot)
+                        }
+                        Ok(snapshot) => {
+                            chat.target_change_pending = false;
+                            chat.store_conversation_snapshot(snapshot)
+                        }
+                        Err(error) => {
+                            chat.target_change_pending = false;
+                            chat.sync_panel_with_active_conversation();
+                            chat.set_error(error);
+                        }
+                    });
+                    cx.notify();
+                });
+            }
+            None => {
+                let result = backend.save_default_target(project_id, target).await;
+                let _ = this.update(cx, |model, cx| {
+                    model.chat.update(cx, |chat, _| {
+                        if chat.target_change_generation != generation {
+                            return;
+                        }
+                        chat.target_change_pending = false;
+                        if let Err(error) = result {
+                            chat.set_error(error);
+                        }
+                    });
+                    cx.notify();
+                });
+            }
+        }));
     }
 
     pub(crate) fn open_companion_model_picker(&mut self, cx: &mut Context<Self>) {
@@ -3357,22 +3710,8 @@ impl AppModel {
             let Some(project_id) = chat.project_id.as_ref().map(ToString::to_string) else {
                 return;
             };
-            let target = match chat.selected_transport {
-                ChatTransportKind::Api => {
-                    let Some(connection_id) = chat
-                        .selected_connection_id
-                        .as_ref()
-                        .map(ToString::to_string)
-                    else {
-                        return;
-                    };
-                    ChatExecutionTargetRequest::Api { connection_id }
-                }
-                ChatTransportKind::Cli => ChatExecutionTargetRequest::Cli {
-                    backend: chat.selected_cli_backend,
-                    model: chat.selected_cli_model.clone(),
-                    model_profile: chat.selected_cli_model_profile.clone(),
-                },
+            let Some(target) = chat.panel_target() else {
+                return;
             };
             (project_id, target)
         };
@@ -3467,7 +3806,7 @@ impl AppModel {
             return;
         };
         let content = self.chat_draft_input.read(cx).value().trim().to_string();
-        let conversation_id = {
+        let (conversation_id, expected_target) = {
             let chat = self.chat.read(cx);
             if content.is_empty()
                 || !chat.composer_available()
@@ -3479,7 +3818,10 @@ impl AppModel {
             {
                 return;
             }
-            chat.active_conversation.as_ref().map(ToString::to_string)
+            (
+                chat.active_conversation.as_ref().map(ToString::to_string),
+                chat.panel_target(),
+            )
         };
         let Some(conversation_id) = conversation_id else {
             return;
@@ -3492,7 +3834,7 @@ impl AppModel {
         cx.notify();
         self.chat_task = Some(cx.spawn(async move |this, cx| {
             let result = backend
-                .send_message(conversation_id.clone(), content.clone())
+                .send_message(conversation_id.clone(), content.clone(), expected_target)
                 .await;
             let _ = this.update(cx, |model, cx| {
                 model.chat.update(cx, |chat, _| {
@@ -3874,7 +4216,11 @@ impl AppModel {
         cx: &mut Context<Self>,
     ) {
         self.configure_agent_api(role, cx);
-        self.select_view(AppView::Settings, cx);
+        // Straight to the route the agent uses, when it has one.
+        let has_route = self.settings.read(cx).selected_route_id.is_some();
+        self.settings
+            .update(cx, |settings, _| settings.route_detail = has_route);
+        self.open_settings(Some(crate::settings::SettingsPage::Routes), cx);
     }
 
     pub(crate) fn refresh_agents(&mut self, cx: &mut Context<Self>) {
@@ -3888,9 +4234,6 @@ impl AppModel {
     /// Refreshes the agents snapshot for the shell chrome without touching the Agents panel's
     /// loading/busy state; skipped while a loud read or an operation is in flight.
     pub(crate) fn refresh_agents_quiet(&mut self, cx: &mut Context<Self>) {
-        if self.agents.read(cx).in_flight() {
-            return;
-        }
         self.refresh_agents_inner(false, true, cx);
     }
 
@@ -3995,6 +4338,17 @@ impl AppModel {
         if self.lifecycle.is_disposed() {
             return;
         }
+        if self.agents.read(cx).in_flight() {
+            self.agents_refresh_pending = Some(
+                self.agents_refresh_pending
+                    .take()
+                    .map(|(pending_force, pending_quiet)| {
+                        (pending_force || force_discovery, pending_quiet && quiet)
+                    })
+                    .unwrap_or((force_discovery, quiet)),
+            );
+            return;
+        }
         let Some(project_id) = self
             .workspace
             .read(cx)
@@ -4028,9 +4382,36 @@ impl AppModel {
                 match result {
                     Ok(snapshot) => {
                         model.sync_agent_config_inputs(&snapshot, cx);
-                        model.agents.update(cx, |agents, _| {
-                            agents.apply_snapshot(generation, snapshot);
-                        });
+                        let known: std::collections::HashSet<String> = model
+                            .agents
+                            .read(cx)
+                            .fallbacks
+                            .iter()
+                            .map(|fallback| fallback.checkpoint_id.clone())
+                            .collect();
+                        let arrived: Vec<(String, String, hvc_core::llm::AgentRole)> = snapshot
+                            .fallbacks
+                            .iter()
+                            .filter(|fallback| !known.contains(&fallback.checkpoint_id))
+                            .map(|fallback| {
+                                (
+                                    fallback.error_code.clone(),
+                                    fallback.diagnostic.clone(),
+                                    fallback.agent_role,
+                                )
+                            })
+                            .collect();
+                        let applied = model
+                            .agents
+                            .update(cx, |agents, _| agents.apply_snapshot(generation, snapshot));
+                        if applied {
+                            model.finish_agents_resync();
+                        }
+                        if applied {
+                            for (code, diagnostic, role) in arrived {
+                                model.announce_cli_fallback(&code, &diagnostic, role, cx);
+                            }
+                        }
                     }
                     // A quiet read keeps whatever the chrome already shows; the next loud read
                     // (opening Agents) reports the failure in its own panel.
@@ -4044,6 +4425,9 @@ impl AppModel {
                             model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                     }
+                }
+                if let Some((force_discovery, quiet)) = model.agents_refresh_pending.take() {
+                    model.refresh_agents_inner(force_discovery, quiet, cx);
                 }
                 cx.notify();
             });
@@ -4341,11 +4725,16 @@ impl AppModel {
                 self.save_free_form_slot(slot, cx);
             }
             CliModelPickerTarget::Companion => {
+                if self.chat.read(cx).target_change_pending {
+                    self.close_cli_model_picker(cx);
+                    return;
+                }
                 self.chat.update(cx, |chat, _| {
                     chat.selected_cli_model = model_id;
                     chat.selected_cli_model_profile = None;
                     chat.selected_cli_model_source = source;
                 });
+                self.apply_chat_target_change(cx);
             }
         }
         self.close_cli_model_picker(cx);
@@ -4441,9 +4830,7 @@ impl AppModel {
                     self.agents.update(cx, |agents, _| {
                         agents.error = Some(crate::errors::UiCommandError::from_chat_parts(
                             "invalid_custom_args",
-                            format!(
-                                "Argumentos Custom devem ser um array JSON de strings: {error}"
-                            ),
+                            format!("Custom arguments must be a JSON array of strings: {error}"),
                         ));
                     });
                     cx.notify();
@@ -4677,7 +5064,7 @@ impl AppModel {
                             agents.error = Some(crate::errors::UiCommandError::from_chat_parts(
                                 "invalid_custom_args",
                                 format!(
-                                    "Argumentos Custom devem ser um array JSON de strings: {error}"
+                                    "Custom arguments must be a JSON array of strings: {error}"
                                 ),
                             ));
                         });
@@ -5330,6 +5717,118 @@ impl AppModel {
         }));
     }
 
+    /// A CLI fallback checkpoint just appeared: say so where the developer is looking (toast +
+    /// activity), pointing at Agents where the decision lives.
+    fn announce_cli_fallback(
+        &mut self,
+        code: &str,
+        diagnostic: &str,
+        role: hvc_core::llm::AgentRole,
+        cx: &mut Context<Self>,
+    ) {
+        let agent = hvc_core::terminals::canonical_agent(role).name;
+        let (summary, kind) = if code == hvc_core::persistence_service::CLI_VERSION_UNVALIDATED {
+            (
+                format!("{agent}: updated CLI needs validation before the pulsation continues"),
+                HeaderNoticeKind::Warning,
+            )
+        } else {
+            (
+                format!("{agent}: CLI fallback awaiting your decision"),
+                HeaderNoticeKind::Warning,
+            )
+        };
+        self.push_header_notice(kind, format!("{summary} — {diagnostic}"), cx);
+        self.record_activity(
+            ActivityKind::Agent,
+            summary,
+            Some(FlowTarget::AgentFallback(role)),
+            true,
+        );
+    }
+
+    /// "Update & validate CLI": lets the CLI launch (Gemini updates itself on launch), probes the
+    /// adapter contract against the new version, and resumes the pulsation when it passes.
+    pub(crate) fn validate_agent_cli_fallback(
+        &mut self,
+        checkpoint_id: String,
+        expected_state_version: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(backend) = self.agents_backend.clone() else {
+            return;
+        };
+        let generation = self.agents.update(cx, |agents, _| {
+            let generation = agents.begin(false);
+            agents.notice = Some("Validating the updated CLI — this can take a minute…".into());
+            generation
+        });
+        cx.notify();
+        self.agents_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend
+                .validate_fallback(hvc_core::persistence_service::ValidateCliFallbackRequest {
+                    checkpoint_id,
+                    expected_state_version,
+                })
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                match result {
+                    Ok(response) => {
+                        let validated = response.report.validated;
+                        let version = response
+                            .report
+                            .version
+                            .clone()
+                            .unwrap_or_else(|| "unknown".into());
+                        let label = response.report.backend.label();
+                        model.agents.update(cx, |agents, _| {
+                            if agents.generation == generation {
+                                agents.busy = false;
+                                agents.notice = Some(if validated {
+                                    format!("{label} v{version} validated — pulsation resumed.")
+                                } else {
+                                    format!(
+                                        "{label} v{version} failed validation. Switch provider or abort the pulsation."
+                                    )
+                                });
+                            }
+                        });
+                        if !validated {
+                            model.push_header_notice(
+                                HeaderNoticeKind::Warning,
+                                response.report.diagnostic.clone(),
+                                cx,
+                            );
+                        }
+                        model.record_activity(
+                            ActivityKind::Agent,
+                            if validated {
+                                format!("{label} v{version} validated · pulsation resumed")
+                            } else {
+                                format!("{label} v{version} failed validation")
+                            },
+                            Some(FlowTarget::View(AppView::Agents)),
+                            !validated,
+                        );
+                        model.refresh_agents(cx);
+                        model.refresh_pulsations(cx);
+                        model.schedule_agents_notice_dismiss(cx);
+                    }
+                    Err(error) => {
+                        let message = error.presentable();
+                        if model
+                            .agents
+                            .update(cx, |agents, _| agents.fail(generation, error))
+                        {
+                            model.push_header_notice(HeaderNoticeKind::Error, message, cx);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn resolve_agent_cli_fallback(
         &mut self,
         checkpoint_id: String,
@@ -5419,7 +5918,7 @@ impl AppModel {
     }
 
     pub(crate) fn refresh_settings(&mut self, cx: &mut Context<Self>) {
-        if self.settings.read(cx).settings_section == crate::settings::SettingsSection::Usage {
+        if self.settings_page_visible(crate::settings::SettingsPage::Usage, cx) {
             self.refresh_usage(cx);
         }
         self.refresh_settings_inner(false, cx);
@@ -5447,7 +5946,7 @@ impl AppModel {
             timer.await;
             let _ = this.update(cx, |model, cx| {
                 model.settings_quiet_refresh_pending = false;
-                if model.active_view() != AppView::Settings {
+                if !model.settings_modal.open {
                     model.refresh_settings_quiet(cx);
                 }
             });
@@ -5529,6 +6028,175 @@ impl AppModel {
         }));
     }
 
+    pub(crate) fn select_project_for_deletion(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        self.settings_project_delete_input
+            .update(cx, |input, cx| input.clear(cx));
+        let generation = self.settings.update(cx, |settings, _| {
+            settings.deletion_generation = settings.deletion_generation.saturating_add(1);
+            settings.deletion_project_id = Some(id.clone());
+            settings.deletion_preview = None;
+            settings.deletion_loading = true;
+            settings.error = None;
+            settings.deletion_generation
+        });
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = backend.preview_project_deletion(id.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                model.settings.update(cx, |settings, _| {
+                    if settings.deletion_generation != generation
+                        || settings.deletion_project_id.as_deref() != Some(&id)
+                    {
+                        return;
+                    }
+                    settings.deletion_loading = false;
+                    match result {
+                        Ok(preview) => settings.deletion_preview = Some(preview),
+                        Err(error) => settings.error = Some(error),
+                    }
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn cancel_project_deletion(&mut self, cx: &mut Context<Self>) {
+        if self.settings.read(cx).deletion_busy {
+            return;
+        }
+        self.settings.update(cx, |settings, _| {
+            settings.deletion_generation = settings.deletion_generation.saturating_add(1);
+            settings.deletion_project_id = None;
+            settings.deletion_preview = None;
+            settings.deletion_loading = false;
+            settings.deletion_busy = false;
+            settings.error = None;
+        });
+        self.settings_project_delete_input
+            .update(cx, |input, cx| input.clear(cx));
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_project_deletion(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let (preview, generation, busy) = {
+            let settings = self.settings.read(cx);
+            (
+                settings.deletion_preview.clone(),
+                settings.deletion_generation,
+                settings.deletion_busy,
+            )
+        };
+        let Some(preview) = preview else {
+            return;
+        };
+        if busy {
+            return;
+        }
+        let confirmation = self
+            .settings_project_delete_input
+            .read(cx)
+            .value()
+            .to_owned();
+        if confirmation != preview.project.name {
+            self.settings.update(cx, |settings, _| {
+                settings.error = Some(UiCommandError::worker(
+                    "Type the exact project name to confirm deletion.",
+                ))
+            });
+            cx.notify();
+            return;
+        }
+        let active = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .is_some_and(|id| id.as_ref() == preview.project.id);
+        if active
+            && self
+                .workspace
+                .read(cx)
+                .tabs
+                .iter()
+                .any(|tab| tab.dirty || tab.saving || tab.conflict.is_some())
+        {
+            self.settings.update(cx,|settings,_|settings.error=Some(UiCommandError::worker("Save or close all dirty, saving or conflicted editor tabs before deleting this project.")));
+            cx.notify();
+            return;
+        }
+        let id = preview.project.id.clone();
+        self.settings.update(cx, |settings, _| {
+            settings.deletion_busy = true;
+            settings.error = None;
+        });
+        cx.notify();
+        cx.spawn(async move |this,cx| {
+            let result=backend.delete_project_permanently(id.clone(),confirmation).await;
+            let _=this.update(cx,|model,cx| {
+                let current=model.settings.read(cx).deletion_generation==generation;
+                model.settings.update(cx,|settings,_|settings.deletion_busy=false);
+                match result {
+                    Ok(outcome)=> {
+                        if active && model.workspace.read(cx).project_id.as_ref().is_some_and(|current|current.as_ref()==id) {model.clear_deleted_active_project(cx);}
+                        let message=if outcome.cleanup_pending {
+                            "Project removed. Some quarantined files or old backups still need cleanup; the app will retry on startup."
+                        } else {"Project and repository permanently removed. Usage remains in the attributed history."};
+                        model.settings.update(cx,|settings,_| {
+                            settings.deletion_project_id=None;
+                            settings.deletion_preview=None;
+                            settings.notice=Some(message.into());
+                            settings.status_line=Some((crate::settings::StatusTone::Saved,message.into()));
+                        });
+                        model.status=message.into();
+                        model.settings_project_delete_input.update(cx,|input,cx|input.clear(cx));
+                        model.refresh_settings(cx);
+                        model.refresh_usage(cx);
+                    }
+                    Err(error) if current=>model.settings.update(cx,|settings,_|settings.error=Some(error)),
+                    Err(_)=>{},
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    fn clear_deleted_active_project(&mut self, cx: &mut Context<Self>) {
+        self.session_task.take();
+        self.session_generation = self.session_generation.saturating_add(1);
+        self.workspace_task.take();
+        self.brownfield_task.take();
+        self.brownfield_generation = self.brownfield_generation.saturating_add(1);
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.project_id = None;
+            workspace.root_path = None;
+            workspace.root_path_canonical = None;
+            workspace.tree.clear();
+            workspace.tabs.clear();
+            workspace.active_relative_path = None;
+            workspace.editor.update(cx, |editor, cx| {
+                *editor = crate::native_editor::NativeEditor::new(cx)
+            });
+        });
+        self.pulsations
+            .update(cx, |pulsations, _| pulsations.reset(None));
+        self.chat.update(cx, |chat, _| *chat = ChatModel::default());
+        self.agents.update(cx, |agents, _| {
+            *agents = crate::agents::AgentsModel::default()
+        });
+        self.vault
+            .update(cx, |vault, _| *vault = VaultModel::default());
+        self.forge = crate::forge::ForgeUi::new(cx);
+        self.navigation
+            .update(cx, |navigation, _| navigation.active = AppView::Home);
+    }
+
     pub(crate) fn run_settings_operation(
         &mut self,
         operation: crate::settings::SettingsFuture<String>,
@@ -5537,9 +6205,10 @@ impl AppModel {
         if self.lifecycle.is_disposed() {
             return;
         }
-        let generation = self
-            .settings
-            .update(cx, |settings, _| settings.begin(false));
+        let generation = self.settings.update(cx, |settings, _| {
+            settings.status_line = Some((crate::settings::StatusTone::Working, "Working…".into()));
+            settings.begin(false)
+        });
         cx.notify();
         self.settings_task = Some(cx.spawn(async move |this, cx| {
             let result = operation.await;
@@ -5552,6 +6221,10 @@ impl AppModel {
                         let current = model.settings.read(cx).generation;
                         if current == generation {
                             model.settings.update(cx, |settings, _| {
+                                settings.status_line = Some((
+                                    crate::settings::StatusTone::Saved,
+                                    message.clone().into(),
+                                ));
                                 settings.notice = Some(message.into());
                             });
                             model.refresh_settings(cx);
@@ -5559,10 +6232,16 @@ impl AppModel {
                     }
                     Err(error) => {
                         let message = error.presentable();
-                        if model
-                            .settings
-                            .update(cx, |settings, _| settings.fail(generation, error))
+                        if model.settings.update(cx, |settings, _| {
+                            settings.status_line = Some((
+                                crate::settings::StatusTone::Failed,
+                                message.to_string().into(),
+                            ));
+                            settings.fail(generation, error)
+                        }) && !model.settings_modal.open
                         {
+                            // With Settings open the status line already says it; the error
+                            // still reaches the notification history, without a toast.
                             model.push_header_notice(HeaderNoticeKind::Error, message, cx);
                         }
                         cx.notify();
@@ -5807,7 +6486,8 @@ impl AppModel {
         self.settings.update(cx, |settings, _| {
             settings.selected_connection_id = None;
             settings.creating_connection = true;
-            settings.settings_section = crate::settings::SettingsSection::Connections;
+            settings.connection_detail = true;
+            settings.page = crate::settings::SettingsPage::Connections;
         });
         for input in [
             &self.settings_connection_name_input,
@@ -5910,24 +6590,112 @@ impl AppModel {
         else {
             return;
         };
+        if self.settings.read(cx).testing_connection.is_some() {
+            return;
+        }
+        let model = self
+            .settings
+            .read(cx)
+            .connection()
+            .map(|connection| connection.default_model.clone())
+            .unwrap_or_default();
+        self.settings.update(cx, |settings, _| {
+            settings.testing_connection = Some(connection_id.clone());
+            settings.status_line = Some((
+                crate::settings::StatusTone::Working,
+                "Testing the connection…".into(),
+            ));
+        });
+        cx.notify();
+        // Not a generic Settings operation: the result is kept per connection, with its latency
+        // and a classified failure, instead of a one-line notice.
+        self.settings_test_task = Some(cx.spawn(async move |this, cx| {
+            let started = std::time::Instant::now();
+            let result = backend
+                .test_connection(TestProviderConnectionRequest {
+                    connection_id: connection_id.clone(),
+                })
+                .await;
+            let _ = this.update(cx, |model_state, cx| {
+                use crate::settings::{ConnectionTestOutcome, ConnectionTestResult};
+                let at = crate::time::current_clock_hhmm();
+                let outcome = match result {
+                    Ok(response) => ConnectionTestResult {
+                        outcome: if response.reachable {
+                            ConnectionTestOutcome::Connected
+                        } else {
+                            ConnectionTestOutcome::ConnectedWithWarnings
+                        },
+                        latency_ms: Some(response.latency_ms),
+                        model: response.model,
+                        detail: response.message,
+                        at,
+                    },
+                    Err(error) => {
+                        let outcome = ConnectionTestOutcome::from_error(&error);
+                        ConnectionTestResult {
+                            outcome,
+                            // Time to the failure, so a timeout reads as ~30 s; a missing key
+                            // fails before any request, so it has no latency to show.
+                            latency_ms: (outcome != ConnectionTestOutcome::NoApiKey)
+                                .then(|| started.elapsed().as_millis() as u64),
+                            model,
+                            detail: error.presentable(),
+                            at,
+                        }
+                    }
+                };
+                model_state.settings.update(cx, |settings, _| {
+                    settings.testing_connection = None;
+                    settings.status_line = Some((outcome.outcome.tone(), outcome.summary().into()));
+                    settings.connection_tests.insert(connection_id, outcome);
+                });
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Refreshes remote API metadata only after an explicit Settings action. It never changes a
+    /// connection, route, or conversation; selecting an entry still only edits the form draft.
+    pub(crate) fn refresh_settings_api_catalog(&mut self, cx: &mut Context<Self>) {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(connection_id) = self
+            .settings
+            .read(cx)
+            .selected_connection_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
+            return;
+        };
         self.run_settings_operation(
             Box::pin(async move {
-                let response = backend
-                    .test_connection(TestProviderConnectionRequest { connection_id })
-                    .await?;
-                Ok(format!(
-                    "Connection {} in {} ms: {}",
-                    if response.reachable {
-                        "reachable"
-                    } else {
-                        "unavailable"
-                    },
-                    response.latency_ms,
-                    response.message
-                ))
+                let snapshot = backend.refresh_api_model_catalog(connection_id).await?;
+                let state = match snapshot.state {
+                    hvc_core::llm::ApiModelCatalogState::Ready => "updated",
+                    hvc_core::llm::ApiModelCatalogState::Stale => {
+                        "stale; showing last successful result"
+                    }
+                    hvc_core::llm::ApiModelCatalogState::Failed => {
+                        "failed; no previous result is available"
+                    }
+                    hvc_core::llm::ApiModelCatalogState::Unsupported => {
+                        "not available for this provider"
+                    }
+                };
+                Ok(format!("API model catalog {state}."))
             }),
             cx,
         );
+    }
+
+    pub(crate) fn select_settings_api_model(&mut self, model_id: String, cx: &mut Context<Self>) {
+        self.settings_connection_model_input
+            .update(cx, |input, cx| input.set_value(model_id, cx));
+        self.close_dropdown(cx);
+        cx.notify();
     }
 
     pub(crate) fn delete_settings_connection(&mut self, cx: &mut Context<Self>) {
@@ -5975,7 +6743,8 @@ impl AppModel {
         self.settings.update(cx, |settings, _| {
             settings.selected_route_id = None;
             settings.creating_route = true;
-            settings.settings_section = crate::settings::SettingsSection::Routes;
+            settings.route_detail = true;
+            settings.page = crate::settings::SettingsPage::Routes;
             settings.route_strategy = "priority".into();
             settings.route_max_attempts = 3;
             settings.route_attempt_timeout_ms = 45_000;
@@ -6325,7 +7094,19 @@ impl AppModel {
         self.status = "Event history delayed; refreshing runtime snapshots".into();
         // Workspace changes may also have been lost; refresh its index without
         // replacing open buffers, the current project, or navigation state.
-        self.schedule_vault_refresh(cx);
+        self.mark_vault_stale(cx);
+    }
+
+    /// An applied Agents snapshot is the resync for a terminal/agents sequence gap. A lagged
+    /// broadcast still owns `needs_resync` until its own resync (`finish_event_resync`) ends.
+    fn finish_agents_resync(&mut self) {
+        if !std::mem::take(&mut self.agents_resync_pending) {
+            return;
+        }
+        if !self.event_resync_pending {
+            self.needs_resync = false;
+            self.status = "Agent history resynchronized".into();
+        }
     }
 
     fn finish_event_resync(&mut self, cx: &mut Context<Self>) {
@@ -6337,7 +7118,6 @@ impl AppModel {
         match self.active_view {
             AppView::Agents => self.refresh_agents(cx),
             AppView::Forge => self.refresh_forge(cx),
-            AppView::Settings => self.refresh_settings(cx),
             AppView::Pulsations => self.refresh_pulsation_usage(cx),
             AppView::Chat => {
                 let project = self
@@ -6357,6 +7137,9 @@ impl AppModel {
                 }
             }
             _ => {}
+        }
+        if self.settings_modal.open {
+            self.refresh_settings(cx);
         }
     }
 
@@ -6396,7 +7179,21 @@ impl AppModel {
         let timer = cx.background_executor().clone();
         self.polling_task = Some(cx.spawn(async move |this, cx| {
             loop {
-                timer.timer(std::time::Duration::from_millis(1_200)).await;
+                let interval = match this.update(cx, |model, cx| {
+                    let pulsations = model.pulsations.read(cx);
+                    if pulsations.running_jobs > 0
+                        || pulsations.awaiting_hitl > 0
+                        || pulsations.awaiting_failure > 0
+                    {
+                        std::time::Duration::from_millis(1_200)
+                    } else {
+                        std::time::Duration::from_secs(5)
+                    }
+                }) {
+                    Ok(interval) => interval,
+                    Err(_) => break,
+                };
+                timer.timer(interval).await;
                 let state = this.update(cx, |model, cx| {
                     if model.lifecycle.is_disposed() {
                         return false;
@@ -6489,8 +7286,10 @@ impl AppModel {
         self.auto_open_review = session.is_some_and(|value| value.auto_open_review);
         let preferred_pulsation_id = session.and_then(|value| value.active_pulsation_id.clone());
         let restored_vault_selection = session.and_then(|value| value.selected_vault_path.clone());
+        // Sessions saved before Settings became a modal may name it; land on Home instead.
         let active_view = session
             .map(|session| AppView::from_id(&session.active_view))
+            .filter(|view| *view != AppView::Settings)
             .unwrap_or(AppView::Home);
         let requested_active = session.and_then(|session| session.active_tab_path.as_deref());
         let active_path = requested_active
@@ -6599,16 +7398,14 @@ impl AppModel {
         self.refresh_forge(cx);
         match active_view {
             AppView::Agents => self.refresh_agents(cx),
-            AppView::Settings => self.refresh_settings(cx),
             AppView::Logs => self.refresh_logs(cx),
+            AppView::Home => self.refresh_home_stats(true, cx),
             _ => {}
         }
         if active_view != AppView::Agents {
             self.refresh_agents_quiet(cx);
         }
-        if active_view != AppView::Settings {
-            self.refresh_settings_quiet(cx);
-        }
+        self.refresh_settings_quiet(cx);
         cx.notify();
     }
 
@@ -6733,6 +7530,8 @@ impl AppModel {
     fn flush_pending_session(&mut self, cx: &mut Context<Self>) -> Task<()> {
         self.lifecycle.dispose();
         self.event_task.take();
+        self.llm_delta_task.take();
+        self.pending_llm_deltas.clear();
         self.polling_task.take();
         self.workspace_task.take();
         self.brownfield_task.take();
@@ -6760,6 +7559,7 @@ impl AppModel {
         self.logs_task.take();
         self.logs_resync_tasks.clear();
         self.chat_task.take();
+        self.chat_target_task.take();
         self.chat_resync_tasks.clear();
         self.resolution_chips_task.take();
         self.resolution_conversation_task.take();
@@ -6813,7 +7613,74 @@ impl AppModel {
         })
     }
 
+    fn queue_llm_delta(
+        &mut self,
+        envelope: hvc_core::llm::LlmEventEnvelope,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_llm_deltas.push(envelope);
+        if self.llm_delta_task.is_some() {
+            return;
+        }
+        let timer = cx.background_executor().clone();
+        self.llm_delta_task = Some(cx.spawn(async move |this, cx| {
+            timer.timer(std::time::Duration::from_millis(250)).await;
+            let _ = this.update(cx, |model, cx| {
+                model.llm_delta_task = None;
+                model.apply_pending_llm_deltas(cx);
+            });
+        }));
+    }
+
+    /// Flushes only the UI-side projection of already persisted agent output. A terminal event
+    /// calls this before it is applied so a completion, failure, or cancellation can never pass
+    /// older visible text.
+    fn flush_pending_llm_deltas(&mut self, cx: &mut Context<Self>) {
+        self.llm_delta_task.take();
+        self.apply_pending_llm_deltas(cx);
+    }
+
+    fn apply_pending_llm_deltas(&mut self, cx: &mut Context<Self>) {
+        let deltas = std::mem::take(&mut self.pending_llm_deltas);
+        if deltas.is_empty() || self.lifecycle.is_disposed() {
+            return;
+        }
+        let delta_count = deltas.len() as u64;
+        let execution_id = deltas.last().map(|envelope| envelope.execution_id.clone());
+        let agents_gap = self
+            .agents
+            .update(cx, |agents, _| agents.record_llm_batch(&deltas));
+        let classification = self
+            .logs
+            .update(cx, |logs, _| logs.record_llm_batch(deltas));
+        self.event_count = self.event_count.saturating_add(delta_count);
+        // The count is intentionally updated once per presentation batch. It remains a UI
+        // activity indicator rather than an audit counter; the durable stream retains each event.
+        self.status = "Agent output updated".into();
+        if classification == SequenceClassification::Gap || agents_gap {
+            self.needs_resync = true;
+            self.agents_resync_pending |= agents_gap;
+            self.status = "LLM gap detected; reloading persisted execution".into();
+            if let Some(execution_id) = execution_id {
+                self.resync_llm_execution(execution_id, cx);
+            }
+        }
+        cx.notify();
+    }
+
     fn handle_event(&mut self, event: AppEvent, cx: &mut Context<Self>) {
+        if let AppEvent::Llm(envelope) = &event
+            && matches!(
+                envelope.event,
+                hvc_core::llm::LlmStreamEvent::TokenDelta { .. }
+            )
+        {
+            self.queue_llm_delta(envelope.clone(), cx);
+            return;
+        }
+        if matches!(&event, AppEvent::Llm(_)) {
+            self.flush_pending_llm_deltas(cx);
+        }
         // Indexing progress ticks at supervisor cadence and must not steal the status bar's
         // main text (see the generic "Event received: ..." below) on every delta.
         if let AppEvent::Indexing(event) = event {
@@ -6825,13 +7692,17 @@ impl AppModel {
                 ModelPullEvent::Completed { model } => self.record_activity(
                     ActivityKind::Indexing,
                     format!("Embedding model {model} ready"),
-                    Some(FlowTarget::View(AppView::Settings)),
+                    Some(FlowTarget::Settings(
+                        crate::settings::SettingsPage::Embeddings,
+                    )),
                     false,
                 ),
                 ModelPullEvent::Failed { model, error } => self.record_activity(
                     ActivityKind::Indexing,
                     format!("Embedding model {model} failed: {error}"),
-                    Some(FlowTarget::View(AppView::Settings)),
+                    Some(FlowTarget::Settings(
+                        crate::settings::SettingsPage::Embeddings,
+                    )),
                     true,
                 ),
                 ModelPullEvent::Started { .. } | ModelPullEvent::Progress { .. } => {}
@@ -6949,17 +7820,21 @@ impl AppModel {
                 let classification = self.logs.update(cx, |logs, _| logs.record_llm(envelope));
                 if classification == SequenceClassification::Gap || agents_gap {
                     self.needs_resync = true;
+                    self.agents_resync_pending |= agents_gap;
                     self.status = "LLM gap detected; reloading persisted execution".into();
                     self.resync_llm_execution(execution_id, cx);
                 }
                 if terminal || agents_gap {
+                    if terminal {
+                        self.refresh_pulsations(cx);
+                    }
                     if self.active_view == AppView::Agents {
                         self.refresh_agents(cx);
                     } else {
                         self.refresh_agents_quiet(cx);
                     }
                 }
-                if failed && self.active_view != AppView::Settings {
+                if failed && !self.settings_modal.open {
                     self.schedule_settings_quiet_refresh(cx);
                 }
             }
@@ -6988,9 +7863,13 @@ impl AppModel {
                     .update(cx, |agents, _| agents.record_event(*envelope));
                 if gap {
                     self.needs_resync = true;
+                    self.agents_resync_pending = true;
                     self.status = "Terminal gap detected; reloading persisted history".into();
                 }
                 if terminal || gap {
+                    if terminal {
+                        self.refresh_pulsations(cx);
+                    }
                     if self.active_view == AppView::Agents {
                         self.refresh_agents(cx);
                     } else {
@@ -7045,7 +7924,9 @@ impl AppModel {
             IndexingEvent::Failed { error, .. } => self.record_activity(
                 ActivityKind::Indexing,
                 format!("Knowledge indexing failed: {error}"),
-                Some(FlowTarget::View(AppView::Settings)),
+                Some(FlowTarget::Settings(
+                    crate::settings::SettingsPage::Embeddings,
+                )),
                 true,
             ),
             // Only the transition into Idle is a milestone; the supervisor keeps repeating it.
@@ -7072,7 +7953,7 @@ impl AppModel {
         let should_reload = self.workspace.update(cx, |workspace, _| {
             workspace.mark_external_change(&event.relative_path, &event.kind)
         });
-        self.schedule_vault_refresh(cx);
+        self.mark_vault_stale(cx);
         if !should_reload {
             return;
         }
@@ -7206,11 +8087,16 @@ fn load_workspace(core: Arc<AppCore>, path: String) -> Result<RestoredSession, S
         })
         .unwrap_or_default();
 
-    let notice = opened.greenfield.map(|status| status.message).or_else(|| {
-        (opened.kind == WorkspaceKind::Brownfield).then(|| {
-            "Existing workspace detected; choose whether to start gradual mapping.".to_string()
-        })
-    });
+    // Restoring runs on every launch; "already set up" would greet the developer each time.
+    let notice = opened
+        .greenfield
+        .filter(|status| status.initialized)
+        .map(|status| status.message)
+        .or_else(|| {
+            (opened.kind == WorkspaceKind::Brownfield).then(|| {
+                "Existing workspace detected; choose whether to start gradual mapping.".to_string()
+            })
+        });
     Ok(RestoredSession {
         project_id: project.id,
         root_path: opened.root_path,
@@ -7453,6 +8339,7 @@ mod tests {
                     failure_checkpoints: Vec::new(),
                     failure_waiting_count: 0,
                     background_agents_count: 1,
+                    active_jobs: Vec::new(),
                     brownfield_coverage: None,
                 })),
                 artifacts: Arc::new(Mutex::new(vec![test_artifact("Plan")])),
@@ -7497,6 +8384,7 @@ mod tests {
         fn runtime_snapshot(
             &self,
             _project_id: String,
+            _detail_pulsation_id: Option<String>,
         ) -> PulsationsFuture<PulsationRuntimeSnapshot> {
             *self
                 .snapshot_calls
@@ -7831,13 +8719,48 @@ mod tests {
     fn navigates_every_view(cx: &mut TestAppContext) {
         let model = cx.new(AppModel::new_for_test);
         for view in AppView::ALL {
+            let before = cx.read(|cx| model.read(cx).active_view());
             model.update(cx, |model, cx| model.select_view(view, cx));
-            assert_eq!(cx.read(|cx| model.read(cx).active_view()), view);
+            // Settings opens its modal over the current view instead of becoming the view.
+            let expected = if view == AppView::Settings {
+                assert!(cx.read(|cx| model.read(cx).settings_modal.open));
+                before
+            } else {
+                view
+            };
+            assert_eq!(cx.read(|cx| model.read(cx).active_view()), expected);
             cx.read(|cx| {
                 let model = model.read(cx);
-                assert_eq!(model.navigation.read(cx).active, view);
+                assert_eq!(model.navigation.read(cx).active, expected);
             });
         }
+    }
+
+    #[gpui::test]
+    fn an_applied_agents_snapshot_clears_a_terminal_gap_but_not_a_lagged_stream(
+        cx: &mut TestAppContext,
+    ) {
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, _| {
+            // A terminal gap alone: the agents resync ends it.
+            model.needs_resync = true;
+            model.agents_resync_pending = true;
+            model.finish_agents_resync();
+            assert!(!model.needs_resync());
+            assert!(!model.agents_resync_pending);
+
+            // An ordinary snapshot with no gap outstanding leaves an unrelated resync alone.
+            model.needs_resync = true;
+            model.finish_agents_resync();
+            assert!(model.needs_resync());
+
+            // A lagged broadcast is still being resynchronized: it keeps the flag.
+            model.event_resync_pending = true;
+            model.agents_resync_pending = true;
+            model.finish_agents_resync();
+            assert!(model.needs_resync());
+            assert!(!model.agents_resync_pending);
+        });
     }
 
     #[gpui::test]
@@ -7858,6 +8781,7 @@ mod tests {
             model.refresh_agents_quiet(cx);
             assert_eq!(model.agents.read(cx).generation, before);
             assert!(model.agents.read(cx).loading);
+            assert_eq!(model.agents_refresh_pending, Some((false, true)));
         });
     }
 
@@ -7907,15 +8831,25 @@ mod tests {
                 PulsationDetailSection::Artifacts
             );
 
+            // With the Settings modal open the shortcut walks its pages instead.
             model.select_view(AppView::Settings, cx);
+            assert!(model.settings_modal.open);
             model.cycle_current_section(1, cx);
             assert_eq!(
-                model.settings.read(cx).settings_section,
-                crate::settings::SettingsSection::Routes
+                model.settings.read(cx).page,
+                crate::settings::SettingsPage::Usage
+            );
+            model.cycle_current_section(-1, cx);
+            model.cycle_current_section(-1, cx);
+            assert_eq!(
+                model.settings.read(cx).page,
+                crate::settings::SettingsPage::About
             );
 
-            // A view without a section strip (Vault) ignores the shortcut instead of panicking.
+            // Another view closes Settings; a view without a section strip (Vault) ignores the
+            // shortcut instead of panicking.
             model.select_view(AppView::Vault, cx);
+            assert!(!model.settings_modal.open);
             model.cycle_current_section(1, cx);
         });
     }
@@ -7950,6 +8884,8 @@ mod tests {
         let model = cx.new(|cx| AppModel::new_for_test_with_persistence(persistence, cx));
         model.update(cx, |model, cx| {
             configure_restorable_state(model, cx);
+            model.select_view(AppView::Logs, cx);
+            // Settings is a modal over the view; the view is what persists.
             model.select_view(AppView::Settings, cx);
             model.set_context_rail_collapsed(true, cx);
             model.set_context_drawer_open(false, cx);
@@ -7974,7 +8910,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let request = &requests[0];
         assert_eq!(request.project_id, "project-1");
-        assert_eq!(request.active_view, "settings");
+        assert_eq!(request.active_view, "logs");
         assert!(request.sidebar_collapsed);
         assert!(!request.context_drawer_open);
         assert_eq!(request.workspace_view_mode, "editor");
@@ -8438,7 +9374,13 @@ mod tests {
             loop {
                 cx.run_until_parked();
                 model.update(cx, |model, cx| {
-                    assert_eq!(model.active_view(), view);
+                    // Settings opens over the previous view (Logs) instead of replacing it.
+                    if view == AppView::Settings {
+                        assert_eq!(model.active_view(), AppView::Logs);
+                        assert!(model.settings_modal.open);
+                    } else {
+                        assert_eq!(model.active_view(), view);
+                    }
                     model.refresh_pulsations(cx);
                 });
                 let snapshot = core
@@ -8565,7 +9507,13 @@ mod tests {
                 let mut snapshot = backend.snapshot.lock().unwrap().clone();
                 snapshot.main_agents_count = 1;
                 model.apply_pulsation_snapshot("project-1".into(), snapshot, None, cx);
-                assert_eq!(model.active_view(), view);
+                // Settings opens over the previous view (Logs) instead of replacing it.
+                if view == AppView::Settings {
+                    assert_eq!(model.active_view(), AppView::Logs);
+                    assert!(model.settings_modal.open);
+                } else {
+                    assert_eq!(model.active_view(), view);
+                }
                 assert_eq!(
                     model
                         .workspace
@@ -8807,6 +9755,7 @@ mod tests {
                 estimated_cost_usd: None,
                 error_code: None,
                 error_message: None,
+                target_label: None,
                 created_at: "now".into(),
                 updated_at: "now".into(),
             }
@@ -8839,7 +9788,7 @@ mod tests {
         fn create_conversation(
             &self,
             _: String,
-            _: ChatExecutionTargetRequest,
+            _: hvc_core::chat_service::ChatExecutionTargetRequest,
         ) -> crate::chat::ChatFuture<hvc_core::chat_service::GetChatConversationResponse> {
             Box::pin(async { Err(crate::errors::UiCommandError::worker("unused")) })
         }
@@ -8852,6 +9801,7 @@ mod tests {
             &self,
             conversation_id: String,
             content: String,
+            _: Option<hvc_core::chat_service::ChatExecutionTargetRequest>,
         ) -> crate::chat::ChatFuture<(
             hvc_core::chat_service::SendChatMessageResponse,
             hvc_core::chat_service::GetChatConversationResponse,
@@ -8893,6 +9843,22 @@ mod tests {
             _: String,
         ) -> crate::chat::ChatFuture<hvc_core::chat_service::GetChatTurnSnapshotResponse> {
             Box::pin(async { Err(crate::errors::UiCommandError::worker("unused")) })
+        }
+
+        fn update_conversation_target(
+            &self,
+            _: String,
+            _: hvc_core::chat_service::ChatExecutionTargetRequest,
+        ) -> crate::chat::ChatFuture<hvc_core::chat_service::GetChatConversationResponse> {
+            Box::pin(async { Err(crate::errors::UiCommandError::worker("unused")) })
+        }
+
+        fn save_default_target(
+            &self,
+            _: String,
+            _: hvc_core::chat_service::ChatExecutionTargetRequest,
+        ) -> crate::chat::ChatFuture<()> {
+            Box::pin(async { Ok(()) })
         }
     }
 
@@ -8975,6 +9941,21 @@ mod tests {
 
         model.update(cx, |m, cx| m.toggle_resolution_chip("set-a".into(), cx));
         cx.run_until_parked();
+        {
+            let sent = chat_backend.sent.lock().unwrap();
+            assert_eq!(
+                sent.len(),
+                1,
+                "opening a brand-new conversation must auto-send exactly one \
+                 host-authored briefing (question + rationale) so the Companion \
+                 isn't guessing what \"References\"/\"Handles\" means from nothing"
+            );
+            assert!(
+                sent[0].1.contains("Where should this file live?"),
+                "the briefing must include the chip's question text: {:?}",
+                sent[0].1
+            );
+        }
         model.read_with(cx, |m, cx| {
             let resolution = m.resolution.read(cx);
             assert_eq!(resolution.expanded.as_deref(), Some("set-a"));
@@ -8983,7 +9964,7 @@ mod tests {
                 .as_ref()
                 .expect("conversation loaded");
             assert_eq!(conversation.conversation_id, "resolution-conversation-1");
-            assert!(conversation.messages.is_empty());
+            assert!(conversation.synthesized_draft.is_none());
         });
 
         model.update(cx, |m, cx| m.synthesize_resolution_reply(cx));

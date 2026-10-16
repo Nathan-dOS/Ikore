@@ -77,7 +77,15 @@ fn first_task_clarifies_through_companion_and_resumes_after_restart_without_extr
         json!({"outputLanguage":"en","summary":"The token format is missing","statusUpdate":"needs_clarification","contextUsage":[],"notes":[],"artifacts":[],"componentProposals":[],"questions":[{"id":"token_format","question":"Which token format should be used?","rationale":"Defines validation in auth.rs"}]}),
         json!({"outputLanguage":"en","summary":"Specification completed after the human response","statusUpdate":"checkpoint_ready","contextUsage":[],"notes":[],"artifacts":[{"name":"Specification","kind":"specification","relativePath":null,"content":"JWT: reject an expired token with status 401."}],"componentProposals":[]}),
     ];
-    let server=ScriptedHttpServer::start(outputs.map(|output|ScriptedResponse::json(200,json!({"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}).to_string())));
+    let mut outputs = outputs.into_iter();
+    let server = ScriptedHttpServer::respond_with(move |request| {
+        let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+        let model = body["model"]
+            .as_str()
+            .expect("provider request model identity");
+        let output = outputs.next().expect("scripted stage response");
+        ScriptedResponse::json(200,json!({"model":model,"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}).to_string())
+    });
     let sink = Arc::new(StopEachResponse::default());
     let credentials = Arc::new(MemoryCredentialStore::default());
     credentials.set("openai", "fixture-only").unwrap();
@@ -222,7 +230,15 @@ fn clarification_answer_files_tags_are_parsed_and_persisted_alongside_the_prose(
         json!({"outputLanguage":"en","summary":"Intake completed","statusUpdate":"advance","contextUsage":[],"notes":[],"artifacts":[]}),
         json!({"outputLanguage":"en","summary":"The token format is missing","statusUpdate":"needs_clarification","contextUsage":[],"notes":[],"artifacts":[],"componentProposals":[],"questions":[{"id":"token_format","question":"Which token format should be used?","rationale":"Defines validation in auth.rs"}]}),
     ];
-    let server=ScriptedHttpServer::start(outputs.map(|output|ScriptedResponse::json(200,json!({"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}).to_string())));
+    let mut outputs = outputs.into_iter();
+    let server = ScriptedHttpServer::respond_with(move |request| {
+        let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+        let model = body["model"]
+            .as_str()
+            .expect("provider request model identity");
+        let output = outputs.next().expect("scripted stage response");
+        ScriptedResponse::json(200,json!({"model":model,"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}).to_string())
+    });
     let sink = Arc::new(StopEachResponse::default());
     let credentials = Arc::new(MemoryCredentialStore::default());
     credentials.set("openai", "fixture-only").unwrap();

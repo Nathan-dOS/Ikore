@@ -175,6 +175,44 @@ impl HeaderNoticeQueue {
         }
     }
 
+    /// Records a notice in the history (unread) without raising a toast — for messages the
+    /// surface in front of the developer already shows, like the Settings status line.
+    pub(crate) fn push_quiet(&mut self, source: String, kind: HeaderNoticeKind, message: String) {
+        if message.trim().is_empty() {
+            return;
+        }
+        if let Some(existing) = self.entries.iter_mut().rev().find(|n| {
+            n.project == self.project
+                && n.source == source
+                && n.kind == kind
+                && n.message == message
+                && n.action.is_none()
+        }) {
+            existing.repeats += 1;
+            existing.read = false;
+            existing.created = std::time::SystemTime::now();
+            return;
+        }
+        self.next_id += 1;
+        self.entries.push_back(HeaderNotice {
+            id: self.next_id,
+            kind,
+            message,
+            action: None,
+            project: self.project.clone(),
+            source,
+            created: std::time::SystemTime::now(),
+            repeats: 1,
+            read: false,
+            pending: false,
+        });
+        if self.entries.len() > 100
+            && let Some(index) = self.entries.iter().position(|n| Some(n.id) != self.pinned)
+        {
+            self.entries.remove(index);
+        }
+    }
+
     pub(crate) fn current(&self) -> Option<&HeaderNotice> {
         self.entries
             .iter()
@@ -227,6 +265,28 @@ impl HeaderNoticeQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quiet_notice_reaches_the_history_without_a_toast() {
+        let mut queue = HeaderNoticeQueue::default();
+        queue.push_quiet(
+            "Settings".into(),
+            HeaderNoticeKind::Notice,
+            "Route saved.".into(),
+        );
+        assert!(queue.current().is_none());
+        assert_eq!(queue.unread(), 1);
+        queue.push_quiet(
+            "Settings".into(),
+            HeaderNoticeKind::Notice,
+            "Route saved.".into(),
+        );
+        let history = queue.history();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].repeats, 2);
+        assert!(queue.current().is_none());
+    }
+
     #[test]
     fn repeated_dismissed_events_rejoin_the_queue_without_replacing_the_current_card() {
         let mut q = HeaderNoticeQueue::default();

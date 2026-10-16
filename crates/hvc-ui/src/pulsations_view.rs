@@ -11,6 +11,10 @@ use crate::pulsations::{
 use crate::sizing::StyledExt;
 use crate::theme;
 
+/// Pulsations rendered per status group until the developer asks for the rest. A long-lived
+/// project accumulates hundreds of failed attempts; every card is laid out on every frame.
+const GROUP_RENDER_LIMIT: usize = 25;
+
 pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let has_project = model.workspace.read(cx).project_id.is_some();
     let queue = model
@@ -69,9 +73,6 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
         .min_h_0()
         .p_3()
         .rounded_lg()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
         .flex()
         .flex_col()
         .gap_3()
@@ -118,6 +119,24 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                     let selected = members
                         .iter()
                         .any(|pulse| Some(pulse.id.as_str()) == active_id.as_deref());
+                    let group_key = status_group_id(status);
+                    let show_all = model
+                        .pulsations
+                        .read(cx)
+                        .groups_showing_all
+                        .contains(group_key);
+                    let total = members.len();
+                    let visible: Vec<_> = members
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(position, pulse)| {
+                            show_all
+                                || *position < GROUP_RENDER_LIMIT
+                                || Some(pulse.id.as_str()) == active_id.as_deref()
+                        })
+                        .map(|(_, pulse)| pulse)
+                        .collect();
+                    let more = total - visible.len();
                     let id = gpui::SharedString::from(format!(
                         "pulsation-group-{}",
                         status_group_id(status)
@@ -127,25 +146,35 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                         div()
                             .flex_shrink_0()
                             .min_w_0()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(theme::border())
-                            .overflow_hidden()
                             .child(
                                 div()
                                     .id(id)
                                     .debug_selector(move || debug_id.to_string())
-                                    .px_3()
-                                    .py_2()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
                                     .cursor_pointer()
-                                    .text_sm()
-                                    .bg(theme::surface_raised())
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(if selected {
                                         theme::accent()
                                     } else {
-                                        theme::text()
+                                        theme::text_muted()
                                     })
-                                    .hover(|style| style.bg(theme::accent_soft()))
+                                    .hover(|style| style.bg(theme::surface_raised()))
+                                    .child(crate::widgets::icon(
+                                        if expanded {
+                                            crate::icons::Icon::ChevronDown
+                                        } else {
+                                            crate::icons::Icon::ChevronRight
+                                        },
+                                        px(12.0),
+                                        theme::text_subtle(),
+                                    ))
+                                    .child(crate::widgets::status_dot(status_color(status)))
                                     .on_click(cx.listener(move |model, _, _, cx| {
                                         model
                                             .pulsations
@@ -153,10 +182,9 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                         cx.notify();
                                     }))
                                     .child(format!(
-                                        "{} {} · {}{}",
-                                        if expanded { "▾" } else { "▸" },
+                                        "{} · {}{}",
                                         status_label(status, None),
-                                        members.len(),
+                                        total,
                                         if selected && !expanded {
                                             " · selected"
                                         } else {
@@ -167,11 +195,11 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                             .when(expanded, |group| {
                                 group.child(
                                     div()
-                                        .p_2()
+                                        .pt_1()
                                         .flex()
                                         .flex_col()
                                         .gap_2()
-                                        .when(members.is_empty(), |list| {
+                                        .when(total == 0, |list| {
                                             list.child(
                                                 div()
                                                     .p_2()
@@ -180,7 +208,7 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                                     .child("No running pulsations."),
                                             )
                                         })
-                                        .children(members.into_iter().map(|pulse| {
+                                        .children(visible.into_iter().map(|pulse| {
                                             let position =
                                                 queue.iter().find(|p| p.pulsation_id == pulse.id);
                                             let label = position.map(|p| {
@@ -191,7 +219,43 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                                 )
                                             });
                                             pulsation_card(pulse, active_id.as_deref(), label, cx)
-                                        })),
+                                        }))
+                                        .when(more > 0, |list| {
+                                            let id = gpui::SharedString::from(format!(
+                                                "pulsation-group-more-{group_key}"
+                                            ));
+                                            let selector = id.clone();
+                                            list.child(
+                                                div()
+                                                    .id(id)
+                                                    .debug_selector(move || selector.to_string())
+                                                    .px_2()
+                                                    .py_1()
+                                                    .rounded_md()
+                                                    .cursor_pointer()
+                                                    .text_xs()
+                                                    .text_color(theme::text_muted())
+                                                    .hover(|style| {
+                                                        style
+                                                            .bg(theme::surface_raised())
+                                                            .text_color(theme::text())
+                                                    })
+                                                    .on_click(cx.listener(
+                                                        move |model, _, _, cx| {
+                                                            model.pulsations.update(
+                                                                cx,
+                                                                |state, _| {
+                                                                    state
+                                                                        .groups_showing_all
+                                                                        .insert(group_key);
+                                                                },
+                                                            );
+                                                            cx.notify();
+                                                        },
+                                                    ))
+                                                    .child(format!("Show {more} older")),
+                                            )
+                                        }),
                                 )
                             }),
                     )
@@ -205,9 +269,6 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
         .min_h_0()
         .p_4()
         .rounded_lg()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
         .flex()
         .flex_col()
         .gap_3()
@@ -222,75 +283,60 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
             let backend_override_busy = model.pulsations.read(cx).backend_override_busy;
             panel
                 .child(
-                    div()
-                        .id("pulsation-section-tabs")
-                        .debug_selector(|| "pulsation-section-tabs".into())
-                        .flex()
-                        .flex_shrink_0()
-                        .items_center()
-                        .justify_center()
-                        .flex_wrap()
-                        .gap_2()
-                        .children(
-                            [
-                                (
-                                    PulsationDetailSection::Review,
-                                    "pulsation-review",
-                                    if review_pending {
-                                        "Review · pending"
-                                    } else {
-                                        "Review"
-                                    },
-                                ),
-                                (
-                                    PulsationDetailSection::Overview,
-                                    "pulsation-overview",
-                                    "Overview",
-                                ),
-                                (
-                                    PulsationDetailSection::Preparation,
-                                    "pulsation-preparation",
-                                    if preparation_pending {
-                                        "Preparation · pending"
-                                    } else {
-                                        "Preparation"
-                                    },
-                                ),
-                                (
-                                    PulsationDetailSection::Artifacts,
-                                    "pulsation-artifacts",
-                                    "Artifacts",
-                                ),
-                            ]
-                            .into_iter()
-                            .map(|(target, id, label)| {
-                                div()
-                                    .id(id)
-                                    .debug_selector(move || id.into())
-                                    .px_3()
-                                    .py_2()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .text_sm()
-                                    .bg(if section == target {
-                                        theme::accent_soft()
-                                    } else {
-                                        theme::surface_raised()
-                                    })
-                                    .text_color(if section == target {
-                                        theme::accent()
-                                    } else {
-                                        theme::text_muted()
-                                    })
-                                    .on_click(cx.listener(move |model, _, _, cx| {
-                                        model
-                                            .pulsations
-                                            .update(cx, |state, _| state.detail_section = target);
-                                        cx.notify();
-                                    }))
-                                    .child(label)
-                            }),
-                        ),
+                    crate::widgets::segment_track(
+                        div()
+                            .id("pulsation-section-tabs")
+                            .debug_selector(|| "pulsation-section-tabs".into()),
+                    )
+                    .flex_shrink_0()
+                    .self_center()
+                    .flex_wrap()
+                    .children(
+                        [
+                            (
+                                PulsationDetailSection::Review,
+                                "pulsation-review",
+                                if review_pending {
+                                    "Review · pending"
+                                } else {
+                                    "Review"
+                                },
+                            ),
+                            (
+                                PulsationDetailSection::Overview,
+                                "pulsation-overview",
+                                "Overview",
+                            ),
+                            (
+                                PulsationDetailSection::Preparation,
+                                "pulsation-preparation",
+                                if preparation_pending {
+                                    "Preparation · pending"
+                                } else {
+                                    "Preparation"
+                                },
+                            ),
+                            (
+                                PulsationDetailSection::Artifacts,
+                                "pulsation-artifacts",
+                                "Artifacts",
+                            ),
+                        ]
+                        .into_iter()
+                        .map(|(target, id, label)| {
+                            crate::widgets::segment(
+                                div().id(id).debug_selector(move || id.into()),
+                                section == target,
+                            )
+                            .on_click(cx.listener(move |model, _, _, cx| {
+                                model
+                                    .pulsations
+                                    .update(cx, |state, _| state.detail_section = target);
+                                cx.notify();
+                            }))
+                            .child(label)
+                        }),
+                    ),
                 )
                 .child(
                     div()
@@ -303,11 +349,15 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                             panel.overflow_hidden()
                         })
                         .when(section != PulsationDetailSection::Review, |panel| {
-                            panel.overflow_y_scroll()
+                            // A reading column: on a 2K/4K window the stage track and the token
+                            // cards stop stretching across the whole screen.
+                            panel.overflow_y_scroll().flex().flex_col().items_center()
                         })
                         .when(section != PulsationDetailSection::Review, |scroll| {
                             scroll.child(
                                 div()
+                                    .w_full()
+                                    .max_w(px(PULSATION_READING_MAX))
                                     .flex_shrink_0()
                                     .mb_4()
                                     .child(pulsation_detail_header(
@@ -317,25 +367,30 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                         backend_override_busy,
                                         cx,
                                     ))
-                                    .child(pipeline(active.stage)),
+                                    .child(pipeline(active.stage, active.status)),
                             )
                         })
                         .child(match section {
                             PulsationDetailSection::Review => {
                                 crate::review_view::review_panel(model, cx)
                             }
-                            PulsationDetailSection::Overview => detail_overview(
+                            PulsationDetailSection::Overview => reading_column(detail_overview(
                                 model,
                                 &active,
                                 running_jobs,
                                 awaiting_hitl,
                                 brownfield_coverage,
                                 cx,
-                            ),
-                            PulsationDetailSection::Preparation => preparation_panel(model, cx),
-                            PulsationDetailSection::Artifacts => {
-                                detail_artifacts(model, artifacts, artifacts_loading, cx)
+                            )),
+                            PulsationDetailSection::Preparation => {
+                                reading_column(preparation_panel(model, cx))
                             }
+                            PulsationDetailSection::Artifacts => reading_column(detail_artifacts(
+                                model,
+                                artifacts,
+                                artifacts_loading,
+                                cx,
+                            )),
                         }),
                 )
         })
@@ -495,7 +550,7 @@ fn pulsation_card(
         .border_color(if selected {
             theme::accent()
         } else {
-            theme::border()
+            theme::surface_raised()
         })
         .bg(if selected {
             theme::accent_soft()
@@ -503,6 +558,13 @@ fn pulsation_card(
             theme::surface_raised()
         })
         .cursor_pointer()
+        .when(!selected, |card| {
+            card.hover(|style| {
+                style
+                    .bg(theme::surface_hover())
+                    .border_color(theme::surface_hover())
+            })
+        })
         .on_click(cx.listener(move |model, _, _, cx| {
             model.select_pulsation(id.clone(), cx);
         }))
@@ -545,7 +607,7 @@ fn pulsation_card(
                 div()
                     .mt_1()
                     .text_xs()
-                    .text_color(theme::warning())
+                    .text_color(theme::text_subtle())
                     .child(label),
             )
         })
@@ -588,23 +650,20 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
     });
     let mut panel = div().mt_4().flex().flex_col().gap_3();
 
-    let mut prespec_card = prep_card("PREPARATION & LOCAL CONTEXT")
-        .child(format!("Revision {} · {}", detail.input_revision, label))
-        .when_some(reason, |p, r| {
-            p.child(div().text_sm().text_color(theme::text_muted()).child(r))
-        })
-        .when_some(detail.context_disposition.clone(), |p, d| {
-            p.child(format!("Selected context: {d}"))
-        })
-        .when_some(detail.diagnostic.clone(), |p, d| {
-            p.child(div().text_sm().child(d))
-        })
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child("Contextual code does not require vault or AST."),
-        );
+    let mut prespec_card = prep_card_info(
+        "PREPARATION & LOCAL CONTEXT",
+        "Contextual code does not require vault or AST.",
+    )
+    .child(format!("Revision {} · {}", detail.input_revision, label))
+    .when_some(reason, |p, r| {
+        p.child(div().text_sm().text_color(theme::text_muted()).child(r))
+    })
+    .when_some(detail.context_disposition.clone(), |p, d| {
+        p.child(format!("Selected context: {d}"))
+    })
+    .when_some(detail.diagnostic.clone(), |p, d| {
+        p.child(div().text_sm().child(d))
+    });
 
     if let Some(assessment) = &prep.assessment {
         prespec_card = prespec_card.child(format!(
@@ -657,10 +716,10 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
 
     if let Some(questions) = detail.questions.filter(|_| main_actionable) {
         let question_set_id = questions.id.clone();
-        let mut questions_card = prep_card("SPECIFICATION · PENDING QUESTIONS")
-            .child(div().text_sm().child(
-                "Questions produced by Specification and presented in Companion without additional LLM calls. No complete specification to approve yet.",
-            ));
+        let mut questions_card = prep_card_info(
+            "SPECIFICATION · PENDING QUESTIONS",
+            "Questions produced by Specification and presented in Companion without additional LLM calls. No complete specification to approve yet.",
+        );
         let mut complete = true;
         for question in questions.questions {
             questions_card = questions_card
@@ -708,70 +767,68 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         panel = panel.child(questions_card);
     } else if artifact_review && main_actionable {
         let confirm_stage_reject = model.confirm_stage_reject;
-        let artifact_card = prep_card("ARTIFACT REVIEW & HITL")
-            .child(
-                div()
-                    .text_sm()
-                    .child("Inspect the persisted content below before making a decision."),
-            )
-            .child(model.stage_feedback_input.clone())
-            .child(preparation_button(
-                "artifact-approve",
-                "Approve stage",
-                !review_busy,
-                cx,
-                |m, cx| {
-                    m.set_confirm_stage_reject(false, cx);
-                    m.apply_hitl_decision(HitlDecision::Approve, cx);
-                },
-            ))
-            .child(preparation_button(
-                "artifact-revise",
-                "Request revision with feedback",
-                !review_busy,
-                cx,
-                |m, cx| {
-                    m.set_confirm_stage_reject(false, cx);
-                    m.apply_hitl_decision(HitlDecision::RequestRevision, cx);
-                },
-            ))
-            .child(
-                div()
-                    .id("artifact-reject")
-                    .debug_selector(|| "artifact-reject".into())
-                    .p_2()
-                    .rounded_md()
-                    .tab_index(0)
-                    .bg(if confirm_stage_reject {
-                        theme::danger()
-                    } else {
-                        theme::danger_soft()
-                    })
-                    .text_color(if confirm_stage_reject {
-                        theme::canvas()
-                    } else {
-                        theme::danger()
-                    })
-                    .text_sm()
-                    .opacity(if !review_busy { 1.0 } else { 0.5 })
-                    .when(!review_busy, |button| {
-                        button
-                            .cursor_pointer()
-                            .hover(|style| style.opacity(theme::HOVER_OPACITY))
-                            .on_click(cx.listener(move |m, _, _, cx| {
-                                if confirm_stage_reject {
-                                    m.apply_hitl_decision(HitlDecision::Reject, cx);
-                                } else {
-                                    m.set_confirm_stage_reject(true, cx);
-                                }
-                            }))
-                    })
-                    .child(if confirm_stage_reject {
-                        "Confirm stage rejection"
-                    } else {
-                        "Reject stage"
-                    }),
-            );
+        let artifact_card = prep_card_info(
+            "ARTIFACT REVIEW & HITL",
+            "Inspect the persisted content below before making a decision.",
+        )
+        .child(model.stage_feedback_input.clone())
+        .child(preparation_button(
+            "artifact-approve",
+            "Approve stage",
+            !review_busy,
+            cx,
+            |m, cx| {
+                m.set_confirm_stage_reject(false, cx);
+                m.apply_hitl_decision(HitlDecision::Approve, cx);
+            },
+        ))
+        .child(preparation_button(
+            "artifact-revise",
+            "Request revision with feedback",
+            !review_busy,
+            cx,
+            |m, cx| {
+                m.set_confirm_stage_reject(false, cx);
+                m.apply_hitl_decision(HitlDecision::RequestRevision, cx);
+            },
+        ))
+        .child(
+            div()
+                .id("artifact-reject")
+                .debug_selector(|| "artifact-reject".into())
+                .p_2()
+                .rounded_md()
+                .tab_index(0)
+                .bg(if confirm_stage_reject {
+                    theme::danger()
+                } else {
+                    theme::danger_soft()
+                })
+                .text_color(if confirm_stage_reject {
+                    theme::canvas()
+                } else {
+                    theme::danger()
+                })
+                .text_sm()
+                .opacity(if !review_busy { 1.0 } else { 0.5 })
+                .when(!review_busy, |button| {
+                    button
+                        .cursor_pointer()
+                        .hover(|style| style.opacity(theme::HOVER_OPACITY))
+                        .on_click(cx.listener(move |m, _, _, cx| {
+                            if confirm_stage_reject {
+                                m.apply_hitl_decision(HitlDecision::Reject, cx);
+                            } else {
+                                m.set_confirm_stage_reject(true, cx);
+                            }
+                        }))
+                })
+                .child(if confirm_stage_reject {
+                    "Confirm stage rejection"
+                } else {
+                    "Reject stage"
+                }),
+        );
         panel = panel.child(artifact_card);
     }
 
@@ -791,18 +848,15 @@ fn preparation_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         LearningState::Cancelled => "Report dismissed",
     };
 
-    let mut learning_card = prep_card("ADVISORY LEARNING")
-        .child(
-            div()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(format!("State: {learning_label}")),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child("Proposals do not alter rules or reopen Done."),
-        );
+    let mut learning_card = prep_card_info(
+        "ADVISORY LEARNING",
+        "Proposals do not alter rules or reopen Done.",
+    )
+    .child(
+        div()
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .child(format!("State: {learning_label}")),
+    );
 
     if let Some(run) = &detail.learning_run {
         learning_card = learning_card
@@ -984,6 +1038,22 @@ fn preparation_validation(model: &AppModel, field: &'static str, cx: &gpui::App)
 }
 
 fn prep_card(title: &'static str) -> gpui::Div {
+    prep_card_frame().child(prep_card_title(title))
+}
+
+/// A `prep_card` whose explanation sits in an "i" beside the title.
+fn prep_card_info(title: &'static str, info: &'static str) -> gpui::Div {
+    prep_card_frame().child(
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(prep_card_title(title))
+            .child(crate::widgets::info_tip(title, info)),
+    )
+}
+
+fn prep_card_frame() -> gpui::Div {
     div()
         .p_3()
         .rounded_lg()
@@ -993,12 +1063,13 @@ fn prep_card(title: &'static str) -> gpui::Div {
         .flex()
         .flex_col()
         .gap_2()
-        .child(
-            div()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(theme::accent())
-                .child(title),
-        )
+}
+
+fn prep_card_title(title: &'static str) -> gpui::Div {
+    div()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(theme::accent())
+        .child(title)
 }
 
 fn preparation_button(
@@ -1008,24 +1079,19 @@ fn preparation_button(
     cx: &mut Context<AppModel>,
     action: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .self_start()
-        .flex_shrink_0()
-        .p_2()
-        .rounded_md()
-        .tab_index(0)
-        .bg(theme::surface_raised())
-        .text_sm()
-        .opacity(if enabled { 1.0 } else { 0.5 })
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.opacity(theme::HOVER_OPACITY))
-                .on_click(cx.listener(move |m, _, _, cx| action(m, cx)))
-        })
-        .child(label)
+    crate::widgets::button_frame(
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .self_start()
+            .tab_index(0),
+        crate::widgets::ButtonVariant::Secondary,
+        enabled,
+    )
+    .when(enabled, |button| {
+        button.on_click(cx.listener(move |m, _, _, cx| action(m, cx)))
+    })
+    .child(label)
 }
 
 fn learning_decision_button(
@@ -1036,32 +1102,19 @@ fn learning_decision_button(
     cx: &mut Context<AppModel>,
     action: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(gpui::SharedString::from(id))
-        .self_start()
-        .flex_shrink_0()
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .border_1()
-        .border_color(if selected {
-            theme::accent()
+    crate::widgets::button_frame(
+        div().id(gpui::SharedString::from(id)).self_start(),
+        if selected {
+            crate::widgets::ButtonVariant::Selected
         } else {
-            theme::border()
-        })
-        .bg(if selected {
-            theme::accent_soft()
-        } else {
-            theme::surface_raised()
-        })
-        .text_sm()
-        .opacity(if enabled { 1.0 } else { 0.5 })
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .on_click(cx.listener(move |model, _, _, cx| action(model, cx)))
-        })
-        .child(label)
+            crate::widgets::ButtonVariant::Secondary
+        },
+        enabled,
+    )
+    .when(enabled, |button| {
+        button.on_click(cx.listener(move |model, _, _, cx| action(model, cx)))
+    })
+    .child(label)
 }
 
 fn artifact_preview_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
@@ -1076,7 +1129,7 @@ fn artifact_preview_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         .p_3()
         .rounded_md()
         .border_1()
-        .border_color(theme::accent())
+        .border_color(theme::border_strong())
         .flex()
         .flex_col()
         .gap_2()
@@ -1189,16 +1242,21 @@ fn brownfield_progress_panel(coverage: BrownfieldCoverageMetrics) -> impl IntoEl
                         .bg(theme::accent()),
                 ),
         )
-        .child(div().mt_2().text_sm().child(format!(
-            "{} of {} eligible sources with valid extraction",
-            coverage.extracted_valid_sources, coverage.eligible_source_denominator
-        )))
         .child(
             div()
-                .mt_1()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child("Denominator: known sources in inventory minus ignored sources."),
+                .mt_2()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_sm()
+                .child(format!(
+                    "{} of {} eligible sources with valid extraction",
+                    coverage.extracted_valid_sources, coverage.eligible_source_denominator
+                ))
+                .child(crate::widgets::info_tip(
+                    "brownfield-denominator",
+                    "Denominator: known sources in inventory minus ignored sources.",
+                )),
         )
         .child(
             div()
@@ -1347,8 +1405,18 @@ fn cleanup_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         .gap_2()
         .child(
             div()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child("Leftover files"),
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Leftover files"),
+                )
+                .child(crate::widgets::info_tip(
+                    "pulsation-cleanup",
+                    "Only files this pulsation created and never edited since are removed. Kept files stay in the base review; adopting the base remains an explicit step.",
+                )),
         )
         .child(div().text_sm().child(summary))
         .when_some(plan.clone(), |card, plan| {
@@ -1412,9 +1480,6 @@ fn cleanup_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                     |model, cx| model.reload_cleanup_preview(cx),
                 )),
         )
-        .child(div().text_xs().text_color(theme::text_muted()).child(
-            "Only files this pulsation created and never edited since are removed. Kept files stay in the base review; adopting the base remains an explicit step.",
-        ))
         .into_any_element()
 }
 
@@ -1543,6 +1608,19 @@ fn composition_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         .into_any_element()
 }
 
+/// Widest the pulsation header and the Overview/Preparation/Artifacts sections grow; Review keeps
+/// the full column for its side-by-side panes.
+const PULSATION_READING_MAX: f32 = 1200.0;
+
+fn reading_column(content: impl IntoElement) -> AnyElement {
+    div()
+        .w_full()
+        .max_w(px(PULSATION_READING_MAX))
+        .flex_shrink_0()
+        .child(content)
+        .into_any_element()
+}
+
 fn pulsation_detail_header(
     pulsation: Pulsation,
     busy: bool,
@@ -1599,30 +1677,19 @@ fn pulsation_detail_header(
                     pulsation.terminal_reason.as_deref(),
                 ))
                 .child(
-                    div()
-                        .id("cancel-pulsation-jobs")
-                        .debug_selector(|| "pulsation-cancel".into())
-                        .px_3()
-                        .py_2()
-                        .rounded_md()
-                        .bg(if busy {
-                            theme::surface_raised()
-                        } else {
-                            theme::danger_soft()
-                        })
-                        .text_color(if busy {
-                            theme::text_muted()
-                        } else {
-                            theme::danger()
-                        })
-                        .when(!busy, |button| {
-                            button.cursor_pointer().on_click(
-                                cx.listener(|model, _, _, cx| {
-                                    model.cancel_active_pulsation_jobs(cx)
-                                }),
-                            )
-                        })
-                        .child("Cancel pulsation"),
+                    crate::widgets::button_frame(
+                        div()
+                            .id("cancel-pulsation-jobs")
+                            .debug_selector(|| "pulsation-cancel".into()),
+                        crate::widgets::ButtonVariant::Danger,
+                        !busy,
+                    )
+                    .when(!busy, |button| {
+                        button.on_click(
+                            cx.listener(|model, _, _, cx| model.cancel_active_pulsation_jobs(cx)),
+                        )
+                    })
+                    .child("Cancel pulsation"),
                 ),
         )
         .when_some(backend_override, |header, backend_override| {
@@ -1659,95 +1726,129 @@ fn pulsation_detail_header(
                             }),
                     )
                     .child(
-                        div()
-                            .id("clear-backend-override")
-                            .debug_selector(|| "pulsation-clear-override".into())
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .bg(if can_retry {
-                                theme::accent_soft()
-                            } else {
-                                theme::surface_raised()
-                            })
-                            .text_color(if can_retry {
-                                theme::accent()
-                            } else {
-                                theme::text_muted()
-                            })
-                            .when(can_retry, |button| {
-                                button
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|model, _, _, cx| {
-                                        model.clear_backend_override_and_retry(cx)
-                                    }))
-                            })
-                            .child(if backend_override_busy {
-                                "Clearing…"
-                            } else {
-                                "Clear override and retry"
-                            }),
+                        crate::widgets::button_frame(
+                            div()
+                                .id("clear-backend-override")
+                                .debug_selector(|| "pulsation-clear-override".into()),
+                            crate::widgets::ButtonVariant::Tinted,
+                            can_retry,
+                        )
+                        .when(can_retry, |button| {
+                            button.on_click(cx.listener(|model, _, _, cx| {
+                                model.clear_backend_override_and_retry(cx)
+                            }))
+                        })
+                        .child(if backend_override_busy {
+                            "Clearing…"
+                        } else {
+                            "Clear override and retry"
+                        }),
                     ),
             )
         })
 }
 
-fn pipeline(current_stage: PulsationStage) -> impl IntoElement {
+/// The detail header's six-stage stepper. Colour follows the one shared rule: finished stages
+/// (and the last stage of a Done pulsation) are green, the current stage is blue while it runs,
+/// amber at a checkpoint and red when the pulsation failed.
+fn pipeline(current_stage: PulsationStage, status: PulsationStatus) -> impl IntoElement {
     let current = PIPELINE_STAGES
         .iter()
         .position(|stage| *stage == current_stage)
         .unwrap_or_default();
+    let (current_fill, current_ink) = match status {
+        PulsationStatus::Failed => (theme::danger_soft(), theme::danger()),
+        PulsationStatus::Checkpoint => (theme::warning_soft(), theme::warning()),
+        PulsationStatus::Done => (theme::success_soft(), theme::success()),
+        _ => (theme::running_soft(), theme::running()),
+    };
     div()
         .mt_5()
         .flex()
         .items_start()
-        .gap_1()
         .children(
             PIPELINE_STAGES
                 .into_iter()
                 .enumerate()
-                .map(|(index, stage)| {
-                    let complete = index < current;
-                    let active = index == current;
+                .map(move |(index, stage)| {
+                    let complete =
+                        index < current || (status == PulsationStatus::Done && index == current);
+                    let active = index == current && !complete;
+                    let (fill, ink) = if complete {
+                        (theme::success_soft(), theme::success())
+                    } else if active {
+                        (current_fill, current_ink)
+                    } else {
+                        (theme::surface_raised(), theme::text_subtle())
+                    };
+                    // Half-connectors on each side of the circle, green once the stage behind
+                    // them is finished.
+                    let connector = |visible: bool, done: bool| {
+                        div().flex_1().h_px().when(visible, |line| {
+                            line.bg(if done {
+                                theme::success()
+                            } else {
+                                theme::border_strong()
+                            })
+                        })
+                    };
                     div()
                         .flex_1()
                         .min_w_0()
                         .flex()
                         .flex_col()
                         .items_center()
-                        .gap_1()
+                        .gap_2()
                         .child(
                             div()
-                                .size_7()
-                                .rounded_full()
+                                .w_full()
                                 .flex()
                                 .items_center()
-                                .justify_center()
-                                .bg(if complete || active {
-                                    theme::accent_soft()
-                                } else {
-                                    theme::surface_raised()
-                                })
-                                .text_color(if complete || active {
-                                    theme::accent()
-                                } else {
-                                    theme::text_muted()
-                                })
-                                .child(if complete {
-                                    "✓".into()
-                                } else {
-                                    (index + 1).to_string()
-                                }),
+                                .child(connector(index > 0, index <= current))
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .size_7()
+                                        .rounded_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .border_1()
+                                        .border_color(if active { ink } else { fill })
+                                        .bg(fill)
+                                        .text_color(ink)
+                                        .text_xs()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .when(complete, |circle| {
+                                            circle.child(crate::widgets::icon(
+                                                crate::icons::Icon::Check,
+                                                px(14.0),
+                                                ink,
+                                            ))
+                                        })
+                                        .when(!complete, |circle| {
+                                            circle.child((index + 1).to_string())
+                                        }),
+                                )
+                                .child(connector(
+                                    index + 1 < PIPELINE_STAGES.len(),
+                                    index < current,
+                                )),
                         )
                         .child(
                             div()
                                 .text_xs()
                                 .text_color(if active {
                                     theme::text()
-                                } else {
+                                } else if complete {
                                     theme::text_muted()
+                                } else {
+                                    theme::text_subtle()
                                 })
-                                .child(stage_label(stage)),
+                                .when(active, |label| {
+                                    label.font_weight(gpui::FontWeight::SEMIBOLD)
+                                })
+                                .child(crate::pipeline_status::step_label(stage)),
                         )
                 }),
         )
@@ -1758,59 +1859,47 @@ fn status_dot(status: PulsationStatus) -> impl IntoElement {
 }
 
 fn status_pill(status: PulsationStatus, terminal_reason: Option<&str>) -> impl IntoElement {
+    let color = status_color(status);
     div()
+        .flex()
+        .items_center()
+        .gap_2()
         .px_3()
         .py_1()
         .rounded_full()
-        .bg(theme::surface_raised())
-        .text_color(status_color(status))
+        .bg(status_soft_color(status))
+        .text_sm()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(color)
+        .child(crate::widgets::status_dot(color))
         .child(status_label(status, terminal_reason))
 }
 
+/// Blue while in flight, green when Done, amber at a checkpoint, red when failed.
 fn status_color(status: PulsationStatus) -> gpui::Rgba {
     match status {
-        PulsationStatus::Done => theme::accent(),
+        PulsationStatus::Done => theme::success(),
         PulsationStatus::Failed => theme::danger(),
         PulsationStatus::Checkpoint => theme::warning(),
         PulsationStatus::Idle | PulsationStatus::Planning | PulsationStatus::Running => {
-            gpui::rgb(0x73b7ff)
+            theme::running()
+        }
+    }
+}
+
+fn status_soft_color(status: PulsationStatus) -> gpui::Rgba {
+    match status {
+        PulsationStatus::Done => theme::success_soft(),
+        PulsationStatus::Failed => theme::danger_soft(),
+        PulsationStatus::Checkpoint => theme::warning_soft(),
+        PulsationStatus::Idle | PulsationStatus::Planning | PulsationStatus::Running => {
+            theme::running_soft()
         }
     }
 }
 
 fn section_heading(eyebrow: &'static str, title: &'static str, count: usize) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .justify_between()
-        .child(
-            div()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child(eyebrow),
-                )
-                .child(
-                    div()
-                        .text_lg()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(title),
-                ),
-        )
-        .child(
-            div()
-                .min_w(px(24.0))
-                .h(px(24.0))
-                .px_2()
-                .rounded_full()
-                .bg(theme::surface_raised())
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_xs()
-                .child(count.to_string()),
-        )
+    crate::widgets::section_header(eyebrow, title, count)
 }
 
 fn fact(label: &'static str, value: impl Into<String>) -> impl IntoElement {
@@ -1824,25 +1913,7 @@ fn fact(label: &'static str, value: impl Into<String>) -> impl IntoElement {
 }
 
 fn empty_panel(title: &'static str, description: &'static str) -> impl IntoElement {
-    div()
-        .size_full()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap_2()
-        .child(
-            div()
-                .text_lg()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(title),
-        )
-        .child(
-            div()
-                .text_color(theme::text_muted())
-                .text_sm()
-                .child(description),
-        )
+    crate::widgets::empty_panel(crate::icons::Icon::Activity, title, description)
 }
 
 #[cfg(test)]

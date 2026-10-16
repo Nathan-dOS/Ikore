@@ -1,4 +1,4 @@
-//! The end-of-pulsation HTML report (ADR-024 §5).
+//! The end-of-pulsation HTML report (ADR-027 §5).
 //!
 //! [`render_pulsation_report`] is a pure function of a typed
 //! [`PulsationReport`]: it reads no clock, no file and no database, so the same

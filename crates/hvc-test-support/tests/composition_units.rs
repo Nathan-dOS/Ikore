@@ -260,6 +260,19 @@ fn an_edit_outside_ownership_is_rejected_and_corrected_once() {
                     }
                 }));
             }
+            if facts.executor == "code_repairer" {
+                // The repair replaces the rejected answer whole.
+                assert!(
+                    facts
+                        .user_prompt
+                        .contains("return the COMPLETE response again")
+                );
+                assert!(
+                    facts
+                        .user_prompt
+                        .contains("- Deliver the complete edits for: `src/session.rs`.")
+                );
+            }
             reply(facts)
         },
     );
@@ -407,6 +420,147 @@ fn a_validated_sibling_is_reused_without_a_call_when_the_stage_is_retried() {
         )
         .unwrap();
     assert_eq!(accounts, 1, "Retry shares the stage's budget account");
+}
+
+/// The session task with a second criterion, so one of its criteria can be
+/// shared between the two code units while each keeps one of its own.
+fn session_task_with_logging() -> TaskDraft {
+    let mut task = session_task();
+    task.criteria.push(AcceptanceCriterion {
+        id: "ac-3".into(),
+        description: "open_session logs the rejected expiry".into(),
+    });
+    task
+}
+
+/// Like `proposals`, but the validator unit also carries the session
+/// criterion `shared`, which the session unit carries too: a criterion
+/// shared by two code units, as the Specification assigned them in "Teste
+/// Haiku Only 1" (2026-09-24).
+fn shared_proposals(facts: &PromptFacts, session_criteria: &[&str], shared: &str) -> Value {
+    let mut proposals = proposals(facts);
+    proposals[0]["taskRefs"] = json!(["task_1", "task_2"]);
+    proposals[0]["criterionRefs"] = json!(["crit_1_1", shared]);
+    proposals[1]["criterionRefs"] = json!(session_criteria);
+    proposals[3]["criterionRefs"] = json!(session_criteria);
+    proposals
+}
+
+/// A reply whose code evidence leaves out `dropped` for every unit that owns
+/// one of `skippers`.
+fn shared_reply(
+    facts: &PromptFacts,
+    session_criteria: &[&str],
+    shared: &str,
+    skippers: &[&str],
+    dropped: &str,
+) -> ScriptedResponse {
+    let mut options = options();
+    if facts.executor == "specification_author" {
+        options.proposals = Some(shared_proposals(facts, session_criteria, shared));
+    }
+    let mut reply = unit_response_with(facts, &options);
+    let skips = facts.executor == "code_implementer"
+        && facts
+            .owned()
+            .iter()
+            .any(|(_, row)| skippers.contains(&row.path.as_str()));
+    if skips {
+        let evidence = reply["payload"]["evidence"].as_array_mut().unwrap();
+        for item in evidence.iter_mut() {
+            let kept = item["criterionRefs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|criterion| *criterion != dropped)
+                .cloned()
+                .collect::<Vec<_>>();
+            item["criterionRefs"] = Value::Array(kept);
+        }
+        evidence.retain(|item| !item["criterionRefs"].as_array().unwrap().is_empty());
+    }
+    provider_reply(reply)
+}
+
+#[test]
+fn a_unit_may_leave_a_shared_criterion_to_the_sibling_that_delivers_it() {
+    // The validator carries the session criterion but only the session unit
+    // evidences it.
+    let harness = Harness::start_in(
+        fixture_env(),
+        vec![expiry_task(), session_task()],
+        |facts, _, _| {
+            shared_reply(
+                facts,
+                &["crit_2_1"],
+                "crit_2_1",
+                &["src/auth.rs"],
+                "crit_2_1",
+            )
+        },
+    );
+    harness.wait_for_checkpoint("SPECIFICATION");
+    harness.approve();
+    harness.wait_for_checkpoint("Contract");
+    harness.approve();
+    harness.wait_for_checkpoint("Test");
+    assert_eq!(
+        &harness.calls()[3..5],
+        ["code_implementer", "code_implementer"],
+        "no correction: the validator owes only its exclusive criterion"
+    );
+    let rejected: i64 = harness
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM stage_work_unit_attempts a JOIN stage_executions e ON e.id=a.execution_id WHERE e.pulsation_id=?1 AND a.state='rejected'",
+            [&harness.pulse],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rejected, 0);
+}
+
+#[test]
+fn a_shared_criterion_no_unit_evidenced_parks_the_stage_once() {
+    // `crit_2_2` is shared; each unit evidences only its own criterion.
+    let harness = Harness::start_in(
+        fixture_env(),
+        vec![expiry_task(), session_task_with_logging()],
+        |facts, _, _| {
+            shared_reply(
+                facts,
+                &["crit_2_1", "crit_2_2"],
+                "crit_2_2",
+                &["src/auth.rs", "src/session.rs"],
+                "crit_2_2",
+            )
+        },
+    );
+    harness.wait_for_checkpoint("SPECIFICATION");
+    harness.approve();
+    harness.wait_for_checkpoint("Contract");
+    harness.approve();
+    let checkpoint = harness.wait_for_failure_checkpoint();
+    assert_eq!(
+        harness.calls().len(),
+        5,
+        "both units validated; nothing a resample could fix is re-asked"
+    );
+    let (class, code, diagnostic, targets): (String, String, String, String) = harness
+        .db()
+        .query_row(
+            "SELECT failure_class,error_code,diagnostic,allowed_revision_targets_json FROM stage_failure_requests WHERE checkpoint_id=?1",
+            [&checkpoint],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(class, "host_contract");
+    assert_eq!(code, "evidence_unresolved");
+    assert!(
+        diagnostic.contains("`crit_2_2` (units `implement_validator`, `implement_session`)"),
+        "{diagnostic}"
+    );
+    assert_eq!(targets, r#"["Code"]"#);
 }
 
 #[test]

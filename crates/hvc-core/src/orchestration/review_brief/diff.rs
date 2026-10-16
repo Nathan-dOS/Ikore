@@ -1,17 +1,27 @@
-//! Diff between revisions (ADR-024 part 3): the previous candidate's brief
+//! Diff between revisions (ADR-027 part 3): the previous candidate's brief
 //! next to the new one, keyed by what stays stable across revisions.
+//!
+//! Criterion ids are local to their task, so criteria, coverage and verdicts
+//! are keyed by task and id, and labelled with the task title when two tasks
+//! share an id. Set-valued fields compare as sets: reordering them is not a
+//! change.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
 use super::{
-    BriefCheck, BriefCoverage, BriefCriterion, BriefFileGroup, BriefInterface, BriefInterfaceGroup,
-    BriefUnit, BriefVerdict, JudgementKind, ReviewBrief, SpecificationVisual, StageVisual,
-    check_words,
+    BriefCheck, BriefContext, BriefCoverage, BriefCriterion, BriefFileGroup, BriefInterface,
+    BriefInterfaceGroup, BriefUnit, BriefVerdict, JudgementKind, ReviewBrief, SpecificationVisual,
+    StageVisual, check_words, stage_brief,
 };
+use crate::orchestration::composition::recipes::{
+    StagePayloadRecord, specification_of, task_table,
+};
+use crate::orchestration::composition::references::ReferenceTable;
 use crate::orchestration::composition::{
-    CoverageKind, GroupIntent, InterfaceIntent, ProposalKind, Verdict, VerificationMode,
+    CompositionError, CoverageKind, GroupIntent, InterfaceIntent, ProposalKind,
+    SpecificationContractV1, Verdict, VerificationMode,
 };
 
 /// The previous candidate of the stage next to this one.
@@ -55,10 +65,11 @@ pub enum ChangeSubject {
 pub struct BriefChange {
     pub kind: ChangeKind,
     pub subject: ChangeSubject,
-    /// The key compared: a criterion id, a path, an interface, unit or check
-    /// key. Decisions and blockers carry no id, so theirs is the label they
-    /// have in the revision they appear in. Empty for the objective,
-    /// exclusions and interfaces tied to no file.
+    /// The key compared: a criterion id (prefixed with its task title when
+    /// two tasks share it), a path, an interface, unit or check key.
+    /// Decisions and blockers carry no id, so theirs is the label they have
+    /// in the revision they appear in. Empty for the objective, exclusions
+    /// and interfaces tied to no file.
     pub label: String,
     /// The part of the item that changed, for `Changed` and `Moved`.
     pub field: Option<&'static str>,
@@ -67,7 +78,7 @@ pub struct BriefChange {
 }
 
 impl BriefChange {
-    fn new(kind: ChangeKind, subject: ChangeSubject, label: impl Into<String>) -> Self {
+    pub(super) fn new(kind: ChangeKind, subject: ChangeSubject, label: impl Into<String>) -> Self {
         Self {
             kind,
             subject,
@@ -78,21 +89,24 @@ impl BriefChange {
         }
     }
 
-    fn field(mut self, field: &'static str) -> Self {
+    pub(super) fn field(mut self, field: &'static str) -> Self {
         self.field = Some(field);
         self
     }
 
-    fn before(mut self, text: impl Into<String>) -> Self {
+    pub(super) fn before(mut self, text: impl Into<String>) -> Self {
         self.before = Some(text.into());
         self
     }
 
-    fn after(mut self, text: impl Into<String>) -> Self {
+    pub(super) fn after(mut self, text: impl Into<String>) -> Self {
         self.after = Some(text.into());
         self
     }
 }
+
+/// Work units per `(task id, criterion id)`, sorted.
+type CriterionUnits = BTreeMap<(String, String), Vec<String>>;
 
 /// The structural difference between two briefs of the same stage and
 /// batch, in the brief's own order:
@@ -105,8 +119,53 @@ impl BriefChange {
 ///
 /// Decisions, exclusions and blockers carry no id and are matched by their
 /// exact text, so an edited one reads as removed and added. Briefs of two
-/// different stages compare only their objective.
+/// different stages compare only their objective. From the public view a
+/// criterion's work units are known only when its id names one task in the
+/// brief; [`compare_records`] knows them from the typed handles.
 pub fn compare(previous: &ReviewBrief, current: &ReviewBrief) -> Vec<BriefChange> {
+    let units = match (&previous.visual, &current.visual) {
+        (StageVisual::Specification(before), StageVisual::Specification(after)) => Some((
+            unambiguous_criterion_units(before),
+            unambiguous_criterion_units(after),
+        )),
+        _ => None,
+    };
+    compare_with(previous, current, units.as_ref())
+}
+
+/// The previous and current candidates compared through their typed
+/// records: their briefs, with every criterion's work units taken from the
+/// task-scoped handles. `None` when either record has no brief.
+pub(crate) fn compare_records(
+    previous: &StagePayloadRecord,
+    previous_context: &BriefContext<'_>,
+    current: &StagePayloadRecord,
+    current_context: &BriefContext<'_>,
+) -> Result<Option<Vec<BriefChange>>, CompositionError> {
+    let (Some(before), Some(after)) = (
+        stage_brief(previous, previous_context)?,
+        stage_brief(current, current_context)?,
+    ) else {
+        return Ok(None);
+    };
+    let units = match (specification_of(previous), specification_of(current)) {
+        (Some(previous_spec), Some(current_spec)) => {
+            let table = task_table(current_context.manifest)?;
+            Some((
+                scoped_criterion_units(previous_spec, &table),
+                scoped_criterion_units(current_spec, &table),
+            ))
+        }
+        _ => None,
+    };
+    Ok(Some(compare_with(&before, &after, units.as_ref())))
+}
+
+fn compare_with(
+    previous: &ReviewBrief,
+    current: &ReviewBrief,
+    units: Option<&(CriterionUnits, CriterionUnits)>,
+) -> Vec<BriefChange> {
     let mut changes = Vec::new();
     if previous.objective != current.objective {
         let mut change = BriefChange::new(ChangeKind::Changed, ChangeSubject::Objective, "");
@@ -122,7 +181,9 @@ pub fn compare(previous: &ReviewBrief, current: &ReviewBrief) -> Vec<BriefChange
                 &decisions(previous),
                 &decisions(current),
             );
-            compare_criteria(&mut changes, before, after);
+            let none = (CriterionUnits::new(), CriterionUnits::new());
+            let (previous_units, current_units) = units.unwrap_or(&none);
+            compare_criteria(&mut changes, before, after, previous_units, current_units);
             compare_interfaces(&mut changes, before, after);
             compare_texts(
                 &mut changes,
@@ -143,11 +204,18 @@ pub fn compare(previous: &ReviewBrief, current: &ReviewBrief) -> Vec<BriefChange
             compare_units(&mut changes, &before.units, &after.units);
         }
         (StageVisual::Test(before), StageVisual::Test(after)) => {
+            let labels = CriterionLabels::of(
+                before
+                    .coverage
+                    .iter()
+                    .chain(&after.coverage)
+                    .map(|row| (&row.task_id, &row.task_title, &row.criterion_id)),
+            );
             compare_keyed(
                 &mut changes,
                 ChangeSubject::Criterion,
-                &keyed_coverage(&before.coverage),
-                &keyed_coverage(&after.coverage),
+                &keyed_coverage(&before.coverage, &labels),
+                &keyed_coverage(&after.coverage, &labels),
             );
             compare_keyed(
                 &mut changes,
@@ -161,11 +229,18 @@ pub fn compare(previous: &ReviewBrief, current: &ReviewBrief) -> Vec<BriefChange
             compare_files(&mut changes, &before.files, &after.files, false);
         }
         (StageVisual::Integrator(before), StageVisual::Integrator(after)) => {
+            let labels = CriterionLabels::of(
+                before
+                    .verdicts
+                    .iter()
+                    .chain(&after.verdicts)
+                    .map(|row| (&row.task_id, &row.task_title, &row.criterion_id)),
+            );
             compare_keyed(
                 &mut changes,
                 ChangeSubject::Criterion,
-                &keyed_verdicts(&before.verdicts),
-                &keyed_verdicts(&after.verdicts),
+                &keyed_verdicts(&before.verdicts, &labels),
+                &keyed_verdicts(&after.verdicts, &labels),
             );
             compare_texts(
                 &mut changes,
@@ -184,6 +259,113 @@ pub fn compare(previous: &ReviewBrief, current: &ReviewBrief) -> Vec<BriefChange
     }
     changes
 }
+
+// ---------------------------------------------------------------------------
+// Task-scoped criteria
+// ---------------------------------------------------------------------------
+
+/// Labels criterion ids, prefixing the task title only where two tasks
+/// share an id in either brief.
+struct CriterionLabels {
+    ambiguous: BTreeSet<String>,
+}
+
+impl CriterionLabels {
+    fn of<'a>(rows: impl Iterator<Item = (&'a String, &'a String, &'a String)>) -> Self {
+        let mut owners: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for (task_id, _, criterion_id) in rows {
+            owners.entry(criterion_id).or_default().insert(task_id);
+        }
+        Self {
+            ambiguous: owners
+                .into_iter()
+                .filter(|(_, tasks)| tasks.len() > 1)
+                .map(|(id, _)| id.to_owned())
+                .collect(),
+        }
+    }
+
+    fn label(&self, task_title: &str, criterion_id: &str) -> String {
+        if self.ambiguous.contains(criterion_id) {
+            format!("{task_title} · {criterion_id}")
+        } else {
+            criterion_id.to_owned()
+        }
+    }
+}
+
+/// From the typed handles: the work units that cover each task's criterion.
+fn scoped_criterion_units(
+    spec: &SpecificationContractV1,
+    table: &ReferenceTable,
+) -> CriterionUnits {
+    let mut units = CriterionUnits::new();
+    for (_, task) in table.tasks() {
+        for handle in &task.criteria {
+            if let Some(criterion) = table.criterion(handle) {
+                units.insert(
+                    (task.task_id.clone(), criterion.criterion_id.clone()),
+                    Vec::new(),
+                );
+            }
+        }
+    }
+    for unit in &spec.unit_proposals {
+        for handle in &unit.criterion_refs {
+            if let Some(criterion) = table.criterion(handle)
+                && let Some(task) = table.task(&criterion.task)
+                && let Some(owners) =
+                    units.get_mut(&(task.task_id.clone(), criterion.criterion_id.clone()))
+            {
+                owners.push(unit.unit_key.to_string());
+            }
+        }
+    }
+    canonicalize_criterion_units(units)
+}
+
+/// From the public view: only criterion ids that name one task can be tied
+/// to their work units, whose labels carry ids alone.
+fn unambiguous_criterion_units(visual: &SpecificationVisual) -> CriterionUnits {
+    let mut owners: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for task in &visual.tasks {
+        for criterion in &task.criteria {
+            owners
+                .entry(&criterion.criterion_id)
+                .or_default()
+                .push(&task.task_id);
+        }
+    }
+    canonicalize_criterion_units(
+        owners
+            .into_iter()
+            .filter(|(_, tasks)| tasks.len() == 1)
+            .map(|(id, tasks)| {
+                (
+                    (tasks[0].to_owned(), id.to_owned()),
+                    visual
+                        .units
+                        .iter()
+                        .filter(|unit| unit.criteria.iter().any(|criterion| criterion == id))
+                        .map(|unit| unit.key.clone())
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn canonicalize_criterion_units(mut units: CriterionUnits) -> CriterionUnits {
+    for keys in units.values_mut() {
+        keys.sort_unstable();
+        keys.dedup();
+    }
+    units
+}
+
+// ---------------------------------------------------------------------------
+// Shared comparison helpers
+// ---------------------------------------------------------------------------
 
 fn decisions(brief: &ReviewBrief) -> Vec<(String, String)> {
     brief
@@ -246,20 +428,49 @@ fn verification_words(mode: VerificationMode) -> &'static str {
     }
 }
 
-fn listed(items: &[String]) -> String {
+fn changed_text(before: String, after: String) -> Option<(String, String)> {
+    (before != after).then_some((before, after))
+}
+
+fn listed(items: &BTreeSet<&str>) -> String {
     if items.is_empty() {
         "none".to_owned()
     } else {
-        items.join(", ")
+        items.iter().copied().collect::<Vec<_>>().join(", ")
     }
 }
 
-/// Criteria by id. A criterion whose work units changed is reported here,
-/// once, as moved.
+fn changed_set_text(before: &[String], after: &[String]) -> Option<(String, String)> {
+    // Compare the raw sets, never their presentation: [] and ["none"],
+    // or ["a, b"] and ["a", "b"], must remain distinguishable.
+    let before: BTreeSet<&str> = before.iter().map(String::as_str).collect();
+    let after: BTreeSet<&str> = after.iter().map(String::as_str).collect();
+    if before == after {
+        return None;
+    }
+    let (was, now) = (listed(&before), listed(&after));
+    if was == now {
+        Some((
+            serde_json::to_string(&before).expect("string sets serialize"),
+            serde_json::to_string(&after).expect("string sets serialize"),
+        ))
+    } else {
+        Some((was, now))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Specification
+// ---------------------------------------------------------------------------
+
+/// Criterion ids are local to each task. A criterion whose known work units
+/// changed is reported here, once, as moved.
 fn compare_criteria(
     changes: &mut Vec<BriefChange>,
     previous: &SpecificationVisual,
     current: &SpecificationVisual,
+    previous_units: &CriterionUnits,
+    current_units: &CriterionUnits,
 ) {
     let criteria = |brief: &SpecificationVisual| -> Vec<(String, String, BriefCriterion)> {
         brief
@@ -272,36 +483,26 @@ fn compare_criteria(
             })
             .collect()
     };
-    let units_of = |brief: &SpecificationVisual, id: &str| -> Vec<String> {
-        brief
-            .units
-            .iter()
-            .filter(|unit| unit.criteria.iter().any(|criterion| criterion == id))
-            .map(|unit| unit.key.clone())
-            .collect()
-    };
     let before = criteria(previous);
     let after = criteria(current);
-    for (task_id, title, criterion) in &after {
-        let id = criterion.criterion_id.as_str();
-        let Some((old_task, old_title, old)) = before
+    let labels = CriterionLabels::of(
+        before
             .iter()
-            .find(|(_, _, old)| old.criterion_id == criterion.criterion_id)
+            .chain(&after)
+            .map(|(task_id, title, criterion)| (task_id, title, &criterion.criterion_id)),
+    );
+    for (task_id, title, criterion) in &after {
+        let label = labels.label(title, &criterion.criterion_id);
+        let Some((_, _, old)) = before
+            .iter()
+            .find(|(owner, _, old)| owner == task_id && old.criterion_id == criterion.criterion_id)
         else {
             changes.push(
-                BriefChange::new(ChangeKind::Added, ChangeSubject::Criterion, id)
+                BriefChange::new(ChangeKind::Added, ChangeSubject::Criterion, label)
                     .after(criterion.requirement.clone()),
             );
             continue;
         };
-        if old_task != task_id {
-            changes.push(
-                BriefChange::new(ChangeKind::Moved, ChangeSubject::Criterion, id)
-                    .field("task")
-                    .before(old_title.clone())
-                    .after(title.clone()),
-            );
-        }
         let reason = |criterion: &BriefCriterion| {
             criterion
                 .not_applicable_reason
@@ -311,52 +512,56 @@ fn compare_criteria(
         let fields = [
             (
                 "requirement",
-                old.requirement.clone(),
-                criterion.requirement.clone(),
+                changed_text(old.requirement.clone(), criterion.requirement.clone()),
             ),
             (
                 "proof",
-                verification_words(old.verification).to_owned(),
-                verification_words(criterion.verification).to_owned(),
+                changed_text(
+                    verification_words(old.verification).to_owned(),
+                    verification_words(criterion.verification).to_owned(),
+                ),
             ),
             (
                 "proof plan",
-                old.verification_intent.clone(),
-                criterion.verification_intent.clone(),
+                changed_text(
+                    old.verification_intent.clone(),
+                    criterion.verification_intent.clone(),
+                ),
             ),
-            ("checks", listed(&old.checks), listed(&criterion.checks)),
-            ("reason", reason(old), reason(criterion)),
+            ("checks", changed_set_text(&old.checks, &criterion.checks)),
+            ("reason", changed_text(reason(old), reason(criterion))),
         ];
-        for (field, was, now) in fields {
-            if was != now {
+        for (field, change) in fields {
+            if let Some((was, now)) = change {
                 changes.push(
-                    BriefChange::new(ChangeKind::Changed, ChangeSubject::Criterion, id)
+                    BriefChange::new(ChangeKind::Changed, ChangeSubject::Criterion, label.clone())
                         .field(field)
                         .before(was)
                         .after(now),
                 );
             }
         }
-        let (was, now) = (units_of(previous, id), units_of(current, id));
-        if was != now {
+        let key = (task_id.clone(), criterion.criterion_id.clone());
+        if let (Some(was), Some(now)) = (previous_units.get(&key), current_units.get(&key))
+            && let Some((was, now)) = changed_set_text(was, now)
+        {
             changes.push(
-                BriefChange::new(ChangeKind::Moved, ChangeSubject::Criterion, id)
+                BriefChange::new(ChangeKind::Moved, ChangeSubject::Criterion, label)
                     .field("work units")
-                    .before(listed(&was))
-                    .after(listed(&now)),
+                    .before(was)
+                    .after(now),
             );
         }
     }
-    for (_, _, old) in &before {
-        if !after
-            .iter()
-            .any(|(_, _, criterion)| criterion.criterion_id == old.criterion_id)
-        {
+    for (task_id, title, old) in &before {
+        if !after.iter().any(|(owner, _, criterion)| {
+            owner == task_id && criterion.criterion_id == old.criterion_id
+        }) {
             changes.push(
                 BriefChange::new(
                     ChangeKind::Removed,
                     ChangeSubject::Criterion,
-                    old.criterion_id.clone(),
+                    labels.label(title, &old.criterion_id),
                 )
                 .before(old.requirement.clone()),
             );
@@ -537,28 +742,30 @@ fn compare_units(changes: &mut Vec<BriefChange>, previous: &[BriefUnit], current
         let fields = [
             (
                 "kind",
-                kind_words(old.kind).to_owned(),
-                kind_words(unit.kind).to_owned(),
+                changed_text(
+                    kind_words(old.kind).to_owned(),
+                    kind_words(unit.kind).to_owned(),
+                ),
             ),
-            ("objective", old.objective.clone(), unit.objective.clone()),
+            (
+                "objective",
+                changed_text(old.objective.clone(), unit.objective.clone()),
+            ),
             (
                 "writes",
-                listed(&old.destinations),
-                listed(&unit.destinations),
+                changed_set_text(&old.destinations, &unit.destinations),
             ),
             (
                 "depends on",
-                listed(&old.depends_on),
-                listed(&unit.depends_on),
+                changed_set_text(&old.depends_on, &unit.depends_on),
             ),
             (
                 "interfaces",
-                listed(&old.interfaces),
-                listed(&unit.interfaces),
+                changed_set_text(&old.interfaces, &unit.interfaces),
             ),
         ];
-        for (field, was, now) in fields {
-            if was != now {
+        for (field, change) in fields {
+            if let Some((was, now)) = change {
                 changes.push(
                     BriefChange::new(ChangeKind::Changed, ChangeSubject::Unit, unit.key.clone())
                         .field(field)
@@ -582,12 +789,30 @@ fn compare_units(changes: &mut Vec<BriefChange>, previous: &[BriefUnit], current
 // Keyed items (Contract, Test, Integrator)
 // ---------------------------------------------------------------------------
 
-/// An item with a stable key, the one line shown when it is added or
-/// removed, and the fields compared when it stays.
+/// A field compared when a keyed item stays: one text, or a set whose order
+/// does not matter.
+enum Field {
+    Text(String),
+    Set(Vec<String>),
+}
+
+impl Field {
+    fn changed(&self, after: &Self) -> Option<(String, String)> {
+        match (self, after) {
+            (Self::Text(before), Self::Text(after)) => changed_text(before.clone(), after.clone()),
+            (Self::Set(before), Self::Set(after)) => changed_set_text(before, after),
+            _ => None,
+        }
+    }
+}
+
+/// An item with a stable key, the label the developer reads, the one line
+/// shown when it is added or removed, and the fields compared when it stays.
 struct Keyed {
     key: String,
+    label: String,
     summary: String,
-    fields: Vec<(&'static str, String)>,
+    fields: Vec<(&'static str, Field)>,
 }
 
 /// Added and changed items in the current order, then removed ones in the
@@ -601,18 +826,18 @@ fn compare_keyed(
     for item in current {
         let Some(old) = previous.iter().find(|old| old.key == item.key) else {
             changes.push(
-                BriefChange::new(ChangeKind::Added, subject, item.key.clone())
+                BriefChange::new(ChangeKind::Added, subject, item.label.clone())
                     .after(item.summary.clone()),
             );
             continue;
         };
         for ((field, was), (_, now)) in old.fields.iter().zip(&item.fields) {
-            if was != now {
+            if let Some((was, now)) = was.changed(now) {
                 changes.push(
-                    BriefChange::new(ChangeKind::Changed, subject, item.key.clone())
+                    BriefChange::new(ChangeKind::Changed, subject, item.label.clone())
                         .field(field)
-                        .before(was.clone())
-                        .after(now.clone()),
+                        .before(was)
+                        .after(now),
                 );
             }
         }
@@ -620,11 +845,16 @@ fn compare_keyed(
     for old in previous {
         if !current.iter().any(|item| item.key == old.key) {
             changes.push(
-                BriefChange::new(ChangeKind::Removed, subject, old.key.clone())
+                BriefChange::new(ChangeKind::Removed, subject, old.label.clone())
                     .before(old.summary.clone()),
             );
         }
     }
+}
+
+/// The key of a task-scoped criterion; the separator cannot occur in ids.
+fn criterion_key(task_id: &str, criterion_id: &str) -> String {
+    format!("{task_id}\u{1f}{criterion_id}")
 }
 
 fn group_intent_words(intent: GroupIntent) -> &'static str {
@@ -640,14 +870,18 @@ fn keyed_interfaces(groups: &[BriefInterfaceGroup]) -> Vec<Keyed> {
         .iter()
         .map(|group| Keyed {
             key: group.key.clone(),
+            label: group.key.clone(),
             summary: format!("{}: {}", group_intent_words(group.intent), group.signature),
             fields: vec![
-                ("intent", group_intent_words(group.intent).to_owned()),
-                ("signature", group.signature.clone()),
-                ("invariants", group.invariants.join(" · ")),
-                ("sources", listed(&group.sources)),
-                ("criteria", listed(&group.criteria)),
-                ("bound units", listed(&group.units)),
+                (
+                    "intent",
+                    Field::Text(group_intent_words(group.intent).to_owned()),
+                ),
+                ("signature", Field::Text(group.signature.clone())),
+                ("invariants", Field::Set(group.invariants.clone())),
+                ("sources", Field::Set(group.sources.clone())),
+                ("criteria", Field::Set(group.criteria.clone())),
+                ("bound units", Field::Set(group.units.clone())),
             ],
         })
         .collect()
@@ -661,16 +895,20 @@ fn coverage_words(coverage: CoverageKind) -> &'static str {
     }
 }
 
-fn keyed_coverage(rows: &[BriefCoverage]) -> Vec<Keyed> {
+fn keyed_coverage(rows: &[BriefCoverage], labels: &CriterionLabels) -> Vec<Keyed> {
     rows.iter()
         .map(|row| Keyed {
-            key: row.criterion_id.clone(),
+            key: criterion_key(&row.task_id, &row.criterion_id),
+            label: labels.label(&row.task_title, &row.criterion_id),
             summary: format!("{}: {}", coverage_words(row.coverage), row.explanation),
             fields: vec![
-                ("coverage", coverage_words(row.coverage).to_owned()),
-                ("tests", listed(&row.tests)),
-                ("declared checks", listed(&row.declared_checks)),
-                ("explanation", row.explanation.clone()),
+                (
+                    "coverage",
+                    Field::Text(coverage_words(row.coverage).to_owned()),
+                ),
+                ("tests", Field::Set(row.tests.clone())),
+                ("declared checks", Field::Set(row.declared_checks.clone())),
+                ("explanation", Field::Text(row.explanation.clone())),
             ],
         })
         .collect()
@@ -684,15 +922,19 @@ fn verdict_words(verdict: Verdict) -> &'static str {
     }
 }
 
-fn keyed_verdicts(rows: &[BriefVerdict]) -> Vec<Keyed> {
+fn keyed_verdicts(rows: &[BriefVerdict], labels: &CriterionLabels) -> Vec<Keyed> {
     rows.iter()
         .map(|row| Keyed {
-            key: row.criterion_id.clone(),
+            key: criterion_key(&row.task_id, &row.criterion_id),
+            label: labels.label(&row.task_title, &row.criterion_id),
             summary: format!("{}: {}", verdict_words(row.verdict), row.explanation),
             fields: vec![
-                ("verdict", verdict_words(row.verdict).to_owned()),
-                ("checks", listed(&row.checks)),
-                ("explanation", row.explanation.clone()),
+                (
+                    "verdict",
+                    Field::Text(verdict_words(row.verdict).to_owned()),
+                ),
+                ("checks", Field::Set(row.checks.clone())),
+                ("explanation", Field::Text(row.explanation.clone())),
             ],
         })
         .collect()
@@ -703,8 +945,9 @@ fn keyed_checks(checks: &[BriefCheck]) -> Vec<Keyed> {
         .iter()
         .map(|check| Keyed {
             key: check.check_ref.clone(),
+            label: check.check_ref.clone(),
             summary: check_words(check.status).to_owned(),
-            fields: vec![("status", check_words(check.status).to_owned())],
+            fields: vec![("status", Field::Text(check_words(check.status).to_owned()))],
         })
         .collect()
 }

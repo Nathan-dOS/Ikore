@@ -1,4 +1,4 @@
-//! ADR-024 M1, M3 and M4: the brief of every artifact checkpoint of a real v4
+//! ADR-027 M1, M3 and M4: the brief of every artifact checkpoint of a real v4
 //! pulsation is read from the exact waiting checkpoint, labelled from the
 //! frozen batch, refused once the checkpoint is stale, and compared with the
 //! previous candidate after a revision; a stage failure lists its choices.
@@ -100,7 +100,7 @@ fn specification_checkpoint_brief_comes_from_the_typed_payload() {
     assert_eq!(contract.stage, PulsationStage::Contract);
 }
 
-/// ADR-024 M3: Request revision only marks the earlier candidate
+/// ADR-027 M3: Request revision only marks the earlier candidate
 /// `superseded`. Its typed payload stays readable behind the resolved
 /// checkpoint, so the next Specification brief compares the two and quotes
 /// the feedback the run received. A previous payload that cannot be read
@@ -274,7 +274,7 @@ fn enable_passing_check(harness: &Harness) {
         .unwrap();
 }
 
-/// ADR-024 M4: Contract, Test and Integrator checkpoints of a real v4
+/// ADR-027 M4: Contract, Test and Integrator checkpoints of a real v4
 /// pulsation brief their own payloads, with the approved specification's
 /// objective, the host's check receipts and the files' publication state.
 /// A stage that runs again, after a revision requested here or at a later
@@ -450,7 +450,7 @@ fn wait_for_next(harness: &Harness, not: &str) -> String {
     found.unwrap()
 }
 
-/// ADR-024 M4: a real stage-failure checkpoint offers exactly the decisions
+/// ADR-027 M4: a real stage-failure checkpoint offers exactly the decisions
 /// the host permits, each saying what it will do.
 #[test]
 fn a_contract_conflict_failure_lists_every_permitted_choice() {

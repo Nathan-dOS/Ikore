@@ -126,7 +126,7 @@ impl LexicalCodeContextService {
                 facts
                     .coverage
                     .diagnostics
-                    .push("Workspace indisponível para coleta segura.".into());
+                    .push("Workspace unavailable for safe collection.".into());
                 return Ok((facts, false));
             }
         };
@@ -252,9 +252,7 @@ impl LexicalCodeContextService {
                             target_revision: None,
                             resolution_evidence: None,
                             resolution: ReferenceResolution::Unresolved {
-                                reason:
-                                    "Referência lexical observada, sem resolvedor de linguagem."
-                                        .into(),
+                                reason: "Lexical reference observed; no language resolver.".into(),
                             },
                         });
                     }
@@ -269,7 +267,9 @@ impl LexicalCodeContextService {
             facts.coverage.truncated = true;
         }
         if facts.sources.is_empty() {
-            facts.coverage.diagnostics.push("no_matches: nenhuma evidência selecionada neste escopo; dependências desconhecidas.".into());
+            facts.coverage.diagnostics.push(
+                "no_matches: no evidence selected in this scope; dependencies unknown.".into(),
+            );
         }
         if facts.coverage.truncated {
             facts.coverage.state = CoverageState::Partial;

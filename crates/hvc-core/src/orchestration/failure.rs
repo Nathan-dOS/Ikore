@@ -167,8 +167,18 @@ pub fn classify_stage_failure(error: &PersistenceServiceError) -> Option<Failure
         // A truncated answer reaches here as a CLI fault, but "retry the CLI"
         // is precisely the wrong offer for it, so it does not opt out with the
         // rest of the CLI faults.
-        PersistenceServiceError::Cli { code, .. } if code == "cli_output_truncated" => {
+        PersistenceServiceError::Cli { code, .. }
+            if matches!(
+                code.as_str(),
+                "cli_output_truncated" | "cli_output_budget_exceeded"
+            ) =>
+        {
             FailureClass::OutputTruncated
+        }
+        PersistenceServiceError::Cli { code, .. }
+            if matches!(code.as_str(), "model_mismatch" | "model_unverified") =>
+        {
+            FailureClass::HostContract
         }
         PersistenceServiceError::Cli { .. } => return None,
         PersistenceServiceError::Retryable(_) | PersistenceServiceError::ModelOutputInvalid(_) => {
@@ -196,6 +206,9 @@ pub fn classify_stage_failure(error: &PersistenceServiceError) -> Option<Failure
             | LlmErrorKind::Permission
             | LlmErrorKind::ModelNotFound
             | LlmErrorKind::RouteConflict => FailureClass::ProviderConfiguration,
+            LlmErrorKind::ModelMismatch | LlmErrorKind::ModelUnverified => {
+                FailureClass::HostContract
+            }
             LlmErrorKind::InvalidRequest
             | LlmErrorKind::InvalidResponse
             | LlmErrorKind::StreamFailed
@@ -264,11 +277,26 @@ impl OfferedDecisionsV4 {
     }
 }
 
+/// `rejected_answer` marks a failure of the stage's own answer (malformed,
+/// truncated, citing what it may not, writing outside its files). For Test
+/// and the Integrator such an answer says nothing about the Code they
+/// reviewed: the stage revises itself first, Code stays a second target, and
+/// Retry is offered while the unit still holds an extra permit ("Teste Haiku
+/// Only 1", 2026-09-24, re-ran a healthy Code for an Integrator slip).
 pub fn offered_decisions_v4(
     class: FailureClass,
     stage: PulsationStage,
     remaining_extra_invocations: u32,
+    rejected_answer: bool,
 ) -> Option<OfferedDecisionsV4> {
+    let own_answer = rejected_answer
+        && matches!(stage, PulsationStage::Test | PulsationStage::Integrator)
+        && matches!(
+            class,
+            FailureClass::BudgetExhausted
+                | FailureClass::OutputTruncated
+                | FailureClass::OwnershipViolation
+        );
     let allow_retry = match class {
         FailureClass::StaleInput => true,
         FailureClass::ProviderConfiguration
@@ -276,11 +304,15 @@ pub fn offered_decisions_v4(
         | FailureClass::Infrastructure
         | FailureClass::ExecutorSetup
         | FailureClass::RetryBudgetExhausted => remaining_extra_invocations > 0,
-        _ => false,
+        _ => own_answer && remaining_extra_invocations > 0,
     };
     let mut revision_targets = Vec::new();
+    if own_answer {
+        revision_targets.push(stage);
+    }
     if class.offers_revision()
         && let Some(target) = failure_revision_target(stage)
+        && !revision_targets.contains(&target)
     {
         revision_targets.push(target);
     }
@@ -549,44 +581,82 @@ mod tests {
     fn composed_failures_offer_retry_only_with_a_permit_and_gate_earlier_targets() {
         use PulsationStage::*;
         // Transport failure with a permit left: retry; without: revision only.
-        let with = offered_decisions_v4(FailureClass::ProviderTransport, Code, 1).unwrap();
+        let with = offered_decisions_v4(FailureClass::ProviderTransport, Code, 1, false).unwrap();
         assert!(with.allow_retry && !with.allow_revision());
         assert_eq!(
-            offered_decisions_v4(FailureClass::ProviderTransport, Code, 0),
+            offered_decisions_v4(FailureClass::ProviderTransport, Code, 0, false),
             None
         );
-        let exhausted = offered_decisions_v4(FailureClass::BudgetExhausted, Code, 0).unwrap();
+        let exhausted =
+            offered_decisions_v4(FailureClass::BudgetExhausted, Code, 0, false).unwrap();
         assert!(!exhausted.allow_retry);
         assert_eq!(exhausted.revision_targets, vec![Code]);
         // A production defect found in Test routes to Code, never to Test itself.
-        let defect = offered_decisions_v4(FailureClass::ValidationFailed, Test, 2).unwrap();
+        let defect = offered_decisions_v4(FailureClass::ValidationFailed, Test, 2, false).unwrap();
         assert!(!defect.allow_retry);
         assert_eq!(defect.revision_targets, vec![Code]);
         // A contract conflict in Code exposes the earlier approved stages as targets.
-        let conflict = offered_decisions_v4(FailureClass::ContractConflict, Code, 2).unwrap();
+        let conflict =
+            offered_decisions_v4(FailureClass::ContractConflict, Code, 2, false).unwrap();
         assert!(!conflict.allow_retry);
         assert_eq!(
             conflict.revision_targets,
             vec![Code, Specification, Contract]
         );
         // ...but not stages that come after the failing one.
-        let early = offered_decisions_v4(FailureClass::ContractConflict, Specification, 0).unwrap();
+        let early =
+            offered_decisions_v4(FailureClass::ContractConflict, Specification, 0, false).unwrap();
         assert_eq!(early.revision_targets, vec![Specification]);
         // Missing toolchain: nothing a model or prose can fix; terminal.
         assert_eq!(
-            offered_decisions_v4(FailureClass::ValidationUnavailable, Code, 2),
+            offered_decisions_v4(FailureClass::ValidationUnavailable, Code, 2, false),
             None
         );
         // Intake has no revision target: budget exhaustion there is terminal.
         assert_eq!(
-            offered_decisions_v4(FailureClass::BudgetExhausted, Intake, 0),
+            offered_decisions_v4(FailureClass::BudgetExhausted, Intake, 0, false),
             None
         );
         assert!(
-            offered_decisions_v4(FailureClass::StaleInput, Test, 0)
+            offered_decisions_v4(FailureClass::StaleInput, Test, 0, false)
                 .unwrap()
                 .allow_retry
         );
+    }
+
+    #[test]
+    fn a_rejected_answer_of_test_or_integrator_revises_the_stage_itself_first() {
+        use PulsationStage::*;
+        // "Teste Haiku Only 1": the Integrator's own answer was rejected and
+        // the only offer was re-running the accepted Code.
+        for stage in [Test, Integrator] {
+            for class in [
+                FailureClass::BudgetExhausted,
+                FailureClass::OutputTruncated,
+                FailureClass::OwnershipViolation,
+            ] {
+                let with = offered_decisions_v4(class, stage, 1, true).unwrap();
+                assert!(with.allow_retry, "{stage:?} {class:?}");
+                assert_eq!(with.revision_targets, vec![stage, Code], "{class:?}");
+                assert_eq!(with.primary_revision_stage(), Some(stage));
+                let spent = offered_decisions_v4(class, stage, 0, true).unwrap();
+                assert!(!spent.allow_retry, "Retry needs the unit's extra permit");
+                assert_eq!(spent.revision_targets, vec![stage, Code]);
+            }
+        }
+        // A failed check is a defect of the reviewed code, not of the answer.
+        let defect = offered_decisions_v4(FailureClass::ValidationFailed, Test, 1, true).unwrap();
+        assert!(!defect.allow_retry);
+        assert_eq!(defect.revision_targets, vec![Code]);
+        // A diagnosis the worker reported still routes to Code.
+        let reported =
+            offered_decisions_v4(FailureClass::ModelReportedFailure, Integrator, 1, false).unwrap();
+        assert!(!reported.allow_retry);
+        assert_eq!(reported.revision_targets, vec![Code]);
+        // Code revises itself already; the flag adds nothing there.
+        let code = offered_decisions_v4(FailureClass::BudgetExhausted, Code, 1, true).unwrap();
+        assert!(!code.allow_retry);
+        assert_eq!(code.revision_targets, vec![Code]);
     }
 
     #[test]
@@ -615,6 +685,22 @@ mod tests {
                 message: "execução CLI excedeu o tempo limite".into(),
             }),
             None
+        );
+    }
+
+    #[test]
+    fn a_run_the_host_stopped_for_its_output_ceiling_is_classified_like_a_truncation() {
+        let error = PersistenceServiceError::Cli {
+            code: "cli_output_budget_exceeded".into(),
+            message: "the CLI was stopped after producing 32624 output tokens".into(),
+        };
+        assert_eq!(
+            classify_stage_failure(&error),
+            Some(FailureClass::OutputTruncated)
+        );
+        assert_eq!(
+            stage_failure_error_code(&error),
+            "cli_output_budget_exceeded"
         );
     }
 }

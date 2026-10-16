@@ -250,7 +250,7 @@ impl PersistenceService {
         let db = self.connection()?;
         if Self::find_project_by_id(&db, &project_id, false)?.is_none() {
             return Err(PersistenceServiceError::NotFound(
-                "Projeto não encontrado para configurar composição.".into(),
+                "Project not found to configure composition.".into(),
             ));
         }
         let extra = serde_json::json!({"qualifiedRecipes": settings.qualified_recipes}).to_string();
@@ -1103,8 +1103,38 @@ impl PersistenceService {
         let db = self.connection()?;
         if Self::find_project_by_id(&db, &project_id, false)?.is_none() {
             return Err(PersistenceServiceError::NotFound(
-                "Projeto não encontrado para configurar especialidades.".into(),
+                "Project not found to configure specialties.".into(),
             ));
+        }
+        if let (AgentExecutionMode::CliProcess, Some(cli)) =
+            (setting.execution_mode, setting.backend)
+        {
+            // The specialty inherits its role's model and catalog profile.
+            let role = crate::llm::AgentRole::for_stage(
+                executor_kind.stage().to_pulsation().as_db_value(),
+            );
+            let (role_model, role_profile): (Option<String>, Option<String>) = db
+                .query_row(
+                    "SELECT model,model_profile FROM cli_agent_configs WHERE project_id=?1 AND agent_role=?2 AND backend=?3",
+                    params![project_id, role.as_str(), cli.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .unwrap_or_default();
+            let model = setting
+                .model
+                .as_deref()
+                .filter(|m| !m.trim().is_empty())
+                .or(role_model.as_deref());
+            crate::terminals::validate_catalog_effort(
+                &db,
+                &project_id,
+                cli,
+                model,
+                role_profile.as_deref(),
+                setting.thinking_level,
+            )
+            .map_err(|error| PersistenceServiceError::Validation(error.to_string()))?;
         }
         db.execute(
             "INSERT INTO composition_specialty_overrides(project_id,executor_kind,execution_mode,backend,model,thinking_level,updated_at)
@@ -1201,12 +1231,11 @@ impl PersistenceService {
             return serde_json::from_str(&previous)
                 .map_err(|e| PersistenceServiceError::Runtime(e.to_string()));
         }
-        let execution = Self::find_execution(&db, execution_id.as_str())?.ok_or_else(|| {
-            PersistenceServiceError::NotFound("Execução composta não encontrada.".into())
-        })?;
+        let execution = Self::find_execution(&db, execution_id.as_str())?
+            .ok_or_else(|| PersistenceServiceError::NotFound("Composed run not found.".into()))?;
         if execution.pulsation_id != pulsation_id.as_str() {
             return Err(PersistenceServiceError::Validation(
-                "SC-021: a execução não pertence a esta pulsação.".into(),
+                "SC-021: the run does not belong to this pulsation.".into(),
             ));
         }
         let (current_project, state_version): (String, u64) = db.query_row(
@@ -1216,7 +1245,7 @@ impl PersistenceService {
         )?;
         if current_project != project_id.as_str() {
             return Err(PersistenceServiceError::Validation(
-                "SC-021: a pulsação não pertence a este projeto.".into(),
+                "SC-021: the pulsation does not belong to this project.".into(),
             ));
         }
         let (generation, parent_state, version) = command.versions();
@@ -1225,8 +1254,7 @@ impl PersistenceService {
             || u64::from(parent_state) != state_version
         {
             return Err(PersistenceServiceError::Validation(
-                "SC-021: a decisão foi tomada sobre um snapshot obsoleto; recarregue a execução."
-                    .into(),
+                "SC-021: the decision was made on a stale snapshot; reload the run.".into(),
             ));
         }
         let checkpoint_id: String = db
@@ -1238,7 +1266,7 @@ impl PersistenceService {
             .optional()?
             .ok_or_else(|| {
                 PersistenceServiceError::Validation(
-                    "SC-021: esta execução não está estacionada em um checkpoint de falha.".into(),
+                    "SC-021: this run is not parked on a failure checkpoint.".into(),
                 )
             })?;
         drop(db);
@@ -1266,9 +1294,7 @@ impl PersistenceService {
         )?;
         let snapshot = self
             .get_stage_execution_snapshot(&execution.pulsation_id, Some(execution.stage))?
-            .ok_or_else(|| {
-                PersistenceServiceError::Runtime("Snapshot da execução indisponível.".into())
-            })?;
+            .ok_or_else(|| PersistenceServiceError::Runtime("Run snapshot unavailable.".into()))?;
         self.connection()?.execute(
             "INSERT INTO stage_recovery_requests(request_id,stage_execution_id,action,result_json,created_at) VALUES(?1,?2,?3,?4,?5)",
             params![
@@ -1325,7 +1351,7 @@ impl PersistenceService {
         let project_id = Self::normalize_project_id(project_id)?;
         let db = self.connection()?;
         let project = Self::find_project_by_id(&db, &project_id, false)?
-            .ok_or_else(|| PersistenceServiceError::NotFound("Projeto não encontrado.".into()))?;
+            .ok_or_else(|| PersistenceServiceError::NotFound("Project not found.".into()))?;
         Ok(detect_presets(Path::new(&project.workspace_path)))
     }
 
@@ -1341,13 +1367,13 @@ impl PersistenceService {
         profile.validate().map_err(|e| composition_invalid(&e))?;
         if let Some(path) = profile.resolved_wrapper_hint() {
             return Err(PersistenceServiceError::Validation(format!(
-                "`{path}` é um wrapper de shell; um perfil de validação precisa de um executável direto."
+                "`{path}` is a shell wrapper; a validation profile needs a direct executable."
             )));
         }
         let db = self.connection()?;
         if Self::find_project_by_id(&db, &project_id, false)?.is_none() {
             return Err(PersistenceServiceError::NotFound(
-                "Projeto não encontrado para configurar validação.".into(),
+                "Project not found to configure validation.".into(),
             ));
         }
         let previous: Option<(String, u32)> = db
@@ -1589,7 +1615,7 @@ impl PersistenceService {
             PulsationStatus::Checkpoint,
             stage,
             "stage_failure_opened",
-            Some("A etapa falhou e aguarda uma decisão explícita antes de encerrar."),
+            Some("The stage failed and waits for an explicit decision before closing."),
         )?;
         let (state_version, input_revision): (u64, u64) = transaction.query_row(
             "SELECT state_version,input_revision FROM pulsations WHERE id=?1",

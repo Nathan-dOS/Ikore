@@ -267,6 +267,20 @@ impl WorkspaceTabModel {
         }
     }
 
+    /// What the tab strip, the conflict banner and the context drawer paint — everything but the
+    /// document text, which is never cloned per frame.
+    pub(crate) fn summary(&self) -> TabSummary {
+        TabSummary {
+            relative_path: self.relative_path.clone(),
+            file_name: self.file_name().to_owned(),
+            revision: self.revision.clone(),
+            dirty: self.dirty,
+            saving: self.saving,
+            conflict: self.conflict.clone(),
+            save_error: self.save_error.clone(),
+        }
+    }
+
     pub(crate) fn file_name(&self) -> &str {
         self.relative_path
             .rsplit(['/', '\\'])
@@ -301,6 +315,22 @@ impl WorkspaceTabModel {
     }
 }
 
+/// Open editor tabs kept in memory at once. Every tab holds its text twice (live and last
+/// saved), so the cap bounds the editor's footprint; opening one more closes the least recently
+/// used tab that has nothing unsaved.
+pub(crate) const MAX_OPEN_TABS: usize = 12;
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TabSummary {
+    pub relative_path: SharedString,
+    pub file_name: String,
+    pub revision: String,
+    pub dirty: bool,
+    pub saving: bool,
+    pub conflict: Option<String>,
+    pub save_error: Option<String>,
+}
+
 pub struct WorkspaceEditorModel {
     pub project_id: Option<SharedString>,
     pub root_path: Option<SharedString>,
@@ -314,7 +344,13 @@ pub struct WorkspaceEditorModel {
     pub active_relative_path: Option<SharedString>,
     pub editor: Entity<NativeEditor>,
     pub tabs: Vec<WorkspaceTabModel>,
+    /// Paths in activation order, most recent last. Tabs missing here (restored directly into
+    /// `tabs`) count as the least recently used.
+    activation_order: Vec<SharedString>,
     pub context_drawer_open: bool,
+    /// Shows the rendered Markdown instead of the editor; one or the other, never both.
+    pub(crate) preview_mode: bool,
+    pub(crate) folders: crate::file_tree::FolderState,
     pub(crate) brownfield: BrownfieldOnboardingModel,
 }
 
@@ -328,7 +364,10 @@ impl WorkspaceEditorModel {
             active_relative_path: None,
             editor: cx.new(NativeEditor::new),
             tabs: Vec::new(),
+            activation_order: Vec::new(),
             context_drawer_open: true,
+            preview_mode: false,
+            folders: crate::file_tree::FolderState::default(),
             brownfield: BrownfieldOnboardingModel::default(),
         }
     }
@@ -363,35 +402,90 @@ impl WorkspaceEditorModel {
             .find(|tab| tab.relative_path.as_ref() == relative_path)
     }
 
-    pub(crate) fn open_tab(
+    fn touch(&mut self, relative_path: &SharedString) {
+        self.activation_order.retain(|path| path != relative_path);
+        self.activation_order.push(relative_path.clone());
+    }
+
+    /// The tab a new one would replace at the cap: the least recently used tab that is not
+    /// active and has nothing unsaved or in flight. `None` below the cap or when every tab
+    /// holds unsaved work.
+    pub(crate) fn eviction_candidate(&self) -> Option<SharedString> {
+        if self.tabs.len() < MAX_OPEN_TABS {
+            return None;
+        }
+        let rank = |path: &SharedString| {
+            self.activation_order
+                .iter()
+                .position(|candidate| candidate == path)
+                .map_or(0, |position| position + 1)
+        };
+        self.tabs
+            .iter()
+            .filter(|tab| !tab.dirty && !tab.saving)
+            .filter(|tab| self.active_relative_path.as_ref() != Some(&tab.relative_path))
+            .min_by_key(|tab| rank(&tab.relative_path))
+            .map(|tab| tab.relative_path.clone())
+    }
+
+    /// Whether `relative_path` can open: it is already open, there is room, or a clean tab can
+    /// make room.
+    pub(crate) fn can_open(&self, relative_path: &str) -> bool {
+        self.tab(relative_path).is_some()
+            || self.tabs.len() < MAX_OPEN_TABS
+            || self.eviction_candidate().is_some()
+    }
+
+    /// Opens (or re-activates) a tab. Returns the path of the tab it closed to stay within
+    /// `MAX_OPEN_TABS`, if any, alongside whether a new tab was created.
+    pub(crate) fn open_tab_evicting(
         &mut self,
         relative_path: impl Into<SharedString>,
         content: String,
         revision: String,
-    ) -> bool {
+    ) -> (bool, Option<SharedString>) {
         let relative_path = relative_path.into();
         if self
             .tabs
             .iter()
             .any(|tab| tab.relative_path == relative_path)
         {
+            self.touch(&relative_path);
             self.active_relative_path = Some(relative_path);
-            return false;
+            return (false, None);
+        }
+        let evicted = self.eviction_candidate();
+        if let Some(path) = &evicted {
+            self.close_tab(path);
         }
         self.tabs.push(WorkspaceTabModel::new(
             relative_path.clone(),
             content,
             revision,
         ));
+        self.touch(&relative_path);
         self.active_relative_path = Some(relative_path);
-        true
+        (true, evicted)
+    }
+
+    /// Test convenience: opens without reporting which tab (if any) was evicted.
+    #[cfg(test)]
+    pub(crate) fn open_tab(
+        &mut self,
+        relative_path: impl Into<SharedString>,
+        content: String,
+        revision: String,
+    ) -> bool {
+        self.open_tab_evicting(relative_path, content, revision).0
     }
 
     pub(crate) fn select_tab(&mut self, relative_path: &str) -> bool {
         if self.tab(relative_path).is_none() {
             return false;
         }
-        self.active_relative_path = Some(relative_path.to_owned().into());
+        let path: SharedString = relative_path.to_owned().into();
+        self.touch(&path);
+        self.active_relative_path = Some(path);
         true
     }
 
@@ -402,6 +496,8 @@ impl WorkspaceEditorModel {
         if self.tabs.len() == previous_len {
             return false;
         }
+        self.activation_order
+            .retain(|path| path.as_ref() != relative_path);
         if self
             .active_relative_path
             .as_ref()
@@ -410,6 +506,15 @@ impl WorkspaceEditorModel {
             self.active_relative_path = self.tabs.last().map(|tab| tab.relative_path.clone());
         }
         true
+    }
+
+    /// Caret and scroll only — the cheap path for editor notifications that did not edit.
+    pub(crate) fn sync_active_cursor(&mut self, selection: EditorSelection, scroll_top: f32) {
+        if let Some(tab) = self.active_tab_mut() {
+            tab.cursor_line = Some(selection.head.line);
+            tab.cursor_column = Some(selection.head.column);
+            tab.scroll_top = Some(f64::from(scroll_top));
+        }
     }
 
     pub(crate) fn sync_active_editor(&mut self, snapshot: &EditorSnapshot) -> bool {
@@ -506,6 +611,52 @@ impl WorkspaceEditorModel {
             return false;
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tab_cap_tests {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+
+    #[gpui::test]
+    fn the_tab_cap_closes_the_least_recently_used_clean_tab_and_never_unsaved_work(
+        cx: &mut TestAppContext,
+    ) {
+        let workspace = cx.new(WorkspaceEditorModel::new);
+        workspace.update(cx, |workspace, _| {
+            for index in 0..MAX_OPEN_TABS {
+                workspace.open_tab(format!("notes/{index}.md"), "text".into(), "r1".into());
+            }
+            assert_eq!(
+                workspace.eviction_candidate().as_ref().map(AsRef::as_ref),
+                Some("notes/0.md")
+            );
+
+            // Re-activating the oldest tab moves it to the back of the line.
+            assert!(workspace.select_tab("notes/0.md"));
+            assert_eq!(
+                workspace.eviction_candidate().as_ref().map(AsRef::as_ref),
+                Some("notes/1.md")
+            );
+
+            // Unsaved work is never a candidate.
+            workspace.tab_mut("notes/1.md").unwrap().dirty = true;
+            let (created, evicted) =
+                workspace.open_tab_evicting("notes/new.md", "new".into(), "r1".into());
+            assert!(created);
+            assert_eq!(evicted.as_ref().map(AsRef::as_ref), Some("notes/2.md"));
+            assert_eq!(workspace.tabs.len(), MAX_OPEN_TABS);
+            assert!(workspace.tab("notes/1.md").is_some());
+
+            // Every inactive tab dirty: nothing can make room, so nothing new may open.
+            for tab in &mut workspace.tabs {
+                tab.dirty = true;
+            }
+            assert!(workspace.eviction_candidate().is_none());
+            assert!(!workspace.can_open("notes/another.md"));
+            assert!(workspace.can_open("notes/new.md"), "already open");
+        });
     }
 }
 

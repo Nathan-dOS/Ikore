@@ -849,7 +849,7 @@ fn later_stage_revisions_are_keyed_by_interface_criterion_check_and_blocker_text
             "Changed Interface csv_writer signature | pub fn write_usage_csv(rows: &[Usage]) -> String -> pub fn write_usage_csv(rows: &[Usage], out: &mut String)",
             "Changed Interface usage_view intent | change -> preserve",
             "Removed Interface query_usage - | preserve: pub fn query_usage(range: Range) -> Vec<Usage> -> -",
-            "Changed Unit core_export interfaces | query_usage, csv_writer -> csv_writer",
+            "Changed Unit core_export interfaces | csv_writer, query_usage -> csv_writer",
         ]
     );
 
@@ -978,5 +978,375 @@ fn failure_choices_follow_the_permitted_decisions_and_say_what_each_does() {
     assert_eq!(
         kinds,
         [FailureDecisionKind::Revision, FailureDecisionKind::Abort]
+    );
+}
+
+fn visual_mut(brief: &mut ReviewBrief) -> &mut SpecificationVisual {
+    match &mut brief.visual {
+        StageVisual::Specification(visual) => visual,
+        other => panic!("not a Specification brief: {other:?}"),
+    }
+}
+
+fn context(manifest: &BatchManifest) -> BriefContext<'_> {
+    BriefContext {
+        manifest,
+        specification: None,
+        checks: &[],
+        publications: &[],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task-scoped criterion ids (ADR-027 M3 integration)
+// ---------------------------------------------------------------------------
+
+fn task_local_criterion_manifest() -> BatchManifest {
+    use crate::feature_forge::{AcceptanceCriterion, TaskDraft, TaskKind, WorkTask};
+
+    BatchManifest {
+        schema_version: 1,
+        title: "Task-scoped criteria".into(),
+        tasks: [("t-core", "Task A"), ("t-ui", "Task B")]
+            .into_iter()
+            .map(|(id, title)| WorkTask {
+                id: id.into(),
+                project_id: "project".into(),
+                revision: 1,
+                draft: TaskDraft {
+                    title: title.into(),
+                    kind: TaskKind::Feature,
+                    description: format!("Implement {title}."),
+                    criteria: vec![AcceptanceCriterion {
+                        id: "ac-1".into(),
+                        description: format!("Acceptance for {title}."),
+                    }],
+                    dependencies: Vec::new(),
+                    feature_id: None,
+                },
+                feature_revision: None,
+                state: "ready".into(),
+                active_pulsation_id: None,
+                completed_pulsation_id: None,
+            })
+            .collect(),
+        features: Vec::new(),
+        feature_dependencies: Vec::new(),
+        path_confirmation_source: Default::default(),
+    }
+}
+
+fn task_local_criterion_spec() -> SpecificationContractV1 {
+    let mut specification = spec();
+    specification.requirements = vec![
+        requirement("task_1", "crit_1_1", VerificationMode::ExecutedCheck, None),
+        requirement("task_2", "crit_2_1", VerificationMode::DocumentCheck, None),
+    ];
+    specification.unit_proposals[0].criterion_refs = vec![h("crit_1_1")];
+    specification
+}
+
+#[test]
+fn unchanged_task_local_criterion_ids_do_not_create_cross_task_changes() {
+    let manifest = task_local_criterion_manifest();
+    let record = record(task_local_criterion_spec());
+    let brief = stage_brief(&record, &context(&manifest)).unwrap().unwrap();
+    assert_eq!(visual(&brief).tasks[0].criteria[0].criterion_id, "ac-1");
+    assert_eq!(visual(&brief).tasks[1].criteria[0].criterion_id, "ac-1");
+    assert!(compare(&brief, &brief).is_empty());
+    assert!(
+        compare_records(&record, &context(&manifest), &record, &context(&manifest))
+            .unwrap()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_changed_or_removed_task_local_criterion_belongs_only_to_its_task() {
+    let manifest = task_local_criterion_manifest();
+    let specification = task_local_criterion_spec();
+    let previous_record = record(specification.clone());
+    let previous = stage_brief(&previous_record, &context(&manifest))
+        .unwrap()
+        .unwrap();
+    let mut revised = specification;
+    revised.requirements[1].requirement = "Only Task B requires the export button.".into();
+    let current_record = record(revised);
+    let current = stage_brief(&current_record, &context(&manifest))
+        .unwrap()
+        .unwrap();
+    let expected = vec![
+        BriefChange::new(
+            ChangeKind::Changed,
+            ChangeSubject::Criterion,
+            "Task B · ac-1",
+        )
+        .field("requirement")
+        .before("Requirement for crit_2_1.")
+        .after("Only Task B requires the export button."),
+    ];
+    assert_eq!(compare(&previous, &current), expected);
+    assert_eq!(
+        compare_records(
+            &previous_record,
+            &context(&manifest),
+            &current_record,
+            &context(&manifest)
+        )
+        .unwrap()
+        .unwrap(),
+        expected
+    );
+
+    let mut removed = previous.clone();
+    visual_mut(&mut removed).tasks[1].criteria.clear();
+    assert_eq!(
+        compare(&previous, &removed),
+        [BriefChange::new(
+            ChangeKind::Removed,
+            ChangeSubject::Criterion,
+            "Task B · ac-1"
+        )
+        .before("Requirement for crit_2_1.")]
+    );
+    assert_eq!(
+        compare(&removed, &previous),
+        [
+            BriefChange::new(ChangeKind::Added, ChangeSubject::Criterion, "Task B · ac-1")
+                .after("Requirement for crit_2_1.")
+        ]
+    );
+}
+
+#[test]
+fn typed_criterion_handles_keep_duplicate_ids_in_their_own_work_units() {
+    let manifest = task_local_criterion_manifest();
+    let specification = task_local_criterion_spec();
+    let previous_record = record(specification.clone());
+    let mut revised = specification;
+    revised.unit_proposals[1].unit_key = h("ui_button");
+    let current_record = record(revised);
+    let changes = compare_records(
+        &previous_record,
+        &context(&manifest),
+        &current_record,
+        &context(&manifest),
+    )
+    .unwrap()
+    .unwrap();
+    let criterion_changes: Vec<_> = changes
+        .into_iter()
+        .filter(|change| change.subject == ChangeSubject::Criterion)
+        .collect();
+    assert_eq!(
+        criterion_changes,
+        [
+            BriefChange::new(ChangeKind::Moved, ChangeSubject::Criterion, "Task B · ac-1")
+                .field("work units")
+                .before("ui_export")
+                .after("ui_button")
+        ]
+    );
+
+    // The public display labels cannot identify which task owns `ac-1`.
+    // Without the records, report the added/removed unit without guessing
+    // that both tasks' identically named criteria moved with it.
+    let previous = stage_brief(&previous_record, &context(&manifest))
+        .unwrap()
+        .unwrap();
+    let current = stage_brief(&current_record, &context(&manifest))
+        .unwrap()
+        .unwrap();
+    let view_changes = compare(&previous, &current);
+    assert_eq!(view_changes.len(), 2);
+    assert!(
+        view_changes
+            .iter()
+            .all(|change| change.subject == ChangeSubject::Unit)
+    );
+}
+
+#[test]
+fn reordering_set_associations_does_not_change_a_specification_brief() {
+    use crate::feature_forge::AcceptanceCriterion;
+    use crate::orchestration::composition::Validate as _;
+
+    let mut manifest = task_local_criterion_manifest();
+    manifest.tasks[0].draft.criteria = ["AC-1", "AC-2"]
+        .into_iter()
+        .map(|id| AcceptanceCriterion {
+            id: id.into(),
+            description: format!("Acceptance for {id}."),
+        })
+        .collect();
+    manifest.tasks[1].draft.criteria[0].id = "AC-3".into();
+    let mut specification = spec();
+    specification.requirements[0].required_check_refs = vec![h("check_a"), h("check_b")];
+    specification.unit_proposals[0].task_refs = vec![h("task_1"), h("task_2")];
+    specification.unit_proposals[0].criterion_refs =
+        vec![h("crit_1_1"), h("crit_1_2"), h("crit_2_1")];
+    let mut test_unit = specification.unit_proposals[1].clone();
+    test_unit.unit_key = h("ui_checks");
+    test_unit.kind = ProposalKind::Test;
+    test_unit.depends_on = vec![h("core_export"), h("ui_export")];
+    specification.unit_proposals.push(test_unit);
+    specification.validate().unwrap();
+    let previous_record = record(specification.clone());
+
+    // Keep the same requirements, graph and unit coverage, changing only
+    // the order in which their set-valued associations were returned.
+    for requirement in &mut specification.requirements {
+        requirement.required_check_refs.reverse();
+    }
+    for unit in &mut specification.unit_proposals {
+        unit.destination_refs.reverse();
+        unit.depends_on.reverse();
+    }
+    specification.unit_proposals.reverse();
+    specification.validate().unwrap();
+    let current_record = record(specification);
+
+    assert!(
+        compare_records(
+            &previous_record,
+            &context(&manifest),
+            &current_record,
+            &context(&manifest)
+        )
+        .unwrap()
+        .unwrap()
+        .is_empty()
+    );
+    let previous = stage_brief(&previous_record, &context(&manifest))
+        .unwrap()
+        .unwrap();
+    let current = stage_brief(&current_record, &context(&manifest))
+        .unwrap()
+        .unwrap();
+    assert!(compare(&previous, &current).is_empty());
+}
+
+#[test]
+fn distinct_raw_sets_still_change_when_their_normal_display_collides() {
+    use crate::orchestration::composition::Validate as _;
+
+    let mut specification = spec();
+    specification.unit_proposals[0].unit_key = h("none");
+    specification.unit_proposals[1].depends_on.clear();
+    specification.validate().unwrap();
+    let previous = brief_of(specification.clone());
+    specification.unit_proposals[1].depends_on = vec![h("none")];
+    specification.validate().unwrap();
+    let current = brief_of(specification);
+    assert_eq!(
+        compare(&previous, &current),
+        [
+            BriefChange::new(ChangeKind::Changed, ChangeSubject::Unit, "ui_export")
+                .field("depends on")
+                .before("[]")
+                .after(r#"["none"]"#)
+        ]
+    );
+
+    // A path may itself contain a comma. It is still one destination,
+    // not the two paths that happen to have the same joined display.
+    let mut previous = previous;
+    visual_mut(&mut previous).units[1].destinations = vec!["a, b".into()];
+    let mut current = previous.clone();
+    visual_mut(&mut current).units[1].destinations = vec!["a".into(), "b".into()];
+    assert_eq!(
+        compare(&previous, &current),
+        [
+            BriefChange::new(ChangeKind::Changed, ChangeSubject::Unit, "ui_export")
+                .field("writes")
+                .before(r#"["a, b"]"#)
+                .after(r#"["a","b"]"#)
+        ]
+    );
+}
+
+#[test]
+fn coverage_and_verdicts_keep_duplicate_criterion_ids_with_their_task() {
+    let coverage = |task: &str, kind| BriefCoverage {
+        task_id: format!("t-{task}"),
+        criterion_id: "ac-1".into(),
+        description: format!("Acceptance for Task {task}."),
+        task_title: format!("Task {task}"),
+        coverage: kind,
+        tests: Vec::new(),
+        declared_checks: Vec::new(),
+        explanation: format!("Coverage of Task {task}."),
+    };
+    let test_brief = |b_kind| ReviewBrief {
+        stage: PulsationStage::Test,
+        next_stage: Some(PulsationStage::Integrator),
+        objective: None,
+        counts: Vec::new(),
+        revision: None,
+        judgement: Vec::new(),
+        verified: Vec::new(),
+        visual: StageVisual::Test(TestVisual {
+            coverage: vec![coverage("A", CoverageKind::Authored), coverage("B", b_kind)],
+            checks: Vec::new(),
+            files: Vec::new(),
+        }),
+    };
+    assert!(
+        compare(
+            &test_brief(CoverageKind::Authored),
+            &test_brief(CoverageKind::Authored)
+        )
+        .is_empty()
+    );
+    let changes: Vec<String> = compare(
+        &test_brief(CoverageKind::Authored),
+        &test_brief(CoverageKind::NotApplicable),
+    )
+    .iter()
+    .map(line)
+    .collect();
+    assert_eq!(
+        changes,
+        ["Changed Criterion Task B · ac-1 coverage | authored -> not applicable"]
+    );
+
+    let verdict = |task: &str, verdict| BriefVerdict {
+        task_id: format!("t-{task}"),
+        criterion_id: "ac-1".into(),
+        description: format!("Acceptance for Task {task}."),
+        task_title: format!("Task {task}"),
+        verdict,
+        checks: Vec::new(),
+        explanation: "Reviewed.".into(),
+    };
+    let integrator_brief = |verdicts| ReviewBrief {
+        stage: PulsationStage::Integrator,
+        next_stage: None,
+        objective: None,
+        counts: Vec::new(),
+        revision: None,
+        judgement: Vec::new(),
+        verified: Vec::new(),
+        visual: StageVisual::Integrator(IntegratorVisual {
+            verdicts,
+            blockers: Vec::new(),
+            checks: Vec::new(),
+            publications: Vec::new(),
+        }),
+    };
+    let changes: Vec<String> = compare(
+        &integrator_brief(vec![
+            verdict("A", Verdict::Supported),
+            verdict("B", Verdict::Supported),
+        ]),
+        &integrator_brief(vec![verdict("A", Verdict::Supported)]),
+    )
+    .iter()
+    .map(line)
+    .collect();
+    assert_eq!(
+        changes,
+        ["Removed Criterion Task B · ac-1 - | supported: Reviewed. -> -"]
     );
 }

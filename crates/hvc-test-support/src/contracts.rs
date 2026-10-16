@@ -281,7 +281,7 @@ fn loads_execution_metrics_and_compression_preview() {
     assert!(
         PersistenceCommandError::from(missing)
             .message
-            .contains("não encontrada")
+            .contains("LLM execution not found")
     );
 }
 

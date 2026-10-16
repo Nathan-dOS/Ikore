@@ -1,7 +1,7 @@
 # Threat model — runtime CLI multiagente
 
 **Revisão:** 2026-09-03  
-**Escopo:** Codex, Claude Code, Gemini CLI, OpenCode e Custom no Windows x64  
+**Escopo:** Codex, Claude Code, Gemini CLI, OpenCode, Antigravity CLI e Custom no Windows x64<br>
 **Estado:** implementado e revisado para o gate CLI-G3
 
 ## Fronteiras de confiança
@@ -62,3 +62,15 @@ See [implementation and validation](token-usage-implementation.md).
 ## Pulsation attribution — 2026-09-10
 
 V29 stores the host-owned pulsation ID alongside existing counters, without copying names or content. Attribution survives source deletion; names are resolved on read. No new provider call or execution capability is introduced. Previously deleted source relations remain unassigned. See [validation](pulsation-token-usage.md).
+
+## Antigravity CLI — 2026-10-14
+
+`agy` 1.3.5 is the sixth official backend. Verified on this machine before any code was written:
+
+- **Writes by default.** A headless `agy` refuses shell commands (`denied_actions`) but created a file with `write_to_file` without asking. Read-only is therefore enforced by configuration, not by an adapter flag: every launch points `--gemini_dir` at a host-owned root whose `antigravity-cli/settings.json` denies `write_file(*)`, `command(*)`, `unsandboxed(*)` and `execute_url(*)`; the Companion also denies `read_file(*)`. A real run against that root answered "Matches user-configured deny rule" and left the workspace untouched.
+- **Developer configuration stays out.** The private root replaces `~/.gemini` wholesale (MCP servers, plugins, rules, permission grants, skills). The sign-in lives in the OS keyring and survives. Pipeline and Companion launches get a fresh root per run; manual and FreeForm runs share one root beside the database because `--conversation` resumes from it.
+- **Prompt stays off argv.** `-p` only takes the prompt as an argument, so the adapter uses `--input-format stream-json` and writes one NDJSON message on stdin.
+- **No self-update mid-pulsation.** Launches set `AGY_CLI_DISABLE_AUTO_UPDATE=true` (`1` is ignored by 1.3.5); versions above the validated ceiling are gated like Gemini.
+- **Auth probe.** `-p /usage --output-format json` runs in the developer's own root (an empty root sends `/usage` to the model as text). It spends no model turn and also yields the quota shown on the agent card; quota labels are bounded and sanitized.
+
+Residual risk accepted by Nathan (2026-10-14): the deny rules are `agy`'s own permission engine, an external dependency that could change between versions; a pulsation's writes would still land only in the read-only snapshot, and publication happens only from the JSON `artifacts` array. `--gemini_dir` is an undocumented flag found in the binary; `agy` rejects unknown flags, so a version that drops it fails the launch instead of running unconfined.

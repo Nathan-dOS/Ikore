@@ -26,7 +26,7 @@ pub struct ModelCatalogEntry {
 
 static CATALOG: LazyLock<ModelCatalog> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../../assets/llm-model-catalog-v1.json"))
-        .expect("o catálogo LLM versionado deve conter JSON válido")
+        .expect("the versioned LLM catalog must contain valid JSON")
 });
 
 pub fn catalog() -> &'static ModelCatalog {

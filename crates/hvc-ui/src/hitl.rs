@@ -31,7 +31,7 @@ pub(crate) fn register_hitl_keybindings(cx: &mut App) {
     ]);
 }
 
-/// The developer's mark on one judgement item of the brief (ADR-024 M2).
+/// The developer's mark on one judgement item of the brief (ADR-027 M2).
 /// Session-local and keyed by the checkpoint it was made on; never a host gate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum ItemMark {
@@ -144,7 +144,7 @@ pub(crate) struct HitlReviewState {
     pub(crate) show_feedback: bool,
     pub(crate) documents_loading: bool,
     pub(crate) documents_error: Option<String>,
-    /// Derived view of the same checkpoint (ADR-024). Never gates approval.
+    /// Derived view of the same checkpoint (ADR-027). Never gates approval.
     pub(crate) brief: Option<ReviewBrief>,
     pub(crate) brief_error: Option<String>,
     /// The Brief tab is showing instead of a document.

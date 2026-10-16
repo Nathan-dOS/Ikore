@@ -51,9 +51,6 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .min_h_0()
                 .p_3()
                 .rounded_lg()
-                .border_1()
-                .border_color(theme::border())
-                .bg(theme::surface())
                 .flex()
                 .flex_col()
                 .gap_3()
@@ -152,9 +149,15 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                                                     div()
                                                         .flex_shrink_0()
                                                         .mt(px(2.0))
-                                                        .text_xs()
-                                                        .text_color(theme::accent())
-                                                        .child(if is_expanded { "▼" } else { "▶" }),
+                                                        .child(crate::widgets::icon(
+                                                            if is_expanded {
+                                                                crate::icons::Icon::ChevronDown
+                                                            } else {
+                                                                crate::icons::Icon::ChevronRight
+                                                            },
+                                                            px(12.0),
+                                                            theme::text_muted(),
+                                                        )),
                                                 )
                                                 .when_some(group.order_label, |row, order| {
                                                     row.child(
@@ -354,9 +357,6 @@ pub(crate) fn logs_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
                 .min_h_0()
                 .p_4()
                 .rounded_lg()
-                .border_1()
-                .border_color(theme::border())
-                .bg(theme::surface())
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
@@ -805,30 +805,16 @@ fn button(
     cx: &mut Context<AppModel>,
     handler: impl Fn(&mut AppModel, &mut Context<AppModel>) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .self_start()
-        .flex_shrink_0()
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .bg(if enabled {
-            theme::accent()
-        } else {
-            theme::surface_raised()
-        })
-        .text_color(if enabled {
-            theme::canvas()
-        } else {
-            theme::text_muted()
-        })
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
-        })
-        .child(label)
+    // Logs controls refresh and fold panels; none of them is a primary act.
+    crate::widgets::button_frame(
+        div().id(id).debug_selector(move || id.into()).self_start(),
+        crate::widgets::ButtonVariant::Secondary,
+        enabled,
+    )
+    .when(enabled, |button| {
+        button.on_click(cx.listener(move |model, _, _, cx| handler(model, cx)))
+    })
+    .child(label)
 }
 
 fn section(title: &'static str) -> gpui::Div {
@@ -905,7 +891,7 @@ pub(crate) fn status_badge_info(
     } else if is_fail {
         ("FAIL", theme::danger_soft(), theme::danger())
     } else if is_running {
-        ("RUNNING", theme::accent_soft(), theme::accent())
+        ("RUNNING", theme::running_soft(), theme::running())
     } else if is_retrying {
         ("RETRY", theme::warning_soft(), theme::warning())
     } else if is_waiting {

@@ -123,18 +123,14 @@ pub(crate) fn expanded_conversation(model: &AppModel, cx: &mut Context<AppModel>
             .flex()
             .items_center()
             .justify_between()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .children(chip.questions.iter().map(|question| {
-                        div()
-                            .text_sm()
-                            .child(question.question.clone())
-                            .into_any_element()
-                    })),
-            )
+            .child(div().flex_1().min_w_0().flex().flex_col().gap_1().children(
+                chip.questions.iter().map(|question| {
+                    div()
+                        .text_sm()
+                        .child(question.question.clone())
+                        .into_any_element()
+                }),
+            ))
             .child(btn(
                 "resolution-close",
                 "Close",

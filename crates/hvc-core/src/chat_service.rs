@@ -8,7 +8,7 @@ use chrono::Utc;
 use futures::{StreamExt, stream};
 use regex::Regex;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::runtime::Handle;
@@ -36,6 +36,11 @@ const MAX_MODEL_ROUNDS: usize = 8;
 const MAX_TOOL_CALLS: usize = 24;
 const MAX_TOOL_RESULT_BYTES: usize = 256 * 1024;
 const TURN_TIMEOUT: Duration = Duration::from_secs(120);
+/// A CLI turn runs one fresh CLI process per round and re-sends every read so
+/// far. A seven-round repository review took about 70 s of rounds plus two
+/// repairs and hit the API's 120 s limit on its last round (2026-09-26). Each
+/// round keeps its own `TURN_TIMEOUT`; the developer can cancel at any time.
+const CLI_TURN_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_USER_MESSAGE_CHARS: usize = 20_000;
 
 #[derive(Debug, Clone, Serialize)]
@@ -56,7 +61,7 @@ impl ChatCommandError {
     fn database(error: impl Display) -> Self {
         Self::new(
             "chat_persistence",
-            format!("Falha ao persistir o chat: {error}"),
+            format!("Failed to save the chat: {error}"),
         )
     }
 }
@@ -237,7 +242,7 @@ impl ChatTransportKind {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "transport", rename_all = "snake_case")]
 pub enum ChatExecutionTargetRequest {
     Api {
@@ -267,6 +272,8 @@ pub struct ChatMessage {
     pub estimated_cost_usd: Option<f64>,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
+    /// Frozen at send time; older turns are reconstructed from their first model call.
+    pub target_label: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -308,6 +315,31 @@ pub struct CreateChatConversationRequest {
     pub target: ChatExecutionTargetRequest,
 }
 
+/// Retargets an existing conversation (ADR-014 amendment, 2026-09-22): the
+/// Companion panel applies to the open conversation from its next message.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateChatConversationTargetRequest {
+    pub conversation_id: String,
+    pub target: ChatExecutionTargetRequest,
+}
+
+/// The validated columns a target resolves to.
+struct ResolvedTarget {
+    connection_id: Option<String>,
+    provider_id: String,
+    model_id: String,
+    transport: ChatTransportKind,
+    cli_backend: Option<CliBackend>,
+    model_profile: Option<String>,
+    model_source: CliModelSelectionSource,
+}
+
+/// `runtime_settings` key of a project's last chosen Companion target.
+pub fn companion_target_setting_key(project_id: &str) -> String {
+    format!("companion.target.{project_id}")
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateChatConversationResponse {
@@ -345,6 +377,9 @@ pub struct DeleteChatConversationResponse {
 pub struct SendChatMessageRequest {
     pub conversation_id: String,
     pub content: String,
+    /// The panel target the developer saw when pressing Send.
+    #[serde(default)]
+    pub expected_target: Option<ChatExecutionTargetRequest>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -543,23 +578,13 @@ impl ChatService {
         Ok(ListChatConversationsResponse { conversations })
     }
 
-    pub fn create_conversation(
+    /// Validates a Companion target exactly as conversation creation does.
+    fn resolve_target(
         &self,
-        request: CreateChatConversationRequest,
-    ) -> Result<CreateChatConversationResponse, ChatCommandError> {
-        let project_id = normalize_id(&request.project_id, "projectId")?;
-        let database = self.connection()?;
-        let project_exists: bool = database.query_row(
-            "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 AND is_archived = 0)",
-            params![project_id],
-            |row| row.get(0),
-        )?;
-        if !project_exists {
-            return Err(ChatCommandError::new(
-                "project_not_found",
-                "Projeto ativo não encontrado.",
-            ));
-        }
+        database: &Connection,
+        project_id: &str,
+        target: ChatExecutionTargetRequest,
+    ) -> Result<ResolvedTarget, ChatCommandError> {
         let (
             connection_id,
             provider_id,
@@ -568,7 +593,7 @@ impl ChatService {
             cli_backend,
             model_profile,
             model_source,
-        ) = match request.target {
+        ) = match target {
             ChatExecutionTargetRequest::Api { connection_id } => {
                 let connection_id = normalize_id(&connection_id, "connectionId")?;
                 let provider_connection = self
@@ -628,8 +653,8 @@ impl ChatService {
                     }
                 };
                 validate_catalog_model_selection(
-                    &database,
-                    &project_id,
+                    database,
+                    project_id,
                     backend,
                     model.as_deref(),
                     model_profile.as_deref(),
@@ -647,6 +672,140 @@ impl ChatService {
                 )
             }
         };
+
+        Ok(ResolvedTarget {
+            connection_id,
+            provider_id,
+            model_id,
+            transport,
+            cli_backend,
+            model_profile,
+            model_source,
+        })
+    }
+
+    /// The project's last chosen Companion target, if any. An unreadable
+    /// value is ignored rather than failing the chat.
+    pub fn default_target(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<ChatExecutionTargetRequest>, ChatCommandError> {
+        let project_id = normalize_id(project_id, "projectId")?;
+        let value: Option<String> = self
+            .connection()?
+            .query_row(
+                "SELECT value FROM runtime_settings WHERE key = ?1",
+                params![companion_target_setting_key(&project_id)],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value.and_then(|value| serde_json::from_str(&value).ok()))
+    }
+
+    /// Remembers `target` as the project's Companion target after validating
+    /// it, so the panel and resolution conversations survive a restart.
+    pub fn save_default_target(
+        &self,
+        project_id: &str,
+        target: ChatExecutionTargetRequest,
+    ) -> Result<(), ChatCommandError> {
+        let project_id = normalize_id(project_id, "projectId")?;
+        let database = self.connection()?;
+        self.resolve_target(&database, &project_id, target.clone())?;
+        Self::store_default_target(&database, &project_id, &target)
+    }
+
+    fn store_default_target(
+        database: &Connection,
+        project_id: &str,
+        target: &ChatExecutionTargetRequest,
+    ) -> Result<(), ChatCommandError> {
+        let value = serde_json::to_string(target).map_err(|error| {
+            ChatCommandError::new(
+                "invalid_target",
+                format!("Invalid Companion target: {error}"),
+            )
+        })?;
+        database.execute(
+            "INSERT INTO runtime_settings(key, value, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![companion_target_setting_key(project_id), value, now_iso()],
+        )?;
+        Ok(())
+    }
+
+    /// Applies `target` to an existing conversation from its next message and
+    /// remembers it as the project default. Refused while a reply is running.
+    pub fn update_conversation_target(
+        &self,
+        request: UpdateChatConversationTargetRequest,
+    ) -> Result<GetChatConversationResponse, ChatCommandError> {
+        let conversation_id = normalize_id(&request.conversation_id, "conversationId")?;
+        let record = self.get_conversation_record(&conversation_id)?;
+        let mut database = self.connection()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let running: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM chat_messages WHERE conversation_id = ?1 AND status IN ('pending', 'streaming'))",
+            params![conversation_id],
+            |row| row.get(0),
+        )?;
+        if running {
+            return Err(ChatCommandError::new(
+                "conversation_busy",
+                "Wait for the current reply to finish before changing the connection.",
+            ));
+        }
+        let resolved =
+            self.resolve_target(&transaction, &record.project_id, request.target.clone())?;
+        transaction.execute(
+            "UPDATE chat_conversations
+             SET connection_id = ?2, provider_id_snapshot = ?3, model_id_snapshot = ?4,
+                 transport_kind = ?5, cli_backend = ?6, model_profile = ?7, model_source = ?8,
+                 updated_at = ?9
+             WHERE id = ?1",
+            params![
+                conversation_id,
+                resolved.connection_id,
+                resolved.provider_id,
+                resolved.model_id,
+                resolved.transport.as_str(),
+                resolved.cli_backend.map(CliBackend::as_str),
+                resolved.model_profile,
+                resolved.model_source.as_str(),
+                now_iso(),
+            ],
+        )?;
+        Self::store_default_target(&transaction, &record.project_id, &request.target)?;
+        transaction.commit()?;
+        self.get_conversation(GetChatConversationRequest { conversation_id })
+    }
+
+    pub fn create_conversation(
+        &self,
+        request: CreateChatConversationRequest,
+    ) -> Result<CreateChatConversationResponse, ChatCommandError> {
+        let project_id = normalize_id(&request.project_id, "projectId")?;
+        let database = self.connection()?;
+        let project_exists: bool = database.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 AND is_archived = 0)",
+            params![project_id],
+            |row| row.get(0),
+        )?;
+        if !project_exists {
+            return Err(ChatCommandError::new(
+                "project_not_found",
+                "Active project not found.",
+            ));
+        }
+        let ResolvedTarget {
+            connection_id,
+            provider_id,
+            model_id,
+            transport,
+            cli_backend,
+            model_profile,
+            model_source,
+        } = self.resolve_target(&database, &project_id, request.target.clone())?;
 
         let id = Uuid::new_v4().to_string();
         let now = now_iso();
@@ -669,6 +828,7 @@ impl ChatService {
                 model_source.as_str(),
             ],
         )?;
+        Self::store_default_target(&database, &project_id, &request.target)?;
         let conversation = self.get_conversation_record(&id)?;
         Ok(CreateChatConversationResponse {
             conversation: self.decorate_conversation(conversation)?,
@@ -706,7 +866,7 @@ impl ChatService {
         {
             return Err(ChatCommandError::new(
                 "turn_active",
-                "Cancele a resposta em andamento antes de excluir a conversa.",
+                "Cancel the reply in progress before deleting the conversation.",
             ));
         }
         let database = self.connection()?;
@@ -719,7 +879,7 @@ impl ChatService {
         if specification_linked {
             return Err(ChatCommandError::new(
                 "specification_history",
-                "Esta conversa preserva perguntas/respostas de Specification. Consulte e responda pela view Pulsations.",
+                "This conversation keeps Specification questions and answers. Read and answer them in Pulsations.",
             ));
         }
         let resolution_linked: bool = transaction.query_row(
@@ -730,7 +890,7 @@ impl ChatService {
         if resolution_linked {
             return Err(ChatCommandError::new(
                 "specification_history",
-                "Esta conversa preserva a resolução de uma clarification de Specification. Consulte pela view Pulsations.",
+                "This conversation keeps the resolution of a Specification clarification. Read it in Pulsations.",
             ));
         }
         transaction.execute(
@@ -756,16 +916,26 @@ impl ChatService {
         if content.is_empty() || content.chars().count() > MAX_USER_MESSAGE_CHARS {
             return Err(ChatCommandError::new(
                 "invalid_message",
-                "A mensagem deve conter entre 1 e 20.000 caracteres.",
+                "The message must have between 1 and 20,000 characters.",
             ));
         }
         let conversation = self.get_conversation_record(&conversation_id)?;
+        if request
+            .expected_target
+            .as_ref()
+            .is_some_and(|target| !target_matches_record(target, &conversation))
+        {
+            return Err(ChatCommandError::new(
+                "target_changed",
+                "The conversation target changed before Send. Review the selected model and send again.",
+            ));
+        }
         let provider_connection = match conversation.transport {
             ChatTransportKind::Api => {
                 let connection_id = conversation.connection_id.clone().ok_or_else(|| {
                     ChatCommandError::new(
                         "connection_removed",
-                        "A conexão desta conversa foi removida. Crie uma nova conversa.",
+                        "This conversation's connection was removed. Start a new conversation.",
                     )
                 })?;
                 let provider_connection = self
@@ -774,13 +944,13 @@ impl ChatService {
                     .map_err(|_| {
                         ChatCommandError::new(
                             "connection_removed",
-                            "A conexão desta conversa não existe mais. Crie uma nova conversa.",
+                            "This conversation's connection no longer exists. Start a new conversation.",
                         )
                     })?;
                 if provider_connection.provider_id.as_str() != conversation.provider_id {
                     return Err(ChatCommandError::new(
                         "connection_changed",
-                        "O provider da conexão mudou. Crie uma nova conversa.",
+                        "The connection's provider changed. Start a new conversation.",
                     ));
                 }
                 self.ensure_connection_eligible_for_model(
@@ -823,7 +993,7 @@ impl ChatService {
         {
             return Err(ChatCommandError::new(
                 "turn_active",
-                "Esta conversa já possui uma resposta em andamento.",
+                "This conversation already has a reply in progress.",
             ));
         }
 
@@ -832,8 +1002,26 @@ impl ChatService {
         let user_message_id = Uuid::new_v4().to_string();
         let assistant_message_id = Uuid::new_v4().to_string();
         let now = now_iso();
-        let database = self.connection()?;
-        let transaction = database.unchecked_transaction()?;
+        let mut database = self.connection()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = transaction.query_row(
+            "SELECT id, project_id, connection_id, provider_id_snapshot, model_id_snapshot,
+                    title, created_at, updated_at, transport_kind, cli_backend,
+                    model_profile, model_source FROM chat_conversations WHERE id=?1",
+            [&conversation_id],
+            map_conversation_record,
+        )?;
+        if !same_target(&conversation, &current)
+            || request
+                .expected_target
+                .as_ref()
+                .is_some_and(|target| !target_matches_record(target, &current))
+        {
+            return Err(ChatCommandError::new(
+                "target_changed",
+                "The conversation target changed before Send. Review the selected model and send again.",
+            ));
+        }
         let next_ordinal: i64 = transaction.query_row(
             "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM chat_messages WHERE conversation_id = ?1",
             params![conversation_id],
@@ -848,15 +1036,16 @@ impl ChatService {
         transaction.execute(
             "INSERT INTO chat_messages (
                id, conversation_id, ordinal, role, content, status, execution_id,
-               generation_id, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, 'assistant', '', 'pending', ?4, ?5, ?6, ?6)",
+               generation_id, created_at, updated_at, target_label
+             ) VALUES (?1, ?2, ?3, 'assistant', '', 'pending', ?4, ?5, ?6, ?6, ?7)",
             params![
                 assistant_message_id,
                 conversation_id,
                 next_ordinal + 1,
                 execution_id,
                 generation_id,
-                now
+                now,
+                target_label(&current),
             ],
         )?;
         if next_ordinal == 0 {
@@ -917,13 +1106,13 @@ impl ChatService {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
-                        .expect("runtime temporário de chat deve inicializar");
+                        .expect("temporary chat runtime must start");
                     runtime.block_on(turn);
                 })
                 .map_err(|error| {
                     ChatCommandError::new(
                         "runtime_unavailable",
-                        format!("Falha ao iniciar turno de chat: {error}"),
+                        format!("Failed to start the chat turn: {error}"),
                     )
                 })?;
         }
@@ -991,13 +1180,14 @@ impl ChatService {
             .query_row(
                 "SELECT id, conversation_id, ordinal, role, content, status, execution_id,
                         generation_id, last_sequence, input_tokens, output_tokens,
-                        estimated_cost_usd, error_code, error_message, created_at, updated_at
+                        estimated_cost_usd, error_code, error_message, created_at, updated_at,
+                        target_label
                  FROM chat_messages WHERE generation_id = ?1",
                 params![generation_id],
                 map_message,
             )
             .optional()?
-            .ok_or_else(|| ChatCommandError::new("turn_not_found", "Turno não encontrado."))?;
+            .ok_or_else(|| ChatCommandError::new("turn_not_found", "Turn not found."))?;
         let tool_calls = self.list_tool_calls_for_message(&message.id)?;
         Ok(GetChatTurnSnapshotResponse {
             message,
@@ -1018,12 +1208,15 @@ impl ChatService {
                 |row| row.get(0),
             )
             .optional()?
-            .ok_or_else(|| ChatCommandError::new("project_not_found", "Projeto não encontrado."))?;
+            .ok_or_else(|| ChatCommandError::new("project_not_found", "Project not found."))?;
         let expected = Path::new(&expected).canonicalize().map_err(|_| {
-            ChatCommandError::new("workspace_mismatch", "Workspace do projeto não existe.")
+            ChatCommandError::new(
+                "workspace_mismatch",
+                "The project workspace does not exist.",
+            )
         })?;
         let actual = workspace_root.canonicalize().map_err(|_| {
-            ChatCommandError::new("workspace_mismatch", "Workspace ativo inválido.")
+            ChatCommandError::new("workspace_mismatch", "The active workspace is invalid.")
         })?;
         if expected != actual {
             return Err(ChatCommandError::new(
@@ -1047,24 +1240,27 @@ impl ChatService {
         model: &str,
     ) -> Result<(), ChatCommandError> {
         let profile = profile_by_id(connection.provider_id.as_str()).ok_or_else(|| {
-            ChatCommandError::new("provider_incompatible", "Provider sem perfil compatível.")
+            ChatCommandError::new(
+                "provider_incompatible",
+                "The provider has no compatible profile.",
+            )
         })?;
         let model = model_entry(connection.provider_id.as_str(), model).ok_or_else(|| {
             ChatCommandError::new(
                 "model_incompatible",
-                "O modelo não está marcado como compatível com tool calling no catálogo versionado.",
+                "The model is not marked as tool-calling capable in the versioned catalog.",
             )
         })?;
         if !connection.enabled || connection.state == "blocked" {
             return Err(ChatCommandError::new(
                 "connection_unavailable",
-                "A conexão está desabilitada ou bloqueada.",
+                "The connection is disabled or blocked.",
             ));
         }
         if !profile.capabilities.tool_calling || !model.tool_calling {
             return Err(ChatCommandError::new(
                 "model_incompatible",
-                "A conexão e o modelo precisam oferecer tool calling.",
+                "The connection and model must support tool calling.",
             ));
         }
         if profile.auth_style != AuthStyle::None
@@ -1076,7 +1272,7 @@ impl ChatService {
         {
             return Err(ChatCommandError::new(
                 "credential_unavailable",
-                "A conexão não possui credencial configurada.",
+                "The connection has no credential configured.",
             ));
         }
         Ok(())
@@ -1094,7 +1290,7 @@ impl ChatService {
             )
             .optional()?
             .ok_or_else(|| {
-                ChatCommandError::new("conversation_not_found", "Conversa não encontrada.")
+                ChatCommandError::new("conversation_not_found", "Conversation not found.")
             })
     }
 
@@ -1142,7 +1338,8 @@ impl ChatService {
         let mut statement = connection.prepare(
             "SELECT id, conversation_id, ordinal, role, content, status, execution_id,
                     generation_id, last_sequence, input_tokens, output_tokens,
-                    estimated_cost_usd, error_code, error_message, created_at, updated_at
+                    estimated_cost_usd, error_code, error_message, created_at, updated_at,
+                    target_label
              FROM chat_messages WHERE conversation_id = ?1 ORDER BY ordinal",
         )?;
         let rows = statement.query_map(params![conversation_id], map_message)?;
@@ -1204,6 +1401,44 @@ struct ConversationRecord {
     updated_at: String,
 }
 
+fn same_target(a: &ConversationRecord, b: &ConversationRecord) -> bool {
+    a.transport == b.transport
+        && a.connection_id == b.connection_id
+        && a.provider_id == b.provider_id
+        && a.model_id == b.model_id
+        && a.cli_backend == b.cli_backend
+        && a.model_profile == b.model_profile
+        && a.model_source == b.model_source
+}
+
+fn target_matches_record(target: &ChatExecutionTargetRequest, record: &ConversationRecord) -> bool {
+    match target {
+        ChatExecutionTargetRequest::Api { connection_id } => {
+            record.transport == ChatTransportKind::Api
+                && record.connection_id.as_deref() == Some(connection_id)
+        }
+        ChatExecutionTargetRequest::Cli {
+            backend,
+            model,
+            model_profile,
+        } => {
+            record.transport == ChatTransportKind::Cli
+                && record.cli_backend == Some(*backend)
+                && record.model_id == model.as_deref().unwrap_or("default")
+                && record.model_profile == *model_profile
+        }
+    }
+}
+
+fn target_label(record: &ConversationRecord) -> String {
+    let mut label = format!("{} / {}", record.provider_id, record.model_id);
+    if let Some(profile) = &record.model_profile {
+        label.push_str(" / ");
+        label.push_str(profile);
+    }
+    label
+}
+
 fn map_conversation_record(row: &Row<'_>) -> rusqlite::Result<ConversationRecord> {
     let transport: String = row.get(8)?;
     let cli_backend: Option<String> = row.get(9)?;
@@ -1252,6 +1487,7 @@ fn map_message(row: &Row<'_>) -> rusqlite::Result<ChatMessage> {
         error_message: row.get(13)?,
         created_at: row.get(14)?,
         updated_at: row.get(15)?,
+        target_label: row.get(16)?,
     })
 }
 
@@ -1298,7 +1534,7 @@ fn normalize_id(raw: &str, field: &str) -> Result<String, ChatCommandError> {
     if value.is_empty() {
         return Err(ChatCommandError::new(
             "invalid_request",
-            format!("{field} não pode ser vazio."),
+            format!("{field} cannot be empty."),
         ));
     }
     Ok(value.to_string())
@@ -1385,7 +1621,7 @@ fn now_iso() -> String {
 }
 
 fn runtime_lock_error() -> ChatCommandError {
-    ChatCommandError::new("chat_runtime", "Falha ao acessar o estado interno do chat.")
+    ChatCommandError::new("chat_runtime", "Failed to access the internal chat state.")
 }
 
 #[derive(Clone)]
@@ -1449,6 +1685,10 @@ enum CompanionControlEnvelope {
     ToolCalls { calls: Vec<CompanionControlCall> },
 }
 
+fn exceeds_remaining_read_budget(envelope: &CompanionControlEnvelope, remaining: usize) -> bool {
+    matches!(envelope, CompanionControlEnvelope::ToolCalls { calls } if calls.len() > remaining)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CompanionControlCall {
@@ -1459,6 +1699,20 @@ struct CompanionControlCall {
 }
 
 impl ChatService {
+    /// Closes the calls of a turn that ended with a round still in flight.
+    fn close_running_model_calls(
+        &self,
+        assistant_message_id: &str,
+        reason: &str,
+    ) -> Result<(), ChatCommandError> {
+        self.connection()?.execute(
+            "UPDATE chat_model_calls SET status='failed',completed_at=?2,error_code=?3,termination_reason=?3
+             WHERE assistant_message_id=?1 AND status='running'",
+            params![assistant_message_id, now_iso(), reason],
+        )?;
+        Ok(())
+    }
+
     async fn run_turn(&self, context: TurnContext) {
         let _ = self.set_message_status(&context.assistant_message_id, "streaming", None, None);
         let _ = self.emit_turn_event(
@@ -1467,20 +1721,42 @@ impl ChatService {
             ChatEventDetail::Empty {},
         );
 
+        let (limit, limit_message) = if context.conversation.transport == ChatTransportKind::Cli {
+            (
+                CLI_TURN_TIMEOUT,
+                "The turn reached its 5-minute limit. Narrow the question and try again.",
+            )
+        } else {
+            (
+                TURN_TIMEOUT,
+                "The turn reached its 120-second limit. Narrow the question and try again.",
+            )
+        };
         let result = tokio::select! {
             biased;
             _ = context.cancellation.cancelled() => Err(TurnOutcome::Cancelled),
-            timed = tokio::time::timeout(TURN_TIMEOUT, self.run_model_loop(&context)) => {
+            timed = tokio::time::timeout(limit, self.run_model_loop(&context)) => {
                 match timed {
                     Ok(Ok(())) => Ok(()),
                     Ok(Err(error)) => Err(TurnOutcome::Failed(error)),
                     Err(_) => Err(TurnOutcome::Failed(ChatCommandError::new(
                         "turn_timeout",
-                        "O turno atingiu o limite de 120 segundos. Restrinja a pergunta e tente novamente.",
+                        limit_message,
                     ))),
                 }
             }
         };
+        // A timeout or cancellation drops the round in flight; its call row
+        // stayed `running` forever (2026-09-26).
+        match &result {
+            Err(TurnOutcome::Cancelled) => {
+                let _ = self.close_running_model_calls(&context.assistant_message_id, "cancelled");
+            }
+            Err(TurnOutcome::Failed(error)) => {
+                let _ = self.close_running_model_calls(&context.assistant_message_id, &error.code);
+            }
+            Ok(()) => {}
+        }
 
         match result {
             Ok(()) => {
@@ -1497,7 +1773,7 @@ impl ChatService {
                     &context.assistant_message_id,
                     "cancelled",
                     Some("cancelled"),
-                    Some("Resposta cancelada pelo usuário."),
+                    Some("Reply cancelled by the user."),
                 );
                 let _ = self.emit_turn_event(
                     ChatEventKind::TurnCancelled,
@@ -1549,7 +1825,10 @@ impl ChatService {
             )
         })?;
         let profile = profile_by_id(connection.provider_id.as_str()).ok_or_else(|| {
-            ChatCommandError::new("provider_incompatible", "Provider sem perfil compatível.")
+            ChatCommandError::new(
+                "provider_incompatible",
+                "The provider has no compatible profile.",
+            )
         })?;
         let api_key = if profile.auth_style == AuthStyle::None {
             None
@@ -1670,7 +1949,7 @@ impl ChatService {
                 if response.content.trim().is_empty() {
                     return Err(ChatCommandError::new(
                         "empty_response",
-                        "O provider encerrou o turno sem conteúdo ou chamada de ferramenta.",
+                        "The provider ended the turn with no content or tool call.",
                     ));
                 }
                 if !response.streamed {
@@ -1702,7 +1981,7 @@ impl ChatService {
             if total_tool_calls > MAX_TOOL_CALLS {
                 return Err(ChatCommandError::new(
                     "tool_call_limit",
-                    "O turno atingiu o limite de 24 leituras. Restrinja a pergunta e tente novamente.",
+                    "The turn reached its limit of 24 reads. Narrow the question and try again.",
                 ));
             }
 
@@ -1722,7 +2001,7 @@ impl ChatService {
             if total_tool_bytes > MAX_TOOL_RESULT_BYTES {
                 return Err(ChatCommandError::new(
                     "tool_result_limit",
-                    "O turno atingiu 256 KiB de resultados. Restrinja a pergunta e tente novamente.",
+                    "The turn reached 256 KiB of results. Narrow the question and try again.",
                 ));
             }
             exchanges.push(ToolExchange {
@@ -1734,13 +2013,13 @@ impl ChatService {
             if round_index + 1 == MAX_MODEL_ROUNDS {
                 return Err(ChatCommandError::new(
                     "model_round_limit",
-                    "O turno atingiu o limite de 8 rodadas. Restrinja a pergunta e tente novamente.",
+                    "The turn reached its limit of 8 rounds. Narrow the question and try again.",
                 ));
             }
         }
         Err(ChatCommandError::new(
             "model_round_limit",
-            "O turno atingiu o limite de rodadas.",
+            "The turn reached its round limit.",
         ))
     }
 
@@ -1793,7 +2072,14 @@ impl ChatService {
                         context.conversation.model_profile,
                     ],
                 )?;
-                let prompt = build_cli_companion_prompt(&messages, &exchanges, repair, backend);
+                let remaining_reads = MAX_TOOL_CALLS.saturating_sub(total_tool_calls);
+                let prompt = build_cli_companion_prompt(
+                    &messages,
+                    &exchanges,
+                    repair,
+                    backend,
+                    remaining_reads,
+                );
                 let started = Instant::now();
                 let outcome = terminals
                     .execute_companion_round(
@@ -1824,9 +2110,34 @@ impl ChatService {
                 let latency_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
                 match outcome {
                     Ok(output) => {
+                        self.connection()?.execute(
+                            "UPDATE chat_model_calls SET observed_model=?2,model_verification=?3 WHERE id=?1",
+                            params![model_call_id, output.observed_model, output.model_verification],
+                        )?;
                         let parsed = parse_cli_companion_envelope(&output.envelope_json, backend);
                         match parsed {
                             Ok(envelope) => {
+                                if exceeds_remaining_read_budget(&envelope, remaining_reads) {
+                                    self.finish_cli_model_call(
+                                        &model_call_id,
+                                        "failed",
+                                        latency_ms,
+                                        output.detected_cli_version.as_deref(),
+                                        output.exit_code,
+                                        "read_budget_exceeded",
+                                        output.output_bytes,
+                                        output.redaction_count,
+                                        Some("tool_call_limit"),
+                                    )?;
+                                    if !repair {
+                                        repair = true;
+                                        continue;
+                                    }
+                                    return Err(ChatCommandError::new(
+                                        "tool_call_limit",
+                                        "The turn has no remaining reads. Ask a narrower question or use the evidence already gathered.",
+                                    ));
+                                }
                                 self.finish_cli_model_call(
                                     &model_call_id,
                                     "completed",
@@ -1861,17 +2172,37 @@ impl ChatService {
                         }
                     }
                     Err(error) => {
-                        let invalid_envelope = matches!(&error, TerminalError::Process(message) if message.contains("invalid control envelope"));
+                        // The miss cause (`unavailable_tool`, `schema_rejected`, …)
+                        // is kept on the call: a repaired round used to leave
+                        // no trace of why its first attempt failed.
+                        let envelope_miss = match &error {
+                            TerminalError::Process(message)
+                                if message.contains("invalid control envelope") =>
+                            {
+                                Some(
+                                    message
+                                        .rsplit_once('(')
+                                        .and_then(|(_, cause)| cause.strip_suffix(')'))
+                                        .unwrap_or("no_envelope"),
+                                )
+                            }
+                            _ => None,
+                        };
+                        let invalid_envelope = envelope_miss.is_some();
                         self.finish_cli_model_call(
                             &model_call_id,
                             "failed",
                             latency_ms,
                             None,
                             None,
-                            terminal_termination_reason(&error),
+                            envelope_miss.unwrap_or_else(|| terminal_termination_reason(&error)),
                             0,
                             0,
-                            Some(error.code()),
+                            Some(if invalid_envelope {
+                                "invalid_control_envelope"
+                            } else {
+                                error.code()
+                            }),
                         )?;
                         if invalid_envelope && !repair {
                             repair = true;
@@ -1905,7 +2236,7 @@ impl ChatService {
                     if total_tool_calls > MAX_TOOL_CALLS {
                         return Err(ChatCommandError::new(
                             "tool_call_limit",
-                            "O turno atingiu o limite de 24 leituras. Restrinja a pergunta e tente novamente.",
+                            "The turn reached its limit of 24 reads. Narrow the question and try again.",
                         ));
                     }
                     let results = self
@@ -1927,7 +2258,7 @@ impl ChatService {
                     if total_tool_bytes > MAX_TOOL_RESULT_BYTES {
                         return Err(ChatCommandError::new(
                             "tool_result_limit",
-                            "O turno atingiu 256 KiB de resultados. Restrinja a pergunta e tente novamente.",
+                            "The turn reached 256 KiB of results. Narrow the question and try again.",
                         ));
                     }
                     exchanges.push(ToolExchange {
@@ -1940,7 +2271,7 @@ impl ChatService {
         }
         Err(ChatCommandError::new(
             "model_round_limit",
-            "O turno atingiu o limite de 8 rodadas. Restrinja a pergunta e tente novamente.",
+            "The turn reached its limit of 8 rounds. Narrow the question and try again.",
         ))
     }
 
@@ -2003,9 +2334,8 @@ impl ChatService {
                     .await
                     .unwrap_or_else(|error| ToolResult {
                         call: fallback_call,
-                        content:
-                            json!({ "error": format!("Falha interna da ferramenta: {error}") })
-                                .to_string(),
+                        content: json!({ "error": format!("Internal tool failure: {error}") })
+                            .to_string(),
                         is_error: true,
                     })
                 }
@@ -2288,7 +2618,7 @@ fn execute_repository_tool(repository: &RepositoryContext, call: NormalizedToolC
     let outcome = match call.name.as_str() {
         "list_repository_tree" => {
             serde_json::from_value::<ListRepositoryTreeArgs>(call.arguments.clone())
-                .map_err(|error| format!("Argumentos inválidos: {error}"))
+                .map_err(|error| format!("Invalid arguments: {error}"))
                 .and_then(|args| repository.list_tree(args).map_err(|error| error.0))
                 .and_then(|result| {
                     serde_json::to_string(&result).map_err(|error| error.to_string())
@@ -2296,7 +2626,7 @@ fn execute_repository_tool(repository: &RepositoryContext, call: NormalizedToolC
         }
         "search_repository" => {
             serde_json::from_value::<SearchRepositoryArgs>(call.arguments.clone())
-                .map_err(|error| format!("Argumentos inválidos: {error}"))
+                .map_err(|error| format!("Invalid arguments: {error}"))
                 .and_then(|args| repository.search(args).map_err(|error| error.0))
                 .and_then(|result| {
                     serde_json::to_string(&result).map_err(|error| error.to_string())
@@ -2304,7 +2634,7 @@ fn execute_repository_tool(repository: &RepositoryContext, call: NormalizedToolC
         }
         "read_repository_file" => {
             serde_json::from_value::<ReadRepositoryFileArgs>(call.arguments.clone())
-                .map_err(|error| format!("Argumentos inválidos: {error}"))
+                .map_err(|error| format!("Invalid arguments: {error}"))
                 .and_then(|args| repository.read_file(args).map_err(|error| error.0))
                 .and_then(|result| {
                     serde_json::to_string(&result).map_err(|error| error.to_string())
@@ -2977,10 +3307,10 @@ fn summarize_tool_result(result: &ToolResult) -> String {
             .collect();
     }
     match result.call.name.as_str() {
-        "list_repository_tree" => "Árvore do repositório consultada.".into(),
-        "search_repository" => "Busca no repositório concluída.".into(),
-        "read_repository_file" => "Trecho de arquivo consultado.".into(),
-        _ => "Ferramenta concluída.".into(),
+        "list_repository_tree" => "Repository tree read.".into(),
+        "search_repository" => "Repository search finished.".into(),
+        "read_repository_file" => "File excerpt read.".into(),
+        _ => "Tool finished.".into(),
     }
 }
 
@@ -3011,7 +3341,7 @@ impl ChatService {
             AuthStyle::Bearer => {
                 let secret = api_key.ok_or_else(|| ModelFailure {
                     code: "credential_unavailable".into(),
-                    message: "A conexão não possui credencial configurada.".into(),
+                    message: "The connection has no credential configured.".into(),
                     retryable: false,
                 })?;
                 headers.insert(
@@ -3019,7 +3349,7 @@ impl ChatService {
                     HeaderValue::from_str(&format!("Bearer {secret}")).map_err(|_| {
                         ModelFailure {
                             code: "invalid_credential".into(),
-                            message: "A credencial contém caracteres inválidos.".into(),
+                            message: "The credential contains invalid characters.".into(),
                             retryable: false,
                         }
                     })?,
@@ -3028,14 +3358,14 @@ impl ChatService {
             AuthStyle::Anthropic => {
                 let secret = api_key.ok_or_else(|| ModelFailure {
                     code: "credential_unavailable".into(),
-                    message: "A conexão não possui credencial configurada.".into(),
+                    message: "The connection has no credential configured.".into(),
                     retryable: false,
                 })?;
                 headers.insert(
                     "x-api-key",
                     HeaderValue::from_str(secret).map_err(|_| ModelFailure {
                         code: "invalid_credential".into(),
-                        message: "A credencial contém caracteres inválidos.".into(),
+                        message: "The credential contains invalid characters.".into(),
                         retryable: false,
                     })?,
                 );
@@ -3059,9 +3389,9 @@ impl ChatService {
                 }
                 .into(),
                 message: if error.is_timeout() {
-                    "O provider não respondeu dentro do prazo."
+                    "The provider did not answer in time."
                 } else {
-                    "Não foi possível alcançar o provider configurado."
+                    "Could not reach the configured provider."
                 }
                 .into(),
                 retryable: true,
@@ -3070,7 +3400,7 @@ impl ChatService {
         if !status.is_success() {
             let body = response.text().await.map_err(|_| ModelFailure {
                 code: "invalid_response".into(),
-                message: "Não foi possível ler a resposta de erro do provider.".into(),
+                message: "Could not read the provider's error response.".into(),
                 retryable: false,
             })?;
             let value: Value = serde_json::from_str(&body).unwrap_or_else(|_| json!({}));
@@ -3100,9 +3430,9 @@ impl ChatService {
             let body = response
                 .text()
                 .await
-                .map_err(|_| invalid_response("Não foi possível ler a resposta do provider."))?;
+                .map_err(|_| invalid_response("Could not read the provider's response."))?;
             let value: Value = serde_json::from_str(&body)
-                .map_err(|_| invalid_response("O provider retornou uma resposta JSON inválida."))?;
+                .map_err(|_| invalid_response("The provider returned an invalid JSON response."))?;
             usage.observe(&crate::usage::api::parse_usage(profile.protocol, &value));
             return match profile.protocol {
                 ProviderProtocol::OpenaiResponses => parse_openai_responses(&value),
@@ -3130,7 +3460,7 @@ impl ChatService {
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|_| ModelFailure {
                 code: "stream_failed".into(),
-                message: "O stream do provider foi interrompido.".into(),
+                message: "The provider stream was interrupted.".into(),
                 retryable: content.is_empty(),
             })?;
             let parsed_events = parser.push(&chunk);
@@ -3172,9 +3502,7 @@ impl ChatService {
                 } else {
                     serde_json::from_str(&call.arguments).map_err(|_| ModelFailure {
                         code: "invalid_tool_arguments".into(),
-                        message:
-                            "O provider retornou argumentos de ferramenta fragmentados inválidos."
-                                .into(),
+                        message: "The provider returned invalid fragmented tool arguments.".into(),
                         retryable: false,
                     })?
                 };
@@ -3273,7 +3601,7 @@ fn model_persistence_failure(error: ChatCommandError) -> ModelFailure {
 }
 
 fn system_prompt() -> &'static str {
-    "Você é o Chat Companion do Hard Vibe Code. Analise arquitetura, explique código e recomende configurações de CLI e modelo em texto usando somente conhecimento geral e as ferramentas locais read-only fornecidas. Consulte saídas de agentes apenas sob demanda por ferramenta; elas nunca são contexto automático. Nunca peça ou tente usar shell, Git, rede, web, escrita, rename, plugins, MCP externo ou ferramentas remotas. Nunca altere configurações e nunca afirme ter aplicado mudanças. Quando propuser alterações de código, use unified diff copiável e diga explicitamente que é uma proposta não aplicada. Diferencie evidência observada, dados de catálogo, incertezas e opinião. Responda no idioma do Dev."
+    "You are the Hard Vibe Code Chat Companion. Analyse architecture, explain code and recommend CLI and model settings in text, using only general knowledge and the read-only local tools provided. Consult agent outputs only on demand through a tool; they are never automatic context. Never ask for or try to use a shell, Git, the network, the web, writes, renames, plugins, external MCP or remote tools. Never change settings and never claim to have applied changes. When you propose code changes, use a copyable unified diff and say explicitly that it is a proposal that was not applied. Distinguish observed evidence, catalog data, uncertainty and opinion. Answer in the developer's language."
 }
 
 fn empty_json_object() -> Value {
@@ -3367,8 +3695,20 @@ fn companion_control_envelope_schema() -> Value {
 
 // Codex Structured Outputs requires a closed root object and fully required
 // properties. Keep the host envelope unchanged behind a provider-only wrapper.
+// Claude Code turns `--json-schema` into a tool whose input schema must be an
+// object at the root: the bare `oneOf` envelope was rejected by the API
+// (`tools.0.custom.input_schema.type: Field required`) on every call. The
+// envelope extractor finds the inner `final`/`tool_calls` object either way.
 fn companion_schema_for_backend(backend: CliBackend) -> Value {
     let schema = companion_control_envelope_schema();
+    if backend == CliBackend::Claude {
+        return json!({
+            "type": "object",
+            "properties": {"response": {"anyOf": schema["oneOf"].clone()}},
+            "required": ["response"],
+            "additionalProperties": false
+        });
+    }
     if backend != CliBackend::Codex {
         return schema;
     }
@@ -3459,6 +3799,7 @@ fn build_cli_companion_prompt(
     exchanges: &[ToolExchange],
     repair: bool,
     backend: CliBackend,
+    remaining_reads: usize,
 ) -> String {
     let messages = messages
         .iter()
@@ -3483,13 +3824,26 @@ fn build_cli_companion_prompt(
         })
         .collect::<Vec<_>>();
     let repair_instruction = if repair {
-        "Your previous response did not satisfy the control envelope. Return exactly one valid JSON envelope now."
+        "Your previous response exceeded the control envelope or remaining read budget. Return exactly one valid envelope within the remaining budget, or a final answer using evidence already gathered."
+    } else {
+        ""
+    };
+    // Claude Code delivers `--json-schema` through a StructuredOutput tool.
+    // Listed like tool definitions, the repository operations were called as
+    // native tools: "No such tool available" five to nine times per round, and
+    // some rounds never reached StructuredOutput ("invalid control envelope",
+    // 2026-09-26; reproduced 3/3, fixed 3/3 by this wording). Left alone, Haiku
+    // also wrote the whole answer as text and again inside the tool (1713 →
+    // 860 tokens and 16.6 → 9.2 s on the same question).
+    let delivery = if backend == CliBackend::Claude {
+        "\nYour only callable tool is StructuredOutput; any other tool call fails. Call it once per reply with `response` set to the envelope: {\"type\":\"tool_calls\",\"calls\":[...]} to run operations, or {\"type\":\"final\",\"text\":\"...\"} to answer. Do not write the answer as plain text before or after that call: text outside it is discarded."
     } else {
         ""
     };
     format!(
-        "<system>\n{}\nYou have no native tools. To inspect local data, return a tool_calls envelope using only the schemas below. When enough evidence is available, return a final envelope. Never include reasoning, traces, Markdown fences, or text outside the envelope.\n{}\n</system>\n<history>\n{}\n</history>\n<tool_exchanges>\n{}\n</tool_exchanges>\n<control_envelope_schema>\n{}\n</control_envelope_schema>\n{}",
+        "<system>\n{}\nYou have no native tools. The repository operations in <operations> are not tools you can call: to run them, return a tool_calls envelope naming them. This turn has {remaining_reads} reads remaining in total; never request more than that number. If none remain, return a final answer from the evidence already gathered and state any limit. The host runs requested operations and returns the results in <tool_exchanges>. When enough evidence is available, return a final envelope. Never include reasoning, traces, Markdown fences, or text outside the envelope.{}\n<operations>\n{}\n</operations>\n</system>\n<history>\n{}\n</history>\n<tool_exchanges>\n{}\n</tool_exchanges>\n<control_envelope_schema>\n{}\n</control_envelope_schema>\n{}",
         system_prompt(),
+        delivery,
         serde_json::to_string(&repository_tool_schemas()).unwrap_or_else(|_| "[]".into()),
         serde_json::to_string(&messages).unwrap_or_else(|_| "[]".into()),
         serde_json::to_string(&exchanges).unwrap_or_else(|_| "[]".into()),
@@ -3692,7 +4046,7 @@ fn repository_tool_schemas() -> Vec<(&'static str, &'static str, Value)> {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "maxLength": 256 },
-                    "backend": { "type": "string", "enum": ["codex", "claude", "gemini", "opencode"] },
+                    "backend": { "type": "string", "enum": ["codex", "claude", "gemini", "opencode", "antigravity"] },
                     "provider": { "type": "string" },
                     "capability": { "type": "string" },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
@@ -3901,7 +4255,7 @@ fn parse_openai_responses(value: &Value) -> Result<ModelResponse, ModelFailure> 
 fn parse_openai_chat(value: &Value) -> Result<ModelResponse, ModelFailure> {
     let message = value
         .pointer("/choices/0/message")
-        .ok_or_else(|| invalid_response("Resposta OpenAI-compatible sem message."))?;
+        .ok_or_else(|| invalid_response("OpenAI-compatible response without a message."))?;
     let content = message
         .get("content")
         .and_then(Value::as_str)
@@ -3942,7 +4296,7 @@ fn parse_anthropic(value: &Value) -> Result<ModelResponse, ModelFailure> {
     let blocks = value
         .get("content")
         .and_then(Value::as_array)
-        .ok_or_else(|| invalid_response("Resposta Anthropic sem content."))?;
+        .ok_or_else(|| invalid_response("Anthropic response without content."))?;
     let mut content = String::new();
     let mut tool_calls = Vec::new();
     for block in blocks {
@@ -3986,14 +4340,14 @@ fn parse_arguments(value: Option<&Value>) -> Result<Value, ModelFailure> {
         Some(Value::String(arguments)) => {
             serde_json::from_str(arguments).map_err(|_| ModelFailure {
                 code: "invalid_tool_arguments".into(),
-                message: "O provider retornou argumentos de ferramenta inválidos.".into(),
+                message: "The provider returned invalid tool arguments.".into(),
                 retryable: false,
             })
         }
         Some(arguments @ Value::Object(_)) => Ok(arguments.clone()),
         _ => Err(ModelFailure {
             code: "invalid_tool_arguments".into(),
-            message: "O provider retornou argumentos de ferramenta inválidos.".into(),
+            message: "The provider returned invalid tool arguments.".into(),
             retryable: false,
         }),
     }
@@ -4012,7 +4366,7 @@ fn provider_error_message(value: &Value) -> String {
         .pointer("/error/message")
         .or_else(|| value.get("message"))
         .and_then(Value::as_str)
-        .unwrap_or("Provider retornou erro sem mensagem.")
+        .unwrap_or("The provider returned an error without a message.")
         .chars()
         .take(500)
         .collect()
@@ -4200,6 +4554,68 @@ mod tests {
         assert!(!loaded.conversation.connection_available);
     }
 
+    /// 2026-09-26: a CLI turn timed out during its seventh round, and that
+    /// round's call stayed `running`; other messages' rounds are untouched.
+    #[test]
+    fn a_turn_that_ends_early_closes_its_round_in_flight() {
+        let (_temp, _workspace, service) = prepare_chat();
+        let conversation = service
+            .create_conversation(CreateChatConversationRequest {
+                project_id: "project-a".into(),
+                target: ChatExecutionTargetRequest::Api {
+                    connection_id: "connection-a".into(),
+                },
+            })
+            .unwrap()
+            .conversation;
+        let database = service.connection().unwrap();
+        let now = now_iso();
+        for (ordinal, message) in ["assistant-timed-out", "assistant-other"]
+            .iter()
+            .enumerate()
+        {
+            database
+                .execute(
+                    "INSERT INTO chat_messages (
+                       id, conversation_id, ordinal, role, content, status, generation_id,
+                       created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, 'assistant', '', 'streaming', ?1, ?4, ?4)",
+                    params![
+                        message,
+                        conversation.id.as_str(),
+                        ordinal as i64,
+                        now.as_str()
+                    ],
+                )
+                .unwrap();
+            database
+                .execute(
+                    "INSERT INTO chat_model_calls (
+                       id, assistant_message_id, round_index, provider_id, model_id, started_at, status
+                     ) VALUES (?1, ?2, 6, 'claude', 'haiku', ?3, 'running')",
+                    params![format!("call-{message}"), message, now.as_str()],
+                )
+                .unwrap();
+        }
+        service
+            .close_running_model_calls("assistant-timed-out", "turn_timeout")
+            .unwrap();
+        let state = |id: &str| -> (String, Option<String>, Option<String>) {
+            database
+                .query_row(
+                    "SELECT status, error_code, completed_at FROM chat_model_calls WHERE id=?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap()
+        };
+        let closed = state("call-assistant-timed-out");
+        assert_eq!(closed.0, "failed");
+        assert_eq!(closed.1.as_deref(), Some("turn_timeout"));
+        assert!(closed.2.is_some());
+        assert_eq!(state("call-assistant-other").0, "running");
+    }
+
     #[test]
     fn reopened_service_recovers_pending_messages_and_running_child_records() {
         let (_temp, _workspace, service) = prepare_chat();
@@ -4348,7 +4764,7 @@ mod tests {
         assert!(
             service
                 .delete_conversation(DeleteChatConversationRequest {
-                    conversation_id: conversation.id,
+                    conversation_id: conversation.id.clone(),
                 })
                 .unwrap()
                 .deleted
@@ -4407,6 +4823,7 @@ mod tests {
             SendChatMessageRequest {
                 conversation_id: conversation.id.clone(),
                 content: "Persist both messages".into(),
+                expected_target: None,
             },
             &workspace,
         );
@@ -4446,8 +4863,9 @@ mod tests {
         let started = service
             .start_turn(
                 SendChatMessageRequest {
-                    conversation_id: conversation.id,
+                    conversation_id: conversation.id.clone(),
                     content: "Cancele antes de iniciar a rede".into(),
+                    expected_target: None,
                 },
                 &workspace,
             )
@@ -4474,6 +4892,29 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.message.status, "cancelled");
         assert_eq!(snapshot.message.error_code.as_deref(), Some("cancelled"));
+        assert_eq!(
+            snapshot.message.target_label.as_deref(),
+            Some("openai / gpt-4.1-mini")
+        );
+        service
+            .update_conversation_target(UpdateChatConversationTargetRequest {
+                conversation_id: conversation.id.clone(),
+                target: ChatExecutionTargetRequest::Cli {
+                    backend: CliBackend::Codex,
+                    model: None,
+                    model_profile: None,
+                },
+            })
+            .unwrap();
+        let historical = service
+            .get_conversation(GetChatConversationRequest {
+                conversation_id: conversation.id,
+            })
+            .unwrap();
+        assert_eq!(
+            historical.messages[1].target_label,
+            snapshot.message.target_label
+        );
     }
 
     #[test]
@@ -4545,10 +4986,32 @@ mod tests {
         ] {
             assert!(!validator.is_valid(&invalid));
         }
-        assert_eq!(
-            companion_schema_for_backend(CliBackend::Claude),
-            companion_control_envelope_schema()
-        );
+        // Claude Code rejects a tool input schema without a root object type
+        // (`tools.0.custom.input_schema.type: Field required`).
+        let claude = companion_schema_for_backend(CliBackend::Claude);
+        assert_eq!(claude["type"], "object");
+        assert_eq!(claude["required"], json!(["response"]));
+        assert!(claude.get("oneOf").is_none() && claude.get("$schema").is_none());
+        let claude_validator = jsonschema::validator_for(&claude).unwrap();
+        assert!(claude_validator.is_valid(&json!({"response":{"type":"final","text":"Ready"}})));
+        assert!(!claude_validator.is_valid(&json!({"type":"final","text":"Ready"})));
+        let claude_result = r#"{"type":"result","is_error":false,"structured_output":{"response":{"type":"final","text":"Ready"}}}"#;
+        let inner = crate::terminals::extract_companion_envelope_json(claude_result)
+            .expect("the inner envelope is found under `response`");
+        assert!(matches!(
+            parse_cli_companion_envelope(&inner, CliBackend::Claude).unwrap(),
+            CompanionControlEnvelope::Final { text } if text == "Ready"
+        ));
+        for backend in [
+            CliBackend::Gemini,
+            CliBackend::Opencode,
+            CliBackend::Antigravity,
+        ] {
+            assert_eq!(
+                companion_schema_for_backend(backend),
+                companion_control_envelope_schema()
+            );
+        }
     }
 
     #[test]
@@ -4609,7 +5072,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_conversation_target_is_immutable_and_survives_restart() {
+    fn cli_conversation_target_survives_restart_and_invalid_targets_are_refused() {
         let (_temp, _workspace, service) = prepare_chat();
         let created = service
             .create_conversation(CreateChatConversationRequest {
@@ -4666,6 +5129,189 @@ mod tests {
         assert!(invalid_model.is_err());
     }
 
+    /// ADR-014 amendment (2026-09-22): the Companion panel applies to the open
+    /// conversation, and the project remembers the last chosen target across
+    /// restarts. A running reply and an invalid target leave it unchanged.
+    #[test]
+    fn v43_backfills_historical_assistant_target_without_changing_user_messages() {
+        let database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE chat_messages(id TEXT PRIMARY KEY, role TEXT NOT NULL);
+                 CREATE TABLE chat_model_calls(
+                   id TEXT PRIMARY KEY, assistant_message_id TEXT, provider_id TEXT,
+                   model_id TEXT, model_profile TEXT, started_at TEXT
+                 );
+                 INSERT INTO chat_messages VALUES('user-1','user'),('assistant-1','assistant');
+                 INSERT INTO chat_model_calls VALUES(
+                   'call-1','assistant-1','codex','gpt-5.6-luna','low','2026-09-26T00:00:00Z'
+                 );",
+            )
+            .unwrap();
+        database
+            .execute_batch(include_str!(
+                "../migrations/V43__companion_turn_target_and_model_evidence.sql"
+            ))
+            .unwrap();
+        let historical: Option<String> = database
+            .query_row(
+                "SELECT target_label FROM chat_messages WHERE id='assistant-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let user: Option<String> = database
+            .query_row(
+                "SELECT target_label FROM chat_messages WHERE id='user-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let verification: String = database
+            .query_row(
+                "SELECT model_verification FROM chat_model_calls WHERE id='call-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(historical.as_deref(), Some("codex / gpt-5.6-luna / low"));
+        assert_eq!(user, None);
+        assert_eq!(verification, "unverified");
+    }
+
+    #[test]
+    fn a_conversation_is_retargeted_and_the_project_remembers_the_target() {
+        let (_temp, _workspace, service) = prepare_chat();
+        assert_eq!(service.default_target("project-a").unwrap(), None);
+        let claude = ChatExecutionTargetRequest::Cli {
+            backend: CliBackend::Claude,
+            model: Some("haiku".into()),
+            model_profile: None,
+        };
+        let created = service
+            .create_conversation(CreateChatConversationRequest {
+                project_id: "project-a".into(),
+                target: claude.clone(),
+            })
+            .unwrap()
+            .conversation;
+        assert_eq!(
+            service.default_target("project-a").unwrap(),
+            Some(claude.clone())
+        );
+
+        let codex = ChatExecutionTargetRequest::Cli {
+            backend: CliBackend::Codex,
+            model: None,
+            model_profile: None,
+        };
+        let retargeted = service
+            .update_conversation_target(UpdateChatConversationTargetRequest {
+                conversation_id: created.id.clone(),
+                target: codex.clone(),
+            })
+            .unwrap()
+            .conversation;
+        assert_eq!(retargeted.cli_backend, Some(CliBackend::Codex));
+        assert_eq!(retargeted.model_id, "default");
+        assert_eq!(retargeted.model_source, CliModelSelectionSource::Default);
+
+        // The remembered target survives a restart of the service.
+        let database_path = service.db_path.clone();
+        drop(service);
+        let reopened = Arc::new(ChatService::new(
+            database_path,
+            Arc::new(TestCredentials),
+            Arc::new(NoopChatEventSink),
+        ));
+        assert_eq!(
+            reopened.default_target("project-a").unwrap(),
+            Some(codex.clone())
+        );
+
+        // An invalid target is refused and changes nothing.
+        let invalid = reopened.update_conversation_target(UpdateChatConversationTargetRequest {
+            conversation_id: created.id.clone(),
+            target: ChatExecutionTargetRequest::Cli {
+                backend: CliBackend::Claude,
+                model: Some("model with spaces".into()),
+                model_profile: None,
+            },
+        });
+        assert!(invalid.is_err());
+        assert_eq!(reopened.default_target("project-a").unwrap(), Some(codex));
+
+        // A stale panel selection cannot start a turn on the retargeted model.
+        let stale_send = reopened.start_turn(
+            SendChatMessageRequest {
+                conversation_id: created.id.clone(),
+                content: "Use the model shown in the panel".into(),
+                expected_target: Some(claude.clone()),
+            },
+            _workspace.as_path(),
+        );
+        assert_eq!(stale_send.unwrap_err().code, "target_changed");
+        let message_count: i64 = reopened
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM chat_messages WHERE conversation_id=?1",
+                [&created.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(message_count, 0);
+
+        // A reply in progress keeps the conversation on its current target.
+        reopened
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO chat_messages (
+                   id, conversation_id, ordinal, role, content, status, generation_id,
+                   created_at, updated_at
+                 ) VALUES ('assistant-a', ?1, 0, 'assistant', 'parcial', 'streaming',
+                           'generation-a', ?2, ?2)",
+                params![created.id, now_iso()],
+            )
+            .unwrap();
+        let busy = reopened
+            .update_conversation_target(UpdateChatConversationTargetRequest {
+                conversation_id: created.id.clone(),
+                target: claude,
+            })
+            .unwrap_err();
+        assert_eq!(busy.code, "conversation_busy");
+        let loaded = reopened
+            .get_conversation(GetChatConversationRequest {
+                conversation_id: created.id,
+            })
+            .unwrap()
+            .conversation;
+        assert_eq!(loaded.cli_backend, Some(CliBackend::Codex));
+    }
+
+    #[test]
+    fn companion_read_budget_rejects_an_overlarge_round_before_execution() {
+        let calls = (0..21)
+            .map(|index| CompanionControlCall {
+                id: format!("read-{index}"),
+                name: "list_repository_tree".into(),
+                arguments: json!({}),
+            })
+            .collect();
+        let envelope = CompanionControlEnvelope::ToolCalls { calls };
+        assert!(exceeds_remaining_read_budget(&envelope, 20));
+        assert!(!exceeds_remaining_read_budget(&envelope, 21));
+        assert!(exceeds_remaining_read_budget(&envelope, 0));
+        assert!(!exceeds_remaining_read_budget(
+            &CompanionControlEnvelope::Final {
+                text: "Done".into()
+            },
+            0,
+        ));
+    }
+
     #[test]
     fn agent_outputs_are_project_scoped_and_only_enter_prompts_after_a_tool_call() {
         let (_temp, _workspace, service) = prepare_chat();
@@ -4695,9 +5341,30 @@ mod tests {
             &[],
             false,
             CliBackend::Codex,
+            20,
         );
+        assert!(prompt.contains("20 reads remaining in total"));
         assert!(!prompt.contains("alpha-private-evidence"));
         assert!(!prompt.contains("beta-private-evidence"));
+        // Only Claude answers through a StructuredOutput tool.
+        assert!(!prompt.contains("StructuredOutput"));
+        let claude_prompt = build_cli_companion_prompt(
+            &[ProtocolMessage {
+                role: "user".into(),
+                content: "Which model should I use?".into(),
+            }],
+            &[],
+            false,
+            CliBackend::Claude,
+            0,
+        );
+        assert!(claude_prompt.contains("0 reads remaining in total"));
+        assert!(claude_prompt.contains("Your only callable tool is StructuredOutput"));
+        // Operations are framed as requests, never as callable tools.
+        for rendered in [&prompt, &claude_prompt] {
+            assert!(rendered.contains("are not tools you can call"));
+            assert!(rendered.contains("<operations>\n[[\"list_repository_tree\""));
+        }
 
         let matches = search_agent_outputs_tool(
             &service.db_path,

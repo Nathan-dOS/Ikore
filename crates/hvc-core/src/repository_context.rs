@@ -153,11 +153,9 @@ impl RepositoryContext {
     pub fn new(root: &Path) -> Result<Self, RepositoryError> {
         let canonical = root
             .canonicalize()
-            .map_err(|error| RepositoryError(format!("Workspace inválido: {error}")))?;
+            .map_err(|error| RepositoryError(format!("Invalid workspace: {error}")))?;
         if !canonical.is_dir() {
-            return Err(RepositoryError(
-                "O workspace precisa ser um diretório.".into(),
-            ));
+            return Err(RepositoryError("The workspace must be a directory.".into()));
         }
         Ok(Self { root: canonical })
     }
@@ -203,7 +201,7 @@ impl RepositoryContext {
     ) -> Result<RepositorySearchResult, RepositoryError> {
         if args.query.is_empty() || args.query.chars().count() > MAX_QUERY_CHARS {
             return Err(RepositoryError(
-                "A busca deve conter entre 1 e 256 caracteres.".into(),
+                "The search must have between 1 and 256 characters.".into(),
             ));
         }
         let scope = self.resolve_relative(args.path.as_deref().unwrap_or(""), true)?;
@@ -213,11 +211,11 @@ impl RepositoryContext {
             "literal" => None,
             "regex" => Some(
                 Regex::new(&args.query)
-                    .map_err(|error| RepositoryError(format!("Regex inválida: {error}")))?,
+                    .map_err(|error| RepositoryError(format!("Invalid regex: {error}")))?,
             ),
             _ => {
                 return Err(RepositoryError(
-                    "Modo de busca deve ser 'literal' ou 'regex'.".into(),
+                    "Search mode must be 'literal' or 'regex'.".into(),
                 ));
             }
         };
@@ -268,7 +266,7 @@ impl RepositoryContext {
         let requested_end = args.end_line.unwrap_or(start + MAX_READ_LINES - 1);
         if requested_end < start {
             return Err(RepositoryError(
-                "endLine deve ser maior ou igual a startLine.".into(),
+                "endLine must be greater than or equal to startLine.".into(),
             ));
         }
         let end = requested_end.min(start + MAX_READ_LINES - 1);
@@ -313,31 +311,29 @@ impl RepositoryContext {
             })
         {
             return Err(RepositoryError(
-                "A ferramenta aceita somente paths relativos sem '..'.".into(),
+                "The tool accepts only relative paths without '..'.".into(),
             ));
         }
         let candidate = self.root.join(requested);
         self.reject_symlink_components(&candidate)?;
         let canonical = candidate
             .canonicalize()
-            .map_err(|_| RepositoryError("Path não encontrado no repositório.".into()))?;
+            .map_err(|_| RepositoryError("Path not found in the repository.".into()))?;
         if !canonical.starts_with(&self.root) {
             return Err(RepositoryError(
-                "Acesso fora da raiz do repositório foi bloqueado.".into(),
+                "Access outside the repository root was blocked.".into(),
             ));
         }
         if canonical != self.root && !self.path_is_visible(&canonical) {
             return Err(RepositoryError(
-                "Path ignorado ou excluído pelas regras de segurança.".into(),
+                "Path ignored or excluded by the safety rules.".into(),
             ));
         }
         if directory && !canonical.is_dir() {
-            return Err(RepositoryError(
-                "O path informado não é um diretório.".into(),
-            ));
+            return Err(RepositoryError("The path is not a directory.".into()));
         }
         if !directory && !canonical.is_file() {
-            return Err(RepositoryError("O path informado não é um arquivo.".into()));
+            return Err(RepositoryError("The path is not a file.".into()));
         }
         Ok(canonical)
     }
@@ -354,7 +350,7 @@ impl RepositoryContext {
     fn reject_symlink_components(&self, candidate: &Path) -> Result<(), RepositoryError> {
         let relative = candidate
             .strip_prefix(&self.root)
-            .map_err(|_| RepositoryError("Path fora do repositório.".into()))?;
+            .map_err(|_| RepositoryError("Path outside the repository.".into()))?;
         let mut current = self.root.clone();
         for component in relative.components() {
             current.push(component.as_os_str());
@@ -362,7 +358,7 @@ impl RepositoryContext {
                 .map(|metadata| is_link(&metadata))
                 .unwrap_or(false)
             {
-                return Err(RepositoryError("Links simbólicos não são seguidos.".into()));
+                return Err(RepositoryError("Symbolic links are not followed.".into()));
             }
         }
         Ok(())
@@ -381,7 +377,7 @@ impl RepositoryContext {
         let path = self.resolve_relative(relative.as_str(), false)?;
         if !is_code_path(&path) {
             return Err(RepositoryError(
-                "O path informado não é uma fonte de código elegível.".into(),
+                "The path is not an eligible source file.".into(),
             ));
         }
         crate::orchestration::SourceSnapshot::from_text(
@@ -424,7 +420,7 @@ impl RepositoryContext {
             enumerated_files: 0,
             read_bytes: 0,
             truncated: false,
-            diagnostics: vec!["exact_paths: fontes resolvidas pelo índice do Vault.".into()],
+            diagnostics: vec!["exact_paths: sources resolved by the Vault index.".into()],
         };
         let mut sources = Vec::new();
         let mut seen = HashSet::new();
@@ -481,7 +477,7 @@ impl RepositoryContext {
             coverage.state = CoverageState::Partial;
             coverage
                 .diagnostics
-                .push("truncated: orçamento da resolução exata atingido.".into());
+                .push("truncated: the exact-resolution budget was reached.".into());
         }
         Ok((sources, coverage))
     }
@@ -506,7 +502,8 @@ impl RepositoryContext {
             {
                 if paths.len() >= 10_000 {
                     return Err(RepositoryError(
-                        "Catálogo documental excede 10.000 arquivos; escopo incompleto.".into(),
+                        "The document catalog exceeds 10,000 files; the scope is incomplete."
+                            .into(),
                     ));
                 }
                 paths.push(self.relative_display(entry.path())?);
@@ -549,8 +546,7 @@ impl RepositoryContext {
             read_bytes: 0,
             truncated: false,
             diagnostics: vec![
-                "Inventário heurístico limitado; não comprova cobertura global do repositório."
-                    .into(),
+                "Limited heuristic inventory; it does not prove global repository coverage.".into(),
             ],
         };
 
@@ -568,7 +564,7 @@ impl RepositoryContext {
                     coverage.state = CoverageState::Partial;
                     coverage
                         .diagnostics
-                        .push(format!("Entrada indisponível durante enumeração: {error}"));
+                        .push(format!("Entry unavailable during enumeration: {error}"));
                     continue;
                 }
             };
@@ -601,7 +597,7 @@ impl RepositoryContext {
                 Err(error) => {
                     coverage.state = CoverageState::Partial;
                     coverage.diagnostics.push(format!(
-                        "Metadados indisponíveis para `{relative_path}`: {error}"
+                        "Metadata unavailable for `{relative_path}`: {error}"
                     ));
                     continue;
                 }
@@ -616,7 +612,7 @@ impl RepositoryContext {
             coverage.state = CoverageState::Partial;
             coverage
                 .diagnostics
-                .push("truncated: limite de arquivos, profundidade ou duração atingido.".into());
+                .push("truncated: the file, depth or time limit was reached.".into());
         }
         Ok((files, coverage))
     }
@@ -640,7 +636,7 @@ impl RepositoryContext {
             let bytes = content.len() as u64;
             if files.len() >= max_files || total_bytes.saturating_add(bytes) > max_total_bytes {
                 return Err(RepositoryError(
-                    "Workspace seguro excede o limite de arquivos ou bytes.".into(),
+                    "The safe workspace exceeds the file or byte limit.".into(),
                 ));
             }
             total_bytes = total_bytes.saturating_add(bytes);
@@ -666,33 +662,31 @@ impl RepositoryContext {
             .to_ascii_lowercase();
         if is_sensitive_name(&name) || !allowed_text_name(&name) {
             return Err(RepositoryError(
-                "Arquivo sensível, binário ou não suportado foi bloqueado.".into(),
+                "A sensitive, binary or unsupported file was blocked.".into(),
             ));
         }
         let file = fs::File::open(path)
-            .map_err(|error| RepositoryError(format!("Falha ao ler arquivo: {error}")))?;
+            .map_err(|error| RepositoryError(format!("Failed to read the file: {error}")))?;
         let metadata = file
             .metadata()
             .map_err(|e| RepositoryError(e.to_string()))?;
         if !metadata.is_file() || metadata.len() > limit.min(MAX_FILE_BYTES) {
-            return Err(RepositoryError(
-                "Arquivos acima de 1 MiB não podem ser consultados.".into(),
-            ));
+            return Err(RepositoryError("Files over 1 MiB cannot be read.".into()));
         }
         let mut bytes = Vec::new();
         file.take(limit.min(MAX_FILE_BYTES))
             .read_to_end(&mut bytes)
-            .map_err(|error| RepositoryError(format!("Falha ao ler arquivo: {error}")))?;
+            .map_err(|error| RepositoryError(format!("Failed to read the file: {error}")))?;
         self.reject_symlink_components(path)?;
         if bytes.contains(&0) || bytes.len() as u64 != metadata.len() {
             return Err(RepositoryError(
-                "Arquivo binário ou alterado durante a leitura.".into(),
+                "The file is binary or changed while being read.".into(),
             ));
         }
         let size = bytes.len() as u64;
         String::from_utf8(bytes)
             .map(|text| (text, size))
-            .map_err(|_| RepositoryError("Arquivo binário ou não UTF-8 foi bloqueado.".into()))
+            .map_err(|_| RepositoryError("A binary or non-UTF-8 file was blocked.".into()))
     }
 
     /// One bounded enumeration, no per-keyword scans and no file reads in the walker.
@@ -718,7 +712,7 @@ impl RepositoryContext {
             read_bytes: 0,
             truncated: false,
             diagnostics: vec![
-                "Coleta lexical limitada; não comprova dependências ausentes nem cobertura global."
+                "Limited lexical collection; it proves neither missing dependencies nor global coverage."
                     .into(),
             ],
         };
@@ -773,10 +767,12 @@ impl RepositoryContext {
             coverage.state = CoverageState::Partial;
             coverage
                 .diagnostics
-                .push("truncated: limite de enumeração, bytes ou tempo atingido.".into());
+                .push("truncated: the enumeration, byte or time limit was reached.".into());
         }
         if coverage.state == CoverageState::Partial {
-            coverage.diagnostics.push("Algumas fontes não foram lidas; arquivos indisponíveis não são evidência negativa.".into());
+            coverage.diagnostics.push(
+                "Some sources were not read; unavailable files are not negative evidence.".into(),
+            );
         }
         Ok((sources, coverage))
     }
@@ -784,7 +780,7 @@ impl RepositoryContext {
     fn relative_display(&self, path: &Path) -> Result<String, RepositoryError> {
         path.strip_prefix(&self.root)
             .map(|relative| relative.to_string_lossy().replace('\\', "/"))
-            .map_err(|_| RepositoryError("Path fora do repositório.".into()))
+            .map_err(|_| RepositoryError("Path outside the repository.".into()))
     }
 }
 

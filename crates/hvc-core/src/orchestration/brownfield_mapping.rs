@@ -37,14 +37,14 @@ impl PersistenceService {
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::find_project_by_id(&tx, &project_id, false)?.ok_or_else(|| {
             PersistenceServiceError::NotFound(
-                "Projeto ativo não encontrado para o mapeamento brownfield.".into(),
+                "Active project not found for brownfield mapping.".into(),
             )
         })?;
         if Self::read_runtime_setting(&tx, &brownfield_consent_key(&project_id))?.as_deref()
             != Some("true")
         {
             return Err(PersistenceServiceError::Validation(
-                "O mapeamento brownfield exige consentimento ativo para este projeto.".into(),
+                "Brownfield mapping requires active consent for this project.".into(),
             ));
         }
         let id = Self::ensure_brownfield_mapping_job_tx(&tx, &project_id)?;
@@ -202,7 +202,7 @@ impl PersistenceService {
                 {
                     metrics.coverage_partial = true;
                     metrics.diagnostics.push(
-                        "budget_exhausted: bootstrap agendou a continuação das fontes restantes."
+                        "budget_exhausted: bootstrap scheduled the remaining sources to continue."
                             .into(),
                     );
                     deferred_bootstrap.extend(sources[index..].iter().map(|pending| {
@@ -347,7 +347,7 @@ impl PersistenceService {
                 let mut db = self.connection()?;
                 let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
                 tx.execute(
-                    "UPDATE brownfield_refresh_queue SET state='superseded',diagnostic='Revisão mudou antes do refresh.',updated_at=?4 WHERE project_id=?1 AND relative_path=?2 AND content_revision_key=?3",
+                    "UPDATE brownfield_refresh_queue SET state='superseded',diagnostic='Revision changed before the refresh.',updated_at=?4 WHERE project_id=?1 AND relative_path=?2 AND content_revision_key=?3",
                     params![project_id, path, key, Self::now_iso()],
                 )?;
                 Self::enqueue_brownfield_refresh_tx(
@@ -721,7 +721,7 @@ impl PersistenceService {
             return Ok(());
         }
         let diagnostic = format!(
-            "Fonte `{relative_path}` mudou desde a revisão observada; regeneração não foi agendada."
+            "Source `{relative_path}` changed since the observed revision; regeneration was not scheduled."
         );
         let now = Self::now_iso();
         for (note_id, artifact_id, publication_state) in affected {
@@ -757,7 +757,7 @@ impl PersistenceService {
         )?;
         if !valid {
             return Err(PersistenceServiceError::Cancelled(
-                "Mapeamento brownfield superado ou sem consentimento.".into(),
+                "Brownfield mapping superseded or without consent.".into(),
             ));
         }
         Ok(())

@@ -1,4 +1,4 @@
-//! Development fixture for ADR-024: a v4 pulsation parked at its Specification
+//! Development fixture for ADR-027: a v4 pulsation parked at its Specification
 //! checkpoint, so the real GUI can be opened on the Review Brief tab.
 //!
 //! Usage: `review_brief_fixture NEW_DIRECTORY [--revised] [--stage STAGE]`,
@@ -10,11 +10,11 @@
 //!
 //! `--revised` first requests a revision with feedback composed from flags,
 //! as Review sends it, and parks at the second Specification checkpoint, whose
-//! brief shows what changed (ADR-024 M3).
+//! brief shows what changed (ADR-027 M3).
 //!
 //! `--stage contract|test|integrator` approves on to that checkpoint;
 //! `--stage failure` makes the code worker diagnose a contract conflict, which
-//! parks a stage failure with three revision targets (ADR-024 M4). When the
+//! parks a stage failure with three revision targets (ADR-027 M4). When the
 //! `check_fixture` binary sits next to the examples folder, a required compile
 //! check runs, so the Test brief carries a host receipt.
 use hvc_core::{
@@ -289,10 +289,14 @@ fn main() {
         if request.body.trim().is_empty() {
             return ScriptedResponse::json(400, r#"{"error":"empty request"}"#);
         }
+        let body: Value = serde_json::from_str(&request.body).expect("provider request JSON");
+        let model = body["model"]
+            .as_str()
+            .expect("provider request model identity");
         let content = reply(&parse_prompt(request), fail_code);
         ScriptedResponse::json(
             200,
-            json!({"choices":[{"message":{"content":content.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":60}}).to_string(),
+            json!({"model":model,"choices":[{"message":{"content":content.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":60}}).to_string(),
         )
     });
     let data = root.join("data");

@@ -14,6 +14,27 @@ use hvc_core::workspace_service::WorkspaceChangedEvent;
 use crate::errors::UiCommandError;
 
 const MAX_VISIBLE_EVENTS: usize = 200;
+/// Bytes of live LLM output kept for the Logs monitor. The whole string is re-shaped on every
+/// streamed batch, so an unbounded answer would stall the window; the persisted execution keeps
+/// the full text.
+const MAX_VISIBLE_OUTPUT_BYTES: usize = 32 * 1024;
+const OUTPUT_TRIMMED_MARKER: &str = "[earlier output trimmed]
+";
+
+/// Keeps the last `MAX_VISIBLE_OUTPUT_BYTES` of `output` (on a char boundary) behind a marker.
+fn keep_output_tail(output: String) -> String {
+    if output.len() <= MAX_VISIBLE_OUTPUT_BYTES {
+        return output;
+    }
+    let mut start = output.len() - MAX_VISIBLE_OUTPUT_BYTES;
+    while !output.is_char_boundary(start) {
+        start += 1;
+    }
+    let body = output[start..]
+        .strip_prefix(OUTPUT_TRIMMED_MARKER)
+        .unwrap_or(&output[start..]);
+    format!("{OUTPUT_TRIMMED_MARKER}{body}")
+}
 
 pub(crate) type LogsFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, UiCommandError>> + Send + 'static>>;
@@ -309,47 +330,66 @@ impl LogsModel {
     }
 
     pub(crate) fn record_llm(&mut self, envelope: LlmEventEnvelope) -> SequenceClassification {
-        let classification = self.classify(&envelope);
-        let summary = llm_summary(&envelope.event);
-        self.push_event(RuntimeEventRecord {
-            category: "llm".into(),
-            name: envelope.event.event_name().into(),
-            summary: summary.into(),
-            sequence: Some(envelope.sequence),
-            timestamp: crate::time::current_time_only().into(),
-        });
+        self.record_llm_batch(std::iter::once(envelope))
+    }
 
-        if classification == SequenceClassification::Stale {
-            return classification;
-        }
+    /// Applies a contiguous group of LLM events while materializing `visible_output` once. The
+    /// event receiver still validates every sequence number, so batching presentation never
+    /// hides a gap or changes the persisted event order.
+    pub(crate) fn record_llm_batch(
+        &mut self,
+        envelopes: impl IntoIterator<Item = LlmEventEnvelope>,
+    ) -> SequenceClassification {
+        let mut result = SequenceClassification::Stale;
+        let mut pending_output: Option<String> = None;
 
-        self.active_execution_id = Some(envelope.execution_id.clone().into());
-        self.active_generation_id = Some(envelope.generation_id.clone().into());
-        if classification == SequenceClassification::Gap {
-            self.visible_output_complete = false;
-            self.resync_pending = true;
-            return classification;
-        }
+        for envelope in envelopes {
+            let classification = self.classify(&envelope);
+            let summary = llm_summary(&envelope.event);
+            self.push_event(RuntimeEventRecord {
+                category: "llm".into(),
+                name: envelope.event.event_name().into(),
+                summary: summary.into(),
+                sequence: Some(envelope.sequence),
+                timestamp: crate::time::current_time_only().into(),
+            });
 
-        if self.resync_pending {
-            return classification;
-        }
-
-        match envelope.event {
-            LlmStreamEvent::RouteStarted { .. } => {
-                self.visible_output = "".into();
+            if classification == SequenceClassification::Stale {
+                continue;
+            }
+            result = classification;
+            self.active_execution_id = Some(envelope.execution_id.clone().into());
+            self.active_generation_id = Some(envelope.generation_id.clone().into());
+            if classification == SequenceClassification::Gap {
                 self.visible_output_complete = false;
+                self.resync_pending = true;
+                result = SequenceClassification::Gap;
+                continue;
             }
-            LlmStreamEvent::TokenDelta { text } => {
-                let mut output = self.visible_output.to_string();
-                output.push_str(&text);
-                self.visible_output = output.into();
+            if self.resync_pending {
+                continue;
             }
-            LlmStreamEvent::RouteCompleted { .. } => self.visible_output_complete = true,
-            LlmStreamEvent::RouteFailed { .. } => self.visible_output_complete = false,
-            _ => {}
+
+            match envelope.event {
+                LlmStreamEvent::RouteStarted { .. } => {
+                    pending_output = Some(String::new());
+                    self.visible_output_complete = false;
+                }
+                LlmStreamEvent::TokenDelta { text } => {
+                    pending_output
+                        .get_or_insert_with(|| self.visible_output.to_string())
+                        .push_str(&text);
+                }
+                LlmStreamEvent::RouteCompleted { .. } => self.visible_output_complete = true,
+                LlmStreamEvent::RouteFailed { .. } => self.visible_output_complete = false,
+                _ => {}
+            }
         }
-        classification
+
+        if let Some(output) = pending_output {
+            self.visible_output = keep_output_tail(output).into();
+        }
+        result
     }
 
     pub(crate) fn begin_resync(&mut self) -> u64 {
@@ -443,6 +483,26 @@ fn llm_summary(event: &LlmStreamEvent) -> String {
 }
 
 #[cfg(test)]
+mod output_tail_tests {
+    use super::*;
+
+    #[test]
+    fn live_output_keeps_a_bounded_tail_on_a_char_boundary() {
+        let short = "answer".to_string();
+        assert_eq!(keep_output_tail(short.clone()), short);
+
+        let long = format!("{}{}", "→".repeat(MAX_VISIBLE_OUTPUT_BYTES), "the end");
+        let kept = keep_output_tail(long);
+        assert!(kept.starts_with(OUTPUT_TRIMMED_MARKER));
+        assert!(kept.ends_with("the end"));
+        assert!(kept.len() <= MAX_VISIBLE_OUTPUT_BYTES + OUTPUT_TRIMMED_MARKER.len());
+        // Trimming again (the next streamed batch) never stacks markers.
+        let again = keep_output_tail(format!("{kept}{}", "x".repeat(10)));
+        assert_eq!(again.matches(OUTPUT_TRIMMED_MARKER).count(), 1);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use hvc_core::llm::{LlmEventEnvelope, LlmExecutionSnapshot, LlmStreamEvent};
     use serde_json::json;
@@ -470,6 +530,26 @@ mod tests {
         assert_eq!(model.record_llm(event(4)), SequenceClassification::Next);
         assert_eq!(model.visible_output, "x");
         assert!(!model.visible_output_complete);
+    }
+
+    #[test]
+    fn batches_contiguous_deltas_without_losing_sequence_or_output() {
+        let mut model = LogsModel::default();
+        let mut second = event(2);
+        second.event = LlmStreamEvent::TokenDelta { text: "y".into() };
+        let mut third = event(3);
+        third.event = LlmStreamEvent::TokenDelta { text: "z".into() };
+
+        assert_eq!(
+            model.record_llm_batch(vec![event(1), second, third]),
+            SequenceClassification::Next
+        );
+        assert_eq!(model.visible_output, "xyz");
+        assert_eq!(model.events.len(), 3);
+        assert_eq!(
+            model.events.last().and_then(|event| event.sequence),
+            Some(3)
+        );
     }
 
     #[test]

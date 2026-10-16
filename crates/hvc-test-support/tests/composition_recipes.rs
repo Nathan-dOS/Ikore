@@ -142,9 +142,23 @@ fn the_integrator_receives_host_prechecks_and_a_recovery_command_is_idempotent_a
             assert!(
                 request
                     .body
-                    .contains("Check `fixture_compile` of stage Code has no receipt (not run)."),
+                    .contains("The Code check named fixture_compile has no receipt (not run)."),
                 "{}",
                 facts.user_prompt
+            );
+            // Pre-checks name earlier stages' checks without a citable handle
+            // ("Teste Haiku Only 1").
+            let prechecks = facts
+                .user_prompt
+                .split("## Host pre-checks")
+                .nth(1)
+                .and_then(|rest| rest.split("\n## ").next())
+                .unwrap();
+            assert!(!prechecks.contains("`fixture_compile`"), "{prechecks}");
+            assert!(
+                facts
+                    .user_prompt
+                    .contains("cite no check handle that is not listed under Host checks")
             );
             // Diagnoses a production defect so the stage parks and a typed
             // recovery command can be applied.

@@ -83,21 +83,21 @@ pub fn assess(
         add(
             "few_informative_tokens",
             25,
-            "Menos de três palavras informativas.",
+            "Fewer than three informative words.",
         );
     }
     if !has(&dict.verbs) {
         add(
             "missing_verb",
             15,
-            "Ação não reconhecida pelo dicionário v1.",
+            "Action not recognized by the v1 dictionary.",
         );
     }
     if has(&dict.generic) && !observable {
         add(
             "generic_without_evidence",
             40,
-            "Melhoria/correção genérica sem resultado observável.",
+            "Generic improvement or fix without an observable result.",
         );
     }
     if !observable
@@ -109,7 +109,7 @@ pub fn assess(
         add(
             "open_ended",
             20,
-            "Pedido explicitamente aberto sem resultado observável.",
+            "Explicitly open-ended request without an observable result.",
         );
     }
     let score = contributions

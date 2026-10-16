@@ -176,7 +176,7 @@ impl Render for SelectMenu {
             .p_1()
             .rounded_md()
             .border_1()
-            .border_color(theme::border())
+            .border_color(theme::border_strong())
             .bg(theme::surface_raised())
             .shadow_lg()
             .flex()
@@ -333,10 +333,14 @@ fn control_options(
                 .collect()
         })
     });
+    if let Some(segments) = segmented {
+        return segmented_control(id, label, segments, enabled, cx);
+    }
     div()
         .id(SharedString::from(id.clone()))
         .debug_selector(move || debug.clone())
         .tab_index(0)
+        .focus_visible(|style| style.border_color(theme::accent()))
         .relative()
         // A picker is as wide as its label and value: it neither fills a row
         // (`flex_1`) nor stretches across a column. Grids still size it to the cell.
@@ -346,7 +350,7 @@ fn control_options(
         .p_2()
         .rounded_md()
         .border_1()
-        .border_color(theme::border())
+        .border_color(theme::border_strong())
         .bg(theme::surface_raised())
         .opacity(if enabled { 1.0 } else { 0.55 })
         .child(
@@ -364,63 +368,250 @@ fn control_options(
                     label
                 }),
         )
-        .when_some(segmented.clone(), |d, segments| {
-            d.child(
-                div()
-                    .flex()
-                    .gap_1()
-                    .children(segments.into_iter().map(|choice| {
-                        let target = id.clone();
-                        let chosen = choice.value.clone();
-                        div()
-                            .flex_1()
-                            .child(crate::widgets::btn(
-                                format!("{id}:{}", choice.value),
-                                choice.label,
-                                if choice.selected {
-                                    crate::widgets::ButtonVariant::Selected
-                                } else {
-                                    crate::widgets::ButtonVariant::Ghost
-                                },
-                                enabled && choice.reason.is_none(),
-                                cx,
-                                move |m, cx| m.apply_choice(&target, &chosen, cx),
-                            ))
-                            .when_some(choice.reason, |d, reason| {
-                                d.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(theme::text_muted())
-                                        .child(reason),
-                                )
-                            })
-                    })),
-            )
-        })
-        .when(segmented.is_none(), |d| {
-            d.child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .gap_2()
-                    .text_sm()
-                    .child(value)
-                    .child("▾"),
-            )
-            .when(enabled, |d| {
-                d.cursor_pointer()
-                    .on_click(cx.listener(move |m, _, window, cx| {
-                        m.open_select(&id, bounds.get(), window, cx);
-                    }))
-                    .on_key_down(cx.listener(move |m, e: &gpui::KeyDownEvent, window, cx| {
-                        if matches!(e.keystroke.key.as_str(), "enter" | "space" | "down") {
-                            m.open_select(&key_id, key_bounds.get(), window, cx);
-                            cx.stop_propagation();
-                        }
-                    }))
-            })
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .text_sm()
+                .child(div().min_w_0().text_ellipsis().child(value))
+                .child(crate::widgets::icon(
+                    crate::icons::Icon::ChevronDown,
+                    px(14.0),
+                    theme::text_muted(),
+                )),
+        )
+        .when(enabled, |d| {
+            d.cursor_pointer()
+                .on_click(cx.listener(move |m, _, window, cx| {
+                    m.open_select(&id, bounds.get(), window, cx);
+                }))
+                .on_key_down(cx.listener(move |m, e: &gpui::KeyDownEvent, window, cx| {
+                    if matches!(e.keystroke.key.as_str(), "enter" | "space" | "down") {
+                        m.open_select(&key_id, key_bounds.get(), window, cx);
+                        cx.stop_propagation();
+                    }
+                }))
         })
         .into_any_element()
+}
+
+/// Two to four exclusive choices as the shared segmented control, its label a quiet eyebrow above
+/// the track instead of a box around buttons. Segment ids stay `{id}:{value}`.
+fn segmented_control(
+    id: String,
+    label: SharedString,
+    segments: Vec<Choice>,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let debug = id.clone();
+    let reasons: Vec<String> = segments
+        .iter()
+        .filter_map(|choice| {
+            choice
+                .reason
+                .as_ref()
+                .map(|reason| format!("{}: {reason}", choice.label))
+        })
+        .collect();
+    div()
+        .id(SharedString::from(id.clone()))
+        .debug_selector(move || debug.clone())
+        .flex_shrink_0()
+        .max_w(px(360.0))
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_xs()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(theme::text_subtle())
+                .child(if label.as_ref() == "MODO" {
+                    SharedString::from("MODE")
+                } else {
+                    label
+                }),
+        )
+        .child(
+            crate::widgets::segment_track(div()).children(segments.into_iter().map(|choice| {
+                let target = id.clone();
+                let chosen = choice.value.clone();
+                let segment_id = SharedString::from(format!("{id}:{}", choice.value));
+                let selector = segment_id.clone();
+                let available = enabled && choice.reason.is_none();
+                let reason = choice.reason.clone();
+                crate::widgets::segment(
+                    div()
+                        .id(segment_id)
+                        .debug_selector(move || selector.to_string()),
+                    choice.selected,
+                )
+                .when(!available, |segment| {
+                    segment.cursor_default().text_color(theme::text_subtle())
+                })
+                .when_some(reason, |segment, reason| {
+                    let tip = SharedString::from(reason);
+                    segment.tooltip(move |_, cx| {
+                        cx.new(|_| crate::widgets::Tooltip::new(tip.clone())).into()
+                    })
+                })
+                .when(available && !choice.selected, |segment| {
+                    segment.on_click(
+                        cx.listener(move |m, _, _, cx| m.apply_choice(&target, &chosen, cx)),
+                    )
+                })
+                .child(choice.label)
+            })),
+        )
+        .children(reasons.into_iter().map(|reason| {
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(reason)
+        }))
+        .into_any_element()
+}
+
+/// A one-line picker the height of a button ("Filter: All ⌄") for toolbars, where the two-line
+/// labelled `control` towered over the buttons beside it. Opens the same menu.
+/// A picker that sits in a form grid next to text inputs: the same eyebrow label above and a
+/// 40 px box drawn like `NativeTextInput`, filling its cell, so a row of fields reads as one form.
+pub(crate) fn field_control(
+    id: impl Into<String>,
+    label: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let id = id.into();
+    let debug = id.clone();
+    let key_id = id.clone();
+    let bounds = Rc::new(Cell::new(Bounds::default()));
+    let measured = bounds.clone();
+    let key_bounds = bounds.clone();
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .min_w_0()
+        .child(
+            div()
+                .text_xs()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::text_muted())
+                .child(label.into()),
+        )
+        .child(
+            div()
+                .id(SharedString::from(id.clone()))
+                .debug_selector(move || debug.clone())
+                .tab_index(0)
+                .relative()
+                .w_full()
+                .h(px(40.0))
+                .px_3()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .rounded_md()
+                .border_1()
+                .border_color(theme::border_strong())
+                .bg(theme::canvas())
+                .opacity(if enabled { 1.0 } else { 0.55 })
+                .child(
+                    canvas(move |b, _, _| measured.set(b), |_, _, _, _| {})
+                        .absolute()
+                        .size_full(),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(value.into()),
+                )
+                .child(crate::widgets::icon(
+                    crate::icons::Icon::ChevronDown,
+                    px(14.0),
+                    theme::text_muted(),
+                ))
+                .when(enabled, |control| {
+                    control
+                        .cursor_pointer()
+                        .hover(|style| style.border_color(theme::accent()))
+                        .on_click(cx.listener(move |m, _, window, cx| {
+                            m.open_select(&id, bounds.get(), window, cx);
+                        }))
+                        .on_key_down(cx.listener(move |m, e: &gpui::KeyDownEvent, window, cx| {
+                            if matches!(e.keystroke.key.as_str(), "enter" | "space" | "down") {
+                                m.open_select(&key_id, key_bounds.get(), window, cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                }),
+        )
+        .into_any_element()
+}
+
+pub(crate) fn compact_control(
+    id: impl Into<String>,
+    label: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    enabled: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let id = id.into();
+    let debug = id.clone();
+    let key_id = id.clone();
+    let bounds = Rc::new(Cell::new(Bounds::default()));
+    let measured = bounds.clone();
+    let key_bounds = bounds.clone();
+    let label = label.into();
+    let value = value.into();
+    crate::widgets::button_frame(
+        div()
+            .id(SharedString::from(id.clone()))
+            .debug_selector(move || debug.clone())
+            .relative()
+            .tab_index(0),
+        crate::widgets::ButtonVariant::Secondary,
+        enabled,
+    )
+    .gap_2()
+    .child(
+        canvas(move |b, _, _| measured.set(b), |_, _, _, _| {})
+            .absolute()
+            .size_full(),
+    )
+    .child(
+        div()
+            .text_color(theme::text_muted())
+            .child(format!("{label}:")),
+    )
+    .child(value)
+    .child(crate::widgets::icon(
+        crate::icons::Icon::ChevronDown,
+        px(12.0),
+        theme::text_muted(),
+    ))
+    .when(enabled, |control| {
+        control
+            .on_click(cx.listener(move |m, _, window, cx| {
+                m.open_select(&id, bounds.get(), window, cx);
+            }))
+            .on_key_down(cx.listener(move |m, e: &gpui::KeyDownEvent, window, cx| {
+                if matches!(e.keystroke.key.as_str(), "enter" | "space" | "down") {
+                    m.open_select(&key_id, key_bounds.get(), window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+    })
+    .into_any_element()
 }
 
 impl AppModel {

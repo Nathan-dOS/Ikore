@@ -46,7 +46,11 @@ pub(crate) trait PulsationsBackend: Send + Sync {
     ) -> PulsationsFuture<hvc_core::persistence_service::StageFailureDetail>;
     fn action(&self, action: PulsationAction) -> PulsationsFuture<()>;
     fn artifact_content(&self, pulse: String, artifact: String) -> PulsationsFuture<String>;
-    fn runtime_snapshot(&self, project_id: String) -> PulsationsFuture<PulsationRuntimeSnapshot>;
+    fn runtime_snapshot(
+        &self,
+        project_id: String,
+        detail_pulsation_id: Option<String>,
+    ) -> PulsationsFuture<PulsationRuntimeSnapshot>;
     fn artifacts(&self, pulsation_id: String) -> PulsationsFuture<Vec<Artifact>>;
     /// Every open clarification checkpoint across the project (ADR-022
     /// clarification loop, P4/A4.1) -- the resolution modal's chip list.
@@ -204,16 +208,21 @@ impl PulsationsBackend for CorePulsationsBackend {
         })
     }
 
-    fn runtime_snapshot(&self, project_id: String) -> PulsationsFuture<PulsationRuntimeSnapshot> {
+    fn runtime_snapshot(
+        &self,
+        project_id: String,
+        detail_pulsation_id: Option<String>,
+    ) -> PulsationsFuture<PulsationRuntimeSnapshot> {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
         Box::pin(async move {
             runtime
                 .spawn_blocking(move || {
                     core.persistence()
-                        .get_pulsation_runtime_snapshot(GetPulsationRuntimeSnapshotRequest {
-                            project_id,
-                        })
+                        .get_pulsation_runtime_snapshot_for_detail(
+                            GetPulsationRuntimeSnapshotRequest { project_id },
+                            detail_pulsation_id.as_deref(),
+                        )
                         .map(|response| response.snapshot)
                         .map_err(|error| error.to_string())
                 })
@@ -383,6 +392,9 @@ pub struct PulsationsModel {
     pub(crate) usage: crate::usage::UsageState,
     /// User choices survive view navigation and runtime polling for this project.
     pub(crate) group_expansion: std::collections::HashMap<&'static str, bool>,
+    /// Status groups the developer asked to see in full; the rest render their newest
+    /// `GROUP_RENDER_LIMIT` pulsations (plus the selected one).
+    pub(crate) groups_showing_all: std::collections::HashSet<&'static str>,
     pub detail_section: PulsationDetailSection,
     pub brownfield_coverage: Option<BrownfieldCoverageMetrics>,
     pub details: Vec<PulsationCoordinationSnapshot>,
@@ -397,6 +409,8 @@ pub struct PulsationsModel {
     pub active_pulsation_id: Option<SharedString>,
     pub artifacts: Vec<Artifact>,
     pub running_jobs: usize,
+    /// Who holds the runtime slots (the header's "now running" readout). Main first.
+    pub active_jobs: Vec<hvc_core::persistence_service::ActiveRuntimeJob>,
     pub awaiting_hitl: usize,
     /// Counted apart from `awaiting_hitl` so a parked failure cannot suppress the
     /// notification for an artifact review that opens after it.
@@ -514,6 +528,7 @@ impl PulsationsModel {
         self.awaiting_hitl = snapshot.hitl_waiting_count;
         self.awaiting_failure = snapshot.failure_waiting_count;
         self.running_jobs = snapshot.main_agents_count + snapshot.background_agents_count;
+        self.active_jobs = std::mem::take(&mut snapshot.active_jobs);
         self.coordination = snapshot.coordination;
         self.brownfield_coverage = snapshot.brownfield_coverage;
         self.active_pulsation_id = next_id.clone().map(Into::into);
@@ -744,6 +759,7 @@ mod tests {
             hitl_waiting_count: 0,
             failure_checkpoints: Vec::new(),
             failure_waiting_count: 0,
+            active_jobs: Vec::new(),
             brownfield_coverage: None,
         };
         model.apply_snapshot("project-1".into(), snapshot.clone(), None);
@@ -798,6 +814,7 @@ mod tests {
         let active = model.apply_snapshot(
             "project-1".into(),
             PulsationRuntimeSnapshot {
+                active_jobs: Vec::new(),
                 brownfield_coverage: Some(BrownfieldCoverageMetrics {
                     frontier_initialized: true,
                     inventory_known_sources: 4,
@@ -854,6 +871,7 @@ mod tests {
         model.apply_snapshot(
             "project-1".into(),
             PulsationRuntimeSnapshot {
+                active_jobs: Vec::new(),
                 brownfield_coverage: None,
                 details: Vec::new(),
                 coordination: None,

@@ -14,9 +14,12 @@ use crate::hitl::{
 
 /// The brief item the keyboard acts on, when the Brief tab is showing items.
 fn brief_cursor_in_view(model: &AppModel, cx: &gpui::App) -> Option<usize> {
+    if model.settings_modal.open {
+        return None;
+    }
     let hitl = &model.pulsations.read(cx).hitl;
     (hitl.brief_selected && hitl.brief.is_some() && !hitl.marks.is_empty() && !hitl.busy)
-        .then_some(hitl.brief_cursor.min(hitl.marks.len() - 1))
+        .then(|| hitl.brief_cursor.min(hitl.marks.len() - 1))
 }
 use crate::theme;
 use crate::workspace_view::render_markdown_block;
@@ -426,7 +429,7 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
     let show_feedback = hitl.show_feedback;
     let expanded = pulsations.diff_expanded;
     let documents = hitl.documents.clone();
-    // The Brief tab (ADR-024) shares the reader with the documents; the decision
+    // The Brief tab (ADR-027) shares the reader with the documents; the decision
     // bar and its gate do not change with it.
     let has_brief_tab = hitl.has_brief_tab() && !documents.is_empty();
     let showing_brief = has_brief_tab && hitl.brief_selected;
@@ -485,6 +488,9 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         .key_context("HitlReview")
         .track_focus(&model.review_focus)
         .on_action(cx.listener(|model, _: &ApproveHitl, _, cx| {
+            if model.settings_modal.open {
+                return;
+            }
             // Enter never discards the developer's flags; the Approve button still can.
             let flagged = model.pulsations.read(cx).hitl.flag_count();
             if flagged > 0 {
@@ -516,17 +522,27 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         .on_action(cx.listener(|model, _: &NextBriefItem, _, cx| {
             if brief_cursor_in_view(model, cx).is_some() {
                 model.move_brief_cursor(true, cx);
+            } else {
+                cx.propagate();
             }
         }))
         .on_action(cx.listener(|model, _: &PreviousBriefItem, _, cx| {
             if brief_cursor_in_view(model, cx).is_some() {
                 model.move_brief_cursor(false, cx);
+            } else {
+                cx.propagate();
             }
         }))
         .on_action(cx.listener(|model, _: &RequestHitlRevision, _, cx| {
+            if model.settings_modal.open {
+                return;
+            }
             model.apply_hitl_decision(HitlDecision::RequestRevision, cx);
         }))
         .on_action(cx.listener(|model, _: &RejectHitl, _, cx| {
+            if model.settings_modal.open {
+                return;
+            }
             if model.confirm_hitl_reject {
                 model.set_confirm_hitl_reject(false, cx);
                 model.apply_hitl_decision(HitlDecision::Reject, cx);
@@ -851,7 +867,7 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                     "Approve",
                     can_approve,
                     HitlDecision::Approve,
-                    false,
+                    flagged == 0,
                     cx,
                 ))
                 .child(hitl_button(
@@ -911,7 +927,7 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         .into_any_element()
 }
 
-/// `primary` marks the button the developer's own flags point to (ADR-024 M2).
+/// `primary` marks the button the developer's own flags point to (ADR-027 M2).
 fn hitl_button(
     id: &'static str,
     label: impl Into<SharedString>,
@@ -920,37 +936,23 @@ fn hitl_button(
     primary: bool,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .tab_index(0)
-        .bg(if primary {
-            theme::warning()
-        } else {
-            theme::surface_raised()
-        })
-        .text_color(if primary {
-            theme::canvas()
-        } else {
-            theme::text()
-        })
-        .when(primary, |button| {
-            button.font_weight(gpui::FontWeight::SEMIBOLD)
-        })
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.opacity(theme::HOVER_OPACITY))
-                .on_click(cx.listener(move |model, _, _, cx| {
-                    model.set_confirm_hitl_reject(false, cx);
-                    model.apply_hitl_decision(decision, cx);
-                }))
-        })
-        .when(!enabled, |button| button.opacity(0.45))
-        .child(label.into())
+    let variant = if primary {
+        crate::widgets::ButtonVariant::Primary
+    } else {
+        crate::widgets::ButtonVariant::Secondary
+    };
+    crate::widgets::button_frame(
+        div().id(id).debug_selector(move || id.into()).tab_index(0),
+        variant,
+        enabled,
+    )
+    .when(enabled, |button| {
+        button.on_click(cx.listener(move |model, _, _, cx| {
+            model.set_confirm_hitl_reject(false, cx);
+            model.apply_hitl_decision(decision, cx);
+        }))
+    })
+    .child(label.into())
 }
 
 fn hitl_reject_button(
@@ -960,35 +962,26 @@ fn hitl_reject_button(
     confirming: bool,
     cx: &mut Context<AppModel>,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .tab_index(0)
-        .bg(if confirming {
-            theme::danger()
-        } else {
-            theme::danger_soft()
-        })
-        .text_color(if confirming {
-            theme::canvas()
-        } else {
-            theme::danger()
-        })
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.opacity(theme::HOVER_OPACITY))
-                .on_click(cx.listener(move |model, _, _, cx| {
-                    if confirming {
-                        model.apply_hitl_decision(HitlDecision::Reject, cx);
-                    } else {
-                        model.set_confirm_hitl_reject(true, cx);
-                    }
-                }))
-        })
-        .when(!enabled, |button| button.opacity(0.45))
-        .child(label)
+    crate::widgets::button_frame(
+        div().id(id).debug_selector(move || id.into()).tab_index(0),
+        crate::widgets::ButtonVariant::Danger,
+        enabled,
+    )
+    // The armed second click is a solid danger fill: it must not look like the first.
+    .when(enabled && confirming, |button| {
+        button
+            .bg(theme::danger())
+            .border_color(theme::danger())
+            .text_color(theme::canvas())
+    })
+    .when(enabled, |button| {
+        button.on_click(cx.listener(move |model, _, _, cx| {
+            if confirming {
+                model.apply_hitl_decision(HitlDecision::Reject, cx);
+            } else {
+                model.set_confirm_hitl_reject(true, cx);
+            }
+        }))
+    })
+    .child(label)
 }

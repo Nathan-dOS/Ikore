@@ -41,14 +41,15 @@ pub(super) fn build(
 
     let verdicts: Vec<BriefVerdict> = batch_criteria(table)
         .into_iter()
-        .filter_map(|(handle, task_title, criterion_id, description)| {
+        .filter_map(|criterion| {
             let assessment = assessments
                 .iter()
-                .find(|assessment| assessment.criterion_ref == handle)?;
+                .find(|assessment| assessment.criterion_ref == criterion.handle)?;
             Some(BriefVerdict {
-                criterion_id,
-                description,
-                task_title,
+                task_id: criterion.task_id,
+                criterion_id: criterion.criterion_id,
+                description: criterion.description,
+                task_title: criterion.task_title,
                 verdict: assessment.verdict,
                 checks: assessment
                     .check_refs

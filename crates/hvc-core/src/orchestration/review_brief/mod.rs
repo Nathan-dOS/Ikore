@@ -1,4 +1,4 @@
-//! The derived review brief of a developer checkpoint (ADR-024).
+//! The derived review brief of a developer checkpoint (ADR-027).
 //!
 //! A brief is built from the same validated typed payload that produced the
 //! checkpoint's Markdown, never from the Markdown itself. It is a view model:
@@ -16,8 +16,8 @@
 //!
 //! When a stage runs again after Request revision, [`compare`] lays the
 //! previous candidate's brief next to the new one (part 3), keyed by what
-//! stays stable across revisions: criterion ids, paths, interface and unit
-//! keys, and check handles.
+//! stays stable across revisions: task-scoped criterion ids, paths,
+//! interface and unit keys, and check handles.
 
 mod contract;
 mod diff;
@@ -42,6 +42,7 @@ use super::composition::{
 use crate::feature_forge::BatchManifest;
 use crate::persistence_service::PulsationStage;
 
+pub(crate) use diff::compare_records;
 pub use diff::{BriefChange, ChangeKind, ChangeSubject, RevisionDiff, compare};
 pub use failure::{FailureChoice, FailureDecisionKind, failure_choices};
 
@@ -224,6 +225,8 @@ pub struct TestVisual {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BriefCoverage {
+    /// The task the criterion id belongs to; ids are local to their task.
+    pub task_id: String,
     pub criterion_id: String,
     pub description: String,
     pub task_title: String,
@@ -258,6 +261,8 @@ pub struct IntegratorVisual {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BriefVerdict {
+    /// The task the criterion id belongs to; ids are local to their task.
+    pub task_id: String,
     pub criterion_id: String,
     pub description: String,
     pub task_title: String,
@@ -360,25 +365,33 @@ fn path_of(record: &StagePayloadRecord, handle: &Handle) -> String {
         .unwrap_or_else(|| handle.to_string())
 }
 
-/// `(task title, criterion id, developer text)` of every criterion in batch
-/// order, keyed by its handle.
-fn batch_criteria(table: &ReferenceTable) -> Vec<(Handle, String, String, String)> {
+/// One criterion of the frozen batch, in batch order.
+struct BatchCriterion {
+    handle: Handle,
+    task_id: String,
+    task_title: String,
+    criterion_id: String,
+    description: String,
+}
+
+fn batch_criteria(table: &ReferenceTable) -> Vec<BatchCriterion> {
     table
         .scope()
         .iter()
         .flat_map(|scope| {
-            let title = table
+            let (task_id, task_title) = table
                 .task(&scope.task_ref)
-                .map(|task| task.title.clone())
+                .map(|task| (task.task_id.clone(), task.title.clone()))
                 .unwrap_or_default();
             scope.criterion_refs.iter().filter_map(move |handle| {
                 let binding = table.criterion(handle)?;
-                Some((
-                    handle.clone(),
-                    title.clone(),
-                    binding.criterion_id.clone(),
-                    binding.description.clone(),
-                ))
+                Some(BatchCriterion {
+                    handle: handle.clone(),
+                    task_id: task_id.clone(),
+                    task_title: task_title.clone(),
+                    criterion_id: binding.criterion_id.clone(),
+                    description: binding.description.clone(),
+                })
             })
         })
         .collect()

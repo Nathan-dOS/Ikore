@@ -194,9 +194,9 @@ impl TimeoutReason {
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Inactivity => "O processo CLI ficou inativo além do limite sem produzir saída.",
+            Self::Inactivity => "The CLI process stayed idle past the limit without output.",
             Self::MaxCeiling => {
-                "O processo CLI excedeu o tempo limite máximo permitido para a operação."
+                "The CLI process exceeded the maximum time allowed for the operation."
             }
         }
     }

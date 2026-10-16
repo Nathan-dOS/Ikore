@@ -2531,6 +2531,12 @@ mod tests {
         let mut mixed = ok;
         mixed["questions"] = serde_json::json!([]);
         assert!(serde_json::from_value::<UnitModelResponseV1>(mixed).is_err());
+        let mut executor_kind = serde_json::json!({
+            "schemaVersion": 1, "outcome": "failed", "code": "scope_insufficient",
+            "message": "Scope is too small.", "relatedRefs": []
+        });
+        executor_kind["executorKind"] = serde_json::json!("code_implementer");
+        assert!(serde_json::from_value::<UnitModelResponseV1>(executor_kind).is_err());
     }
 
     #[test]

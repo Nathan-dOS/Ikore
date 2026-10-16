@@ -93,11 +93,16 @@ fn a_non_english_intake_response_is_corrected_on_the_next_attempt() {
     let intake_calls_for_handler = Arc::clone(&intake_calls);
     let server = ScriptedHttpServer::respond_with(move |request| {
         let stage = stage_of(request);
+        let body: Value = serde_json::from_str(&request.body).expect("provider request JSON");
+        let model = body["model"]
+            .as_str()
+            .expect("provider request model identity");
         if stage == "Intake" && intake_calls_for_handler.fetch_add(1, Ordering::SeqCst) == 0 {
             let broken = non_english_intake_response();
             return ScriptedResponse::json(
                 200,
                 json!({
+                    "model": model,
                     "choices": [{"message": {"content": broken}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 10, "completion_tokens": 20}
                 })

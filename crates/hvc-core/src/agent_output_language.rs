@@ -136,12 +136,20 @@ fn is_path_like(token: &str) -> bool {
         || token.contains('\\')
         || token.contains("://")
         || token.contains('_')
+        || is_opaque_identifier_or_hash(token)
         || matches!(
             token.rsplit_once('.'),
             Some((_, extension))
                 if (1..=5).contains(&extension.len())
                     && extension.chars().all(|character| character.is_ascii_alphanumeric())
         )
+}
+
+fn is_opaque_identifier_or_hash(token: &str) -> bool {
+    // Hex UUIDs (e.g. 550e8400-e29b-41d4-a716-446655440000) or hex hashes (>= 8 chars with digits)
+    token.len() >= 8
+        && token.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+        && token.chars().any(|c| c.is_ascii_digit())
 }
 
 fn ascii_words(value: &str) -> Vec<String> {
@@ -280,6 +288,11 @@ mod tests {
         validate_english_prose(
             "fixture",
             "Coverage is recorded in docs/arquitetura/contrato.md; see also https://example.com/relatorio.",
+        )
+        .unwrap();
+        validate_english_prose(
+            "fixture",
+            "Feature id is 12345678-abcd-1234-de00-da0012345678 and sha is a06f8194b3c2.",
         )
         .unwrap();
 

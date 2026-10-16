@@ -1,4 +1,4 @@
-//! Host-rendered, self-contained HTML reports (ADR-024).
+//! Host-rendered, self-contained HTML reports (ADR-027).
 //!
 //! A report is a derived view of data the host already validated. It is never
 //! a document of record, carries no script, loads nothing from the network and

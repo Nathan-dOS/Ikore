@@ -299,6 +299,9 @@ fn wait_for_graph(service: &PersistenceService, project_id: &str) -> String {
 
 fn relational_stage_response(case: RelationalCase, request: &RecordedRequest) -> ScriptedResponse {
     let body: Value = serde_json::from_str(&request.body).expect("provider request JSON");
+    let model = body["model"]
+        .as_str()
+        .expect("provider request model identity");
     let prompt = body["messages"]
         .as_array()
         .expect("messages")
@@ -345,6 +348,7 @@ fn relational_stage_response(case: RelationalCase, request: &RecordedRequest) ->
     ScriptedResponse::json(
         200,
         json!({
+            "model": model,
             "choices": [{"message": {"content": output.to_string()}, "finish_reason": "stop"}],
             "usage": {
                 "prompt_tokens": prompt.chars().count().div_ceil(4),

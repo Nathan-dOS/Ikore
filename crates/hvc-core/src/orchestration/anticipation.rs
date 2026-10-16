@@ -316,7 +316,7 @@ impl PersistenceService {
                 Self::record_brownfield_usage_tx(&tx,&handoff.recipient.project_id,&context.facts.sources)?;
             }
             Self::record_context_collection(&tx,&handoff.recipient,"specification",disposition,elapsed,&measured_facts)?;
-            let diagnostic=handoff.context.as_ref().map(|c|format!("Coleta/revalidação no epoch {epoch}, {}. {}",Self::now_iso(),c.facts.coverage.diagnostics.join(" ")));
+            let diagnostic=handoff.context.as_ref().map(|c|format!("Collection/revalidation at epoch {epoch}, {}. {}",Self::now_iso(),c.facts.coverage.diagnostics.join(" ")));
             tx.execute("UPDATE pulsation_preparation SET consumed_job_id=?3,context_disposition=?4,diagnostic=?5,prespec_state=CASE WHEN ?4='stale_on_demand' THEN 'stale' ELSE prespec_state END WHERE pulsation_id=?1 AND input_revision=?2",params![pulse,handoff.recipient.input_revision,handoff.recipient.job_id,disposition,diagnostic])?;
             tx.commit()?;
             Ok(handoff)

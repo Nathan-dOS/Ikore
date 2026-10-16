@@ -70,6 +70,8 @@ pub(crate) struct NativeTextInput {
     drag_anchor: usize,
     caret_row: Option<usize>,
     preferred_column: Option<Pixels>,
+    /// Extra left padding for a glyph drawn over the field (the Settings search icon).
+    leading_inset: Pixels,
 }
 
 impl gpui::EventEmitter<Submit> for NativeTextInput {}
@@ -94,7 +96,14 @@ impl NativeTextInput {
             drag_anchor: 0,
             caret_row: None,
             preferred_column: None,
+            leading_inset: px(0.0),
         }
+    }
+
+    /// Leaves `inset` free at the left edge for an icon the parent draws over the field.
+    pub(crate) fn leading_inset(mut self, inset: Pixels) -> Self {
+        self.leading_inset = inset;
+        self
     }
 
     pub(crate) fn obscured(mut self) -> Self {
@@ -497,13 +506,14 @@ impl Render for NativeTextInput {
             .line_height(px(24.0))
             .cursor_text()
             .overflow_hidden()
-            .px_3()
+            .pl(px(12.0) + self.leading_inset)
+            .pr(px(12.0))
             .rounded_md()
             .border_1()
             .border_color(if self.focus_handle.is_focused(window) {
                 theme::accent()
             } else {
-                theme::border()
+                theme::border_strong()
             })
             .bg(theme::canvas())
             .text_color(theme::text())

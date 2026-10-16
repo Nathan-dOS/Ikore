@@ -1,0 +1,1194 @@
+{
+  "schemaVersion": 1,
+  "validatedAt": "2026-10-16T01:29:41.4398932Z",
+  "localParent": "9eef69d6ea481e52b86bd0a73456236be4d58fb8",
+  "remoteParent": "62d58f03cb7a720a46524b6347917618e4479e7f",
+  "sourceIdentification": "Normalized source Git blobs identify the validated worktree. The containing merge commit is the delivered app revision.",
+  "sourceCodeBlobs": [
+    {
+      "path": ".cargo/config.toml",
+      "gitBlob": "795380fcafe89e601144ac6a7d4ae3faae5a40b3"
+    },
+    {
+      "path": ".gitattributes",
+      "gitBlob": "7682346c5e094f240f8a502ad5ed619baf8a79f0"
+    },
+    {
+      "path": "Cargo.lock",
+      "gitBlob": "6154d6ac07cc3d6ef4bccfe4ffa9bb35b80a2a8a"
+    },
+    {
+      "path": "Cargo.toml",
+      "gitBlob": "568402abae92f8c254e34d70173fe6d1fb797d3a"
+    },
+    {
+      "path": "crates/hvc-app/Cargo.toml",
+      "gitBlob": "005887c07bbffbb5fbcafe28963b8159e6d34d94"
+    },
+    {
+      "path": "crates/hvc-app/src/main.rs",
+      "gitBlob": "97632b78faa0fa432635c462685097be0d76d0d4"
+    },
+    {
+      "path": "crates/hvc-core/Cargo.toml",
+      "gitBlob": "58d101af6a8db51120b16e5f8cdb3a8969562e33"
+    },
+    {
+      "path": "crates/hvc-core/src/agent_output_language.rs",
+      "gitBlob": "fc885ed700388c26de9b39fc61c9b65338d2063c"
+    },
+    {
+      "path": "crates/hvc-core/src/agent_runtime.rs",
+      "gitBlob": "5d8da9c366cab5a86fcd30398cc476c4290002e7"
+    },
+    {
+      "path": "crates/hvc-core/src/agent_timeout.rs",
+      "gitBlob": "c289439f74bd2eaaad4e02148d5dc50dc8a996d7"
+    },
+    {
+      "path": "crates/hvc-core/src/app_core.rs",
+      "gitBlob": "fc26e77ac52bd1d36a937f8836a6f0b58907e111"
+    },
+    {
+      "path": "crates/hvc-core/src/chat_service.rs",
+      "gitBlob": "35f946a026296d20951759a756442d4b79b47f9c"
+    },
+    {
+      "path": "crates/hvc-core/src/embedding_service.rs",
+      "gitBlob": "69828761ee29ffbedf66baff99be420f5bfd64b7"
+    },
+    {
+      "path": "crates/hvc-core/src/feature_forge/failure.rs",
+      "gitBlob": "9145c0ed9bc715231c20d0d8f2d2f3ff373d35c0"
+    },
+    {
+      "path": "crates/hvc-core/src/feature_forge/mod.rs",
+      "gitBlob": "91028bc02dc1be1f479fa0ea10c9a581c15af3da"
+    },
+    {
+      "path": "crates/hvc-core/src/feature_forge/persistence.rs",
+      "gitBlob": "1b87fb9ce7e5c6f7b31f5c048638ef11d812f820"
+    },
+    {
+      "path": "crates/hvc-core/src/feature_forge/runtime.rs",
+      "gitBlob": "dd8e7cb22b91532218ff4dbe776d730cf72e91a3"
+    },
+    {
+      "path": "crates/hvc-core/src/feature_forge/tests.rs",
+      "gitBlob": "c1b693d0e537a03f5ff4131223be1d36c01ffafa"
+    },
+    {
+      "path": "crates/hvc-core/src/lib.rs",
+      "gitBlob": "0888f9cd1957f14de24e503bcc09e65f671d62e5"
+    },
+    {
+      "path": "crates/hvc-core/src/llm/adapter.rs",
+      "gitBlob": "1f0473d844ba683eb01dce802d0bcf59ea2ffcf7"
+    },
+    {
+      "path": "crates/hvc-core/src/llm/api_model_catalog.rs",
+      "gitBlob": "b3db4bebe2a95a1f422645c94e842f5908579025"
+    },
+    {
+      "path": "crates/hvc-core/src/llm/catalog.rs",
+      "gitBlob": "2f55e812844d13e40fa3cf99eba06968a4c789ed"
+    },
+    {
+      "path": "crates/hvc-core/src/llm/compression.rs",
+      "gitBlob": "445eaeb277ff3da94a1d21157d22d09dc3d5d95f"
+    },
+    {
+      "path": "crates/hvc-core/src/llm/credentials.rs",
+      "gitBlob": "3cebdec3b2a9f8a2b445c95ab8998f1dbbff72bf"
+    },
+    {
+      "path": "crates/hvc-core/src/llm/domain.rs",
+      "gitBlob": "699f9fbb2b291139b60da2cf6c21d3117f951306"
+    },
+    {
+      "path": "crates/hvc-core/src/llm/error.rs",
+      "gitBlob": "0b08ac26ce4e90ff9d79d64ab643f8dc77fccee5"
+    },
+    {
+      "path": "crates/hvc-core/src/llm/mod.rs",
+      "gitBlob": "9cddc7a54b49395c3016673e2e4047b27de38b9e"
+    },
+    {
+      "path": "crates/hvc-core/src/llm/profiles.rs",
+      "gitBlob": "5144e000aafd200b3326cd318ea84fae57a0d206"
+    },
+    {
+      "path": "crates/hvc-core/src/llm/repository.rs",
+      "gitBlob": "074c61ea50e2f5283ce71619b04ab3aa204d922d"
+    },
+    {
+      "path": "crates/hvc-core/src/llm/router.rs",
+      "gitBlob": "e19b16ae18d2e182a1aa575d47670b28a8b1658d"
+    },
+    {
+      "path": "crates/hvc-core/src/llm/streaming.rs",
+      "gitBlob": "b52cdc5c347e7ff7b632e6f64bb4b9366cef3210"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/anticipation.rs",
+      "gitBlob": "5caddc620c8aa04b8e6345f917e16aa6c113546f"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/brownfield_enrichment.rs",
+      "gitBlob": "6973dea6c557be0bd72473da8d5f8c83f51ff9a5"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/brownfield_maintenance.rs",
+      "gitBlob": "2d4f00142e475d7296e7048620b173a7b1ab03a2"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/brownfield_mapping.rs",
+      "gitBlob": "b32bbdbb48ea9f3cc556b4a59aca84466f69e399"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/brownfield_resolution.rs",
+      "gitBlob": "c4b687d83b908179f1ffee897a348a24eb4fdf0b"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/clarification.rs",
+      "gitBlob": "44deffac4ea456a6fe022e378353cab59997d8ec"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/cleanup.rs",
+      "gitBlob": "7a3e78920bbef4916be87d4621f0766748fe4f39"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/code_context.rs",
+      "gitBlob": "8c103e11d517fdbc0b3ded7082a4804cd2ae3e18"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/component_notes.rs",
+      "gitBlob": "77f45f180c79f2017f0b70bb41e6912778e9073f"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/composition/contracts.rs",
+      "gitBlob": "bb32d87ded7dd0afe18c6fe3b4bb05cff370c938"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/composition/edits.rs",
+      "gitBlob": "881e18362acd7a86ef6614d7bc035e88f9f61d3f"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/composition/host_coordinator.rs",
+      "gitBlob": "d354b64b62b3dea830e51c6732d75d5ed037bb94"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/composition/host_persistence.rs",
+      "gitBlob": "6f1f0402a5de6b61ac3dc003524a7876057d8649"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/composition/parse.rs",
+      "gitBlob": "1b92ac14028529c03d8de07a107d57c6ec776dc9"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/composition/policy.rs",
+      "gitBlob": "e7e6c76c537bb902f8eb259c47493b8ad0dfd113"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/composition/projection.rs",
+      "gitBlob": "7f96412e35545b8d3f4737451fa4ee98ba1eed15"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/composition/recipes.rs",
+      "gitBlob": "fe53937583d243cc36206b43d2a258b87db1e394"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/composition/schema.rs",
+      "gitBlob": "7b20c2894ffe1ac0fad63732d708e4f24f17dc14"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/composition/validate.rs",
+      "gitBlob": "34ffe015deb671b2d8f430df7616792a1b327a50"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/context.rs",
+      "gitBlob": "1298d4004f0884cb6df187733ebfa4e97ad4e98c"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/contracts.rs",
+      "gitBlob": "51a5b5c1f46c33eb96bdbc6b7ab57ebedd0f3044"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/coordination_tests.rs",
+      "gitBlob": "6328b1f2d56facad7faeaa6663d69859eae86169"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/coordination.rs",
+      "gitBlob": "38640331693db0dd3704577e6eb516af49c04187"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/failure.rs",
+      "gitBlob": "7257c9af745151d9f1f295d3da76f6213ea51f30"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/indexing.rs",
+      "gitBlob": "d1cd2d46bf7c4dd6dc9c307323412d150a556391"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/integration.rs",
+      "gitBlob": "1f111366d915dad5e7da436f28818cc3c48e83c6"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/learning_report.rs",
+      "gitBlob": "e1ac962225b5bde2ed0e6fe1ac7d54ada6fc117d"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/learning_tests.rs",
+      "gitBlob": "9c6f26ccd48ce8865f18f340debb21d5f97cc695"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/learning.rs",
+      "gitBlob": "d971f730661348b64bcae13615d5e70cb7cdaadb"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/mod.rs",
+      "gitBlob": "fa660c95e4e3813849d59162d620d74e93324359"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/policy.rs",
+      "gitBlob": "9ef3b7da9bd112c45bef539c02c68a414c2d251e"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/preparation.rs",
+      "gitBlob": "de1e9fc37c57feb8e35f6e99a85e67f2062765dc"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/publication.rs",
+      "gitBlob": "5d0a0ba2b714535ce4e5747b411b3165a4756c56"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/reconciliation.rs",
+      "gitBlob": "0fccf34cf492b02a024b030df0e6e804cd7f03f0"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/resolution.rs",
+      "gitBlob": "228bdebb53a15fd02bb5122d481a9e51e431e24c"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/review_brief.rs",
+      "gitBlob": "c48d0c5e030ecb5e82d70009cc214bd3671755c7"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/serial.rs",
+      "gitBlob": "369b66a2c9cea21c46b684a90ea461a9175d09d2"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/stage_preflight.rs",
+      "gitBlob": "e31c240cd1cdd03be536c190157da12ec4d9facf"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/task_refine.rs",
+      "gitBlob": "72e7c2c251c3fd278ba1be202437b21b29585843"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/tree_sitter_context.rs",
+      "gitBlob": "f25aeb4786d152b7ec4be5d0ae940e4ddd1c85c7"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/upgrade.rs",
+      "gitBlob": "28da9c385f92939fe8b8f6b390ffcb8397812155"
+    },
+    {
+      "path": "crates/hvc-core/src/persistence_service.rs",
+      "gitBlob": "7471aef16dcbbc3a029c47abc8f06438d7dd720d"
+    },
+    {
+      "path": "crates/hvc-core/src/project_deletion.rs",
+      "gitBlob": "ff287f1f336d9548a453c6b880d27efecc0ff8da"
+    },
+    {
+      "path": "crates/hvc-core/src/reports/fixtures/pulsation-report.golden.html",
+      "gitBlob": "ae275c619d1ab02a41a391098ddb3b62d1c671dd"
+    },
+    {
+      "path": "crates/hvc-core/src/reports/mod.rs",
+      "gitBlob": "d0408364fb06b0b98007a2e38d9c8d758956207a"
+    },
+    {
+      "path": "crates/hvc-core/src/reports/pulsation.rs",
+      "gitBlob": "af935ceb99c6e993ac68097a42969e15c6f01e39"
+    },
+    {
+      "path": "crates/hvc-core/src/reports/report.css",
+      "gitBlob": "071cdf0f1f503b2776599d89283f0a8f66de88e3"
+    },
+    {
+      "path": "crates/hvc-core/src/repository_context.rs",
+      "gitBlob": "d3924e775599569d81d39e5ec09412db56a35e49"
+    },
+    {
+      "path": "crates/hvc-core/src/stage_briefs.rs",
+      "gitBlob": "db7e724cdf9fc95ecbe9f857a74e1a44f2798597"
+    },
+    {
+      "path": "crates/hvc-core/src/terminals.rs",
+      "gitBlob": "9085dd7e2b30a2d0d138a4062006b14bfde98a40"
+    },
+    {
+      "path": "crates/hvc-core/src/terminals/adapters/antigravity.rs",
+      "gitBlob": "4e2cd031a8853040d99bbb038dfb9c143427d76a"
+    },
+    {
+      "path": "crates/hvc-core/src/terminals/adapters/claude.rs",
+      "gitBlob": "095b0e8cf32693a260b9236602603079e7d8f345"
+    },
+    {
+      "path": "crates/hvc-core/src/terminals/adapters/custom.rs",
+      "gitBlob": "82b1ddf9f2eb9936cee82826e72ca21bda84f42d"
+    },
+    {
+      "path": "crates/hvc-core/src/terminals/adapters/gemini.rs",
+      "gitBlob": "9fbb0ac59715be23ca8dfbb19412d182d12762d1"
+    },
+    {
+      "path": "crates/hvc-core/src/terminals/adapters/mod.rs",
+      "gitBlob": "b786f09708adc3201d127d674696c99b6549b167"
+    },
+    {
+      "path": "crates/hvc-core/src/terminals/codex_model_provenance.rs",
+      "gitBlob": "0f240be8c41f4ece4a4a59023ecbb77e359a9ff2"
+    },
+    {
+      "path": "crates/hvc-core/src/terminals/model_catalog.rs",
+      "gitBlob": "eff6af93d28645072eb20465fffe94aeb789f076"
+    },
+    {
+      "path": "crates/hvc-core/src/terminals/model_identity.rs",
+      "gitBlob": "b97e37846f53db6c4ff4685364dd93393b39dd84"
+    },
+    {
+      "path": "crates/hvc-core/src/terminals/observation_report.rs",
+      "gitBlob": "7a56b4de1b309c6167679d8a6e7e270b06393e2e"
+    },
+    {
+      "path": "crates/hvc-core/src/usage.rs",
+      "gitBlob": "92fc13b610799125f0a6005d39c138b826a122e4"
+    },
+    {
+      "path": "crates/hvc-core/src/usage/cli.rs",
+      "gitBlob": "cd2e3b69eed2aab114c14a92a71ad04c318184b0"
+    },
+    {
+      "path": "crates/hvc-core/src/workspace_service.rs",
+      "gitBlob": "ba03c581ad9a5b70fb9dc6e4216e2b22e76778fa"
+    },
+    {
+      "path": "crates/hvc-editor/Cargo.toml",
+      "gitBlob": "3da0c0678430d713a29e6e5fa9ad1ccd5cbd3611"
+    },
+    {
+      "path": "crates/hvc-editor/src/buffer.rs",
+      "gitBlob": "75e5b7bb2470afd2620c23c0662a6da94078dd7e"
+    },
+    {
+      "path": "crates/hvc-test-support/Cargo.toml",
+      "gitBlob": "231af499afc8879057e7dd8bfcc6ad1d57a3d842"
+    },
+    {
+      "path": "crates/hvc-test-support/examples/agents_ui_fixture.rs",
+      "gitBlob": "1238456687d6ff757e2b9cfeab3b47f40f49b297"
+    },
+    {
+      "path": "crates/hvc-test-support/examples/review_brief_fixture.rs",
+      "gitBlob": "1e5494ef91bbb9d09c23eb5d41d69ccf4924a30e"
+    },
+    {
+      "path": "crates/hvc-test-support/src/bin/cli_fixture.rs",
+      "gitBlob": "ce8ebfafb22211d21ebe3472e3573ceb480fb161"
+    },
+    {
+      "path": "crates/hvc-test-support/src/brownfield_graph_benchmark.rs",
+      "gitBlob": "6a578d217fd86b007664015331edd038e73410e4"
+    },
+    {
+      "path": "crates/hvc-test-support/src/composition_benchmark.rs",
+      "gitBlob": "7a4b13c630be6f04b44e3e8a41b8c7fa96ef3370"
+    },
+    {
+      "path": "crates/hvc-test-support/src/contracts.rs",
+      "gitBlob": "9f8d6bca156d380c415a195d6cc1f5127cdbe6f3"
+    },
+    {
+      "path": "crates/hvc-test-support/src/core_harness.rs",
+      "gitBlob": "f5d015bf6a4cde995d18eb44c76d33e5dabd63b2"
+    },
+    {
+      "path": "crates/hvc-test-support/src/pulsation_benchmark.rs",
+      "gitBlob": "e5935ac0b65ab9cbacef417b9af19643c3248f47"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/antigravity_live_pulsation.rs",
+      "gitBlob": "a6a15c5abe817a244e6ad5a751f7785bbf468924"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/cli_executor.rs",
+      "gitBlob": "fa58eceebc06dcd6e82ba63748b6cb12adedc68f"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/cli_validation_gate.rs",
+      "gitBlob": "6d9dcd1fd0452ca629c40216365b019c9bbf76eb"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/composition_cli.rs",
+      "gitBlob": "02a13233fe9fd5addf89ed7249f57cc602d43303"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/composition_failures.rs",
+      "gitBlob": "a6bef6382f8c59fec67e15d0d0f7cddf91e50b95"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/composition_recipes.rs",
+      "gitBlob": "bbf98893f84b1965b55f822ecafda996ede5e206"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/composition_support/mod.rs",
+      "gitBlob": "3922618660684d1d86689dc9da0643945da542d0"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/composition_units.rs",
+      "gitBlob": "95bc8697889515b6a8aa487bd1294cc5b2e93d2d"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/corrective_retry.rs",
+      "gitBlob": "e53adadae4d8e63f68a1991ec6563ff3fad41e20"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/learning_worker.rs",
+      "gitBlob": "eafd817fcc0871b4b47a6159cb4fe7a920081e5c"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/preparation_workflow.rs",
+      "gitBlob": "c6ce6e9737598fd435701a354ab1be5e2b62560f"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/review_brief.rs",
+      "gitBlob": "a84b6d0d7f9f3ea4d41b55fd5354973e71590459"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/serial_upgrade.rs",
+      "gitBlob": "c4878f1887124061706f8f8d5ff58e448f01f5d5"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/serial_worker.rs",
+      "gitBlob": "f140d0bb3b03b70267856fcea7c639409484b634"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/stage_failure_checkpoint.rs",
+      "gitBlob": "48d893bf5d37925d44167598c558e33beda9d1ad"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/thinking_budget_ab.rs",
+      "gitBlob": "dc63fd4e759c046fde9b510c4d232ec48c5d2966"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/token_usage.rs",
+      "gitBlob": "b4d178eb9e5f7dc2a5f6e8102874b413b69299f9"
+    },
+    {
+      "path": "crates/hvc-ui/Cargo.toml",
+      "gitBlob": "43a07cb549e0db4a06f2dbaf8d8f9bbc6ef0b946"
+    },
+    {
+      "path": "crates/hvc-ui/src/agents_view.rs",
+      "gitBlob": "ec9542ccd3bbd946d896ba17dea7f0c41154839c"
+    },
+    {
+      "path": "crates/hvc-ui/src/agents.rs",
+      "gitBlob": "bc3cce93b21eae6adcf61949b3b11f06b8f6e2d4"
+    },
+    {
+      "path": "crates/hvc-ui/src/app_model.rs",
+      "gitBlob": "f021f6caa95132f8d9eb2af8a8f7c73977d0b423"
+    },
+    {
+      "path": "crates/hvc-ui/src/assets.rs",
+      "gitBlob": "60ddc6134734dc6bc8744024fd25c1f397f81d66"
+    },
+    {
+      "path": "crates/hvc-ui/src/chat_view.rs",
+      "gitBlob": "057520744593425b65730c41ed61bbdcb1dafcff"
+    },
+    {
+      "path": "crates/hvc-ui/src/chat.rs",
+      "gitBlob": "dae86dfc6cf35aa18c607407ecc16c11efed7d79"
+    },
+    {
+      "path": "crates/hvc-ui/src/choices.rs",
+      "gitBlob": "a398cbc57590d8c55399ce830682ce2af0bab302"
+    },
+    {
+      "path": "crates/hvc-ui/src/composition_ui.rs",
+      "gitBlob": "0e701bbb068e64ba894c0a8f1c63a2365a1464e0"
+    },
+    {
+      "path": "crates/hvc-ui/src/context_rail.rs",
+      "gitBlob": "3643004089b139479a59518bcb804313806c9d53"
+    },
+    {
+      "path": "crates/hvc-ui/src/file_tree.rs",
+      "gitBlob": "3939c11d6925088039a882181731def6f93132de"
+    },
+    {
+      "path": "crates/hvc-ui/src/flow.rs",
+      "gitBlob": "61ff13772dba73f1eebe2471a5e5e067ded8722e"
+    },
+    {
+      "path": "crates/hvc-ui/src/forge_view.rs",
+      "gitBlob": "6e20a3ee1ed32f3b0a507ad20864d7b9c4c42884"
+    },
+    {
+      "path": "crates/hvc-ui/src/forge.rs",
+      "gitBlob": "fe629f8c4ead3127135a4cc41a74f9d195fc9b1b"
+    },
+    {
+      "path": "crates/hvc-ui/src/hitl.rs",
+      "gitBlob": "01ee7c7c9df75baf09c6d8353e6250f7fbccf46b"
+    },
+    {
+      "path": "crates/hvc-ui/src/home_charts.rs",
+      "gitBlob": "107e3bedc8f0189e63171de81201bbcea06f8dbc"
+    },
+    {
+      "path": "crates/hvc-ui/src/home_stats_tests.rs",
+      "gitBlob": "45faf137b67d96487db824d889d159e22d9e6538"
+    },
+    {
+      "path": "crates/hvc-ui/src/home_stats.rs",
+      "gitBlob": "c7f5027bf42c1d39b93aeeba5e007862a67cc564"
+    },
+    {
+      "path": "crates/hvc-ui/src/home_view.rs",
+      "gitBlob": "046fa9a64dbf9637b8922276334db893fa872c7c"
+    },
+    {
+      "path": "crates/hvc-ui/src/icons.rs",
+      "gitBlob": "509ed7ed78e4debb27245ea97cba7cce2995c33d"
+    },
+    {
+      "path": "crates/hvc-ui/src/layout_tests.rs",
+      "gitBlob": "447a0279d2b6a850ffc4c165199fae77deb42306"
+    },
+    {
+      "path": "crates/hvc-ui/src/lib.rs",
+      "gitBlob": "742374b1ed4a649116644bc3745831515b9a267f"
+    },
+    {
+      "path": "crates/hvc-ui/src/logs_view.rs",
+      "gitBlob": "2560d58f18d1640b01ef2069d4e13dc0f4c56ccc"
+    },
+    {
+      "path": "crates/hvc-ui/src/logs.rs",
+      "gitBlob": "cb65790899f28ddb674d3ea6b42816a247d446ab"
+    },
+    {
+      "path": "crates/hvc-ui/src/native_editor.rs",
+      "gitBlob": "29e6346162538e223bbfe2608b18153e83694b50"
+    },
+    {
+      "path": "crates/hvc-ui/src/notifications.rs",
+      "gitBlob": "aa1557a0ce9042ef6c22fa1efeb0f4b156d1f8ef"
+    },
+    {
+      "path": "crates/hvc-ui/src/pipeline_status.rs",
+      "gitBlob": "49e24e6daec6b08ceac81ab1dc3bb5bc9d0b107a"
+    },
+    {
+      "path": "crates/hvc-ui/src/pulsations_view.rs",
+      "gitBlob": "276a20d980a4d916462e160b6c58449da4366d19"
+    },
+    {
+      "path": "crates/hvc-ui/src/pulsations.rs",
+      "gitBlob": "d7fcb1643b3327bef532a9441daf43ee1e231922"
+    },
+    {
+      "path": "crates/hvc-ui/src/resolution_ui.rs",
+      "gitBlob": "8d1623aca19b85c4667624159e649c2eebd80bbe"
+    },
+    {
+      "path": "crates/hvc-ui/src/resolution_view.rs",
+      "gitBlob": "b72a1df8a07b3df1fb5cb13480f0b095528134ea"
+    },
+    {
+      "path": "crates/hvc-ui/src/resolution.rs",
+      "gitBlob": "6ec349b9f072e12c4bf31e446001d9c87b7791f2"
+    },
+    {
+      "path": "crates/hvc-ui/src/review_brief_view.rs",
+      "gitBlob": "0e18a311b57e9653564858f23fa6ff2f43e36ca6"
+    },
+    {
+      "path": "crates/hvc-ui/src/review_view.rs",
+      "gitBlob": "345967c43744cf33f32d3249fbc1db9329d640ad"
+    },
+    {
+      "path": "crates/hvc-ui/src/select_menu.rs",
+      "gitBlob": "843c49e74092100a607e4d2a1af94ab4d33da190"
+    },
+    {
+      "path": "crates/hvc-ui/src/session.rs",
+      "gitBlob": "f12b0f3c1928801bf9cf5f61a19d7d897036642c"
+    },
+    {
+      "path": "crates/hvc-ui/src/settings_modal.rs",
+      "gitBlob": "67bea70ab8e966f4a85efbf8a58d37bc5835ee05"
+    },
+    {
+      "path": "crates/hvc-ui/src/settings_pages.rs",
+      "gitBlob": "f2e8ee4c56aba313b2911fb8f7c9dfbb16d051b7"
+    },
+    {
+      "path": "crates/hvc-ui/src/settings_search.rs",
+      "gitBlob": "add7d64b2d32c14680a493f2dbc53f6f0f0faa79"
+    },
+    {
+      "path": "crates/hvc-ui/src/settings_ui.rs",
+      "gitBlob": "c072bc7bf108ba468f8127f97f4dab7fb0597b9a"
+    },
+    {
+      "path": "crates/hvc-ui/src/settings_view.rs",
+      "gitBlob": "7eca0bbe6c04c7ba68cdaaae1b4aabf375fc4d72"
+    },
+    {
+      "path": "crates/hvc-ui/src/settings.rs",
+      "gitBlob": "720617247e999d1ba8c4495a0a1414ba942a0d31"
+    },
+    {
+      "path": "crates/hvc-ui/src/shell.rs",
+      "gitBlob": "722a6864ab60d88a4f01526aa50a2a342d88ae60"
+    },
+    {
+      "path": "crates/hvc-ui/src/sizing.rs",
+      "gitBlob": "9beab3366d5fc4f18a6f42df7da47985ec514aa7"
+    },
+    {
+      "path": "crates/hvc-ui/src/split_pane.rs",
+      "gitBlob": "e95b8edfa40456b79295fca91b99db4d5bfbcd62"
+    },
+    {
+      "path": "crates/hvc-ui/src/text_input.rs",
+      "gitBlob": "b6314080974696773a240e456f3397c68090c857"
+    },
+    {
+      "path": "crates/hvc-ui/src/theme.rs",
+      "gitBlob": "e5237c956ee22930c9df8278f48980c668787e90"
+    },
+    {
+      "path": "crates/hvc-ui/src/title_bar.rs",
+      "gitBlob": "9d8fe806418ee3be89cde1631bb136f7027ab7f6"
+    },
+    {
+      "path": "crates/hvc-ui/src/usage.rs",
+      "gitBlob": "08be7e4d24b5cfbf786d5a4075f14b3a78d74f28"
+    },
+    {
+      "path": "crates/hvc-ui/src/vault_view.rs",
+      "gitBlob": "9bcbe733213ded295528a2d86c52c76ad14b63c2"
+    },
+    {
+      "path": "crates/hvc-ui/src/vault.rs",
+      "gitBlob": "8c162320ad72b7b17f2196936ec4fb837198c7af"
+    },
+    {
+      "path": "crates/hvc-ui/src/widgets.rs",
+      "gitBlob": "adec7506b01f335c7a8d84ee3d8181fe29e4aa26"
+    },
+    {
+      "path": "crates/hvc-ui/src/workspace_view.rs",
+      "gitBlob": "41d166e3a7f1861f42bee34eabe27dc6a261b85e"
+    },
+    {
+      "path": "crates/hvc-ui/src/workspace.rs",
+      "gitBlob": "2c91c980dc1f0a3af8dc4df1dab7e9bfd681ce67"
+    },
+    {
+      "path": "scripts/gate-stage7.ps1",
+      "gitBlob": "38e286491ae076a4f41437805de6933ecd9a2a87"
+    },
+    {
+      "path": "third_party/gpui/Cargo.toml",
+      "gitBlob": "384306367bc014b4492155ced3598c2baafe85d0"
+    },
+    {
+      "path": "third_party/gpui/src/elements/div.rs",
+      "gitBlob": "a0a032ba28ea4b99d23841721faba89a5c78420c"
+    },
+    {
+      "path": "third_party/gpui/src/elements/text.rs",
+      "gitBlob": "6a31b20f144e3cf1a08d5e180be50e707217bdb6"
+    },
+    {
+      "path": "third_party/gpui/src/text_system/line_wrapper.rs",
+      "gitBlob": "4e5238eef4b73d27e5e08468c8284a9e58d4178f"
+    },
+    {
+      "path": "third_party/gpui/src/window.rs",
+      "gitBlob": "7ba547461682effd53b13526a651a93d1e393db3"
+    }
+  ],
+  "environment": {
+    "platform": "Windows 11 Pro 10.0.26300",
+    "logicalProcessors": 12,
+    "memoryBytes": 34278871040,
+    "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+    "target": "separate worktree target; no shared CARGO_TARGET_DIR"
+  },
+  "rustfmt": {
+    "command": "cargo fmt --all -- --check",
+    "passed": true
+  },
+  "clippy": {
+    "durationSeconds": 13.3464825,
+    "exitCode": 0,
+    "command": "cargo clippy --workspace --all-targets --locked --offline -- -D warnings"
+  },
+  "clippyInitial": {
+    "durationSeconds": 29.1042007,
+    "exitCode": 101,
+    "command": "cargo clippy --workspace --all-targets --locked --offline -- -D warnings"
+  },
+  "clippySecond": {
+    "durationSeconds": 36.8794545,
+    "exitCode": 101,
+    "command": "cargo clippy --workspace --all-targets --locked --offline -- -D warnings"
+  },
+  "tests": {
+    "command": "cargo test-all",
+    "offline": true,
+    "nativeWindows": true,
+    "threadsPerBinary": 2,
+    "exitCode": 0,
+    "durationSeconds": 874.6958559,
+    "passed": 1167,
+    "failed": 0,
+    "ignored": 10,
+    "filteredOut": 0,
+    "runnerSeconds": 679.11,
+    "summaries": 39,
+    "ignoredNames": [
+      "agent_runtime::prompt_tests::print_the_prompt_a_compact_model_receives",
+      "authenticated_antigravity_runs_a_whole_pulsation_on_gemini_flash",
+      "authenticated_antigravity_runs_the_specification_stage_on_claude_sonnet",
+      "authenticated_antigravity_accepts_every_registry_payload_schema",
+      "authenticated_antigravity_companion_smoke",
+      "authenticated_antigravity_pipeline_smoke",
+      "authenticated_claude_model_identity_smoke",
+      "authenticated_codex_companion_smoke",
+      "authenticated_codex_turn_context_model_smoke",
+      "claude_thinking_budget_paired_ab_on_specification_and_contract"
+    ]
+  },
+  "testCargoPreparationSeconds": 164.0,
+  "testList": {
+    "command": "cargo test-all --list",
+    "exitCode": 0,
+    "listed": 1177,
+    "durationSeconds": 18.5892111
+  },
+  "runnerInventory": [
+    {
+      "target": "unittests src\\main.rs (target\\debug\\deps\\hard_vibe_code-c06cc455b897fcde.exe)",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_core-15aa850eeb50762b.exe)",
+      "passed": 749,
+      "failed": 0,
+      "ignored": 1,
+      "filteredOut": 0,
+      "durationSeconds": 316.45
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_editor-8b00cac0c378bc90.exe)",
+      "passed": 17,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.04
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_test_support-79c9348e5f327a1a.exe)",
+      "passed": 24,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 9.41
+    },
+    {
+      "target": "unittests src\\bin\\check_fixture.rs (target\\debug\\deps\\check_fixture-496e9a98ccb231ca.exe)",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "unittests src\\bin\\cli_fixture.rs (target\\debug\\deps\\cli_fixture-a8eb943aa44d83e7.exe)",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "tests\\antigravity_live_pulsation.rs (target\\debug\\deps\\antigravity_live_pulsation-1a669a4279b9fd35.exe)",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 2,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "tests\\brownfield_bf5.rs (target\\debug\\deps\\brownfield_bf5-e1caf8aa55cc3f58.exe)",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 11.15
+    },
+    {
+      "target": "tests\\cli_executor.rs (target\\debug\\deps\\cli_executor-f9f5d3c21ab04a32.exe)",
+      "passed": 12,
+      "failed": 0,
+      "ignored": 6,
+      "filteredOut": 0,
+      "durationSeconds": 50.71
+    },
+    {
+      "target": "tests\\cli_validation_gate.rs (target\\debug\\deps\\cli_validation_gate-cb0fad4d7df450f7.exe)",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 36.13
+    },
+    {
+      "target": "tests\\composition_benchmark.rs (target\\debug\\deps\\composition_benchmark-614e4450f9010638.exe)",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 12.46
+    },
+    {
+      "target": "tests\\composition_checks.rs (target\\debug\\deps\\composition_checks-419eb77ea3de1e35.exe)",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 14.27
+    },
+    {
+      "target": "tests\\composition_cli.rs (target\\debug\\deps\\composition_cli-71d64266f8031692.exe)",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 18.93
+    },
+    {
+      "target": "tests\\composition_failures.rs (target\\debug\\deps\\composition_failures-5cb66d8510d0a955.exe)",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 14.9
+    },
+    {
+      "target": "tests\\composition_parallel.rs (target\\debug\\deps\\composition_parallel-9db7bbf2aa7a3e0f.exe)",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 12.76
+    },
+    {
+      "target": "tests\\composition_path_confirmation.rs (target\\debug\\deps\\composition_path_confirmation-0827799b857d0348.exe)",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 3.3
+    },
+    {
+      "target": "tests\\composition_pipeline.rs (target\\debug\\deps\\composition_pipeline-3f73ca170d32a164.exe)",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 4.36
+    },
+    {
+      "target": "tests\\composition_recipes.rs (target\\debug\\deps\\composition_recipes-a0b1d7ba24e8d8be.exe)",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 9.84
+    },
+    {
+      "target": "tests\\composition_units.rs (target\\debug\\deps\\composition_units-32fb2564c4aa4e5d.exe)",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 13.95
+    },
+    {
+      "target": "tests\\composition_validation.rs (target\\debug\\deps\\composition_validation-e4e42e534175f202.exe)",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 3.16
+    },
+    {
+      "target": "tests\\coordination_upgrade.rs (target\\debug\\deps\\coordination_upgrade-10fbd753293b78f0.exe)",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 1.08
+    },
+    {
+      "target": "tests\\corrective_retry.rs (target\\debug\\deps\\corrective_retry-7b5db1cd6ef0d68a.exe)",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 4.82
+    },
+    {
+      "target": "tests\\learning_worker.rs (target\\debug\\deps\\learning_worker-2dc07558bbfc7891.exe)",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 3.04
+    },
+    {
+      "target": "tests\\orchestration_baseline.rs (target\\debug\\deps\\orchestration_baseline-261d7867158328d0.exe)",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.6
+    },
+    {
+      "target": "tests\\preparation_workflow.rs (target\\debug\\deps\\preparation_workflow-eff4342ff467bba5.exe)",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 2.96
+    },
+    {
+      "target": "tests\\pulsation_m5.rs (target\\debug\\deps\\pulsation_m5-c6247edc8e8cb17d.exe)",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 55.37
+    },
+    {
+      "target": "tests\\review_brief.rs (target\\debug\\deps\\review_brief-a90e811314324fe2.exe)",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 3.68
+    },
+    {
+      "target": "tests\\serial_upgrade.rs (target\\debug\\deps\\serial_upgrade-705012e13b99c21b.exe)",
+      "passed": 15,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 6.86
+    },
+    {
+      "target": "tests\\serial_worker.rs (target\\debug\\deps\\serial_worker-ab0f2f52a3e353fd.exe)",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 5.19
+    },
+    {
+      "target": "tests\\stage_failure_checkpoint.rs (target\\debug\\deps\\stage_failure_checkpoint-5e89f616900e5a19.exe)",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 14.11
+    },
+    {
+      "target": "tests\\thinking_budget_ab.rs (target\\debug\\deps\\thinking_budget_ab-f025db68865358cc.exe)",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 1,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "tests\\token_usage.rs (target\\debug\\deps\\token_usage-8e8569b99e35fba6.exe)",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 1.6
+    },
+    {
+      "target": "tests\\workspace_flow.rs (target\\debug\\deps\\workspace_flow-05cda9ff8d65b8ba.exe)",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.03
+    },
+    {
+      "target": "unittests examples\\pulsation_ui_fixture.rs (target\\debug\\examples\\pulsation_ui_fixture-6dc30dd1da2b6510.exe)",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 1.05
+    },
+    {
+      "target": "unittests src\\lib.rs (target\\debug\\deps\\hvc_ui-bbaff088e5521556.exe)",
+      "passed": 281,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 46.9
+    },
+    {
+      "target": "Doc-tests hvc_core",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "Doc-tests hvc_editor",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "Doc-tests hvc_test_support",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "Doc-tests hvc_ui",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "filteredOut": 0,
+      "durationSeconds": 0.0
+    }
+  ],
+  "fixture": {
+    "command": "cargo run --locked --offline -p hvc-test-support --example review_brief_fixture -- NEW_DIRECTORY",
+    "exitCode": 0,
+    "durationSeconds": 58.7840712,
+    "directory": "<repo>-test-workflow\\target\\m2-base-qa\\review-fixture-4099789b7ef94e4eb03dfb21c5ec6ebe"
+  },
+  "audit": {
+    "command": "cargo audit --json --no-fetch",
+    "exitCode": 1,
+    "databaseCommit": "edb58f5974b83eb8302332821cb6d389777aa351",
+    "databaseUpdated": "2026-10-14T17:18:32-03:00",
+    "databaseRefreshed": false,
+    "vulnerabilities": 7,
+    "findings": [
+      {
+        "id": "RUSTSEC-2026-0338",
+        "package": "quinn-proto",
+        "version": "0.11.17",
+        "patched": [
+          ">=0.11.18"
+        ]
+      },
+      {
+        "id": "RUSTSEC-2026-0340",
+        "package": "quinn-proto",
+        "version": "0.11.17",
+        "patched": [
+          ">=0.11.18"
+        ]
+      },
+      {
+        "id": "RUSTSEC-2026-0343",
+        "package": "quinn-proto",
+        "version": "0.11.17",
+        "patched": [
+          ">=0.11.18"
+        ]
+      },
+      {
+        "id": "RUSTSEC-2026-0285",
+        "package": "rustls",
+        "version": "0.23.43",
+        "patched": [
+          ">=0.23.45"
+        ]
+      },
+      {
+        "id": "RUSTSEC-2026-0346",
+        "package": "rustls",
+        "version": "0.23.43",
+        "patched": [
+          ">=0.23.46"
+        ]
+      },
+      {
+        "id": "RUSTSEC-2026-0348",
+        "package": "rustls",
+        "version": "0.23.43",
+        "patched": [
+          ">=0.23.46"
+        ]
+      },
+      {
+        "id": "RUSTSEC-2026-0349",
+        "package": "rustls",
+        "version": "0.23.43",
+        "patched": [
+          ">=0.23.46"
+        ]
+      }
+    ]
+  },
+  "compatibilityChanges": [
+    "Resolved 14 source conflicts while keeping both local M0/M1 and upstream behavior.",
+    "Preserved discovery_with and controlled cache tests while using upstream scan/store and stale/background discovery.",
+    "Updated the M1 scripted response to echo the requested model identity required by the new router.",
+    "Fixed 14 strict Clippy diagnostics with equivalent expressions/type alias; no lint allows.",
+    "Canonical Review Brief ADR is now ADR-027; comments updated, old evidence unchanged."
+  ],
+  "limits": [
+    "One complete post-integration test run; not a benchmark against the smaller 943-test snapshot.",
+    "Test wall time includes recompilation of changed code; Cargo preparation and runner times are separate.",
+    "Audit used cached RustSec database without fetching. Seven findings remain; no audit or test failure was suppressed.",
+    "No new release build, desktop smoke or full Stage 7 gate was run for this synchronization; prior release/smoke evidence does not validate this merged revision.",
+    "Existing upstream ignored/live tests were preserved and not enabled. Two upstream discovery tests still perform real machine probes.",
+    "M2 Confirm/Flag was not implemented."
+  ]
+}

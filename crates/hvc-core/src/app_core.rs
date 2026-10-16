@@ -84,17 +84,17 @@ impl AppPaths {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppCoreError {
-    #[error("não foi possível resolver o diretório de dados da aplicação")]
+    #[error("could not resolve the application data directory")]
     DataDirectoryUnavailable,
-    #[error("outra instância do Hard Vibe Code já está usando este diretório de dados")]
+    #[error("another Hard Vibe Code instance is already using this data directory")]
     DataDirectoryInUse,
-    #[error("falha de I/O no diretório de dados: {0}")]
+    #[error("I/O failure in the data directory: {0}")]
     Io(#[from] std::io::Error),
-    #[error("falha ao inicializar persistência: {0}")]
+    #[error("failed to initialize persistence: {0}")]
     Persistence(#[from] PersistenceServiceError),
-    #[error("falha ao recuperar o Chat Companion: {0}")]
+    #[error("failed to recover the Chat Companion: {0}")]
     Chat(#[from] crate::chat_service::ChatCommandError),
-    #[error("falha ao inicializar o painel Agents: {0}")]
+    #[error("failed to initialize the Agents panel: {0}")]
     Terminal(#[from] crate::terminals::TerminalError),
 }
 
@@ -298,6 +298,46 @@ impl AppCore {
         &self.persistence
     }
 
+    /// Detaches the active watcher before the filesystem rename. The UI checks
+    /// unsaved editor buffers before calling this explicit user operation.
+    pub fn delete_project_permanently(
+        &self,
+        project_id: &str,
+        confirmation: &str,
+    ) -> Result<crate::project_deletion::ProjectDeletionOutcome, PersistenceServiceError> {
+        let preview = self.persistence.preview_project_deletion(project_id)?;
+        let target = fs::canonicalize(&preview.project.workspace_path)?;
+        let active = {
+            let mut workspace = self.workspace.lock().map_err(|_| {
+                PersistenceServiceError::Runtime("Workspace lock is unavailable.".into())
+            })?;
+            let active = workspace
+                .root_path
+                .as_ref()
+                .is_some_and(|root| root == &target);
+            if active {
+                workspace.watcher = None;
+                workspace.root_path = None;
+            }
+            active
+        };
+        let result = self
+            .persistence
+            .delete_project_permanently(project_id, confirmation);
+        if result.is_err() && active && target.exists() {
+            self.open_workspace(OpenWorkspaceRequest {
+                path: target.to_string_lossy().into_owned(),
+            })
+            .map_err(|error| {
+                PersistenceServiceError::Runtime(format!(
+                    "Project deletion failed, and the workspace watcher could not restart: {}",
+                    error.message
+                ))
+            })?;
+        }
+        result
+    }
+
     pub fn chat(&self) -> Arc<ChatService> {
         Arc::clone(&self.chat)
     }
@@ -374,8 +414,7 @@ impl AppCore {
         {
             return Err(WorkspaceCommandError {
                 code: workspace_service::WorkspaceErrorCode::ValidationError,
-                message: "O onboarding brownfield só pode ser alterado em um workspace existente."
-                    .into(),
+                message: "Brownfield onboarding can only change in an existing workspace.".into(),
                 details: None,
                 remediation: None,
             });
@@ -389,9 +428,9 @@ impl AppCore {
         if project_root != root {
             return Err(WorkspaceCommandError {
                 code: workspace_service::WorkspaceErrorCode::ValidationError,
-                message: "O projeto informado não corresponde ao workspace aberto.".into(),
+                message: "The project does not match the open workspace.".into(),
                 details: None,
-                remediation: Some("Reabra o projeto correto e tente novamente.".into()),
+                remediation: Some("Reopen the right project and try again.".into()),
             });
         }
 
@@ -422,7 +461,7 @@ impl AppCore {
             code: workspace_service::WorkspaceErrorCode::IoError,
             message: error.to_string(),
             details: None,
-            remediation: Some("Tente atualizar o inventário novamente.".into()),
+            remediation: Some("Try refreshing the inventory again.".into()),
         })?;
         self.persistence
             .enqueue_brownfield_mapping(&request.project_id)
@@ -448,7 +487,7 @@ impl AppCore {
         if project_root != root {
             return Err(WorkspaceCommandError {
                 code: workspace_service::WorkspaceErrorCode::ValidationError,
-                message: "O módulo informado não pertence ao workspace aberto.".into(),
+                message: "The module does not belong to the open workspace.".into(),
                 details: None,
                 remediation: None,
             });
@@ -582,7 +621,7 @@ impl AppCore {
 fn workspace_lock_error() -> WorkspaceCommandError {
     WorkspaceCommandError {
         code: workspace_service::WorkspaceErrorCode::IoError,
-        message: "Falha ao acessar o estado interno do workspace.".into(),
+        message: "Failed to access the internal workspace state.".into(),
         details: None,
         remediation: None,
     }

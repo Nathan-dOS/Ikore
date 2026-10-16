@@ -107,7 +107,7 @@ impl SourceSnapshot {
     ) -> Result<Self, ContractError> {
         let project_id = project_id.into();
         if project_id.trim().is_empty() || content.contains('\0') {
-            return Err(ContractError::Invalid("fonte textual/projeto"));
+            return Err(ContractError::Invalid("text source/project"));
         }
         if content.len() > 1024 * 1024 {
             return Err(ContractError::BudgetExceeded);
@@ -402,7 +402,7 @@ impl CollectionBudget {
             || self.max_snippet_bytes == 0
             || self.max_duration_ms == 0
         {
-            return Err(ContractError::Invalid("orçamento de coleta"));
+            return Err(ContractError::Invalid("collection budget"));
         }
         Ok(())
     }
@@ -480,7 +480,7 @@ impl CodeContextFacts {
             || (self.coverage.truncated && self.coverage.state == CoverageState::Complete)
             || (self.coverage.state == CoverageState::Unavailable && !self.sources.is_empty())
         {
-            return Err(ContractError::Invalid("proveniência/cobertura do contexto"));
+            return Err(ContractError::Invalid("context provenance/coverage"));
         }
         Ok(())
     }
@@ -516,7 +516,7 @@ impl CodeContextFacts {
             let line = snapshot.snippet(reference.line, reference.line)?;
             if !line.content.contains(&reference.observed_text) {
                 return Err(ContractError::Invalid(
-                    "referência divergente da linha observada",
+                    "reference differs from the observed line",
                 ));
             }
             if let ReferenceResolution::Resolved { target } = &reference.resolution
@@ -550,7 +550,7 @@ impl CodeContextFacts {
             let declaration = snapshot.snippet(symbol.start_line, symbol.end_line)?;
             if !declaration.content.contains(&symbol.name) {
                 return Err(ContractError::Invalid(
-                    "símbolo divergente da fonte capturada",
+                    "symbol differs from the captured source",
                 ));
             }
         }

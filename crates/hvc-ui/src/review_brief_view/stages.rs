@@ -1,4 +1,4 @@
-//! The stage visuals after Specification (ADR-024 M4) and the stage-failure brief.
+//! The stage visuals after Specification (ADR-027 M4) and the stage-failure brief.
 //!
 //! Contract shows its interfaces; Test keeps the coverage the agent declared apart from
 //! the checks the host executed; Integrator shows a verdict per criterion, the host checks

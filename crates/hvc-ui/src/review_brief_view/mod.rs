@@ -1,4 +1,4 @@
-//! The derived review brief of a checkpoint (ADR-024 M1–M4).
+//! The derived review brief of a checkpoint (ADR-027 M1–M4).
 //!
 //! A native rendering of `hvc_core::orchestration::review_brief::ReviewBrief`. The host
 //! decided every count, status and rule; this module only draws them. Text an agent wrote
@@ -396,7 +396,7 @@ fn subject_name(subject: ChangeSubject) -> &'static str {
     }
 }
 
-/// ADR-024 part 3: the previous candidate of this stage next to this one,
+/// ADR-027 part 3: the previous candidate of this stage next to this one,
 /// under the feedback the run received. The host compared them; the quoted
 /// text is the agent's, except the feedback.
 fn revision_card(diff: &RevisionDiff) -> AnyElement {

@@ -72,12 +72,13 @@ pub(super) fn build(
 
     let coverage: Vec<BriefCoverage> = batch_criteria(table)
         .into_iter()
-        .filter_map(|(handle, task_title, criterion_id, description)| {
-            let (item, tests) = declared.get(&handle)?;
+        .filter_map(|criterion| {
+            let (item, tests) = declared.get(&criterion.handle)?;
             Some(BriefCoverage {
-                criterion_id,
-                description,
-                task_title,
+                task_id: criterion.task_id,
+                criterion_id: criterion.criterion_id,
+                description: criterion.description,
+                task_title: criterion.task_title,
                 coverage: item.coverage,
                 tests: tests.clone(),
                 declared_checks: item.check_refs.iter().map(ToString::to_string).collect(),
