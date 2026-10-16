@@ -79,11 +79,19 @@ pub(crate) enum Icon {
     CircleHelp,
     /// Review brief: an item flagged for revision.
     Flag,
+    /// Review brief: what changed since the previous revision.
+    GitCompare,
+    /// Review brief: removed since the previous revision.
+    Minus,
+    /// Review brief: moved since the previous revision.
+    ArrowRight,
+    /// Review brief: changed since the previous revision.
+    Pencil,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 38] = [
+    pub(crate) const ALL: [Self; 42] = [
         Self::House,
         Self::Plus,
         Self::Hammer,
@@ -122,6 +130,10 @@ impl Icon {
         Self::Network,
         Self::CircleHelp,
         Self::Flag,
+        Self::GitCompare,
+        Self::Minus,
+        Self::ArrowRight,
+        Self::Pencil,
     ];
 
     /// Asset path served by `HvcAssets`; `icons/<lucide-name>.svg`.
@@ -165,6 +177,10 @@ impl Icon {
             Self::Network => "icons/network.svg",
             Self::CircleHelp => "icons/circle-help.svg",
             Self::Flag => "icons/flag.svg",
+            Self::GitCompare => "icons/git-compare.svg",
+            Self::Minus => "icons/minus.svg",
+            Self::ArrowRight => "icons/arrow-right.svg",
+            Self::Pencil => "icons/pencil.svg",
         }
     }
 }
