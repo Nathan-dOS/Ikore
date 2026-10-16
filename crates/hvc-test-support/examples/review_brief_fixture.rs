@@ -1,11 +1,15 @@
 //! Development fixture for ADR-027: a v4 pulsation parked at its Specification
 //! checkpoint, so the real GUI can be opened on the Review Brief tab.
 //!
-//! Usage: `review_brief_fixture NEW_DIRECTORY`, then start `hvc-app` with
-//! `HVC_DATA_DIR` set to the printed data directory. Every provider reply comes
-//! from the scripted composition worker; the worker stops once the checkpoint
-//! is waiting, so the GUI never races it. Provider credentials point at
-//! fixture-only names, never the developer's.
+//! Usage: `review_brief_fixture NEW_DIRECTORY [--revised]`, then start
+//! `hvc-app` with `HVC_DATA_DIR` set to the printed data directory. Every
+//! provider reply comes from the scripted composition worker; the worker stops
+//! once the checkpoint is waiting, so the GUI never races it. Provider
+//! credentials point at fixture-only names, never the developer's.
+//!
+//! `--revised` first requests a revision with feedback composed from flags,
+//! as Review sends it, and parks at the second Specification checkpoint, whose
+//! brief shows what changed (ADR-027 M3).
 use hvc_core::{
     AppCoreDependencies,
     feature_forge::{
@@ -113,15 +117,85 @@ fn reply(facts: &PromptFacts) -> Value {
         ])),
         ..ReplyOptions::default()
     };
-    unit_response_with(facts, &options)
+    let mut response = unit_response_with(facts, &options);
+    if facts.user_prompt.contains(REVISION_MARK) {
+        revise(&mut response["payload"]);
+    }
+    response
+}
+
+const REVISION_MARK: &str = "Revision feedback from the developer:";
+
+const FEEDBACK: &str = "Flagged by the developer in the review brief:
+- [Decision] D1: Keep the public signature of validate_token. — Also decide what happens when the token expires exactly now.
+- [Proof by reading only] AC-2: A token that expires exactly now is rejected — Say which boundary test proves it.
+
+Additional feedback: rename the test unit after what it covers.";
+
+/// What the scripted author changes when it answers `FEEDBACK`.
+fn revise(payload: &mut Value) {
+    payload["decisions"] = json!([
+        "Keep the public signature of validate_token.",
+        "Treat a token that expires exactly now as expired."
+    ]);
+    payload["requirements"][1]["requirement"] =
+        json!("validate_token returns false when expires_at equals now.");
+    payload["requirements"][1]["verificationIntent"] =
+        json!("Author a boundary test with expires_at equal to now.");
+    payload["exclusions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("No clock-skew tolerance."));
+    payload["unitProposals"][1]["unitKey"] = json!("cover_boundaries");
+    payload["unitProposals"][1]["objective"] =
+        json!("Cover expired, boundary and still-valid tokens with unit tests.");
+}
+
+fn wait_for_specification(
+    database: &rusqlite::Connection,
+    pulse: &str,
+    not: Option<&str>,
+) -> String {
+    let deadline = Instant::now() + Duration::from_secs(180);
+    loop {
+        let waiting: Option<String> = database
+            .query_row(
+                "SELECT c.id FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.id=?1 AND p.stage='SPECIFICATION' AND p.status='checkpoint' AND c.status='waiting' AND c.kind='artifact_review' AND c.id<>?2",
+                [pulse, not.unwrap_or("")],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(id) = waiting {
+            return id;
+        }
+        let status: String = database
+            .query_row(
+                "SELECT status FROM pulsations WHERE id=?1",
+                [pulse],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            status != "failed" && Instant::now() < deadline,
+            "pulsation did not reach the Specification checkpoint (status {status})"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn main() {
     let root = PathBuf::from(
         std::env::args_os()
             .nth(1)
-            .expect("usage: review_brief_fixture NEW_DIRECTORY"),
+            .expect("usage: review_brief_fixture NEW_DIRECTORY [--revised]"),
     );
+    let revised = match std::env::args().nth(2).as_deref() {
+        None => false,
+        Some("--revised") => true,
+        Some(other) => {
+            panic!("unknown option {other}; usage: review_brief_fixture NEW_DIRECTORY [--revised]")
+        }
+    };
     assert!(!root.exists(), "refuse to reuse or overwrite {root:?}");
     fs::create_dir_all(&root).unwrap();
     // The GUI registers projects by their canonical root (`\\?\` form on
@@ -228,30 +302,20 @@ fn main() {
     let token = stop.clone();
     runtime.spawn(async move { worker.run_job_worker_until(token).await });
     let database = rusqlite::Connection::open(service.database_path()).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(180);
-    loop {
-        let parked: bool = database
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.id=?1 AND p.stage='SPECIFICATION' AND p.status='checkpoint' AND c.status='waiting' AND c.kind='artifact_review')",
-                [&pulse],
-                |row| row.get(0),
-            )
+    let first = wait_for_specification(&database, &pulse, None);
+    if revised {
+        let checkpoint = service.get_hitl_checkpoint(&pulse).unwrap();
+        assert_eq!(checkpoint.checkpoint_id, first);
+        service
+            .apply_hitl_decision(ApplyHitlDecisionRequest {
+                pulsation_id: pulse.clone(),
+                checkpoint_id: checkpoint.checkpoint_id,
+                expected_state_version: checkpoint.state_version,
+                feedback: Some(FEEDBACK.into()),
+                decision: HitlDecision::RequestRevision,
+            })
             .unwrap();
-        if parked {
-            break;
-        }
-        let status: String = database
-            .query_row(
-                "SELECT status FROM pulsations WHERE id=?1",
-                [&pulse],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(
-            status != "failed" && Instant::now() < deadline,
-            "pulsation did not reach the Specification checkpoint (status {status})"
-        );
-        std::thread::sleep(Duration::from_millis(50));
+        wait_for_specification(&database, &pulse, Some(&first));
     }
     stop.cancel();
     runtime.shutdown_timeout(Duration::from_secs(5));
@@ -279,5 +343,11 @@ fn main() {
         brief.judgement.len(),
         brief.facts.units
     );
+    if let Some(diff) = &brief.revision {
+        println!(
+            "Revision: {} changes since the previous candidate",
+            diff.changes.as_ref().map_or(0, Vec::len)
+        );
+    }
     println!("HVC_DATA_DIR={}", data.display());
 }

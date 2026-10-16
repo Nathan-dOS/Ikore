@@ -93,7 +93,7 @@ pub(crate) enum Icon {
     Trash,
     /// Copy to the clipboard.
     Copy,
-    /// Zoom out.
+    /// Zoom out; review brief items removed since the previous revision.
     Minus,
     /// Fit the graph to its panel.
     Maximize,
@@ -125,11 +125,17 @@ pub(crate) enum Icon {
     Timer,
     /// Review brief: an item flagged for revision.
     Flag,
+    /// Review brief: what changed since the previous revision.
+    GitCompare,
+    /// Review brief: moved since the previous revision.
+    ArrowRight,
+    /// Review brief: changed since the previous revision.
+    Pencil,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 61] = [
+    pub(crate) const ALL: [Self; 64] = [
         Self::House,
         Self::Plus,
         Self::Hammer,
@@ -191,6 +197,9 @@ impl Icon {
         Self::ChevronUp,
         Self::Timer,
         Self::Flag,
+        Self::GitCompare,
+        Self::ArrowRight,
+        Self::Pencil,
     ];
 
     /// Asset path served by `HvcAssets`; `icons/<lucide-name>.svg`.
@@ -257,6 +266,9 @@ impl Icon {
             Self::Send => "icons/send.svg",
             Self::Save => "icons/save.svg",
             Self::Flag => "icons/flag.svg",
+            Self::GitCompare => "icons/git-compare.svg",
+            Self::ArrowRight => "icons/arrow-right.svg",
+            Self::Pencil => "icons/pencil.svg",
         }
     }
 }

@@ -1,17 +1,19 @@
-//! The derived review brief of a checkpoint (ADR-027 M1–M2).
+//! The derived review brief of a checkpoint (ADR-027 M1–M3).
 //!
 //! A native rendering of `hvc_core::orchestration::review_brief::ReviewBrief`. The host
 //! decided every count, status and rule; this module only draws them. Text an agent wrote
 //! (objective, decisions, requirements, interface and unit descriptions) is labelled where
 //! it appears, and colour always comes with an icon and a word. Each judgement item can be
 //! confirmed or flagged (M2); flags and their notes become the Request revision feedback.
+//! After Request revision, a card lists what changed since the previous candidate (M3).
 
 use std::collections::HashMap;
 
 use gpui::{AnyElement, Context, Entity, SharedString, div, prelude::*, px};
 use hvc_core::orchestration::composition::{InterfaceIntent, ProposalKind, VerificationMode};
 use hvc_core::orchestration::review_brief::{
-    BriefCriterion, BriefFile, BriefFileGroup, BriefUnit, JudgementItem, JudgementKind, ReviewBrief,
+    BriefChange, BriefCriterion, BriefFile, BriefFileGroup, BriefUnit, ChangeKind, ChangeSubject,
+    JudgementItem, JudgementKind, ReviewBrief, RevisionDiff,
 };
 use hvc_core::persistence_service::PulsationStage;
 
@@ -47,6 +49,9 @@ pub(crate) fn brief_panel(
         .flex_col()
         .gap_4()
         .child(decision_card(brief))
+        .when_some(brief.revision.as_ref(), |panel, diff| {
+            panel.child(revision_card(diff))
+        })
         .child(
             row()
                 .child(judgement_card(&brief.judgement, marks, cx))
@@ -357,6 +362,193 @@ fn decision_card(brief: &ReviewBrief) -> AnyElement {
                         .text_xs()
                         .child(chip)
                 })),
+        )
+        .into_any_element()
+}
+
+fn change_look(kind: ChangeKind) -> (Icon, gpui::Rgba, &'static str) {
+    match kind {
+        ChangeKind::Added => (Icon::Plus, theme::success(), "Added"),
+        ChangeKind::Removed => (Icon::Minus, theme::danger(), "Removed"),
+        ChangeKind::Moved => (Icon::ArrowRight, theme::accent(), "Moved"),
+        ChangeKind::Changed => (Icon::Pencil, theme::warning(), "Changed"),
+    }
+}
+
+fn subject_name(subject: ChangeSubject) -> &'static str {
+    match subject {
+        ChangeSubject::Objective => "Objective",
+        ChangeSubject::Decision => "Decision",
+        ChangeSubject::Criterion => "Criterion",
+        ChangeSubject::Interface => "Interface",
+        ChangeSubject::Exclusion => "Exclusion",
+        ChangeSubject::File => "File",
+        ChangeSubject::Unit => "Work unit",
+    }
+}
+
+/// ADR-027 part 3: the previous candidate of this stage next to this one,
+/// under the feedback the run received. The host compared them; the quoted
+/// text is the agent's, except the feedback.
+fn revision_card(diff: &RevisionDiff) -> AnyElement {
+    let header = card_header(
+        Icon::GitCompare,
+        theme::accent(),
+        "Changed since the previous revision",
+        diff.changes.as_ref().map(Vec::len),
+        Provenance::Host,
+    );
+    let card = card("brief-revision")
+        .w_full()
+        .border_color(theme::accent_soft())
+        .child(header)
+        .when_some(diff.feedback.as_deref(), |card, feedback| {
+            card.child(revision_feedback(feedback))
+        });
+    let Some(changes) = diff.changes.as_deref() else {
+        return card
+            .child(
+                div()
+                    .debug_selector(|| "brief-revision-unavailable".into())
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .text_sm()
+                    .child(icon(Icon::TriangleAlert, px(16.0), theme::warning()))
+                    .child(div().flex_1().min_w_0().child(
+                        "The previous revision is unavailable, so nothing is compared. \
+                         The documents in the next tabs are complete.",
+                    )),
+            )
+            .into_any_element();
+    };
+    if changes.is_empty() {
+        return card
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme::text_muted())
+                    .child("Nothing in this brief changed since the previous revision."),
+            )
+            .into_any_element();
+    }
+    card.child(
+        div()
+            .text_xs()
+            .text_color(theme::text_muted())
+            .child("Compared by criterion, path and work unit. Decisions and exclusions have no id, so an edited one shows as removed and added. Quoted text is the agent's."),
+    )
+    .children(
+        changes
+            .iter()
+            .enumerate()
+            .map(|(index, change)| change_row(index, change)),
+    )
+    .into_any_element()
+}
+
+fn revision_feedback(feedback: &str) -> AnyElement {
+    div()
+        .debug_selector(|| "brief-revision-feedback".into())
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .pl_3()
+        .border_l_2()
+        .border_color(theme::warning())
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::warning())
+                .child("Revision feedback this run received"),
+        )
+        .children(feedback.trim().lines().map(|line| {
+            div()
+                .min_w_0()
+                .text_sm()
+                .child(SharedString::from(line.to_owned()))
+        }))
+        .into_any_element()
+}
+
+/// `AC-2 · proof plan`: the compared key and, for an edit, the part that changed.
+fn change_key(change: &BriefChange) -> Option<String> {
+    match (change.label.is_empty(), change.field) {
+        (true, None) => None,
+        (true, Some(field)) => Some(field.to_owned()),
+        (false, None) => Some(change.label.clone()),
+        (false, Some(field)) => Some(format!("{} · {field}", change.label)),
+    }
+}
+
+fn change_row(index: usize, change: &BriefChange) -> AnyElement {
+    let (glyph, ink, word) = change_look(change.kind);
+    let side = |label: &'static str, text: &str, muted: bool| {
+        div()
+            .min_w_0()
+            .flex()
+            .items_start()
+            .gap_2()
+            .text_sm()
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .w(px(36.0))
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(label),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .when(muted, |text| text.text_color(theme::text_muted()))
+                    .child(SharedString::from(text.to_owned())),
+            )
+    };
+    div()
+        .debug_selector(move || format!("brief-change-{index}"))
+        .min_w_0()
+        .flex()
+        .items_start()
+        .gap_2()
+        .child(div().pt(px(2.0)).child(icon(glyph, px(14.0), ink)))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_1()
+                // Fixed words keep their width; only the key wraps, at its
+                // spaces, as one text. A shrinkable label inside a wrapping
+                // row collapsed to one character per line in the real app.
+                .child(
+                    div()
+                        .debug_selector(move || format!("brief-change-head-{index}"))
+                        .min_w_0()
+                        .flex()
+                        .items_start()
+                        .gap_2()
+                        .text_xs()
+                        .child(div().flex_shrink_0().text_color(ink).child(word))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(theme::text_muted())
+                                .child(subject_name(change.subject)),
+                        )
+                        .when_some(change_key(change), |line, key| {
+                            line.child(div().flex_1().min_w_0().child(SharedString::from(key)))
+                        }),
+                )
+                .when_some(change.before.as_deref(), |rows, before| {
+                    rows.child(side("Was", before, change.after.is_some()))
+                })
+                .when_some(change.after.as_deref(), |rows, after| {
+                    rows.child(side("Now", after, false))
+                }),
         )
         .into_any_element()
 }

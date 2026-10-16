@@ -37,6 +37,90 @@ fn require_current_review(
     }
 }
 
+/// The `stage_payload_v1` content produced behind a checkpoint. `candidate`
+/// keeps only the still-candidate output of a waiting review; the output of
+/// a resolved review may since have been superseded.
+fn stage_payload_behind(
+    db: &Connection,
+    checkpoint_id: &str,
+    candidate: bool,
+) -> Result<Option<String>, PersistenceServiceError> {
+    Ok(db
+        .query_row(
+            "SELECT a.content FROM artifacts a
+             JOIN checkpoints c ON c.pulsation_id=a.pulsation_id
+               AND c.producer_job_id=a.producer_job_id AND c.generation=a.generation
+               AND c.input_revision=a.input_revision AND c.stage=a.producer_stage
+             WHERE c.id=?1 AND a.kind=?2 AND (?3=0 OR a.acceptance='candidate')
+             ORDER BY a.output_position,a.id LIMIT 1",
+            params![
+                checkpoint_id,
+                composition::recipes::STAGE_PAYLOAD_KIND,
+                candidate
+            ],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
+/// The one field of a stored `StageHandoffV1` the revision diff quotes.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HandoffFeedback {
+    revision_feedback: Option<String>,
+}
+
+/// ADR-027 part 3. When the review before this one, at the same stage and
+/// input revision, ended in Request revision, its candidate's brief compared
+/// with this one, and the feedback this run received as the host handed it
+/// over. `None` for a stage's first candidate. A previous candidate that
+/// cannot be read or briefed gives `changes: None`; nothing is inferred.
+fn revision_diff(
+    db: &Connection,
+    checkpoint_id: &str,
+    current: &composition::recipes::StagePayloadRecord,
+    manifest: &crate::feature_forge::BatchManifest,
+) -> Result<Option<review_brief::RevisionDiff>, PersistenceServiceError> {
+    let previous: Option<(String, String)> = db
+        .query_row(
+            "SELECT prev.id,prev.status FROM checkpoints cur
+             JOIN checkpoints prev ON prev.pulsation_id=cur.pulsation_id
+               AND upper(prev.stage)=upper(cur.stage) AND prev.purpose='artifact_review'
+               AND prev.input_revision=cur.input_revision AND prev.created_at<cur.created_at
+             WHERE cur.id=?1 ORDER BY prev.created_at DESC LIMIT 1",
+            [checkpoint_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((previous, status)) = previous else {
+        return Ok(None);
+    };
+    if status != "revision_requested" {
+        return Ok(None);
+    }
+    let changes = stage_payload_behind(db, &previous, false)?
+        .and_then(|content| review_brief::decode_record(&content).ok())
+        .and_then(|record| {
+            review_brief::compare_specification_records(&record, current, manifest)
+                .ok()
+                .flatten()
+        });
+    let feedback = db
+        .query_row(
+            "SELECT s.handoff_json FROM stage_acceptances s
+             JOIN checkpoints c ON c.producer_job_id=s.job_id AND c.generation=s.generation
+             WHERE c.id=?1",
+            [checkpoint_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|handoff| serde_json::from_str::<HandoffFeedback>(&handoff).ok())
+        .and_then(|handoff| handoff.revision_feedback)
+        .filter(|feedback| !feedback.trim().is_empty());
+    Ok(Some(review_brief::RevisionDiff { feedback, changes }))
+}
+
 /// Who produced the accepted outcome and which exact bytes its publications
 /// expect. The legacy stage leaves both empty; the composed stage supplies
 /// its execution and the hashes it observed at admission (ADR-022).
@@ -318,24 +402,7 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let tx = db.transaction()?;
         require_current_review(&tx, checkpoint)?;
-        let content: Option<String> = tx
-            .query_row(
-                "SELECT a.content FROM artifacts a
-             JOIN checkpoints c ON c.pulsation_id=a.pulsation_id
-               AND c.producer_job_id=a.producer_job_id AND c.generation=a.generation
-               AND c.input_revision=a.input_revision AND c.stage=a.producer_stage
-             WHERE c.id=?1 AND a.pulsation_id=?2 AND a.acceptance='candidate' AND a.kind=?3
-             ORDER BY a.output_position,a.id LIMIT 1",
-                params![
-                    checkpoint.checkpoint_id,
-                    checkpoint.pulsation_id,
-                    composition::recipes::STAGE_PAYLOAD_KIND
-                ],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .optional()?
-            .flatten();
-        let Some(content) = content else {
+        let Some(content) = stage_payload_behind(&tx, &checkpoint.checkpoint_id, true)? else {
             return Ok(None);
         };
         let Some(manifest) =
@@ -345,7 +412,13 @@ impl PersistenceService {
         };
         let record = review_brief::decode_record(&content)
             .map_err(|error| invalid(format!("The stage payload is unreadable: {error}")))?;
-        review_brief::specification_brief(&record, &manifest).map_err(invalid)
+        let Some(mut brief) =
+            review_brief::specification_brief(&record, &manifest).map_err(invalid)?
+        else {
+            return Ok(None);
+        };
+        brief.revision = revision_diff(&tx, &checkpoint.checkpoint_id, &record, &manifest)?;
+        Ok(Some(brief))
     }
 
     pub(super) fn load_stage_handoff(

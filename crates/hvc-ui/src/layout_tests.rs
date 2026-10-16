@@ -373,6 +373,7 @@ fn specification_brief() -> hvc_core::orchestration::review_brief::ReviewBrief {
         ),
         requirement: "Requirement text.".into(),
         verification,
+        verification_intent: "Run the export test.".into(),
         checks: vec!["core_tests".into()],
         not_applicable_reason: None,
     };
@@ -402,6 +403,7 @@ fn specification_brief() -> hvc_core::orchestration::review_brief::ReviewBrief {
             changed_interfaces: 1,
             units: 3,
         },
+        revision: None,
         judgement: vec![
             JudgementItem {
                 kind: JudgementKind::Decision,
@@ -431,6 +433,10 @@ fn specification_brief() -> hvc_core::orchestration::review_brief::ReviewBrief {
                 detail: None,
                 refs: Vec::new(),
             },
+        ],
+        exclusions: vec![
+            "Scheduled or automatic exports".into(),
+            "Exporting one row per LLM call".into(),
         ],
         verified: vec![
             "Each of the 6 acceptance criteria has exactly one requirement.".into(),
@@ -906,6 +912,252 @@ fn brief_review_drafts_stay_with_their_checkpoint_and_flags_never_block_approve(
     model.read_with(visual, |model, cx| {
         assert_eq!(model.stage_feedback_input.read(cx).value(), "");
     });
+}
+
+fn set_brief_revision(
+    model: &Entity<AppModel>,
+    visual: &mut VisualTestContext,
+    revision: Option<hvc_core::orchestration::review_brief::RevisionDiff>,
+) {
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |state, _| {
+            state.hitl.brief.as_mut().unwrap().revision = revision;
+        });
+    });
+    select(model, visual, AppView::Pulsations);
+}
+
+#[gpui::test]
+fn a_revised_brief_lists_its_changes_under_the_feedback_before_the_judgement(
+    cx: &mut TestAppContext,
+) {
+    use hvc_core::orchestration::review_brief::{
+        BriefChange, ChangeKind, ChangeSubject, RevisionDiff,
+    };
+    let (model, visual) = open_specification_brief(cx);
+    let change = |kind,
+                  subject,
+                  label: &str,
+                  field: Option<&'static str>,
+                  before: Option<&str>,
+                  after: Option<&str>| BriefChange {
+        kind,
+        subject,
+        label: label.into(),
+        field,
+        before: before.map(Into::into),
+        after: after.map(Into::into),
+    };
+    let long =
+        "Export aggregates per pulsation, model and calendar day in the developer's time zone. "
+            .repeat(4);
+    let changes = vec![
+        change(
+            ChangeKind::Removed,
+            ChangeSubject::Decision,
+            "D1",
+            None,
+            Some("Export aggregates per pulsation and model, not one row per LLM call."),
+            None,
+        ),
+        change(
+            ChangeKind::Added,
+            ChangeSubject::Decision,
+            "D1",
+            None,
+            None,
+            Some(&long),
+        ),
+        change(
+            ChangeKind::Changed,
+            ChangeSubject::Criterion,
+            "AC-4",
+            Some("proof"),
+            Some("by reading"),
+            Some("executed check"),
+        ),
+        change(
+            ChangeKind::Moved,
+            ChangeSubject::Criterion,
+            "AC-6",
+            Some("work units"),
+            Some("ui_export"),
+            Some("core_export, ui_export"),
+        ),
+        change(
+            ChangeKind::Changed,
+            ChangeSubject::Interface,
+            "crates/hvc-ui/src/usage.rs",
+            Some("intent"),
+            Some("change"),
+            Some("preserve"),
+        ),
+        change(
+            ChangeKind::Removed,
+            ChangeSubject::File,
+            "crates/hvc-core/src/usage/legacy_export_kept_for_one_release_only.rs",
+            None,
+            Some("existing file"),
+            None,
+        ),
+        change(
+            ChangeKind::Added,
+            ChangeSubject::Unit,
+            "usage_tests",
+            None,
+            None,
+            Some("Author the export tests."),
+        ),
+    ];
+    let feedback = "Flagged by the developer in the review brief:\n\
+        - [Decision] D1: Export aggregates per pulsation and model, not one row per LLM call. — Aggregate per day too.\n\
+        - [Proof by reading only] AC-4: An empty date range writes only the header row. — Add an executed test.\n\n\
+        Additional feedback: keep the button where it is.";
+    set_brief_revision(
+        &model,
+        visual,
+        Some(RevisionDiff {
+            feedback: Some(feedback.into()),
+            changes: Some(changes.clone()),
+        }),
+    );
+
+    // Tall windows keep every row painted; the widths are the ones under test.
+    for (width, height) in [(960.0, 1800.0), (1440.0, 1800.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let decision = visual.debug_bounds("brief-decision").unwrap();
+        let revision = visual.debug_bounds("brief-revision").unwrap();
+        let judgement = visual.debug_bounds("brief-judgement").unwrap();
+        let quoted = visual.debug_bounds("brief-revision-feedback").unwrap();
+        assert!(
+            decision.bottom() <= revision.top() && revision.bottom() <= judgement.top(),
+            "the diff sits between the decision line and the judgement at {width}: {decision:?} {revision:?} {judgement:?}"
+        );
+        assert!(
+            revision.left() >= reader.left() && revision.right() <= reader.right() + px(1.0),
+            "the diff overflows the reader at {width}: {revision:?} vs {reader:?}"
+        );
+        assert!(quoted.left() >= revision.left() && quoted.right() <= revision.right());
+        assert!(
+            quoted.size.height >= px(60.0),
+            "every feedback line shows at {width}: {quoted:?}"
+        );
+        let mut above = quoted.bottom();
+        const ROWS: [&str; 7] = [
+            "brief-change-0",
+            "brief-change-1",
+            "brief-change-2",
+            "brief-change-3",
+            "brief-change-4",
+            "brief-change-5",
+            "brief-change-6",
+        ];
+        assert_eq!(ROWS.len(), changes.len());
+        for selector in ROWS {
+            let row = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector} at {width}"));
+            assert!(
+                row.left() >= revision.left() && row.right() <= revision.right() + px(1.0),
+                "{selector} overflows at {width}: {row:?} vs {revision:?}"
+            );
+            assert!(row.top() >= above, "{selector} is out of order at {width}");
+            above = row.bottom();
+        }
+        const HEADS: [&str; 7] = [
+            "brief-change-head-0",
+            "brief-change-head-1",
+            "brief-change-head-2",
+            "brief-change-head-3",
+            "brief-change-head-4",
+            "brief-change-head-5",
+            "brief-change-head-6",
+        ];
+        // Each header is one line; only the long path may take a second. A label
+        // that shrank inside a wrapping row once stood one character per line.
+        for (index, selector) in HEADS.into_iter().enumerate() {
+            let head = visual.debug_bounds(selector).unwrap();
+            let limit = if index == 5 { px(40.0) } else { px(24.0) };
+            assert!(
+                head.size.height <= limit,
+                "{selector} is {head:?} at {width}"
+            );
+        }
+        // The long decision wraps inside the card instead of widening it.
+        let wrapped = visual.debug_bounds("brief-change-1").unwrap();
+        assert!(
+            wrapped.size.height >= px(48.0),
+            "long text did not wrap at {width}: {wrapped:?}"
+        );
+    }
+
+    // The small window's reader is short (the decision line alone fills it), so
+    // the card sits below the fold there, still inside the reader's width.
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Pulsations);
+    let reader = visual.debug_bounds("review-document-reader").unwrap();
+    let revision = visual.debug_bounds("brief-revision").unwrap();
+    assert!(
+        revision.left() >= reader.left() && revision.right() <= reader.right() + px(1.0),
+        "{revision:?} vs {reader:?}"
+    );
+}
+
+/// Each variant gets its own window: GPUI's test frames keep every selector
+/// they ever painted, so absence is only provable where it never rendered.
+#[gpui::test]
+fn an_unreadable_or_unchanged_previous_revision_says_so_and_a_first_candidate_shows_no_diff(
+    cx: &mut TestAppContext,
+) {
+    use hvc_core::orchestration::review_brief::RevisionDiff;
+    visual_variant(cx, |model, visual| {
+        set_brief_revision(
+            model,
+            visual,
+            Some(RevisionDiff {
+                feedback: None,
+                changes: None,
+            }),
+        );
+        // An unreadable previous candidate is said, never reconstructed.
+        assert!(visual.debug_bounds("brief-revision").is_some());
+        assert!(visual.debug_bounds("brief-revision-unavailable").is_some());
+        assert!(visual.debug_bounds("brief-revision-feedback").is_none());
+        assert!(visual.debug_bounds("brief-change-0").is_none());
+    });
+    visual_variant(cx, |model, visual| {
+        set_brief_revision(
+            model,
+            visual,
+            Some(RevisionDiff {
+                feedback: Some("Tighten the wording.".into()),
+                changes: Some(Vec::new()),
+            }),
+        );
+        // A revision that changed nothing structural lists nothing.
+        assert!(visual.debug_bounds("brief-revision-feedback").is_some());
+        assert!(visual.debug_bounds("brief-revision-unavailable").is_none());
+        assert!(visual.debug_bounds("brief-change-0").is_none());
+    });
+    visual_variant(cx, |model, visual| {
+        select(model, visual, AppView::Pulsations);
+        assert!(visual.debug_bounds("brief-decision").is_some());
+        assert!(visual.debug_bounds("brief-revision").is_none());
+        model.read_with(visual, |model, cx| {
+            assert!(model.pulsations.read(cx).hitl.can_approve());
+        });
+    });
+}
+
+fn visual_variant(
+    cx: &mut TestAppContext,
+    check: impl FnOnce(&Entity<AppModel>, &mut VisualTestContext),
+) {
+    let (model, visual) = open_specification_brief(cx);
+    visual.simulate_resize(size(px(1440.0), px(1800.0)));
+    check(&model, visual);
 }
 
 /// Parks a stage failure with the given offered decisions in a window of its own.
