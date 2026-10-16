@@ -47,6 +47,7 @@ pub(crate) static ASSETS: &[(&str, &[u8])] = &[
     icon_asset!("file-text"),
     icon_asset!("flask-conical"),
     icon_asset!("folder"),
+    icon_asset!("flag"),
     icon_asset!("folder-open"),
     icon_asset!("hammer"),
     icon_asset!("heart-pulse"),

@@ -123,11 +123,13 @@ pub(crate) enum Icon {
     ChevronUp,
     /// Durations (runs, pulsations).
     Timer,
+    /// Review brief: an item flagged for revision.
+    Flag,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 60] = [
+    pub(crate) const ALL: [Self; 61] = [
         Self::House,
         Self::Plus,
         Self::Hammer,
@@ -188,6 +190,7 @@ impl Icon {
         Self::ChevronLeft,
         Self::ChevronUp,
         Self::Timer,
+        Self::Flag,
     ];
 
     /// Asset path served by `HvcAssets`; `icons/<lucide-name>.svg`.
@@ -253,6 +256,7 @@ impl Icon {
             Self::Square => "icons/square.svg",
             Self::Send => "icons/send.svg",
             Self::Save => "icons/save.svg",
+            Self::Flag => "icons/flag.svg",
         }
     }
 }

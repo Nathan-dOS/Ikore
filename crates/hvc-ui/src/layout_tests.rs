@@ -497,11 +497,12 @@ fn specification_brief() -> hvc_core::orchestration::review_brief::ReviewBrief {
     }
 }
 
-#[gpui::test]
-fn specification_brief_opens_first_and_fits_small_and_large_windows(cx: &mut TestAppContext) {
+/// Parks the Specification brief fixture on the Review tab of a new window.
+fn open_specification_brief(cx: &mut TestAppContext) -> (Entity<AppModel>, &mut VisualTestContext) {
     use hvc_core::persistence_service::{HitlCheckpoint, HitlReviewDocument};
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.update(|_, cx| crate::hitl::register_hitl_keybindings(cx));
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
     model.update(visual, |m, cx| {
         m.pulsations.update(cx, |state, _| {
             state.pulsations[0].status = PulsationStatus::Checkpoint;
@@ -541,6 +542,12 @@ fn specification_brief_opens_first_and_fits_small_and_large_windows(cx: &mut Tes
             state.detail_section = PulsationDetailSection::Review;
         });
     });
+    (model, visual)
+}
+
+#[gpui::test]
+fn specification_brief_opens_first_and_fits_small_and_large_windows(cx: &mut TestAppContext) {
+    let (model, visual) = open_specification_brief(cx);
     for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
         visual.simulate_resize(size(px(width), px(height)));
         select(&model, visual, AppView::Pulsations);
@@ -617,6 +624,287 @@ fn specification_brief_opens_first_and_fits_small_and_large_windows(cx: &mut Tes
     click(visual, "review-brief-tab");
     model.read_with(visual, |model, cx| {
         assert!(model.pulsations.read(cx).hitl.brief_selected)
+    });
+}
+
+#[gpui::test]
+fn review_without_interactive_brief_keeps_shortcuts_safe_and_tabs_through_controls(
+    cx: &mut TestAppContext,
+) {
+    let (model, visual) = open_specification_brief(cx);
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Pulsations);
+    assert!(visual.debug_bounds("review-decision-bar").is_some());
+    assert!(visual.debug_bounds("review-document-reader").is_some());
+    for missing_brief in [false, true] {
+        model.update(visual, |model, cx| {
+            model.pulsations.update(cx, |pulsations, _| {
+                let hitl = &mut pulsations.hitl;
+                hitl.brief_selected = false;
+                if missing_brief {
+                    hitl.brief = None;
+                    hitl.marks.clear();
+                }
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| model.read(cx).review_focus.focus(window));
+        visual.simulate_keystrokes("c f");
+        model.read_with(visual, |model, cx| {
+            assert_eq!(model.pulsations.read(cx).hitl.mark_counts().0, 0);
+            assert_eq!(model.pulsations.read(cx).hitl.flag_count(), 0);
+            assert!(model.current_brief_notes(cx).is_empty());
+        });
+        for key in ["tab", "shift-tab"] {
+            let review_focus = visual.update(|window, cx| {
+                model.read(cx).review_focus.focus(window);
+                window.focused(cx)
+            });
+            visual.simulate_keystrokes(key);
+            let after = visual.update(|window, cx| window.focused(cx));
+            assert!(after.is_some());
+            assert_ne!(after, review_focus, "{key} must reach the Shell binding");
+        }
+    }
+}
+
+#[gpui::test]
+fn settings_modal_keeps_brief_marks_and_decisions_untouched(cx: &mut TestAppContext) {
+    let (model, visual) = open_specification_brief(cx);
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Pulsations);
+    assert!(visual.debug_bounds("review-decision-bar").is_some());
+    open_settings(&model, visual, Some(SettingsPage::General));
+    visual.simulate_keystrokes("c f tab shift-tab r d enter");
+    model.read_with(visual, |model, cx| {
+        let hitl = &model.pulsations.read(cx).hitl;
+        assert_eq!(hitl.mark_counts(), (0, 0, 4));
+        assert!(!hitl.busy);
+        assert!(!model.confirm_hitl_reject);
+        assert!(model.last_revision_feedback.is_none());
+        assert!(model.settings_modal.open);
+    });
+    let inside = visual.update(|window, cx| model.read(cx).settings_focus_contains(window, cx));
+    assert!(
+        inside,
+        "Tab must stay inside Settings while Review is behind it"
+    );
+}
+
+#[gpui::test]
+fn brief_marks_compose_the_revision_feedback_and_keep_enter_from_dropping_flags(
+    cx: &mut TestAppContext,
+) {
+    use crate::hitl::ItemMark;
+    let (model, visual) = open_specification_brief(cx);
+    // Tall enough that every judgement item's buttons are on screen.
+    visual.simulate_resize(size(px(1440.0), px(1600.0)));
+    select(&model, visual, AppView::Pulsations);
+
+    // Mouse: flagging opens the item's note and focuses it.
+    click(visual, "brief-flag-1");
+    let note = model.read_with(visual, |model, cx| {
+        assert_eq!(model.pulsations.read(cx).hitl.marks[1], ItemMark::Flagged);
+        model
+            .brief_notes
+            .get(&1)
+            .cloned()
+            .expect("a flagged item gets a note")
+    });
+    assert!(visual.debug_bounds("brief-note-1").is_some());
+    visual.update(|window, cx| {
+        assert!(gpui::Focusable::focus_handle(note.read(cx), cx).is_focused(window));
+    });
+    visual.simulate_keystrokes("c f");
+    model.read_with(visual, |model, cx| {
+        // Typing in the note never fires the review shortcuts.
+        assert_eq!(model.pulsations.read(cx).hitl.marks[1], ItemMark::Flagged);
+        assert_eq!(note.read(cx).value(), "cf");
+    });
+    note.update(visual, |input, cx| {
+        input.set_value("Add an executed test for the empty range.", cx)
+    });
+
+    // Keyboard: from the review, Tab moves, C confirms and F flags the item under the cursor.
+    visual.update(|window, cx| model.read(cx).review_focus.focus(window));
+    visual.simulate_keystrokes("tab c shift-tab shift-tab f");
+    model.read_with(visual, |model, cx| {
+        let hitl = &model.pulsations.read(cx).hitl;
+        assert_eq!(
+            hitl.marks,
+            [
+                ItemMark::Flagged,
+                ItemMark::Flagged,
+                ItemMark::Confirmed,
+                ItemMark::Open
+            ]
+        );
+        assert_eq!(hitl.brief_cursor, 0);
+        assert_eq!(hitl.mark_counts(), (1, 2, 1));
+    });
+    assert!(visual.debug_bounds("review-brief-progress").is_some());
+
+    // Enter does not approve over the developer's flags.
+    visual.simulate_keystrokes("enter");
+    model.read_with(visual, |model, cx| {
+        let hitl = &model.pulsations.read(cx).hitl;
+        assert!(!hitl.busy);
+        assert!(
+            hitl.error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("2 items are flagged")),
+            "{:?}",
+            hitl.error
+        );
+        assert!(model.last_revision_feedback.is_none());
+    });
+
+    // R sends the flags, in brief order, with their notes and the items' own text.
+    visual.simulate_keystrokes("r");
+    model.read_with(visual, |model, _| {
+        let feedback = model.last_revision_feedback.as_deref().unwrap();
+        assert!(feedback.starts_with("Flagged by the developer in the review brief:\n"));
+        let decision = feedback
+            .find("- [Decision taken by the agent] D1: Export aggregates per pulsation and model, not one row per LLM call. — flagged for revision without a note.")
+            .expect(feedback);
+        let proof = feedback
+            .find("- [Proof by reading only] AC-4: An empty date range writes only the header row. — Add an executed test for the empty range.")
+            .expect(feedback);
+        assert!(decision < proof);
+        assert!(!feedback.contains("Existing interface changes"), "confirmed items stay out");
+    });
+}
+
+#[gpui::test]
+fn brief_review_drafts_stay_with_their_checkpoint_and_flags_never_block_approve(
+    cx: &mut TestAppContext,
+) {
+    use crate::hitl::ItemMark;
+    use hvc_core::persistence_service::HitlCheckpoint;
+    let (model, visual) = open_specification_brief(cx);
+    let long_note = "Add an executed test for the empty range, ".repeat(12);
+    model.update(visual, |model, cx| {
+        model.sync_stage_feedback_scope(cx);
+        model.toggle_brief_mark(1, ItemMark::Flagged, None, cx);
+        model.toggle_brief_mark(0, ItemMark::Confirmed, None, cx);
+        let note = model.brief_notes.get(&1).cloned().unwrap();
+        note.update(cx, |input, cx| input.set_value(long_note.clone(), cx));
+        model.stage_feedback_input.update(cx, |input, cx| {
+            input.set_value("Free text for this checkpoint.", cx)
+        });
+    });
+
+    // A long note and the progress line fit the reader and the footer at both sizes.
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let actions = visual.debug_bounds("review-decision-bar").unwrap();
+        let note = visual.debug_bounds("brief-note-1").unwrap();
+        assert!(
+            note.left() >= reader.left() && note.right() <= reader.right() + px(1.0),
+            "note overflows at {width}x{height}: {note:?} vs {reader:?}"
+        );
+        assert!(reader.bottom() <= actions.top() && actions.bottom() <= px(height));
+        for element in [
+            "review-brief-progress",
+            "hitl-approve",
+            "hitl-revision",
+            "hitl-reject",
+        ] {
+            let bounds = visual.debug_bounds(element).unwrap();
+            assert!(
+                bounds.left() >= actions.left()
+                    && bounds.right() <= actions.right()
+                    && bounds.top() >= actions.top()
+                    && bounds.bottom() <= actions.bottom(),
+                "{element} leaves the decision bar at {width}x{height}: {bounds:?} vs {actions:?}"
+            );
+        }
+    }
+
+    // A refresh of the same checkpoint keeps the review; so does switching tabs.
+    let same = model.read_with(visual, |model, cx| {
+        model
+            .pulsations
+            .read(cx)
+            .hitl
+            .expected_checkpoint
+            .clone()
+            .unwrap()
+    });
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |state, _| {
+            let pulse = state.pulsations[0].clone();
+            state.hitl.load_checkpoint(Some(&pulse), Some(same.clone()));
+            state.hitl.brief_selected = false;
+            state.hitl.brief_selected = true;
+        });
+        model.sync_stage_feedback_scope(cx);
+    });
+    model.read_with(visual, |model, cx| {
+        assert_eq!(
+            model.pulsations.read(cx).hitl.marks[..2],
+            [ItemMark::Confirmed, ItemMark::Flagged]
+        );
+        assert_eq!(model.current_brief_notes(cx).len(), 1);
+        assert_eq!(
+            model.stage_feedback_input.read(cx).value(),
+            "Free text for this checkpoint."
+        );
+    });
+
+    // Flags never block an explicit Approve: the decision is dispatched.
+    click(visual, "hitl-approve");
+    model.read_with(visual, |model, cx| {
+        assert_eq!(
+            model.pulsations.read(cx).hitl.error.as_deref(),
+            Some("HITL decision unavailable in test environment")
+        );
+    });
+
+    // Checkpoint B of the same pulsation and input revision starts clean:
+    // no marks, no notes and no free-text draft from A.
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |state, _| {
+            let pulse = state.pulsations[0].clone();
+            state.hitl.load_checkpoint(
+                Some(&pulse),
+                Some(HitlCheckpoint {
+                    checkpoint_id: "contract-checkpoint".into(),
+                    ..same.clone()
+                }),
+            );
+        });
+        model.sync_stage_feedback_scope(cx);
+    });
+    model.read_with(visual, |model, cx| {
+        assert!(model.pulsations.read(cx).hitl.marks.is_empty());
+        assert!(model.current_brief_notes(cx).is_empty());
+        assert_eq!(model.stage_feedback_input.read(cx).value(), "");
+    });
+
+    // A newer state version of one checkpoint is a new review as well.
+    model.update(visual, |model, cx| {
+        model
+            .stage_feedback_input
+            .update(cx, |input, cx| input.set_value("Draft for version 1.", cx));
+        model.pulsations.update(cx, |state, _| {
+            let pulse = state.pulsations[0].clone();
+            state.hitl.load_checkpoint(
+                Some(&pulse),
+                Some(HitlCheckpoint {
+                    checkpoint_id: "contract-checkpoint".into(),
+                    state_version: same.state_version + 1,
+                    ..same.clone()
+                }),
+            );
+        });
+        model.sync_stage_feedback_scope(cx);
+    });
+    model.read_with(visual, |model, cx| {
+        assert_eq!(model.stage_feedback_input.read(cx).value(), "");
     });
 }
 

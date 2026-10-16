@@ -1,26 +1,44 @@
-//! The derived review brief of a checkpoint (ADR-027 M1).
+//! The derived review brief of a checkpoint (ADR-027 M1–M2).
 //!
 //! A native rendering of `hvc_core::orchestration::review_brief::ReviewBrief`. The host
 //! decided every count, status and rule; this module only draws them. Text an agent wrote
 //! (objective, decisions, requirements, interface and unit descriptions) is labelled where
-//! it appears, and colour always comes with an icon and a word. Read-only in M1: the
-//! Confirm/Flag controls arrive with M2.
+//! it appears, and colour always comes with an icon and a word. Each judgement item can be
+//! confirmed or flagged (M2); flags and their notes become the Request revision feedback.
 
-use gpui::{AnyElement, SharedString, div, prelude::*, px};
+use std::collections::HashMap;
+
+use gpui::{AnyElement, Context, Entity, SharedString, div, prelude::*, px};
 use hvc_core::orchestration::composition::{InterfaceIntent, ProposalKind, VerificationMode};
 use hvc_core::orchestration::review_brief::{
     BriefCriterion, BriefFile, BriefFileGroup, BriefUnit, JudgementItem, JudgementKind, ReviewBrief,
 };
 use hvc_core::persistence_service::PulsationStage;
 
+use crate::app_model::AppModel;
+use crate::hitl::{ItemMark, judgement_kind_label};
 use crate::icons::Icon;
+use crate::text_input::NativeTextInput;
 use crate::theme;
 use crate::widgets::icon;
 
 /// Width under which a two-card row stacks; keeps each card readable at 960 px.
 const CARD_MIN_WIDTH: f32 = 320.0;
 
-pub(crate) fn brief_panel(brief: &ReviewBrief) -> AnyElement {
+/// The developer's marks over the brief, as the Review state holds them.
+pub(crate) struct BriefMarks<'a> {
+    pub(crate) marks: &'a [ItemMark],
+    pub(crate) cursor: usize,
+    pub(crate) notes: &'a HashMap<usize, Entity<NativeTextInput>>,
+    /// False while a decision is being applied or no checkpoint is waiting.
+    pub(crate) interactive: bool,
+}
+
+pub(crate) fn brief_panel(
+    brief: &ReviewBrief,
+    marks: &BriefMarks<'_>,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
     div()
         .debug_selector(|| "review-brief".into())
         .w_full()
@@ -31,7 +49,7 @@ pub(crate) fn brief_panel(brief: &ReviewBrief) -> AnyElement {
         .child(decision_card(brief))
         .child(
             row()
-                .child(judgement_card(&brief.judgement))
+                .child(judgement_card(&brief.judgement, marks, cx))
                 .child(verified_card(&brief.verified)),
         )
         .child(criteria_card(brief))
@@ -343,42 +361,41 @@ fn decision_card(brief: &ReviewBrief) -> AnyElement {
         .into_any_element()
 }
 
-fn judgement_look(kind: JudgementKind) -> (Icon, gpui::Rgba, &'static str, &'static str) {
+fn judgement_look(kind: JudgementKind) -> (Icon, gpui::Rgba, &'static str) {
     match kind {
         JudgementKind::Decision => (
             Icon::Signpost,
             theme::purple(),
-            "Decision taken by the agent",
             "Decisions change scope without a criterion of their own.",
         ),
         JudgementKind::ReadingOnlyProof => (
             Icon::CircleHelp,
             theme::warning(),
-            "Proof by reading only",
             "No host check will execute it; later stages can only report it as unverified.",
         ),
         JudgementKind::NotApplicable => (
             Icon::CircleHelp,
             theme::warning(),
-            "Marked not applicable",
             "It will not be verified at all. The reason is the agent's.",
         ),
         JudgementKind::InterfaceChange => (
             Icon::Plug,
             theme::warning(),
-            "Existing interface changes",
             "Code you already own changes shape.",
         ),
         JudgementKind::Exclusions => (
             Icon::Ban,
             theme::text_muted(),
-            "Left out of scope",
             "Exclusions are easy to miss in prose. Check nothing here was expected.",
         ),
     }
 }
 
-fn judgement_card(items: &[JudgementItem]) -> AnyElement {
+fn judgement_card(
+    items: &[JudgementItem],
+    marks: &BriefMarks<'_>,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
     let header = card_header(
         Icon::Signpost,
         theme::warning(),
@@ -397,21 +414,121 @@ fn judgement_card(items: &[JudgementItem]) -> AnyElement {
             )
             .into_any_element();
     }
-    card.children(items.iter().map(judgement_item))
-        .into_any_element()
+    let rows: Vec<AnyElement> = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| judgement_item(index, item, marks, cx))
+        .collect();
+    card.child(
+        div()
+            .text_xs()
+            .text_color(theme::text_muted())
+            .child("Confirm what looks right and flag what should change. Flags and their notes become your revision feedback. C confirms, F flags, Tab moves."),
+    )
+    .children(rows)
+    .into_any_element()
 }
 
-fn judgement_item(item: &JudgementItem) -> AnyElement {
-    let (glyph, ink, kind_label, why) = judgement_look(item.kind);
+fn mark_button(
+    id: SharedString,
+    glyph: Icon,
+    ink: gpui::Rgba,
+    label: &'static str,
+    active: bool,
+    enabled: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let selector = id.to_string();
     div()
+        .id(id)
+        .debug_selector(move || selector.clone())
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .border_1()
+        .border_color(if active { ink } else { theme::border() })
+        .bg(if active {
+            theme::surface_raised()
+        } else {
+            theme::surface()
+        })
+        .text_xs()
+        .child(icon(glyph, px(14.0), ink))
+        .child(label)
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(|style| style.opacity(theme::HOVER_OPACITY))
+        })
+        .when(!enabled, |button| button.opacity(0.45))
+}
+
+fn judgement_item(
+    index: usize,
+    item: &JudgementItem,
+    marks: &BriefMarks<'_>,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let (glyph, ink, why) = judgement_look(item.kind);
+    let mark = marks.marks.get(index).copied().unwrap_or_default();
+    let focused = marks.cursor == index;
+    let note = (mark == ItemMark::Flagged)
+        .then(|| marks.notes.get(&index).cloned())
+        .flatten();
+    let enabled = marks.interactive;
+    let state = match mark {
+        ItemMark::Open => None,
+        ItemMark::Confirmed => Some((Icon::Check, theme::success(), "Confirmed")),
+        ItemMark::Flagged => Some((Icon::Flag, theme::warning(), "Flagged")),
+    };
+    let border = match mark {
+        _ if focused && enabled => theme::accent(),
+        ItemMark::Flagged => theme::warning(),
+        _ => theme::border(),
+    };
+    let confirm = mark_button(
+        SharedString::from(format!("brief-confirm-{index}")),
+        Icon::Check,
+        theme::success(),
+        "Looks right · C",
+        mark == ItemMark::Confirmed,
+        enabled,
+    )
+    .when(enabled, |button| {
+        button.on_click(cx.listener(move |model, _, window, cx| {
+            model.toggle_brief_mark(index, ItemMark::Confirmed, Some(window), cx);
+        }))
+    });
+    let flag = mark_button(
+        SharedString::from(format!("brief-flag-{index}")),
+        Icon::Flag,
+        theme::warning(),
+        "Flag · F",
+        mark == ItemMark::Flagged,
+        enabled,
+    )
+    .when(enabled, |button| {
+        button.on_click(cx.listener(move |model, _, window, cx| {
+            model.toggle_brief_mark(index, ItemMark::Flagged, Some(window), cx);
+        }))
+    });
+
+    div()
+        .debug_selector(move || format!("brief-item-{index}"))
         .min_w_0()
         .flex()
         .gap_3()
         .p_3()
         .rounded_md()
         .border_1()
-        .border_color(theme::border())
-        .bg(theme::canvas())
+        .border_color(border)
+        .bg(if mark == ItemMark::Flagged {
+            theme::warning_soft()
+        } else {
+            theme::canvas()
+        })
         .child(div().pt(px(2.0)).child(icon(glyph, px(18.0), ink)))
         .child(
             div()
@@ -424,15 +541,28 @@ fn judgement_item(item: &JudgementItem) -> AnyElement {
                     div()
                         .flex()
                         .flex_wrap()
+                        .items_center()
                         .gap_2()
                         .text_xs()
                         .text_color(theme::text_muted())
-                        .child(kind_label.to_uppercase())
+                        .child(judgement_kind_label(item.kind).to_uppercase())
                         .child(
                             div()
                                 .text_color(theme::text())
                                 .child(SharedString::from(item.label.clone())),
-                        ),
+                        )
+                        .child(div().flex_1())
+                        .when_some(state, |row, (glyph, ink, label)| {
+                            row.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .text_color(ink)
+                                    .child(icon(glyph, px(14.0), ink))
+                                    .child(label),
+                            )
+                        }),
                 )
                 .child(
                     div()
@@ -451,6 +581,31 @@ fn judgement_item(item: &JudgementItem) -> AnyElement {
                             .flex_wrap()
                             .gap_1()
                             .children(item.refs.iter().map(|reference| pill(reference.clone()))),
+                    )
+                })
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .pt_1()
+                        .child(confirm)
+                        .child(flag),
+                )
+                .when_some(note, |column, note| {
+                    column.child(
+                        div()
+                            .debug_selector(move || format!("brief-note-{index}"))
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme::text_muted())
+                                    .child("Your note · sent with Request revision"),
+                            )
+                            .child(crate::sizing::text_area(note)),
                     )
                 }),
         )
