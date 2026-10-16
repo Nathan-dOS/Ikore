@@ -1011,23 +1011,7 @@ impl PersistenceService {
         let mut remaining = ledger.remaining();
         remaining.initial_invocations = remaining.initial_invocations.min(16);
         remaining.extra_invocations = remaining.extra_invocations.min(2);
-        let receipts = Self::latest_validation_receipts(db, &execution.id)?;
-        let checks = execution
-            .plan
-            .check_refs
-            .iter()
-            .map(|check| {
-                let receipt = receipts.iter().find(|r| &r.check_ref == check);
-                CheckSummaryV1 {
-                    check_ref: check.clone(),
-                    required: true,
-                    receipt_id: receipt.map(|r| r.receipt_id.clone()),
-                    status: receipt
-                        .map(|r| check_status_of(r.status))
-                        .unwrap_or(comp::CheckStatus::NotRun),
-                }
-            })
-            .collect();
+        let checks = Self::execution_checks(db, execution)?;
         let totals = crate::usage::stage_execution_totals(db, &execution.id)?;
         let snapshot = StageExecutionSnapshot {
             schema_version: SchemaV1,
@@ -1478,6 +1462,32 @@ impl PersistenceService {
             serde_json::from_str(&json).map_err(|e| PersistenceServiceError::Runtime(e.to_string()))
         })
         .transpose()
+    }
+
+    /// Every check the execution's plan requires, with the status of its
+    /// latest host receipt (`not_run` without one). Snapshots and the review
+    /// brief read the same summary.
+    pub(crate) fn execution_checks(
+        db: &Connection,
+        execution: &ExecutionRow,
+    ) -> Result<Vec<CheckSummaryV1>, PersistenceServiceError> {
+        let receipts = Self::latest_validation_receipts(db, &execution.id)?;
+        Ok(execution
+            .plan
+            .check_refs
+            .iter()
+            .map(|check| {
+                let receipt = receipts.iter().find(|r| &r.check_ref == check);
+                CheckSummaryV1 {
+                    check_ref: check.clone(),
+                    required: true,
+                    receipt_id: receipt.map(|r| r.receipt_id.clone()),
+                    status: receipt
+                        .map(|r| check_status_of(r.status))
+                        .unwrap_or(comp::CheckStatus::NotRun),
+                }
+            })
+            .collect())
     }
 
     /// The latest receipt per check of an execution, for reports and snapshots.

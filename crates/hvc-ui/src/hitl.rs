@@ -49,6 +49,12 @@ pub(crate) const fn judgement_kind_label(kind: JudgementKind) -> &'static str {
         JudgementKind::NotApplicable => "Marked not applicable",
         JudgementKind::InterfaceChange => "Existing interface changes",
         JudgementKind::Exclusions => "Left out of scope",
+        JudgementKind::NewInterface => "New interface",
+        JudgementKind::ExistingTestsOnly => "Covered only by existing tests",
+        JudgementKind::UnexecutedCheck => "Required check without a passing run",
+        JudgementKind::Contradicted => "Contradicted by the review",
+        JudgementKind::Unverified => "Not verified by the review",
+        JudgementKind::Blocker => "Blocker reported by the reviewer",
     }
 }
 
@@ -380,6 +386,7 @@ impl HitlReviewState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hvc_core::orchestration::review_brief::{SpecificationVisual, StageVisual};
     use hvc_core::persistence_service::{PulsationStage, PulsationStatus};
 
     #[gpui::test]
@@ -470,16 +477,19 @@ mod tests {
         ReviewBrief {
             stage: PulsationStage::Specification,
             next_stage: Some(PulsationStage::Contract),
-            objective: "Reject expired tokens.".into(),
-            facts: Default::default(),
+            objective: Some("Reject expired tokens.".into()),
+            counts: Vec::new(),
             revision: None,
             judgement: Vec::new(),
-            exclusions: Vec::new(),
             verified: Vec::new(),
-            tasks: Vec::new(),
-            files: Vec::new(),
-            unattached_interfaces: Vec::new(),
-            units: Vec::new(),
+            visual: StageVisual::Specification(SpecificationVisual {
+                facts: Default::default(),
+                exclusions: Vec::new(),
+                tasks: Vec::new(),
+                files: Vec::new(),
+                unattached_interfaces: Vec::new(),
+                units: Vec::new(),
+            }),
         }
     }
 

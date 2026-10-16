@@ -105,6 +105,7 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
         .child(
             div()
                 .id("failure-detail")
+                .debug_selector(|| "failure-detail".into())
                 .flex_1()
                 .min_w_0()
                 .min_h_0()
@@ -113,7 +114,8 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                 .flex_col()
                 .gap_3()
                 .p_3()
-                .child(failure_facts(&checkpoint))
+                // The target picker leads: it is part of the decision, and
+                // the explanation below must never push it out of view.
                 .when(revision_targets.len() > 1, |panel| {
                     panel.child(
                         div()
@@ -154,6 +156,8 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                             })),
                     )
                 })
+                .child(crate::review_brief_view::failure_choices_card(&checkpoint))
+                .child(failure_facts(&checkpoint))
                 .child(match (detail_loading, detail_error, detail) {
                     (true, _, _) => div()
                         .text_sm()

@@ -1,4 +1,4 @@
-//! The derived review brief of a checkpoint (ADR-024 M1–M3).
+//! The derived review brief of a checkpoint (ADR-024 M1–M4).
 //!
 //! A native rendering of `hvc_core::orchestration::review_brief::ReviewBrief`. The host
 //! decided every count, status and rule; this module only draws them. Text an agent wrote
@@ -6,6 +6,12 @@
 //! it appears, and colour always comes with an icon and a word. Each judgement item can be
 //! confirmed or flagged (M2); flags and their notes become the Request revision feedback.
 //! After Request revision, a card lists what changed since the previous candidate (M3).
+//! Contract, Test and Integrator checkpoints draw their own stage visual, and a stage
+//! failure lists what each permitted decision does (M4, `stages`).
+
+mod stages;
+
+pub(crate) use stages::failure_choices_card;
 
 use std::collections::HashMap;
 
@@ -13,7 +19,7 @@ use gpui::{AnyElement, Context, Entity, SharedString, div, prelude::*, px};
 use hvc_core::orchestration::composition::{InterfaceIntent, ProposalKind, VerificationMode};
 use hvc_core::orchestration::review_brief::{
     BriefChange, BriefCriterion, BriefFile, BriefFileGroup, BriefUnit, ChangeKind, ChangeSubject,
-    JudgementItem, JudgementKind, ReviewBrief, RevisionDiff,
+    JudgementItem, JudgementKind, ReviewBrief, RevisionDiff, SpecificationVisual, StageVisual,
 };
 use hvc_core::persistence_service::PulsationStage;
 
@@ -57,17 +63,41 @@ pub(crate) fn brief_panel(
                 .child(judgement_card(&brief.judgement, marks, cx))
                 .child(verified_card(&brief.verified)),
         )
-        .child(criteria_card(brief))
-        .child(
-            row()
-                .child(files_card(brief))
-                .child(units_card(&brief.units)),
-        )
+        .children(stage_visual(brief))
         .child(div().text_xs().text_color(theme::text_muted()).child(
-            "Derived from this checkpoint's validated payload and the frozen task batch. \
+            "Derived from this checkpoint's validated payload, the frozen task batch and the host's own records. \
                      The documents in the next tabs are the record; approval still requires them.",
         ))
         .into_any_element()
+}
+
+/// The stage's own cards, after the shared anatomy.
+fn stage_visual(brief: &ReviewBrief) -> Vec<AnyElement> {
+    match &brief.visual {
+        StageVisual::Specification(visual) => vec![
+            criteria_card(visual),
+            row()
+                .child(files_card(visual))
+                .child(units_card(&visual.units))
+                .into_any_element(),
+        ],
+        StageVisual::Contract(visual) => {
+            vec![stages::interfaces_card(visual), units_card(&visual.units)]
+        }
+        StageVisual::Test(visual) => vec![
+            stages::coverage_card(visual),
+            row()
+                .child(stages::checks_card(&visual.checks))
+                .child(stages::test_files_card(&visual.files))
+                .into_any_element(),
+        ],
+        // Paths need the width: publications get a row of their own.
+        StageVisual::Integrator(visual) => vec![
+            stages::verdicts_card(visual),
+            stages::publications_card(&visual.publications),
+            stages::checks_card(&visual.checks),
+        ],
+    }
 }
 
 /// Shown on the Brief tab when the brief could not be built; the documents are unaffected.
@@ -241,58 +271,37 @@ fn stage_name(stage: PulsationStage) -> &'static str {
     }
 }
 
-fn plural(count: usize, one: &str, many: &str) -> String {
-    format!("{count} {}", if count == 1 { one } else { many })
-}
-
 // ---------------------------------------------------------------------------
 // Sections
 // ---------------------------------------------------------------------------
 
-fn decision_card(brief: &ReviewBrief) -> AnyElement {
-    let stage = stage_name(brief.stage);
-    let headline = match brief.next_stage {
+/// What approving starts, in the words of the stage under review.
+fn headline(brief: &ReviewBrief) -> String {
+    let subject = match brief.stage {
+        PulsationStage::Specification => "this specification",
+        PulsationStage::Contract => "this contract",
+        PulsationStage::Test => "these tests",
+        PulsationStage::Integrator => "this integration",
+        PulsationStage::Intake | PulsationStage::Code => "this stage",
+    };
+    match brief.next_stage {
         Some(next) => format!(
-            "Approve this {} so the {} stage can start.",
-            stage.to_lowercase(),
+            "Approve {subject} so the {} stage can start.",
             stage_name(next)
         ),
-        None => format!("Approve this {}.", stage.to_lowercase()),
+        None => format!("Approve {subject} to verify the published files and close the pulsation."),
+    }
+}
+
+fn decision_card(brief: &ReviewBrief) -> AnyElement {
+    let stage = stage_name(brief.stage);
+    let headline = headline(brief);
+    let objective_label = if brief.stage == PulsationStage::Specification {
+        "Objective"
+    } else {
+        "Objective of the approved specification"
     };
-    let facts = &brief.facts;
-    let mut proof = vec![format!("{} executed", facts.executed)];
-    if facts.by_reading > 0 {
-        proof.push(format!("{} by reading", facts.by_reading));
-    }
-    if facts.not_applicable > 0 {
-        proof.push(format!("{} not applicable", facts.not_applicable));
-    }
-    let mut chips = vec![
-        plural(facts.tasks, "task", "tasks"),
-        format!(
-            "{} · {}",
-            plural(facts.criteria, "criterion", "criteria"),
-            proof.join(", ")
-        ),
-        format!(
-            "{} · {} new",
-            plural(facts.existing_files + facts.planned_files, "file", "files"),
-            facts.planned_files
-        ),
-    ];
-    if facts.changed_interfaces > 0 {
-        chips.push(format!(
-            "{} changed",
-            plural(
-                facts.changed_interfaces,
-                "existing interface",
-                "existing interfaces"
-            )
-        ));
-    }
-    if facts.units > 0 {
-        chips.push(plural(facts.units, "work unit", "work units"));
-    }
+    let chips = brief.counts.clone();
 
     div()
         .debug_selector(|| "brief-decision".into())
@@ -325,27 +334,25 @@ fn decision_card(brief: &ReviewBrief) -> AnyElement {
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(headline),
         )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child("Objective")
-                        .child(provenance(Provenance::Agent)),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .child(SharedString::from(brief.objective.clone())),
-                ),
-        )
+        .when_some(brief.objective.clone(), |card, objective| {
+            card.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_xs()
+                            .text_color(theme::text_muted())
+                            .child(objective_label)
+                            .child(provenance(Provenance::Agent)),
+                    )
+                    .child(div().text_sm().child(SharedString::from(objective))),
+            )
+        })
         .child(
             div()
                 .flex()
@@ -384,6 +391,8 @@ fn subject_name(subject: ChangeSubject) -> &'static str {
         ChangeSubject::Exclusion => "Exclusion",
         ChangeSubject::File => "File",
         ChangeSubject::Unit => "Work unit",
+        ChangeSubject::Check => "Check",
+        ChangeSubject::Blocker => "Blocker",
     }
 }
 
@@ -579,6 +588,36 @@ fn judgement_look(kind: JudgementKind) -> (Icon, gpui::Rgba, &'static str) {
             Icon::Ban,
             theme::text_muted(),
             "Exclusions are easy to miss in prose. Check nothing here was expected.",
+        ),
+        JudgementKind::NewInterface => (
+            Icon::Plug,
+            theme::success(),
+            "Other code will depend on this signature once it exists.",
+        ),
+        JudgementKind::ExistingTestsOnly => (
+            Icon::CircleHelp,
+            theme::warning(),
+            "No test was written for it; tests that already existed are assumed to cover it.",
+        ),
+        JudgementKind::UnexecutedCheck => (
+            Icon::TriangleAlert,
+            theme::warning(),
+            "The project requires this check, and nothing the host ran passed it.",
+        ),
+        JudgementKind::Contradicted => (
+            Icon::X,
+            theme::danger(),
+            "The reviewer found the delivered code contradicts the criterion.",
+        ),
+        JudgementKind::Unverified => (
+            Icon::CircleHelp,
+            theme::warning(),
+            "Nothing the reviewer saw shows the criterion holds.",
+        ),
+        JudgementKind::Blocker => (
+            Icon::Ban,
+            theme::danger(),
+            "The reviewer reports this stops delivery.",
         ),
     }
 }
@@ -859,7 +898,7 @@ fn proof_label(criterion: &BriefCriterion) -> (Icon, gpui::Rgba, String) {
     }
 }
 
-fn criteria_card(brief: &ReviewBrief) -> AnyElement {
+fn criteria_card(brief: &SpecificationVisual) -> AnyElement {
     let facts = &brief.facts;
     let total = facts.criteria.max(1) as f32;
     let bar = div()
@@ -1011,7 +1050,7 @@ fn criterion_row(criterion: &BriefCriterion) -> AnyElement {
         .into_any_element()
 }
 
-fn files_card(brief: &ReviewBrief) -> AnyElement {
+fn files_card(brief: &SpecificationVisual) -> AnyElement {
     let total: usize = brief.files.iter().map(|group| group.files.len()).sum();
     card("brief-files")
         .child(card_header(
@@ -1266,6 +1305,14 @@ fn unit_node(unit: &BriefUnit) -> AnyElement {
                     .map(|criterion| pill(criterion.clone())),
             ),
         )
+        .when(!unit.interfaces.is_empty(), |node| {
+            node.child(
+                div()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(format!("Implements {}", unit.interfaces.join(", "))),
+            )
+        })
         .when(!unit.depends_on.is_empty(), |node| {
             node.child(
                 div()
@@ -1289,6 +1336,7 @@ mod tests {
             criteria: Vec::new(),
             depends_on: depends_on.iter().map(|key| (*key).into()).collect(),
             objective: String::new(),
+            interfaces: Vec::new(),
         }
     }
 

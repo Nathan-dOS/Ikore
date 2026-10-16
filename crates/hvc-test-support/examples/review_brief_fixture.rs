@@ -1,15 +1,22 @@
 //! Development fixture for ADR-024: a v4 pulsation parked at its Specification
 //! checkpoint, so the real GUI can be opened on the Review Brief tab.
 //!
-//! Usage: `review_brief_fixture NEW_DIRECTORY [--revised]`, then start
-//! `hvc-app` with `HVC_DATA_DIR` set to the printed data directory. Every
-//! provider reply comes from the scripted composition worker; the worker stops
-//! once the checkpoint is waiting, so the GUI never races it. Provider
-//! credentials point at fixture-only names, never the developer's.
+//! Usage: `review_brief_fixture NEW_DIRECTORY [--revised] [--stage STAGE]`,
+//! then start `hvc-app` with `HVC_DATA_DIR` set to the printed data
+//! directory. Every provider reply comes from the scripted composition
+//! worker; the worker stops once the checkpoint is waiting, so the GUI never
+//! races it. Provider credentials point at fixture-only names, never the
+//! developer's.
 //!
 //! `--revised` first requests a revision with feedback composed from flags,
 //! as Review sends it, and parks at the second Specification checkpoint, whose
 //! brief shows what changed (ADR-024 M3).
+//!
+//! `--stage contract|test|integrator` approves on to that checkpoint;
+//! `--stage failure` makes the code worker diagnose a contract conflict, which
+//! parks a stage failure with three revision targets (ADR-024 M4). When the
+//! `check_fixture` binary sits next to the examples folder, a required compile
+//! check runs, so the Test brief carries a host receipt.
 use hvc_core::{
     AppCoreDependencies,
     feature_forge::{
@@ -17,7 +24,12 @@ use hvc_core::{
         TaskKind, TaskSelection, TaskService,
     },
     llm::{LlmEventEnvelope, LlmEventSink},
-    orchestration::{PreparationSettings, composition::settings::CompositionSettings},
+    orchestration::{
+        PreparationSettings, SchemaV1,
+        composition::settings::CompositionSettings,
+        composition::{CheckKind, Handle, Uuid, ValidationCommandProfileV1},
+        review_brief::failure_choices,
+    },
     persistence_service::*,
     workspace_service::bootstrap_greenfield_workspace,
 };
@@ -79,9 +91,24 @@ fn tasks() -> Vec<TaskDraft> {
 }
 
 /// The default scripted reply, except that the Specification proposes one
-/// code unit covering every criterion and a test unit after it, as the host
-/// requires for a multi-task batch.
-fn reply(facts: &PromptFacts) -> Value {
+/// code unit and one test unit after it, each covering every criterion, as
+/// the host requires for a multi-task batch to plan Code and Test.
+fn reply(facts: &PromptFacts, fail_code: bool) -> Value {
+    if fail_code && facts.executor == "code_implementer" {
+        return json!({
+            "schemaVersion": 1, "outcome": "failed", "code": "contract_conflict",
+            "message": "The approved signature cannot express the expiry input.", "relatedRefs": []
+        });
+    }
+    if facts.executor == "integration_reviewer" {
+        // One verdict short of supported, so the Integrator brief has an item.
+        let mut response = unit_response(facts);
+        response["payload"]["assessments"][1]["verdict"] = json!("unverified");
+        response["payload"]["assessments"][1]["explanation"] = json!(
+            "No authored test sets expires_at equal to now, so the boundary is not shown either way."
+        );
+        return response;
+    }
     if facts.executor != "specification_author" {
         return unit_response(facts);
     }
@@ -92,24 +119,22 @@ fn reply(facts: &PromptFacts) -> Value {
         .find(|(_, row)| row.path == "tests/auth_test.rs" && row.planned)
         .map(|(handle, _)| handle.as_str())
         .unwrap_or(source);
-    let first_task = facts.tasks[0].as_str();
-    let first_task_criteria: Vec<&str> = facts
+    let criteria: Vec<&str> = facts
         .criteria
         .iter()
-        .filter(|(task, _)| task == first_task)
         .map(|(_, criterion)| criterion.as_str())
         .collect();
     let options = ReplyOptions {
         proposals: Some(json!([
             {
                 "unitKey": "implement_expiry", "kind": "code", "taskRefs": facts.tasks,
-                "criterionRefs": facts.criteria.iter().map(|(_, criterion)| criterion).collect::<Vec<_>>(),
+                "criterionRefs": criteria,
                 "inputRefs": [source], "destinationRefs": [source], "dependsOn": [],
                 "objective": "Implement the expiry comparison in validate_token."
             },
             {
-                "unitKey": "cover_expiry", "kind": "test", "taskRefs": [first_task],
-                "criterionRefs": first_task_criteria,
+                "unitKey": "cover_expiry", "kind": "test", "taskRefs": facts.tasks,
+                "criterionRefs": criteria,
                 "inputRefs": [source], "destinationRefs": [test_destination],
                 "dependsOn": ["implement_expiry"],
                 "objective": "Cover expired and boundary tokens with unit tests."
@@ -151,17 +176,21 @@ fn revise(payload: &mut Value) {
         json!("Cover expired, boundary and still-valid tokens with unit tests.");
 }
 
-fn wait_for_specification(
+/// Waits for a waiting checkpoint of `kind` (at `stage`, for an artifact
+/// review) other than `not`, and returns its id.
+fn wait_for_checkpoint(
     database: &rusqlite::Connection,
     pulse: &str,
+    kind: &str,
+    stage: &str,
     not: Option<&str>,
 ) -> String {
     let deadline = Instant::now() + Duration::from_secs(180);
     loop {
         let waiting: Option<String> = database
             .query_row(
-                "SELECT c.id FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.id=?1 AND p.stage='SPECIFICATION' AND p.status='checkpoint' AND c.status='waiting' AND c.kind='artifact_review' AND c.id<>?2",
-                [pulse, not.unwrap_or("")],
+                "SELECT c.id FROM pulsations p JOIN checkpoints c ON c.pulsation_id=p.id WHERE p.id=?1 AND p.status='checkpoint' AND c.status='waiting' AND c.kind=?2 AND (?2<>'artifact_review' OR p.stage=?3) AND c.id<>?4",
+                [pulse, kind, stage, not.unwrap_or("")],
                 |row| row.get(0),
             )
             .ok();
@@ -177,25 +206,73 @@ fn wait_for_specification(
             .unwrap();
         assert!(
             status != "failed" && Instant::now() < deadline,
-            "pulsation did not reach the Specification checkpoint (status {status})"
+            "pulsation did not reach the {stage} {kind} checkpoint (status {status})"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
+fn approve(service: &PersistenceService, pulse: &str) {
+    let checkpoint = service.get_hitl_checkpoint(pulse).unwrap();
+    service
+        .apply_hitl_decision(ApplyHitlDecisionRequest {
+            pulsation_id: pulse.into(),
+            checkpoint_id: checkpoint.checkpoint_id,
+            expected_state_version: checkpoint.state_version,
+            feedback: None,
+            decision: HitlDecision::Approve,
+        })
+        .unwrap();
+}
+
+/// A required compile check run by the `check_fixture` stand-in, when it was
+/// built next to the examples folder (`cargo build -p hvc-test-support --bins`).
+fn passing_check() -> Option<ValidationCommandProfileV1> {
+    let examples = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let executable = examples
+        .parent()?
+        .join(format!("check_fixture{}", std::env::consts::EXE_SUFFIX));
+    executable.is_file().then(|| ValidationCommandProfileV1 {
+        schema_version: SchemaV1,
+        profile_id: Uuid::generate(),
+        profile_version: 1,
+        check_ref: Handle::new("fixture_compile").unwrap(),
+        kind: CheckKind::Compile,
+        required: true,
+        executable: executable.to_string_lossy().into_owned(),
+        argv: vec!["pass".into()],
+        cwd_relative_path: ".".into(),
+        input_globs: vec!["**/*.rs".into()],
+        environment_names: vec![],
+        toolchain_identity: "fixture".into(),
+        timeout_seconds: 30,
+        max_log_bytes: 65_536,
+    })
+}
+
+const USAGE: &str = "usage: review_brief_fixture NEW_DIRECTORY [--revised] [--stage contract|test|integrator|failure]";
+
 fn main() {
-    let root = PathBuf::from(
-        std::env::args_os()
-            .nth(1)
-            .expect("usage: review_brief_fixture NEW_DIRECTORY [--revised]"),
-    );
-    let revised = match std::env::args().nth(2).as_deref() {
-        None => false,
-        Some("--revised") => true,
-        Some(other) => {
-            panic!("unknown option {other}; usage: review_brief_fixture NEW_DIRECTORY [--revised]")
+    let root = PathBuf::from(std::env::args_os().nth(1).expect(USAGE));
+    let mut revised = false;
+    let mut target = "specification".to_owned();
+    let mut options = std::env::args().skip(2);
+    while let Some(option) = options.next() {
+        match option.as_str() {
+            "--revised" => revised = true,
+            "--stage" => target = options.next().expect(USAGE),
+            other => panic!("unknown option {other}; {USAGE}"),
         }
+    }
+    let later: &[&str] = match target.as_str() {
+        "specification" => &[],
+        "contract" => &["Contract"],
+        "test" => &["Contract", "Test"],
+        "integrator" => &["Contract", "Test", "Integrator"],
+        "failure" => &["Contract"],
+        other => panic!("unknown stage {other}; {USAGE}"),
     };
+    let fail_code = target == "failure";
     assert!(!root.exists(), "refuse to reuse or overwrite {root:?}");
     fs::create_dir_all(&root).unwrap();
     // The GUI registers projects by their canonical root (`\\?\` form on
@@ -208,11 +285,11 @@ fn main() {
     fs::create_dir_all(workspace.join("src")).unwrap();
     fs::write(workspace.join("src/auth.rs"), SOURCE).unwrap();
 
-    let server = ScriptedHttpServer::respond_with(|request| {
+    let server = ScriptedHttpServer::respond_with(move |request| {
         if request.body.trim().is_empty() {
             return ScriptedResponse::json(400, r#"{"error":"empty request"}"#);
         }
-        let content = reply(&parse_prompt(request));
+        let content = reply(&parse_prompt(request), fail_code);
         ScriptedResponse::json(
             200,
             json!({"choices":[{"message":{"content":content.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":60}}).to_string(),
@@ -254,11 +331,18 @@ fn main() {
         .project
         .id;
     force_api_direct(&service, &project);
+    let check = passing_check();
+    if let Some(profile) = check.clone() {
+        service
+            .upsert_validation_profile(&project, profile, true)
+            .unwrap();
+    }
     service
         .update_composition_settings(
             &project,
             CompositionSettings {
                 enabled: true,
+                validation_enabled: check.is_some(),
                 ..CompositionSettings::default()
             }
             .with_all_recipes_qualified(),
@@ -298,7 +382,7 @@ fn main() {
     let token = stop.clone();
     runtime.spawn(async move { worker.run_job_worker_until(token).await });
     let database = rusqlite::Connection::open(service.database_path()).unwrap();
-    let first = wait_for_specification(&database, &pulse, None);
+    let first = wait_for_checkpoint(&database, &pulse, "artifact_review", "SPECIFICATION", None);
     if revised {
         let checkpoint = service.get_hitl_checkpoint(&pulse).unwrap();
         assert_eq!(checkpoint.checkpoint_id, first);
@@ -311,16 +395,25 @@ fn main() {
                 decision: HitlDecision::RequestRevision,
             })
             .unwrap();
-        wait_for_specification(&database, &pulse, Some(&first));
+        wait_for_checkpoint(
+            &database,
+            &pulse,
+            "artifact_review",
+            "SPECIFICATION",
+            Some(&first),
+        );
+    }
+    for stage in later {
+        approve(&service, &pulse);
+        wait_for_checkpoint(&database, &pulse, "artifact_review", stage, None);
+    }
+    if fail_code {
+        approve(&service, &pulse);
+        wait_for_checkpoint(&database, &pulse, "stage_failure", "", None);
     }
     stop.cancel();
     runtime.shutdown_timeout(Duration::from_secs(5));
 
-    let checkpoint = service.get_hitl_checkpoint(&pulse).unwrap();
-    let brief = service
-        .read_checkpoint_brief(&checkpoint)
-        .unwrap()
-        .expect("the Specification checkpoint has a brief");
     service
         .save_ui_session(
             serde_json::from_value(json!({
@@ -333,17 +426,49 @@ fn main() {
             .unwrap(),
         )
         .unwrap();
-    println!(
-        "Brief: {} criteria, {} judgement items, {} work units",
-        brief.facts.criteria,
-        brief.judgement.len(),
-        brief.facts.units
-    );
-    if let Some(diff) = &brief.revision {
+    if fail_code {
+        let snapshot = service
+            .get_pulsation_runtime_snapshot(GetPulsationRuntimeSnapshotRequest {
+                project_id: project.clone(),
+            })
+            .unwrap()
+            .snapshot;
+        let failure = snapshot
+            .failure_checkpoints
+            .first()
+            .expect("a waiting stage failure");
         println!(
-            "Revision: {} changes since the previous candidate",
-            diff.changes.as_ref().map_or(0, Vec::len)
+            "Failure: {} at {:?}, {} choices",
+            failure.failure_class,
+            failure.stage,
+            failure_choices(failure).len()
         );
+    } else {
+        let checkpoint = service.get_hitl_checkpoint(&pulse).unwrap();
+        let brief = service
+            .read_checkpoint_brief(&checkpoint)
+            .unwrap()
+            .expect("an artifact checkpoint of a v4 pulsation has a brief");
+        println!(
+            "Brief: {:?}, {} judgement items, counts {:?}",
+            brief.stage,
+            brief.judgement.len(),
+            brief.counts
+        );
+        if let Some(diff) = &brief.revision {
+            println!(
+                "Revision: {} changes since the previous candidate",
+                diff.changes.as_ref().map_or(0, Vec::len)
+            );
+        }
     }
+    println!(
+        "Host check: {}",
+        if check.is_some() {
+            "fixture_compile (required)"
+        } else {
+            "none (build check_fixture first)"
+        }
+    );
     println!("HVC_DATA_DIR={}", data.display());
 }

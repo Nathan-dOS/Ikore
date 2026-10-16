@@ -332,22 +332,19 @@ fn specification_brief() -> hvc_core::orchestration::review_brief::ReviewBrief {
         criteria: vec!["AC-1".into(), "AC-2".into(), "AC-3".into()],
         depends_on: depends_on.iter().map(|key| (*key).into()).collect(),
         objective: "Write the export.".into(),
+        interfaces: Vec::new(),
     };
     ReviewBrief {
         stage: PulsationStage::Specification,
         next_stage: Some(PulsationStage::Contract),
-        objective: "Let developers export token usage to CSV from the Usage view, one row per pulsation and model, with totals that match the app.".into(),
-        facts: BriefFacts {
-            tasks: 2,
-            criteria: 6,
-            executed: 5,
-            by_reading: 1,
-            not_applicable: 0,
-            existing_files: 3,
-            planned_files: 1,
-            changed_interfaces: 1,
-            units: 3,
-        },
+        objective: Some("Let developers export token usage to CSV from the Usage view, one row per pulsation and model, with totals that match the app.".into()),
+        counts: vec![
+            "2 tasks".into(),
+            "6 criteria · 5 executed, 1 by reading".into(),
+            "4 files · 1 new".into(),
+            "1 existing interface changed".into(),
+            "3 work units".into(),
+        ],
         revision: None,
         judgement: vec![
             JudgementItem {
@@ -379,77 +376,98 @@ fn specification_brief() -> hvc_core::orchestration::review_brief::ReviewBrief {
                 refs: Vec::new(),
             },
         ],
-        exclusions: vec![
-            "Scheduled or automatic exports".into(),
-            "Exporting one row per LLM call".into(),
-        ],
         verified: vec![
             "Each of the 6 acceptance criteria has exactly one requirement.".into(),
             "The 3 existing files it cites were read from the project.".into(),
             "The new file it plans is a registered destination inside the project.".into(),
             "Its 3 work units form no dependency cycle, and a code unit covers every criterion.".into(),
         ],
-        tasks: vec![
-            BriefTask {
-                task_id: "4b8e0c62-3d1f-4a77-9b25-6c0e8f2a9d14".into(),
-                title: "Export usage summary to CSV".into(),
-                criteria: ["AC-1", "AC-2", "AC-3", "AC-5"]
-                    .into_iter()
-                    .map(|id| criterion(id, VerificationMode::ExecutedCheck))
-                    .chain([criterion("AC-4", VerificationMode::DocumentCheck)])
-                    .collect(),
+        visual: StageVisual::Specification(SpecificationVisual {
+            facts: BriefFacts {
+                tasks: 2,
+                criteria: 6,
+                executed: 5,
+                by_reading: 1,
+                not_applicable: 0,
+                existing_files: 3,
+                planned_files: 1,
+                changed_interfaces: 1,
+                units: 3,
             },
-            BriefTask {
-                task_id: "9f31d7a0-5e2c-4c18-8d64-2b7a1e0c5f83".into(),
-                title: "Expose CSV export in the Usage view".into(),
-                criteria: vec![criterion("AC-6", VerificationMode::ExecutedCheck)],
-            },
-        ],
-        files: vec![
-            BriefFileGroup {
-                root: "crates/hvc-core".into(),
-                files: vec![
-                    BriefFile {
+            exclusions: vec![
+                "Scheduled or automatic exports".into(),
+                "Exporting one row per LLM call".into(),
+            ],
+            tasks: vec![
+                BriefTask {
+                    task_id: "4b8e0c62-3d1f-4a77-9b25-6c0e8f2a9d14".into(),
+                    title: "Export usage summary to CSV".into(),
+                    criteria: ["AC-1", "AC-2", "AC-3", "AC-5"]
+                        .into_iter()
+                        .map(|id| criterion(id, VerificationMode::ExecutedCheck))
+                        .chain([criterion("AC-4", VerificationMode::DocumentCheck)])
+                        .collect(),
+                },
+                BriefTask {
+                    task_id: "9f31d7a0-5e2c-4c18-8d64-2b7a1e0c5f83".into(),
+                    title: "Expose CSV export in the Usage view".into(),
+                    criteria: vec![criterion("AC-6", VerificationMode::ExecutedCheck)],
+                },
+            ],
+            files: vec![
+                BriefFileGroup {
+                    root: "crates/hvc-core".into(),
+                    files: vec![
+                        BriefFile {
+                            path: "src/usage.rs".into(),
+                            planned: false,
+                            interfaces: vec![BriefInterface {
+                                intent: InterfaceIntent::Preserve,
+                                description: "query_usage keeps its signature.".into(),
+                            }],
+                        },
+                        BriefFile {
+                            path: "src/usage/export.rs".into(),
+                            planned: true,
+                            interfaces: Vec::new(),
+                        },
+                    ],
+                },
+                BriefFileGroup {
+                    root: "crates/hvc-ui".into(),
+                    files: vec![BriefFile {
                         path: "src/usage.rs".into(),
                         planned: false,
                         interfaces: vec![BriefInterface {
-                            intent: InterfaceIntent::Preserve,
-                            description: "query_usage keeps its signature.".into(),
+                            intent: InterfaceIntent::Change,
+                            description: "The Usage view gains an Export button.".into(),
                         }],
-                    },
-                    BriefFile {
-                        path: "src/usage/export.rs".into(),
-                        planned: true,
-                        interfaces: Vec::new(),
-                    },
-                ],
-            },
-            BriefFileGroup {
-                root: "crates/hvc-ui".into(),
-                files: vec![BriefFile {
-                    path: "src/usage.rs".into(),
-                    planned: false,
-                    interfaces: vec![BriefInterface {
-                        intent: InterfaceIntent::Change,
-                        description: "The Usage view gains an Export button.".into(),
                     }],
-                }],
-            },
-        ],
-        unattached_interfaces: vec![BriefInterface {
-            intent: InterfaceIntent::New,
-            description: "write_usage_csv is a new public function.".into(),
-        }],
-        units: vec![
-            unit("core_export", ProposalKind::Code, &[]),
-            unit("usage_tests", ProposalKind::Test, &["core_export"]),
-            unit("ui_export", ProposalKind::Code, &["core_export"]),
-        ],
+                },
+            ],
+            unattached_interfaces: vec![BriefInterface {
+                intent: InterfaceIntent::New,
+                description: "write_usage_csv is a new public function.".into(),
+            }],
+            units: vec![
+                unit("core_export", ProposalKind::Code, &[]),
+                unit("usage_tests", ProposalKind::Test, &["core_export"]),
+                unit("ui_export", ProposalKind::Code, &["core_export"]),
+            ],
+        }),
     }
 }
 
 /// Parks the Specification brief fixture on the Review tab of a new window.
 fn open_specification_brief(cx: &mut TestAppContext) -> (Entity<AppModel>, &mut VisualTestContext) {
+    open_brief(cx, specification_brief())
+}
+
+/// Parks `brief` on the Review tab of a new window, behind two documents.
+fn open_brief(
+    cx: &mut TestAppContext,
+    brief: hvc_core::orchestration::review_brief::ReviewBrief,
+) -> (Entity<AppModel>, &mut VisualTestContext) {
     use hvc_core::persistence_service::{HitlCheckpoint, HitlReviewDocument};
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.update(|_, cx| crate::hitl::register_hitl_keybindings(cx));
@@ -488,7 +506,7 @@ fn open_specification_brief(cx: &mut TestAppContext) -> (Entity<AppModel>, &mut 
             );
             state
                 .hitl
-                .finish_brief(generation, &checkpoint, Ok(Some(specification_brief())));
+                .finish_brief(generation, &checkpoint, Ok(Some(brief)));
             state.detail_section = PulsationDetailSection::Review;
         });
     });
@@ -3195,4 +3213,409 @@ fn controls_size_to_content_instead_of_the_panel(cx: &mut TestAppContext) {
             list.size.width
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// ADR-024 M4: Contract, Test and Integrator briefs and the failure choices
+// ---------------------------------------------------------------------------
+
+/// The shared anatomy of a later-stage fixture: no revision, host words only.
+fn later_brief(
+    stage: PulsationStage,
+    next_stage: Option<PulsationStage>,
+    counts: &[&str],
+    judgement: Vec<hvc_core::orchestration::review_brief::JudgementItem>,
+    visual: hvc_core::orchestration::review_brief::StageVisual,
+) -> hvc_core::orchestration::review_brief::ReviewBrief {
+    hvc_core::orchestration::review_brief::ReviewBrief {
+        stage,
+        next_stage,
+        objective: Some("Let developers export token usage to CSV from the Usage view, one row per pulsation and model, with totals that match the app.".into()),
+        counts: counts.iter().map(|count| (*count).to_owned()).collect(),
+        revision: None,
+        judgement,
+        verified: vec!["Each criterion in scope has exactly one coverage entry.".into()],
+        visual,
+    }
+}
+
+fn item(
+    kind: hvc_core::orchestration::review_brief::JudgementKind,
+    label: &str,
+    text: &str,
+) -> hvc_core::orchestration::review_brief::JudgementItem {
+    hvc_core::orchestration::review_brief::JudgementItem {
+        kind,
+        label: label.into(),
+        text: text.into(),
+        detail: Some("An agent-written explanation that is long enough to wrap inside the item at the small window size.".into()),
+        refs: Vec::new(),
+    }
+}
+
+fn contract_brief() -> hvc_core::orchestration::review_brief::ReviewBrief {
+    use hvc_core::orchestration::composition::GroupIntent;
+    use hvc_core::orchestration::review_brief::*;
+    let group = |key: &str, intent, signature: &str| {
+        BriefInterfaceGroup {
+        key: key.into(),
+        intent,
+        signature: signature.into(),
+        invariants: vec![
+            "Returns rows in the order the Usage view shows them, so a spreadsheet matches the screen.".into(),
+            "Never panics on an empty range.".into(),
+        ],
+        sources: vec!["crates/hvc-core/src/usage.rs".into()],
+        criteria: vec!["AC-1".into(), "AC-2".into()],
+        units: vec!["core_export".into()],
+    }
+    };
+    let mut units = match specification_brief().visual {
+        StageVisual::Specification(visual) => visual.units,
+        _ => unreachable!(),
+    };
+    units[0].interfaces = vec!["csv_writer".into(), "query_usage".into()];
+    later_brief(
+        PulsationStage::Contract,
+        Some(PulsationStage::Code),
+        &[
+            "3 interface groups · 1 changed, 1 new, 1 preserved",
+            "3 work units · 1 bound to an interface",
+        ],
+        vec![
+            item(
+                JudgementKind::NewInterface,
+                "csv_writer",
+                "pub fn write_usage_csv(rows: &[UsageRow], out: &mut impl std::io::Write) -> std::io::Result<()>",
+            ),
+            item(
+                JudgementKind::InterfaceChange,
+                "usage_view",
+                "fn render_export_button(&self, loading: bool, cx: &mut Context<Self>) -> impl IntoElement",
+            ),
+        ],
+        StageVisual::Contract(ContractVisual {
+            interfaces: vec![
+                group(
+                    "query_usage",
+                    GroupIntent::Preserve,
+                    "pub fn query_usage(range: DateRange, filter: &UsageFilter) -> Result<Vec<UsageRow>, UsageError>",
+                ),
+                group(
+                    "csv_writer",
+                    GroupIntent::New,
+                    "pub fn write_usage_csv(rows: &[UsageRow], out: &mut impl std::io::Write) -> std::io::Result<()>",
+                ),
+                group(
+                    "usage_view",
+                    GroupIntent::Change,
+                    "fn render_export_button(&self, loading: bool, cx: &mut Context<Self>) -> impl IntoElement",
+                ),
+            ],
+            units,
+        }),
+    )
+}
+
+fn test_brief() -> hvc_core::orchestration::review_brief::ReviewBrief {
+    use hvc_core::orchestration::composition::{CheckStatus, CoverageKind};
+    use hvc_core::orchestration::review_brief::*;
+    let row = |id: &str, coverage, tests: &[&str]| {
+        BriefCoverage {
+        criterion_id: id.into(),
+        description: format!("{id}: an empty date range writes only the header row, and the totals match the Usage view."),
+        task_title: "Export usage summary to CSV".into(),
+        coverage,
+        tests: tests.iter().map(|test| (*test).to_owned()).collect(),
+        declared_checks: vec!["core_tests".into()],
+        explanation: "The authored test calls write_usage_csv with an empty range and compares the output with the header.".into(),
+    }
+    };
+    later_brief(
+        PulsationStage::Test,
+        Some(PulsationStage::Integrator),
+        &[
+            "3 criteria · 1 authored, 1 existing, 1 not applicable",
+            "2 host checks · 1 passed, 1 not run",
+            "1 test file · 1 new",
+        ],
+        vec![
+            item(
+                JudgementKind::ExistingTestsOnly,
+                "AC-2",
+                "Totals match the Usage view for the same filter.",
+            ),
+            item(
+                JudgementKind::UnexecutedCheck,
+                "ui_tests",
+                "The host has no passing receipt for this required check: not run.",
+            ),
+        ],
+        StageVisual::Test(TestVisual {
+            coverage: vec![
+                row(
+                    "AC-1",
+                    CoverageKind::Authored,
+                    &["crates/hvc-core/tests/usage_export_header_only_test.rs"],
+                ),
+                row(
+                    "AC-2",
+                    CoverageKind::Existing,
+                    &["crates/hvc-core/tests/usage_test.rs"],
+                ),
+                row("AC-3", CoverageKind::NotApplicable, &[]),
+            ],
+            checks: vec![
+                BriefCheck {
+                    check_ref: "core_tests".into(),
+                    required: true,
+                    status: CheckStatus::Passed,
+                    receipt: Some("dc3424cc-21d5-44aa-8b00-ee1c998a66e4".into()),
+                },
+                BriefCheck {
+                    check_ref: "ui_tests".into(),
+                    required: true,
+                    status: CheckStatus::NotRun,
+                    receipt: None,
+                },
+            ],
+            files: vec![BriefFileGroup {
+                root: "crates/hvc-core".into(),
+                files: vec![BriefFile {
+                    path: "tests/usage_export_header_only_test.rs".into(),
+                    planned: true,
+                    interfaces: Vec::new(),
+                }],
+            }],
+        }),
+    )
+}
+
+fn integrator_brief() -> hvc_core::orchestration::review_brief::ReviewBrief {
+    use hvc_core::orchestration::PublicationState;
+    use hvc_core::orchestration::composition::Verdict;
+    use hvc_core::orchestration::review_brief::*;
+    let verdict = |id: &str, verdict| {
+        BriefVerdict {
+        criterion_id: id.into(),
+        description: format!("{id}: the export keeps one row per pulsation and model."),
+        task_title: "Export usage summary to CSV".into(),
+        verdict,
+        checks: Vec::new(),
+        explanation: "The implementation groups by pulsation and model; the authored test asserts one row per pair.".into(),
+    }
+    };
+    let file = |path: &str, stage, state| BriefPublication {
+        path: path.into(),
+        stage,
+        state,
+    };
+    later_brief(
+        PulsationStage::Integrator,
+        None,
+        &[
+            "3 criteria · 1 supported, 1 contradicted, 1 unverified",
+            "1 blocker",
+            "No host check for this stage",
+            "3 files · 2 published, 1 to publish",
+        ],
+        vec![
+            item(
+                JudgementKind::Contradicted,
+                "AC-2",
+                "Totals match the Usage view for the same filter.",
+            ),
+            item(
+                JudgementKind::Blocker,
+                "B1",
+                "The CSV header order differs from the Usage view columns, so a spreadsheet does not line up with the screen.",
+            ),
+        ],
+        StageVisual::Integrator(IntegratorVisual {
+            verdicts: vec![
+                verdict("AC-1", Verdict::Supported),
+                verdict("AC-2", Verdict::Contradicted),
+                verdict("AC-3", Verdict::Unverified),
+            ],
+            blockers: vec!["The CSV header order differs from the Usage view columns.".into()],
+            checks: Vec::new(),
+            publications: vec![
+                file(
+                    "crates/hvc-core/src/usage/export.rs",
+                    PulsationStage::Code,
+                    PublicationState::Applied,
+                ),
+                file(
+                    "crates/hvc-core/tests/usage_export_header_only_test_with_a_long_name.rs",
+                    PulsationStage::Test,
+                    PublicationState::Applied,
+                ),
+                file(
+                    "knowledge/obsidian/features/usage-export-to-csv.md",
+                    PulsationStage::Integrator,
+                    PublicationState::Pending,
+                ),
+            ],
+        }),
+    )
+}
+
+/// Asserts each section fits the reader and each row head is one line;
+/// `long` heads (a long path in a narrow card) may take three, far from the
+/// one-character-per-line collapse the M3 diff once had.
+fn assert_brief_fits(
+    visual: &mut VisualTestContext,
+    sections: &[&'static str],
+    heads: &[&'static str],
+    long: &[&'static str],
+    width: f32,
+) {
+    let reader = visual.debug_bounds("review-document-reader").unwrap();
+    for section in sections {
+        let bounds = visual
+            .debug_bounds(section)
+            .unwrap_or_else(|| panic!("missing {section} at {width}"));
+        assert!(
+            bounds.left() >= reader.left() && bounds.right() <= reader.right() + px(1.0),
+            "{section} overflows the reader at {width}: {bounds:?} vs {reader:?}"
+        );
+    }
+    for head in heads {
+        let bounds = visual
+            .debug_bounds(head)
+            .unwrap_or_else(|| panic!("missing {head} at {width}"));
+        let limit = if long.contains(head) {
+            px(64.0)
+        } else {
+            px(24.0)
+        };
+        assert!(
+            bounds.size.height <= limit,
+            "{head} is {bounds:?} at {width}"
+        );
+    }
+}
+
+/// One later-stage brief and the selectors its window must draw.
+struct StageCase {
+    brief: hvc_core::orchestration::review_brief::ReviewBrief,
+    sections: &'static [&'static str],
+    heads: &'static [&'static str],
+    long: &'static [&'static str],
+}
+
+#[gpui::test]
+fn later_stage_briefs_draw_their_own_visuals_and_fit_both_window_widths(cx: &mut TestAppContext) {
+    let stages = [
+        StageCase {
+            brief: contract_brief(),
+            sections: &[
+                "brief-decision",
+                "brief-judgement",
+                "brief-verified",
+                "brief-interfaces",
+                "brief-units",
+            ],
+            heads: &[
+                "brief-interface-0",
+                "brief-interface-1",
+                "brief-interface-2",
+            ],
+            long: &[],
+        },
+        StageCase {
+            brief: test_brief(),
+            sections: &[
+                "brief-decision",
+                "brief-judgement",
+                "brief-coverage",
+                "brief-checks",
+                "brief-test-files",
+            ],
+            heads: &[
+                "brief-coverage-0",
+                "brief-coverage-1",
+                "brief-coverage-2",
+                "brief-check-0",
+                "brief-check-1",
+            ],
+            long: &[],
+        },
+        StageCase {
+            brief: integrator_brief(),
+            sections: &[
+                "brief-decision",
+                "brief-judgement",
+                "brief-verdicts",
+                "brief-checks",
+                "brief-publications",
+            ],
+            heads: &[
+                "brief-verdict-0",
+                "brief-verdict-1",
+                "brief-verdict-2",
+                "brief-publication-0",
+                "brief-publication-1",
+                "brief-publication-2",
+            ],
+            long: &[
+                "brief-publication-0",
+                "brief-publication-1",
+                "brief-publication-2",
+            ],
+        },
+    ];
+    for StageCase {
+        brief,
+        sections,
+        heads,
+        long,
+    } in stages
+    {
+        let (model, visual) = open_brief(cx, brief);
+        // Tall windows keep every row painted; the widths are the ones under test.
+        for width in [960.0, 1440.0] {
+            visual.simulate_resize(size(px(width), px(2400.0)));
+            select(&model, visual, AppView::Pulsations);
+            assert_brief_fits(visual, sections, heads, long, width);
+        }
+        // Only the stage's own visual is drawn in its window.
+        assert!(visual.debug_bounds("brief-criteria").is_none());
+        model.read_with(visual, |model, cx| {
+            let hitl = &model.pulsations.read(cx).hitl;
+            assert!(hitl.brief_selected);
+            assert_eq!(hitl.marks.len(), 2, "both judgement items can be marked");
+            assert!(hitl.can_approve(), "the documents still gate approval");
+        });
+    }
+}
+
+#[gpui::test]
+fn a_parked_failure_explains_each_permitted_decision_above_its_facts(cx: &mut TestAppContext) {
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        let (_model, visual) =
+            parked_failure_window(cx, "retry_budget_exhausted", true, true, (width, height));
+        let detail = visual.debug_bounds("failure-detail").unwrap();
+        let choices = visual.debug_bounds("failure-choices").unwrap();
+        assert!(
+            choices.left() >= detail.left() && choices.right() <= detail.right() + px(1.0),
+            "choices overflow at {width}: {choices:?} vs {detail:?}"
+        );
+        assert!(choices.top() >= detail.top(), "choices lead the detail");
+        // Retry, Revise from Code, Abort: as many rows as the bar has buttons.
+        for row in ["failure-choice-0", "failure-choice-1", "failure-choice-2"] {
+            let bounds = visual.debug_bounds(row).unwrap();
+            assert!(
+                bounds.left() >= choices.left() && bounds.right() <= choices.right() + px(1.0),
+                "{row} overflows at {width}: {bounds:?}"
+            );
+        }
+        let bar = visual.debug_bounds("failure-decision-bar").unwrap();
+        assert!(bar.bottom() <= px(height), "the bar stays on screen");
+    }
+    // A failure without retry lists only revision and abort.
+    let (_model, visual) =
+        parked_failure_window(cx, "model_reported_failure", false, true, (1440.0, 900.0));
+    visual.debug_bounds("failure-choice-1").unwrap();
+    assert!(visual.debug_bounds("failure-choice-2").is_none());
 }

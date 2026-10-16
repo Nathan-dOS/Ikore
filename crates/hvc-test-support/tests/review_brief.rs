@@ -1,15 +1,23 @@
-//! ADR-024 M1 and M3: the Specification brief of a real v4 pulsation is read
-//! from the exact waiting checkpoint, labelled from the frozen batch, refused
-//! once the checkpoint is stale, and compared with the previous candidate
-//! after Request revision.
+//! ADR-024 M1, M3 and M4: the brief of every artifact checkpoint of a real v4
+//! pulsation is read from the exact waiting checkpoint, labelled from the
+//! frozen batch, refused once the checkpoint is stale, and compared with the
+//! previous candidate after a revision; a stage failure lists its choices.
 mod composition_support;
 
 use composition_support::*;
-use hvc_core::orchestration::composition::VerificationMode;
-use hvc_core::orchestration::review_brief::{
-    BriefChange, ChangeKind, ChangeSubject, JudgementKind,
+use hvc_core::orchestration::PublicationState;
+use hvc_core::orchestration::SchemaV1;
+use hvc_core::orchestration::composition::settings::CompositionSettings;
+use hvc_core::orchestration::composition::{
+    CheckKind, CheckStatus, Handle, Uuid, ValidationCommandProfileV1, Verdict, VerificationMode,
 };
-use hvc_core::persistence_service::{ApplyHitlDecisionRequest, HitlDecision};
+use hvc_core::orchestration::review_brief::{
+    BriefChange, ChangeKind, ChangeSubject, FailureDecisionKind, JudgementKind, ReviewBrief,
+    StageVisual, failure_choices,
+};
+use hvc_core::persistence_service::{
+    ApplyHitlDecisionRequest, GetPulsationRuntimeSnapshotRequest, HitlDecision, PulsationStage,
+};
 use serde_json::{Value, json};
 
 #[test]
@@ -23,14 +31,20 @@ fn specification_checkpoint_brief_comes_from_the_typed_payload() {
         .read_checkpoint_brief(&checkpoint)
         .unwrap()
         .expect("a v4 Specification checkpoint has a brief");
-    assert_eq!(brief.objective, "Reject expired tokens in the validator.");
-    assert_eq!(brief.facts.tasks, 1);
-    assert_eq!(brief.facts.criteria, 1);
-    assert_eq!(brief.facts.by_reading, 1);
-    assert_eq!(brief.facts.changed_interfaces, 1);
+    assert_eq!(
+        brief.objective.as_deref(),
+        Some("Reject expired tokens in the validator.")
+    );
+    let StageVisual::Specification(visual) = &brief.visual else {
+        panic!("not a Specification brief");
+    };
+    assert_eq!(visual.facts.tasks, 1);
+    assert_eq!(visual.facts.criteria, 1);
+    assert_eq!(visual.facts.by_reading, 1);
+    assert_eq!(visual.facts.changed_interfaces, 1);
 
     // Task and criterion text come from the frozen batch, not the model.
-    let task = &brief.tasks[0];
+    let task = &visual.tasks[0];
     assert_eq!(task.title, "Reject expired tokens");
     assert_eq!(task.criteria[0].criterion_id, "ac-1");
     assert_eq!(
@@ -55,9 +69,9 @@ fn specification_checkpoint_brief_comes_from_the_typed_payload() {
         brief.judgement[0].text,
         "Keep the public signature of validate_token."
     );
-    assert!(!brief.files.is_empty());
-    assert_eq!(brief.units.len(), 1);
-    assert_eq!(brief.units[0].criteria, ["ac-1"]);
+    assert!(!visual.files.is_empty());
+    assert_eq!(visual.units.len(), 1);
+    assert_eq!(visual.units[0].criteria, ["ac-1"]);
 
     // The documents of the same checkpoint are unaffected by the brief read.
     assert!(
@@ -74,17 +88,16 @@ fn specification_checkpoint_brief_comes_from_the_typed_payload() {
     assert!(harness.service.read_checkpoint_brief(&stale).is_err());
     assert!(harness.service.read_hitl_review(&stale).is_err());
 
-    // M1 only briefs Specification; the Contract checkpoint reads as `None`.
+    // The next checkpoint briefs its own stage (M4).
     harness.approve();
     harness.wait_for_checkpoint("Contract");
     let contract = harness.service.get_hitl_checkpoint(&harness.pulse).unwrap();
-    assert!(
-        harness
-            .service
-            .read_checkpoint_brief(&contract)
-            .unwrap()
-            .is_none()
-    );
+    let contract = harness
+        .service
+        .read_checkpoint_brief(&contract)
+        .unwrap()
+        .expect("the Contract checkpoint has its own brief");
+    assert_eq!(contract.stage, PulsationStage::Contract);
 }
 
 /// ADR-024 M3: Request revision only marks the earlier candidate
@@ -207,15 +220,285 @@ fn a_revised_specification_brief_shows_what_changed_and_the_feedback() {
     assert_eq!(diff.changes, None);
     assert_eq!(diff.feedback.as_deref(), Some(FEEDBACK));
 
-    // Approving the revised candidate moves on as before; Contract has no brief.
+    // Approving the revised candidate moves on as before; the first Contract
+    // candidate has nothing to compare.
     harness.approve();
     harness.wait_for_checkpoint("Contract");
     let contract = harness.service.get_hitl_checkpoint(&harness.pulse).unwrap();
+    let contract = harness
+        .service
+        .read_checkpoint_brief(&contract)
+        .unwrap()
+        .expect("the Contract checkpoint has its own brief");
+    assert_eq!(contract.revision, None);
+}
+
+const CHECK_FIXTURE: &str = env!("CARGO_BIN_EXE_check_fixture");
+
+/// A required compile check that always passes, so later briefs carry a host
+/// receipt.
+fn enable_passing_check(harness: &Harness) {
+    harness
+        .service
+        .upsert_validation_profile(
+            &harness.project,
+            ValidationCommandProfileV1 {
+                schema_version: SchemaV1,
+                profile_id: Uuid::generate(),
+                profile_version: 1,
+                check_ref: Handle::new("fixture_compile").unwrap(),
+                kind: CheckKind::Compile,
+                required: true,
+                executable: CHECK_FIXTURE.to_owned(),
+                argv: vec!["pass".into()],
+                cwd_relative_path: ".".into(),
+                input_globs: vec!["**/*.rs".into()],
+                environment_names: vec![],
+                toolchain_identity: "fixture".into(),
+                timeout_seconds: 30,
+                max_log_bytes: 65_536,
+            },
+            true,
+        )
+        .unwrap();
+    harness
+        .service
+        .update_composition_settings(
+            &harness.project,
+            CompositionSettings {
+                enabled: true,
+                validation_enabled: true,
+                ..CompositionSettings::default()
+            },
+        )
+        .unwrap();
+}
+
+/// ADR-024 M4: Contract, Test and Integrator checkpoints of a real v4
+/// pulsation brief their own payloads, with the approved specification's
+/// objective, the host's check receipts and the files' publication state.
+/// A stage that runs again, after a revision requested here or at a later
+/// stage, is compared with its previous candidate.
+#[test]
+fn later_checkpoints_brief_their_own_payloads_with_receipts_and_publications() {
+    const OBJECTIVE: &str = "Reject expired tokens in the validator.";
+    let harness = Harness::start(|facts, _, _| completed_reply(facts));
+    enable_passing_check(&harness);
+    harness.wait_for_checkpoint("SPECIFICATION");
+    harness.approve();
+
+    harness.wait_for_checkpoint("Contract");
+    let contract = current_brief(&harness);
+    assert_eq!(contract.stage, PulsationStage::Contract);
+    assert_eq!(contract.next_stage, Some(PulsationStage::Code));
+    assert_eq!(contract.objective.as_deref(), Some(OBJECTIVE));
+    assert_eq!(
+        contract.counts,
+        [
+            "1 interface group · 1 changed",
+            "1 work unit · 1 bound to an interface"
+        ]
+    );
+    assert_eq!(
+        judgement(&contract),
+        [(JudgementKind::InterfaceChange, "validator")]
+    );
+    let StageVisual::Contract(visual) = &contract.visual else {
+        panic!("not a Contract brief");
+    };
+    assert_eq!(
+        visual.interfaces[0].signature,
+        "pub fn validate_token(expires_at: u64, now: u64) -> bool"
+    );
+    assert_eq!(visual.interfaces[0].units, ["implement_expiry"]);
+    assert_eq!(visual.units[0].interfaces, ["validator"]);
+    harness.approve();
+
+    // Test: the declared coverage, and the receipt of the check the host ran.
+    harness.wait_for_checkpoint("Test");
+    let test = current_brief(&harness);
+    assert_eq!(test.next_stage, Some(PulsationStage::Integrator));
+    assert_eq!(
+        test.counts,
+        [
+            "1 criterion · 1 authored",
+            "1 host check · 1 passed",
+            "1 test file · 1 new"
+        ]
+    );
+    assert!(test.judgement.is_empty(), "{:?}", test.judgement);
+    let StageVisual::Test(visual) = &test.visual else {
+        panic!("not a Test brief");
+    };
+    assert_eq!(visual.coverage[0].criterion_id, "ac-1");
+    assert_eq!(visual.coverage[0].tests, ["tests/auth_test.rs"]);
+    assert_eq!(visual.checks[0].check_ref, "fixture_compile");
+    assert_eq!(visual.checks[0].status, CheckStatus::Passed);
+    assert!(visual.checks[0].receipt.is_some());
+    assert_eq!(test.revision, None);
+
+    // A revision at Test runs Code and Test again; the new Test brief
+    // compares with the first and quotes the feedback.
+    request_revision(&harness, "Add a boundary test for expires_at == now.");
+    let second = wait_for_next(&harness, "Test");
+    let diff = current_brief(&harness)
+        .revision
+        .expect("Test ran again after its revision");
+    assert_eq!(
+        diff.feedback.as_deref(),
+        Some("Add a boundary test for expires_at == now.")
+    );
+    assert_eq!(
+        diff.changes,
+        Some(Vec::new()),
+        "the scripted author answered the same"
+    );
+    harness.approve();
+
+    // Integrator: verdicts, no check for this stage, files already applied.
+    harness.wait_for_checkpoint("Integrator");
+    let integrator = current_brief(&harness);
+    assert_eq!(integrator.next_stage, None);
+    assert_eq!(integrator.counts[0], "1 criterion · 1 supported");
+    assert_eq!(integrator.counts[1], "No host check for this stage");
+    assert!(integrator.judgement.is_empty());
+    let StageVisual::Integrator(visual) = &integrator.visual else {
+        panic!("not an Integrator brief");
+    };
+    assert_eq!(visual.verdicts[0].verdict, Verdict::Supported);
+    let files: Vec<(&str, PulsationStage, PublicationState)> = visual
+        .publications
+        .iter()
+        .map(|file| (file.path.as_str(), file.stage, file.state))
+        .collect();
     assert!(
-        harness
-            .service
-            .read_checkpoint_brief(&contract)
-            .unwrap()
-            .is_none()
+        files.contains(&(
+            "src/auth.rs",
+            PulsationStage::Code,
+            PublicationState::Applied
+        )),
+        "{files:?}"
+    );
+    assert!(
+        files.contains(&(
+            "tests/auth_test.rs",
+            PulsationStage::Test,
+            PublicationState::Applied
+        )),
+        "{files:?}"
+    );
+
+    // A revision requested at the Integrator targets Code. Test runs again
+    // although its last review was an approval, and is compared with it.
+    request_revision(&harness, "Name the boundary case in the report.");
+    wait_for_next(&harness, &second);
+    let diff = current_brief(&harness)
+        .revision
+        .expect("Test ran again after a later revision");
+    assert_eq!(
+        diff.feedback.as_deref(),
+        Some("Name the boundary case in the report.")
+    );
+    assert_eq!(diff.changes, Some(Vec::new()));
+}
+
+fn current_brief(harness: &Harness) -> ReviewBrief {
+    let checkpoint = harness.service.get_hitl_checkpoint(&harness.pulse).unwrap();
+    harness
+        .service
+        .read_checkpoint_brief(&checkpoint)
+        .unwrap()
+        .expect("a v4 artifact checkpoint has a brief")
+}
+
+fn judgement(brief: &ReviewBrief) -> Vec<(JudgementKind, &str)> {
+    brief
+        .judgement
+        .iter()
+        .map(|item| (item.kind, item.label.as_str()))
+        .collect()
+}
+
+fn request_revision(harness: &Harness, feedback: &str) {
+    let checkpoint = harness.service.get_hitl_checkpoint(&harness.pulse).unwrap();
+    harness
+        .service
+        .apply_hitl_decision(ApplyHitlDecisionRequest {
+            pulsation_id: harness.pulse.clone(),
+            checkpoint_id: checkpoint.checkpoint_id,
+            expected_state_version: checkpoint.state_version,
+            feedback: Some(feedback.into()),
+            decision: HitlDecision::RequestRevision,
+        })
+        .unwrap();
+}
+
+/// Waits for a waiting Test checkpoint other than `not` (a checkpoint id or
+/// a stage name for "any") and returns its id.
+fn wait_for_next(harness: &Harness, not: &str) -> String {
+    let mut found = None;
+    wait_until(&harness.service, &harness.pulse, |db| {
+        found = db
+            .query_row(
+                "SELECT id FROM checkpoints WHERE pulsation_id=?1 AND stage='Test' AND status='waiting' AND kind='artifact_review' AND id<>?2",
+                [&harness.pulse, not],
+                |r| r.get::<_, String>(0),
+            )
+            .ok();
+        found.is_some()
+    });
+    found.unwrap()
+}
+
+/// ADR-024 M4: a real stage-failure checkpoint offers exactly the decisions
+/// the host permits, each saying what it will do.
+#[test]
+fn a_contract_conflict_failure_lists_every_permitted_choice() {
+    let harness = Harness::start(|facts, ordinal, _| {
+        if facts.executor == "code_implementer" && ordinal == 4 {
+            provider_reply(json!({
+                "schemaVersion": 1, "outcome": "failed", "code": "contract_conflict",
+                "message": "The approved signature cannot express the expiry input.", "relatedRefs": []
+            }))
+        } else {
+            completed_reply(facts)
+        }
+    });
+    for stage in ["SPECIFICATION", "Contract"] {
+        harness.wait_for_checkpoint(stage);
+        harness.approve();
+    }
+    let checkpoint = harness.wait_for_failure_checkpoint();
+    let snapshot = harness
+        .service
+        .get_pulsation_runtime_snapshot(GetPulsationRuntimeSnapshotRequest {
+            project_id: harness.project.clone(),
+        })
+        .unwrap()
+        .snapshot;
+    let failure = snapshot
+        .failure_checkpoints
+        .iter()
+        .find(|failure| failure.checkpoint_id == checkpoint)
+        .expect("the snapshot lists the waiting failure");
+    let choices: Vec<(FailureDecisionKind, Option<PulsationStage>)> = failure_choices(failure)
+        .iter()
+        .map(|choice| (choice.decision, choice.target))
+        .collect();
+    assert_eq!(
+        choices,
+        [
+            (FailureDecisionKind::Revision, Some(PulsationStage::Code)),
+            (
+                FailureDecisionKind::Revision,
+                Some(PulsationStage::Specification)
+            ),
+            (
+                FailureDecisionKind::Revision,
+                Some(PulsationStage::Contract)
+            ),
+            (FailureDecisionKind::Abort, None),
+        ],
+        "a diagnosis is never retried; the approved earlier stages are targets"
     );
 }

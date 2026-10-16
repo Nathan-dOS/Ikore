@@ -71,16 +71,99 @@ struct HandoffFeedback {
     revision_feedback: Option<String>,
 }
 
-/// ADR-024 part 3. When the review before this one, at the same stage and
-/// input revision, ended in Request revision, its candidate's brief compared
-/// with this one, and the feedback this run received as the host handed it
-/// over. `None` for a stage's first candidate. A previous candidate that
-/// cannot be read or briefed gives `changes: None`; nothing is inferred.
+/// The accepted Specification payload of the checkpoint's input revision,
+/// for the briefs of the stages after it. Unreadable content counts as
+/// absent: the brief then leaves out what depends on it.
+fn approved_specification(
+    db: &Connection,
+    checkpoint_id: &str,
+) -> Result<Option<composition::recipes::StagePayloadRecord>, PersistenceServiceError> {
+    Ok(db
+        .query_row(
+            "SELECT a.content FROM artifacts a
+             JOIN checkpoints c ON c.pulsation_id=a.pulsation_id AND c.input_revision=a.input_revision
+             WHERE c.id=?1 AND a.kind=?2 AND a.acceptance='accepted'
+               AND upper(a.producer_stage)='SPECIFICATION'
+             ORDER BY a.created_at DESC,a.id LIMIT 1",
+            params![checkpoint_id, composition::recipes::STAGE_PAYLOAD_KIND],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .and_then(|content| review_brief::decode_record(&content).ok()))
+}
+
+/// The host checks of the execution that produced a checkpoint's candidate,
+/// with their latest receipts. Empty for a legacy stage.
+fn checkpoint_checks(
+    db: &Connection,
+    checkpoint_id: &str,
+) -> Result<Vec<composition::CheckSummaryV1>, PersistenceServiceError> {
+    let producer: Option<(Option<String>, Option<u64>)> = db
+        .query_row(
+            "SELECT producer_job_id,generation FROM checkpoints WHERE id=?1",
+            [checkpoint_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((Some(job), Some(generation))) = producer else {
+        return Ok(Vec::new());
+    };
+    match PersistenceService::find_execution_for_job(db, &job, generation)? {
+        Some(execution) => PersistenceService::execution_checks(db, &execution),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Files of the checkpoint's input revision that a publication concerns,
+/// with their state, for the Integrator brief.
+fn checkpoint_publications(
+    db: &Connection,
+    checkpoint_id: &str,
+) -> Result<Vec<review_brief::BriefPublication>, PersistenceServiceError> {
+    let rows = db
+        .prepare(
+            "SELECT a.relative_path,a.producer_stage,a.publication_state FROM artifacts a
+             JOIN checkpoints c ON c.pulsation_id=a.pulsation_id AND c.input_revision=a.input_revision
+             WHERE c.id=?1 AND a.acceptance IN ('accepted','candidate')
+               AND a.relative_path IS NOT NULL AND a.publication_state<>'not_required'
+             ORDER BY a.relative_path,a.created_at",
+        )?
+        .query_map([checkpoint_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(path, stage, state)| {
+            let stage = catalog::parse_stage(stage.as_deref()?)?;
+            let state = match state.as_str() {
+                "pending" => PublicationState::Pending,
+                "applying" => PublicationState::Applying,
+                "applied" => PublicationState::Applied,
+                "conflict" => PublicationState::Conflict,
+                _ => return None,
+            };
+            Some(review_brief::BriefPublication { path, stage, state })
+        })
+        .collect())
+}
+
+/// ADR-024 part 3. When an earlier review of the same stage and input
+/// revision was approved or sent back, the stage ran again after a Request
+/// revision (here or at a later stage): that candidate's brief compared with
+/// this one, and the feedback this run received as the host handed it over.
+/// `None` for a stage's first candidate. A previous candidate that cannot be
+/// read or briefed gives `changes: None`; nothing is inferred.
 fn revision_diff(
     db: &Connection,
     checkpoint_id: &str,
     current: &review_brief::ReviewBrief,
-    manifest: &crate::feature_forge::BatchManifest,
+    context: &review_brief::BriefContext<'_>,
 ) -> Result<Option<review_brief::RevisionDiff>, PersistenceServiceError> {
     let previous: Option<(String, String)> = db
         .query_row(
@@ -96,13 +179,18 @@ fn revision_diff(
     let Some((previous, status)) = previous else {
         return Ok(None);
     };
-    if status != "revision_requested" {
+    if status != "revision_requested" && status != "approved" {
         return Ok(None);
     }
+    let previous_checks = checkpoint_checks(db, &previous)?;
+    let previous_context = review_brief::BriefContext {
+        checks: &previous_checks,
+        ..*context
+    };
     let changes = stage_payload_behind(db, &previous, false)?
         .and_then(|content| review_brief::decode_record(&content).ok())
         .and_then(|record| {
-            review_brief::specification_brief(&record, manifest)
+            review_brief::stage_brief(&record, &previous_context)
                 .ok()
                 .flatten()
         })
@@ -393,9 +481,11 @@ impl PersistenceService {
 
     /// The derived brief of a still-current review checkpoint (ADR-024),
     /// built from the typed `stage_payload_v1` record of the exact candidate
-    /// output and the frozen batch, in the same snapshot as the admission
-    /// check. `None` when the stage keeps no typed payload (pipelines before
-    /// v4) or has no brief yet. Approval never depends on it.
+    /// output, the frozen batch, the approved specification, the candidate
+    /// execution's host checks and, at the Integrator, the files to publish,
+    /// all in the same snapshot as the admission check. `None` when the stage
+    /// keeps no typed payload (pipelines before v4). Approval never depends
+    /// on it.
     pub fn read_checkpoint_brief(
         &self,
         checkpoint: &HitlCheckpoint,
@@ -413,12 +503,26 @@ impl PersistenceService {
         };
         let record = review_brief::decode_record(&content)
             .map_err(|error| invalid(format!("The stage payload is unreadable: {error}")))?;
-        let Some(mut brief) =
-            review_brief::specification_brief(&record, &manifest).map_err(invalid)?
-        else {
+        let id = checkpoint.checkpoint_id.as_str();
+        let specification = match record.stage {
+            composition::Stage::Specification => None,
+            _ => approved_specification(&tx, id)?,
+        };
+        let checks = checkpoint_checks(&tx, id)?;
+        let publications = match record.stage {
+            composition::Stage::Integrator => checkpoint_publications(&tx, id)?,
+            _ => Vec::new(),
+        };
+        let context = review_brief::BriefContext {
+            manifest: &manifest,
+            specification: specification.as_ref(),
+            checks: &checks,
+            publications: &publications,
+        };
+        let Some(mut brief) = review_brief::stage_brief(&record, &context).map_err(invalid)? else {
             return Ok(None);
         };
-        brief.revision = revision_diff(&tx, &checkpoint.checkpoint_id, &brief, &manifest)?;
+        brief.revision = revision_diff(&tx, id, &brief, &context)?;
         Ok(Some(brief))
     }
 
