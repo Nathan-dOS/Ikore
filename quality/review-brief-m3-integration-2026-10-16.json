@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "pathSanitization": "2026-10-17: personal checkout prefix replaced with <repo>; original validation fields and source identifiers retained.",
   "validatedAt": "2026-10-16T08:51:33.0529084Z",
   "clientDate": "2026-10-16",
   "clientTimezone": "America/Sao_Paulo",
@@ -1037,7 +1038,7 @@
       "durationSeconds": 4.9799077
     },
     {
-      "command": "cargo run --locked --offline -p hvc-test-support --example review_brief_fixture -- <repo>-test-workflow\\target\\m3-final-qa\\revised-fixture-8c5382ecc4ee40ef86c2927655e995ec --revised",
+      "command": "cargo run --locked --offline -p hvc-test-support --example review_brief_fixture -- <repo>\\target\\m3-final-qa\\revised-fixture-8c5382ecc4ee40ef86c2927655e995ec --revised",
       "exitCode": 0,
       "durationSeconds": 8.6253945
     }
@@ -1456,10 +1457,10 @@
     "command": "cargo run --locked --offline -p hvc-test-support --example review_brief_fixture -- NEW_DIRECTORY",
     "exitCode": 0,
     "durationSeconds": 12.906972,
-    "directory": "<repo>-test-workflow\\target\\m3-final-qa\\review-fixture-f83bcd2d87d248fb939be8ad7e486aa5"
+    "directory": "<repo>\\target\\m3-final-qa\\review-fixture-f83bcd2d87d248fb939be8ad7e486aa5"
   },
   "revisedFixture": {
-    "command": "cargo run --locked --offline -p hvc-test-support --example review_brief_fixture -- <repo>-test-workflow\\target\\m3-final-qa\\revised-fixture-8c5382ecc4ee40ef86c2927655e995ec --revised",
+    "command": "cargo run --locked --offline -p hvc-test-support --example review_brief_fixture -- <repo>\\target\\m3-final-qa\\revised-fixture-8c5382ecc4ee40ef86c2927655e995ec --revised",
     "exitCode": 0,
     "durationSeconds": 8.6253945
   },

@@ -1,5 +1,7 @@
 # Focused test workflow — Windows validation, 2026-10-15
 
+Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
+
 Base: ADR-024 M1 `7ee6ef58273c0c379082020567aa015a09dd150d`, implemented and validated in the separate `HARD-VC-test-workflow` checkout on `chore/test-workflow`. Source hashes and full measurements are preserved in [the JSON snapshot](test-workflow-validation-2026-10-15.json). The Git commit introducing these files identifies the delivered patch.
 
 ## Delivered behavior

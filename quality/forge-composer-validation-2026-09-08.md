@@ -1,5 +1,7 @@
 # Forge Incubation composer and header validation
 
+Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
+
 Date: 2026-09-08
 
 ## Scope

@@ -4,6 +4,30 @@ Thumbs.db
 
 # Rust
 target/
+**/*.rs.bk
+.ci-cache/
 
 # Environment
 .env
+.env.*
+!.env.example
+
+# Local databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Local agent and editor state (the shared .agent/ skill stays tracked)
+.claude/
+.gemini/
+.vscode/
+.idea/
+
+# Operating system metadata
+desktop.ini
+
+# Archived design assets; keep new prototypes in the private design archive
+/Interfaces/
+/Icone-Logo.png

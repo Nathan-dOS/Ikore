@@ -1,6 +1,8 @@
 # M5 — smoke visual GPUI
 
-Data: 2026-08-28/29. Branch `gpui-migration`. Implementação visual e correções: `3a2e2f0`, `d5025c5`, `16a1706`. Complemento ao [checkpoint M5](C:/Dev/Hard-Vibe-Code/quality/pulsation-sync-m5.md).
+Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
+
+Data: 2026-08-28/29. Branch `gpui-migration`. Implementação visual e correções: `3a2e2f0`, `d5025c5`, `16a1706`. Complemento ao [checkpoint M5](../quality/pulsation-sync-m5.md).
 
 Status: **smoke visual concluído; G5 permanece aberto**. A evidência aprova os fluxos exercitados, não autoriza rollout, distribuição ou onboarding Brownfield.
 

@@ -2,7 +2,7 @@
 
 Implementation date: 2026-09-05
 Validation completed: 2026-09-06
-Design: ADR-015, in the separate Cerebro documentation repository.
+Design: [ADR-015 public summary](../docs/adr/README.md#adr-015-navigation).
 
 ## Delivered behavior
 

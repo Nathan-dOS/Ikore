@@ -34,7 +34,7 @@ Diferente dos quatro backends existentes, o Grok CLI não tinha nenhuma fixture,
 - `CliBackend::Grok` no runtime de terminais (mesmo tratamento dos cinco backends existentes: descoberta, auth probe, versão, execução automática de pipeline, execução manual, FreeForm, resume nativo por ID, catálogo de modelos).
 - `xai` como `ProviderProfile` do modo API (protocolo OpenAI-compatible, mesmo caminho genérico de Groq/DeepSeek/Mistral/OpenRouter).
 - Migração de banco widening todo `CHECK(backend IN (...))`/`CHECK(cli_backend IN (...))` existente.
-- Fixtures versionadas, threat-model e ADR do cérebro atualizados.
+- Fixtures versionadas, threat-model e ADR público atualizados.
 
 ### Não incluído nesta entrega
 
@@ -176,7 +176,7 @@ Cada tabela reconstruída preserva `PRAGMA foreign_key_check = 0` e testes a par
 
 ### Bloco G8 — documentação
 - Ampliar [cli-threat-model.md](cli-threat-model.md) com uma seção datada `## Grok CLI — prompt materializado em arquivo temporário — <data>`, cobrindo o risco novo da decisão #1 (nunca criar uma tabela de ameaças nova — seguindo a mesma convenção de emenda datada já usada nesse arquivo em 2026-09-09/2026-09-10).
-- No cérebro (`<home>\Documents\Nathan\HardVibeCode\aplicativo\Projeto Hard-Code`), emendar o ADR que já documenta os backends CLI/API (a localizar no Bloco G0 — provavelmente o mesmo ADR estendido pelo ADR-022/redesign de shell) com uma seção datada, em vez de abrir ADR novo, seguindo a convenção já confirmada pelo usuário.
+- Emendar a documentação pública dos backends CLI/API em [docs/adr/](../docs/adr/README.md#adr-010-cli-runtime) com uma seção datada, em vez de abrir ADR novo, seguindo a convenção já confirmada pelo usuário.
 
 ### Bloco G9 — gate final
 Mesmos comandos do gate CLI-G original:
@@ -212,7 +212,7 @@ mais: smoke opt-in com a conta real já autenticada nesta máquina (start/resume
 | 5 | G5 | G2, G4 | catálogo declarativo CLI |
 | 6 | G6 | item em aberto 4 resolvido | provedor xAI no modo API |
 | 7 | G7 | G0 | UI |
-| 8 | G8 | G1–G7 | threat model + ADR do cérebro |
+| 8 | G8 | G1–G7 | threat model + ADR público |
 | 9 | G9 | tudo | gate final |
 
 ## Estratégia de commits sugerida
@@ -224,6 +224,6 @@ mais: smoke opt-in com a conta real já autenticada nesta máquina (start/resume
 5. `feat(terminals): add grok to the declarative cli model catalog`
 6. `feat(llm): register xai as an openai-compatible provider profile`
 7. `feat(ui): surface grok in backend selection and agent cards`
-8. `docs(cli): extend threat model and cérebro adr with the grok integration`
+8. `docs(cli): extend threat model and public adr with the grok integration`
 
 Commits pequenos o bastante para revisão e bisect, como já é a prática deste projeto.

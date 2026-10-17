@@ -4,7 +4,7 @@ description: >-
   Guia o fluxo de trabalho em 3 fases para planejamento, implementacao, execucao
   e documentacao de testes automatizados em qualquer projeto. Exige analise previa
   e aprovacao do plano de testes antes da escrita de codigo, execucao com 100% de
-  sucesso e atualizacao do repositorio cerebro ou base de conhecimento ao final.
+  sucesso e atualizacao da documentacao publica ou base de conhecimento ao final.
 ---
 
 # Test Quality Lifecycle
@@ -24,7 +24,7 @@ O fluxo de testes e estritamente dividido em 3 fases sequenciais:
 [ Fase 2: Implementacao e Execucao ]
                │
                ▼ (100% dos Testes Passando)
-[ Fase 3: Documentacao e Atualizacao do Cerebro ]
+[ Fase 3: Documentacao e Atualizacao da Base de Conhecimento ]
 ```
 
 ---
@@ -80,14 +80,17 @@ Apos a aprovacao do plano, inicia-se a construcao e validacao dos testes.
 
 ---
 
-## Fase 3: Documentacao e Atualizacao do Repositorio Cerebro
+## Fase 3: Documentacao e Atualizacao da Base de Conhecimento
 
 Apos a suite ser executada com 100% de sucesso, a base de conhecimento do projeto deve ser atualizada.
 
 ### 3.1 Identificacao da Base de Conhecimento
-Verificar se o projeto possui um repositorio cerebro, vault de documentacao, pasta de arquitetura/qualidade ou documentacao viva de testes.
 
-### 3.2 Atualizacoes Obrigatorias (Se Existir Repositorio Cerebro / Docs)
+Neste repositorio, use [docs/testing.md](../../../docs/testing.md) para o fluxo publico e [quality/README.md](../../../quality/README.md) para evidencias datadas.
+
+Verificar se o projeto possui um diretorio `docs/`, vault de documentacao, pasta de arquitetura/qualidade ou documentacao viva de testes.
+
+### 3.2 Atualizacoes Obrigatorias (Se Existir Base de Conhecimento / Docs)
 1. **Inventario de Testes**:
    - Atualizar a contagem total de testes automatizados por runner e modulo.
    - Registrar os nomes dos novos testes e suites adicionados.
@@ -98,7 +101,7 @@ Verificar se o projeto possui um repositorio cerebro, vault de documentacao, pas
    - Mover os itens concluidos nesta iteracao para a secao de entregas.
    - Registrar novos gaps, cenarios de melhoria ou testes futuros identificados durante a implementacao.
 
-### 3.3 Relatorio de Conclusao (Se Nao Existir Repositorio Cerebro)
+### 3.3 Relatorio de Conclusao (Se Nao Existir Base de Conhecimento)
 Caso o projeto nao possua uma estrutura formal de documentacao viva:
 - Gerar um resumo tecnico direto contendo:
   - Total de testes criados e executados.

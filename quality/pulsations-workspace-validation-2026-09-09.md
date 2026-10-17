@@ -1,5 +1,7 @@
 # Pulsations review, status groups, and Workspace columns
 
+Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
+
 Date: 2026-09-09
 
 ## Behavior and architecture

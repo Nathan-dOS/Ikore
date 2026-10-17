@@ -5,6 +5,7 @@
 
 # Cargo & Rust build artifacts
 target/
+.ci-cache/
 **/*.rs.bk
 Cargo.lock.bk
 
@@ -15,8 +16,8 @@ Cargo.lock.bk
 
 # Environment files and credentials
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # Databases and local runtime states
 *.db

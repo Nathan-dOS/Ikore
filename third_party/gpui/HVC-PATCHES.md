@@ -48,7 +48,7 @@ hit also requires it to match. Text without `text_overflow` keeps
 Validation: `cargo test -p hvc-ui --lib` and a physical smoke on Windows 11
 (isolated profile) where the Workspace tree shows `contract-templa…` at
 1280×800 instead of a clipped name. See the 2026-09-24 "responsiveness and
-workspace/agents/vault/forge polish" report in the Cérebro.
+workspace/agents/vault/forge polish" report in the maintainers' design archive; see the public [historical evidence context](../../quality/README.md#historical-design-references).
 
 Follow-up (2026-09-25): with truncation now recomputed per width, the measure
 closure truncated the element's captured `runs` in place, and Taffy calls it
@@ -83,7 +83,7 @@ Validation: `cargo test -p hvc-ui --lib`
 (`keyboard_focus_presses_once_and_opens_tooltips_under_the_control`,
 `tab_moves_focus_through_controls_and_stays_inside_settings`) and a physical
 smoke on Windows 11 (isolated profile). See the 2026-09-25 "Home dashboard,
-keyboard navigation and icon controls" report in the Cérebro.
+keyboard navigation and icon controls" report in the maintainers' design archive; see the public [historical evidence context](../../quality/README.md#historical-design-references).
 
 ## Integridade
 

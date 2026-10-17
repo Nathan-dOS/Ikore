@@ -50,4 +50,4 @@ O gate técnico passou, mas `distributionAllowed` permanece `false` pela políti
 
 Ficam fora deste MVP: P3/few-shot cache, P4/reranking por prompt, aplicação automática, remoção de relações, alteração de `risk`/`status` e reescrita autônoma de notas. Relatórios Learning continuam não normativos e excluídos do retrieval.
 
-Decisão arquitetural: [ADR-008](<home>/Documents/Nathan/HardVibeCode/aplicativo/Projeto%20Hard-Code/Documentos/02-Arquitetura/ADRs/ADR-008-Telemetria-de-Contexto-e-Refinamento-HITL-do-Grafo.md).
+Decisão arquitetural: [ADR-008 — resumo público](../docs/adr/README.md#adr-008-context-telemetry).

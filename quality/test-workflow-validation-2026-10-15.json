@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "pathSanitization": "2026-10-17: personal checkout prefix replaced with <repo>; original validation fields and source identifiers retained.",
   "validatedAt": "2026-10-15T20:26:47.2265338Z",
   "baseRevision": "7ee6ef58273c0c379082020567aa015a09dd150d",
   "sourceIdentification": "SHA-256 identifies bytes in the validation worktree. Git blob IDs identify normalized source across CRLF/LF checkouts; the containing Git commit preserves this report.",
@@ -53,7 +54,7 @@
     "cargoAudit": "0.22.2",
     "cargoAuditReportedBuildSeconds": 137,
     "cargoAuditInstallProfile": "dev, no-default-features",
-    "target": "<repo>-test-workflow\\target"
+    "target": "<repo>\\target"
   },
   "commands": {
     "coldBuild": "cargo test --workspace --locked --offline --no-run --timings",

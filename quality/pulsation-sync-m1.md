@@ -1,5 +1,7 @@
 # Sincronização de pulsações — checkpoint M1
 
+Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
+
 Data: 2026-08-27. Repositório: `C:\Dev\Hard-Vibe-Code`, branch `gpui-migration`.
 Base: `429805f` (M0). Implementação M1: `b084f18`. Decisão: ADR-007 e REGRAS RSP-01–22 no cérebro.
 

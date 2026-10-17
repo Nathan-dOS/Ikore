@@ -1,5 +1,7 @@
 # Main branch integration — 2026-10-17
 
+Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
+
 ## Scope and provenance
 
 This integration joins `main` at `33373a560026c8cda296b3d987efdcef51416bbc`

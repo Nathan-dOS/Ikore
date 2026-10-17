@@ -211,9 +211,9 @@ impl CompositionError {
 
 #[cfg(test)]
 mod fixtures {
-    //! The documentation registry copied verbatim from the Cérebro
-    //! (`Documentos/02-Arquitetura/Contracts/`). The SHA-256 of each copy is
-    //! recorded in the Cérebro validation report for this milestone.
+    //! Versioned schema and examples for the stage-composition contract.
+    //! See `docs/adr/022-stage-composition.md` for the public contract map.
+    //! Historical fixture digests remain in the original validation records.
     pub const SCHEMA: &str = include_str!("fixtures/stage-composition-v1.schema.json");
     pub const EXAMPLES: &str = include_str!("fixtures/stage-composition-v1.examples.json");
 

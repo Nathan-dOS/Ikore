@@ -1,5 +1,7 @@
 # UI refresh, modal dismissal and Companion composer — 2026-09-07
 
+Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
+
 ## Findings and implementation
 
 - Every Pulsations runtime snapshot previously called `refresh_forge` while Tasks or Feature Forge was visible. The 1.2-second poll set the same busy flag as mutations and inserted an `Atualizando` row into normal layout. Background refresh now retains rendered data, has its own in-flight state and never inserts that row.

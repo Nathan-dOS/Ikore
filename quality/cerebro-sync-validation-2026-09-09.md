@@ -1,5 +1,7 @@
 # Cerebro synchronization and checkpoint validation — 2026-09-09
 
+Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
+
 ## Scope
 
 Baseline: HVC `dev:f91f7d1c3ee1762f48831efacfaed32b73c96e6d`; Cerebro `main:df19cab`.

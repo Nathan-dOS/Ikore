@@ -1,5 +1,7 @@
 # Threat model — runtime CLI multiagente
 
+Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
+
 **Revisão:** 2026-09-03  
 **Escopo:** Codex, Claude Code, Gemini CLI, OpenCode, Antigravity CLI e Custom no Windows x64<br>
 **Estado:** implementado e revisado para o gate CLI-G3

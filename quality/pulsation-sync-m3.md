@@ -1,5 +1,7 @@
 # Sincronização de pulsações — checkpoint M3
 
+Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
+
 Data: 2026-08-28. Repositório: `C:\Dev\Hard-Vibe-Code`, branch `gpui-migration`.
 Base: `66abe0d` (checkpoint M2). Implementação: `031420d`.
 Decisão: ADR-007 e REGRAS de sincronização do cérebro do projeto.

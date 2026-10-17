@@ -1,5 +1,7 @@
 # Sincronização de pulsações — validação M5
 
+Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
+
 Data: 2026-08-28. Branch `gpui-migration`. Base M4: `c627837`. Implementação: `8167313`.
 ADR-007 / REGRAS de sincronização do cérebro do projeto.
 
@@ -76,7 +78,7 @@ Os nomes abaixo são testes executáveis; caminhos sob `crates/hvc-core/src/orch
 | `cargo build --release --locked --offline -p hvc-app` | Aprovado; aviso preexistente de futura incompatibilidade `proc-macro-error2 2.0.1` |
 | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/audit-supply-chain.ps1` | 549 pacotes, zero licenças negadas/metadata ausente/source review; gate técnico aprovado. Distribuição permanece bloqueada por `zed-55470`. |
 | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/audit-advisories.ps1 -OutputDirectory target/m5/advisories` | Zero vulnerabilidades; avisos informativos preexistentes 10 unmaintained, 2 unsound, 1 yanked. RustSec `6420e39260b3d771b049954cf5d52b57e2118da4`. |
-| [Smoke visual GPUI](C:/Dev/Hard-Vibe-Code/quality/pulsation-smoke-m5.md) | **Aprovado nos fluxos exercitados**: revisão/perguntas/restart, FIFO/cancelamento, artifacts/HITL, Done/Learning, conflito/reconciliação, isolamento de projeto e shutdown/restauração. O script Win32 padronizado não foi combinado com Computer Use e permanece sem evidência nesta rodada. |
+| [Smoke visual GPUI](../quality/pulsation-smoke-m5.md) | **Aprovado nos fluxos exercitados**: revisão/perguntas/restart, FIFO/cancelamento, artifacts/HITL, Done/Learning, conflito/reconciliação, isolamento de projeto e shutdown/restauração. O script Win32 padronizado não foi combinado com Computer Use e permanece sem evidência nesta rodada. |
 
 Ambiente: Windows `10.0.26200.0`, x86_64; Intel Core Ultra 7 258V, 8 núcleos/8 processadores lógicos. Rust detalhado e modo release registrados no JSON comparativo. SHA-256 do executável GPUI usado após a correção final: `ff623200fadf47d2ba7a56160470bea3a6df09b37d3789109725073d4043806b`.
 
@@ -100,7 +102,7 @@ Uma retomada após expiração pode usar `--resume`, mas o auxiliar recusa qualq
 
 ### Resultados medidos
 
-[Dados brutos e metadados](C:/Dev/Hard-Vibe-Code/quality/pulsation-benchmark-m5.json), código `8167313feb7796ef873b5d11a828d3a584280530`, working diff de código vazio, Rust 1.98.0 / LLVM 22.1.8, release. **78 execuções**: seis aquecimentos excluídos + 72 medidas. Hash único dos 128 arquivos: `afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf`. Nenhuma compilação ou outra instância HVC estava concorrendo com a medição; o desktop e seus serviços não foram isolados como um laboratório.
+[Dados brutos e metadados](../quality/pulsation-benchmark-m5.json), código `8167313feb7796ef873b5d11a828d3a584280530`, working diff de código vazio, Rust 1.98.0 / LLVM 22.1.8, release. **78 execuções**: seis aquecimentos excluídos + 72 medidas. Hash único dos 128 arquivos: `afeee15ddae5cd9ed914050bd92c209e2a931520c2724463d7464afcd6ca02cf`. Nenhuma compilação ou outra instância HVC estava concorrendo com a medição; o desktop e seus serviços não foram isolados como um laboratório.
 
 Tempos em milissegundos, base observada → Specification aceita; 12 observações por célula/posição:
 

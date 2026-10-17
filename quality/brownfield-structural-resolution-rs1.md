@@ -8,7 +8,7 @@ O gate RS1 valida o resolvedor determinístico e persistido de relações Rust, 
 
 O pipeline de background agora é `brownfield_map → brownfield_resolve → brownfield_enrich`. A resolução é cercada por consentimento, geração, cancelamento e `resolution_context`; pode retomar por cursor após 20.000 arestas ou dois segundos. Mudanças de código reextraem somente a fonte observada e reavaliam o grafo pelo cache. Mudanças de `Cargo.toml`, `package.json`, `tsconfig.json` e `jsconfig.json` invalidam somente a resolução.
 
-O relatório integral e reproduzível está em [brownfield-structural-resolution-rs1.json](C:/Dev/Hard-Vibe-Code/quality/brownfield-structural-resolution-rs1.json). Comando:
+O relatório integral e reproduzível está em [brownfield-structural-resolution-rs1.json](../quality/brownfield-structural-resolution-rs1.json). Comando:
 
 ```powershell
 cargo run --release -p hvc-test-support --example brownfield_benchmark -- quality/brownfield-structural-resolution-rs1.json 5

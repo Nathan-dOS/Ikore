@@ -1,5 +1,7 @@
 # Companion and text input correction — 2026-09-07
 
+Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
+
 ## Reproduced problems
 
 - Codex CLI 0.153.4 rejected the screenshot's `gpt-5.2-codex` model for the current ChatGPT account. Its error and `turn.failed` JSONL events were on stdout with empty stderr. HVC discarded those events when constructing the error and showed only `Codex CLI exited with status Some(1)`.

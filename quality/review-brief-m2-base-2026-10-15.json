@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "pathSanitization": "2026-10-17: personal checkout prefix replaced with <repo>; original validation fields and source identifiers retained.",
   "validatedAt": "2026-10-16T01:29:41.4398932Z",
   "localParent": "9eef69d6ea481e52b86bd0a73456236be4d58fb8",
   "remoteParent": "62d58f03cb7a720a46524b6347917618e4479e7f",
@@ -1108,7 +1109,7 @@
     "command": "cargo run --locked --offline -p hvc-test-support --example review_brief_fixture -- NEW_DIRECTORY",
     "exitCode": 0,
     "durationSeconds": 58.7840712,
-    "directory": "<repo>-test-workflow\\target\\m2-base-qa\\review-fixture-4099789b7ef94e4eb03dfb21c5ec6ebe"
+    "directory": "<repo>\\target\\m2-base-qa\\review-fixture-4099789b7ef94e4eb03dfb21c5ec6ebe"
   },
   "audit": {
     "command": "cargo audit --json --no-fetch",

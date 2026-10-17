@@ -8,7 +8,7 @@ BF5 torna a cobertura brownfield mensurável e auditável sem acrescentar migrat
 
 A documentação é contada por fonte elegível distinta, não por quantidade de notas. Cada fonte ocupa um único estado, com precedência conservadora `stale > validated > proposed`. Alterações humanas no frontmatter `mapping-status` de uma nota Component agora sincronizam o estado persistido; exclusão da nota a marca `stale`. A UI mostra porcentagem, barra, numerador/denominador, estados de extração, estados documentais e fontes ignoradas no painel de Pulsações.
 
-O benchmark BF5 usa o AppCore, worker, watcher e SQLite reais com provider loopback, repositórios temporários equivalentes e ordem contrabalanceada. O artefato integral está em [brownfield-benchmark-bf5.json](C:/Dev/Hard-Vibe-Code/quality/brownfield-benchmark-bf5.json), e pode ser regenerado por:
+O benchmark BF5 usa o AppCore, worker, watcher e SQLite reais com provider loopback, repositórios temporários equivalentes e ordem contrabalanceada. O artefato integral está em [brownfield-benchmark-bf5.json](../quality/brownfield-benchmark-bf5.json), e pode ser regenerado por:
 
 ```powershell
 cargo run --release -p hvc-test-support --example brownfield_benchmark -- quality/brownfield-benchmark-bf5.json 5

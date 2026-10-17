@@ -1,5 +1,7 @@
 # Etapa 7 — corte definitivo para GPUI
 
+Design references: [public summaries](../docs/adr/README.md); [historical archive context](README.md#historical-design-references).
+
 **Data:** 2026-08-26  
 **Plataforma do primeiro corte:** Windows x64  
 **Estado:** aplicação exclusivamente GPUI/Rust; distribuição externa ainda bloqueada

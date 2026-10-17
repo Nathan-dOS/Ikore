@@ -8,13 +8,13 @@ Este checkpoint entrega contratos, políticas puras e fixtures. **Não ativa a s
 
 | Entrega | Evidência |
 |---|---|
-| Outcomes, revisão humana, configuração, preparação, publicação e snapshot tipados | [contracts.rs](C:/Dev/Hard-Vibe-Code/crates/hvc-core/src/orchestration/contracts.rs) |
-| Captura imutável, SHA-256, caminhos relativos, evidências e contratos de coleta/extração | [context.rs](C:/Dev/Hard-Vibe-Code/crates/hvc-core/src/orchestration/context.rs) |
-| Validação de geração/revisão, checkpoints, respostas, handoff e decisão de replay | [policy.rs](C:/Dev/Hard-Vibe-Code/crates/hvc-core/src/orchestration/policy.rs) |
-| 30 testes unitários novos de contratos | [tests.rs](C:/Dev/Hard-Vibe-Code/crates/hvc-core/src/orchestration/tests.rs) |
-| Bancos V9 isolados, projetos sem vault e estados legados | [pulsation_fixture.rs](C:/Dev/Hard-Vibe-Code/crates/hvc-test-support/src/pulsation_fixture.rs) |
-| Provedor simulado controlável por semáforos | [controlled_gateway.rs](C:/Dev/Hard-Vibe-Code/crates/hvc-test-support/src/controlled_gateway.rs) |
-| 8 testes novos de integração/caracterização | [orchestration_baseline.rs](C:/Dev/Hard-Vibe-Code/crates/hvc-test-support/tests/orchestration_baseline.rs) |
+| Outcomes, revisão humana, configuração, preparação, publicação e snapshot tipados | [contracts.rs](../crates/hvc-core/src/orchestration/contracts.rs) |
+| Captura imutável, SHA-256, caminhos relativos, evidências e contratos de coleta/extração | [context.rs](../crates/hvc-core/src/orchestration/context.rs) |
+| Validação de geração/revisão, checkpoints, respostas, handoff e decisão de replay | [policy.rs](../crates/hvc-core/src/orchestration/policy.rs) |
+| 30 testes unitários novos de contratos | [tests.rs](../crates/hvc-core/src/orchestration/tests.rs) |
+| Bancos V9 isolados, projetos sem vault e estados legados | [pulsation_fixture.rs](../crates/hvc-test-support/src/pulsation_fixture.rs) |
+| Provedor simulado controlável por semáforos | [controlled_gateway.rs](../crates/hvc-test-support/src/controlled_gateway.rs) |
+| 8 testes novos de integração/caracterização | [orchestration_baseline.rs](../crates/hvc-test-support/tests/orchestration_baseline.rs) |
 
 O módulo público `hvc_core::orchestration` não possui worker nem publicador. As funções de política retornam decisões/erros; quem as aplicar em M1 deverá fazê-lo dentro da transação/coordenador correspondente. Serde é usado nos contratos persistíveis e nos testes, não para criar uma API JSON/IPC.
 
@@ -67,7 +67,7 @@ IDs/revisões vindos de banco devem ser convertidos com checagem de faixa ao mat
 
 ## Achado de compatibilidade para M1
 
-O [parser legado de artifacts](C:/Dev/Hard-Vibe-Code/crates/hvc-core/src/agent_runtime.rs:922) aplica `trim()` ao conteúdo, enquanto `structured_output` mantém o texto original. O novo teste de caracterização comprova a diferença usando uma quebra de linha final.
+O [parser legado de artifacts](../crates/hvc-core/src/agent_runtime.rs#L922) aplica `trim()` ao conteúdo, enquanto `structured_output` mantém o texto original. O novo teste de caracterização comprova a diferença usando uma quebra de linha final.
 
 Ao migrar conteúdo durável/hashes, M1 deve distinguir bytes gerados dos bytes aceitos/publicados pelo legado. Não calcular o hash de um texto e usar outro no replay, nem reescrever automaticamente um arquivo existente para “normalizar” a diferença. Este marco não modificou o parser.
 

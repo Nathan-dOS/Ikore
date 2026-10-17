@@ -2,6 +2,9 @@
 
 Desktop Orchestrator nativo em GPUI/Rust para Windows x64.
 
+Documentação: [arquitetura](docs/architecture.md), [testes](docs/testing.md),
+[decisões de design](docs/adr/README.md) e [evidências de qualidade](quality/README.md).
+
 ## Estado atual
 
 - `hvc-app` é o único binário desktop e gera `hard-vibe-code.exe`.
@@ -133,7 +136,7 @@ Pulsations groups executions by status, with Running first and initially expande
 
 The existing session schema persists the active view. The corresponding header tab is derived during restoration; other tab histories and internal sections are kept in memory.
 
-Implementation evidence: [Tabs UI validation](quality/tabs-ui-validation-2026-09-05.md). The accepted design is ADR-015 in the separate Cerebro documentation repository.
+Implementation evidence: [Tabs UI validation](quality/tabs-ui-validation-2026-09-05.md). See the public [ADR-015 summary](docs/adr/README.md#adr-015-navigation).
 
 Review, status groups, and resizing evidence: [Pulsations and Workspace validation](quality/pulsations-workspace-validation-2026-09-09.md), extending the Review placement defined in ADR-017.
 
