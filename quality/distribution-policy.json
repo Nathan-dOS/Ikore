@@ -3,15 +3,32 @@
   "allowedRegistrySources": [
     "registry+https://github.com/rust-lang/crates.io-index"
   ],
+  "publicationScopes": {
+    "source": {
+      "status": "approved",
+      "decidedAt": "2026-10-17",
+      "license": "Apache-2.0",
+      "note": "Publishing the Hard Vibe Code source repository under Apache-2.0 is approved. The pinned Windows dependency graph must keep passing scripts/audit-supply-chain.ps1 without denied licenses."
+    },
+    "binary": {
+      "status": "blocked",
+      "decidedAt": "2026-10-17",
+      "blockedBy": [
+        "zed-55470"
+      ],
+      "note": "Binary releases, installers and downloadable CI artifacts of hard-vibe-code.exe stay blocked until every distribution_blocking legal blocker is resolved or approved."
+    }
+  },
   "legalBlockers": [
     {
       "id": "zed-55470",
-      "title": "GPUI e dependências transitivas GPL relatadas no upstream",
+      "title": "GPL transitive dependencies reported upstream for GPUI",
       "url": "https://github.com/zed-industries/zed/issues/55470",
       "status": "open",
       "verifiedAt": "2026-08-26",
       "disposition": "distribution_blocking",
-      "note": "O grafo Windows fixado em gpui 0.2.2 não contém sum_tree/ztracing/zlog, mas a política aprovada mantém a distribuição bloqueada enquanto o issue upstream permanecer aberto ou sem decisão jurídica explícita."
+      "scope": "binary",
+      "note": "The Windows graph pinned to gpui 0.2.2 does not contain sum_tree/ztracing/zlog, but the approved policy keeps binary distribution blocked while the upstream issue stays open or lacks an explicit legal decision. Source publication is governed by publicationScopes.source."
     }
   ]
 }

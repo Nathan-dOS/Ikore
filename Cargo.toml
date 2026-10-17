@@ -13,7 +13,7 @@ default-members = ["crates/hvc-app"]
 version = "0.1.0"
 edition = "2024"
 authors = ["Nathan"]
-license = "Proprietary"
+license = "Apache-2.0"
 
 [workspace.dependencies]
 anyhow = "1"
