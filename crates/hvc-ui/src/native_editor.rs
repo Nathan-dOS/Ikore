@@ -611,12 +611,9 @@ impl Element for EditorElement {
                 strikethrough: None,
             };
             lines.push((
-                window.text_system().shape_line(
-                    display.into(),
-                    font_size,
-                    &[run],
-                    None,
-                ),
+                window
+                    .text_system()
+                    .shape_line(display.into(), font_size, &[run], None),
                 first_line_y + line_height * visible_index,
             ));
         }

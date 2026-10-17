@@ -53,12 +53,16 @@ pub fn check_stages(
             }
             _ => check_api(db, llm, project_id, role, stage)?,
         };
-        issues.extend(found.into_iter().map(|(blocking, detail)| StagePreflightIssue {
-            stage: stage.to_owned(),
-            role: role.as_str().to_owned(),
-            blocking,
-            message: format!("{label} ({}): {detail}", role.as_str()),
-        }));
+        issues.extend(
+            found
+                .into_iter()
+                .map(|(blocking, detail)| StagePreflightIssue {
+                    stage: stage.to_owned(),
+                    role: role.as_str().to_owned(),
+                    blocking,
+                    message: format!("{label} ({}): {detail}", role.as_str()),
+                }),
+        );
     }
     Ok(issues)
 }

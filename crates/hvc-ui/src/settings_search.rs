@@ -550,6 +550,14 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         "compile tests checks cargo",
     ),
     entry(
+        "composition-visualizer",
+        P::Composition,
+        "Review brief",
+        "Visualizer notes",
+        "An agent adds a headline and up to three notes to each checkpoint's Brief, citing only what the host delivered. Off by default; the Brief is complete without it.",
+        "visualizer brief review notes agent",
+    ),
+    entry(
         "composition-checks",
         P::Composition,
         "Host validation",

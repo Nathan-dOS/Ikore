@@ -449,7 +449,11 @@ async fn claude_sonnet_generation_rejects_haiku_output_and_terminates_the_proces
         )
         .unwrap();
     }
-    std::fs::write(binaries.path().join("claude.fixture-state"), "sonnet_mismatch").unwrap();
+    std::fs::write(
+        binaries.path().join("claude.fixture-state"),
+        "sonnet_mismatch",
+    )
+    .unwrap();
     let marker = binaries.path().join("claude.fixture-after-mismatch");
     let original_path = std::env::var_os("PATH");
     let _restore = PathRestore(original_path.clone());
@@ -623,7 +627,11 @@ async fn claude_run_past_its_output_ceiling_is_killed_and_its_partial_usage_reco
         )
         .unwrap();
     }
-    std::fs::write(binaries.path().join("claude.fixture-state"), "output_runaway").unwrap();
+    std::fs::write(
+        binaries.path().join("claude.fixture-state"),
+        "output_runaway",
+    )
+    .unwrap();
     let marker = binaries.path().join("claude.fixture-after-mismatch");
     let original_path = std::env::var_os("PATH");
     let _restore = PathRestore(original_path.clone());
@@ -686,7 +694,10 @@ async fn claude_run_past_its_output_ceiling_is_killed_and_its_partial_usage_reco
         .unwrap();
     assert_eq!((output, quality.as_str()), (40_000, "partial"));
     tokio::time::sleep(Duration::from_secs(4)).await;
-    assert!(!marker.exists(), "the host must kill the process before it finishes");
+    assert!(
+        !marker.exists(),
+        "the host must kill the process before it finishes"
+    );
 }
 
 /// ADR-022/025 live qualification: one synthetic request through the real
@@ -718,7 +729,10 @@ async fn authenticated_claude_model_identity_smoke() {
         })
         .unwrap();
 
-    let mut probe = request(&harness.project_id, Instant::now() + Duration::from_secs(120));
+    let mut probe = request(
+        &harness.project_id,
+        Instant::now() + Duration::from_secs(120),
+    );
     probe.user_prompt = "Reply with exactly HVC_MODEL_IDENTITY_OK and no tools.".into();
     probe.max_output_tokens = 32;
     let result = harness
@@ -766,18 +780,27 @@ async fn authenticated_claude_model_identity_smoke() {
     match result {
         Ok(_) => {
             assert_eq!(status, "completed");
-            assert!(generations.iter().all(|model| model
-                .as_deref()
-                .is_some_and(|model| model.to_ascii_lowercase().contains("haiku"))));
+            assert!(generations.iter().all(|model| {
+                model
+                    .as_deref()
+                    .is_some_and(|model| model.to_ascii_lowercase().contains("haiku"))
+            }));
         }
         Err(error) => {
-            assert!(matches!(error.code(), "model_mismatch" | "model_unverified"), "{error}");
+            assert!(
+                matches!(error.code(), "model_mismatch" | "model_unverified"),
+                "{error}"
+            );
             assert_eq!(status, "failed");
             assert_eq!(error_code.as_deref(), Some(error.code()));
         }
     }
     if status == "completed" {
-        assert!(observed.as_deref().is_some_and(|model| model.to_ascii_lowercase().contains("haiku")));
+        assert!(
+            observed
+                .as_deref()
+                .is_some_and(|model| model.to_ascii_lowercase().contains("haiku"))
+        );
     }
 }
 
@@ -953,7 +976,11 @@ async fn authenticated_antigravity_companion_smoke() {
         .rev()
         .find(|m| m.role == "assistant")
         .unwrap();
-    assert_eq!(assistant.status, "completed", "{:?}", assistant.error_message);
+    assert_eq!(
+        assistant.status, "completed",
+        "{:?}",
+        assistant.error_message
+    );
     assert!(assistant.content.contains("Ready"), "{}", assistant.content);
     assert_eq!(credentials.0.load(Ordering::SeqCst), 0);
 }
@@ -1120,7 +1147,10 @@ async fn authenticated_codex_turn_context_model_smoke() {
             expected_version: current.version,
         })
         .unwrap();
-    let mut probe = request(&harness.project_id, Instant::now() + Duration::from_secs(180));
+    let mut probe = request(
+        &harness.project_id,
+        Instant::now() + Duration::from_secs(180),
+    );
     probe.user_prompt = "Reply with exactly HVC_CODEX_MODEL_OK and do not call tools.".into();
     probe.max_output_tokens = 32;
     let result = tokio::time::timeout(
@@ -1153,7 +1183,13 @@ async fn authenticated_codex_turn_context_model_smoke() {
         .unwrap();
     assert_eq!(evidence.0.as_deref(), Some("gpt-5.6-luna"));
     assert_eq!(evidence.1, "codex_turn_context");
-    assert!(result.unwrap().unwrap().raw_output.contains("HVC_CODEX_MODEL_OK"));
+    assert!(
+        result
+            .unwrap()
+            .unwrap()
+            .raw_output
+            .contains("HVC_CODEX_MODEL_OK")
+    );
 }
 
 #[tokio::test]
@@ -1450,10 +1486,7 @@ async fn deadline_kills_the_process_tree_and_stops_descendant_heartbeat() {
     let error = harness
         .terminals
         .execute_llm_request(
-            &request(
-                &harness.project_id,
-                Instant::now() + Duration::from_secs(5),
-            ),
+            &request(&harness.project_id, Instant::now() + Duration::from_secs(5)),
             &CancellationToken::new(),
         )
         .await
@@ -1479,8 +1512,7 @@ async fn deadline_kills_the_process_tree_and_stops_descendant_heartbeat() {
 }
 
 #[tokio::test]
-async fn feature_discovery_uses_the_official_cli_adapters_with_isolated_context_and_own_identity()
-{
+async fn feature_discovery_uses_the_official_cli_adapters_with_isolated_context_and_own_identity() {
     let _lock = PATH_TEST_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()

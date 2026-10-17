@@ -60,13 +60,24 @@ impl AppModel {
     }
 
     pub(crate) fn start_cli_observation_trial(&mut self, cx: &mut Context<Self>) {
-        if self.settings.read(cx).busy { return; }
-        let Some(backend) = self.settings_backend.clone() else { return; };
-        let Some(project) = self.composition_project(cx) else { return; };
-        self.run_settings_operation(Box::pin(async move {
-            backend.start_cli_observation_trial(project.project_id).await?;
-            Ok("Unbounded CLI observation started for the next 20 Pulsation CLI runs.".into())
-        }), cx);
+        if self.settings.read(cx).busy {
+            return;
+        }
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(project) = self.composition_project(cx) else {
+            return;
+        };
+        self.run_settings_operation(
+            Box::pin(async move {
+                backend
+                    .start_cli_observation_trial(project.project_id)
+                    .await?;
+                Ok("Unbounded CLI observation started for the next 20 Pulsation CLI runs.".into())
+            }),
+            cx,
+        );
     }
 
     /// The in-flight cap of the parallel engine (ADR-022, M6): `1` keeps the
@@ -99,6 +110,14 @@ impl AppModel {
                 }
             },
             "Recipe qualification updated; it applies to the next composed stage admission.",
+            cx,
+        );
+    }
+
+    pub(crate) fn toggle_composition_visualizer(&mut self, cx: &mut Context<Self>) {
+        self.save_composition(
+            |settings| settings.visualizer_enabled = !settings.visualizer_enabled,
+            "Visualizer notes updated; they apply to the next checkpoint that opens.",
             cx,
         );
     }
@@ -578,6 +597,24 @@ pub(crate) fn composition_page(
                     ),
                     stacked_row("composition-checks", hl, checks),
                 ],
+            ),
+        )
+        .section(
+            "Review brief",
+            section(
+                "Review brief",
+                None,
+                vec![row(
+                    "composition-visualizer",
+                    hl,
+                    switch(
+                        "composition-visualizer",
+                        project.settings.visualizer_enabled,
+                        !busy,
+                        cx,
+                        |model, cx| model.toggle_composition_visualizer(cx),
+                    ),
+                )],
             ),
         )
         .section(

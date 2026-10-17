@@ -384,45 +384,73 @@ fn emit_official_success(backend: &str, args: &[String]) {
             } else {
                 "claude-haiku-4-5-20251001"
             };
-            println!(r#"{{"type":"system","subtype":"init","session_id":"{session}","model":"{requested_model}"}}"#);
+            println!(
+                r#"{{"type":"system","subtype":"init","session_id":"{session}","model":"{requested_model}"}}"#
+            );
             if fixture_model_unverified() {
-                println!(r#"{{"type":"stream_event","agent_id":"subagent-1","event":{{"type":"message_start","parent_tool_use_id":"tool-parent-1","message":{{"id":"claude-message-1"}}}}}}"#);
+                println!(
+                    r#"{{"type":"stream_event","agent_id":"subagent-1","event":{{"type":"message_start","parent_tool_use_id":"tool-parent-1","message":{{"id":"claude-message-1"}}}}}}"#
+                );
                 thread::sleep(Duration::from_secs(2));
                 if let Ok(path) = env::current_exe() {
-                    let _ = std::fs::write(path.with_file_name("claude.fixture-after-mismatch"), b"still-running");
+                    let _ = std::fs::write(
+                        path.with_file_name("claude.fixture-after-mismatch"),
+                        b"still-running",
+                    );
                 }
                 return;
             }
             if fixture_subagent_mismatch() {
-                println!(r#"{{"type":"stream_event","agent_id":"subagent-1","event":{{"type":"message_start","parent_tool_use_id":"tool-parent-1","message":{{"id":"claude-message-1","model":"{observed_model}"}}}}}}"#);
+                println!(
+                    r#"{{"type":"stream_event","agent_id":"subagent-1","event":{{"type":"message_start","parent_tool_use_id":"tool-parent-1","message":{{"id":"claude-message-1","model":"{observed_model}"}}}}}}"#
+                );
                 thread::sleep(Duration::from_secs(2));
                 if let Ok(path) = env::current_exe() {
-                    let _ = std::fs::write(path.with_file_name("claude.fixture-after-mismatch"), b"still-running");
+                    let _ = std::fs::write(
+                        path.with_file_name("claude.fixture-after-mismatch"),
+                        b"still-running",
+                    );
                 }
                 return;
             }
-            println!(r#"{{"type":"stream_event","event":{{"type":"message_start","message":{{"id":"claude-message-1","model":"{observed_model}"}}}}}}"#);
+            println!(
+                r#"{{"type":"stream_event","event":{{"type":"message_start","message":{{"id":"claude-message-1","model":"{observed_model}"}}}}}}"#
+            );
             if fixture_output_runaway() {
                 // Two 20,000-token messages, then a long pause: a host that
                 // does not stop the run at its output ceiling lets the marker appear.
-                println!(r#"{{"type":"stream_event","event":{{"type":"message_delta","usage":{{"output_tokens":20000}}}}}}"#);
-                println!(r#"{{"type":"stream_event","event":{{"type":"message_start","message":{{"id":"claude-message-2","model":"{observed_model}"}}}}}}"#);
-                println!(r#"{{"type":"stream_event","event":{{"type":"message_delta","usage":{{"output_tokens":20000}}}}}}"#);
+                println!(
+                    r#"{{"type":"stream_event","event":{{"type":"message_delta","usage":{{"output_tokens":20000}}}}}}"#
+                );
+                println!(
+                    r#"{{"type":"stream_event","event":{{"type":"message_start","message":{{"id":"claude-message-2","model":"{observed_model}"}}}}}}"#
+                );
+                println!(
+                    r#"{{"type":"stream_event","event":{{"type":"message_delta","usage":{{"output_tokens":20000}}}}}}"#
+                );
                 std::io::stdout().flush().unwrap();
                 thread::sleep(Duration::from_secs(3));
                 if let Ok(path) = env::current_exe() {
-                    let _ = std::fs::write(path.with_file_name("claude.fixture-after-mismatch"), b"still-running");
+                    let _ = std::fs::write(
+                        path.with_file_name("claude.fixture-after-mismatch"),
+                        b"still-running",
+                    );
                 }
                 return;
             }
             if fixture_model_mismatch() {
                 thread::sleep(Duration::from_secs(2));
                 if let Ok(path) = env::current_exe() {
-                    let _ = std::fs::write(path.with_file_name("claude.fixture-after-mismatch"), b"still-running");
+                    let _ = std::fs::write(
+                        path.with_file_name("claude.fixture-after-mismatch"),
+                        b"still-running",
+                    );
                 }
                 return;
             }
-            println!(r#"{{"type":"assistant","message":{{"id":"claude-message-1","model":"{observed_model}","content":[{{"type":"text","text":"ok claude fixture"}}]}}}}"#);
+            println!(
+                r#"{{"type":"assistant","message":{{"id":"claude-message-1","model":"{observed_model}","content":[{{"type":"text","text":"ok claude fixture"}}]}}}}"#
+            );
             println!(
                 r#"{{"type":"result","result":"ok claude fixture","session_id":"{session}","model":"{observed_model}","modelUsage":{{"claude-fixture":{{"inputTokens":8,"outputTokens":5,"cacheReadInputTokens":12}}}}}}"#
             );
@@ -432,11 +460,15 @@ fn emit_official_success(backend: &str, args: &[String]) {
             println!(
                 r#"{{"type":"message","model":"{requested_model}","content":"ok gemini fixture"}}"#
             );
-            println!(r#"{{"type":"result","result":"ok gemini fixture","stats":{{"models":{{"gemini-fixture":{{"input_tokens":20,"output_tokens":5,"total_tokens":25,"cached":12}}}}}}}}"#);
+            println!(
+                r#"{{"type":"result","result":"ok gemini fixture","stats":{{"models":{{"gemini-fixture":{{"input_tokens":20,"output_tokens":5,"total_tokens":25,"cached":12}}}}}}}}"#
+            );
         }
         "opencode" => {
             println!(r#"{{"type":"session.created","sessionID":"{session}"}}"#);
-            println!(r#"{{"type":"text","model":"{requested_model}","part":{{"id":"opencode-message-1","text":"ok opencode fixture"}}}}"#);
+            println!(
+                r#"{{"type":"text","model":"{requested_model}","part":{{"id":"opencode-message-1","text":"ok opencode fixture"}}}}"#
+            );
             println!(
                 r#"{{"type":"step_finish","part":{{"id":"fixture-step","tokens":{{"input":8,"output":3,"reasoning":2,"cache":{{"read":12,"write":0}}}}}}}}"#
             );

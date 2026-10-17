@@ -39,19 +39,30 @@ pub(crate) fn reload_action(model: &AppModel, cx: &mut Context<AppModel>) -> Any
 }
 
 pub(crate) fn projects_page(model: &AppModel, cx: &mut Context<AppModel>) -> PageContent {
-    let settings=model.settings.read(cx);
-    let selected=settings.deletion_project_id.clone();
+    let settings = model.settings.read(cx);
+    let selected = settings.deletion_project_id.clone();
     if selected.is_some() {
-        let preview=settings.deletion_preview.clone();
-        let loading=settings.deletion_loading;
-        let busy=settings.deletion_busy;
-        let confirmed=preview.as_ref().is_some_and(|p|model.settings_project_delete_input.read(cx).value()==p.project.name);
-        let mut page=PageContent::new(SettingsPage::Projects.label())
+        let preview = settings.deletion_preview.clone();
+        let loading = settings.deletion_loading;
+        let busy = settings.deletion_busy;
+        let confirmed = preview.as_ref().is_some_and(|p| {
+            model.settings_project_delete_input.read(cx).value() == p.project.name
+        });
+        let mut page = PageContent::new(SettingsPage::Projects.label())
             .description(SettingsPage::Projects.description())
-            .back(back_link("settings-project-back","All projects",cx,|model,cx|model.cancel_project_deletion(cx)));
-        if let Some(preview)=preview {
-            let project=preview.project;
-            let state=if project.is_archived {"Archived"} else {"Active"};
+            .back(back_link(
+                "settings-project-back",
+                "All projects",
+                cx,
+                |model, cx| model.cancel_project_deletion(cx),
+            ));
+        if let Some(preview) = preview {
+            let project = preview.project;
+            let state = if project.is_archived {
+                "Archived"
+            } else {
+                "Active"
+            };
             page=page.meta(format!("{} · {state}",project.name))
                 .section("Repository",section("Repository",None,vec![
                     row_with("project-delete-path","Directory".into(),Some("The entire directory, including .git and files you created, will be removed.".into()),Some(project.workspace_path.into()),false,readout(state)),
@@ -68,20 +79,54 @@ pub(crate) fn projects_page(model: &AppModel, cx: &mut Context<AppModel>) -> Pag
         }
         return page;
     }
-    let projects=settings.snapshot.as_ref().map(|s|s.projects.clone()).unwrap_or_default();
-    let mut rows=vec![stacked_row("project-deletion",None,note("Choose a project to review its files and delete it permanently."))];
-    let pending=settings.snapshot.as_ref().map_or(0,|s|s.pending_project_deletions);
-    if pending>0 {rows.push(warning_note(format!("Cleanup is pending for {pending} deleted project(s). The app retries when it starts.")));}
-    rows.extend(if projects.is_empty() {vec![note("No local projects are registered.")]} else {
-        projects.into_iter().map(|project| {
-            let id=project.id.clone();
-            nav_row(SharedString::from(format!("settings-project:{id}")),if project.is_archived {theme::text_subtle()} else {theme::success()},project.name,project.workspace_path,cx,move |model,cx|model.select_project_for_deletion(id.clone(),cx))
-        }).collect()
+    let projects = settings
+        .snapshot
+        .as_ref()
+        .map(|s| s.projects.clone())
+        .unwrap_or_default();
+    let mut rows = vec![stacked_row(
+        "project-deletion",
+        None,
+        note("Choose a project to review its files and delete it permanently."),
+    )];
+    let pending = settings
+        .snapshot
+        .as_ref()
+        .map_or(0, |s| s.pending_project_deletions);
+    if pending > 0 {
+        rows.push(warning_note(format!(
+            "Cleanup is pending for {pending} deleted project(s). The app retries when it starts."
+        )));
+    }
+    rows.extend(if projects.is_empty() {
+        vec![note("No local projects are registered.")]
+    } else {
+        projects
+            .into_iter()
+            .map(|project| {
+                let id = project.id.clone();
+                nav_row(
+                    SharedString::from(format!("settings-project:{id}")),
+                    if project.is_archived {
+                        theme::text_subtle()
+                    } else {
+                        theme::success()
+                    },
+                    project.name,
+                    project.workspace_path,
+                    cx,
+                    move |model, cx| model.select_project_for_deletion(id.clone(), cx),
+                )
+            })
+            .collect()
     });
     PageContent::new(SettingsPage::Projects.label())
         .description(SettingsPage::Projects.description())
-        .action(reload_action(model,cx))
-        .section("Local projects",section("Local projects",describe("project-deletion"),rows))
+        .action(reload_action(model, cx))
+        .section(
+            "Local projects",
+            section("Local projects", describe("project-deletion"), rows),
+        )
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -500,8 +545,12 @@ pub(crate) fn routes_page(
                     .targets
                     .iter()
                     .filter(|target| {
-                        target_conflict(&snapshot.connections, &target.connection_id, &target.model_id)
-                            .is_some()
+                        target_conflict(
+                            &snapshot.connections,
+                            &target.connection_id,
+                            &target.model_id,
+                        )
+                        .is_some()
                     })
                     .count();
                 nav_row(
@@ -1418,6 +1467,7 @@ fn agent_timeouts_table() -> gpui::Div {
         (AgentRole::Integrator, "Merge & reconciliation"),
         (AgentRole::LearningAgent, "Knowledge synthesis"),
         (AgentRole::IntakeRouter, "Triage & validation"),
+        (AgentRole::Visualizer, "Review brief notes"),
     ];
     let header = div()
         .flex()
@@ -1568,6 +1618,9 @@ mod tests {
             target_conflict(&connections, "router", "openai/gpt-4.1-mini"),
             None
         );
-        assert_eq!(target_conflict(&connections, "missing", "gpt-4.1-mini"), None);
+        assert_eq!(
+            target_conflict(&connections, "missing", "gpt-4.1-mini"),
+            None
+        );
     }
 }

@@ -86,6 +86,17 @@ pub fn parse_prompt(request: &RecordedRequest) -> PromptFacts {
     let messages = body["messages"].as_array().expect("messages");
     let system = messages[0]["content"].as_str().unwrap_or_default();
     let user = messages[1]["content"].as_str().unwrap_or_default();
+    // The Visualizer (ADR-027 M5) is not a composition worker: its user
+    // prompt is the delivered JSON input, with no handles to parse.
+    if system.starts_with(VISUALIZER_PROMPT_START) {
+        return PromptFacts {
+            executor: VISUALIZER.to_owned(),
+            tasks: Vec::new(),
+            criteria: Vec::new(),
+            references: BTreeMap::new(),
+            user_prompt: user.to_owned(),
+        };
+    }
     let executor = between(system, "You are the `", "` worker")
         .expect("executor kind in system prompt")
         .to_owned();
@@ -138,6 +149,31 @@ pub fn parse_prompt(request: &RecordedRequest) -> PromptFacts {
         references,
         user_prompt: user.to_owned(),
     }
+}
+
+/// The executor name `parse_prompt` gives a Visualizer request.
+pub const VISUALIZER: &str = "visualizer";
+const VISUALIZER_PROMPT_START: &str = "You are the Visualizer";
+
+/// A valid ReviewBriefV1 for a Visualizer request: a headline and one note
+/// citing the first delivered judgement item (or reference), emphasised.
+pub fn visualizer_response(user_prompt: &str) -> Value {
+    let input: Value = serde_json::from_str(user_prompt).expect("Visualizer input JSON");
+    let first_item = input["judgement"][0]["ref"].as_str();
+    let first_ref = first_item.or_else(|| input["references"][0]["ref"].as_str());
+    let notes = first_ref
+        .map(|reference| {
+            vec![json!({
+                "text": "Start with this item; it is the one the host cannot settle for you.",
+                "refs": [reference]
+            })]
+        })
+        .unwrap_or_default();
+    json!({
+        "headline": "One point needs your judgement before this stage can move on.",
+        "notes": notes,
+        "emphasis": first_item.map(|reference| vec![reference]).unwrap_or_default()
+    })
 }
 
 pub fn handle_for_path<'a>(facts: &'a PromptFacts, path: &str) -> &'a str {

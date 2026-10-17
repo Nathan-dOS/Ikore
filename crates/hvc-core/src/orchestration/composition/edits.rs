@@ -398,10 +398,14 @@ mod tests {
             destination_ref: handle("plan_1"),
             content: "// conflicting\n".into(),
         };
-        let conflict = apply_destination_edits(None, &[], &[&create, &conflicting_create])
-            .unwrap_err();
+        let conflict =
+            apply_destination_edits(None, &[], &[&create, &conflicting_create]).unwrap_err();
         assert_eq!(conflict.code, ErrorCode::ReferenceConflict);
-        assert!(conflict.message.contains("cannot choose between their contents"));
+        assert!(
+            conflict
+                .message
+                .contains("cannot choose between their contents")
+        );
         assert_eq!(
             apply_destination_edits(Some(b"exists"), &[], &[&create])
                 .unwrap_err()

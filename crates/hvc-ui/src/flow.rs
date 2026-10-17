@@ -70,8 +70,7 @@ impl AppModel {
             FlowTarget::Hitl(decision) => self.apply_hitl_decision(decision, cx),
             FlowTarget::AgentFallback(role) => {
                 self.agents.update(cx, |agents, _| {
-                    agents.selected_agent =
-                        Some(crate::agents::AgentIdentifier::Canonical(role));
+                    agents.selected_agent = Some(crate::agents::AgentIdentifier::Canonical(role));
                 });
                 self.select_view(AppView::Agents, cx);
             }
@@ -149,17 +148,11 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
                     },
                 ]
             })
-        } else if let Some(fallback) = model
-            .agents
-            .read(cx)
-            .fallbacks
-            .iter()
-            .find(|fallback| {
-                pulsations
-                    .active()
-                    .is_none_or(|active| active.id == fallback.pulsation_id)
-            })
-        {
+        } else if let Some(fallback) = model.agents.read(cx).fallbacks.iter().find(|fallback| {
+            pulsations
+                .active()
+                .is_none_or(|active| active.id == fallback.pulsation_id)
+        }) {
             // A CLI fallback (updated CLI awaiting validation, or a transport failure) parks
             // the pulsation until the developer decides in Agents.
             Some(vec![

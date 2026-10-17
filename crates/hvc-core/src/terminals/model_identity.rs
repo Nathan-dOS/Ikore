@@ -150,7 +150,11 @@ mod tests {
             ModelVerification::Unverified
         );
         assert_eq!(
-            verify_model(Some("claude"), Some("default"), Some("claude-haiku-4-5-20251001")),
+            verify_model(
+                Some("claude"),
+                Some("default"),
+                Some("claude-haiku-4-5-20251001")
+            ),
             ModelVerification::Unverified
         );
         for alias in ["inherit", "best", "opusplan"] {

@@ -203,10 +203,27 @@ mod tests {
                 resume_session_id: None,
             })
             .unwrap();
-        assert!(spec.args.windows(2).any(|pair| pair == ["--model", "haiku"]));
-        assert!(spec.args.windows(2).any(|pair| pair == ["--permission-mode", "dontAsk"]));
-        assert!(spec.args.windows(2).any(|pair| pair == ["--tools", "Read,Glob,Grep"]));
-        assert!(!spec.args.windows(2).any(|pair| pair == ["--permission-mode", "plan"]));
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|pair| pair == ["--model", "haiku"])
+        );
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|pair| pair == ["--permission-mode", "dontAsk"])
+        );
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|pair| pair == ["--tools", "Read,Glob,Grep"])
+        );
+        assert!(
+            !spec
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--permission-mode", "plan"])
+        );
     }
 
     #[test]
@@ -256,7 +273,10 @@ mod tests {
             br#"{"type":"stream_event","parent_tool_use_id":"tool-parent","agent_id":"agent-child","event":{"type":"message_start","message":{"id":"msg-17","model":"claude-haiku-4-5-20251001"}}}"#,
         );
         assert!(frame.is_model_generation);
-        assert_eq!(frame.observed_model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        assert_eq!(
+            frame.observed_model.as_deref(),
+            Some("claude-haiku-4-5-20251001")
+        );
         assert_eq!(frame.message_id.as_deref(), Some("msg-17"));
         assert_eq!(frame.parent_invocation_id.as_deref(), Some("tool-parent"));
         assert_eq!(frame.agent_id.as_deref(), Some("agent-child"));
@@ -332,7 +352,10 @@ mod tests {
         let frame = ClaudeAdapter.normalize_frame("stdout", event.to_string().as_bytes());
         assert_eq!(frame.kind, TerminalEventKind::Error);
         assert!(!frame.is_model_generation);
-        assert_eq!(frame.content, "Claude CLI reported an API error without a diagnostic.");
+        assert_eq!(
+            frame.content,
+            "Claude CLI reported an API error without a diagnostic."
+        );
         assert_eq!(
             crate::terminals::claude_companion_error(&event.to_string()),
             Some(frame.content)

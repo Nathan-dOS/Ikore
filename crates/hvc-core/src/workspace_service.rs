@@ -51,7 +51,10 @@ pub enum WorkspaceServiceError {
     PathForbidden(String),
     InvalidExtension(String),
     InvalidQuery(String),
-    Conflict { expected: String, actual: String },
+    Conflict {
+        expected: String,
+        actual: String,
+    },
     Io(io::Error),
     Notify(notify::Error),
     InvalidUtf8(String),
@@ -2213,7 +2216,12 @@ pub(crate) fn validate_generated_vault_note(
     // A contract note has its own shape (no source/test files); it fixes
     // literal values other stages must be checked against instead.
     if is_contract_note {
-        for field in ["producers", "consumers", "affects-features", "contracted-literals"] {
+        for field in [
+            "producers",
+            "consumers",
+            "affects-features",
+            "contracted-literals",
+        ] {
             let present = frontmatter
                 .is_some_and(|object| matches!(object.get(field), Some(Value::Array(_))));
             if !present {

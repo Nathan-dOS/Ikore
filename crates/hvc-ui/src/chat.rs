@@ -1396,7 +1396,9 @@ mod tests {
             assert_eq!(model.chat.read(cx).selected_cli_backend, CliBackend::Codex);
         });
         cx.run_until_parked();
-        model.update(cx, |model, cx| model.set_chat_cli_backend(CliBackend::Claude, cx));
+        model.update(cx, |model, cx| {
+            model.set_chat_cli_backend(CliBackend::Claude, cx)
+        });
         cx.run_until_parked();
         let calls = backend
             .retargeted

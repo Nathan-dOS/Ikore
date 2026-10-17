@@ -37,6 +37,7 @@ mod pulsations;
 mod pulsations_view;
 mod resolution;
 mod resolution_view;
+mod review_brief_view;
 mod review_view;
 mod select_menu;
 mod selectable_message;

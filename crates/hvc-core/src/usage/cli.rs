@@ -678,7 +678,10 @@ mod tests {
             .into_iter()
             .enumerate()
         {
-            tracker.observe(CliBackend::Claude, &message_start(&format!("m{index}"), 8, 100, 0));
+            tracker.observe(
+                CliBackend::Claude,
+                &message_start(&format!("m{index}"), 8, 100, 0),
+            );
             // The `assistant` frame repeats a stale one-to-four token figure.
             tracker.observe(
                 CliBackend::Claude,
@@ -745,12 +748,18 @@ mod tests {
     #[test]
     fn the_live_measurement_counts_prompt_cache_and_output_as_a_floor() {
         let mut tracker = CliUsageTracker::default();
-        assert!(tracker.live.measurement(None).is_none(), "nothing streamed yet");
+        assert!(
+            tracker.live.measurement(None).is_none(),
+            "nothing streamed yet"
+        );
         tracker.observe(CliBackend::Claude, &message_start("m1", 8, 1_000, 200));
         tracker.observe(CliBackend::Claude, &message_delta(500));
         tracker.observe(CliBackend::Claude, &message_start("m2", 8, 1_500, 0));
         let measurement = tracker.live.measurement(Some("haiku".into())).unwrap();
-        assert_eq!(measurement.counts.input_tokens, Some(8 + 1_000 + 200 + 8 + 1_500));
+        assert_eq!(
+            measurement.counts.input_tokens,
+            Some(8 + 1_000 + 200 + 8 + 1_500)
+        );
         assert_eq!(measurement.counts.cache_read_tokens, Some(2_500));
         assert_eq!(measurement.counts.cache_write_tokens, Some(200));
         // m1 exact, m2 still at the start frame's own "1".

@@ -1,5 +1,7 @@
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
-use hvc_core::chat_service::{ChatConversation, ChatMessage, ChatToolArgumentValue, ChatToolCall, ChatTransportKind};
+use hvc_core::chat_service::{
+    ChatConversation, ChatMessage, ChatToolArgumentValue, ChatToolCall, ChatTransportKind,
+};
 use hvc_core::terminals::CliAvailabilityState;
 #[cfg(test)]
 use hvc_editor::{parse_chat_content, parse_markdown};
@@ -655,7 +657,10 @@ pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEle
         .into_any_element()
 }
 
-fn visible_api_model<'a>(conversation: Option<&'a ChatConversation>, connection_default: &'a str) -> &'a str {
+fn visible_api_model<'a>(
+    conversation: Option<&'a ChatConversation>,
+    connection_default: &'a str,
+) -> &'a str {
     conversation
         .filter(|conversation| conversation.transport == ChatTransportKind::Api)
         .map(|conversation| conversation.model_id.as_str())
@@ -696,19 +701,20 @@ pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -
         })
         .when(!message.content.is_empty(), |card| {
             let model = cx.entity().downgrade();
-            card.child(SelectableMessage::new(format!("chat-text:{}", message.id), message.content.clone())
+            card.child(
+                SelectableMessage::new(
+                    format!("chat-text:{}", message.id),
+                    message.content.clone(),
+                )
                 .on_copy_diff(move |diff, cx| {
                     let _ = model.update(cx, |model, cx| model.copy_chat_diff(diff, cx));
-                }))
+                }),
+            )
         })
         .when_some(message.error_message, |card, error| {
-            card.child(
-                div()
-                    .mt_2()
-                    .text_sm()
-                    .text_color(theme::danger())
-                    .child(SelectableMessage::new(format!("chat-error:{}", message.id), error)),
-            )
+            card.child(div().mt_2().text_sm().text_color(theme::danger()).child(
+                SelectableMessage::new(format!("chat-error:{}", message.id), error),
+            ))
         });
     let id = message.id;
     if assistant {
@@ -763,7 +769,11 @@ pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -
                                     theme::text_muted(),
                                     true,
                                     cx,
-                                    move |_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone())),
+                                    move |_, cx| {
+                                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                            text.clone(),
+                                        ))
+                                    },
                                 ))
                             }),
                     )
@@ -789,26 +799,36 @@ pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -
                     .bg(theme::accent_soft())
                     .child(body),
             )
-            .child(div().flex().items_center().gap_1()
-                .child(div().text_xs().text_color(theme::text_subtle()).child(meta))
-                .when_some(copy_text, |row, text| {
-                    row.child(compact_icon_action(
-                        SharedString::from(copy_id),
-                        crate::icons::Icon::Copy,
-                        "Copy message",
-                        theme::text_muted(),
-                        true,
-                        cx,
-                        move |_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone())),
-                    ))
-                }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(div().text_xs().text_color(theme::text_subtle()).child(meta))
+                    .when_some(copy_text, |row, text| {
+                        row.child(compact_icon_action(
+                            SharedString::from(copy_id),
+                            crate::icons::Icon::Copy,
+                            "Copy message",
+                            theme::text_muted(),
+                            true,
+                            cx,
+                            move |_, cx| {
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()))
+                            },
+                        ))
+                    }),
+            )
             .into_any_element()
     }
 }
 
 fn copyable_chat_message_text(message: &ChatMessage) -> Option<String> {
     let content = (!message.content.trim().is_empty()).then_some(message.content.as_str());
-    let error = message.error_message.as_deref().filter(|error| !error.trim().is_empty());
+    let error = message
+        .error_message
+        .as_deref()
+        .filter(|error| !error.trim().is_empty());
     match (content, error) {
         (Some(content), Some(error)) => Some(format!("{content}\n\n{error}")),
         (Some(content), None) => Some(content.to_owned()),
@@ -1066,10 +1086,23 @@ mod tests {
 
     #[test]
     fn message_copy_includes_user_assistant_and_error_text() {
-        assert_eq!(copyable_chat_message_text(&message("user", "Question", None)).as_deref(), Some("Question"));
-        assert_eq!(copyable_chat_message_text(&message("assistant", "Answer", None)).as_deref(), Some("Answer"));
-        assert_eq!(copyable_chat_message_text(&message("assistant", "", Some("CLI failed"))).as_deref(), Some("CLI failed"));
-        assert_eq!(copyable_chat_message_text(&message("assistant", "Partial", Some("CLI failed"))).as_deref(), Some("Partial\n\nCLI failed"));
+        assert_eq!(
+            copyable_chat_message_text(&message("user", "Question", None)).as_deref(),
+            Some("Question")
+        );
+        assert_eq!(
+            copyable_chat_message_text(&message("assistant", "Answer", None)).as_deref(),
+            Some("Answer")
+        );
+        assert_eq!(
+            copyable_chat_message_text(&message("assistant", "", Some("CLI failed"))).as_deref(),
+            Some("CLI failed")
+        );
+        assert_eq!(
+            copyable_chat_message_text(&message("assistant", "Partial", Some("CLI failed")))
+                .as_deref(),
+            Some("Partial\n\nCLI failed")
+        );
         assert!(copyable_chat_message_text(&message("assistant", "  ", Some("  "))).is_none());
     }
 
@@ -1103,7 +1136,10 @@ mod tests {
         };
         assert!(!should_show_tool_activity(Some(&conversation)));
         assert!(should_show_tool_activity(None));
-        assert_eq!(visible_api_model(Some(&conversation), "configured"), "configured");
+        assert_eq!(
+            visible_api_model(Some(&conversation), "configured"),
+            "configured"
+        );
         let mut api_conversation = conversation;
         api_conversation.transport = ChatTransportKind::Api;
         api_conversation.model_id = "frozen-model".into();

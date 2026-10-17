@@ -206,7 +206,9 @@ pub fn classify_stage_failure(error: &PersistenceServiceError) -> Option<Failure
             | LlmErrorKind::Permission
             | LlmErrorKind::ModelNotFound
             | LlmErrorKind::RouteConflict => FailureClass::ProviderConfiguration,
-            LlmErrorKind::ModelMismatch | LlmErrorKind::ModelUnverified => FailureClass::HostContract,
+            LlmErrorKind::ModelMismatch | LlmErrorKind::ModelUnverified => {
+                FailureClass::HostContract
+            }
             LlmErrorKind::InvalidRequest
             | LlmErrorKind::InvalidResponse
             | LlmErrorKind::StreamFailed
@@ -696,6 +698,9 @@ mod tests {
             classify_stage_failure(&error),
             Some(FailureClass::OutputTruncated)
         );
-        assert_eq!(stage_failure_error_code(&error), "cli_output_budget_exceeded");
+        assert_eq!(
+            stage_failure_error_code(&error),
+            "cli_output_budget_exceeded"
+        );
     }
 }

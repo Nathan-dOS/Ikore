@@ -140,7 +140,10 @@ fn model_identity_status(
             Ok((row.get::<_, Option<String>>(0)?, row.get::<_, bool>(1)?))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    let generations = rows.into_iter().filter(|(_, is_generation)| *is_generation).collect::<Vec<_>>();
+    let generations = rows
+        .into_iter()
+        .filter(|(_, is_generation)| *is_generation)
+        .collect::<Vec<_>>();
     if generations.is_empty() {
         return Ok((false, false));
     }
@@ -459,12 +462,8 @@ fn run_rows(db: &Connection, trial_id: &str) -> Result<Vec<CliObservationRun>, T
         )?;
         let usage = usage(db, &run_id)?;
         let requested_model = usage.requested_model.or(configured_model);
-        let (model_verified, generation_mismatch) = model_identity_status(
-            db,
-            &run_id,
-            &backend,
-            requested_model.as_deref(),
-        )?;
+        let (model_verified, generation_mismatch) =
+            model_identity_status(db, &run_id, &backend, requested_model.as_deref())?;
         let model_mismatch = generation_mismatch
             || models_differ(requested_model.as_deref(), usage.observed_model.as_deref());
         if outcome == ObservationOutcome::Accepted && !model_verified {
@@ -747,9 +746,19 @@ mod tests {
 
     #[test]
     fn unverified_and_mismatched_runs_never_enter_accepted_trial_statistics() {
-        let mut unverified = run("claude", "task_specifier", ObservationOutcome::Accepted, 90_000);
+        let mut unverified = run(
+            "claude",
+            "task_specifier",
+            ObservationOutcome::Accepted,
+            90_000,
+        );
         unverified.model_verified = false;
-        let mut mismatched = run("claude", "task_specifier", ObservationOutcome::Accepted, 80_000);
+        let mut mismatched = run(
+            "claude",
+            "task_specifier",
+            ObservationOutcome::Accepted,
+            80_000,
+        );
         mismatched.model_verified = false;
         mismatched.model_mismatch = true;
         let group = group_runs(&[unverified, mismatched]).remove(0);

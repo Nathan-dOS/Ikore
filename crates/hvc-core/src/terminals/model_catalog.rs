@@ -1130,9 +1130,24 @@ mod tests {
         assert_eq!(
             summary,
             vec![
-                ("google", "gemini-3.8-flash", "Gemini 3.8 Flash", "low,medium,high".into()),
-                ("anthropic", "claude-opus-5-5", "Claude Opus 5.5", "low,medium,high".into()),
-                ("anthropic", "claude-sonnet-5-5", "Claude Sonnet 5.5", "low,medium,high".into()),
+                (
+                    "google",
+                    "gemini-3.8-flash",
+                    "Gemini 3.8 Flash",
+                    "low,medium,high".into()
+                ),
+                (
+                    "anthropic",
+                    "claude-opus-5-5",
+                    "Claude Opus 5.5",
+                    "low,medium,high".into()
+                ),
+                (
+                    "anthropic",
+                    "claude-sonnet-5-5",
+                    "Claude Sonnet 5.5",
+                    "low,medium,high".into()
+                ),
                 ("openai", "gpt-oss-120b", "GPT-OSS 120B", "medium".into()),
             ]
         );

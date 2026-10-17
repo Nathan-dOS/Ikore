@@ -114,12 +114,10 @@ fn correction_for(error: &CompositionError) -> CorrectionContext {
 
 fn classify_composition_error(error: &CompositionError) -> UnitFailure {
     let (class, repairable) = match error.code {
-        ErrorCode::InvalidShape
-        | ErrorCode::InvalidLanguage
-        | ErrorCode::EvidenceUnresolved => (FailureClass::BudgetExhausted, true),
-        ErrorCode::ReferenceConflict
-            if matches!(error.sc, Invariant::Sc002 | Invariant::Sc004) =>
-        {
+        ErrorCode::InvalidShape | ErrorCode::InvalidLanguage | ErrorCode::EvidenceUnresolved => {
+            (FailureClass::BudgetExhausted, true)
+        }
+        ErrorCode::ReferenceConflict if matches!(error.sc, Invariant::Sc002 | Invariant::Sc004) => {
             // A model that cites an unassigned task or an undelivered input
             // can correct its own malformed envelope within the bounded
             // allowance. Path, candidate, ownership and content identity
@@ -327,10 +325,9 @@ fn contracted_literal_findings(sources: &[SourceFile]) -> Vec<String> {
             if literal.value.is_empty() {
                 continue;
             }
-            let found_elsewhere = sources
-                .iter()
-                .enumerate()
-                .any(|(other_index, other)| other_index != index && other.content.contains(&literal.value));
+            let found_elsewhere = sources.iter().enumerate().any(|(other_index, other)| {
+                other_index != index && other.content.contains(&literal.value)
+            });
             if !found_elsewhere {
                 findings.push(format!(
                     "Contracted literal `{}` = `{}` (from `{}`) was not found in any other delivered file.",
@@ -354,12 +351,11 @@ fn extract_script_srcs(html: &str) -> Vec<String> {
             break;
         };
         let tag = &tail[..tag_end];
-        if let Some(after_src) = tag.split("src=").nth(1) {
-            if let Some(quote) = after_src.chars().next().filter(|c| *c == '"' || *c == '\'') {
-                if let Some(end) = after_src[1..].find(quote) {
-                    out.push(after_src[1..1 + end].to_string());
-                }
-            }
+        if let Some(after_src) = tag.split("src=").nth(1)
+            && let Some(quote) = after_src.chars().next().filter(|c| *c == '"' || *c == '\'')
+            && let Some(end) = after_src[1..].find(quote)
+        {
+            out.push(after_src[1..1 + end].to_string());
         }
         rest = &tail[tag_end + 1..];
     }
@@ -1670,31 +1666,43 @@ impl PersistenceService {
                     code: "model_mismatch".into(),
                     message: format!(
                         "Specialty `{}` defines a transport/model without a canonical selection for role `{}`.",
-                        kind.as_str(), role.as_str()
+                        kind.as_str(),
+                        role.as_str()
                     ),
                 });
             }
             return Ok(api_profile("stage_role_default"));
         };
-        if elected_backend.as_deref().is_some_and(|elected| elected != backend) {
+        if elected_backend
+            .as_deref()
+            .is_some_and(|elected| elected != backend)
+        {
             return Err(PersistenceServiceError::Cli {
                 code: "model_mismatch".into(),
                 message: format!(
                     "Pulsation fallback attempted to switch role `{}` from its frozen backend `{backend}` to `{}`.",
-                    role.as_str(), elected_backend.as_deref().unwrap_or_default()
+                    role.as_str(),
+                    elected_backend.as_deref().unwrap_or_default()
                 ),
             });
         }
-        if let Some((specialty_mode, specialty_backend, specialty_model, specialty_thinking)) = specialty {
+        if let Some((specialty_mode, specialty_backend, specialty_model, specialty_thinking)) =
+            specialty
+        {
             let selected_backend = elected_backend.as_deref().unwrap_or(&backend);
             if specialty_mode != mode
-                || specialty_backend.as_deref().is_some_and(|value| value != selected_backend)
+                || specialty_backend
+                    .as_deref()
+                    .is_some_and(|value| value != selected_backend)
             {
                 return Err(PersistenceServiceError::Cli {
                     code: "model_mismatch".into(),
                     message: format!(
                         "Specialty `{}` attempted to replace role `{}` transport/backend `{}/{};` its frozen selection must be inherited.",
-                        kind.as_str(), role.as_str(), mode, selected_backend
+                        kind.as_str(),
+                        role.as_str(),
+                        mode,
+                        selected_backend
                     ),
                 });
             }
@@ -1710,7 +1718,9 @@ impl PersistenceService {
                             code: "model_mismatch".into(),
                             message: format!(
                                 "Specialty `{}` selected `{}` but canonical role `{}` is frozen to `{}`.",
-                                kind.as_str(), specialty_model, role.as_str(),
+                                kind.as_str(),
+                                specialty_model,
+                                role.as_str(),
                                 model.as_deref().unwrap_or("default")
                             ),
                         });
@@ -1720,7 +1730,8 @@ impl PersistenceService {
                             code: "model_unverified".into(),
                             message: format!(
                                 "Specialty `{}` cannot prove its model is the frozen selection for role `{}`.",
-                                kind.as_str(), role.as_str()
+                                kind.as_str(),
+                                role.as_str()
                             ),
                         });
                     }
@@ -1746,11 +1757,10 @@ impl PersistenceService {
             });
         }
         let source = "stage_role".to_owned();
-        let backend = Some(elected_backend.unwrap_or(backend));
+        let backend = elected_backend.unwrap_or(backend);
         if mode != "cli_process" {
             return Ok(api_profile(&source));
         }
-        let backend = backend.unwrap_or_else(|| "codex".to_owned());
         let flavor = crate::terminals::CliBackend::parse(&backend)
             .map(SchemaFlavor::for_cli_backend)
             .unwrap_or(SchemaFlavor::Canonical);
@@ -3248,10 +3258,10 @@ fn clarification_with_task_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
     use crate::orchestration::composition::plan::{PlanInputs, UnitDraft, freeze_plan};
     use crate::orchestration::composition::references::ReferenceTable;
     use crate::orchestration::composition::{RelPath, SourceRole};
+    use rusqlite::Connection;
 
     fn h(text: &str) -> comp::Handle {
         comp::Handle::new(text).unwrap()
@@ -3294,7 +3304,10 @@ mod tests {
 
     #[test]
     fn contracted_literal_findings_are_empty_without_a_published_contract_note() {
-        let code = source("src/js/app.js", "console.log('no contract note in context');\n");
+        let code = source(
+            "src/js/app.js",
+            "console.log('no contract note in context');\n",
+        );
         assert!(contracted_literal_findings(&[code]).is_empty());
     }
 
@@ -3523,9 +3536,18 @@ mod tests {
             &runtime,
         )
         .unwrap();
-        assert_eq!((code.backend.as_deref(), code.requested_model.as_str()), (Some("codex"), "gpt-5.6-luna"));
-        assert_eq!((repair.backend.as_deref(), repair.requested_model.as_str()), (Some("codex"), "gpt-5.6-luna"));
-        assert_eq!((intake.backend.as_deref(), intake.requested_model.as_str()), (Some("claude"), "haiku"));
+        assert_eq!(
+            (code.backend.as_deref(), code.requested_model.as_str()),
+            (Some("codex"), "gpt-5.6-luna")
+        );
+        assert_eq!(
+            (repair.backend.as_deref(), repair.requested_model.as_str()),
+            (Some("codex"), "gpt-5.6-luna")
+        );
+        assert_eq!(
+            (intake.backend.as_deref(), intake.requested_model.as_str()),
+            (Some("claude"), "haiku")
+        );
     }
 
     #[test]

@@ -70,12 +70,18 @@ impl CliAdapter for CustomAdapter {
                 content: String::new(),
                 native_session_id: None,
                 observed_model: model,
-                message_id: value.get("messageId").and_then(Value::as_str).map(ToOwned::to_owned),
+                message_id: value
+                    .get("messageId")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
                 parent_invocation_id: value
                     .get("parentInvocationId")
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned),
-                agent_id: value.get("agentId").and_then(Value::as_str).map(ToOwned::to_owned),
+                agent_id: value
+                    .get("agentId")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
                 is_model_generation: true,
                 is_text: false,
                 is_delta: false,

@@ -895,7 +895,10 @@ pub(crate) fn render_markdown_block_with(
             .bg(theme::canvas())
             .font_family(theme::FONT_MONO)
             .text_sm()
-            .child(text_element(format!("{}\n{code}", language.unwrap_or_default())))
+            .child(text_element(format!(
+                "{}\n{code}",
+                language.unwrap_or_default()
+            )))
             .into_any_element(),
         MarkdownBlock::Quote(text) => div()
             .mb_2()

@@ -1,21 +1,105 @@
 use gpui::{App, KeyBinding, actions};
+use hvc_core::orchestration::review_brief::{JudgementItem, JudgementKind, ReviewBrief};
 use hvc_core::persistence_service::{
     ApplyHitlDecisionRequest, HitlCheckpoint, HitlDecision, HitlReviewDocument, Pulsation,
 };
 use hvc_editor::{MarkdownBlock, parse_markdown};
 
-actions!(hitl, [ApproveHitl, RequestHitlRevision, RejectHitl]);
+actions!(
+    hitl,
+    [
+        ApproveHitl,
+        RequestHitlRevision,
+        RejectHitl,
+        ConfirmBriefItem,
+        FlagBriefItem,
+        NextBriefItem,
+        PreviousBriefItem
+    ]
+);
 
 pub(crate) fn register_hitl_keybindings(cx: &mut App) {
+    const REVIEW: &str = "HitlReview && !NativeTextInput";
     cx.bind_keys([
-        KeyBinding::new("enter", ApproveHitl, Some("HitlReview && !NativeTextInput")),
-        KeyBinding::new(
-            "r",
-            RequestHitlRevision,
-            Some("HitlReview && !NativeTextInput"),
-        ),
-        KeyBinding::new("d", RejectHitl, Some("HitlReview && !NativeTextInput")),
+        KeyBinding::new("enter", ApproveHitl, Some(REVIEW)),
+        KeyBinding::new("r", RequestHitlRevision, Some(REVIEW)),
+        KeyBinding::new("d", RejectHitl, Some(REVIEW)),
+        KeyBinding::new("c", ConfirmBriefItem, Some(REVIEW)),
+        KeyBinding::new("f", FlagBriefItem, Some(REVIEW)),
+        KeyBinding::new("tab", NextBriefItem, Some(REVIEW)),
+        KeyBinding::new("shift-tab", PreviousBriefItem, Some(REVIEW)),
     ]);
+}
+
+/// The developer's mark on one judgement item of the brief (ADR-027 M2).
+/// Session-local and keyed by the checkpoint it was made on; never a host gate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ItemMark {
+    #[default]
+    Open,
+    Confirmed,
+    Flagged,
+}
+
+/// How a judgement kind is named to the developer and in revision feedback.
+pub(crate) const fn judgement_kind_label(kind: JudgementKind) -> &'static str {
+    match kind {
+        JudgementKind::Decision => "Decision taken by the agent",
+        JudgementKind::ReadingOnlyProof => "Proof by reading only",
+        JudgementKind::NotApplicable => "Marked not applicable",
+        JudgementKind::InterfaceChange => "Existing interface changes",
+        JudgementKind::Exclusions => "Left out of scope",
+        JudgementKind::NewInterface => "New interface",
+        JudgementKind::ExistingTestsOnly => "Covered only by existing tests",
+        JudgementKind::UnexecutedCheck => "Required check without a passing run",
+        JudgementKind::Contradicted => "Contradicted by the review",
+        JudgementKind::Unverified => "Not verified by the review",
+        JudgementKind::Blocker => "Blocker reported by the reviewer",
+    }
+}
+
+/// The Request revision feedback: one line per flagged item, in the order the
+/// brief shows them, each carrying the item's own text so the revising agent
+/// does not depend on labels it may not remember; then any free-text feedback.
+/// With nothing flagged the free text goes out unchanged, as before M2.
+pub(crate) fn compose_revision_feedback(
+    items: &[JudgementItem],
+    marks: &[ItemMark],
+    note: impl Fn(usize) -> Option<String>,
+    free_text: &str,
+) -> String {
+    let free_text = free_text.trim();
+    let lines: Vec<String> = items
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| marks.get(*index) == Some(&ItemMark::Flagged))
+        .map(|(index, item)| {
+            let subject = match item.kind {
+                JudgementKind::Exclusions => item.text.clone(),
+                _ => format!("{}: {}", item.label, item.text),
+            };
+            let request = note(index)
+                .map(|note| note.trim().to_owned())
+                .filter(|note| !note.is_empty())
+                .unwrap_or_else(|| "flagged for revision without a note.".to_owned());
+            format!(
+                "- [{}] {subject} — {request}",
+                judgement_kind_label(item.kind)
+            )
+        })
+        .collect();
+    if lines.is_empty() {
+        return free_text.to_owned();
+    }
+    let mut feedback = format!(
+        "Flagged by the developer in the review brief:\n{}",
+        lines.join("\n")
+    );
+    if !free_text.is_empty() {
+        feedback.push_str("\n\nAdditional feedback: ");
+        feedback.push_str(free_text);
+    }
+    feedback
 }
 
 #[cfg(test)]
@@ -60,6 +144,19 @@ pub(crate) struct HitlReviewState {
     pub(crate) show_feedback: bool,
     pub(crate) documents_loading: bool,
     pub(crate) documents_error: Option<String>,
+    /// Derived view of the same checkpoint (ADR-027). Never gates approval.
+    pub(crate) brief: Option<ReviewBrief>,
+    pub(crate) brief_error: Option<String>,
+    /// The Visualizer's note on the same checkpoint (ADR-027 M5). Never a
+    /// gate: an error or an absent note leaves the brief as it is.
+    pub(crate) visualization:
+        Option<hvc_core::orchestration::review_brief::CheckpointVisualization>,
+    /// The Brief tab is showing instead of a document.
+    pub(crate) brief_selected: bool,
+    /// One mark per judgement item of `brief`, in its order.
+    pub(crate) marks: Vec<ItemMark>,
+    /// The judgement item the C/F keys act on.
+    pub(crate) brief_cursor: usize,
     pub(crate) busy: bool,
     pub(crate) error: Option<String>,
     load_generation: u64,
@@ -101,6 +198,12 @@ impl HitlReviewState {
             self.busy = false;
             self.documents_loading = false;
             self.documents_error = None;
+            self.brief = None;
+            self.brief_error = None;
+            self.visualization = None;
+            self.brief_selected = false;
+            self.marks.clear();
+            self.brief_cursor = 0;
             self.error = None;
         }
         self.expected_checkpoint = checkpoint;
@@ -155,8 +258,146 @@ impl HitlReviewState {
         true
     }
 
+    /// Applies the brief read that followed `finish_documents` for the same
+    /// generation. A brief opens on its own tab; a failed brief read only
+    /// adds a tab that explains it, so the documents stay the default view.
+    pub(crate) fn finish_brief(
+        &mut self,
+        generation: u64,
+        checkpoint: &HitlCheckpoint,
+        result: Result<Option<ReviewBrief>, String>,
+    ) -> bool {
+        if generation != self.load_generation
+            || !same_checkpoint(self.expected_checkpoint.as_ref(), Some(checkpoint))
+        {
+            return false;
+        }
+        match result {
+            Ok(brief) => {
+                self.brief_selected = brief.is_some() && !self.documents.is_empty();
+                self.marks =
+                    vec![ItemMark::Open; brief.as_ref().map_or(0, |brief| brief.judgement.len())];
+                self.brief = brief;
+                self.brief_error = None;
+            }
+            Err(error) => {
+                self.brief = None;
+                self.brief_error = Some(error);
+                self.brief_selected = false;
+                self.marks.clear();
+            }
+        }
+        self.brief_cursor = 0;
+        true
+    }
+
+    /// The Visualizer's note read with the brief of this load.
+    pub(crate) fn finish_visualization(
+        &mut self,
+        generation: u64,
+        checkpoint: &HitlCheckpoint,
+        result: Result<
+            Option<hvc_core::orchestration::review_brief::CheckpointVisualization>,
+            String,
+        >,
+    ) -> bool {
+        if generation != self.load_generation
+            || !same_checkpoint(self.expected_checkpoint.as_ref(), Some(checkpoint))
+        {
+            return false;
+        }
+        self.visualization = result.ok().flatten();
+        true
+    }
+
+    /// A later read of a pending note; ignored once the checkpoint changed.
+    pub(crate) fn update_visualization(
+        &mut self,
+        checkpoint: &HitlCheckpoint,
+        result: Result<
+            Option<hvc_core::orchestration::review_brief::CheckpointVisualization>,
+            String,
+        >,
+    ) -> bool {
+        if self.brief.is_none()
+            || !same_checkpoint(self.expected_checkpoint.as_ref(), Some(checkpoint))
+        {
+            return false;
+        }
+        if let Ok(visualization) = result {
+            self.visualization = visualization;
+        }
+        true
+    }
+
+    /// The checkpoint whose note is still being written, if any.
+    pub(crate) fn pending_visualization(&self) -> Option<HitlCheckpoint> {
+        self.visualization
+            .as_ref()
+            .is_some_and(|visualization| {
+                visualization.state
+                    == hvc_core::orchestration::review_brief::VisualizationState::Pending
+            })
+            .then(|| self.expected_checkpoint.clone())
+            .flatten()
+    }
+
+    pub(crate) fn has_brief_tab(&self) -> bool {
+        self.brief.is_some() || self.brief_error.is_some()
+    }
+
     pub(crate) fn retry_documents(&mut self) {
         self.documents_error = None;
+        self.brief = None;
+        self.brief_error = None;
+        self.visualization = None;
+        self.brief_selected = false;
+        self.marks.clear();
+        self.brief_cursor = 0;
+    }
+
+    /// Sets `mark` on item `index`, or reopens it when it already carries that
+    /// mark. Moves the cursor to the item. Returns the item's new mark.
+    pub(crate) fn toggle_mark(&mut self, index: usize, mark: ItemMark) -> Option<ItemMark> {
+        if self.busy {
+            return None;
+        }
+        let current = self.marks.get_mut(index)?;
+        *current = if *current == mark {
+            ItemMark::Open
+        } else {
+            mark
+        };
+        self.brief_cursor = index;
+        Some(*current)
+    }
+
+    /// Moves the cursor to the next (or previous) item, wrapping around.
+    pub(crate) fn move_brief_cursor(&mut self, forward: bool) {
+        let count = self.marks.len();
+        if count == 0 {
+            return;
+        }
+        self.brief_cursor = if forward {
+            (self.brief_cursor + 1) % count
+        } else {
+            (self.brief_cursor + count - 1) % count
+        };
+    }
+
+    /// `(confirmed, flagged, open)` over the brief's judgement items.
+    pub(crate) fn mark_counts(&self) -> (usize, usize, usize) {
+        self.marks
+            .iter()
+            .fold((0, 0, 0), |(confirmed, flagged, open), mark| match mark {
+                ItemMark::Confirmed => (confirmed + 1, flagged, open),
+                ItemMark::Flagged => (confirmed, flagged + 1, open),
+                ItemMark::Open => (confirmed, flagged, open + 1),
+            })
+    }
+
+    pub(crate) fn flag_count(&self) -> usize {
+        self.mark_counts().1
     }
 
     pub(crate) fn can_approve(&self) -> bool {
@@ -202,6 +443,7 @@ impl HitlReviewState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hvc_core::orchestration::review_brief::{SpecificationVisual, StageVisual};
     use hvc_core::persistence_service::{PulsationStage, PulsationStatus};
 
     #[gpui::test]
@@ -286,6 +528,267 @@ mod tests {
         assert!(state.documents.is_empty());
         assert!(!state.show_source);
         assert!(!state.finish_documents(generation, &current, Ok(documents())));
+    }
+
+    fn brief() -> ReviewBrief {
+        ReviewBrief {
+            stage: PulsationStage::Specification,
+            next_stage: Some(PulsationStage::Contract),
+            objective: Some("Reject expired tokens.".into()),
+            counts: Vec::new(),
+            revision: None,
+            judgement: Vec::new(),
+            verified: Vec::new(),
+            visual: StageVisual::Specification(SpecificationVisual {
+                facts: Default::default(),
+                exclusions: Vec::new(),
+                tasks: Vec::new(),
+                files: Vec::new(),
+                unattached_interfaces: Vec::new(),
+                units: Vec::new(),
+            }),
+        }
+    }
+
+    fn visualization(
+        state: hvc_core::orchestration::review_brief::VisualizationState,
+    ) -> hvc_core::orchestration::review_brief::CheckpointVisualization {
+        hvc_core::orchestration::review_brief::CheckpointVisualization {
+            state,
+            note: None,
+            diagnostic: None,
+        }
+    }
+
+    #[test]
+    fn a_visualizer_note_belongs_to_its_checkpoint_and_never_gates_approval() {
+        use hvc_core::orchestration::review_brief::VisualizationState;
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));
+        let (generation, first) = state.begin_documents().unwrap();
+        state.finish_documents(generation, &first, Ok(documents()));
+        state.finish_brief(generation, &first, Ok(Some(brief())));
+        assert!(state.finish_visualization(
+            generation,
+            &first,
+            Ok(Some(visualization(VisualizationState::Pending)))
+        ));
+        assert_eq!(
+            state
+                .pending_visualization()
+                .map(|checkpoint| checkpoint.checkpoint_id),
+            Some(first.checkpoint_id.clone())
+        );
+        assert!(state.can_approve(), "a pending note never blocks approval");
+
+        // A poll result for the same checkpoint replaces the note; an error
+        // keeps what was there.
+        assert!(
+            state
+                .update_visualization(&first, Ok(Some(visualization(VisualizationState::Omitted))))
+        );
+        assert!(state.update_visualization(&first, Err("read failed".into())));
+        assert_eq!(
+            state.visualization.as_ref().unwrap().state,
+            VisualizationState::Omitted
+        );
+        assert!(state.pending_visualization().is_none());
+
+        // A newer checkpoint drops the note; late answers for the old one are ignored.
+        state.load_checkpoint(Some(&pulse("second")), Some(checkpoint("second")));
+        assert!(state.visualization.is_none());
+        assert!(
+            !state
+                .update_visualization(&first, Ok(Some(visualization(VisualizationState::Pending))))
+        );
+        assert!(!state.finish_visualization(
+            generation,
+            &first,
+            Ok(Some(visualization(VisualizationState::Pending)))
+        ));
+        assert!(state.visualization.is_none());
+    }
+
+    #[test]
+    fn a_brief_opens_first_but_never_replaces_the_documents_or_the_approval_gate() {
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));
+        let (generation, first) = state.begin_documents().unwrap();
+        assert!(state.finish_documents(generation, &first, Ok(documents())));
+        assert!(state.finish_brief(generation, &first, Ok(Some(brief()))));
+        assert!(state.brief_selected && state.has_brief_tab());
+        assert!(state.can_approve(), "approval still rests on the documents");
+
+        // A newer checkpoint drops the brief and its selection; a late
+        // brief of the old one is ignored.
+        state.load_checkpoint(Some(&pulse("second")), Some(checkpoint("second")));
+        assert!(state.brief.is_none() && !state.brief_selected);
+        assert!(!state.finish_brief(generation, &first, Ok(Some(brief()))));
+        assert!(!state.has_brief_tab());
+    }
+
+    #[test]
+    fn a_failed_brief_read_keeps_documents_in_front_and_explains_itself() {
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));
+        let (generation, first) = state.begin_documents().unwrap();
+        state.finish_documents(generation, &first, Ok(documents()));
+        state.finish_brief(generation, &first, Err("payload unreadable".into()));
+        assert!(!state.brief_selected);
+        assert!(state.has_brief_tab());
+        assert_eq!(state.brief_error.as_deref(), Some("payload unreadable"));
+        assert!(state.can_approve());
+
+        // Stages without a brief show no tab at all.
+        let mut legacy = HitlReviewState::default();
+        legacy.load_checkpoint(Some(&pulse("legacy")), Some(checkpoint("legacy")));
+        let (generation, current) = legacy.begin_documents().unwrap();
+        legacy.finish_documents(generation, &current, Ok(documents()));
+        legacy.finish_brief(generation, &current, Ok(None));
+        assert!(!legacy.has_brief_tab() && !legacy.brief_selected);
+    }
+
+    fn item(kind: JudgementKind, label: &str, text: &str) -> JudgementItem {
+        JudgementItem {
+            kind,
+            label: label.into(),
+            text: text.into(),
+            detail: None,
+            refs: Vec::new(),
+        }
+    }
+
+    fn brief_with_items() -> ReviewBrief {
+        ReviewBrief {
+            judgement: vec![
+                item(JudgementKind::Decision, "D1", "Keep the public signature."),
+                item(
+                    JudgementKind::ReadingOnlyProof,
+                    "AC-4",
+                    "An empty range writes only the header row.",
+                ),
+                item(
+                    JudgementKind::Exclusions,
+                    "2",
+                    "No scheduled export · No per-call rows",
+                ),
+            ],
+            ..brief()
+        }
+    }
+
+    #[test]
+    fn marks_toggle_move_the_cursor_and_reset_with_the_checkpoint() {
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));
+        let (generation, first) = state.begin_documents().unwrap();
+        state.finish_documents(generation, &first, Ok(documents()));
+        state.finish_brief(generation, &first, Ok(Some(brief_with_items())));
+        assert_eq!(state.marks, [ItemMark::Open; 3]);
+        assert_eq!(state.mark_counts(), (0, 0, 3));
+
+        assert_eq!(
+            state.toggle_mark(1, ItemMark::Flagged),
+            Some(ItemMark::Flagged)
+        );
+        assert_eq!(state.brief_cursor, 1);
+        assert_eq!(
+            state.toggle_mark(0, ItemMark::Confirmed),
+            Some(ItemMark::Confirmed)
+        );
+        assert_eq!(state.mark_counts(), (1, 1, 1));
+        // Confirming a flagged item replaces the flag; the same mark twice reopens it.
+        assert_eq!(
+            state.toggle_mark(1, ItemMark::Confirmed),
+            Some(ItemMark::Confirmed)
+        );
+        assert_eq!(
+            state.toggle_mark(1, ItemMark::Confirmed),
+            Some(ItemMark::Open)
+        );
+        assert_eq!(state.toggle_mark(9, ItemMark::Flagged), None);
+
+        state.brief_cursor = 2;
+        state.move_brief_cursor(true);
+        assert_eq!(state.brief_cursor, 0, "the cursor wraps forward");
+        state.move_brief_cursor(false);
+        assert_eq!(state.brief_cursor, 2, "and backward");
+
+        // Marks never touch the approval gate, and a busy decision freezes them.
+        assert!(state.can_approve());
+        state.busy = true;
+        assert_eq!(state.toggle_mark(2, ItemMark::Flagged), None);
+        state.busy = false;
+
+        state.load_checkpoint(Some(&pulse("second")), Some(checkpoint("second")));
+        assert!(state.marks.is_empty() && state.brief_cursor == 0);
+    }
+
+    #[test]
+    fn flagged_items_become_ordered_self_explaining_revision_feedback() {
+        let items = brief_with_items().judgement;
+        let marks = [ItemMark::Flagged, ItemMark::Confirmed, ItemMark::Flagged];
+        let notes = |index: usize| (index == 0).then(|| "  Keep it, but document why.  ".into());
+        assert_eq!(
+            compose_revision_feedback(&items, &marks, notes, "Also rename the module."),
+            "Flagged by the developer in the review brief:\n\
+             - [Decision taken by the agent] D1: Keep the public signature. — Keep it, but document why.\n\
+             - [Left out of scope] No scheduled export · No per-call rows — flagged for revision without a note.\n\
+             \n\
+             Additional feedback: Also rename the module."
+        );
+        // Without flags the free text goes out exactly as before M2.
+        assert_eq!(
+            compose_revision_feedback(&items, &[ItemMark::Open; 3], |_| None, " As typed. "),
+            "As typed."
+        );
+        assert_eq!(
+            compose_revision_feedback(&items, &[ItemMark::Open; 3], |_| None, ""),
+            ""
+        );
+    }
+
+    #[test]
+    fn items_sharing_a_label_keep_independent_marks_and_notes() {
+        // Two interface changes on the same path carry the same label; marks
+        // and notes are keyed by position, never by label.
+        let items = vec![
+            item(
+                JudgementKind::InterfaceChange,
+                "src/auth.rs",
+                "validate_token changes shape.",
+            ),
+            item(
+                JudgementKind::InterfaceChange,
+                "src/auth.rs",
+                "Token gains an issuer field.",
+            ),
+        ];
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));
+        let (generation, first) = state.begin_documents().unwrap();
+        state.finish_documents(generation, &first, Ok(documents()));
+        state.finish_brief(
+            generation,
+            &first,
+            Ok(Some(ReviewBrief {
+                judgement: items.clone(),
+                ..brief()
+            })),
+        );
+        state.toggle_mark(0, ItemMark::Flagged);
+        state.toggle_mark(1, ItemMark::Confirmed);
+        assert_eq!(state.marks, [ItemMark::Flagged, ItemMark::Confirmed]);
+        state.toggle_mark(1, ItemMark::Flagged);
+        let notes = |index: usize| Some(format!("note {index}"));
+        let feedback = compose_revision_feedback(&items, &state.marks, notes, "");
+        assert_eq!(
+            feedback.lines().skip(1).collect::<Vec<_>>(),
+            [
+                "- [Existing interface changes] src/auth.rs: validate_token changes shape. — note 0",
+                "- [Existing interface changes] src/auth.rs: Token gains an issuer field. — note 1",
+            ]
+        );
     }
 
     #[test]

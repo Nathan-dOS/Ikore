@@ -201,10 +201,7 @@ impl TurnFailure {
             TurnFailureKind::ReplyLanguage
         } else if has(&["too many questions"]) {
             TurnFailureKind::TooManyQuestions
-        } else if has(&[
-            "source belongs to a different project",
-            "source changed;",
-        ]) {
+        } else if has(&["source belongs to a different project", "source changed;"]) {
             TurnFailureKind::SourceRejected
         } else if has(&[
             "invalid discovery language",
@@ -328,7 +325,11 @@ pub(crate) fn bounded_technical(raw: &str) -> String {
     if trimmed.chars().count() <= TECHNICAL_DETAIL_LIMIT {
         return trimmed.to_string();
     }
-    trimmed.chars().take(TECHNICAL_DETAIL_LIMIT).collect::<String>() + "…"
+    trimmed
+        .chars()
+        .take(TECHNICAL_DETAIL_LIMIT)
+        .collect::<String>()
+        + "…"
 }
 
 /// Keeps the repair notes to their cap.
@@ -354,7 +355,10 @@ pub fn failure_actions(
     history: &[FeatureTurn],
     turn_kind: TurnKind,
 ) -> Option<(String, FailureActions)> {
-    let turns: Vec<&FeatureTurn> = history.iter().filter(|turn| turn.kind == turn_kind).collect();
+    let turns: Vec<&FeatureTurn> = history
+        .iter()
+        .filter(|turn| turn.kind == turn_kind)
+        .collect();
     let latest = turns.last()?;
     let failure = latest.failure.as_ref()?;
     if !matches!(latest.status.as_str(), "failed" | "interrupted")
@@ -373,9 +377,7 @@ pub fn failure_actions(
         latest.id.clone(),
         FailureActions {
             retry: failure.retry_allowed(),
-            ask_agent: turn_kind == TurnKind::Discovery
-                && failure.ask_agent_allowed()
-                && !repeated,
+            ask_agent: turn_kind == TurnKind::Discovery && failure.ask_agent_allowed() && !repeated,
         },
     ))
 }
@@ -462,7 +464,12 @@ mod tests {
     }
 
     fn failed(id: &str, kind: TurnFailureKind) -> FeatureTurn {
-        turn(id, "failed", TurnKind::Discovery, Some(TurnFailure::new(kind, "raw")))
+        turn(
+            id,
+            "failed",
+            TurnKind::Discovery,
+            Some(TurnFailure::new(kind, "raw")),
+        )
     }
 
     #[test]
@@ -484,11 +491,16 @@ mod tests {
             assert!(!explanation.summary.is_empty(), "{kind:?}");
             assert!(!explanation.cause.is_empty(), "{kind:?}");
             assert!(!explanation.remedy.is_empty(), "{kind:?}");
-            let all = format!("{} {} {}", explanation.summary, explanation.cause, explanation.remedy);
+            let all = format!(
+                "{} {} {}",
+                explanation.summary, explanation.cause, explanation.remedy
+            );
             assert!(!all.contains("secret-raw-detail"), "{kind:?}");
         }
         assert_eq!(
-            TurnFailure::new(TurnFailureKind::Cancelled, "x").explain().summary,
+            TurnFailure::new(TurnFailureKind::Cancelled, "x")
+                .explain()
+                .summary,
             "You cancelled this response."
         );
     }
@@ -536,8 +548,14 @@ mod tests {
             (LlmErrorKind::RouteConflict, TurnFailureKind::ProviderSetup),
             (LlmErrorKind::Timeout, TurnFailureKind::ProviderTransient),
             (LlmErrorKind::Network, TurnFailureKind::ProviderTransient),
-            (LlmErrorKind::RateLimited, TurnFailureKind::ProviderTransient),
-            (LlmErrorKind::AllTargetsExhausted, TurnFailureKind::ProviderTransient),
+            (
+                LlmErrorKind::RateLimited,
+                TurnFailureKind::ProviderTransient,
+            ),
+            (
+                LlmErrorKind::AllTargetsExhausted,
+                TurnFailureKind::ProviderTransient,
+            ),
             (LlmErrorKind::OutputSchema, TurnFailureKind::ReplyUnreadable),
             (LlmErrorKind::Cancelled, TurnFailureKind::Cancelled),
             (LlmErrorKind::InvalidRequest, TurnFailureKind::Unclassified),
@@ -550,12 +568,27 @@ mod tests {
         }
 
         let cli = [
-            (TerminalError::AuthRequired("Claude".into()), TurnFailureKind::ProviderSetup),
-            (TerminalError::NotFound("claude".into()), TurnFailureKind::ProviderSetup),
-            (TerminalError::VersionUnsupported("Codex".into()), TurnFailureKind::ProviderSetup),
+            (
+                TerminalError::AuthRequired("Claude".into()),
+                TurnFailureKind::ProviderSetup,
+            ),
+            (
+                TerminalError::NotFound("claude".into()),
+                TurnFailureKind::ProviderSetup,
+            ),
+            (
+                TerminalError::VersionUnsupported("Codex".into()),
+                TurnFailureKind::ProviderSetup,
+            ),
             (TerminalError::Timeout, TurnFailureKind::ProviderTransient),
-            (TerminalError::InactivityTimeout, TurnFailureKind::ProviderTransient),
-            (TerminalError::Process("exit 1".into()), TurnFailureKind::ProviderTransient),
+            (
+                TerminalError::InactivityTimeout,
+                TurnFailureKind::ProviderTransient,
+            ),
+            (
+                TerminalError::Process("exit 1".into()),
+                TurnFailureKind::ProviderTransient,
+            ),
             (TerminalError::OutputLimit, TurnFailureKind::ReplyUnreadable),
             (TerminalError::Cancelled, TurnFailureKind::Cancelled),
         ];
@@ -570,17 +603,47 @@ mod tests {
     #[test]
     fn rows_written_before_typing_are_classified_from_their_text() {
         let cases = [
-            ("Suggested dependency was not supplied by the host", TurnFailureKind::DependencyUnresolved),
-            ("Proposed dependency was not supplied by the host", TurnFailureKind::DependencyUnresolved),
-            ("Invalid discovery language or question count", TurnFailureKind::ReplyUnreadable),
-            ("expected value at line 1 column 1", TurnFailureKind::ReplyUnreadable),
-            ("execução CLI excedeu o tempo limite", TurnFailureKind::ProviderTransient),
-            ("execução CLI falhou: Codex encerrou com código Some(1)", TurnFailureKind::ProviderTransient),
-            ("execução CLI falhou: A verificação de versão excedeu 10 segundos.", TurnFailureKind::ProviderTransient),
-            ("Application restarted during feature discovery", TurnFailureKind::Interrupted),
-            ("Feature changed while the response was generated", TurnFailureKind::StaleFeature),
+            (
+                "Suggested dependency was not supplied by the host",
+                TurnFailureKind::DependencyUnresolved,
+            ),
+            (
+                "Proposed dependency was not supplied by the host",
+                TurnFailureKind::DependencyUnresolved,
+            ),
+            (
+                "Invalid discovery language or question count",
+                TurnFailureKind::ReplyUnreadable,
+            ),
+            (
+                "expected value at line 1 column 1",
+                TurnFailureKind::ReplyUnreadable,
+            ),
+            (
+                "execução CLI excedeu o tempo limite",
+                TurnFailureKind::ProviderTransient,
+            ),
+            (
+                "execução CLI falhou: Codex encerrou com código Some(1)",
+                TurnFailureKind::ProviderTransient,
+            ),
+            (
+                "execução CLI falhou: A verificação de versão excedeu 10 segundos.",
+                TurnFailureKind::ProviderTransient,
+            ),
+            (
+                "Application restarted during feature discovery",
+                TurnFailureKind::Interrupted,
+            ),
+            (
+                "Feature changed while the response was generated",
+                TurnFailureKind::StaleFeature,
+            ),
             ("Feature conversation cancelled", TurnFailureKind::Cancelled),
-            ("Something nobody wrote a rule for", TurnFailureKind::Unclassified),
+            (
+                "Something nobody wrote a rule for",
+                TurnFailureKind::Unclassified,
+            ),
         ];
         for (text, expected) in cases {
             assert_eq!(TurnFailure::from_legacy(text).kind, expected, "{text}");
@@ -595,7 +658,10 @@ mod tests {
     fn technical_detail_is_redacted_and_bounded() {
         let failure = TurnFailure::new(
             TurnFailureKind::Unclassified,
-            format!("Authorization: Bearer abcdefghijklmnop {}", "x".repeat(4000)),
+            format!(
+                "Authorization: Bearer abcdefghijklmnop {}",
+                "x".repeat(4000)
+            ),
         );
         assert!(!failure.technical.contains("abcdefghijklmnop"));
         assert!(failure.technical.chars().count() <= TECHNICAL_DETAIL_LIMIT + 1);
@@ -615,9 +681,18 @@ mod tests {
         ];
         let (id, actions) = failure_actions(&history, TurnKind::Discovery).unwrap();
         assert_eq!(id, "b");
-        assert_eq!(actions, FailureActions { retry: true, ask_agent: true });
+        assert_eq!(
+            actions,
+            FailureActions {
+                retry: true,
+                ask_agent: true
+            }
+        );
 
-        let running = [failed("a", TurnFailureKind::ReplyUnreadable), turn("b", "running", TurnKind::Discovery, None)];
+        let running = [
+            failed("a", TurnFailureKind::ReplyUnreadable),
+            turn("b", "running", TurnKind::Discovery, None),
+        ];
         assert!(failure_actions(&running, TurnKind::Discovery).is_none());
 
         let cancelled = [turn(
@@ -643,7 +718,12 @@ mod tests {
             failed("a", TurnFailureKind::ReplyLanguage),
             failed("b", TurnFailureKind::ReplyUnreadable),
         ];
-        assert!(failure_actions(&different, TurnKind::Discovery).unwrap().1.ask_agent);
+        assert!(
+            failure_actions(&different, TurnKind::Discovery)
+                .unwrap()
+                .1
+                .ask_agent
+        );
 
         let analysis = [turn(
             "a",
@@ -656,6 +736,11 @@ mod tests {
         assert!(!actions.ask_agent);
 
         let setup = [failed("a", TurnFailureKind::ProviderSetup)];
-        assert!(!failure_actions(&setup, TurnKind::Discovery).unwrap().1.ask_agent);
+        assert!(
+            !failure_actions(&setup, TurnKind::Discovery)
+                .unwrap()
+                .1
+                .ask_agent
+        );
     }
 }

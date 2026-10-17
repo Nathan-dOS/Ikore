@@ -334,11 +334,7 @@ impl ForgeUi {
             .update(cx, |input, cx| input.set_value(String::new(), cx));
     }
 
-    pub fn is_task_selectable(
-        &self,
-        task: &WorkTask,
-        failed_pulsations: &HashSet<String>,
-    ) -> bool {
+    pub fn is_task_selectable(&self, task: &WorkTask, failed_pulsations: &HashSet<String>) -> bool {
         task.state == "ready"
             || (task.state == "queued"
                 && task
@@ -359,11 +355,7 @@ impl ForgeUi {
         self.path_hint_inputs.retain(|id, _| eligible.contains(id));
     }
 
-    pub fn apply_snapshot(
-        &mut self,
-        snapshot: ForgeSnapshot,
-        failed_pulsations: &HashSet<String>,
-    ) {
+    pub fn apply_snapshot(&mut self, snapshot: ForgeSnapshot, failed_pulsations: &HashSet<String>) {
         self.snapshot = snapshot;
         self.reconcile_selected_tasks(failed_pulsations);
     }
@@ -1809,9 +1801,10 @@ mod tests {
         model.update(cx, |model, cx| {
             let forge = &mut model.forge;
             forge.selected_tasks.insert("task-1".into());
-            forge
-                .path_hint_inputs
-                .insert("task-1".into(), cx.new(|cx| NativeTextInput::new("hint", cx)));
+            forge.path_hint_inputs.insert(
+                "task-1".into(),
+                cx.new(|cx| NativeTextInput::new("hint", cx)),
+            );
             forge
                 .batch_title
                 .update(cx, |input, cx| input.set_value("Batch Title", cx));
@@ -1853,10 +1846,10 @@ mod tests {
         let model = cx.new(AppModel::new_for_test);
         model.update(cx, |model, cx| {
             model.forge.selected_tasks.insert("task-1".into());
-            model
-                .forge
-                .path_hint_inputs
-                .insert("task-1".into(), cx.new(|cx| NativeTextInput::new("hint", cx)));
+            model.forge.path_hint_inputs.insert(
+                "task-1".into(),
+                cx.new(|cx| NativeTextInput::new("hint", cx)),
+            );
             model.forge_action(ForgeAction::ClearSelectedTasks, cx);
             assert!(model.forge.selected_tasks.is_empty());
             assert!(model.forge.path_hint_inputs.is_empty());
@@ -1885,7 +1878,11 @@ mod tests {
         // The backlog card still displays "select-task-task-done-1" because selected == true
         assert!(visual.debug_bounds("select-task-task-done-1").is_some());
         // The composer card displays "remove-selected-task-task-done-1"
-        assert!(visual.debug_bounds("remove-selected-task-task-done-1").is_some());
+        assert!(
+            visual
+                .debug_bounds("remove-selected-task-task-done-1")
+                .is_some()
+        );
         // The composer card displays "clear-selected-tasks"
         assert!(visual.debug_bounds("clear-selected-tasks").is_some());
 
@@ -1915,7 +1912,11 @@ mod tests {
         visual2.run_until_parked();
 
         assert!(visual2.debug_bounds("select-task-task-done-2").is_none());
-        assert!(visual2.debug_bounds("remove-selected-task-task-done-2").is_none());
+        assert!(
+            visual2
+                .debug_bounds("remove-selected-task-task-done-2")
+                .is_none()
+        );
         assert!(visual2.debug_bounds("clear-selected-tasks").is_none());
     }
 }

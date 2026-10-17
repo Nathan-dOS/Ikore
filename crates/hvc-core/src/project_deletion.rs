@@ -255,28 +255,27 @@ fn checked_root(
             "Deletion refuses the application data directory or its parent.".into(),
         ));
     }
-    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-        if let Ok(home) = fs::canonicalize(home) {
-            if home.starts_with(&root) {
-                return Err(Error::Validation(
-                    "Deletion refuses the home directory or its parent.".into(),
-                ));
-            }
-        }
+    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME"))
+        && let Ok(home) = fs::canonicalize(home)
+        && home.starts_with(&root)
+    {
+        return Err(Error::Validation(
+            "Deletion refuses the home directory or its parent.".into(),
+        ));
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        if cwd.starts_with(&root) {
-            return Err(Error::Validation(
-                "Deletion refuses the process working directory.".into(),
-            ));
-        }
+    if let Ok(cwd) = std::env::current_dir()
+        && cwd.starts_with(&root)
+    {
+        return Err(Error::Validation(
+            "Deletion refuses the process working directory.".into(),
+        ));
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if exe.starts_with(&root) {
-            return Err(Error::Validation(
-                "Deletion refuses the running executable directory.".into(),
-            ));
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && exe.starts_with(&root)
+    {
+        return Err(Error::Validation(
+            "Deletion refuses the running executable directory.".into(),
+        ));
     }
     let mut statement = db.prepare("SELECT workspace_path FROM projects WHERE id<>?1")?;
     for other in statement.query_map([&project.id], |r| r.get::<_, String>(0))? {
@@ -518,6 +517,8 @@ fn finish_purged(db: &Connection, data_dir: &Path, id: &str) -> Result<(), Error
         }
         fs::remove_dir_all(&quarantine)?;
     }
+    // Pulsation reports quote the removed project's criteria and paths.
+    crate::reports::store::sweep_orphan_reports(db, data_dir)?;
     db.pragma_update(None, "secure_delete", "ON")?;
     // Compact pages freed by the project graph and FTS before creating a survivor backup.
     db.execute_batch("VACUUM")?;
@@ -563,10 +564,11 @@ fn finish_purged(db: &Connection, data_dir: &Path, id: &str) -> Result<(), Error
             .strip_prefix("hard-vibe-code.pre-v13.")
             .or_else(|| name.strip_prefix("hard-vibe-code.pre-v24."))
             .or_else(|| name.strip_prefix("hard-vibe-code.after-deletion."));
-        if let Some(suffix) = old.and_then(|s| s.strip_suffix(".db")) {
-            if Uuid::parse_str(suffix).is_ok() && entry.file_type()?.is_file() {
-                fs::remove_file(entry.path())?;
-            }
+        if let Some(suffix) = old.and_then(|s| s.strip_suffix(".db"))
+            && Uuid::parse_str(suffix).is_ok()
+            && entry.file_type()?.is_file()
+        {
+            fs::remove_file(entry.path())?;
         }
     }
     db.execute(
@@ -637,6 +639,19 @@ mod tests {
             })
             .unwrap();
         drop(db);
+        // Pulsation reports quote criteria and paths; only the kept
+        // project's may survive.
+        let kept_pulse = service
+            .create_pulsation(CreatePulsationRequest {
+                project_id: kept.id.clone(),
+                feature_name: "Kept pulse".into(),
+            })
+            .unwrap()
+            .pulsation;
+        let deleted_report =
+            crate::reports::store::write_report(&data, &pulse.id, "private report").unwrap();
+        let kept_report =
+            crate::reports::store::write_report(&data, &kept_pulse.id, "kept report").unwrap();
         let old_backup = data.join(format!("hard-vibe-code.pre-v13.{}.db", Uuid::new_v4()));
         fs::copy(service.database_path(), &old_backup).unwrap();
 
@@ -650,6 +665,8 @@ mod tests {
         assert!(!removed.exists());
         assert!(!old_backup.exists());
         assert!(survivor.join("keep.md").exists());
+        assert!(!deleted_report.parent().unwrap().exists());
+        assert_eq!(fs::read_to_string(&kept_report).unwrap(), "kept report");
         let clean_backups = fs::read_dir(&data)
             .unwrap()
             .filter_map(Result::ok)
@@ -953,6 +970,18 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn startup_removes_reports_whose_pulsation_no_longer_exists() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data = fixture.path().join("data");
+        let service = PersistenceService::initialize(&data).unwrap();
+        let orphan = crate::reports::store::write_report(&data, "gone", "orphan").unwrap();
+        drop(service);
+        PersistenceService::initialize(&data).unwrap();
+        assert!(!orphan.parent().unwrap().exists());
+        assert!(data.join(crate::reports::store::REPORTS_DIR).exists());
     }
 
     #[test]

@@ -18,11 +18,11 @@ use crate::llm::{
     Clock, CredentialStore, JitterSource, KeyringCredentialStore, LlmEventSink, StableJitter,
     SystemClock,
 };
-use crate::orchestration::{CollectionBudget, IndexingEventSink};
 use crate::orchestration::brownfield::{
     BrownfieldOnboardingResult, BrownfieldOnboardingStatus, InventoryScanner,
     SetBrownfieldConsentRequest, SetBrownfieldIgnoredRequest,
 };
+use crate::orchestration::{CollectionBudget, IndexingEventSink};
 use crate::persistence_service::{
     PersistenceCommandError, PersistenceService, PersistenceServiceError,
 };
@@ -311,21 +311,29 @@ impl AppCore {
             let mut workspace = self.workspace.lock().map_err(|_| {
                 PersistenceServiceError::Runtime("Workspace lock is unavailable.".into())
             })?;
-            let active = workspace.root_path.as_ref().is_some_and(|root| root == &target);
+            let active = workspace
+                .root_path
+                .as_ref()
+                .is_some_and(|root| root == &target);
             if active {
                 workspace.watcher = None;
                 workspace.root_path = None;
             }
             active
         };
-        let result = self.persistence.delete_project_permanently(project_id, confirmation);
+        let result = self
+            .persistence
+            .delete_project_permanently(project_id, confirmation);
         if result.is_err() && active && target.exists() {
             self.open_workspace(OpenWorkspaceRequest {
                 path: target.to_string_lossy().into_owned(),
-            }).map_err(|error| PersistenceServiceError::Runtime(format!(
-                "Project deletion failed, and the workspace watcher could not restart: {}",
-                error.message
-            )))?;
+            })
+            .map_err(|error| {
+                PersistenceServiceError::Runtime(format!(
+                    "Project deletion failed, and the workspace watcher could not restart: {}",
+                    error.message
+                ))
+            })?;
         }
         result
     }

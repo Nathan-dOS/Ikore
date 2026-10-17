@@ -66,12 +66,13 @@ impl ActivityFeed {
         self.entries.iter().take(limit)
     }
 
-    #[allow(dead_code)]
+    /// Home only reads `recent`; the size accessors exist for the bound and reset tests.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -124,7 +125,10 @@ mod tests {
         let mut feed = ActivityFeed::default();
         let base = SystemTime::UNIX_EPOCH;
         for index in 0..(ACTIVITY_CAP + 5) {
-            feed.push(entry(&format!("e{index}"), base + Duration::from_secs(index as u64)));
+            feed.push(entry(
+                &format!("e{index}"),
+                base + Duration::from_secs(index as u64),
+            ));
         }
         assert_eq!(feed.len(), ACTIVITY_CAP);
         let recent: Vec<&str> = feed.recent(3).map(|e| e.summary.as_ref()).collect();

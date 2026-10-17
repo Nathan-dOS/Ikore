@@ -1,7 +1,7 @@
 # Threat model — runtime CLI multiagente
 
 **Revisão:** 2026-09-03  
-**Escopo:** Codex, Claude Code, Gemini CLI, OpenCode, Antigravity CLI e Custom no Windows x64  
+**Escopo:** Codex, Claude Code, Gemini CLI, OpenCode, Antigravity CLI e Custom no Windows x64<br>
 **Estado:** implementado e revisado para o gate CLI-G3
 
 ## Fronteiras de confiança

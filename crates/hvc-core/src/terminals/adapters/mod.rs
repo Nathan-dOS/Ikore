@@ -352,7 +352,10 @@ fn normalize_json_frame(
         native_session_id: find_session_id(&value),
         observed_model: find_model_id(&value),
         message_id: find_message_id(&value),
-        parent_invocation_id: find_string_for_keys(&value, &["parent_tool_use_id", "parentInvocationId"]),
+        parent_invocation_id: find_string_for_keys(
+            &value,
+            &["parent_tool_use_id", "parentInvocationId"],
+        ),
         agent_id: find_string_for_keys(&value, &["agent_id", "agentId"]),
         is_model_generation,
         is_text,
@@ -448,10 +451,15 @@ fn is_model_generation(backend: CliBackend, value: &Value, kind: TerminalEventKi
 }
 
 fn find_message_id(value: &Value) -> Option<String> {
-    ["/event/message/id", "/message/id", "/item/id", "/message_id"]
-        .into_iter()
-        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
-        .map(str::to_owned)
+    [
+        "/event/message/id",
+        "/message/id",
+        "/item/id",
+        "/message_id",
+    ]
+    .into_iter()
+    .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
+    .map(str::to_owned)
 }
 
 fn find_string_for_keys(value: &Value, keys: &[&str]) -> Option<String> {
@@ -462,9 +470,13 @@ fn find_string_for_keys(value: &Value, keys: &[&str]) -> Option<String> {
                     return Some(value.to_owned());
                 }
             }
-            object.values().find_map(|value| find_string_for_keys(value, keys))
+            object
+                .values()
+                .find_map(|value| find_string_for_keys(value, keys))
         }
-        Value::Array(items) => items.iter().find_map(|value| find_string_for_keys(value, keys)),
+        Value::Array(items) => items
+            .iter()
+            .find_map(|value| find_string_for_keys(value, keys)),
         _ => None,
     }
 }

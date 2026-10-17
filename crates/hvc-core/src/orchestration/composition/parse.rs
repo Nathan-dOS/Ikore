@@ -368,8 +368,7 @@ mod tests {
                 "strict `{}`: {result:?}",
                 example.name
             );
-            let claude_wrapped =
-                serde_json::json!({ "response": &example.instance }).to_string();
+            let claude_wrapped = serde_json::json!({ "response": &example.instance }).to_string();
             let result = parse_unit_response(&claude_wrapped, kind, SchemaFlavor::Claude);
             assert_eq!(
                 result.is_ok(),
@@ -489,12 +488,8 @@ mod tests {
         assert_eq!(err.code, ErrorCode::InvalidShape);
 
         // 4. Mismatched executorKind inside wrapper triggers Invariant::Sc005
-        let err = parse_unit_response(
-            &wrapped,
-            ExecutorKind::CodeRepairer,
-            SchemaFlavor::Claude,
-        )
-        .unwrap_err();
+        let err = parse_unit_response(&wrapped, ExecutorKind::CodeRepairer, SchemaFlavor::Claude)
+            .unwrap_err();
         assert_eq!(err.sc, Invariant::Sc005);
         assert!(err.message.contains("executorKind"), "{}", err.message);
     }

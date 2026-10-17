@@ -23,6 +23,7 @@ pub use learning_report::{
     ReviewLearningGraphDecision, ReviewLearningGraphRequest,
 };
 pub(crate) mod publication;
+pub mod review_brief;
 pub mod stage_preflight;
 pub mod task_refine;
 pub(crate) mod upgrade;

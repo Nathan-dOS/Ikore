@@ -9,7 +9,8 @@ pub type EmbeddingFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<f64>, EmbeddingError>> + Send + 'a>>;
 pub type ModelListFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<String>, EmbeddingError>> + Send + 'a>>;
-pub type ModelPullFuture<'a> = Pin<Box<dyn Future<Output = Result<(), EmbeddingError>> + Send + 'a>>;
+pub type ModelPullFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), EmbeddingError>> + Send + 'a>>;
 
 #[derive(Debug, Clone)]
 pub struct EmbeddingError(pub String);
@@ -451,7 +452,11 @@ mod tests {
         let error = runtime()
             .block_on(gateway.embed("nomic-embed-text", "a very long note"))
             .unwrap_err();
-        assert!(error.0.contains("input length exceeds maximum context length"));
+        assert!(
+            error
+                .0
+                .contains("input length exceeds maximum context length")
+        );
         handle.join().unwrap();
     }
 
@@ -468,8 +473,7 @@ mod tests {
 
     #[test]
     fn list_models_reports_connection_failure_without_panicking() {
-        let gateway =
-            OllamaEmbeddingGateway::with_base_url(Client::new(), "http://127.0.0.1:1");
+        let gateway = OllamaEmbeddingGateway::with_base_url(Client::new(), "http://127.0.0.1:1");
         let error = runtime().block_on(gateway.list_models()).unwrap_err();
         assert!(!error.0.is_empty());
     }
@@ -489,16 +493,27 @@ mod tests {
         assert!(result.is_ok());
         let events = events.into_inner().unwrap();
         assert!(matches!(events[0], ModelPullEvent::Started { .. }));
-        assert!(events.iter().any(
-            |event| matches!(event, ModelPullEvent::Progress { completed: 50, total: 100, .. })
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelPullEvent::Progress {
+                completed: 50,
+                total: 100,
+                ..
+            }
+        )));
+        assert!(matches!(
+            events.last(),
+            Some(ModelPullEvent::Completed { .. })
         ));
-        assert!(matches!(events.last(), Some(ModelPullEvent::Completed { .. })));
         handle.join().unwrap();
     }
 
     #[test]
     fn model_names_match_ignores_tag_suffix() {
-        assert!(model_names_match("nomic-embed-text:latest", "nomic-embed-text"));
+        assert!(model_names_match(
+            "nomic-embed-text:latest",
+            "nomic-embed-text"
+        ));
         assert!(!model_names_match("llama3:8b", "nomic-embed-text"));
     }
 }

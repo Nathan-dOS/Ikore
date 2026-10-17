@@ -444,24 +444,20 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             &format!("{} {}", task.draft.title, task.draft.description),
         )
         .is_empty();
-        let mut item = div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(label(format!("• {}", task.draft.title)))
-                    .child(button(
-                        format!("remove-selected-task-{}", task.id),
-                        "✕",
-                        ForgeAction::ToggleTask(task.id.clone()),
-                        cx,
-                    )),
-            );
+        let mut item = div().flex().flex_col().gap_1().child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(label(format!("• {}", task.draft.title)))
+                .child(button(
+                    format!("remove-selected-task-{}", task.id),
+                    "✕",
+                    ForgeAction::ToggleTask(task.id.clone()),
+                    cx,
+                )),
+        );
         if !has_explicit_path {
             item = item.child(label(
                 "No explicit file path detected; the dispatch gate may block this batch \
@@ -791,20 +787,19 @@ fn turn_notices(turn: &FeatureTurn) -> Option<AnyElement> {
     if turn.notices.is_empty() {
         return None;
     }
-    let mut notes = div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .min_w_0()
-        .child(
-            div()
-                .text_xs()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(theme::warning())
-                .child("Adjusted by the host"),
-        );
+    let mut notes = div().flex().flex_col().gap_1().min_w_0().child(
+        div()
+            .text_xs()
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(theme::warning())
+            .child("Adjusted by the host"),
+    );
     for (index, note) in turn.notices.iter().enumerate() {
-        notes = notes.child(message_card(format!("forge-notice:{}:{index}", turn.id), "Host", note));
+        notes = notes.child(message_card(
+            format!("forge-notice:{}:{index}", turn.id),
+            "Host",
+            note,
+        ));
     }
     Some(notes.into_any_element())
 }
@@ -825,15 +820,28 @@ fn turn_failure_notice(
 ) -> Option<AnyElement> {
     let failure = turn.failure.as_ref()?;
     let explanation = failure.explain();
-    let copy_text = format!("{}\n\n{}\n\n{}\n\n{}", explanation.summary, explanation.cause, explanation.remedy, failure.technical);
+    let copy_text = format!(
+        "{}\n\n{}\n\n{}\n\n{}",
+        explanation.summary, explanation.cause, explanation.remedy, failure.technical
+    );
     if failure.kind == TurnFailureKind::Cancelled {
-        return Some(label("").child(SelectableMessage::new(format!("forge-cancelled:{}", turn.id), explanation.summary)).into_any_element());
+        return Some(
+            label("")
+                .child(SelectableMessage::new(
+                    format!("forge-cancelled:{}", turn.id),
+                    explanation.summary,
+                ))
+                .into_any_element(),
+        );
     }
     let summary = div()
         .text_sm()
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(theme::danger())
-        .child(SelectableMessage::new(format!("forge-summary:{}", turn.id), explanation.summary));
+        .child(SelectableMessage::new(
+            format!("forge-summary:{}", turn.id),
+            explanation.summary,
+        ));
     let Some(actions) = actions else {
         return Some(summary.into_any_element());
     };
@@ -851,10 +859,23 @@ fn turn_failure_notice(
         .bg(theme::danger_soft())
         .min_w_0()
         .child(summary)
-        .child(div().text_sm().child(SelectableMessage::new(format!("forge-cause:{}", turn.id), explanation.cause)))
-        .child(label("").child(SelectableMessage::new(format!("forge-remedy:{}", turn.id), explanation.remedy)));
-    let mut buttons = div().flex().flex_wrap().items_center().gap_2()
-        .child(copy_message_button(format!("forge-failure:{}", turn.id), copy_text));
+        .child(div().text_sm().child(SelectableMessage::new(
+            format!("forge-cause:{}", turn.id),
+            explanation.cause,
+        )))
+        .child(label("").child(SelectableMessage::new(
+            format!("forge-remedy:{}", turn.id),
+            explanation.remedy,
+        )));
+    let mut buttons = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_2()
+        .child(copy_message_button(
+            format!("forge-failure:{}", turn.id),
+            copy_text,
+        ));
     if actions.retry {
         buttons = buttons.child(gated_button(
             format!("retry-feature-turn-{turn_id}"),
@@ -891,7 +912,10 @@ fn turn_failure_notice(
                 .text_xs()
                 .text_color(theme::text_subtle())
                 .min_w_0()
-                .child(SelectableMessage::new(format!("forge-technical:{}", turn.id), failure.technical.clone())),
+                .child(SelectableMessage::new(
+                    format!("forge-technical:{}", turn.id),
+                    failure.technical.clone(),
+                )),
         );
     }
     Some(notice.into_any_element())
@@ -908,7 +932,11 @@ fn incubation_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) ->
             f.revision,
             f.brief.coverage
         )))
-        .child(message_card(format!("forge-idea:{}", f.id), "You", &f.original_idea));
+        .child(message_card(
+            format!("forge-idea:{}", f.id),
+            "You",
+            &f.original_idea,
+        ));
     // Analysis turns share the table but are not conversation -- their verdicts
     // are read in the Triage and Dependencies columns, not here.
     let actionable = failure_actions(&model.forge.history, TurnKind::Discovery);
@@ -918,9 +946,17 @@ fn incubation_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) ->
         .iter()
         .filter(|turn| turn.kind == TurnKind::Discovery)
     {
-        panel = panel.child(message_card(format!("forge-user:{}", turn.id), "You", &turn.user_message));
+        panel = panel.child(message_card(
+            format!("forge-user:{}", turn.id),
+            "You",
+            &turn.user_message,
+        ));
         if let Some(reply) = &turn.assistant_message {
-            panel = panel.child(message_card(format!("forge-assistant:{}", turn.id), "Feature Agent", reply));
+            panel = panel.child(message_card(
+                format!("forge-assistant:{}", turn.id),
+                "Feature Agent",
+                reply,
+            ));
         }
         if let Some(notes) = turn_notices(turn) {
             panel = panel.child(notes);
@@ -929,8 +965,7 @@ fn incubation_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) ->
             .as_ref()
             .filter(|(id, _)| id == &turn.id)
             .map(|(_, actions)| *actions);
-        if let Some(notice) =
-            turn_failure_notice(model, turn, actions, ForgeAction::RetryTurn, cx)
+        if let Some(notice) = turn_failure_notice(model, turn, actions, ForgeAction::RetryTurn, cx)
         {
             panel = panel.child(notice);
         }
@@ -1119,7 +1154,11 @@ fn triage_aside(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> An
                         cx,
                     ));
             } else if let Some(message) = &turn.assistant_message {
-                agent = agent.child(message_card(format!("forge-triage:{}", turn.id), "Feature Agent", message));
+                agent = agent.child(message_card(
+                    format!("forge-triage:{}", turn.id),
+                    "Feature Agent",
+                    message,
+                ));
             }
             let actions = failure_actions(&model.forge.history, TurnKind::Triage)
                 .filter(|(id, _)| id == &turn.id)
@@ -1288,7 +1327,11 @@ fn dependency_analysis_card(model: &AppModel, f: &Feature, cx: &mut Context<AppM
                     cx,
                 ));
         } else if let Some(message) = &turn.assistant_message {
-            agent = agent.child(message_card(format!("forge-dependencies:{}", turn.id), "Feature Agent", message));
+            agent = agent.child(message_card(
+                format!("forge-dependencies:{}", turn.id),
+                "Feature Agent",
+                message,
+            ));
         }
         if let Some(notes) = turn_notices(turn) {
             agent = agent.child(notes);

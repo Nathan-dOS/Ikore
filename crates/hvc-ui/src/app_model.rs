@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[path = "preparation_ui.rs"]
@@ -52,6 +54,7 @@ use crate::lifecycle::LifecycleState;
 use crate::logs::{CoreLogsBackend, LogsBackend, LogsModel, SequenceClassification};
 use crate::pulsations::{
     CorePulsationsBackend, PulsationDetailSection, PulsationsBackend, PulsationsModel,
+    ReportNotice, report_available,
 };
 use crate::session::{
     CoreSessionPersistence, HeaderNoticeAction, HeaderNoticeKind, SESSION_DEBOUNCE,
@@ -255,6 +258,8 @@ struct RestoredSession {
 
 /// Repeated Forge/watcher events inside this window collapse into one activity line.
 const ACTIVITY_COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+/// How often Review re-reads a Visualizer note still being written (ADR-027 M5).
+const VISUALIZER_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Per-tab attention counters shown as header badges and, unfolded, in the status bar. See the UI
 /// flow plan Part 4.4.
@@ -306,6 +311,17 @@ pub struct AppModel {
     pub(crate) description_review_input: Entity<NativeTextInput>,
     pub(crate) specification_answer_inputs: Vec<(String, Entity<NativeTextInput>)>,
     pub(crate) stage_feedback_input: Entity<NativeTextInput>,
+    /// Keeps the Review's C/F/Tab/Enter/R/D bindings reachable after a click on the brief.
+    pub(crate) review_focus: gpui::FocusHandle,
+    /// Notes of flagged brief items, by item index, for the checkpoint in
+    /// `brief_notes_scope` (ADR-024 M2). Never persisted.
+    pub(crate) brief_notes: HashMap<usize, Entity<NativeTextInput>>,
+    brief_notes_scope: Option<(String, u64)>,
+    /// `(pulsation, checkpoint, state version)` the free-text feedback belongs to.
+    stage_feedback_scope: Option<(String, String, u64)>,
+    /// The feedback of the last HITL decision request, for tests.
+    #[cfg(test)]
+    pub(crate) last_revision_feedback: Option<String>,
     pub(crate) preparation_threshold_input: Entity<NativeTextInput>,
     pub(crate) composition_override_model_input: Entity<NativeTextInput>,
     pub(crate) context_limit_input: Entity<NativeTextInput>,
@@ -395,12 +411,18 @@ pub struct AppModel {
     snapshot_pending: Option<Option<String>>,
     snapshot_revision: u64,
     hitl_documents_task: Option<Task<()>>,
+    /// Re-reads a pending Visualizer note until it is written or omitted.
+    visualizer_poll_task: Option<Task<()>>,
     failure_task: Option<Task<()>>,
     failure_detail_task: Option<Task<()>>,
     backend_override_task: Option<Task<()>>,
     backend_override_mutation_task: Option<Task<()>>,
     cleanup_preview_task: Option<Task<()>>,
     cleanup_mutation_task: Option<Task<()>>,
+    report_task: Option<Task<()>>,
+    /// Hands a written pulsation report to the system's default application
+    /// for HTML. Tests replace it: their platform cannot open files.
+    report_opener: ReportOpener,
     artifact_read: crate::lifecycle::RevisionRead,
     backend_read: crate::lifecycle::RevisionRead,
     cleanup_read: crate::lifecycle::RevisionRead,
@@ -588,7 +610,8 @@ impl AppModel {
         let settings_connection_secret_input = cx
             .new(|cx| NativeTextInput::new("API key (will not be displayed again)", cx).obscured());
         let settings_route_name_input = cx.new(|cx| NativeTextInput::new("Route name", cx));
-        let settings_project_delete_input = cx.new(|cx| NativeTextInput::new("Type the exact project name", cx));
+        let settings_project_delete_input =
+            cx.new(|cx| NativeTextInput::new("Type the exact project name", cx));
         let settings_embedding_model_input =
             cx.new(|cx| NativeTextInput::new("Embedding model", cx));
         let chat_draft_input =
@@ -752,6 +775,12 @@ impl AppModel {
             reconciliation_input,
             description_review_input,
             stage_feedback_input,
+            review_focus: cx.focus_handle(),
+            brief_notes: HashMap::new(),
+            brief_notes_scope: None,
+            stage_feedback_scope: None,
+            #[cfg(test)]
+            last_revision_feedback: None,
             preparation_threshold_input,
             composition_override_model_input,
             context_limit_input,
@@ -831,12 +860,15 @@ impl AppModel {
             snapshot_pending: None,
             snapshot_revision: 0,
             hitl_documents_task: None,
+            visualizer_poll_task: None,
             failure_task: None,
             failure_detail_task: None,
             backend_override_task: None,
             backend_override_mutation_task: None,
             cleanup_preview_task: None,
             cleanup_mutation_task: None,
+            report_task: None,
+            report_opener: Rc::new(|path, cx| cx.open_with_system(path)),
             artifact_read: Default::default(),
             backend_read: Default::default(),
             cleanup_read: Default::default(),
@@ -1823,6 +1855,7 @@ impl AppModel {
             self.refresh_pulsation_usage(cx);
         }
         self.sync_preparation_inputs(cx);
+        self.sync_stage_feedback_scope(cx);
         if let Some(active_id) = active_id.clone() {
             self.refresh_backend_override(active_id.clone(), cx);
             self.refresh_cleanup_preview(active_id, cx);
@@ -2227,6 +2260,92 @@ impl AppModel {
         }));
     }
 
+    /// Writes the active pulsation's report and hands it to the system's
+    /// default application for HTML (ADR-027 M6). The file lives under the
+    /// data directory and is rewritten on each request.
+    pub(crate) fn open_pulsation_report(&mut self, cx: &mut Context<Self>) {
+        self.request_pulsation_report(None, cx);
+    }
+
+    /// Asks where to keep a copy of the active pulsation's report, then writes
+    /// the report afresh and copies it there. The copy is the developer's; the
+    /// app never touches it again.
+    pub(crate) fn save_pulsation_report(&mut self, cx: &mut Context<Self>) {
+        let state = self.pulsations.read(cx);
+        if state.report.busy {
+            return;
+        }
+        let Some(pulsation_id) = state
+            .active()
+            .filter(|pulsation| report_available(pulsation))
+            .map(|pulsation| pulsation.id.clone())
+        else {
+            return;
+        };
+        let suggested = format!(
+            "pulsation-report-{}.html",
+            pulsation_id.chars().take(8).collect::<String>()
+        );
+        let chosen = cx.prompt_for_new_path(&report_save_directory(), Some(&suggested));
+        self.report_task = Some(cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(target))) = chosen.await else {
+                return;
+            };
+            let _ = this.update(cx, |model, cx| {
+                // The developer may have moved to another pulsation meanwhile.
+                if model.pulsations.read(cx).active_id().as_deref() == Some(pulsation_id.as_str()) {
+                    model.request_pulsation_report(Some(target), cx);
+                }
+            });
+        }));
+    }
+
+    fn request_pulsation_report(&mut self, copy_to: Option<PathBuf>, cx: &mut Context<Self>) {
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let pulsation_id = self.pulsations.update(cx, |state, _| {
+            if state.report.busy {
+                return None;
+            }
+            let id = state
+                .active()
+                .filter(|pulsation| report_available(pulsation))?
+                .id
+                .clone();
+            state.report.busy = true;
+            state.report.notice = None;
+            Some(id)
+        });
+        let Some(pulsation_id) = pulsation_id else {
+            return;
+        };
+        cx.notify();
+        let saving = copy_to.is_some();
+        self.report_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.write_report(pulsation_id.clone(), copy_to).await;
+            let _ = this.update(cx, |model, cx| {
+                let notice = match result {
+                    Ok(path) if saving => ReportNotice::Saved(path),
+                    Ok(path) => {
+                        let opener = Rc::clone(&model.report_opener);
+                        opener(&path, cx);
+                        ReportNotice::Opened(path)
+                    }
+                    Err(error) => ReportNotice::Failed(error),
+                };
+                model.pulsations.update(cx, |state, _| {
+                    // Leaving the pulsation already reset its card.
+                    if state.active_id().as_deref() == Some(pulsation_id.as_str()) {
+                        state.report.busy = false;
+                        state.report.notice = Some(notice);
+                    }
+                });
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn refresh_hitl_documents(&mut self, cx: &mut Context<Self>) {
         if self.active_view != AppView::Pulsations {
             return;
@@ -2243,14 +2362,64 @@ impl AppModel {
         let project_id = self.workspace.read(cx).project_id.clone();
         self.hitl_documents_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.review_documents(checkpoint.clone()).await;
+            // The brief is a derived view of the same checkpoint: read it only
+            // when the documents are there, and apply both together so the
+            // reader never flashes a document before switching to the brief.
+            let brief = if result.is_ok() {
+                Some(backend.review_brief(checkpoint.clone()).await)
+            } else {
+                None
+            };
+            // The Visualizer's note only exists next to a brief.
+            let visualization = if matches!(brief, Some(Ok(Some(_)))) {
+                Some(backend.checkpoint_visualization(checkpoint.clone()).await)
+            } else {
+                None
+            };
             let _ = this.update(cx, |model, cx| {
                 if model.workspace.read(cx).project_id != project_id {
                     return;
                 }
                 model.pulsations.update(cx, |state, _| {
-                    state.hitl.finish_documents(generation, &checkpoint, result);
+                    if state.hitl.finish_documents(generation, &checkpoint, result)
+                        && let Some(brief) = brief
+                    {
+                        state.hitl.finish_brief(generation, &checkpoint, brief);
+                        if let Some(visualization) = visualization {
+                            state
+                                .hitl
+                                .finish_visualization(generation, &checkpoint, visualization);
+                        }
+                    }
                 });
+                model.schedule_visualizer_poll(cx);
                 cx.notify();
+            });
+        }));
+    }
+
+    /// While the Visualizer is writing the open checkpoint's note, reads it
+    /// again every few seconds; the brief never waits for it.
+    pub(crate) fn schedule_visualizer_poll(&mut self, cx: &mut Context<Self>) {
+        let Some(checkpoint) = self.pulsations.read(cx).hitl.pending_visualization() else {
+            self.visualizer_poll_task = None;
+            return;
+        };
+        let Some(backend) = self.pulsations_backend.clone() else {
+            return;
+        };
+        let timer = cx.background_executor().clone();
+        self.visualizer_poll_task = Some(cx.spawn(async move |this, cx| {
+            timer.timer(VISUALIZER_POLL_INTERVAL).await;
+            let result = backend.checkpoint_visualization(checkpoint.clone()).await;
+            let _ = this.update(cx, |model, cx| {
+                let applied = model.pulsations.update(cx, |state, _| {
+                    state.hitl.update_visualization(&checkpoint, result)
+                });
+                if applied {
+                    model.schedule_visualizer_poll(cx);
+                    cx.notify();
+                }
             });
         }));
     }
@@ -2391,6 +2560,7 @@ impl AppModel {
         self.refresh_failure_detail(cx);
         self.refresh_pulsation_usage(cx);
         self.sync_preparation_inputs(cx);
+        self.sync_stage_feedback_scope(cx);
         self.pulsations.update(cx, |pulsations, _| {
             pulsations.diff_expanded = false;
         });
@@ -3030,6 +3200,105 @@ impl AppModel {
         cx.notify();
     }
 
+    /// The checkpoint the brief notes belong to.
+    fn brief_scope(&self, cx: &gpui::App) -> Option<(String, u64)> {
+        self.pulsations
+            .read(cx)
+            .hitl
+            .expected_checkpoint
+            .as_ref()
+            .map(|checkpoint| (checkpoint.checkpoint_id.clone(), checkpoint.state_version))
+    }
+
+    /// The note input of brief item `index`, created when the item is first
+    /// flagged. Notes of another checkpoint or version are dropped first.
+    fn brief_note_input(
+        &mut self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> Entity<NativeTextInput> {
+        let scope = self.brief_scope(cx);
+        if self.brief_notes_scope != scope {
+            self.brief_notes.clear();
+            self.brief_notes_scope = scope;
+        }
+        if let Some(input) = self.brief_notes.get(&index) {
+            return input.clone();
+        }
+        let input = cx.new(|cx| NativeTextInput::new("What should change? (optional)", cx));
+        cx.observe(&input, |_, _, cx| cx.notify()).detach();
+        self.brief_notes.insert(index, input.clone());
+        input
+    }
+
+    /// Notes of the current checkpoint only, by item index.
+    pub(crate) fn current_brief_notes(
+        &self,
+        cx: &gpui::App,
+    ) -> HashMap<usize, Entity<NativeTextInput>> {
+        if self.brief_notes_scope == self.brief_scope(cx) {
+            self.brief_notes.clone()
+        } else {
+            HashMap::new()
+        }
+    }
+
+    /// Confirms or flags brief item `index` (ADR-024 M2); the same mark again
+    /// reopens it. A flag set with the mouse focuses its note; otherwise the
+    /// focus stays on the review so C/F/Tab keep working.
+    pub(crate) fn toggle_brief_mark(
+        &mut self,
+        index: usize,
+        mark: crate::hitl::ItemMark,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        let marked = self
+            .pulsations
+            .update(cx, |pulsations, _| pulsations.hitl.toggle_mark(index, mark));
+        match (marked, window) {
+            (Some(crate::hitl::ItemMark::Flagged), Some(window)) => {
+                let input = self.brief_note_input(index, cx);
+                gpui::Focusable::focus_handle(input.read(cx), cx).focus(window);
+            }
+            (Some(crate::hitl::ItemMark::Flagged), None) => {
+                self.brief_note_input(index, cx);
+            }
+            (Some(_), Some(window)) => self.review_focus.focus(window),
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn move_brief_cursor(&mut self, forward: bool, cx: &mut Context<Self>) {
+        self.pulsations.update(cx, |pulsations, _| {
+            pulsations.hitl.move_brief_cursor(forward)
+        });
+        cx.notify();
+    }
+
+    /// The Request revision feedback: flagged brief items with their notes,
+    /// then the free-text feedback. Without flags the free text goes out as
+    /// typed, exactly as before the brief existed.
+    fn revision_feedback(&self, cx: &gpui::App) -> String {
+        let free_text = self.stage_feedback_input.read(cx).value().to_owned();
+        let hitl = &self.pulsations.read(cx).hitl;
+        let Some(brief) = hitl.brief.as_ref().filter(|_| hitl.flag_count() > 0) else {
+            return free_text;
+        };
+        let notes = self.current_brief_notes(cx);
+        crate::hitl::compose_revision_feedback(
+            &brief.judgement,
+            &hitl.marks,
+            |index| {
+                notes
+                    .get(&index)
+                    .map(|input| input.read(cx).value().to_owned())
+            },
+            &free_text,
+        )
+    }
+
     pub(crate) fn apply_hitl_decision(&mut self, decision: HitlDecision, cx: &mut Context<Self>) {
         self.confirm_hitl_reject = false;
         self.confirm_stage_reject = false;
@@ -3039,13 +3308,17 @@ impl AppModel {
             .update(cx, |pulsations, _| pulsations.hitl.begin(decision));
         let request = request.map(|mut request| {
             if decision == HitlDecision::RequestRevision {
-                request.feedback = Some(self.stage_feedback_input.read(cx).value().to_owned());
+                request.feedback = Some(self.revision_feedback(cx));
             }
             request
         });
         let Some(request) = request else {
             return;
         };
+        #[cfg(test)]
+        {
+            self.last_revision_feedback = request.feedback.clone();
+        }
         let Some(core) = self.core.clone() else {
             self.pulsations.update(cx, |pulsations, _| {
                 pulsations
@@ -3522,7 +3795,7 @@ impl AppModel {
                     .await;
                 let _ = this.update(cx, |model, cx| {
                     model.chat.update(cx, |chat, _| match result {
-                        _ if chat.target_change_generation != generation => return,
+                        _ if chat.target_change_generation != generation => (),
                         Ok(snapshot)
                             if chat.active_conversation.as_ref().map(AsRef::as_ref)
                                 == Some(conversation_id.as_str()) =>
@@ -5894,9 +6167,12 @@ impl AppModel {
     }
 
     pub(crate) fn select_project_for_deletion(&mut self, id: String, cx: &mut Context<Self>) {
-        let Some(backend) = self.settings_backend.clone() else { return; };
-        self.settings_project_delete_input.update(cx, |input,cx|input.clear(cx));
-        let generation = self.settings.update(cx, |settings,_| {
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        self.settings_project_delete_input
+            .update(cx, |input, cx| input.clear(cx));
+        let generation = self.settings.update(cx, |settings, _| {
             settings.deletion_generation = settings.deletion_generation.saturating_add(1);
             settings.deletion_project_id = Some(id.clone());
             settings.deletion_preview = None;
@@ -5905,58 +6181,99 @@ impl AppModel {
             settings.deletion_generation
         });
         cx.notify();
-        cx.spawn(async move |this,cx| {
+        cx.spawn(async move |this, cx| {
             let result = backend.preview_project_deletion(id.clone()).await;
-            let _ = this.update(cx, |model,cx| {
-                model.settings.update(cx,|settings,_| {
-                    if settings.deletion_generation != generation || settings.deletion_project_id.as_deref()!=Some(&id) {return;}
-                    settings.deletion_loading=false;
+            let _ = this.update(cx, |model, cx| {
+                model.settings.update(cx, |settings, _| {
+                    if settings.deletion_generation != generation
+                        || settings.deletion_project_id.as_deref() != Some(&id)
+                    {
+                        return;
+                    }
+                    settings.deletion_loading = false;
                     match result {
-                        Ok(preview)=>settings.deletion_preview=Some(preview),
-                        Err(error)=>settings.error=Some(error),
+                        Ok(preview) => settings.deletion_preview = Some(preview),
+                        Err(error) => settings.error = Some(error),
                     }
                 });
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
     }
 
     pub(crate) fn cancel_project_deletion(&mut self, cx: &mut Context<Self>) {
-        if self.settings.read(cx).deletion_busy {return;}
-        self.settings.update(cx,|settings,_| {
-            settings.deletion_generation=settings.deletion_generation.saturating_add(1);
-            settings.deletion_project_id=None;
-            settings.deletion_preview=None;
-            settings.deletion_loading=false;
-            settings.deletion_busy=false;
-            settings.error=None;
+        if self.settings.read(cx).deletion_busy {
+            return;
+        }
+        self.settings.update(cx, |settings, _| {
+            settings.deletion_generation = settings.deletion_generation.saturating_add(1);
+            settings.deletion_project_id = None;
+            settings.deletion_preview = None;
+            settings.deletion_loading = false;
+            settings.deletion_busy = false;
+            settings.error = None;
         });
-        self.settings_project_delete_input.update(cx,|input,cx|input.clear(cx));
+        self.settings_project_delete_input
+            .update(cx, |input, cx| input.clear(cx));
         cx.notify();
     }
 
     pub(crate) fn confirm_project_deletion(&mut self, cx: &mut Context<Self>) {
-        let Some(backend)=self.settings_backend.clone() else {return;};
-        let (preview,generation,busy)={
-            let settings=self.settings.read(cx);
-            (settings.deletion_preview.clone(),settings.deletion_generation,settings.deletion_busy)
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
         };
-        let Some(preview)=preview else {return;};
-        if busy {return;}
-        let confirmation=self.settings_project_delete_input.read(cx).value().to_owned();
-        if confirmation!=preview.project.name {
-            self.settings.update(cx,|settings,_|settings.error=Some(UiCommandError::worker("Type the exact project name to confirm deletion.")));
+        let (preview, generation, busy) = {
+            let settings = self.settings.read(cx);
+            (
+                settings.deletion_preview.clone(),
+                settings.deletion_generation,
+                settings.deletion_busy,
+            )
+        };
+        let Some(preview) = preview else {
+            return;
+        };
+        if busy {
+            return;
+        }
+        let confirmation = self
+            .settings_project_delete_input
+            .read(cx)
+            .value()
+            .to_owned();
+        if confirmation != preview.project.name {
+            self.settings.update(cx, |settings, _| {
+                settings.error = Some(UiCommandError::worker(
+                    "Type the exact project name to confirm deletion.",
+                ))
+            });
             cx.notify();
             return;
         }
-        let active=self.workspace.read(cx).project_id.as_ref().is_some_and(|id|id.as_ref()==preview.project.id);
-        if active && self.workspace.read(cx).tabs.iter().any(|tab|tab.dirty || tab.saving || tab.conflict.is_some()) {
+        let active = self
+            .workspace
+            .read(cx)
+            .project_id
+            .as_ref()
+            .is_some_and(|id| id.as_ref() == preview.project.id);
+        if active
+            && self
+                .workspace
+                .read(cx)
+                .tabs
+                .iter()
+                .any(|tab| tab.dirty || tab.saving || tab.conflict.is_some())
+        {
             self.settings.update(cx,|settings,_|settings.error=Some(UiCommandError::worker("Save or close all dirty, saving or conflicted editor tabs before deleting this project.")));
             cx.notify();
             return;
         }
-        let id=preview.project.id.clone();
-        self.settings.update(cx,|settings,_| {settings.deletion_busy=true;settings.error=None;});
+        let id = preview.project.id.clone();
+        self.settings.update(cx, |settings, _| {
+            settings.deletion_busy = true;
+            settings.error = None;
+        });
         cx.notify();
         cx.spawn(async move |this,cx| {
             let result=backend.delete_project_permanently(id.clone(),confirmation).await;
@@ -5990,25 +6307,32 @@ impl AppModel {
 
     fn clear_deleted_active_project(&mut self, cx: &mut Context<Self>) {
         self.session_task.take();
-        self.session_generation=self.session_generation.saturating_add(1);
+        self.session_generation = self.session_generation.saturating_add(1);
         self.workspace_task.take();
         self.brownfield_task.take();
-        self.brownfield_generation=self.brownfield_generation.saturating_add(1);
-        self.workspace.update(cx,|workspace,cx| {
-            workspace.project_id=None;
-            workspace.root_path=None;
-            workspace.root_path_canonical=None;
+        self.brownfield_generation = self.brownfield_generation.saturating_add(1);
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.project_id = None;
+            workspace.root_path = None;
+            workspace.root_path_canonical = None;
             workspace.tree.clear();
             workspace.tabs.clear();
-            workspace.active_relative_path=None;
-            workspace.editor.update(cx,|editor,cx|*editor=crate::native_editor::NativeEditor::new(cx));
+            workspace.active_relative_path = None;
+            workspace.editor.update(cx, |editor, cx| {
+                *editor = crate::native_editor::NativeEditor::new(cx)
+            });
         });
-        self.pulsations.update(cx,|pulsations,_|pulsations.reset(None));
-        self.chat.update(cx,|chat,_|*chat=ChatModel::default());
-        self.agents.update(cx,|agents,_|*agents=crate::agents::AgentsModel::default());
-        self.vault.update(cx,|vault,_|*vault=VaultModel::default());
-        self.forge=crate::forge::ForgeUi::new(cx);
-        self.navigation.update(cx,|navigation,_|navigation.active=AppView::Home);
+        self.pulsations
+            .update(cx, |pulsations, _| pulsations.reset(None));
+        self.chat.update(cx, |chat, _| *chat = ChatModel::default());
+        self.agents.update(cx, |agents, _| {
+            *agents = crate::agents::AgentsModel::default()
+        });
+        self.vault
+            .update(cx, |vault, _| *vault = VaultModel::default());
+        self.forge = crate::forge::ForgeUi::new(cx);
+        self.navigation
+            .update(cx, |navigation, _| navigation.active = AppView::Home);
     }
 
     pub(crate) fn run_settings_operation(
@@ -7958,6 +8282,18 @@ fn load_tab(core: &AppCore, snapshot: UiTabSnapshot) -> LoadedTab {
     }
 }
 
+/// Opens a written pulsation report.
+type ReportOpener = Rc<dyn Fn(&Path, &mut gpui::App)>;
+
+/// Where "Save as…" starts for a pulsation report: the developer's home
+/// folder, never the project, whose repository the report must not enter.
+fn report_save_directory() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -8125,6 +8461,8 @@ mod tests {
         cleanup_preview_calls: Arc<Mutex<Vec<String>>>,
         cleanup_calls: Arc<Mutex<Vec<hvc_core::orchestration::CleanupFailedPulsationFilesRequest>>>,
         cleanup_plan: Arc<Mutex<Option<hvc_core::orchestration::FailedPulsationCleanupPlan>>>,
+        report_calls: Arc<Mutex<Vec<ReportCall>>>,
+        report_error: Arc<Mutex<Option<String>>>,
         snapshot: Arc<Mutex<PulsationRuntimeSnapshot>>,
         artifacts: Arc<Mutex<Vec<Artifact>>>,
         resolution_chips: Arc<Mutex<Vec<hvc_core::orchestration::SpecificationQuestionSet>>>,
@@ -8143,6 +8481,8 @@ mod tests {
                 cleanup_preview_calls: Arc::new(Mutex::new(Vec::new())),
                 cleanup_calls: Arc::new(Mutex::new(Vec::new())),
                 cleanup_plan: Arc::new(Mutex::new(None)),
+                report_calls: Arc::new(Mutex::new(Vec::new())),
+                report_error: Arc::new(Mutex::new(None)),
                 snapshot: Arc::new(Mutex::new(PulsationRuntimeSnapshot {
                     details: Vec::new(),
                     coordination: None,
@@ -8311,6 +8651,38 @@ mod tests {
                 })
             })
         }
+
+        fn write_report(
+            &self,
+            pulsation_id: String,
+            copy_to: Option<PathBuf>,
+        ) -> PulsationsFuture<PathBuf> {
+            self.report_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((pulsation_id.clone(), copy_to.clone()));
+            let error = self
+                .report_error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            Box::pin(async move {
+                match error {
+                    Some(error) => Err(error),
+                    None => Ok(copy_to.unwrap_or_else(|| written_report(&pulsation_id))),
+                }
+            })
+        }
+    }
+
+    /// A pulsation id and the copy target of one `write_report` call.
+    type ReportCall = (String, Option<PathBuf>);
+
+    fn written_report(pulsation_id: &str) -> PathBuf {
+        PathBuf::from("data")
+            .join("reports")
+            .join(pulsation_id)
+            .join("pulsation-report.html")
     }
 
     struct RecordingVaultBackend {
@@ -10155,6 +10527,99 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .len(),
             2
+        );
+    }
+
+    /// ADR-027 M6: the report card does nothing before the report exists,
+    /// opens the written file, saves a copy only where the developer chose,
+    /// and shows a failure on the card.
+    #[gpui::test]
+    fn the_pulsation_report_opens_or_saves_only_once_available(cx: &mut TestAppContext) {
+        use crate::pulsations::ReportNotice;
+        let pulsations_backend = Arc::new(RecordingPulsationsBackend::new());
+        let report_calls = Arc::clone(&pulsations_backend.report_calls);
+        let report_error = Arc::clone(&pulsations_backend.report_error);
+        let snapshot = Arc::clone(&pulsations_backend.snapshot);
+        let opened: Rc<std::cell::RefCell<Vec<PathBuf>>> = Rc::default();
+        let model = cx.new(|cx| {
+            AppModel::new_for_test_with_domain_backends(
+                pulsations_backend,
+                Arc::new(RecordingVaultBackend::new()),
+                cx,
+            )
+        });
+        model.update(cx, |model, cx| {
+            let opened = Rc::clone(&opened);
+            model.report_opener = Rc::new(move |path, _| opened.borrow_mut().push(path.into()));
+            configure_domain_workspace(model, cx);
+            model.select_view(AppView::Pulsations, cx);
+            model.refresh_pulsations(cx);
+        });
+        cx.run_until_parked();
+        let notice = |cx: &mut TestAppContext| {
+            cx.read(|cx| {
+                let report = &model.read(cx).pulsations.read(cx).report;
+                assert!(!report.busy);
+                report.notice.clone()
+            })
+        };
+
+        // Running at Code: neither action reaches the host or asks for a path.
+        model.update(cx, |model, cx| {
+            model.open_pulsation_report(cx);
+            model.save_pulsation_report(cx);
+        });
+        cx.run_until_parked();
+        assert!(report_calls.lock().unwrap().is_empty());
+        assert!(!cx.did_prompt_for_new_path());
+        assert_eq!(notice(cx), None);
+
+        {
+            let mut snapshot = snapshot.lock().unwrap();
+            snapshot.pulsations[0].stage = PulsationStage::Integrator;
+            snapshot.pulsations[0].status = PulsationStatus::Checkpoint;
+        }
+        model.update(cx, |model, cx| model.refresh_pulsations(cx));
+        cx.run_until_parked();
+        model.update(cx, |model, cx| model.open_pulsation_report(cx));
+        cx.run_until_parked();
+        let written = written_report("pulse-1");
+        assert_eq!(
+            *report_calls.lock().unwrap(),
+            [("pulse-1".to_owned(), None)]
+        );
+        assert_eq!(*opened.borrow(), std::slice::from_ref(&written));
+        assert_eq!(notice(cx), Some(ReportNotice::Opened(written)));
+
+        // A cancelled "Save as…" writes nothing; a chosen path gets a copy
+        // and nothing opens.
+        model.update(cx, |model, cx| model.save_pulsation_report(cx));
+        cx.simulate_new_path_selection(|_| None);
+        cx.run_until_parked();
+        assert_eq!(report_calls.lock().unwrap().len(), 1);
+        let copy = PathBuf::from("copies").join("report.html");
+        model.update(cx, |model, cx| model.save_pulsation_report(cx));
+        cx.simulate_new_path_selection({
+            let copy = copy.clone();
+            move |_| Some(copy)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            report_calls.lock().unwrap()[1],
+            ("pulse-1".to_owned(), Some(copy.clone()))
+        );
+        assert_eq!(opened.borrow().len(), 1);
+        assert_eq!(notice(cx), Some(ReportNotice::Saved(copy)));
+
+        *report_error.lock().unwrap() = Some("The report could not be written.".into());
+        model.update(cx, |model, cx| model.open_pulsation_report(cx));
+        cx.run_until_parked();
+        assert_eq!(opened.borrow().len(), 1);
+        assert_eq!(
+            notice(cx),
+            Some(ReportNotice::Failed(
+                "The report could not be written.".into()
+            ))
         );
     }
 

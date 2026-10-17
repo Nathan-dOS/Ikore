@@ -1101,29 +1101,33 @@ impl SqliteLlmRepository {
         requested_model: &str,
         observed_model: Option<&str>,
     ) -> Result<(), LlmError> {
-        self.connection()?.execute(
-            "INSERT INTO llm_model_observations(
+        self.connection()?
+            .execute(
+                "INSERT INTO llm_model_observations(
                attempt_id,ordinal,generation_id,agent_role,agent_target,parent_invocation_id,
                provider_id,requested_model,observed_model,created_at
              ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            params![
-                attempt_id,
-                ordinal,
-                generation_id,
-                agent_role.map(AgentRole::as_str),
-                agent_target,
-                parent_invocation_id,
-                provider_id,
-                requested_model,
-                observed_model,
-                Utc::now().to_rfc3339(),
-            ],
-        ).map_err(db_error)?;
+                params![
+                    attempt_id,
+                    ordinal,
+                    generation_id,
+                    agent_role.map(AgentRole::as_str),
+                    agent_target,
+                    parent_invocation_id,
+                    provider_id,
+                    requested_model,
+                    observed_model,
+                    Utc::now().to_rfc3339(),
+                ],
+            )
+            .map_err(db_error)?;
         if let Some(model) = observed_model {
-            self.connection()?.execute(
-                "UPDATE llm_attempts SET observed_model=?1 WHERE id=?2",
-                params![model, attempt_id],
-            ).map_err(db_error)?;
+            self.connection()?
+                .execute(
+                    "UPDATE llm_attempts SET observed_model=?1 WHERE id=?2",
+                    params![model, attempt_id],
+                )
+                .map_err(db_error)?;
         }
         Ok(())
     }

@@ -18,9 +18,9 @@ use crate::icons::Icon;
 use crate::logs_view::logs_panel;
 use crate::native_editor::register_editor_keybindings;
 use crate::pulsations_view::pulsations_panel;
-use crate::settings::SettingsPage;
 #[cfg(test)]
 use crate::session::HeaderNoticeKind;
+use crate::settings::SettingsPage;
 use crate::sizing::{HEADER_HEIGHT, NAV_RAIL_WIDTH, STATUS_BAR_HEIGHT};
 use crate::text_input::register_text_input_keybindings;
 use crate::theme;
@@ -475,20 +475,13 @@ fn header_context(model: &AppModel, window: &Window, cx: &mut Context<AppModel>)
 /// facts that are about the app rather than the current pulsation.
 fn header_health(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let needs_resync = model.needs_resync();
-    let cli_ready = model
-        .agents
-        .read(cx)
-        .snapshot
-        .as_ref()
-        .map(|snapshot| {
-            snapshot
-                .discovery
-                .iter()
-                .filter(|cli| {
-                    cli.state == hvc_core::terminals::CliAvailabilityState::Available
-                })
-                .count()
-        });
+    let cli_ready = model.agents.read(cx).snapshot.as_ref().map(|snapshot| {
+        snapshot
+            .discovery
+            .iter()
+            .filter(|cli| cli.state == hvc_core::terminals::CliAvailabilityState::Available)
+            .count()
+    });
     let providers = model
         .settings
         .read(cx)
@@ -661,7 +654,11 @@ fn status_segment(
 }
 
 /// Passive footer readout in the monospace column on the right.
-fn status_readout(id: &'static str, glyph: Option<Icon>, text: impl Into<SharedString>) -> AnyElement {
+fn status_readout(
+    id: &'static str,
+    glyph: Option<Icon>,
+    text: impl Into<SharedString>,
+) -> AnyElement {
     div()
         .id(id)
         .debug_selector(move || id.into())

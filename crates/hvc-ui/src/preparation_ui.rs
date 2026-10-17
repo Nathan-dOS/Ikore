@@ -42,6 +42,43 @@ impl AppModel {
         }
     }
 
+    /// The free-text revision feedback belongs to the waiting checkpoint it was
+    /// written on (ADR-024 M2). The preparation scope above does not change
+    /// between two checkpoints of the same pulsation and input revision, so
+    /// without this a draft typed at Specification would ride along to Contract.
+    pub(crate) fn sync_stage_feedback_scope(&mut self, cx: &mut Context<Self>) {
+        let pulsations = self.pulsations.read(cx);
+        let key = pulsations
+            .hitl
+            .expected_checkpoint
+            .as_ref()
+            .map(|checkpoint| {
+                (
+                    checkpoint.pulsation_id.clone(),
+                    checkpoint.checkpoint_id.clone(),
+                    checkpoint.state_version,
+                )
+            })
+            .or_else(|| {
+                pulsations.failure.checkpoint.as_ref().map(|checkpoint| {
+                    (
+                        checkpoint.pulsation_id.clone(),
+                        checkpoint.checkpoint_id.clone(),
+                        checkpoint.state_version,
+                    )
+                })
+            });
+        if key == self.stage_feedback_scope {
+            return;
+        }
+        let leaving_a_checkpoint = self.stage_feedback_scope.is_some();
+        self.stage_feedback_scope = key;
+        if leaving_a_checkpoint {
+            self.stage_feedback_input
+                .update(cx, |input, cx| input.clear(cx));
+        }
+    }
+
     pub(crate) fn revise_description(&mut self, cx: &mut Context<Self>) {
         let Some(detail) = self.pulsations.read(cx).detail().cloned() else {
             return;

@@ -590,7 +590,9 @@ impl FeatureAgentRuntime {
         let mut db = self.persistence.connection()?;
         let mut tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         if cancellation.is_cancelled() {
-            return Err(TurnFailure::new(TurnFailureKind::Cancelled, "Feature analysis cancelled").into());
+            return Err(
+                TurnFailure::new(TurnFailureKind::Cancelled, "Feature analysis cancelled").into(),
+            );
         }
         let current = feature(&tx, &f.project_id, &f.id)?;
         if current.revision != f.revision {
@@ -721,11 +723,8 @@ impl FeatureAgentRuntime {
         if result.output_language != "en" {
             return Err(wrong_language("outputLanguage was not \"en\"").into());
         }
-        let (proposed, notices) = repair_proposed_dependencies(
-            &snapshot,
-            f,
-            std::mem::take(&mut result.dependencies),
-        );
+        let (proposed, notices) =
+            repair_proposed_dependencies(&snapshot, f, std::mem::take(&mut result.dependencies));
         for proposed in &proposed {
             crate::agent_output_language::validate_english_prose(
                 "dependency rationale",
@@ -739,7 +738,9 @@ impl FeatureAgentRuntime {
         let mut db = self.persistence.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         if cancellation.is_cancelled() {
-            return Err(TurnFailure::new(TurnFailureKind::Cancelled, "Feature analysis cancelled").into());
+            return Err(
+                TurnFailure::new(TurnFailureKind::Cancelled, "Feature analysis cancelled").into(),
+            );
         }
         let current = feature(&tx, &f.project_id, &f.id)?;
         if current.revision != f.revision {
@@ -1039,7 +1040,11 @@ fn resolve_prerequisite(
     {
         return Keep;
     }
-    let Some(task) = snapshot.tasks.iter().find(|task| task.id == prerequisite_id) else {
+    let Some(task) = snapshot
+        .tasks
+        .iter()
+        .find(|task| task.id == prerequisite_id)
+    else {
         return Drop {
             note: "A suggested prerequisite did not match any feature and was ignored.".into(),
         };

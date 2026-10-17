@@ -500,7 +500,11 @@ mod tests {
 
     #[test]
     fn reads_one_unicode_crlf_line_without_materializing_the_document() {
-        let text = format!("{}\r\nvisible 👋\n{}", "prefix\n".repeat(10_000), "suffix\n".repeat(10_000));
+        let text = format!(
+            "{}\r\nvisible 👋\n{}",
+            "prefix\n".repeat(10_000),
+            "suffix\n".repeat(10_000)
+        );
         let buffer = EditorBuffer::new(&text, "r1");
         assert_eq!(buffer.line_content(10_001), "visible 👋");
         assert_eq!(buffer.line_content(usize::MAX), "");

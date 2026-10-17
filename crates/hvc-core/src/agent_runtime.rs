@@ -252,6 +252,9 @@ impl AgentRuntimeConfig {
             // is not listed here at all - its report is deliberately capped
             // rather than floored, and it sets its own budget.
             AgentRole::IntakeRouter | AgentRole::FeatureAgent | AgentRole::LearningAgent => 1_600,
+            // A headline and at most three short notes; the Visualizer caps
+            // its own request well below this floor.
+            AgentRole::Visualizer => 800,
         };
         self.max_output_tokens.max(floor)
     }

@@ -2051,7 +2051,10 @@ impl crate::llm::LlmGateway for ScriptedGateway {
     ) -> crate::llm::GatewayFuture<'a> {
         Box::pin(async move {
             use crate::llm::*;
-            self.prompts.lock().unwrap().push(request.user_prompt.clone());
+            self.prompts
+                .lock()
+                .unwrap()
+                .push(request.user_prompt.clone());
             self.requests.lock().unwrap().push(request.clone());
             let content = {
                 let mut queue = self.responses.lock().unwrap();
@@ -2123,8 +2126,10 @@ impl crate::llm::LlmGateway for FailingGateway {
         _cancellation: &'a CancellationToken,
     ) -> crate::llm::GatewayFuture<'a> {
         Box::pin(async move {
-            Err(crate::llm::LlmError::new(self.0, "the provider refused the request")
-                .with_target("fixture", "fixture", "fixture"))
+            Err(
+                crate::llm::LlmError::new(self.0, "the provider refused the request")
+                    .with_target("fixture", "fixture", "fixture"),
+            )
         })
     }
 }
@@ -2180,7 +2185,11 @@ fn feature_task(f: &Fixture, feature: &Feature) -> WorkTask {
         .unwrap()
 }
 
-async fn only_turn(runtime: &Arc<FeatureAgentRuntime>, f: &Fixture, feature: &Feature) -> FeatureTurn {
+async fn only_turn(
+    runtime: &Arc<FeatureAgentRuntime>,
+    f: &Fixture,
+    feature: &Feature,
+) -> FeatureTurn {
     runtime.wait_for_idle().await;
     runtime
         .history(&f.project, &feature.id)
@@ -2256,7 +2265,11 @@ async fn unresolvable_dependency_suggestions_are_dropped_with_notes_and_the_repl
     );
     assert_eq!(turn.suggested_dependencies[0].prerequisite_id, delivered.id);
     assert_eq!(turn.notices.len(), 3, "{:?}", turn.notices);
-    assert!(turn.notices.iter().all(|note| !note.contains("no-such-identifier")));
+    assert!(
+        turn.notices
+            .iter()
+            .all(|note| !note.contains("no-such-identifier"))
+    );
 }
 
 #[tokio::test]
@@ -2317,7 +2330,11 @@ async fn a_rejected_reply_records_a_typed_failure_and_the_next_prompt_reports_it
         json!("Esta funcionalidade deve permitir que o usuário atualize toda a interface");
     let gateway = ScriptedGateway::new(vec![
         portuguese.to_string(),
-        discovery_reply(&feature, "Desculpe, refiz a especificação em inglês.", vec![]),
+        discovery_reply(
+            &feature,
+            "Desculpe, refiz a especificação em inglês.",
+            vec![],
+        ),
     ]);
     let runtime = runtime_with(&f, gateway.clone());
     runtime
@@ -2348,7 +2365,10 @@ async fn a_rejected_reply_records_a_typed_failure_and_the_next_prompt_reports_it
     runtime.wait_for_idle().await;
     let prompts = gateway.prompts();
     assert_eq!(prompts.len(), 2);
-    assert!(!prompts[0].contains("hostNotice\":"), "nothing had failed yet");
+    assert!(
+        !prompts[0].contains("hostNotice\":"),
+        "nothing had failed yet"
+    );
     let asked = &prompts[1];
     assert!(asked.contains("\"hostNotice\""), "{asked}");
     assert!(asked.contains("English-only rule"));
@@ -2360,7 +2380,13 @@ async fn a_rejected_reply_records_a_typed_failure_and_the_next_prompt_reports_it
 
     // Once the agent has answered, the failure is history, not news.
     runtime
-        .start(&f.project, &feature.id, feature.revision + 1, &id(), "Thanks")
+        .start(
+            &f.project,
+            &feature.id,
+            feature.revision + 1,
+            &id(),
+            "Thanks",
+        )
         .unwrap();
     runtime.wait_for_idle().await;
     let later = gateway.prompts();
@@ -2374,7 +2400,10 @@ async fn a_rejected_reply_records_a_typed_failure_and_the_next_prompt_reports_it
 async fn unreadable_and_provider_failures_are_typed_where_they_happen() {
     let f = Fixture::new();
     let feature = f.feature("Interface update");
-    let runtime = runtime_with(&f, ScriptedGateway::new(vec!["this is not json at all".into()]));
+    let runtime = runtime_with(
+        &f,
+        ScriptedGateway::new(vec!["this is not json at all".into()]),
+    );
     runtime
         .start(&f.project, &feature.id, feature.revision, &id(), "Continue")
         .unwrap();
@@ -2421,14 +2450,23 @@ async fn a_cancelled_turn_is_not_an_error() {
     let feature = f.feature("Export records");
     let (runtime, gateway) = planning_runtime(&f, &feature);
     let turn = runtime
-        .start(&f.project, &feature.id, feature.revision, &id(), "Discuss export")
+        .start(
+            &f.project,
+            &feature.id,
+            feature.revision,
+            &id(),
+            "Discuss export",
+        )
         .unwrap();
     gateway.entered.acquire().await.unwrap().forget();
     assert!(runtime.cancel(&turn));
     runtime.wait_for_idle().await;
     let history = runtime.history(&f.project, &feature.id).unwrap();
     assert_eq!(history[0].status, "cancelled");
-    assert_eq!(history[0].failure.as_ref().unwrap().kind, TurnFailureKind::Cancelled);
+    assert_eq!(
+        history[0].failure.as_ref().unwrap().kind,
+        TurnFailureKind::Cancelled
+    );
     assert!(failure_actions(&history, TurnKind::Discovery).is_none());
 }
 
@@ -2439,7 +2477,8 @@ fn turns_written_before_typed_failures_are_classified_when_read() {
     let db = f.service.connection().unwrap();
     db.execute("INSERT INTO forge_turns(id,feature_id,feature_revision,ordinal,request_id,status,user_message,error,created_at,updated_at) VALUES('old',?1,?2,1,'r1','failed','Answers','Suggested dependency was not supplied by the host','now','now')", params![feature.id, feature.revision]).unwrap();
     db.execute("INSERT INTO forge_turns(id,feature_id,feature_revision,ordinal,request_id,status,user_message,error,created_at,updated_at) VALUES('older',?1,?2,2,'r2','failed','Continue','expected value at line 1 column 1','now','now')", params![feature.id, feature.revision]).unwrap();
-    let history = FeatureAgentRuntime::history_from_connection(&db, &f.project, &feature.id).unwrap();
+    let history =
+        FeatureAgentRuntime::history_from_connection(&db, &f.project, &feature.id).unwrap();
     assert_eq!(
         history[0].failure.as_ref().unwrap().kind,
         TurnFailureKind::DependencyUnresolved

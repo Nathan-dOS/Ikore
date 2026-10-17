@@ -26,15 +26,15 @@ use crate::secret_redactor::redact_secrets;
 
 mod adapters;
 mod codex_model_provenance;
-pub(crate) mod model_identity;
 mod model_catalog;
+pub(crate) mod model_identity;
 mod observation_report;
 
-pub(crate) use model_catalog::{validate_catalog_effort, validate_catalog_model_selection};
 pub use model_catalog::{
     CliModelCatalogEntry, CliModelCatalogService, CliModelCatalogSnapshot, CliModelCatalogSource,
     CliModelCatalogState, CliModelSelectionSource, cli_model_catalog_version,
 };
+pub(crate) use model_catalog::{validate_catalog_effort, validate_catalog_model_selection};
 pub use observation_report::{
     CliObservationGroup, CliObservationRun, ObservationOutcome, PulsationTimeBreakdown,
 };
@@ -108,17 +108,33 @@ impl ProcessTreeJob {
         };
         unsafe {
             let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-            if QueryInformationJobObject(self.handle, JobObjectBasicAccountingInformation,
-                (&raw mut accounting).cast(), std::mem::size_of_val(&accounting) as u32, std::ptr::null_mut()) == 0 {
+            if QueryInformationJobObject(
+                self.handle,
+                JobObjectBasicAccountingInformation,
+                (&raw mut accounting).cast(),
+                std::mem::size_of_val(&accounting) as u32,
+                std::ptr::null_mut(),
+            ) == 0
+            {
                 return Err(std::io::Error::last_os_error());
             }
             let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-            if QueryInformationJobObject(self.handle, JobObjectExtendedLimitInformation,
-                (&raw mut limits).cast(), std::mem::size_of_val(&limits) as u32, std::ptr::null_mut()) == 0 {
+            if QueryInformationJobObject(
+                self.handle,
+                JobObjectExtendedLimitInformation,
+                (&raw mut limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+                std::ptr::null_mut(),
+            ) == 0
+            {
                 return Err(std::io::Error::last_os_error());
             }
-            Ok((accounting.TotalUserTime.max(0) as u64, accounting.TotalKernelTime.max(0) as u64,
-                limits.PeakProcessMemoryUsed as u64, limits.PeakJobMemoryUsed as u64))
+            Ok((
+                accounting.TotalUserTime.max(0) as u64,
+                accounting.TotalKernelTime.max(0) as u64,
+                limits.PeakProcessMemoryUsed as u64,
+                limits.PeakJobMemoryUsed as u64,
+            ))
         }
     }
 }
@@ -440,6 +456,8 @@ pub enum ExecutionOrigin {
     Pipeline,
     Learning,
     Manual,
+    /// The Visualizer's notes on a checkpoint's Review Brief (ADR-027 M5).
+    Review,
 }
 
 impl ExecutionOrigin {
@@ -449,6 +467,7 @@ impl ExecutionOrigin {
             Self::Pipeline => "pipeline",
             Self::Learning => "learning",
             Self::Manual => "manual",
+            Self::Review => "review",
         }
     }
 
@@ -458,6 +477,7 @@ impl ExecutionOrigin {
             "pipeline" => Some(Self::Pipeline),
             "learning" => Some(Self::Learning),
             "manual" => Some(Self::Manual),
+            "review" => Some(Self::Review),
             _ => None,
         }
     }
@@ -596,7 +616,7 @@ pub struct CanonicalAgentDescriptor {
     pub color_key: &'static str,
 }
 
-pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 8] = [
+pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 9] = [
     CanonicalAgentDescriptor {
         role: AgentRole::FeatureAgent,
         name: "FeatureAgent",
@@ -652,6 +672,13 @@ pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 8] = [
         glyph: "*",
         stage: "Learning",
         color_key: "magenta",
+    },
+    CanonicalAgentDescriptor {
+        role: AgentRole::Visualizer,
+        name: "Visualizer",
+        glyph: "~",
+        stage: "Review",
+        color_key: "violet",
     },
 ];
 
@@ -1689,10 +1716,9 @@ impl TerminalRepository {
             }
         };
         let mut connection = self.connection()?;
-        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let (Some(pulsation_id), Some(role)) =
-            (request.pulsation_id.as_deref(), agent_role)
-        {
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let (Some(pulsation_id), Some(role)) = (request.pulsation_id.as_deref(), agent_role) {
             let frozen: Option<(Option<String>, Option<String>)> = transaction
                 .query_row(
                     "SELECT backend,model FROM terminal_runs
@@ -1801,11 +1827,7 @@ impl TerminalRepository {
             .map_err(TerminalError::from)
     }
 
-    fn has_cli_role_run(
-        &self,
-        pulsation_id: &str,
-        role: AgentRole,
-    ) -> Result<bool, TerminalError> {
+    fn has_cli_role_run(&self, pulsation_id: &str, role: AgentRole) -> Result<bool, TerminalError> {
         self.connection()?
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM terminal_runs
@@ -1932,17 +1954,18 @@ impl TerminalRepository {
                 params![now, run_id],
             )?;
         }
-        if changed > 0 && terminal {
-            if let Some(trial_id) = current.observation_trial_id.as_deref() {
-                transaction.execute(
+        if changed > 0
+            && terminal
+            && let Some(trial_id) = current.observation_trial_id.as_deref()
+        {
+            transaction.execute(
                     "UPDATE cli_observation_trials
                      SET settled_runs=settled_runs+1,
                          state=CASE WHEN state='closing' AND settled_runs+1 >= admitted_runs THEN 'completed' ELSE state END,
                          completed_at=CASE WHEN state='closing' AND settled_runs+1 >= admitted_runs THEN ?1 ELSE completed_at END
                      WHERE id=?2 AND state IN ('active','closing')",
-                    params![now, trial_id],
-                )?;
-            }
+                params![now, trial_id],
+            )?;
         }
         transaction.commit()?;
         if changed == 0 {
@@ -2074,7 +2097,9 @@ impl TerminalRepository {
              ORDER BY started_at DESC LIMIT 1",
             [required(project_id, "projectId")?], map_cli_observation_trial,
         ).optional()?;
-        let Some(trial) = trial else { return Ok(None); };
+        let Some(trial) = trial else {
+            return Ok(None);
+        };
         let now = Utc::now().to_rfc3339();
         let changed = tx.execute(
             "UPDATE cli_observation_trials
@@ -2084,7 +2109,9 @@ impl TerminalRepository {
              WHERE id=?2 AND state='active' AND admitted_runs < target_runs",
             params![now, trial.id],
         )?;
-        if changed != 1 { return Err(TerminalError::Conflict); }
+        if changed != 1 {
+            return Err(TerminalError::Conflict);
+        }
         tx.commit()?;
         self.get_cli_observation_trial(&trial.id).map(Some)
     }
@@ -2103,7 +2130,9 @@ impl TerminalRepository {
              WHERE id=?1 AND state IN ('active','closing') AND admitted_runs > settled_runs",
             [trial_id],
         )?;
-        if changed != 1 { return Err(TerminalError::Conflict); }
+        if changed != 1 {
+            return Err(TerminalError::Conflict);
+        }
         tx.commit()?;
         Ok(())
     }
@@ -2114,7 +2143,12 @@ impl TerminalRepository {
         pulsation_id: Option<&str>,
         origin: ExecutionOrigin,
     ) -> Result<Option<CliObservationTrial>, TerminalError> {
-        if pulsation_id.is_none() || !matches!(origin, ExecutionOrigin::Pipeline | ExecutionOrigin::Learning) {
+        if pulsation_id.is_none()
+            || !matches!(
+                origin,
+                ExecutionOrigin::Pipeline | ExecutionOrigin::Learning
+            )
+        {
             return Ok(None);
         }
         self.reserve_cli_observation_slot(project_id)
@@ -2435,7 +2469,8 @@ impl TerminalRepository {
         role: Option<AgentRole>,
     ) -> Result<usize, TerminalError> {
         let mut connection = self.connection()?;
-        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let active: bool = if let Some(role) = role {
             transaction.query_row(
                 "SELECT EXISTS(SELECT 1 FROM terminal_runs WHERE project_id=?1 AND agent_role=?2
@@ -2996,9 +3031,15 @@ fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<TerminalRun> {
 
 fn map_cli_observation_trial(row: &rusqlite::Row<'_>) -> rusqlite::Result<CliObservationTrial> {
     Ok(CliObservationTrial {
-        id: row.get(0)?, project_id: row.get(1)?, state: row.get(2)?, target_runs: row.get(3)?,
-        admitted_runs: row.get(4)?, settled_runs: row.get(5)?, started_at: row.get(6)?,
-        closed_at: row.get(7)?, completed_at: row.get(8)?,
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        state: row.get(2)?,
+        target_runs: row.get(3)?,
+        admitted_runs: row.get(4)?,
+        settled_runs: row.get(5)?,
+        started_at: row.get(6)?,
+        closed_at: row.get(7)?,
+        completed_at: row.get(8)?,
     })
 }
 
@@ -3008,8 +3049,12 @@ fn observation_frame_silence_ms(
     started_at: Option<&str>,
     finished_at: Option<&str>,
 ) -> Result<Option<u64>, TerminalError> {
-    let Some(started_at) = started_at else { return Ok(None); };
-    let Ok(mut previous) = chrono::DateTime::parse_from_rfc3339(started_at) else { return Ok(None); };
+    let Some(started_at) = started_at else {
+        return Ok(None);
+    };
+    let Ok(mut previous) = chrono::DateTime::parse_from_rfc3339(started_at) else {
+        return Ok(None);
+    };
     let mut maximum = 0_u64;
     let mut statement = db.prepare(
         "SELECT created_at FROM terminal_events WHERE run_id=?1 AND stream IS NOT NULL ORDER BY sequence"
@@ -3022,7 +3067,9 @@ fn observation_frame_silence_ms(
             previous = frame_at;
         }
     }
-    if let Some(finished_at) = finished_at.and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok()) {
+    if let Some(finished_at) =
+        finished_at.and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+    {
         maximum = maximum.max((finished_at - previous).num_milliseconds().max(0) as u64);
     }
     Ok(Some(maximum))
@@ -3146,11 +3193,12 @@ fn require_verifiable_cli_selection(
     backend: CliBackend,
     model: Option<&str>,
 ) -> Result<&str, TerminalError> {
-    let model = model.map(str::trim).filter(|model| !model.is_empty()).ok_or_else(|| {
-        TerminalError::ModelUnverified {
+    let model = model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .ok_or_else(|| TerminalError::ModelUnverified {
             detail: format!("{} CLI default has no fixed model ID", backend.label()),
-        }
-    })?;
+        })?;
     if model_identity::verify_model(Some(backend.as_str()), Some(model), Some(model))
         != model_identity::ModelVerification::Verified
     {
@@ -3176,7 +3224,8 @@ fn validate_cli_launch_model(
         if bound.next() != Some(expected) || bound.next().is_some() {
             return Err(TerminalError::ModelMismatch {
                 expected: expected.to_owned(),
-                observed: "Custom CLI launch environment does not bind exactly the selected model".into(),
+                observed: "Custom CLI launch environment does not bind exactly the selected model"
+                    .into(),
             });
         }
         return Ok(());
@@ -3188,7 +3237,9 @@ fn validate_cli_launch_model(
         .filter(|(_, arg)| *arg == "--model" || arg.starts_with("--model="))
         .map(|(index, _)| index);
     let first = positions.next();
-    if first.and_then(|index| spec.args.get(index + 1)).map(String::as_str)
+    if first
+        .and_then(|index| spec.args.get(index + 1))
+        .map(String::as_str)
         != Some(expected)
         || positions.next().is_some()
         || first.is_some_and(|index| spec.args[index] != "--model")
@@ -4471,10 +4522,22 @@ impl TerminalService {
     }
 
     async fn discovery(&self, force: bool) -> Vec<CliAvailability> {
+        self.discovery_with(force, || scan_cli_discovery(self.runtime.clone()))
+            .await
+    }
+
+    async fn discovery_with<F>(
+        &self,
+        force: bool,
+        discover: impl FnOnce() -> F,
+    ) -> Vec<CliAvailability>
+    where
+        F: std::future::Future<Output = Vec<CliAvailability>>,
+    {
         if !force && let Some(items) = self.cache_if_fresh() {
             return items;
         }
-        let items = scan_cli_discovery(self.runtime.clone()).await;
+        let items = discover().await;
         store_cli_discovery(&self.discovery_cache, items.clone());
         items
     }
@@ -5180,7 +5243,11 @@ impl TerminalService {
         if api_recovery_override {
             if config.execution_mode != AgentExecutionMode::ApiDirect {
                 return Err(TerminalError::ModelMismatch {
-                    expected: format!("{}/{}", config.backend.as_str(), config.model.as_deref().unwrap_or("default")),
+                    expected: format!(
+                        "{}/{}",
+                        config.backend.as_str(),
+                        config.model.as_deref().unwrap_or("default")
+                    ),
                     observed: "API recovery override changes the selected backend".into(),
                 });
             }
@@ -5223,11 +5290,21 @@ impl TerminalService {
                 .specialty_override(&request.project_id, &unit.executor_kind)?
         {
             if specialty.execution_mode != config.execution_mode
-                || specialty.backend.is_some_and(|backend| backend != config.backend)
+                || specialty
+                    .backend
+                    .is_some_and(|backend| backend != config.backend)
             {
                 return Err(TerminalError::ModelMismatch {
-                    expected: format!("{}/{}", config.backend.as_str(), config.model.as_deref().unwrap_or("default")),
-                    observed: format!("{}/{}", specialty.backend.unwrap_or(config.backend).as_str(), specialty.model.as_deref().unwrap_or("inherited")),
+                    expected: format!(
+                        "{}/{}",
+                        config.backend.as_str(),
+                        config.model.as_deref().unwrap_or("default")
+                    ),
+                    observed: format!(
+                        "{}/{}",
+                        specialty.backend.unwrap_or(config.backend).as_str(),
+                        specialty.model.as_deref().unwrap_or("inherited")
+                    ),
                 });
             }
             if let Some(specialty_model) = specialty.model.as_deref() {
@@ -5283,7 +5360,11 @@ impl TerminalService {
             && elected != config.backend
         {
             return Err(TerminalError::ModelMismatch {
-                expected: format!("{}/{}", config.backend.as_str(), config.model.as_deref().unwrap_or("default")),
+                expected: format!(
+                    "{}/{}",
+                    config.backend.as_str(),
+                    config.model.as_deref().unwrap_or("default")
+                ),
                 observed: format!("{}/fallback", elected.as_str()),
             });
         }
@@ -5413,6 +5494,8 @@ impl TerminalService {
             ExecutionOrigin::Feature
         } else if agent_role == AgentRole::LearningAgent {
             ExecutionOrigin::Learning
+        } else if agent_role == AgentRole::Visualizer {
+            ExecutionOrigin::Review
         } else {
             ExecutionOrigin::Pipeline
         };
@@ -5439,35 +5522,44 @@ impl TerminalService {
             origin,
         )?;
         let run = match self.repository.create_session_run(CreateSessionRunRequest {
-                project_id: request.project_id.clone(),
-                slot,
-                origin,
-                execution_mode: AgentExecutionMode::CliProcess,
-                backend: Some(config.backend),
-                model: config.model.clone(),
-                pulsation_id: request.pulsation_id.clone(),
-                job_id: request.job_id.clone(),
-                agent_run_id: request.agent_run_id.clone(),
-                llm_execution_id: Some(request.execution_id.0.clone()),
-                parent_run_id: None,
-                continuation_reason: None,
-                observation_trial_id: observation_trial.as_ref().map(|trial| trial.id.clone()),
-            }) {
+            project_id: request.project_id.clone(),
+            slot,
+            origin,
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: Some(config.backend),
+            model: config.model.clone(),
+            pulsation_id: request.pulsation_id.clone(),
+            job_id: request.job_id.clone(),
+            agent_run_id: request.agent_run_id.clone(),
+            llm_execution_id: Some(request.execution_id.0.clone()),
+            parent_run_id: None,
+            continuation_reason: None,
+            observation_trial_id: observation_trial.as_ref().map(|trial| trial.id.clone()),
+        }) {
             Ok(run) => run,
             Err(error) => {
                 if let Some(trial) = observation_trial.as_ref() {
-                    let _ = self.repository.release_cli_observation_reservation(&trial.id);
+                    let _ = self
+                        .repository
+                        .release_cli_observation_reservation(&trial.id);
                 }
                 return Err(error);
             }
         };
-        let deadline = observation_trial.as_ref().map(|_| None).unwrap_or_else(|| Some(request
-            .dispatch
-            .cli_timeout
-            .map_or(request.deadline, |budget| budget.deadline)));
+        let deadline = observation_trial.as_ref().map(|_| None).unwrap_or_else(|| {
+            Some(
+                request
+                    .dispatch
+                    .cli_timeout
+                    .map_or(request.deadline, |budget| budget.deadline),
+            )
+        });
         let run = if let Some(deadline) = deadline {
-            self.repository.set_run_deadline(&run.id, &deadline_timestamp(deadline))?
-        } else { run };
+            self.repository
+                .set_run_deadline(&run.id, &deadline_timestamp(deadline))?
+        } else {
+            run
+        };
         let run = self
             .repository
             .set_adapter_metadata(&run.id, detected_version.as_deref())?;
@@ -5790,7 +5882,8 @@ impl TerminalService {
         let (stream_sender, stream_receiver) = mpsc::channel(PROCESS_EVENT_CHANNEL_CAPACITY);
         let abort_token = CancellationToken::new();
         let abort_reason = Arc::new(Mutex::new(None));
-        let caller_remaining = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        let caller_remaining =
+            deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
         let mut timeout_policy = policy_override.unwrap_or_else(|| match run.slot {
             SessionSlot::FreeForm { .. } => AgentTimeoutPolicy::manual(),
             SessionSlot::Canonical { agent_role } | SessionSlot::Ephemeral { agent_role, .. } => {
@@ -5820,7 +5913,9 @@ impl TerminalService {
             stream_receiver,
             abort_token.clone(),
             Arc::clone(&abort_reason),
-            watchdog.clone().unwrap_or_else(|| ProgressWatchdog::new(AgentTimeoutPolicy::manual())),
+            watchdog
+                .clone()
+                .unwrap_or_else(|| ProgressWatchdog::new(AgentTimeoutPolicy::manual())),
             output_ceiling,
         ));
         let stdout_task = tokio::spawn(read_process_stream(
@@ -5856,20 +5951,41 @@ impl TerminalService {
         };
         let transport_silence_ms = read_clock.max_silence_ms(Instant::now());
         observation_stop.cancel();
-        if let Some(task) = observation_task { let _ = task.await; }
+        if let Some(task) = observation_task {
+            let _ = task.await;
+        }
         if run.observation_trial_id.is_some() {
             let sample = match process_tree.observation() {
-                Ok((user_cpu_100ns, kernel_cpu_100ns, peak_process_memory_bytes, peak_job_memory_bytes)) => CliObservationSample {
-                    observed_at: Utc::now().to_rfc3339(), elapsed_ms: observation_started.elapsed().as_millis() as u64,
-                    user_cpu_100ns: Some(user_cpu_100ns), kernel_cpu_100ns: Some(kernel_cpu_100ns),
-                    peak_process_memory_bytes: Some(peak_process_memory_bytes), peak_job_memory_bytes: Some(peak_job_memory_bytes),
+                Ok((
+                    user_cpu_100ns,
+                    kernel_cpu_100ns,
+                    peak_process_memory_bytes,
+                    peak_job_memory_bytes,
+                )) => CliObservationSample {
+                    observed_at: Utc::now().to_rfc3339(),
+                    elapsed_ms: observation_started.elapsed().as_millis() as u64,
+                    user_cpu_100ns: Some(user_cpu_100ns),
+                    kernel_cpu_100ns: Some(kernel_cpu_100ns),
+                    peak_process_memory_bytes: Some(peak_process_memory_bytes),
+                    peak_job_memory_bytes: Some(peak_job_memory_bytes),
                 },
-                Err(_) => CliObservationSample { observed_at: Utc::now().to_rfc3339(), elapsed_ms: observation_started.elapsed().as_millis() as u64,
-                    user_cpu_100ns: None, kernel_cpu_100ns: None, peak_process_memory_bytes: None, peak_job_memory_bytes: None },
+                Err(_) => CliObservationSample {
+                    observed_at: Utc::now().to_rfc3339(),
+                    elapsed_ms: observation_started.elapsed().as_millis() as u64,
+                    user_cpu_100ns: None,
+                    kernel_cpu_100ns: None,
+                    peak_process_memory_bytes: None,
+                    peak_job_memory_bytes: None,
+                },
             };
-            let _ = self.repository.record_cli_observation_sample(&run.id, &sample);
+            let _ = self
+                .repository
+                .record_cli_observation_sample(&run.id, &sample);
         }
-        let timing_at_termination = watchdog.as_ref().map(ProgressWatchdog::diagnostic).unwrap_or_else(|| "unbounded observation trial".into());
+        let timing_at_termination = watchdog
+            .as_ref()
+            .map(ProgressWatchdog::diagnostic)
+            .unwrap_or_else(|| "unbounded observation trial".into());
         stdout_task.await.map_err(|error| {
             TerminalError::Process(format!("leitor stdout interrompido: {error}"))
         })?;
@@ -6445,23 +6561,29 @@ fn coordinate_process_events_blocking(
                 codex_session_id = Some(session_id);
             }
         }
-        if backend == CliBackend::Codex && is_model_generation && observed_model.is_none() {
-            if let Some(session_id) = codex_session_id.as_deref() {
-                for probe in 0..20 {
-                    let evidence = if let Some(root) = codex_sessions_root.as_deref() {
-                        codex_model_provenance::session_model_from_root(root, session_id, &run.created_at)
-                    } else {
-                        codex_model_provenance::current_session_model(session_id, &run.created_at)
-                    };
-                    if let Some(evidence) = evidence {
-                        observed_model = Some(evidence.latest_model);
-                        codex_turn_models = Some(evidence.turn_models);
-                        model_evidence_source = "codex_turn_context";
-                        break;
-                    }
-                    if probe < 19 {
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
+        if backend == CliBackend::Codex
+            && is_model_generation
+            && observed_model.is_none()
+            && let Some(session_id) = codex_session_id.as_deref()
+        {
+            for probe in 0..20 {
+                let evidence = if let Some(root) = codex_sessions_root.as_deref() {
+                    codex_model_provenance::session_model_from_root(
+                        root,
+                        session_id,
+                        &run.created_at,
+                    )
+                } else {
+                    codex_model_provenance::current_session_model(session_id, &run.created_at)
+                };
+                if let Some(evidence) = evidence {
+                    observed_model = Some(evidence.latest_model);
+                    codex_turn_models = Some(evidence.turn_models);
+                    model_evidence_source = "codex_turn_context";
+                    break;
+                }
+                if probe < 19 {
+                    std::thread::sleep(Duration::from_millis(100));
                 }
             }
         }
@@ -6494,18 +6616,30 @@ fn coordinate_process_events_blocking(
                         expected: run.model.clone().unwrap_or_else(|| "unselected".into()),
                         observed: model,
                     },
-                    model_identity::ModelVerification::Unverified => TerminalError::ModelUnverified {
-                        detail: format!("Codex turn context reported an unverifiable model: {model}"),
-                    },
+                    model_identity::ModelVerification::Unverified => {
+                        TerminalError::ModelUnverified {
+                            detail: format!(
+                                "Codex turn context reported an unverifiable model: {model}"
+                            ),
+                        }
+                    }
                 };
-                signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::ModelIntegrity);
+                signal_process_abort(
+                    &abort_token,
+                    &abort_reason,
+                    ProcessAbortReason::ModelIntegrity,
+                );
                 return Err(error);
             }
         }
         if is_model_generation {
             summary.model_generation_count = summary.model_generation_count.saturating_add(1);
             let Some(model) = observed_model.as_deref() else {
-                signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::ModelIntegrity);
+                signal_process_abort(
+                    &abort_token,
+                    &abort_reason,
+                    ProcessAbortReason::ModelIntegrity,
+                );
                 return Err(TerminalError::ModelUnverified {
                     detail: format!(
                         "backend={}, messageId={}, agentId={}",
@@ -6519,20 +6653,32 @@ fn coordinate_process_events_blocking(
                 signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
                 return Err(error);
             }
-            match model_identity::verify_model(Some(backend.as_str()), run.model.as_deref(), Some(model)) {
+            match model_identity::verify_model(
+                Some(backend.as_str()),
+                run.model.as_deref(),
+                Some(model),
+            ) {
                 model_identity::ModelVerification::Verified => {
                     summary.verified_model_generation_count =
                         summary.verified_model_generation_count.saturating_add(1);
                 }
                 model_identity::ModelVerification::Mismatch => {
-                    signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::ModelIntegrity);
+                    signal_process_abort(
+                        &abort_token,
+                        &abort_reason,
+                        ProcessAbortReason::ModelIntegrity,
+                    );
                     return Err(TerminalError::ModelMismatch {
                         expected: run.model.clone().unwrap_or_else(|| "unselected".into()),
                         observed: model.to_owned(),
                     });
                 }
                 model_identity::ModelVerification::Unverified => {
-                    signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::ModelIntegrity);
+                    signal_process_abort(
+                        &abort_token,
+                        &abort_reason,
+                        ProcessAbortReason::ModelIntegrity,
+                    );
                     return Err(TerminalError::ModelUnverified {
                         detail: format!(
                             "backend={}, requested={}, observed={}",
@@ -6597,15 +6743,29 @@ fn coordinate_process_events_blocking(
         return Err(error);
     }
     if !summary.raw_output.trim().is_empty() && summary.model_generation_count == 0 {
-        signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::ModelIntegrity);
+        signal_process_abort(
+            &abort_token,
+            &abort_reason,
+            ProcessAbortReason::ModelIntegrity,
+        );
         return Err(TerminalError::ModelUnverified {
-            detail: format!("backend={} emitted output without a generation identity", backend.as_str()),
+            detail: format!(
+                "backend={} emitted output without a generation identity",
+                backend.as_str()
+            ),
         });
     }
     if summary.model_generation_count != summary.verified_model_generation_count {
-        signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::ModelIntegrity);
+        signal_process_abort(
+            &abort_token,
+            &abort_reason,
+            ProcessAbortReason::ModelIntegrity,
+        );
         return Err(TerminalError::ModelUnverified {
-            detail: format!("backend={} has an unverified model generation", backend.as_str()),
+            detail: format!(
+                "backend={} has an unverified model generation",
+                backend.as_str()
+            ),
         });
     }
     if incomplete_stream {
@@ -6992,13 +7152,21 @@ fn validate_companion_launch_selection(
     let profiles = match backend {
         CliBackend::Codex => values("-c")
             .into_iter()
-            .filter_map(|value| value.strip_prefix("model_reasoning_effort=\"")?.strip_suffix('"'))
+            .filter_map(|value| {
+                value
+                    .strip_prefix("model_reasoning_effort=\"")?
+                    .strip_suffix('"')
+            })
             .collect::<Vec<_>>(),
         CliBackend::Claude | CliBackend::Antigravity => values("--effort"),
         CliBackend::Opencode => values("--variant"),
         CliBackend::Gemini | CliBackend::Custom => Vec::new(),
     };
-    if profiles.as_slice() != profile.map_or_else(Vec::new, |profile| vec![profile]).as_slice() {
+    if profiles.as_slice()
+        != profile
+            .map_or_else(Vec::new, |profile| vec![profile])
+            .as_slice()
+    {
         return Err(TerminalError::Validation(
             "Companion launch arguments did not bind the selected profile".into(),
         ));
@@ -7021,7 +7189,11 @@ fn companion_model_evidence(
             continue;
         };
         if let Some(requested) = requested {
-            match model_identity::verify_model(Some(backend.as_str()), Some(requested), Some(&model)) {
+            match model_identity::verify_model(
+                Some(backend.as_str()),
+                Some(requested),
+                Some(&model),
+            ) {
                 model_identity::ModelVerification::Verified => {}
                 model_identity::ModelVerification::Mismatch => {
                     return Err(TerminalError::ModelMismatch {
@@ -7035,9 +7207,7 @@ fn companion_model_evidence(
         observed = Some(model);
     }
     let verification = if observed.is_some() && requested.is_some() {
-        if backend == CliBackend::Claude
-            && matches!(requested, Some("haiku" | "sonnet" | "opus"))
-        {
+        if backend == CliBackend::Claude && matches!(requested, Some("haiku" | "sonnet" | "opus")) {
             "family_verified"
         } else {
             "verified"
@@ -7430,9 +7600,10 @@ pub(crate) fn extract_companion_envelope_json(output: &str) -> Option<String> {
                     }
                 }
                 Some("content_block_delta") if event["delta"]["type"] == "input_json_delta" => {
-                    if let (Some(input), Some(fragment)) =
-                        (inputs.get_mut(&index), event["delta"]["partial_json"].as_str())
-                    {
+                    if let (Some(input), Some(fragment)) = (
+                        inputs.get_mut(&index),
+                        event["delta"]["partial_json"].as_str(),
+                    ) {
                         input.push_str(fragment);
                     }
                 }
@@ -7481,7 +7652,9 @@ pub(crate) fn extract_companion_envelope_json(output: &str) -> Option<String> {
                     .and_then(|event| event.get("type").and_then(Value::as_str).map(str::to_owned))
                     .is_some()
             });
-            (!jsonl_transport).then(|| parse_candidate(output, 0)).flatten()
+            (!jsonl_transport)
+                .then(|| parse_candidate(output, 0))
+                .flatten()
         })
         .and_then(|value| serde_json::to_string(&value).ok())
 }
@@ -7899,6 +8072,8 @@ pub(crate) fn configure_hidden(command: &mut Command) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
 
     #[tokio::test]
@@ -8225,10 +8400,13 @@ mod tests {
     #[test]
     fn companion_recovers_only_complete_structured_output_streams() {
         let envelope = serde_json::json!({"response":{"type":"final","text":"Ready"}});
-        let start = |name: &str| serde_json::json!({"type":"stream_event","event":{
-            "type":"content_block_start","index":0,
-            "content_block":{"type":"tool_use","name":name,"input":{}}
-        }}).to_string();
+        let start = |name: &str| {
+            serde_json::json!({"type":"stream_event","event":{
+                "type":"content_block_start","index":0,
+                "content_block":{"type":"tool_use","name":name,"input":{}}
+            }})
+            .to_string()
+        };
         let frames = |name: &str, input: &str| {
             let mut lines = vec![start(name)];
             for chunk in input.as_bytes().chunks(7) {
@@ -8242,17 +8420,40 @@ mod tests {
         };
         let lines = frames("StructuredOutput", &envelope.to_string());
         let recovered = extract_companion_envelope_json(&lines.join("\n")).unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&recovered).unwrap(),
-            serde_json::json!({"type":"final","text":"Ready"}));
-        assert!(extract_companion_envelope_json(&frames("Read", &envelope.to_string()).join("\n")).is_none());
-        assert!(extract_companion_envelope_json(&frames("StructuredOutput", "{\"response\":").join("\n")).is_none());
-        assert!(extract_companion_envelope_json(&frames("StructuredOutput", "{\"response\":{\"type\":\"final\",\"text\":\"Ready\"}").join("\n")).is_none());
+        assert_eq!(
+            serde_json::from_str::<Value>(&recovered).unwrap(),
+            serde_json::json!({"type":"final","text":"Ready"})
+        );
+        assert!(
+            extract_companion_envelope_json(&frames("Read", &envelope.to_string()).join("\n"))
+                .is_none()
+        );
+        assert!(
+            extract_companion_envelope_json(
+                &frames("StructuredOutput", "{\"response\":").join("\n")
+            )
+            .is_none()
+        );
+        assert!(
+            extract_companion_envelope_json(
+                &frames(
+                    "StructuredOutput",
+                    "{\"response\":{\"type\":\"final\",\"text\":\"Ready\"}"
+                )
+                .join("\n")
+            )
+            .is_none()
+        );
         let malformed_single_delta = serde_json::json!({"type":"stream_event","event":{
             "type":"content_block_delta","index":0,"delta":{"type":"input_json_delta",
             "partial_json":"{\"response\":{\"type\":\"final\",\"text\":\"Ready\"}"
-        }}}).to_string();
+        }}})
+        .to_string();
         assert!(extract_companion_envelope_json(&malformed_single_delta).is_none());
-        assert_eq!(companion_envelope_miss(CliBackend::Claude, &lines.join("\n")), "no_control_envelope");
+        assert_eq!(
+            companion_envelope_miss(CliBackend::Claude, &lines.join("\n")),
+            "no_control_envelope"
+        );
     }
 
     /// The rounds that failed on 2026-09-26: the model called the host's
@@ -8509,10 +8710,19 @@ mod tests {
                 }
                 CliBackend::Antigravity => {
                     let deny = antigravity_deny_rules(&spec);
-                    for rule in ["write_file(*)", "command(*)", "read_file(*)", "search_web(*)"] {
+                    for rule in [
+                        "write_file(*)",
+                        "command(*)",
+                        "read_file(*)",
+                        "search_web(*)",
+                    ] {
                         assert!(deny.iter().any(|value| value == rule), "{rule}");
                     }
-                    assert!(spec.args.iter().any(|arg| arg == "--disable-slash-commands"));
+                    assert!(
+                        spec.args
+                            .iter()
+                            .any(|arg| arg == "--disable-slash-commands")
+                    );
                     assert!(guard.is_some());
                 }
                 CliBackend::Custom => unreachable!(),
@@ -8557,7 +8767,10 @@ mod tests {
         }
         assert!(!deny.iter().any(|value| value == "read_file(*)"));
         // The directory is private to this launch and goes away with the guard.
-        let directory = spec.args[0].strip_prefix("--gemini_dir=").unwrap().to_owned();
+        let directory = spec.args[0]
+            .strip_prefix("--gemini_dir=")
+            .unwrap()
+            .to_owned();
         assert!(Path::new(&directory).is_dir());
         drop(guard);
         assert!(!Path::new(&directory).exists());
@@ -8609,14 +8822,20 @@ mod tests {
             let _guard = harden_spec(backend, Hardening::Companion, &mut spec).unwrap();
             validate_companion_launch_selection(&spec, backend, Some(model), Some(profile))
                 .unwrap();
-            assert!(validate_companion_launch_selection(&spec, backend, Some("other"), Some(profile)).is_err());
-            assert!(validate_companion_launch_selection(&spec, backend, Some(model), Some("high")).is_err());
+            assert!(
+                validate_companion_launch_selection(&spec, backend, Some("other"), Some(profile))
+                    .is_err()
+            );
+            assert!(
+                validate_companion_launch_selection(&spec, backend, Some(model), Some("high"))
+                    .is_err()
+            );
         }
 
         let frame = serde_json::json!({"type":"stream_event","session_id":"s-1",
             "event":{"type":"message_start",
                 "message":{"id":"m-1","model":"claude-haiku-4-5-20251001"}}})
-            .to_string();
+        .to_string();
         let (observed, verification) =
             companion_model_evidence(CliBackend::Claude, Some("haiku"), &frame).unwrap();
         assert_eq!(observed.as_deref(), Some("claude-haiku-4-5-20251001"));
@@ -8626,8 +8845,7 @@ mod tests {
             Err(TerminalError::ModelMismatch { .. })
         ));
         assert_eq!(
-            companion_model_evidence(CliBackend::Codex, Some("gpt-5.6-luna"), "")
-                .unwrap(),
+            companion_model_evidence(CliBackend::Codex, Some("gpt-5.6-luna"), "").unwrap(),
             (None, "unverified")
         );
     }
@@ -8756,7 +8974,9 @@ mod tests {
         })
         .unwrap();
         assert!(validate_cli_launch_model(CliBackend::Custom, Some("haiku"), &custom).is_ok());
-        custom.environment.push(("HVC_SELECTED_MODEL".into(), "sonnet".into()));
+        custom
+            .environment
+            .push(("HVC_SELECTED_MODEL".into(), "sonnet".into()));
         assert_eq!(
             validate_cli_launch_model(CliBackend::Custom, Some("haiku"), &custom)
                 .unwrap_err()
@@ -9206,7 +9426,9 @@ mod tests {
             .unwrap()
             .project;
         let repository = TerminalRepository::new(persistence.database_path());
-        repository.ensure_project_configs(&project.id, true).unwrap();
+        repository
+            .ensure_project_configs(&project.id, true)
+            .unwrap();
         let pulse = persistence
             .create_pulsation(CreatePulsationRequest {
                 project_id: project.id.clone(),
@@ -9229,20 +9451,36 @@ mod tests {
         let first = repository
             .create_run(create(AgentRole::IntakeRouter, CliBackend::Claude, "haiku"))
             .unwrap();
-        assert!(repository
-            .has_cli_role_run(&pulse.id, AgentRole::IntakeRouter)
-            .unwrap());
-        assert!(!repository
-            .has_cli_role_run(&pulse.id, AgentRole::BackendAgent)
-            .unwrap());
+        assert!(
+            repository
+                .has_cli_role_run(&pulse.id, AgentRole::IntakeRouter)
+                .unwrap()
+        );
+        assert!(
+            !repository
+                .has_cli_role_run(&pulse.id, AgentRole::BackendAgent)
+                .unwrap()
+        );
         repository
-            .set_run_status(&first.id, TerminalRunStatus::Failed, None, Some("fixture_done"), None)
+            .set_run_status(
+                &first.id,
+                TerminalRunStatus::Failed,
+                None,
+                Some("fixture_done"),
+                None,
+            )
             .unwrap();
         let second = repository
             .create_run(create(AgentRole::IntakeRouter, CliBackend::Claude, "haiku"))
             .unwrap();
         repository
-            .set_run_status(&second.id, TerminalRunStatus::Failed, None, Some("fixture_done"), None)
+            .set_run_status(
+                &second.id,
+                TerminalRunStatus::Failed,
+                None,
+                Some("fixture_done"),
+                None,
+            )
             .unwrap();
         assert!(matches!(
             repository.clear_history(&project.id, Some(AgentRole::IntakeRouter)),
@@ -9250,7 +9488,11 @@ mod tests {
         ));
         assert_eq!(
             repository
-                .create_run(create(AgentRole::IntakeRouter, CliBackend::Claude, "sonnet"))
+                .create_run(create(
+                    AgentRole::IntakeRouter,
+                    CliBackend::Claude,
+                    "sonnet"
+                ))
                 .unwrap_err()
                 .code(),
             "model_mismatch"
@@ -9263,7 +9505,11 @@ mod tests {
             "model_mismatch"
         );
         repository
-            .create_run(create(AgentRole::BackendAgent, CliBackend::Codex, "gpt-5.6-luna"))
+            .create_run(create(
+                AgentRole::BackendAgent,
+                CliBackend::Codex,
+                "gpt-5.6-luna",
+            ))
             .unwrap();
     }
 
@@ -9861,23 +10107,41 @@ mod tests {
         let trial = repository.start_cli_observation_trial(&project.id).unwrap();
 
         // Companion/manual, discovery and non-Pulsation work never consume a slot.
-        assert!(repository
-            .reserve_cli_observation_for_pulsation(&project.id, None, ExecutionOrigin::Pipeline)
-            .unwrap()
-            .is_none());
-        assert!(repository
-            .reserve_cli_observation_for_pulsation(&project.id, Some("pulse"), ExecutionOrigin::Manual)
-            .unwrap()
-            .is_none());
-        assert!(repository
-            .reserve_cli_observation_for_pulsation(&project.id, Some("pulse"), ExecutionOrigin::Feature)
-            .unwrap()
-            .is_none());
+        assert!(
+            repository
+                .reserve_cli_observation_for_pulsation(&project.id, None, ExecutionOrigin::Pipeline)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            repository
+                .reserve_cli_observation_for_pulsation(
+                    &project.id,
+                    Some("pulse"),
+                    ExecutionOrigin::Manual
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            repository
+                .reserve_cli_observation_for_pulsation(
+                    &project.id,
+                    Some("pulse"),
+                    ExecutionOrigin::Feature
+                )
+                .unwrap()
+                .is_none()
+        );
 
         for _ in 0..20 {
             assert_eq!(
                 repository
-                    .reserve_cli_observation_for_pulsation(&project.id, Some("pulse"), ExecutionOrigin::Pipeline)
+                    .reserve_cli_observation_for_pulsation(
+                        &project.id,
+                        Some("pulse"),
+                        ExecutionOrigin::Pipeline
+                    )
                     .unwrap()
                     .as_ref()
                     .map(|reserved| reserved.id.as_str()),
@@ -9887,10 +10151,16 @@ mod tests {
         let closing = repository.get_cli_observation_trial(&trial.id).unwrap();
         assert_eq!(closing.admitted_runs, 20);
         assert_eq!(closing.state, "closing");
-        assert!(repository
-            .reserve_cli_observation_for_pulsation(&project.id, Some("pulse"), ExecutionOrigin::Learning)
-            .unwrap()
-            .is_none());
+        assert!(
+            repository
+                .reserve_cli_observation_for_pulsation(
+                    &project.id,
+                    Some("pulse"),
+                    ExecutionOrigin::Learning
+                )
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// The report explains a run's duration (tokens over throughput, boot,
@@ -10413,7 +10683,11 @@ mod tests {
         ];
         std::fs::write(
             day.join(format!("rollout-fixture-{session_id}.jsonl")),
-            rollout.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"),
+            rollout
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
         )
         .unwrap();
         let (sender, receiver) = mpsc::channel(4);
@@ -10483,7 +10757,11 @@ mod tests {
         ];
         std::fs::write(
             day.join(format!("rollout-fixture-{session_id}.jsonl")),
-            rollout.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"),
+            rollout
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
         )
         .unwrap();
         let (sender, receiver) = mpsc::channel(4);
@@ -10536,11 +10814,13 @@ mod tests {
             .unwrap();
         assert_eq!(observation.0.as_deref(), Some("different-model"));
         assert_eq!(observation.1, "codex_turn_context");
-        assert!(!repository
-            .list_events(&run_id, 0, 100)
-            .unwrap()
-            .iter()
-            .any(|event| event.content.contains("must-not-publish")));
+        assert!(
+            !repository
+                .list_events(&run_id, 0, 100)
+                .unwrap()
+                .iter()
+                .any(|event| event.content.contains("must-not-publish"))
+        );
     }
 
     #[tokio::test]
@@ -10644,7 +10924,12 @@ mod tests {
         assert_eq!(cli_output_ceiling(u32::MAX), u64::from(u32::MAX) * 2);
     }
 
-    fn claude_message(id: &str, input: u64, cached: u64, output: Option<u64>) -> Vec<ProcessStreamItem> {
+    fn claude_message(
+        id: &str,
+        input: u64,
+        cached: u64,
+        output: Option<u64>,
+    ) -> Vec<ProcessStreamItem> {
         let mut frames = vec![claude_frame(serde_json::json!({
             "type":"stream_event","session_id":"s-1",
             "event":{"type":"message_start","message":{
@@ -10791,7 +11076,12 @@ mod tests {
             "model":"claude-haiku-4-5-20251001"}))];
         for (index, output) in outputs.into_iter().enumerate() {
             // The stale `assistant` echo must not count for more than it says.
-            frames.extend(claude_message(&format!("m-{index}"), 8, 20_000, Some(output)));
+            frames.extend(claude_message(
+                &format!("m-{index}"),
+                8,
+                20_000,
+                Some(output),
+            ));
             frames.push(claude_frame(serde_json::json!({
                 "type":"assistant","session_id":"s-1",
                 "message":{"id":format!("m-{index}"),"model":"claude-haiku-4-5-20251001",
@@ -10821,7 +11111,10 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
-        assert_eq!(key_count, 1, "the empty placeholder is replaced, not joined");
+        assert_eq!(
+            key_count, 1,
+            "the empty placeholder is replaced, not joined"
+        );
         assert_eq!(output, 32_624);
         assert_eq!(input, 5 * (8 + 20_000));
         assert_eq!(quality, "partial");
@@ -10836,7 +11129,8 @@ mod tests {
         for _ in 0..10 {
             frames.push(text_delta(&"x".repeat(400)));
         }
-        let (result, _, _, _, _, _data) = run_claude_stream_against_ceiling(frames, Some(1_500)).await;
+        let (result, _, _, _, _, _data) =
+            run_claude_stream_against_ceiling(frames, Some(1_500)).await;
         assert!(matches!(
             result,
             Err(TerminalError::OutputBudgetExceeded { ceiling: 1_500, .. })
@@ -11224,6 +11518,20 @@ mod tests {
         assert_eq!(output.raw_output, "{\"a\":1,\"b\":2}");
     }
 
+    fn discovery_fixture(scan: usize) -> Vec<CliAvailability> {
+        vec![CliAvailability {
+            backend: CliBackend::Custom,
+            state: CliAvailabilityState::Available,
+            executable_path: None,
+            version: Some(format!("fixture-{scan}")),
+            diagnostic: None,
+            install_url: "",
+            install_command: "",
+            capabilities: adapters::capabilities(CliBackend::Custom, None),
+            quota: Vec::new(),
+        }]
+    }
+
     #[tokio::test]
     async fn discovery_rescans_after_the_ttl_elapses_even_without_force() {
         use crate::persistence_service::PersistenceService;
@@ -11238,7 +11546,14 @@ mod tests {
         )
         .unwrap();
 
-        let _first = service.discovery(false).await;
+        let scans = AtomicUsize::new(0);
+        let discover = || {
+            let scan = scans.fetch_add(1, Ordering::SeqCst) + 1;
+            std::future::ready(discovery_fixture(scan))
+        };
+        let first = service.discovery_with(false, &discover).await;
+        assert_eq!(first, discovery_fixture(1));
+        assert_eq!(scans.load(Ordering::SeqCst), 1);
         let stale_at = Instant::now()
             .checked_sub(CLI_DISCOVERY_CACHE_TTL + Duration::from_secs(1))
             .expect("test clock should support subtracting the TTL");
@@ -11252,7 +11567,9 @@ mod tests {
                 .expect("first call must populate the cache")
                 .discovered_at = stale_at;
         }
-        let _second = service.discovery(false).await;
+        let second = service.discovery_with(false, &discover).await;
+        assert_eq!(second, discovery_fixture(2));
+        assert_eq!(scans.load(Ordering::SeqCst), 2);
         let refreshed_at = service
             .discovery_cache
             .lock()
@@ -11280,7 +11597,13 @@ mod tests {
         )
         .unwrap();
 
-        let _first = service.discovery(false).await;
+        let scans = AtomicUsize::new(0);
+        let discover = || {
+            let scan = scans.fetch_add(1, Ordering::SeqCst) + 1;
+            std::future::ready(discovery_fixture(scan))
+        };
+        let first = service.discovery_with(false, &discover).await;
+        assert_eq!(first, discovery_fixture(1));
         let first_stamp = service
             .discovery_cache
             .lock()
@@ -11288,7 +11611,9 @@ mod tests {
             .as_ref()
             .unwrap()
             .discovered_at;
-        let _second = service.discovery(false).await;
+        let second = service.discovery_with(false, &discover).await;
+        assert_eq!(second, first);
+        assert_eq!(scans.load(Ordering::SeqCst), 1);
         let second_stamp = service
             .discovery_cache
             .lock()

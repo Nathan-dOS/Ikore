@@ -152,6 +152,7 @@ pub fn force_api_direct(service: &PersistenceService, project_id: &str) {
         "test_agent",
         "integrator",
         "learning_agent",
+        "visualizer",
     ] {
         db.execute(
             "INSERT INTO cli_agent_configs(

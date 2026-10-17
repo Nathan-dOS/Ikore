@@ -147,7 +147,9 @@ fn gemini_above_the_validated_ceiling_parks_the_job_until_the_developer_validate
         .unwrap();
     assert!(response.report.validated, "{}", response.report.diagnostic);
     assert_eq!(response.report.version.as_deref(), Some("99.0.0"));
-    let resumed = response.pulsation.expect("a passing probe resumes the pulsation");
+    let resumed = response
+        .pulsation
+        .expect("a passing probe resumes the pulsation");
     assert_ne!(resumed.status, PulsationStatus::Checkpoint);
 
     let (status, code, decision) = current_fallback(&harness, &fallback.checkpoint_id);
@@ -184,7 +186,10 @@ fn gemini_above_the_validated_ceiling_parks_the_job_until_the_developer_validate
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(fallbacks, 0, "no second validation fallback for the same version");
+    assert_eq!(
+        fallbacks, 0,
+        "no second validation fallback for the same version"
+    );
 }
 
 #[test]
@@ -257,4 +262,3 @@ fn a_cli_that_fails_validation_leaves_only_switching_provider_or_aborting() {
     assert_eq!(status, "approved");
     assert_eq!(decision.as_deref(), Some("use_api"));
 }
-

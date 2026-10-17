@@ -110,7 +110,10 @@ fn composed_stages_run_over_the_cli_transport_with_the_schema_delivered_once() {
 
 #[test]
 fn claude_haiku_selection_parks_the_pulsation_for_subagent_mismatch_or_missing_identity() {
-    let _path_lock = PATH_TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    let _path_lock = PATH_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap();
     let binaries = tempfile::tempdir().unwrap();
     let claude = binaries.path().join("claude.exe");
     fs::copy(env!("CARGO_BIN_EXE_cli_fixture"), &claude).unwrap();
@@ -136,7 +139,11 @@ fn claude_haiku_selection_parks_the_pulsation_for_subagent_mismatch_or_missing_i
     let _restore_path = RestorePath(original_path);
 
     for (state, expected_code, expected_model) in [
-        ("subagent_sonnet_mismatch", "model_mismatch", Some("claude-sonnet-5")),
+        (
+            "subagent_sonnet_mismatch",
+            "model_mismatch",
+            Some("claude-sonnet-5"),
+        ),
         ("missing_generation_identity", "model_unverified", None),
     ] {
         fs::write(binaries.path().join("claude.fixture-state"), state).unwrap();
@@ -160,10 +167,17 @@ fn claude_haiku_selection_parks_the_pulsation_for_subagent_mismatch_or_missing_i
             .unwrap();
         assert_eq!(failure_class, "host_contract");
         assert_eq!(error_code, expected_code);
-        assert!(!allow_retry, "a model identity violation cannot be retried automatically");
+        assert!(
+            !allow_retry,
+            "a model identity violation cannot be retried automatically"
+        );
         assert_eq!(
             harness.calls(),
-            ["intake_classifier", "specification_author", "contract_author"]
+            [
+                "intake_classifier",
+                "specification_author",
+                "contract_author"
+            ]
         );
         let terminal_runs: i64 = db
             .query_row(
@@ -172,7 +186,10 @@ fn claude_haiku_selection_parks_the_pulsation_for_subagent_mismatch_or_missing_i
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(terminal_runs, 1, "the failed Code call has no automatic retry");
+        assert_eq!(
+            terminal_runs, 1,
+            "the failed Code call has no automatic retry"
+        );
         assert_eq!(
             fs::read_to_string(harness.workspace().join("src/auth.rs")).unwrap(),
             ORIGINAL_SOURCE,
@@ -182,12 +199,13 @@ fn claude_haiku_selection_parks_the_pulsation_for_subagent_mismatch_or_missing_i
             !marker.exists(),
             "the host terminates the Claude process tree at the first unverified generation"
         );
-        let generations: Vec<(
+        type GenerationEvidence = (
             Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
-        )> = db
+        );
+        let generations: Vec<GenerationEvidence> = db
             .prepare(
                 "SELECT o.model_id,o.message_id,o.parent_invocation_id,o.agent_id FROM terminal_model_observations o JOIN terminal_runs t ON t.id=o.run_id WHERE t.pulsation_id=?1 AND o.is_generation=1 ORDER BY o.ordinal",
             )

@@ -380,7 +380,10 @@ mod tests {
             assert_eq!(claude["type"], "object");
             assert_eq!(claude["required"], json!(["response"]));
             assert_eq!(claude["additionalProperties"], false);
-            assert_eq!(claude["properties"]["response"]["anyOf"], canonical["anyOf"]);
+            assert_eq!(
+                claude["properties"]["response"]["anyOf"],
+                canonical["anyOf"]
+            );
             assert_eq!(claude["$defs"], canonical["$defs"]);
             assert_eq!(
                 canonical["anyOf"][0]["properties"]["executorKind"]["const"],

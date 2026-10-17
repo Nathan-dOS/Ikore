@@ -775,48 +775,115 @@ fn pulsation_table(
     state: &UsageState,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
-    div().id("usage-pulsation-table").debug_selector(|| "usage-pulsation-table".into())
-        .p_4().rounded_lg().bg(theme::surface()).border_1().border_color(theme::border()).flex_shrink_0()
-        .child(title_info("Tokens per pulsation", "usage-pulsations", "Reported usage within the selected filters. Expand a pulsation to view its models."))
-        .when(summary.pulsations.is_empty(), |panel| panel.child(div().mt_3().text_sm().child("No pulsation usage recorded in this period.")))
+    div()
+        .id("usage-pulsation-table")
+        .debug_selector(|| "usage-pulsation-table".into())
+        .p_4()
+        .rounded_lg()
+        .bg(theme::surface())
+        .border_1()
+        .border_color(theme::border())
+        .flex_shrink_0()
+        .child(title_info(
+            "Tokens per pulsation",
+            "usage-pulsations",
+            "Reported usage within the selected filters. Expand a pulsation to view its models.",
+        ))
+        .when(summary.pulsations.is_empty(), |panel| {
+            panel.child(
+                div()
+                    .mt_3()
+                    .text_sm()
+                    .child("No pulsation usage recorded in this period."),
+            )
+        })
         .children(summary.pulsations.iter().map(|pulse| {
             let id = pulse.pulsation_id.clone();
             let expanded = state.expanded_pulsations.contains(&id);
-            div().mt_3().pt_3().border_t_1().border_color(theme::border())
-                .child(div().id(SharedString::from(format!("usage-pulsation-{id}"))).cursor_pointer()
-                    .on_click(cx.listener(move |model, _, _, cx| {
-                        model.settings.update(cx, |settings, _| {
-                            if !settings.usage.expanded_pulsations.remove(&id) { settings.usage.expanded_pulsations.insert(id.clone()); }
-                        });
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .text_sm()
-                            .child(crate::widgets::icon(
-                                if expanded {
-                                    crate::icons::Icon::ChevronDown
-                                } else {
-                                    crate::icons::Icon::ChevronRight
-                                },
-                                px(12.0),
-                                theme::text_subtle(),
-                            ))
-                            .child(pulse.name.clone()),
-                    )
-                    .child(div().text_xs().text_color(theme::text_muted()).child(pulse.pulsation_id.clone()))
-                    .child(div().mt_1().text_sm().child(format!("Input: {} · Output: {} · Total: {}", count(pulse.totals.input_tokens), count(pulse.totals.output_tokens), count(pulse.totals.total_tokens))))
-                    .child(div().text_xs().text_color(theme::text_muted()).child(coverage(&pulse.totals))))
-                .when(expanded, |row| row.child(div().mt_2().child(model_rows(&pulse.models, format!("pulse-models-{}", pulse.pulsation_id).into()))))
+            div()
+                .mt_3()
+                .pt_3()
+                .border_t_1()
+                .border_color(theme::border())
+                .child(
+                    div()
+                        .id(SharedString::from(format!("usage-pulsation-{id}")))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |model, _, _, cx| {
+                            model.settings.update(cx, |settings, _| {
+                                if !settings.usage.expanded_pulsations.remove(&id) {
+                                    settings.usage.expanded_pulsations.insert(id.clone());
+                                }
+                            });
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .text_sm()
+                                .child(crate::widgets::icon(
+                                    if expanded {
+                                        crate::icons::Icon::ChevronDown
+                                    } else {
+                                        crate::icons::Icon::ChevronRight
+                                    },
+                                    px(12.0),
+                                    theme::text_subtle(),
+                                ))
+                                .child(pulse.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_muted())
+                                .child(pulse.pulsation_id.clone()),
+                        )
+                        .child(div().mt_1().text_sm().child(format!(
+                            "Input: {} · Output: {} · Total: {}",
+                            count(pulse.totals.input_tokens),
+                            count(pulse.totals.output_tokens),
+                            count(pulse.totals.total_tokens)
+                        )))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_muted())
+                                .child(coverage(&pulse.totals)),
+                        ),
+                )
+                .when(expanded, |row| {
+                    row.child(div().mt_2().child(model_rows(
+                        &pulse.models,
+                        format!("pulse-models-{}", pulse.pulsation_id).into(),
+                    )))
+                })
         }))
-        .child(div().mt_4().text_sm().child(format!("Usage without pulsation · Total: {} · Input: {} · Output: {}",
-            if summary.without_pulsation.records == 0 { "0".into() } else { count(summary.without_pulsation.total_tokens) },
-            if summary.without_pulsation.records == 0 { "0".into() } else { count(summary.without_pulsation.input_tokens) },
-            if summary.without_pulsation.records == 0 { "0".into() } else { count(summary.without_pulsation.output_tokens) })))
-        .child(div().text_xs().text_color(theme::text_muted()).child(coverage(&summary.without_pulsation)))
+        .child(div().mt_4().text_sm().child(format!(
+            "Usage without pulsation · Total: {} · Input: {} · Output: {}",
+            if summary.without_pulsation.records == 0 {
+                "0".into()
+            } else {
+                count(summary.without_pulsation.total_tokens)
+            },
+            if summary.without_pulsation.records == 0 {
+                "0".into()
+            } else {
+                count(summary.without_pulsation.input_tokens)
+            },
+            if summary.without_pulsation.records == 0 {
+                "0".into()
+            } else {
+                count(summary.without_pulsation.output_tokens)
+            }
+        )))
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(coverage(&summary.without_pulsation)),
+        )
         .into_any_element()
 }
 

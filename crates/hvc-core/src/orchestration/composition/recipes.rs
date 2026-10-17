@@ -218,6 +218,15 @@ fn add_tasks(
     Ok(handles)
 }
 
+/// The task and criterion bindings of a frozen batch, with the same handles
+/// `prepare` registers first for every stage. Readers that only hold a
+/// persisted payload use it to label `task_*`/`crit_*` handles.
+pub fn task_table(manifest: &BatchManifest) -> Result<ReferenceTable, CompositionError> {
+    let mut builder = ReferenceTable::builder();
+    add_tasks(&mut builder, manifest)?;
+    Ok(builder.build())
+}
+
 fn all_criteria(table: &ReferenceTable) -> Vec<Handle> {
     table
         .scope()
@@ -871,10 +880,8 @@ fn plan_stage_units(
     let planned = plan_units(&nodes, builder.scope())?;
     let mut owned_all = Vec::new();
     let mut drafts = Vec::with_capacity(planned.len());
-    let mut candidate_handles: BTreeMap<
-        String,
-        (super::Uuid, Option<Handle>, SourceRole, Handle),
-    > = BTreeMap::new();
+    let mut candidate_handles: BTreeMap<String, (super::Uuid, Option<Handle>, SourceRole, Handle)> =
+        BTreeMap::new();
     for unit in planned {
         let mut input_refs = unit.input_refs.clone();
         for read in &unit.candidate_reads {
@@ -2603,7 +2610,10 @@ mod tests {
                 )
             })
             .count();
-        assert_eq!(candidate_refs, 1, "repeated reads share one candidate reference");
+        assert_eq!(
+            candidate_refs, 1,
+            "repeated reads share one candidate reference"
+        );
     }
 
     /// A proposal that writes a file the Specification never planned is a

@@ -1,0 +1,194 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-17",
+  "baseMain": "33373a560026c8cda296b3d987efdcef51416bbc",
+  "mergedFeature": "dccd257140ea4dd976bd5e0bfd2a8b7880196b92",
+  "candidateTree": "1e0fd323341572197166eea30550604d87aae136",
+  "cratesTree": "35d20db24cd1d9c9d64a2eb935114c0273d15d2e",
+  "scriptsTree": "a83075539739cbe4a6b24528fcc0af8f4230529d",
+  "cargoLockBlob": "6154d6ac07cc3d6ef4bccfe4ffa9bb35b80a2a8a",
+  "rust": "1.98.0",
+  "buildJobs": 2,
+  "testThreads": 2,
+  "tests": {
+    "passed": 1228,
+    "failed": 0,
+    "ignored": 10,
+    "filtered": 0,
+    "suites": 39
+  },
+  "gate": {
+    "schemaVersion": 1,
+    "startedAt": "2026-10-17T14:18:06.0051667Z",
+    "finishedAt": "2026-10-17T14:46:48.0058735Z",
+    "durationSeconds": 1721.987,
+    "passed": false,
+    "steps": [
+      {
+        "name": "estrutura exclusivamente GPUI/Rust",
+        "durationSeconds": 1.119,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "cargo fmt",
+        "durationSeconds": 4.732,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "Clippy",
+        "durationSeconds": 1.505,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "testes Rust",
+        "durationSeconds": 848.628,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "build release GPUI",
+        "durationSeconds": 853.89,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "smoke Windows GPUI",
+        "durationSeconds": 2.315,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "licenças e fontes Rust",
+        "durationSeconds": 1.511,
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "name": "advisories Rust",
+        "durationSeconds": 8.25,
+        "passed": false,
+        "exitCode": 1
+      }
+    ]
+  },
+  "sandboxAttempt": {
+    "result": "MSVC LNK1114; access denied replacing a generated UI import library; no tests executed",
+    "timings": {
+      "schemaVersion": 1,
+      "startedAt": "2026-10-17T14:14:15.4401469Z",
+      "finishedAt": "2026-10-17T14:17:32.5004403Z",
+      "durationSeconds": 197.055,
+      "passed": false,
+      "steps": [
+        {
+          "name": "estrutura exclusivamente GPUI/Rust",
+          "durationSeconds": 0.966,
+          "passed": true,
+          "exitCode": 0
+        },
+        {
+          "name": "cargo fmt",
+          "durationSeconds": 4.303,
+          "passed": true,
+          "exitCode": 0
+        },
+        {
+          "name": "Clippy",
+          "durationSeconds": 31.545,
+          "passed": true,
+          "exitCode": 0
+        },
+        {
+          "name": "testes Rust",
+          "durationSeconds": 160.197,
+          "passed": false,
+          "exitCode": 101
+        }
+      ]
+    }
+  },
+  "smoke": {
+    "isolatedDataDirectory": true,
+    "windowFound": true,
+    "gracefulShutdown": true,
+    "exitCode": 0,
+    "binary": "target/release/hard-vibe-code.exe",
+    "sha256": "89949E672F198A24FAD678FA8FE4C9D2654E8305D85AE5821A0EE45A0760D590"
+  },
+  "audit": {
+    "schemaVersion": 1,
+    "auditedAt": "2026-10-17T14:46:47.9926795Z",
+    "cargoAuditExitCode": 1,
+    "cargoVulnerabilities": 7,
+    "cargoInformationalWarnings": {
+      "unmaintained": 11,
+      "unsound": 2,
+      "yanked": 1
+    },
+    "rustSecLastCommit": "64f92cdc64401fab47baa10e2e11fe382aa57155",
+    "passed": false
+  },
+  "vulnerabilities": [
+    {
+      "id": "RUSTSEC-2026-0338",
+      "package": "quinn-proto",
+      "version": "0.11.17",
+      "patched": [
+        ">=0.11.18"
+      ]
+    },
+    {
+      "id": "RUSTSEC-2026-0340",
+      "package": "quinn-proto",
+      "version": "0.11.17",
+      "patched": [
+        ">=0.11.18"
+      ]
+    },
+    {
+      "id": "RUSTSEC-2026-0343",
+      "package": "quinn-proto",
+      "version": "0.11.17",
+      "patched": [
+        ">=0.11.18"
+      ]
+    },
+    {
+      "id": "RUSTSEC-2026-0285",
+      "package": "rustls",
+      "version": "0.23.43",
+      "patched": [
+        ">=0.23.45"
+      ]
+    },
+    {
+      "id": "RUSTSEC-2026-0346",
+      "package": "rustls",
+      "version": "0.23.43",
+      "patched": [
+        ">=0.23.46"
+      ]
+    },
+    {
+      "id": "RUSTSEC-2026-0348",
+      "package": "rustls",
+      "version": "0.23.43",
+      "patched": [
+        ">=0.23.46"
+      ]
+    },
+    {
+      "id": "RUSTSEC-2026-0349",
+      "package": "rustls",
+      "version": "0.23.43",
+      "patched": [
+        ">=0.23.46"
+      ]
+    }
+  ],
+  "dependencyVersionsChanged": false,
+  "distributionAllowed": false
+}

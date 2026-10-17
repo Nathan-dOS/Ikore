@@ -148,6 +148,9 @@ pub struct Harness {
 }
 
 pub fn completed_reply(facts: &PromptFacts) -> ScriptedResponse {
+    if facts.executor == VISUALIZER {
+        return provider_reply(visualizer_response(&facts.user_prompt));
+    }
     provider_reply(unit_response(facts))
 }
 

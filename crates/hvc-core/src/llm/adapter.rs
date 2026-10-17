@@ -324,11 +324,9 @@ async fn consume_stream(
             }
             error
         })?;
-        if let Some(error) = verify_stream_models(
-            provider,
-            requested_model,
-            parser.observed_models(),
-        ) {
+        if let Some(error) =
+            verify_stream_models(provider, requested_model, parser.observed_models())
+        {
             return Err(error.with_observed_models(parser.observed_models().to_vec()));
         }
         apply_stream_events(events, &mut content, &mut usage, &mut completed, delta_sink);
@@ -355,11 +353,7 @@ async fn consume_stream(
         )
         .with_target(provider, "", requested_model));
     }
-    if let Some(error) = verify_stream_models(
-        provider,
-        requested_model,
-        parser.observed_models(),
-    ) {
+    if let Some(error) = verify_stream_models(provider, requested_model, parser.observed_models()) {
         return Err(error.with_observed_models(parser.observed_models().to_vec()));
     }
     if !completed || content.trim().is_empty() {
@@ -394,7 +388,9 @@ fn verify_stream_models(provider: &str, requested: &str, observed: &[String]) ->
                 return Some(
                     LlmError::new(
                         LlmErrorKind::ModelMismatch,
-                        format!("Provider `{provider}` reported `{model}`; expected `{requested}`."),
+                        format!(
+                            "Provider `{provider}` reported `{model}`; expected `{requested}`."
+                        ),
                     )
                     .with_target(provider, "", requested),
                 );
@@ -403,7 +399,9 @@ fn verify_stream_models(provider: &str, requested: &str, observed: &[String]) ->
                 return Some(
                     LlmError::new(
                         LlmErrorKind::ModelUnverified,
-                        format!("Provider `{provider}` could not verify requested model `{requested}`."),
+                        format!(
+                            "Provider `{provider}` could not verify requested model `{requested}`."
+                        ),
                     )
                     .with_target(provider, "", requested),
                 );

@@ -363,6 +363,821 @@ fn complete_review_and_workspace_readers_fit_small_and_large_windows(cx: &mut Te
     });
 }
 
+fn specification_brief() -> hvc_core::orchestration::review_brief::ReviewBrief {
+    use hvc_core::orchestration::composition::{InterfaceIntent, ProposalKind, VerificationMode};
+    use hvc_core::orchestration::review_brief::*;
+    let criterion = |id: &str, verification| BriefCriterion {
+        criterion_id: id.into(),
+        description: format!(
+            "{id}: the export keeps one row per pulsation and model, with token totals that match the Usage view for the same filter."
+        ),
+        requirement: "Requirement text.".into(),
+        verification,
+        verification_intent: "Run the export test.".into(),
+        checks: vec!["core_tests".into()],
+        not_applicable_reason: None,
+    };
+    let unit = |key: &str, kind, depends_on: &[&str]| BriefUnit {
+        key: key.into(),
+        kind,
+        destinations: vec![
+            "crates/hvc-core/src/usage.rs".into(),
+            "crates/hvc-core/src/usage/export.rs".into(),
+        ],
+        criteria: vec!["AC-1".into(), "AC-2".into(), "AC-3".into()],
+        depends_on: depends_on.iter().map(|key| (*key).into()).collect(),
+        objective: "Write the export.".into(),
+        interfaces: Vec::new(),
+    };
+    ReviewBrief {
+        stage: PulsationStage::Specification,
+        next_stage: Some(PulsationStage::Contract),
+        objective: Some("Let developers export token usage to CSV from the Usage view, one row per pulsation and model, with totals that match the app.".into()),
+        counts: vec![
+            "2 tasks".into(),
+            "6 criteria · 5 executed, 1 by reading".into(),
+            "4 files · 1 new".into(),
+            "1 existing interface changed".into(),
+            "3 work units".into(),
+        ],
+        revision: None,
+        judgement: vec![
+            JudgementItem {
+                kind: JudgementKind::Decision,
+                label: "D1".into(),
+                text: "Export aggregates per pulsation and model, not one row per LLM call.".into(),
+                detail: None,
+                refs: Vec::new(),
+            },
+            JudgementItem {
+                kind: JudgementKind::ReadingOnlyProof,
+                label: "AC-4".into(),
+                text: "An empty date range writes only the header row.".into(),
+                detail: Some("Read the early return in write_usage_csv and confirm the header is written before iterating.".into()),
+                refs: Vec::new(),
+            },
+            JudgementItem {
+                kind: JudgementKind::InterfaceChange,
+                label: "crates/hvc-ui/src/usage.rs".into(),
+                text: "The Usage view gains an Export button that is disabled while a query loads.".into(),
+                detail: None,
+                refs: vec!["crates/hvc-ui/src/usage.rs".into(), "AC-6".into()],
+            },
+            JudgementItem {
+                kind: JudgementKind::Exclusions,
+                label: "2".into(),
+                text: "Scheduled or automatic exports · Exporting one row per LLM call".into(),
+                detail: None,
+                refs: Vec::new(),
+            },
+        ],
+        verified: vec![
+            "Each of the 6 acceptance criteria has exactly one requirement.".into(),
+            "The 3 existing files it cites were read from the project.".into(),
+            "The new file it plans is a registered destination inside the project.".into(),
+            "Its 3 work units form no dependency cycle, and a code unit covers every criterion.".into(),
+        ],
+        visual: StageVisual::Specification(SpecificationVisual {
+            facts: BriefFacts {
+                tasks: 2,
+                criteria: 6,
+                executed: 5,
+                by_reading: 1,
+                not_applicable: 0,
+                existing_files: 3,
+                planned_files: 1,
+                changed_interfaces: 1,
+                units: 3,
+            },
+            exclusions: vec![
+                "Scheduled or automatic exports".into(),
+                "Exporting one row per LLM call".into(),
+            ],
+            tasks: vec![
+                BriefTask {
+                    task_id: "4b8e0c62-3d1f-4a77-9b25-6c0e8f2a9d14".into(),
+                    title: "Export usage summary to CSV".into(),
+                    criteria: ["AC-1", "AC-2", "AC-3", "AC-5"]
+                        .into_iter()
+                        .map(|id| criterion(id, VerificationMode::ExecutedCheck))
+                        .chain([criterion("AC-4", VerificationMode::DocumentCheck)])
+                        .collect(),
+                },
+                BriefTask {
+                    task_id: "9f31d7a0-5e2c-4c18-8d64-2b7a1e0c5f83".into(),
+                    title: "Expose CSV export in the Usage view".into(),
+                    criteria: vec![criterion("AC-6", VerificationMode::ExecutedCheck)],
+                },
+            ],
+            files: vec![
+                BriefFileGroup {
+                    root: "crates/hvc-core".into(),
+                    files: vec![
+                        BriefFile {
+                            path: "src/usage.rs".into(),
+                            planned: false,
+                            interfaces: vec![BriefInterface {
+                                intent: InterfaceIntent::Preserve,
+                                description: "query_usage keeps its signature.".into(),
+                            }],
+                        },
+                        BriefFile {
+                            path: "src/usage/export.rs".into(),
+                            planned: true,
+                            interfaces: Vec::new(),
+                        },
+                    ],
+                },
+                BriefFileGroup {
+                    root: "crates/hvc-ui".into(),
+                    files: vec![BriefFile {
+                        path: "src/usage.rs".into(),
+                        planned: false,
+                        interfaces: vec![BriefInterface {
+                            intent: InterfaceIntent::Change,
+                            description: "The Usage view gains an Export button.".into(),
+                        }],
+                    }],
+                },
+            ],
+            unattached_interfaces: vec![BriefInterface {
+                intent: InterfaceIntent::New,
+                description: "write_usage_csv is a new public function.".into(),
+            }],
+            units: vec![
+                unit("core_export", ProposalKind::Code, &[]),
+                unit("usage_tests", ProposalKind::Test, &["core_export"]),
+                unit("ui_export", ProposalKind::Code, &["core_export"]),
+            ],
+        }),
+    }
+}
+
+/// Parks the Specification brief fixture on the Review tab of a new window.
+fn open_specification_brief(cx: &mut TestAppContext) -> (Entity<AppModel>, &mut VisualTestContext) {
+    open_brief(cx, specification_brief())
+}
+
+/// Parks `brief` on the Review tab of a new window, behind two documents.
+fn open_brief(
+    cx: &mut TestAppContext,
+    brief: hvc_core::orchestration::review_brief::ReviewBrief,
+) -> (Entity<AppModel>, &mut VisualTestContext) {
+    use hvc_core::persistence_service::{HitlCheckpoint, HitlReviewDocument};
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::hitl::register_hitl_keybindings(cx));
+    visual.update(|_, cx| crate::shell::register_navigation_keybindings(cx));
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            state.pulsations[0].status = PulsationStatus::Checkpoint;
+            let pulse = state.pulsations[0].clone();
+            let checkpoint = HitlCheckpoint {
+                pulsation_id: pulse.id.clone(),
+                checkpoint_id: "brief-checkpoint".into(),
+                state_version: 1,
+            };
+            state.hitl.load_checkpoint(Some(&pulse), Some(checkpoint));
+            let (generation, checkpoint) = state.hitl.begin_documents().unwrap();
+            state.hitl.finish_documents(
+                generation,
+                &checkpoint,
+                Ok(vec![
+                    HitlReviewDocument {
+                        artifact_id: "spec-note".into(),
+                        name: "knowledge/obsidian/features/usage-export-to-csv.md".into(),
+                        kind: "specification".into(),
+                        relative_path: Some(
+                            "knowledge/obsidian/features/usage-export-to-csv.md".into(),
+                        ),
+                        content: "# Specification\n\nThe complete official document.".into(),
+                    },
+                    HitlReviewDocument {
+                        artifact_id: "spec-payload".into(),
+                        name: "specification payload".into(),
+                        kind: "stage_payload_v1".into(),
+                        relative_path: None,
+                        content: "{}".into(),
+                    },
+                ]),
+            );
+            state
+                .hitl
+                .finish_brief(generation, &checkpoint, Ok(Some(brief)));
+            state.detail_section = PulsationDetailSection::Review;
+        });
+    });
+    (model, visual)
+}
+
+#[gpui::test]
+fn specification_brief_opens_first_and_fits_small_and_large_windows(cx: &mut TestAppContext) {
+    let (model, visual) = open_specification_brief(cx);
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let tab = visual.debug_bounds("review-brief-tab").unwrap();
+        let first_document = visual.debug_bounds("review-document-tab-0").unwrap();
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let actions = visual.debug_bounds("review-decision-bar").unwrap();
+        assert!(tab.right() <= first_document.left(), "the Brief tab leads");
+        assert!(tab.bottom() <= reader.top());
+        assert!(
+            reader.size.height >= px(100.0),
+            "reader too small: {reader:?}"
+        );
+        assert!(reader.bottom() <= actions.top() && actions.bottom() <= px(height));
+        for action in ["hitl-approve", "hitl-revision", "hitl-reject"] {
+            let button = visual.debug_bounds(action).unwrap();
+            assert!(button.left() >= actions.left() && button.right() <= actions.right());
+        }
+        for section in [
+            "review-brief",
+            "brief-decision",
+            "brief-judgement",
+            "brief-verified",
+            "brief-criteria",
+            "brief-files",
+            "brief-units",
+        ] {
+            let bounds = visual
+                .debug_bounds(section)
+                .unwrap_or_else(|| panic!("missing {section} at {width}x{height}"));
+            assert!(
+                bounds.left() >= reader.left() && bounds.right() <= reader.right() + px(1.0),
+                "{section} overflows the reader at {width}x{height}: {bounds:?} vs {reader:?}"
+            );
+        }
+        // The two cards of a row sit side by side only when both keep their minimum width,
+        // and a shorter card keeps its own height instead of stretching to its neighbour.
+        let judgement = visual.debug_bounds("brief-judgement").unwrap();
+        let verified = visual.debug_bounds("brief-verified").unwrap();
+        assert!(
+            verified.top() >= judgement.bottom() || verified.left() >= judgement.right(),
+            "cards overlap at {width}x{height}"
+        );
+        if verified.left() >= judgement.right() {
+            assert!(verified.size.height < judgement.size.height);
+        }
+        // Document tabs keep a readable one-line label (they collapsed to "1" before).
+        for tab in ["review-document-tab-0", "review-document-tab-1"] {
+            let bounds = visual.debug_bounds(tab).unwrap();
+            assert!(
+                bounds.size.width >= px(120.0),
+                "{tab} collapsed at {width}x{height}: {bounds:?}"
+            );
+        }
+        // Task headers are one line: an internal id once rendered as a column of characters.
+        for task in ["brief-task-0", "brief-task-1"] {
+            let header = visual.debug_bounds(task).unwrap();
+            assert!(
+                header.size.height <= px(32.0),
+                "{task} is {header:?} at {width}x{height}"
+            );
+        }
+        model.read_with(visual, |model, cx| {
+            let hitl = &model.pulsations.read(cx).hitl;
+            assert!(hitl.brief_selected);
+            assert!(hitl.can_approve(), "the documents still gate approval");
+        });
+    }
+    click(visual, "review-document-tab-0");
+    model.read_with(visual, |model, cx| {
+        assert!(!model.pulsations.read(cx).hitl.brief_selected)
+    });
+    assert!(visual.debug_bounds("review-copy-document").is_some());
+    click(visual, "review-brief-tab");
+    model.read_with(visual, |model, cx| {
+        assert!(model.pulsations.read(cx).hitl.brief_selected)
+    });
+}
+
+#[gpui::test]
+fn review_without_interactive_brief_keeps_shortcuts_safe_and_tabs_through_controls(
+    cx: &mut TestAppContext,
+) {
+    let (model, visual) = open_specification_brief(cx);
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Pulsations);
+    assert!(visual.debug_bounds("review-decision-bar").is_some());
+    assert!(visual.debug_bounds("review-document-reader").is_some());
+    for missing_brief in [false, true] {
+        model.update(visual, |model, cx| {
+            model.pulsations.update(cx, |pulsations, _| {
+                let hitl = &mut pulsations.hitl;
+                hitl.brief_selected = false;
+                if missing_brief {
+                    hitl.brief = None;
+                    hitl.marks.clear();
+                }
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| model.read(cx).review_focus.focus(window));
+        visual.simulate_keystrokes("c f");
+        model.read_with(visual, |model, cx| {
+            assert_eq!(model.pulsations.read(cx).hitl.mark_counts().0, 0);
+            assert_eq!(model.pulsations.read(cx).hitl.flag_count(), 0);
+            assert!(model.current_brief_notes(cx).is_empty());
+        });
+        for key in ["tab", "shift-tab"] {
+            let review_focus = visual.update(|window, cx| {
+                model.read(cx).review_focus.focus(window);
+                window.focused(cx)
+            });
+            visual.simulate_keystrokes(key);
+            let after = visual.update(|window, cx| window.focused(cx));
+            assert!(after.is_some());
+            assert_ne!(after, review_focus, "{key} must reach the Shell binding");
+        }
+    }
+}
+
+#[gpui::test]
+fn settings_modal_keeps_brief_marks_and_decisions_untouched(cx: &mut TestAppContext) {
+    let (model, visual) = open_specification_brief(cx);
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Pulsations);
+    assert!(visual.debug_bounds("review-decision-bar").is_some());
+    open_settings(&model, visual, Some(SettingsPage::General));
+    visual.simulate_keystrokes("c f tab shift-tab r d enter");
+    model.read_with(visual, |model, cx| {
+        let hitl = &model.pulsations.read(cx).hitl;
+        assert_eq!(hitl.mark_counts(), (0, 0, 4));
+        assert!(!hitl.busy);
+        assert!(!model.confirm_hitl_reject);
+        assert!(model.last_revision_feedback.is_none());
+        assert!(model.settings_modal.open);
+    });
+    let inside = visual.update(|window, cx| model.read(cx).settings_focus_contains(window, cx));
+    assert!(
+        inside,
+        "Tab must stay inside Settings while Review is behind it"
+    );
+}
+
+#[gpui::test]
+fn brief_marks_compose_the_revision_feedback_and_keep_enter_from_dropping_flags(
+    cx: &mut TestAppContext,
+) {
+    use crate::hitl::ItemMark;
+    let (model, visual) = open_specification_brief(cx);
+    // Tall enough that every judgement item's buttons are on screen.
+    visual.simulate_resize(size(px(1440.0), px(1600.0)));
+    select(&model, visual, AppView::Pulsations);
+
+    // Mouse: flagging opens the item's note and focuses it.
+    click(visual, "brief-flag-1");
+    let note = model.read_with(visual, |model, cx| {
+        assert_eq!(model.pulsations.read(cx).hitl.marks[1], ItemMark::Flagged);
+        model
+            .brief_notes
+            .get(&1)
+            .cloned()
+            .expect("a flagged item gets a note")
+    });
+    assert!(visual.debug_bounds("brief-note-1").is_some());
+    visual.update(|window, cx| {
+        assert!(gpui::Focusable::focus_handle(note.read(cx), cx).is_focused(window));
+    });
+    visual.simulate_keystrokes("c f");
+    model.read_with(visual, |model, cx| {
+        // Typing in the note never fires the review shortcuts.
+        assert_eq!(model.pulsations.read(cx).hitl.marks[1], ItemMark::Flagged);
+        assert_eq!(note.read(cx).value(), "cf");
+    });
+    note.update(visual, |input, cx| {
+        input.set_value("Add an executed test for the empty range.", cx)
+    });
+
+    // Keyboard: from the review, Tab moves, C confirms and F flags the item under the cursor.
+    visual.update(|window, cx| model.read(cx).review_focus.focus(window));
+    visual.simulate_keystrokes("tab c shift-tab shift-tab f");
+    model.read_with(visual, |model, cx| {
+        let hitl = &model.pulsations.read(cx).hitl;
+        assert_eq!(
+            hitl.marks,
+            [
+                ItemMark::Flagged,
+                ItemMark::Flagged,
+                ItemMark::Confirmed,
+                ItemMark::Open
+            ]
+        );
+        assert_eq!(hitl.brief_cursor, 0);
+        assert_eq!(hitl.mark_counts(), (1, 2, 1));
+    });
+    assert!(visual.debug_bounds("review-brief-progress").is_some());
+
+    // Enter does not approve over the developer's flags.
+    visual.simulate_keystrokes("enter");
+    model.read_with(visual, |model, cx| {
+        let hitl = &model.pulsations.read(cx).hitl;
+        assert!(!hitl.busy);
+        assert!(
+            hitl.error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("2 items are flagged")),
+            "{:?}",
+            hitl.error
+        );
+        assert!(model.last_revision_feedback.is_none());
+    });
+
+    // R sends the flags, in brief order, with their notes and the items' own text.
+    visual.simulate_keystrokes("r");
+    model.read_with(visual, |model, _| {
+        let feedback = model.last_revision_feedback.as_deref().unwrap();
+        assert!(feedback.starts_with("Flagged by the developer in the review brief:\n"));
+        let decision = feedback
+            .find("- [Decision taken by the agent] D1: Export aggregates per pulsation and model, not one row per LLM call. — flagged for revision without a note.")
+            .expect(feedback);
+        let proof = feedback
+            .find("- [Proof by reading only] AC-4: An empty date range writes only the header row. — Add an executed test for the empty range.")
+            .expect(feedback);
+        assert!(decision < proof);
+        assert!(!feedback.contains("Existing interface changes"), "confirmed items stay out");
+    });
+}
+
+#[gpui::test]
+fn brief_review_drafts_stay_with_their_checkpoint_and_flags_never_block_approve(
+    cx: &mut TestAppContext,
+) {
+    use crate::hitl::ItemMark;
+    use hvc_core::persistence_service::HitlCheckpoint;
+    let (model, visual) = open_specification_brief(cx);
+    let long_note = "Add an executed test for the empty range, ".repeat(12);
+    model.update(visual, |model, cx| {
+        model.sync_stage_feedback_scope(cx);
+        model.toggle_brief_mark(1, ItemMark::Flagged, None, cx);
+        model.toggle_brief_mark(0, ItemMark::Confirmed, None, cx);
+        let note = model.brief_notes.get(&1).cloned().unwrap();
+        note.update(cx, |input, cx| input.set_value(long_note.clone(), cx));
+        model.stage_feedback_input.update(cx, |input, cx| {
+            input.set_value("Free text for this checkpoint.", cx)
+        });
+    });
+
+    // A long note and the progress line fit the reader and the footer at both sizes.
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let actions = visual.debug_bounds("review-decision-bar").unwrap();
+        let note = visual.debug_bounds("brief-note-1").unwrap();
+        assert!(
+            note.left() >= reader.left() && note.right() <= reader.right() + px(1.0),
+            "note overflows at {width}x{height}: {note:?} vs {reader:?}"
+        );
+        assert!(reader.bottom() <= actions.top() && actions.bottom() <= px(height));
+        for element in [
+            "review-brief-progress",
+            "hitl-approve",
+            "hitl-revision",
+            "hitl-reject",
+        ] {
+            let bounds = visual.debug_bounds(element).unwrap();
+            assert!(
+                bounds.left() >= actions.left()
+                    && bounds.right() <= actions.right()
+                    && bounds.top() >= actions.top()
+                    && bounds.bottom() <= actions.bottom(),
+                "{element} leaves the decision bar at {width}x{height}: {bounds:?} vs {actions:?}"
+            );
+        }
+    }
+
+    // A refresh of the same checkpoint keeps the review; so does switching tabs.
+    let same = model.read_with(visual, |model, cx| {
+        model
+            .pulsations
+            .read(cx)
+            .hitl
+            .expected_checkpoint
+            .clone()
+            .unwrap()
+    });
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |state, _| {
+            let pulse = state.pulsations[0].clone();
+            state.hitl.load_checkpoint(Some(&pulse), Some(same.clone()));
+            state.hitl.brief_selected = false;
+            state.hitl.brief_selected = true;
+        });
+        model.sync_stage_feedback_scope(cx);
+    });
+    model.read_with(visual, |model, cx| {
+        assert_eq!(
+            model.pulsations.read(cx).hitl.marks[..2],
+            [ItemMark::Confirmed, ItemMark::Flagged]
+        );
+        assert_eq!(model.current_brief_notes(cx).len(), 1);
+        assert_eq!(
+            model.stage_feedback_input.read(cx).value(),
+            "Free text for this checkpoint."
+        );
+    });
+
+    // Flags never block an explicit Approve: the decision is dispatched.
+    click(visual, "hitl-approve");
+    model.read_with(visual, |model, cx| {
+        assert_eq!(
+            model.pulsations.read(cx).hitl.error.as_deref(),
+            Some("HITL decision unavailable in test environment")
+        );
+    });
+
+    // Checkpoint B of the same pulsation and input revision starts clean:
+    // no marks, no notes and no free-text draft from A.
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |state, _| {
+            let pulse = state.pulsations[0].clone();
+            state.hitl.load_checkpoint(
+                Some(&pulse),
+                Some(HitlCheckpoint {
+                    checkpoint_id: "contract-checkpoint".into(),
+                    ..same.clone()
+                }),
+            );
+        });
+        model.sync_stage_feedback_scope(cx);
+    });
+    model.read_with(visual, |model, cx| {
+        assert!(model.pulsations.read(cx).hitl.marks.is_empty());
+        assert!(model.current_brief_notes(cx).is_empty());
+        assert_eq!(model.stage_feedback_input.read(cx).value(), "");
+    });
+
+    // A newer state version of one checkpoint is a new review as well.
+    model.update(visual, |model, cx| {
+        model
+            .stage_feedback_input
+            .update(cx, |input, cx| input.set_value("Draft for version 1.", cx));
+        model.pulsations.update(cx, |state, _| {
+            let pulse = state.pulsations[0].clone();
+            state.hitl.load_checkpoint(
+                Some(&pulse),
+                Some(HitlCheckpoint {
+                    checkpoint_id: "contract-checkpoint".into(),
+                    state_version: same.state_version + 1,
+                    ..same.clone()
+                }),
+            );
+        });
+        model.sync_stage_feedback_scope(cx);
+    });
+    model.read_with(visual, |model, cx| {
+        assert_eq!(model.stage_feedback_input.read(cx).value(), "");
+    });
+}
+
+fn set_brief_revision(
+    model: &Entity<AppModel>,
+    visual: &mut VisualTestContext,
+    revision: Option<hvc_core::orchestration::review_brief::RevisionDiff>,
+) {
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |state, _| {
+            state.hitl.brief.as_mut().unwrap().revision = revision;
+        });
+    });
+    select(model, visual, AppView::Pulsations);
+}
+
+#[gpui::test]
+fn a_revised_brief_lists_its_changes_under_the_feedback_before_the_judgement(
+    cx: &mut TestAppContext,
+) {
+    use hvc_core::orchestration::review_brief::{
+        BriefChange, ChangeKind, ChangeSubject, RevisionDiff,
+    };
+    let (model, visual) = open_specification_brief(cx);
+    let change = |kind,
+                  subject,
+                  label: &str,
+                  field: Option<&'static str>,
+                  before: Option<&str>,
+                  after: Option<&str>| BriefChange {
+        kind,
+        subject,
+        label: label.into(),
+        field,
+        before: before.map(Into::into),
+        after: after.map(Into::into),
+    };
+    let long =
+        "Export aggregates per pulsation, model and calendar day in the developer's time zone. "
+            .repeat(4);
+    let changes = vec![
+        change(
+            ChangeKind::Removed,
+            ChangeSubject::Decision,
+            "D1",
+            None,
+            Some("Export aggregates per pulsation and model, not one row per LLM call."),
+            None,
+        ),
+        change(
+            ChangeKind::Added,
+            ChangeSubject::Decision,
+            "D1",
+            None,
+            None,
+            Some(&long),
+        ),
+        change(
+            ChangeKind::Changed,
+            ChangeSubject::Criterion,
+            "AC-4",
+            Some("proof"),
+            Some("by reading"),
+            Some("executed check"),
+        ),
+        change(
+            ChangeKind::Moved,
+            ChangeSubject::Criterion,
+            "AC-6",
+            Some("work units"),
+            Some("ui_export"),
+            Some("core_export, ui_export"),
+        ),
+        change(
+            ChangeKind::Changed,
+            ChangeSubject::Interface,
+            "crates/hvc-ui/src/usage.rs",
+            Some("intent"),
+            Some("change"),
+            Some("preserve"),
+        ),
+        change(
+            ChangeKind::Removed,
+            ChangeSubject::File,
+            "crates/hvc-core/src/usage/legacy_export_kept_for_one_release_only.rs",
+            None,
+            Some("existing file"),
+            None,
+        ),
+        change(
+            ChangeKind::Added,
+            ChangeSubject::Unit,
+            "usage_tests",
+            None,
+            None,
+            Some("Author the export tests."),
+        ),
+    ];
+    let feedback = "Flagged by the developer in the review brief:\n\
+        - [Decision] D1: Export aggregates per pulsation and model, not one row per LLM call. — Aggregate per day too.\n\
+        - [Proof by reading only] AC-4: An empty date range writes only the header row. — Add an executed test.\n\n\
+        Additional feedback: keep the button where it is.";
+    set_brief_revision(
+        &model,
+        visual,
+        Some(RevisionDiff {
+            feedback: Some(feedback.into()),
+            changes: Some(changes.clone()),
+        }),
+    );
+
+    // Tall windows keep every row painted; the widths are the ones under test.
+    for (width, height) in [(960.0, 1800.0), (1440.0, 1800.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let decision = visual.debug_bounds("brief-decision").unwrap();
+        let revision = visual.debug_bounds("brief-revision").unwrap();
+        let judgement = visual.debug_bounds("brief-judgement").unwrap();
+        let quoted = visual.debug_bounds("brief-revision-feedback").unwrap();
+        assert!(
+            decision.bottom() <= revision.top() && revision.bottom() <= judgement.top(),
+            "the diff sits between the decision line and the judgement at {width}: {decision:?} {revision:?} {judgement:?}"
+        );
+        assert!(
+            revision.left() >= reader.left() && revision.right() <= reader.right() + px(1.0),
+            "the diff overflows the reader at {width}: {revision:?} vs {reader:?}"
+        );
+        assert!(quoted.left() >= revision.left() && quoted.right() <= revision.right());
+        assert!(
+            quoted.size.height >= px(60.0),
+            "every feedback line shows at {width}: {quoted:?}"
+        );
+        let mut above = quoted.bottom();
+        const ROWS: [&str; 7] = [
+            "brief-change-0",
+            "brief-change-1",
+            "brief-change-2",
+            "brief-change-3",
+            "brief-change-4",
+            "brief-change-5",
+            "brief-change-6",
+        ];
+        assert_eq!(ROWS.len(), changes.len());
+        for selector in ROWS {
+            let row = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector} at {width}"));
+            assert!(
+                row.left() >= revision.left() && row.right() <= revision.right() + px(1.0),
+                "{selector} overflows at {width}: {row:?} vs {revision:?}"
+            );
+            assert!(row.top() >= above, "{selector} is out of order at {width}");
+            above = row.bottom();
+        }
+        const HEADS: [&str; 7] = [
+            "brief-change-head-0",
+            "brief-change-head-1",
+            "brief-change-head-2",
+            "brief-change-head-3",
+            "brief-change-head-4",
+            "brief-change-head-5",
+            "brief-change-head-6",
+        ];
+        // Each header is one line; only the long path may take a second. A label
+        // that shrank inside a wrapping row once stood one character per line.
+        for (index, selector) in HEADS.into_iter().enumerate() {
+            let head = visual.debug_bounds(selector).unwrap();
+            let limit = if index == 5 { px(40.0) } else { px(24.0) };
+            assert!(
+                head.size.height <= limit,
+                "{selector} is {head:?} at {width}"
+            );
+        }
+        // The long decision wraps inside the card instead of widening it.
+        let wrapped = visual.debug_bounds("brief-change-1").unwrap();
+        assert!(
+            wrapped.size.height >= px(48.0),
+            "long text did not wrap at {width}: {wrapped:?}"
+        );
+    }
+
+    // The small window's reader is short (the decision line alone fills it), so
+    // the card sits below the fold there, still inside the reader's width.
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Pulsations);
+    let reader = visual.debug_bounds("review-document-reader").unwrap();
+    let revision = visual.debug_bounds("brief-revision").unwrap();
+    assert!(
+        revision.left() >= reader.left() && revision.right() <= reader.right() + px(1.0),
+        "{revision:?} vs {reader:?}"
+    );
+}
+
+/// Each variant gets its own window: GPUI's test frames keep every selector
+/// they ever painted, so absence is only provable where it never rendered.
+#[gpui::test]
+fn an_unreadable_or_unchanged_previous_revision_says_so_and_a_first_candidate_shows_no_diff(
+    cx: &mut TestAppContext,
+) {
+    use hvc_core::orchestration::review_brief::RevisionDiff;
+    visual_variant(cx, |model, visual| {
+        set_brief_revision(
+            model,
+            visual,
+            Some(RevisionDiff {
+                feedback: None,
+                changes: None,
+            }),
+        );
+        // An unreadable previous candidate is said, never reconstructed.
+        assert!(visual.debug_bounds("brief-revision").is_some());
+        assert!(visual.debug_bounds("brief-revision-unavailable").is_some());
+        assert!(visual.debug_bounds("brief-revision-feedback").is_none());
+        assert!(visual.debug_bounds("brief-change-0").is_none());
+    });
+    visual_variant(cx, |model, visual| {
+        set_brief_revision(
+            model,
+            visual,
+            Some(RevisionDiff {
+                feedback: Some("Tighten the wording.".into()),
+                changes: Some(Vec::new()),
+            }),
+        );
+        // A revision that changed nothing structural lists nothing.
+        assert!(visual.debug_bounds("brief-revision-feedback").is_some());
+        assert!(visual.debug_bounds("brief-revision-unavailable").is_none());
+        assert!(visual.debug_bounds("brief-change-0").is_none());
+    });
+    visual_variant(cx, |model, visual| {
+        select(model, visual, AppView::Pulsations);
+        assert!(visual.debug_bounds("brief-decision").is_some());
+        assert!(visual.debug_bounds("brief-revision").is_none());
+        model.read_with(visual, |model, cx| {
+            assert!(model.pulsations.read(cx).hitl.can_approve());
+        });
+    });
+}
+
+fn visual_variant(
+    cx: &mut TestAppContext,
+    check: impl FnOnce(&Entity<AppModel>, &mut VisualTestContext),
+) {
+    let (model, visual) = open_specification_brief(cx);
+    visual.simulate_resize(size(px(1440.0), px(1800.0)));
+    check(&model, visual);
+}
+
 /// Parks a stage failure with the given offered decisions in a window of its own.
 ///
 /// Each case needs a fresh window: GPUI keeps debug selectors alive in reused frames,
@@ -534,6 +1349,108 @@ fn leftover_files_card_shows_only_for_failed_pulsations(cx: &mut TestAppContext)
         "the removal button sizes to its label"
     );
     assert!(refresh.left() > remove.right(), "controls sit side by side");
+}
+
+/// The active pulsation at `status` in `section`, with the report card's last
+/// notice set, in a window of its own.
+fn report_window(
+    cx: &mut TestAppContext,
+    section: PulsationDetailSection,
+    status: PulsationStatus,
+    notice: Option<crate::pulsations::ReportNotice>,
+    window: (f32, f32),
+) -> (Entity<AppModel>, &mut VisualTestContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            state.pulsations[0].stage = PulsationStage::Integrator;
+            state.pulsations[0].status = status;
+            state.detail_section = section;
+            state.report.notice = notice;
+        });
+        m.select_view(AppView::Pulsations, cx);
+    });
+    visual.simulate_resize(size(px(window.0), px(window.1)));
+    visual.run_until_parked();
+    (model, visual)
+}
+
+/// ADR-027 M6: the report card sits in Overview and Artifacts, inside the
+/// reading column at the minimum and the common window, with its two actions
+/// side by side and a long written path wrapping inside the card.
+#[gpui::test]
+fn the_report_card_fits_overview_and_artifacts(cx: &mut TestAppContext) {
+    use crate::pulsations::ReportNotice;
+    let written = std::path::PathBuf::from("C:")
+        .join("Users")
+        .join("developer")
+        .join("AppData")
+        .join("Roaming")
+        .join("com.hardvibecode.desktop")
+        .join("reports")
+        .join("5d0c2a6e-8b1f-4c3a-9e27-61f0b4a9d2c8")
+        .join("pulsation-report.html");
+    for window in [(960.0, 640.0), (1440.0, 900.0)] {
+        for section in [
+            PulsationDetailSection::Overview,
+            PulsationDetailSection::Artifacts,
+        ] {
+            let (_, visual) = report_window(
+                cx,
+                section,
+                PulsationStatus::Done,
+                Some(ReportNotice::Opened(written.clone())),
+                window,
+            );
+            let scroll = visual.debug_bounds("pulsation-section-scroll").unwrap();
+            let card = visual.debug_bounds("pulsation-report").unwrap();
+            let status = visual.debug_bounds("pulsation-report-status").unwrap();
+            let open = visual.debug_bounds("pulsation-report-open").unwrap();
+            let save = visual.debug_bounds("pulsation-report-save").unwrap();
+            let at = format!("{section:?} at {window:?}");
+            assert!(
+                card.left() >= scroll.left() && card.right() <= scroll.right(),
+                "{at}: the card leaves the reading column: {card:?} in {scroll:?}"
+            );
+            assert!(
+                status.right() <= card.right() && status.size.width > card.size.width / 2.0,
+                "{at}: the written path overflows or collapses: {status:?} in {card:?}"
+            );
+            assert!(
+                save.left() > open.right() && open.top() == save.top(),
+                "{at}: the actions sit side by side"
+            );
+            assert!(
+                open.size.width < card.size.width / 2.0,
+                "{at}: the open action sizes to its label"
+            );
+            assert!(
+                status.bottom() <= open.top(),
+                "{at}: status above the actions"
+            );
+        }
+    }
+}
+
+/// Before the Integrator checkpoint the card only says when the report
+/// becomes available; its actions do nothing.
+#[gpui::test]
+fn the_report_card_waits_for_the_integrator(cx: &mut TestAppContext) {
+    let (model, visual) = report_window(
+        cx,
+        PulsationDetailSection::Overview,
+        PulsationStatus::Running,
+        None,
+        (1440.0, 900.0),
+    );
+    assert!(visual.debug_bounds("pulsation-report-status").is_some());
+    click(visual, "pulsation-report-open");
+    click(visual, "pulsation-report-save");
+    model.update(visual, |m, cx| {
+        let report = &m.pulsations.read(cx).report;
+        assert!(!report.busy);
+        assert_eq!(report.notice, None);
+    });
 }
 
 #[gpui::test]
@@ -1284,19 +2201,28 @@ fn settings_backdrop_closes_but_clicks_inside_the_panel_do_not(cx: &mut TestAppC
 
 #[gpui::test]
 fn permanent_deletion_keeps_settings_open_and_prevents_page_navigation(cx: &mut TestAppContext) {
-    let (model,visual)=cx.add_window_view(|_,cx|fixture(cx));
-    visual.simulate_resize(size(px(960.0),px(640.0)));
-    open_settings(&model,visual,Some(SettingsPage::Projects));
-    assert!(visual.debug_bounds("settings-row:project-deletion").is_some());
-    model.update(visual,|model,cx| {
-        model.settings.update(cx,|settings,_|settings.deletion_busy=true);
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    open_settings(&model, visual, Some(SettingsPage::Projects));
+    assert!(
+        visual
+            .debug_bounds("settings-row:project-deletion")
+            .is_some()
+    );
+    model.update(visual, |model, cx| {
+        model
+            .settings
+            .update(cx, |settings, _| settings.deletion_busy = true);
         cx.notify();
     });
     visual.run_until_parked();
-    click(visual,"settings-close");
-    click(visual,"settings-nav:general");
-    assert!(model.read_with(visual,|model,_|model.settings_modal.open));
-    assert_eq!(model.read_with(visual,|model,cx|model.settings.read(cx).page),SettingsPage::Projects);
+    click(visual, "settings-close");
+    click(visual, "settings-nav:general");
+    assert!(model.read_with(visual, |model, _| model.settings_modal.open));
+    assert_eq!(
+        model.read_with(visual, |model, cx| model.settings.read(cx).page),
+        SettingsPage::Projects
+    );
 }
 
 #[gpui::test]
@@ -2546,7 +3472,10 @@ fn forge_failed_reply_is_explained_once_with_its_actions(cx: &mut TestAppContext
         visual.run_until_parked();
         let detail = visual.debug_bounds("forge-detail").unwrap();
         let card = visual.debug_bounds("forge-failure-newest").unwrap();
-        assert!(card.right() <= detail.right(), "{card:?} overflows {detail:?}");
+        assert!(
+            card.right() <= detail.right(),
+            "{card:?} overflows {detail:?}"
+        );
         assert!(
             visual.debug_bounds("forge-failure-older").is_none(),
             "an older failure collapses to its summary line"
@@ -2557,13 +3486,19 @@ fn forge_failed_reply_is_explained_once_with_its_actions(cx: &mut TestAppContext
             "toggle-failure-detail-newest",
         ] {
             let bounds = visual.debug_bounds(control).unwrap();
-            assert!(bounds.right() <= card.right(), "{control}: {bounds:?} leaves {card:?}");
+            assert!(
+                bounds.right() <= card.right(),
+                "{control}: {bounds:?} leaves {card:?}"
+            );
         }
         assert!(visual.debug_bounds("retry-feature-turn-older").is_none());
     }
     click(visual, "forge-user:older:copy");
     visual.update(|_, cx| {
-        assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some("Answers"));
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("Answers")
+        );
     });
     // The failure can be copied even while technical detail is collapsed.
     // The newest card may be below the fold after the formatted conversation.
@@ -2590,7 +3525,11 @@ fn forge_failed_reply_is_explained_once_with_its_actions(cx: &mut TestAppContext
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds("retry-feature-turn-second").is_some());
-    assert!(visual.debug_bounds("ask-agent-about-failure-second").is_none());
+    assert!(
+        visual
+            .debug_bounds("ask-agent-about-failure-second")
+            .is_none()
+    );
 }
 
 #[gpui::test]
@@ -3152,6 +4091,413 @@ fn controls_size_to_content_instead_of_the_panel(cx: &mut TestAppContext) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ADR-027 M4: Contract, Test and Integrator briefs and the failure choices
+// ---------------------------------------------------------------------------
+
+/// The shared anatomy of a later-stage fixture: no revision, host words only.
+fn later_brief(
+    stage: PulsationStage,
+    next_stage: Option<PulsationStage>,
+    counts: &[&str],
+    judgement: Vec<hvc_core::orchestration::review_brief::JudgementItem>,
+    visual: hvc_core::orchestration::review_brief::StageVisual,
+) -> hvc_core::orchestration::review_brief::ReviewBrief {
+    hvc_core::orchestration::review_brief::ReviewBrief {
+        stage,
+        next_stage,
+        objective: Some("Let developers export token usage to CSV from the Usage view, one row per pulsation and model, with totals that match the app.".into()),
+        counts: counts.iter().map(|count| (*count).to_owned()).collect(),
+        revision: None,
+        judgement,
+        verified: vec!["Each criterion in scope has exactly one coverage entry.".into()],
+        visual,
+    }
+}
+
+fn item(
+    kind: hvc_core::orchestration::review_brief::JudgementKind,
+    label: &str,
+    text: &str,
+) -> hvc_core::orchestration::review_brief::JudgementItem {
+    hvc_core::orchestration::review_brief::JudgementItem {
+        kind,
+        label: label.into(),
+        text: text.into(),
+        detail: Some("An agent-written explanation that is long enough to wrap inside the item at the small window size.".into()),
+        refs: Vec::new(),
+    }
+}
+
+fn contract_brief() -> hvc_core::orchestration::review_brief::ReviewBrief {
+    use hvc_core::orchestration::composition::GroupIntent;
+    use hvc_core::orchestration::review_brief::*;
+    let group = |key: &str, intent, signature: &str| {
+        BriefInterfaceGroup {
+        key: key.into(),
+        intent,
+        signature: signature.into(),
+        invariants: vec![
+            "Returns rows in the order the Usage view shows them, so a spreadsheet matches the screen.".into(),
+            "Never panics on an empty range.".into(),
+        ],
+        sources: vec!["crates/hvc-core/src/usage.rs".into()],
+        criteria: vec!["AC-1".into(), "AC-2".into()],
+        units: vec!["core_export".into()],
+    }
+    };
+    let mut units = match specification_brief().visual {
+        StageVisual::Specification(visual) => visual.units,
+        _ => unreachable!(),
+    };
+    units[0].interfaces = vec!["csv_writer".into(), "query_usage".into()];
+    later_brief(
+        PulsationStage::Contract,
+        Some(PulsationStage::Code),
+        &[
+            "3 interface groups · 1 changed, 1 new, 1 preserved",
+            "3 work units · 1 bound to an interface",
+        ],
+        vec![
+            item(
+                JudgementKind::NewInterface,
+                "csv_writer",
+                "pub fn write_usage_csv(rows: &[UsageRow], out: &mut impl std::io::Write) -> std::io::Result<()>",
+            ),
+            item(
+                JudgementKind::InterfaceChange,
+                "usage_view",
+                "fn render_export_button(&self, loading: bool, cx: &mut Context<Self>) -> impl IntoElement",
+            ),
+        ],
+        StageVisual::Contract(ContractVisual {
+            interfaces: vec![
+                group(
+                    "query_usage",
+                    GroupIntent::Preserve,
+                    "pub fn query_usage(range: DateRange, filter: &UsageFilter) -> Result<Vec<UsageRow>, UsageError>",
+                ),
+                group(
+                    "csv_writer",
+                    GroupIntent::New,
+                    "pub fn write_usage_csv(rows: &[UsageRow], out: &mut impl std::io::Write) -> std::io::Result<()>",
+                ),
+                group(
+                    "usage_view",
+                    GroupIntent::Change,
+                    "fn render_export_button(&self, loading: bool, cx: &mut Context<Self>) -> impl IntoElement",
+                ),
+            ],
+            units,
+        }),
+    )
+}
+
+fn test_brief() -> hvc_core::orchestration::review_brief::ReviewBrief {
+    use hvc_core::orchestration::composition::{CheckStatus, CoverageKind};
+    use hvc_core::orchestration::review_brief::*;
+    let row = |id: &str, coverage, tests: &[&str]| {
+        BriefCoverage {
+        task_id: "4b8e0c62-3d1f-4a77-9b25-6c0e8f2a9d14".into(),
+        criterion_id: id.into(),
+        description: format!("{id}: an empty date range writes only the header row, and the totals match the Usage view."),
+        task_title: "Export usage summary to CSV".into(),
+        coverage,
+        tests: tests.iter().map(|test| (*test).to_owned()).collect(),
+        declared_checks: vec!["core_tests".into()],
+        explanation: "The authored test calls write_usage_csv with an empty range and compares the output with the header.".into(),
+    }
+    };
+    later_brief(
+        PulsationStage::Test,
+        Some(PulsationStage::Integrator),
+        &[
+            "3 criteria · 1 authored, 1 existing, 1 not applicable",
+            "2 host checks · 1 passed, 1 not run",
+            "1 test file · 1 new",
+        ],
+        vec![
+            item(
+                JudgementKind::ExistingTestsOnly,
+                "AC-2",
+                "Totals match the Usage view for the same filter.",
+            ),
+            item(
+                JudgementKind::UnexecutedCheck,
+                "ui_tests",
+                "The host has no passing receipt for this required check: not run.",
+            ),
+        ],
+        StageVisual::Test(TestVisual {
+            coverage: vec![
+                row(
+                    "AC-1",
+                    CoverageKind::Authored,
+                    &["crates/hvc-core/tests/usage_export_header_only_test.rs"],
+                ),
+                row(
+                    "AC-2",
+                    CoverageKind::Existing,
+                    &["crates/hvc-core/tests/usage_test.rs"],
+                ),
+                row("AC-3", CoverageKind::NotApplicable, &[]),
+            ],
+            checks: vec![
+                BriefCheck {
+                    check_ref: "core_tests".into(),
+                    required: true,
+                    status: CheckStatus::Passed,
+                    receipt: Some("dc3424cc-21d5-44aa-8b00-ee1c998a66e4".into()),
+                },
+                BriefCheck {
+                    check_ref: "ui_tests".into(),
+                    required: true,
+                    status: CheckStatus::NotRun,
+                    receipt: None,
+                },
+            ],
+            files: vec![BriefFileGroup {
+                root: "crates/hvc-core".into(),
+                files: vec![BriefFile {
+                    path: "tests/usage_export_header_only_test.rs".into(),
+                    planned: true,
+                    interfaces: Vec::new(),
+                }],
+            }],
+        }),
+    )
+}
+
+fn integrator_brief() -> hvc_core::orchestration::review_brief::ReviewBrief {
+    use hvc_core::orchestration::PublicationState;
+    use hvc_core::orchestration::composition::Verdict;
+    use hvc_core::orchestration::review_brief::*;
+    let verdict = |id: &str, verdict| {
+        BriefVerdict {
+        task_id: "4b8e0c62-3d1f-4a77-9b25-6c0e8f2a9d14".into(),
+        criterion_id: id.into(),
+        description: format!("{id}: the export keeps one row per pulsation and model."),
+        task_title: "Export usage summary to CSV".into(),
+        verdict,
+        checks: Vec::new(),
+        explanation: "The implementation groups by pulsation and model; the authored test asserts one row per pair.".into(),
+    }
+    };
+    let file = |path: &str, stage, state| BriefPublication {
+        path: path.into(),
+        stage,
+        state,
+    };
+    later_brief(
+        PulsationStage::Integrator,
+        None,
+        &[
+            "3 criteria · 1 supported, 1 contradicted, 1 unverified",
+            "1 blocker",
+            "No host check for this stage",
+            "3 files · 2 published, 1 to publish",
+        ],
+        vec![
+            item(
+                JudgementKind::Contradicted,
+                "AC-2",
+                "Totals match the Usage view for the same filter.",
+            ),
+            item(
+                JudgementKind::Blocker,
+                "B1",
+                "The CSV header order differs from the Usage view columns, so a spreadsheet does not line up with the screen.",
+            ),
+        ],
+        StageVisual::Integrator(IntegratorVisual {
+            verdicts: vec![
+                verdict("AC-1", Verdict::Supported),
+                verdict("AC-2", Verdict::Contradicted),
+                verdict("AC-3", Verdict::Unverified),
+            ],
+            blockers: vec!["The CSV header order differs from the Usage view columns.".into()],
+            checks: Vec::new(),
+            publications: vec![
+                file(
+                    "crates/hvc-core/src/usage/export.rs",
+                    PulsationStage::Code,
+                    PublicationState::Applied,
+                ),
+                file(
+                    "crates/hvc-core/tests/usage_export_header_only_test_with_a_long_name.rs",
+                    PulsationStage::Test,
+                    PublicationState::Applied,
+                ),
+                file(
+                    "knowledge/obsidian/features/usage-export-to-csv.md",
+                    PulsationStage::Integrator,
+                    PublicationState::Pending,
+                ),
+            ],
+        }),
+    )
+}
+
+/// Asserts each section fits the reader and each row head is one line;
+/// `long` heads (a long path in a narrow card) may take three, far from the
+/// one-character-per-line collapse the M3 diff once had.
+fn assert_brief_fits(
+    visual: &mut VisualTestContext,
+    sections: &[&'static str],
+    heads: &[&'static str],
+    long: &[&'static str],
+    width: f32,
+) {
+    let reader = visual.debug_bounds("review-document-reader").unwrap();
+    for section in sections {
+        let bounds = visual
+            .debug_bounds(section)
+            .unwrap_or_else(|| panic!("missing {section} at {width}"));
+        assert!(
+            bounds.left() >= reader.left() && bounds.right() <= reader.right() + px(1.0),
+            "{section} overflows the reader at {width}: {bounds:?} vs {reader:?}"
+        );
+    }
+    for head in heads {
+        let bounds = visual
+            .debug_bounds(head)
+            .unwrap_or_else(|| panic!("missing {head} at {width}"));
+        let limit = if long.contains(head) {
+            px(64.0)
+        } else {
+            px(24.0)
+        };
+        assert!(
+            bounds.size.height <= limit,
+            "{head} is {bounds:?} at {width}"
+        );
+    }
+}
+
+/// One later-stage brief and the selectors its window must draw.
+struct StageCase {
+    brief: hvc_core::orchestration::review_brief::ReviewBrief,
+    sections: &'static [&'static str],
+    heads: &'static [&'static str],
+    long: &'static [&'static str],
+}
+
+#[gpui::test]
+fn later_stage_briefs_draw_their_own_visuals_and_fit_both_window_widths(cx: &mut TestAppContext) {
+    let stages = [
+        StageCase {
+            brief: contract_brief(),
+            sections: &[
+                "brief-decision",
+                "brief-judgement",
+                "brief-verified",
+                "brief-interfaces",
+                "brief-units",
+            ],
+            heads: &[
+                "brief-interface-0",
+                "brief-interface-1",
+                "brief-interface-2",
+            ],
+            long: &[],
+        },
+        StageCase {
+            brief: test_brief(),
+            sections: &[
+                "brief-decision",
+                "brief-judgement",
+                "brief-coverage",
+                "brief-checks",
+                "brief-test-files",
+            ],
+            heads: &[
+                "brief-coverage-0",
+                "brief-coverage-1",
+                "brief-coverage-2",
+                "brief-check-0",
+                "brief-check-1",
+            ],
+            long: &[],
+        },
+        StageCase {
+            brief: integrator_brief(),
+            sections: &[
+                "brief-decision",
+                "brief-judgement",
+                "brief-verdicts",
+                "brief-checks",
+                "brief-publications",
+            ],
+            heads: &[
+                "brief-verdict-0",
+                "brief-verdict-1",
+                "brief-verdict-2",
+                "brief-publication-0",
+                "brief-publication-1",
+                "brief-publication-2",
+            ],
+            long: &[
+                "brief-publication-0",
+                "brief-publication-1",
+                "brief-publication-2",
+            ],
+        },
+    ];
+    for StageCase {
+        brief,
+        sections,
+        heads,
+        long,
+    } in stages
+    {
+        let (model, visual) = open_brief(cx, brief);
+        // Tall windows keep every row painted; the widths are the ones under test.
+        for width in [960.0, 1440.0] {
+            visual.simulate_resize(size(px(width), px(2400.0)));
+            select(&model, visual, AppView::Pulsations);
+            assert_brief_fits(visual, sections, heads, long, width);
+        }
+        // Only the stage's own visual is drawn in its window.
+        assert!(visual.debug_bounds("brief-criteria").is_none());
+        model.read_with(visual, |model, cx| {
+            let hitl = &model.pulsations.read(cx).hitl;
+            assert!(hitl.brief_selected);
+            assert_eq!(hitl.marks.len(), 2, "both judgement items can be marked");
+            assert!(hitl.can_approve(), "the documents still gate approval");
+        });
+    }
+}
+
+#[gpui::test]
+fn a_parked_failure_explains_each_permitted_decision_above_its_facts(cx: &mut TestAppContext) {
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        let (_model, visual) =
+            parked_failure_window(cx, "retry_budget_exhausted", true, true, (width, height));
+        let detail = visual.debug_bounds("failure-detail").unwrap();
+        let choices = visual.debug_bounds("failure-choices").unwrap();
+        assert!(
+            choices.left() >= detail.left() && choices.right() <= detail.right() + px(1.0),
+            "choices overflow at {width}: {choices:?} vs {detail:?}"
+        );
+        assert!(choices.top() >= detail.top(), "choices lead the detail");
+        // Retry, Revise from Code, Abort: as many rows as the bar has buttons.
+        for row in ["failure-choice-0", "failure-choice-1", "failure-choice-2"] {
+            let bounds = visual.debug_bounds(row).unwrap();
+            assert!(
+                bounds.left() >= choices.left() && bounds.right() <= choices.right() + px(1.0),
+                "{row} overflows at {width}: {bounds:?}"
+            );
+        }
+        let bar = visual.debug_bounds("failure-decision-bar").unwrap();
+        assert!(bar.bottom() <= px(height), "the bar stays on screen");
+    }
+    // A failure without retry lists only revision and abort.
+    let (_model, visual) =
+        parked_failure_window(cx, "model_reported_failure", false, true, (1440.0, 900.0));
+    visual.debug_bounds("failure-choice-1").unwrap();
+    assert!(visual.debug_bounds("failure-choice-2").is_none());
+}
+
 /// Rows with short text used to take the pane's width instead of their section's, so their
 /// controls stuck out past the section while longer rows lined up.
 #[gpui::test]
@@ -3500,28 +4846,55 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
         cx.notify();
     });
     visual.run_until_parked();
-    let conversation = visual.debug_bounds("chat-conversation:conversation-1").unwrap();
+    let conversation = visual
+        .debug_bounds("chat-conversation:conversation-1")
+        .unwrap();
     let delete = visual.debug_bounds("chat-delete:conversation-1").unwrap();
     assert!(delete.right() <= conversation.right() && delete.top() >= conversation.top());
     assert!(delete.size.width <= px(36.0) && delete.size.height <= px(36.0));
     click(visual, "chat-delete:conversation-1");
     model.read_with(visual, |model, cx| {
-        assert_eq!(model.chat.read(cx).pending_delete_conversation_id.as_ref().map(ToString::to_string).as_deref(), Some("conversation-1"));
+        assert_eq!(
+            model
+                .chat
+                .read(cx)
+                .pending_delete_conversation_id
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("conversation-1")
+        );
     });
-    assert_eq!(visual.debug_bounds("chat-delete:conversation-1").unwrap().size, delete.size);
+    assert_eq!(
+        visual
+            .debug_bounds("chat-delete:conversation-1")
+            .unwrap()
+            .size,
+        delete.size
+    );
     click(visual, "chat-copy-message:message-0");
     visual.update(|_, cx| {
-        assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some("A user message."));
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("A user message.")
+        );
     });
     click(visual, "chat-copy-message:message-1");
     visual.update(|_, cx| {
-        assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some("A assistant message."));
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("A assistant message.")
+        );
     });
     model.update(visual, |m, cx| {
         m.chat.update(cx, |chat, _| {
-            let answer = &mut chat.messages_by_conversation.get_mut("conversation-1").unwrap()[1];
+            let answer = &mut chat
+                .messages_by_conversation
+                .get_mut("conversation-1")
+                .unwrap()[1];
             answer.content.clear();
-            answer.error_message = Some("Companion CLI returned an invalid control envelope".into());
+            answer.error_message =
+                Some("Companion CLI returned an invalid control envelope".into());
             answer.status = "failed".into();
         });
         cx.notify();
@@ -3529,7 +4902,10 @@ fn companion_conversation_is_a_centred_reading_column(cx: &mut TestAppContext) {
     visual.run_until_parked();
     click(visual, "chat-copy-message:message-1");
     visual.update(|_, cx| {
-        assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some("Companion CLI returned an invalid control envelope"));
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("Companion CLI returned an invalid control envelope")
+        );
     });
     let composer = visual.debug_bounds("chat-composer").unwrap();
     let header = visual.debug_bounds("chat-header").unwrap();
@@ -3608,4 +4984,119 @@ fn a_keyboard_focus_ring_never_resizes_its_control(cx: &mut TestAppContext) {
     assert!(visual.update(|window, _| window.focus_visible()));
     assert_eq!(visual.debug_bounds("forge-section-triage").unwrap(), tab);
     assert_eq!(visual.debug_bounds("info:forge-section").unwrap(), tip);
+}
+
+// ---------------------------------------------------------------------------
+// ADR-027 M5: the Visualizer's note on the Brief
+// ---------------------------------------------------------------------------
+
+fn visualizer_window(
+    cx: &mut TestAppContext,
+    visualization: hvc_core::orchestration::review_brief::CheckpointVisualization,
+) -> (Entity<AppModel>, &mut VisualTestContext) {
+    let (model, visual) = open_specification_brief(cx);
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |state, _| {
+            state.hitl.visualization = Some(visualization);
+        });
+    });
+    (model, visual)
+}
+
+#[gpui::test]
+fn the_visualizer_note_sits_under_the_decision_line_and_marks_its_emphasis(
+    cx: &mut TestAppContext,
+) {
+    use hvc_core::orchestration::review_brief::{
+        CheckpointVisualization, ResolvedNote, ResolvedVisualization, VisualizationState,
+    };
+    let note = CheckpointVisualization {
+        state: VisualizationState::Validated,
+        note: Some(ResolvedVisualization {
+            headline: "AC-4 rests on reading alone; confirm the header-only early return before approving.".into(),
+            notes: vec![
+                ResolvedNote {
+                    text: "The empty-range criterion is proven only by reading write_usage_csv; no host check executes it.".into(),
+                    refs: vec!["AC-4".into(), "crates/hvc-core/src/usage/export.rs".into()],
+                },
+                ResolvedNote {
+                    text: "The Usage view gains an Export button, the only interface you already own that changes.".into(),
+                    refs: vec!["crates/hvc-ui/src/usage.rs".into()],
+                },
+            ],
+            emphasis: vec![1],
+        }),
+        diagnostic: None,
+    };
+    let (model, visual) = visualizer_window(cx, note);
+    for width in [960.0, 1440.0] {
+        visual.simulate_resize(size(px(width), px(2400.0)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let decision = visual.debug_bounds("brief-decision").unwrap();
+        let card = visual.debug_bounds("brief-visualizer").unwrap();
+        let judgement = visual.debug_bounds("brief-judgement").unwrap();
+        assert!(
+            decision.bottom() <= card.top() && card.bottom() <= judgement.top(),
+            "the note sits between the decision line and the judgement at {width}"
+        );
+        assert!(
+            card.left() >= reader.left() && card.right() <= reader.right() + px(1.0),
+            "the note overflows the reader at {width}: {card:?} vs {reader:?}"
+        );
+        for selector in [
+            "brief-visualizer-headline",
+            "brief-visualizer-note-0",
+            "brief-visualizer-note-1",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap();
+            assert!(
+                bounds.left() >= card.left() && bounds.right() <= card.right() + px(1.0),
+                "{selector} overflows at {width}"
+            );
+        }
+        // The emphasis badge is inside the item it points at, and only there.
+        let item = visual.debug_bounds("brief-item-1").unwrap();
+        let badge = visual.debug_bounds("brief-emphasis-1").unwrap();
+        assert!(badge.top() >= item.top() && badge.bottom() <= item.bottom());
+        assert!(badge.right() <= item.right() + px(1.0));
+    }
+    assert!(visual.debug_bounds("brief-emphasis-0").is_none());
+    model.read_with(visual, |model, cx| {
+        assert!(model.pulsations.read(cx).hitl.can_approve());
+    });
+}
+
+#[gpui::test]
+fn a_pending_or_omitted_visualizer_note_is_one_quiet_line(cx: &mut TestAppContext) {
+    use hvc_core::orchestration::review_brief::{CheckpointVisualization, VisualizationState};
+    let (model, visual) = visualizer_window(
+        cx,
+        CheckpointVisualization {
+            state: VisualizationState::Pending,
+            note: None,
+            diagnostic: None,
+        },
+    );
+    visual.simulate_resize(size(px(1440.0), px(1800.0)));
+    select(&model, visual, AppView::Pulsations);
+    let line = visual.debug_bounds("brief-visualizer-pending").unwrap();
+    assert!(line.size.height <= px(40.0), "{line:?}");
+    assert!(visual.debug_bounds("brief-visualizer").is_none());
+
+    let (model, visual) = visualizer_window(
+        cx,
+        CheckpointVisualization {
+            state: VisualizationState::Omitted,
+            note: None,
+            diagnostic: Some("The Visualizer's answer was rejected twice: Note 1 cites `R99`, which is not in the input.".into()),
+        },
+    );
+    visual.simulate_resize(size(px(960.0), px(1800.0)));
+    select(&model, visual, AppView::Pulsations);
+    let reader = visual.debug_bounds("review-document-reader").unwrap();
+    let line = visual.debug_bounds("brief-visualizer-omitted").unwrap();
+    assert!(line.left() >= reader.left() && line.right() <= reader.right() + px(1.0));
+    assert!(visual.debug_bounds("brief-visualizer").is_none());
+    assert!(visual.debug_bounds("brief-visualizer-pending").is_none());
 }

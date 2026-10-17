@@ -80,7 +80,9 @@ fn first_task_clarifies_through_companion_and_resumes_after_restart_without_extr
     let mut outputs = outputs.into_iter();
     let server = ScriptedHttpServer::respond_with(move |request| {
         let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
-        let model = body["model"].as_str().expect("provider request model identity");
+        let model = body["model"]
+            .as_str()
+            .expect("provider request model identity");
         let output = outputs.next().expect("scripted stage response");
         ScriptedResponse::json(200,json!({"model":model,"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}).to_string())
     });
@@ -231,7 +233,9 @@ fn clarification_answer_files_tags_are_parsed_and_persisted_alongside_the_prose(
     let mut outputs = outputs.into_iter();
     let server = ScriptedHttpServer::respond_with(move |request| {
         let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
-        let model = body["model"].as_str().expect("provider request model identity");
+        let model = body["model"]
+            .as_str()
+            .expect("provider request model identity");
         let output = outputs.next().expect("scripted stage response");
         ScriptedResponse::json(200,json!({"model":model,"choices":[{"message":{"content":output.to_string()},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}).to_string())
     });

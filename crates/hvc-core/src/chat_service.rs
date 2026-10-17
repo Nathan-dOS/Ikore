@@ -4892,7 +4892,10 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.message.status, "cancelled");
         assert_eq!(snapshot.message.error_code.as_deref(), Some("cancelled"));
-        assert_eq!(snapshot.message.target_label.as_deref(), Some("openai / gpt-4.1-mini"));
+        assert_eq!(
+            snapshot.message.target_label.as_deref(),
+            Some("openai / gpt-4.1-mini")
+        );
         service
             .update_conversation_target(UpdateChatConversationTargetRequest {
                 conversation_id: conversation.id.clone(),
@@ -4908,7 +4911,10 @@ mod tests {
                 conversation_id: conversation.id,
             })
             .unwrap();
-        assert_eq!(historical.messages[1].target_label, snapshot.message.target_label);
+        assert_eq!(
+            historical.messages[1].target_label,
+            snapshot.message.target_label
+        );
     }
 
     #[test]
@@ -5143,7 +5149,9 @@ mod tests {
             )
             .unwrap();
         database
-            .execute_batch(include_str!("../migrations/V43__companion_turn_target_and_model_evidence.sql"))
+            .execute_batch(include_str!(
+                "../migrations/V43__companion_turn_target_and_model_evidence.sql"
+            ))
             .unwrap();
         let historical: Option<String> = database
             .query_row(
@@ -5297,7 +5305,9 @@ mod tests {
         assert!(!exceeds_remaining_read_budget(&envelope, 21));
         assert!(exceeds_remaining_read_budget(&envelope, 0));
         assert!(!exceeds_remaining_read_budget(
-            &CompanionControlEnvelope::Final { text: "Done".into() },
+            &CompanionControlEnvelope::Final {
+                text: "Done".into()
+            },
             0,
         ));
     }

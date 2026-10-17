@@ -41,7 +41,9 @@ use crate::orchestration::brownfield::{
     BrownfieldConsentState, BrownfieldCoverageMetrics, BrownfieldOnboardingStatus,
 };
 use crate::orchestration::{IndexingEvent, IndexingEventSink};
-use crate::terminals::{CliBackend, CliObservationReport, CliObservationTrial, TerminalRepository, TerminalService};
+use crate::terminals::{
+    CliBackend, CliObservationReport, CliObservationTrial, TerminalRepository, TerminalService,
+};
 
 #[path = "orchestration/anticipation.rs"]
 mod anticipation;
@@ -77,6 +79,8 @@ mod integration;
 mod learning;
 #[path = "orchestration/preparation.rs"]
 mod preparation;
+#[path = "orchestration/pulsation_report.rs"]
+mod pulsation_report;
 #[path = "orchestration/reconciliation.rs"]
 mod reconciliation;
 #[path = "orchestration/resolution.rs"]
@@ -85,6 +89,8 @@ mod resolution;
 mod serial;
 #[path = "orchestration/supervisor.rs"]
 mod supervisor;
+#[path = "orchestration/visualizer.rs"]
+mod visualizer;
 
 mod embedded {
     use refinery::embed_migrations;
@@ -1423,6 +1429,10 @@ impl PersistenceService {
             ));
         }
         crate::project_deletion::recover_project_deletions(&connection, app_data_dir)?;
+        // A report outlives its pulsation only until the next start.
+        if let Err(error) = crate::reports::store::sweep_orphan_reports(&connection, app_data_dir) {
+            eprintln!("pulsation report cleanup deferred: {error}");
+        }
         crate::orchestration::upgrade::adapt_legacy(&mut connection)?;
 
         let llm_repository = SqliteLlmRepository::new(&db_path);
@@ -5230,10 +5240,8 @@ impl PersistenceService {
         let mut db = self.connection()?;
         let transaction = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-        let current =
-            Self::find_pulsation_by_id(&transaction, &request.pulsation_id)?.ok_or_else(|| {
-                PersistenceServiceError::NotFound("Pulsation not found.".to_string())
-            })?;
+        let current = Self::find_pulsation_by_id(&transaction, &request.pulsation_id)?
+            .ok_or_else(|| PersistenceServiceError::NotFound("Pulsation not found.".to_string()))?;
 
         let has_override: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM pulse_execution_overrides WHERE pulsation_id=?1 AND agent_role=?2 AND execution_mode='cli_process')",

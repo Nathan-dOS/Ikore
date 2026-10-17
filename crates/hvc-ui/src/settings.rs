@@ -14,8 +14,8 @@ use hvc_core::llm::{
 };
 use hvc_core::persistence_service::{
     EmbeddingReadinessReport, ListProjectsRequest, PersistenceCommandError, Project,
-    ReindexWorkspaceEmbeddingsRequest,
-    ReindexWorkspaceEmbeddingsResponse, UpdateAgentRuntimeConfigRequest,
+    ReindexWorkspaceEmbeddingsRequest, ReindexWorkspaceEmbeddingsResponse,
+    UpdateAgentRuntimeConfigRequest,
 };
 use hvc_core::project_deletion::{ProjectDeletionOutcome, ProjectDeletionPreview};
 
@@ -64,8 +64,15 @@ pub(crate) struct SettingsSnapshot {
 }
 
 pub(crate) trait SettingsBackend: Send + Sync {
-    fn preview_project_deletion(&self, project_id: String) -> SettingsFuture<ProjectDeletionPreview>;
-    fn delete_project_permanently(&self, project_id: String, confirmation: String) -> SettingsFuture<ProjectDeletionOutcome>;
+    fn preview_project_deletion(
+        &self,
+        project_id: String,
+    ) -> SettingsFuture<ProjectDeletionPreview>;
+    fn delete_project_permanently(
+        &self,
+        project_id: String,
+        confirmation: String,
+    ) -> SettingsFuture<ProjectDeletionOutcome>;
     fn update_preparation(
         &self,
         settings: hvc_core::orchestration::PreparationSettings,
@@ -172,16 +179,26 @@ impl CoreSettingsBackend {
 }
 
 impl SettingsBackend for CoreSettingsBackend {
-    fn preview_project_deletion(&self, project_id: String) -> SettingsFuture<ProjectDeletionPreview> {
+    fn preview_project_deletion(
+        &self,
+        project_id: String,
+    ) -> SettingsFuture<ProjectDeletionPreview> {
         self.blocking(move |persistence| persistence.preview_project_deletion(&project_id))
     }
 
-    fn delete_project_permanently(&self, project_id: String, confirmation: String) -> SettingsFuture<ProjectDeletionOutcome> {
+    fn delete_project_permanently(
+        &self,
+        project_id: String,
+        confirmation: String,
+    ) -> SettingsFuture<ProjectDeletionOutcome> {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
         Box::pin(async move {
-            runtime.spawn_blocking(move || core.delete_project_permanently(&project_id,&confirmation))
-                .await.map_err(|error|UiCommandError::worker(error.to_string()))?.map_err(command_error)
+            runtime
+                .spawn_blocking(move || core.delete_project_permanently(&project_id, &confirmation))
+                .await
+                .map_err(|error| UiCommandError::worker(error.to_string()))?
+                .map_err(command_error)
         })
     }
     fn update_preparation(
@@ -270,15 +287,21 @@ impl SettingsBackend for CoreSettingsBackend {
                             profiles: persistence.list_validation_profiles(&project.id)?,
                             presets: persistence.detect_validation_presets(&project.id)?,
                             overrides: persistence.list_specialty_overrides(&project.id)?,
-                            cli_observation_trial: persistence.active_cli_observation_trial(&project.id)?,
-                            cli_observation_report: persistence.latest_cli_observation_report(&project.id)?,
+                            cli_observation_trial: persistence
+                                .active_cli_observation_trial(&project.id)?,
+                            cli_observation_report: persistence
+                                .latest_cli_observation_report(&project.id)?,
                             project_id: project.id,
                             project_name: project.name,
                         }),
                         None => None,
                     };
                     Ok(SettingsSnapshot {
-                        projects: persistence.list_projects(ListProjectsRequest {include_archived:true})?.projects,
+                        projects: persistence
+                            .list_projects(ListProjectsRequest {
+                                include_archived: true,
+                            })?
+                            .projects,
                         pending_project_deletions: persistence.pending_project_deletion_count()?,
                         composition,
                         preparation: persistence.get_preparation_settings()?,
@@ -612,7 +635,9 @@ impl SettingsPage {
         match self {
             Self::General => "How the workbench behaves around you.",
             Self::Usage => "Tokens recorded by Hard Vibe Code across projects and transports.",
-            Self::Projects => "Review local projects and permanently delete their repository and project data.",
+            Self::Projects => {
+                "Review local projects and permanently delete their repository and project data."
+            }
             Self::Shortcuts => "Every keyboard shortcut, grouped by where it works.",
             Self::Connections => "LLM providers, default models and the keys stored for them.",
             Self::Routes => "Ordered fallbacks across connections and the agents bound to them.",
@@ -649,7 +674,9 @@ impl SettingsPage {
 
     pub(crate) fn group(self) -> SettingsGroup {
         match self {
-            Self::General | Self::Usage | Self::Projects | Self::Shortcuts => SettingsGroup::General,
+            Self::General | Self::Usage | Self::Projects | Self::Shortcuts => {
+                SettingsGroup::General
+            }
             Self::Connections | Self::Routes | Self::Embeddings | Self::SecondBrain => {
                 SettingsGroup::AiModels
             }

@@ -21,6 +21,10 @@ pub struct CompositionSettings {
     /// unit per stage even with composition enabled - the benchmark's arm B.
     #[serde(default)]
     pub qualified_recipes: Vec<String>,
+    /// ADR-027 M5: the Visualizer writes notes on each artifact checkpoint's
+    /// Review Brief. Off by default; the brief is complete without it.
+    #[serde(default)]
+    pub visualizer_enabled: bool,
 }
 
 impl Default for CompositionSettings {
@@ -30,6 +34,7 @@ impl Default for CompositionSettings {
             max_in_flight_units: 1,
             validation_enabled: false,
             qualified_recipes: Vec::new(),
+            visualizer_enabled: false,
         }
     }
 }

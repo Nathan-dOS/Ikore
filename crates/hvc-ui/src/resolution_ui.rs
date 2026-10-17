@@ -212,7 +212,9 @@ impl AppModel {
         });
         cx.notify();
         self.resolution_conversation_task = Some(cx.spawn(async move |this, cx| {
-            let result = backend.send_message(conversation_id.clone(), content, None).await;
+            let result = backend
+                .send_message(conversation_id.clone(), content, None)
+                .await;
             let _ = this.update(cx, |model, cx| {
                 let mut newly_synthesized = None;
                 model.resolution.update(cx, |resolution, _| {

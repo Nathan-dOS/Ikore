@@ -261,20 +261,22 @@ pub(crate) fn mode_control(
     cli_reason: Option<&'static str>,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
-    let api_selected = value.eq_ignore_ascii_case("api")
-        || value.eq_ignore_ascii_case("api key mode");
-    let cli_selected = value.eq_ignore_ascii_case("cli")
-        || value.eq_ignore_ascii_case("cli mode");
-    let options = [("api", "API Key Mode", api_selected), ("cli", "CLI Mode", cli_selected)]
-        .into_iter()
-        .map(|(value, label, selected)| {
-            let mut choice = Choice::new(value, label, selected);
-            if value == "cli" {
-                choice.reason = cli_reason.map(str::to_string);
-            }
-            choice
-        })
-        .collect();
+    let api_selected =
+        value.eq_ignore_ascii_case("api") || value.eq_ignore_ascii_case("api key mode");
+    let cli_selected = value.eq_ignore_ascii_case("cli") || value.eq_ignore_ascii_case("cli mode");
+    let options = [
+        ("api", "API Key Mode", api_selected),
+        ("cli", "CLI Mode", cli_selected),
+    ]
+    .into_iter()
+    .map(|(value, label, selected)| {
+        let mut choice = Choice::new(value, label, selected);
+        if value == "cli" {
+            choice.reason = cli_reason.map(str::to_string);
+        }
+        choice
+    })
+    .collect();
     let display_value = if api_selected {
         "API Key Mode"
     } else {

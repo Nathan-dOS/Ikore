@@ -1,0 +1,7 @@
+[alias]
+# Local feedback by area. Complete changes with test-all and the final gate.
+test-ui = "test --locked -p hvc-ui -- --test-threads=2"
+test-editor = "test --locked -p hvc-editor -p hvc-ui -- --test-threads=2"
+test-support = "test --locked -p hvc-test-support -p hvc-ui -- --test-threads=2"
+test-core = "test --locked -p hvc-core -- --test-threads=2"
+test-all = "test --locked --workspace -- --test-threads=2"

@@ -437,6 +437,7 @@ fn detail_overview(
         .when(active.status == PulsationStatus::Failed, |panel| {
             panel.child(cleanup_panel(model, cx))
         })
+        .child(report_panel(model, active, cx))
         .child(coordination_panel(model, cx))
         .child(composition_panel(model, cx))
         .child(crate::usage::pulsation_usage_panel(model, cx))
@@ -467,7 +468,11 @@ fn detail_artifacts(
     artifacts_loading: bool,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
+    let active = model.pulsations.read(cx).active().cloned();
     div()
+        .when_some(active, |panel, active| {
+            panel.child(report_panel(model, &active, cx))
+        })
         .child(artifact_preview_panel(model, cx))
         .child(
             div()
@@ -1478,6 +1483,105 @@ fn cleanup_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                     !loading && !busy,
                     cx,
                     |model, cx| model.reload_cleanup_preview(cx),
+                )),
+        )
+        .into_any_element()
+}
+
+/// The Pulsation report card (ADR-027 M6): the host writes a read-only HTML
+/// page under the app data folder and opens it with the system's default
+/// application, or copies it where the developer chooses. Before the
+/// Integrator checkpoint opens the card only says when it becomes available.
+fn report_panel(model: &AppModel, active: &Pulsation, cx: &mut Context<AppModel>) -> AnyElement {
+    use crate::pulsations::{ReportNotice, report_available};
+    let state = &model.pulsations.read(cx).report;
+    let busy = state.busy;
+    let notice = state.notice.clone();
+    let available = report_available(active);
+    let (status, color) = match (&notice, busy, available) {
+        (_, true, _) => ("Writing the report…".to_owned(), theme::text_muted()),
+        (Some(ReportNotice::Opened(path)), ..) => (
+            format!(
+                "Opened with your default browser. Written to {}.",
+                path.display()
+            ),
+            theme::text_muted(),
+        ),
+        (Some(ReportNotice::Saved(path)), ..) => (
+            format!("Saved a copy to {}.", path.display()),
+            theme::text_muted(),
+        ),
+        (Some(ReportNotice::Failed(error)), ..) => (error.clone(), theme::danger()),
+        (None, false, true) => (
+            "Verdicts, host checks with receipts, files and where the time and tokens went."
+                .to_owned(),
+            theme::text_muted(),
+        ),
+        (None, false, false) => (
+            "Available once the Integrator checkpoint opens or the pulsation ends.".to_owned(),
+            theme::text_muted(),
+        ),
+    };
+    div()
+        .id("pulsation-report")
+        .debug_selector(|| "pulsation-report".into())
+        .mb_3()
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(theme::border())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(crate::widgets::icon(
+                    crate::icons::Icon::FileText,
+                    px(16.0),
+                    theme::accent(),
+                ))
+                .child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Pulsation report"),
+                )
+                .child(crate::widgets::info_tip(
+                    "pulsation-report",
+                    "A read-only page the host renders from validated payloads, host receipts and usage records. It is rewritten on each request, kept in the app data folder until its project is deleted, and never a document of record.",
+                )),
+        )
+        .child(
+            div()
+                .debug_selector(|| "pulsation-report-status".into())
+                .min_w_0()
+                .text_sm()
+                .text_color(color)
+                .child(status),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(crate::widgets::btn(
+                    "pulsation-report-open",
+                    if busy { "Writing…" } else { "Open report" },
+                    crate::widgets::ButtonVariant::Primary,
+                    available && !busy,
+                    cx,
+                    |model, cx| model.open_pulsation_report(cx),
+                ))
+                .child(crate::widgets::btn(
+                    "pulsation-report-save",
+                    "Save as…",
+                    crate::widgets::ButtonVariant::Secondary,
+                    available && !busy,
+                    cx,
+                    |model, cx| model.save_pulsation_report(cx),
                 )),
         )
         .into_any_element()

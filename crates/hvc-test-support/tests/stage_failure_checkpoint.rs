@@ -123,7 +123,9 @@ fn an_exhausted_retry_budget_parks_on_a_decision_and_resumes_where_it_stopped() 
     let server = ScriptedHttpServer::respond_with(move |request| {
         if stage_of(request) == "Intake" {
             let body: Value = serde_json::from_str(&request.body).expect("provider request JSON");
-            let model = body["model"].as_str().expect("provider request model identity");
+            let model = body["model"]
+                .as_str()
+                .expect("provider request model identity");
             calls_for_handler.fetch_add(1, Ordering::SeqCst);
             if !repaired_for_handler.load(Ordering::SeqCst) {
                 return ScriptedResponse::json(
@@ -335,7 +337,9 @@ fn aborting_a_parked_failure_is_what_finally_makes_it_terminal() {
     let server = ScriptedHttpServer::respond_with(move |request| {
         if stage_of(request) == "Intake" {
             let body: Value = serde_json::from_str(&request.body).expect("provider request JSON");
-            let model = body["model"].as_str().expect("provider request model identity");
+            let model = body["model"]
+                .as_str()
+                .expect("provider request model identity");
             return ScriptedResponse::json(
                 200,
                 json!({

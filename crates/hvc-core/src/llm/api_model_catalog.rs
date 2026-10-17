@@ -593,11 +593,11 @@ fn declared_capabilities(value: Option<&Value>) -> Vec<String> {
         .and_then(Value::as_object)
         .map(|map| {
             map.iter()
-                .filter_map(|(key, value)| {
-                    (value == &Value::Bool(true)
-                        || value.get("supported").and_then(Value::as_bool) == Some(true))
-                    .then(|| key.clone())
+                .filter(|&(_, value)| {
+                    value == &Value::Bool(true)
+                        || value.get("supported").and_then(Value::as_bool) == Some(true)
                 })
+                .map(|(key, _)| key.clone())
                 .collect()
         })
         .unwrap_or_default()
@@ -614,11 +614,11 @@ fn declared_efforts(value: Option<&Value>) -> Vec<String> {
         Some(Value::Array(_)) => string_array(effort),
         Some(Value::Object(map)) => map
             .iter()
-            .filter_map(|(key, value)| {
-                (value == &Value::Bool(true)
-                    || value.get("supported").and_then(Value::as_bool) == Some(true))
-                .then(|| key.clone())
+            .filter(|&(_, value)| {
+                value == &Value::Bool(true)
+                    || value.get("supported").and_then(Value::as_bool) == Some(true)
             })
+            .map(|(key, _)| key.clone())
             .collect(),
         Some(Value::String(value)) => vec![value.clone()],
         _ => Vec::new(),

@@ -11,8 +11,8 @@ use hvc_core::llm::{
 use hvc_core::persistence_service::{
     CancelAgentApiExecutionRequest, CliFallbackCheckpoint, ListAgentApiExecutionsRequest,
     PersistenceCommandError, ResolveCliFallbackRequest, ResolveCliFallbackResponse,
-    ValidateCliFallbackRequest, ValidateCliFallbackResponse,
-    StartFreeFormApiRunRequest, StartFreeFormApiRunResponse,
+    StartFreeFormApiRunRequest, StartFreeFormApiRunResponse, ValidateCliFallbackRequest,
+    ValidateCliFallbackResponse,
 };
 use hvc_core::terminals::{
     CliBackend, CliModelCatalogSnapshot, CreateFreeFormSlotRequest, ResumeManualRunRequest,
@@ -462,15 +462,17 @@ impl AgentsBackend for CoreAgentsBackend {
         let core = Arc::clone(&self.core);
         let runtime = core.runtime_handle().clone();
         Box::pin(async move {
-            runtime.spawn_blocking(move || {
-                core.persistence().export_agent_api_execution(
-                    hvc_core::persistence_service::GetAgentApiExecutionSnapshotRequest {
-                        project_id,
-                        target,
-                        execution_id,
-                    },
-                )
-            }).await
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence().export_agent_api_execution(
+                        hvc_core::persistence_service::GetAgentApiExecutionSnapshotRequest {
+                            project_id,
+                            target,
+                            execution_id,
+                        },
+                    )
+                })
+                .await
                 .map_err(|error| UiCommandError::worker(format!("export worker aborted: {error}")))?
                 .map(|path| path.to_string_lossy().into_owned())
                 .map_err(persistence_error)
@@ -1112,7 +1114,10 @@ impl AgentsModel {
             return;
         };
         let activity = self.api_activity.entry(identifier.clone()).or_default();
-        let target = if activity.last().is_some_and(|line| line.starts_with("output · ")) {
+        let target = if activity
+            .last()
+            .is_some_and(|line| line.starts_with("output · "))
+        {
             activity.last_mut().expect("checked above")
         } else {
             activity.push("output · ".into());
@@ -1451,8 +1456,7 @@ mod tests {
             });
         }
 
-        let activity = &model.api_activity
-            [&AgentIdentifier::Canonical(AgentRole::BackendAgent)];
+        let activity = &model.api_activity[&AgentIdentifier::Canonical(AgentRole::BackendAgent)];
         assert_eq!(activity.len(), 200);
         assert!(activity.iter().all(|line| line.contains("[REDACTED]")));
         assert!(

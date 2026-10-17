@@ -316,13 +316,19 @@ impl<'a> Checker<'a> {
     /// that faithfully cites that same handle as evidence for creating it is
     /// not fabricating support; only a handle never assigned to this unit at
     /// all is a reference conflict.
-    fn require_assigned_inputs(&self, field: &str, refs: &[Handle]) -> Result<(), CompositionError> {
+    fn require_assigned_inputs(
+        &self,
+        field: &str,
+        refs: &[Handle],
+    ) -> Result<(), CompositionError> {
         for handle in refs {
             if !self.unit_inputs.contains(handle) {
                 return Err(reject(
                     Invariant::Sc004,
                     ErrorCode::ReferenceConflict,
-                    format!("`{field}` cites `{handle}`, which is not an input assigned to this unit."),
+                    format!(
+                        "`{field}` cites `{handle}`, which is not an input assigned to this unit."
+                    ),
                 )
                 .with_related([handle.clone()]));
             }
