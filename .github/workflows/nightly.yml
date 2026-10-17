@@ -32,7 +32,7 @@ jobs:
         with:
           tool: cargo-audit
       - run: cargo fetch --locked # the supply-chain step uses cargo metadata --offline
-      - name: Etapa 7
+      - name: Stage 7 gate
         shell: powershell # same PowerShell 5.1 as the local gate
         run: ./scripts/gate-stage7.ps1
       # Reports only. Do not upload the .exe while distribution is blocked.
