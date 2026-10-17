@@ -15,6 +15,12 @@ two test threads per binary:
 | `cargo test-editor` | Editor and consuming UI |
 | `cargo test-support` | Harnesses, integration tests and consuming UI |
 | `cargo test-all` | Complete workspace, including test-enabled examples and doctests |
+| `cargo test-unit` | Workspace `lib` and `bin` tests (CI `unit` job) |
+| `cargo test-integration` | `tests/` targets and the `pulsation_ui_fixture` example (CI `integration` job) |
+| `cargo test-headless` | Crates without GPUI, run by the Docker harness |
+
+`test-unit`, `test-integration` and `cargo test --locked --workspace --doc`
+together select the same tests as `test-all`.
 
 Use the relevant area during development. For a complete delivery, follow the
 repository's checks:
@@ -69,17 +75,28 @@ Those are dated results, not validation of later changes.
 
 ## Linux and Docker
 
-The existing [Docker Compose services](../docker-compose.yml) run headless
-core/editor/test-support tools:
+The [Docker Compose services](../docker-compose.yml) run headless
+core/editor/test-support tools. They are one-shot and behind profiles, so
+`docker compose up` starts nothing:
 
 ```powershell
 docker compose --profile tools build
 docker compose --profile tools run --rm test-runner
+docker compose --profile tools run --rm cargo-check
 docker compose --profile tools run --rm clippy-check
 docker compose --profile tools run --rm fmt-check
 ```
 
-Linux validation has known gaps and does not certify the Windows desktop.
-GitHub Actions workflows are still planned at this baseline; the repository
-does not yet contain `.github/workflows/`. See the [quality index](../quality/README.md)
+`test-runner` runs `cargo test-headless`. Linux validation has known gaps and
+does not certify the Windows desktop. See the [quality index](../quality/README.md)
 for evidence and the meaning of historical design references.
+
+## Continuous integration
+
+[`ci.yml`](../.github/workflows/ci.yml) runs on every pull request and push to
+`main`: `fmt`, then `clippy`, `unit` and `integration` on `windows-latest`, plus
+the Docker job `linux headless (docker)`, which stays informational until the
+Linux failures are fixed. [`nightly.yml`](../.github/workflows/nightly.yml) runs
+the complete Stage 7 gate, and [`security.yml`](../.github/workflows/security.yml)
+runs `cargo audit` and the license and source audit. The jobs call the same
+aliases as local runs, with no retries.

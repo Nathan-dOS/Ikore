@@ -64,11 +64,30 @@ Use os atalhos na raiz do workspace. Todos mantêm as dependências do lockfile
 | `cargo test-support` | Harnesses, integrações e UI consumidora |
 | `cargo test-core` | Core |
 | `cargo test-all` | Workspace completo, incluindo integrações, exemplos marcados como teste e doctests |
+| `cargo test-unit` | Testes de `lib` e `bin` do workspace (job `unit` do CI) |
+| `cargo test-integration` | Alvos de `tests/` e o exemplo `pulsation_ui_fixture` (job `integration` do CI) |
+| `cargo test-headless` | Crates sem GPUI (`hvc-core`, `hvc-editor`, `hvc-test-support`), usado pelo Docker |
 
-Os atalhos servem para feedback local. Ao concluir uma alteração, execute
-`cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets -- -D warnings` e `cargo test-all`.
-Mudanças transversais, migrations e dependências exigem o workspace completo.
+`test-unit`, `test-integration` e `cargo test --locked --workspace --doc`
+somam a mesma seleção do `test-all`.
+
+### Local e CI
+
+Antes de cada push, rode localmente `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --locked -- -D warnings` e o atalho da
+área alterada. O GitHub Actions roda a suíte ampla em todo PR e push na `main`:
+
+| Workflow | Checks |
+|---|---|
+| [`ci.yml`](.github/workflows/ci.yml) | `fmt`, `clippy (windows)`, `unit (windows)`, `integration (windows)` e `linux headless (docker)`, este informativo até o Linux passar |
+| [`nightly.yml`](.github/workflows/nightly.yml) | Gate completo da Etapa 7, diário, manual e em push que altere `Cargo.lock`, `third_party/` ou `scripts/` |
+| [`security.yml`](.github/workflows/security.yml) | `cargo audit` e auditoria de licenças e fontes, em mudanças de dependências e semanalmente |
+
+O CI usa os mesmos atalhos e comandos; para reproduzir uma falha, rode o
+comando do job.
+Rode `cargo test-all` localmente em mudanças transversais, migrations,
+dependências e runtime CLI. Testes `#[ignore]` que exigem CLIs autenticadas,
+rede ou cota paga nunca rodam no CI.
 `cargo test` sem seleção usa apenas o `default-members` (`hvc-app`).
 
 Para investigar uma área menor, confira os nomes com `--list` e aplique um filtro:
@@ -113,6 +132,26 @@ o primeiro build de uma worktree vazia inclui o custo de compilar dependências.
 
 A [validação desta organização de testes](quality/test-workflow-validation-2026-10-15.md)
 registra comandos, tempos, inventário e as pendências encontradas no gate.
+
+## Docker (harness Linux headless)
+
+O Docker não executa o app: GPUI precisa do backend Windows. A imagem roda
+`hvc-core`, `hvc-editor` e `hvc-test-support` em Linux, com o mesmo comando
+local e no job `linux headless (docker)` do CI. Todos os serviços são de uso
+único e ficam atrás de perfis, então `docker compose up` não inicia nenhum:
+
+```powershell
+docker compose --profile tools build
+docker compose --profile tools run --rm test-runner
+docker compose --profile tools run --rm cargo-check
+docker compose --profile tools run --rm clippy-check
+docker compose --profile tools run --rm fmt-check
+```
+
+`test-runner` executa `cargo test-headless`. Os caches do Cargo e o `target/`
+ficam em volumes nomeados. No CI, o override `docker-compose.ci.yml` os grava
+em `.ci-cache/`. A validação Linux tem falhas conhecidas e não certifica o
+desktop Windows; por isso o job do CI ainda é informativo.
 
 ## Paridade e desempenho
 
