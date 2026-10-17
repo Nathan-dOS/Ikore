@@ -64,30 +64,30 @@ Use os atalhos na raiz do workspace. Todos mantêm as dependências do lockfile
 | `cargo test-support` | Harnesses, integrações e UI consumidora |
 | `cargo test-core` | Core |
 | `cargo test-all` | Workspace completo, incluindo integrações, exemplos marcados como teste e doctests |
-| `cargo test-unit` | Testes de `lib` e `bin` do workspace (job `unit` do CI) |
-| `cargo test-integration` | Alvos de `tests/` e o exemplo `pulsation_ui_fixture` (job `integration` do CI) |
-| `cargo test-headless` | Crates sem GPUI (`hvc-core`, `hvc-editor`, `hvc-test-support`), usado pelo Docker |
+| `cargo test-unit` | Workspace `lib` and `bin` tests (CI `unit` job) |
+| `cargo test-integration` | `tests/` targets and the `pulsation_ui_fixture` example (CI `integration` job) |
+| `cargo test-headless` | Crates without GPUI (`hvc-core`, `hvc-editor`, `hvc-test-support`), used by Docker |
 
-`test-unit`, `test-integration` e `cargo test --locked --workspace --doc`
-somam a mesma seleção do `test-all`.
+`test-unit`, `test-integration` and `cargo test --locked --workspace --doc`
+together select the same tests as `test-all`.
 
-### Local e CI
+### Local and CI
 
-Antes de cada push, rode localmente `cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets --locked -- -D warnings` e o atalho da
-área alterada. O GitHub Actions roda a suíte ampla em todo PR e push na `main`:
+Before each push, run `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --locked -- -D warnings` and the alias
+for the area you changed. GitHub Actions runs the broad suite on every pull
+request and push to `main`:
 
 | Workflow | Checks |
 |---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | `fmt`, `clippy (windows)`, `unit (windows)`, `integration (windows)` e `linux headless (docker)`, este informativo até o Linux passar |
-| [`nightly.yml`](.github/workflows/nightly.yml) | Gate completo da Etapa 7, diário, manual e em push que altere `Cargo.lock`, `third_party/` ou `scripts/` |
-| [`security.yml`](.github/workflows/security.yml) | `cargo audit` e auditoria de licenças e fontes, em mudanças de dependências e semanalmente |
+| [`ci.yml`](.github/workflows/ci.yml) | `fmt`, `clippy (windows)`, `unit (windows)`, `integration (windows)` and `linux headless (docker)`, which stays informational until Linux passes |
+| [`nightly.yml`](.github/workflows/nightly.yml) | Complete Stage 7 gate: daily, on demand, and on pushes that change `Cargo.lock`, `third_party/` or `scripts/` |
+| [`security.yml`](.github/workflows/security.yml) | `cargo audit` and the license and source audit, on dependency changes and weekly |
 
-O CI usa os mesmos atalhos e comandos; para reproduzir uma falha, rode o
-comando do job.
-Rode `cargo test-all` localmente em mudanças transversais, migrations,
-dependências e runtime CLI. Testes `#[ignore]` que exigem CLIs autenticadas,
-rede ou cota paga nunca rodam no CI.
+CI uses the same aliases and commands; to reproduce a failure, run the job's
+command. Run `cargo test-all` locally for cross-cutting changes, migrations,
+dependencies and the CLI runtime. `#[ignore]` tests that need authenticated
+CLIs, network access or paid quota never run in CI.
 `cargo test` sem seleção usa apenas o `default-members` (`hvc-app`).
 
 Para investigar uma área menor, confira os nomes com `--list` e aplique um filtro:
@@ -133,12 +133,12 @@ o primeiro build de uma worktree vazia inclui o custo de compilar dependências.
 A [validação desta organização de testes](quality/test-workflow-validation-2026-10-15.md)
 registra comandos, tempos, inventário e as pendências encontradas no gate.
 
-## Docker (harness Linux headless)
+## Docker (Linux headless harness)
 
-O Docker não executa o app: GPUI precisa do backend Windows. A imagem roda
-`hvc-core`, `hvc-editor` e `hvc-test-support` em Linux, com o mesmo comando
-local e no job `linux headless (docker)` do CI. Todos os serviços são de uso
-único e ficam atrás de perfis, então `docker compose up` não inicia nenhum:
+Docker does not run the app: GPUI needs the Windows backend. The image runs
+`hvc-core`, `hvc-editor` and `hvc-test-support` on Linux, with the same command
+locally and in the CI `linux headless (docker)` job. Every service is one-shot
+and behind a profile, so `docker compose up` starts nothing:
 
 ```powershell
 docker compose --profile tools build
@@ -148,10 +148,10 @@ docker compose --profile tools run --rm clippy-check
 docker compose --profile tools run --rm fmt-check
 ```
 
-`test-runner` executa `cargo test-headless`. Os caches do Cargo e o `target/`
-ficam em volumes nomeados. No CI, o override `docker-compose.ci.yml` os grava
-em `.ci-cache/`. A validação Linux tem falhas conhecidas e não certifica o
-desktop Windows; por isso o job do CI ainda é informativo.
+`test-runner` runs `cargo test-headless`. The Cargo caches and `target/` live
+in named volumes; in CI, the `docker-compose.ci.yml` override stores them in
+`.ci-cache/`. Linux validation has known failures and does not certify the
+Windows desktop, so the CI job is still informational.
 
 ## Paridade e desempenho
 
