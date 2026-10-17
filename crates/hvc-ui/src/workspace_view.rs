@@ -837,6 +837,13 @@ fn workspace_editor_surface(
 }
 
 pub(crate) fn render_markdown_block(block: MarkdownBlock) -> AnyElement {
+    render_markdown_block_with(block, &mut |text| text.into_any_element())
+}
+
+pub(crate) fn render_markdown_block_with(
+    block: MarkdownBlock,
+    text_element: &mut impl FnMut(String) -> AnyElement,
+) -> AnyElement {
     match block {
         MarkdownBlock::Table { headers, rows } => div()
             .mb_3()
@@ -863,7 +870,7 @@ pub(crate) fn render_markdown_block(block: MarkdownBlock) -> AnyElement {
                                     .border_b_1()
                                     .border_r_1()
                                     .border_color(theme::border())
-                                    .child(text)
+                                    .child(text_element(text))
                             }))
                     }),
             )
@@ -873,13 +880,13 @@ pub(crate) fn render_markdown_block(block: MarkdownBlock) -> AnyElement {
             .mb_2()
             .text_size(px(22.0 - f32::from(level) * 1.5))
             .font_weight(gpui::FontWeight::BOLD)
-            .child(text)
+            .child(text_element(text))
             .into_any_element(),
         MarkdownBlock::Paragraph(text) => div()
             .mb_3()
             .text_sm()
             .line_height(px(22.0))
-            .child(text)
+            .child(text_element(text))
             .into_any_element(),
         MarkdownBlock::CodeBlock { language, code } => div()
             .mb_3()
@@ -888,7 +895,7 @@ pub(crate) fn render_markdown_block(block: MarkdownBlock) -> AnyElement {
             .bg(theme::canvas())
             .font_family(theme::FONT_MONO)
             .text_sm()
-            .child(format!("{}\n{code}", language.unwrap_or_default()))
+            .child(text_element(format!("{}\n{code}", language.unwrap_or_default())))
             .into_any_element(),
         MarkdownBlock::Quote(text) => div()
             .mb_2()
@@ -896,12 +903,12 @@ pub(crate) fn render_markdown_block(block: MarkdownBlock) -> AnyElement {
             .border_l_2()
             .border_color(theme::accent())
             .text_color(theme::text_muted())
-            .child(text)
+            .child(text_element(text))
             .into_any_element(),
         MarkdownBlock::ListItem(text) => div()
             .mb_1()
             .text_sm()
-            .child(format!("• {text}"))
+            .child(text_element(format!("• {text}")))
             .into_any_element(),
         MarkdownBlock::Rule => div()
             .my_3()

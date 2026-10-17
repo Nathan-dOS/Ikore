@@ -37,6 +37,8 @@ pub(crate) fn register_text_input_keybindings(cx: &mut App) {
         KeyBinding::new("delete", Delete, Some("NativeTextInput")),
         KeyBinding::new("ctrl-a", SelectAll, Some("NativeTextInput")),
         KeyBinding::new("ctrl-c", Copy, Some("NativeTextInput")),
+        KeyBinding::new("ctrl-a", SelectAll, Some("SelectableMessage")),
+        KeyBinding::new("ctrl-c", Copy, Some("SelectableMessage")),
         KeyBinding::new("ctrl-x", Cut, Some("NativeTextInput")),
         KeyBinding::new("ctrl-v", Paste, Some("NativeTextInput")),
         KeyBinding::new("left", MoveLeft, Some("NativeTextInput")),

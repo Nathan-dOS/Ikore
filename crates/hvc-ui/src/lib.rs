@@ -39,6 +39,7 @@ mod resolution;
 mod resolution_view;
 mod review_view;
 mod select_menu;
+mod selectable_message;
 mod session;
 mod settings;
 mod settings_modal;

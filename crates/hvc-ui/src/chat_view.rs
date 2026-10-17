@@ -1,14 +1,15 @@
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
 use hvc_core::chat_service::{ChatConversation, ChatMessage, ChatToolArgumentValue, ChatToolCall, ChatTransportKind};
 use hvc_core::terminals::CliAvailabilityState;
-use hvc_editor::{ChatContentPart, parse_chat_content, parse_markdown};
+#[cfg(test)]
+use hvc_editor::{parse_chat_content, parse_markdown};
 
 use crate::agents::CliModelPickerTarget;
 use crate::agents_view::cli_model_picker_panel;
 use crate::app_model::AppModel;
 use crate::theme;
 
-use crate::workspace_view::render_markdown_block;
+use crate::selectable_message::SelectableMessage;
 
 pub(crate) fn chat_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let (
@@ -694,7 +695,11 @@ pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -
             ))
         })
         .when(!message.content.is_empty(), |card| {
-            card.children(render_chat_content(&message.content, cx))
+            let model = cx.entity().downgrade();
+            card.child(SelectableMessage::new(format!("chat-text:{}", message.id), message.content.clone())
+                .on_copy_diff(move |diff, cx| {
+                    let _ = model.update(cx, |model, cx| model.copy_chat_diff(diff, cx));
+                }))
         })
         .when_some(message.error_message, |card, error| {
             card.child(
@@ -702,7 +707,7 @@ pub(crate) fn render_message(message: ChatMessage, cx: &mut Context<AppModel>) -
                     .mt_2()
                     .text_sm()
                     .text_color(theme::danger())
-                    .child(error),
+                    .child(SelectableMessage::new(format!("chat-error:{}", message.id), error)),
             )
         });
     let id = message.id;
@@ -832,66 +837,6 @@ fn centred(column: gpui::Div) -> gpui::Div {
 }
 
 const CHAT_COLUMN_WIDTH: f32 = 760.0;
-
-fn render_chat_content(content: &str, cx: &mut Context<AppModel>) -> Vec<AnyElement> {
-    parse_chat_content(content)
-        .into_iter()
-        .flat_map(|part| match part {
-            ChatContentPart::Markdown(markdown) => parse_markdown(&markdown)
-                .into_iter()
-                .map(render_markdown_block)
-                .collect::<Vec<_>>(),
-            ChatContentPart::UnifiedDiff { content, file_path } => {
-                let copy = content.clone();
-                vec![
-                    div()
-                        .my_2()
-                        .p_3()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(theme::warning())
-                        .bg(theme::canvas())
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    div()
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .child(file_path),
-                                )
-                                .child(action(
-                                    SharedString::from(format!(
-                                        "chat-copy-diff:{}",
-                                        stable_text_id(&copy)
-                                    )),
-                                    "Copy diff",
-                                    true,
-                                    cx,
-                                    move |model, cx| model.copy_chat_diff(copy.clone(), cx),
-                                )),
-                        )
-                        .child(
-                            div()
-                                .mt_2()
-                                .font_family(theme::FONT_MONO)
-                                .text_xs()
-                                .child(content),
-                        )
-                        .child(
-                            div()
-                                .mt_2()
-                                .text_xs()
-                                .text_color(theme::warning())
-                                .child("Proposed diff not applied · apply action does not exist"),
-                        )
-                        .into_any_element(),
-                ]
-            }
-        })
-        .collect()
-}
 
 fn render_tool_call(tool: ChatToolCall) -> impl IntoElement {
     let label = tool_label(&tool.tool_name);
@@ -1090,12 +1035,6 @@ fn empty(message: &'static str) -> impl IntoElement {
         .text_sm()
         .text_color(theme::text_muted())
         .child(message)
-}
-
-fn stable_text_id(text: &str) -> u64 {
-    text.bytes().fold(1_469_598_103_934_665_603, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(1_099_511_628_211)
-    })
 }
 
 #[cfg(test)]

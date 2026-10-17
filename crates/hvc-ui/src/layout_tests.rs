@@ -2561,6 +2561,25 @@ fn forge_failed_reply_is_explained_once_with_its_actions(cx: &mut TestAppContext
         }
         assert!(visual.debug_bounds("retry-feature-turn-older").is_none());
     }
+    click(visual, "forge-user:older:copy");
+    visual.update(|_, cx| {
+        assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some("Answers"));
+    });
+    // The failure can be copied even while technical detail is collapsed.
+    // The newest card may be below the fold after the formatted conversation.
+    let detail = visual.debug_bounds("forge-detail").unwrap();
+    visual.simulate_event(ScrollWheelEvent {
+        position: detail.center(),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-10_000.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    click(visual, "forge-failure:newest:copy");
+    visual.update(|_, cx| {
+        let copied = cx.read_from_clipboard().unwrap().text().unwrap();
+        assert!(copied.contains("raw technical detail"));
+        assert!(copied.contains("reply"));
+    });
     // A repeated failure of the same kind stops offering the paid follow-up.
     model.update(visual, |m, cx| {
         m.forge.history = vec![

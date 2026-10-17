@@ -2029,12 +2029,14 @@ fn request_path_clarification_reopens_incubation_and_blocks_reapproval() {
 struct ScriptedGateway {
     responses: std::sync::Mutex<std::collections::VecDeque<String>>,
     prompts: std::sync::Mutex<Vec<String>>,
+    requests: std::sync::Mutex<Vec<crate::llm::LlmRequest>>,
 }
 impl ScriptedGateway {
     fn new(responses: Vec<String>) -> Arc<Self> {
         Arc::new(Self {
             responses: std::sync::Mutex::new(responses.into()),
             prompts: std::sync::Mutex::new(Vec::new()),
+            requests: std::sync::Mutex::new(Vec::new()),
         })
     }
     fn prompts(&self) -> Vec<String> {
@@ -2050,6 +2052,7 @@ impl crate::llm::LlmGateway for ScriptedGateway {
         Box::pin(async move {
             use crate::llm::*;
             self.prompts.lock().unwrap().push(request.user_prompt.clone());
+            self.requests.lock().unwrap().push(request.clone());
             let content = {
                 let mut queue = self.responses.lock().unwrap();
                 if queue.len() > 1 {
@@ -2073,6 +2076,41 @@ impl crate::llm::LlmGateway for ScriptedGateway {
                 estimated_cost_usd: None,
             })
         })
+    }
+}
+
+#[tokio::test]
+async fn forge_requests_preserve_progressive_cli_budgets_and_independent_api_deadlines() {
+    let f = Fixture::new();
+    let gateway = ScriptedGateway::new(vec!["{}".into()]);
+    let cancellation = CancellationToken::new();
+    for role in [AgentRole::IntakeRouter, AgentRole::FeatureAgent] {
+        let before = std::time::Instant::now();
+        f.service
+            .execute_feature_request(
+                &f.project,
+                "budget-fixture",
+                role,
+                "Intake",
+                "Inspect supplied context".into(),
+                json!({"type":"object"}),
+                &cancellation,
+                Some(gateway.as_ref()),
+            )
+            .await
+            .unwrap();
+        let requests = gateway.requests.lock().unwrap();
+        let request = requests.last().unwrap();
+        let budget = request
+            .dispatch
+            .cli_timeout
+            .expect("Forge must supply a CLI budget");
+        let policy = crate::agent_timeout::AgentTimeoutPolicy::for_role(role);
+        assert_eq!(budget.policy, policy);
+        assert!(budget.deadline >= before + policy.max_timeout());
+        assert!(request.deadline >= before + policy.base_timeout());
+        assert!(request.deadline < budget.deadline);
+        assert!(request.pulsation_id.is_none());
     }
 }
 
