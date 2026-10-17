@@ -1,0 +1,11 @@
+# CI override: bind the Cargo caches to .ci-cache/ so actions/cache can keep
+# them between runs. Compose merges volumes by container path, so these
+# entries replace the named volumes from docker-compose.yml.
+services:
+  test-runner: &ci-cache
+    volumes:
+      - ./.ci-cache/registry:/usr/local/cargo/registry
+      - ./.ci-cache/git:/usr/local/cargo/git
+      - ./.ci-cache/target:/workspace/target
+  cargo-check: *ci-cache
+  clippy-check: *ci-cache
