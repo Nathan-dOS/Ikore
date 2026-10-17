@@ -441,8 +441,14 @@ async fn claude_sonnet_generation_rejects_haiku_output_and_terminates_the_proces
         .lock()
         .await;
     let binaries = tempfile::tempdir().unwrap();
-    let claude = binaries.path().join("claude.exe");
-    std::fs::copy(env!("CARGO_BIN_EXE_cli_fixture"), &claude).unwrap();
+    // The identity check must not depend on real CLI discovery latency.
+    for backend in ["codex", "claude", "gemini", "opencode", "agy"] {
+        std::fs::copy(
+            env!("CARGO_BIN_EXE_cli_fixture"),
+            binaries.path().join(format!("{backend}.exe")),
+        )
+        .unwrap();
+    }
     std::fs::write(binaries.path().join("claude.fixture-state"), "sonnet_mismatch").unwrap();
     let marker = binaries.path().join("claude.fixture-after-mismatch");
     let original_path = std::env::var_os("PATH");
@@ -508,7 +514,94 @@ async fn claude_sonnet_generation_rejects_haiku_output_and_terminates_the_proces
     assert_eq!(generation.0.as_deref(), Some("claude-sonnet-5"));
     assert_eq!(generation.1.as_deref(), Some("claude-message-1"));
     assert!(generation.2);
-    assert!(!marker.exists(), "the host must kill the local process tree immediately");
+    assert!(
+        !marker.exists(),
+        "the host must kill the local process tree immediately"
+    );
+}
+
+#[tokio::test]
+async fn claude_synthetic_auth_error_reports_login_failure_instead_of_model_mismatch() {
+    let _path_lock = PATH_TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let binaries = tempfile::tempdir().unwrap();
+    // Discovery must not probe the developer's real CLIs in this regression.
+    for backend in ["codex", "claude", "gemini", "opencode", "agy"] {
+        std::fs::copy(
+            env!("CARGO_BIN_EXE_cli_fixture"),
+            binaries.path().join(format!("{backend}.exe")),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        binaries.path().join("claude.fixture-state"),
+        "synthetic_auth_error",
+    )
+    .unwrap();
+    let original_path = std::env::var_os("PATH");
+    let _restore = PathRestore(original_path.clone());
+    let mut paths = vec![binaries.path().to_path_buf()];
+    if let Some(original_path) = original_path {
+        paths.extend(std::env::split_paths(&original_path));
+    }
+    // SAFETY: PATH_TEST_LOCK serializes this mutation and PathRestore restores it.
+    unsafe { std::env::set_var("PATH", std::env::join_paths(paths).unwrap()) };
+    let h = harness(Vec::new());
+    let current = h
+        .terminals
+        .repository()
+        .get_config(&h.project_id, AgentRole::BackendAgent)
+        .unwrap();
+    h.terminals
+        .update_config(UpdateCliAgentConfigRequest {
+            project_id: h.project_id.clone(),
+            agent_role: AgentRole::BackendAgent,
+            execution_mode: AgentExecutionMode::CliProcess,
+            backend: CliBackend::Claude,
+            model: Some("haiku".into()),
+            model_profile: None,
+            model_source: CliModelSelectionSource::Manual,
+            thinking_level: ThinkingLevel::Default,
+            custom_executable: None,
+            custom_args: Vec::new(),
+            custom_risk_ack: false,
+            expected_version: current.version,
+        })
+        .unwrap();
+    let error = h
+        .terminals
+        .execute_llm_request(
+            &request(&h.project_id, Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "cli_auth_required");
+    let db = rusqlite::Connection::open(&h.database_path).unwrap();
+    let (run_id, status, code, observed): (String, String, String, Option<String>) = db.query_row(
+        "SELECT id,status,error_code,observed_model FROM terminal_runs ORDER BY created_at DESC LIMIT 1",
+        [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+    ).unwrap();
+    assert_eq!(status, "failed");
+    assert_eq!(code, "cli_auth_required");
+    assert_eq!(observed, None);
+    let events = h
+        .terminals
+        .repository()
+        .list_events(&run_id, 0, 100)
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.content.contains("OAuth session expired"))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.content.contains("model_mismatch"))
+    );
 }
 
 /// "Haiku CLI teste 1" (2026-09-26): a Claude run spent 44,354 output tokens
@@ -521,8 +614,15 @@ async fn claude_run_past_its_output_ceiling_is_killed_and_its_partial_usage_reco
         .lock()
         .await;
     let binaries = tempfile::tempdir().unwrap();
-    let claude = binaries.path().join("claude.exe");
-    std::fs::copy(env!("CARGO_BIN_EXE_cli_fixture"), &claude).unwrap();
+    // Isolate discovery too: real CLI probes can consume the request deadline
+    // before the fixture reaches the output-budget guard under test.
+    for backend in ["codex", "claude", "gemini", "opencode", "agy"] {
+        std::fs::copy(
+            env!("CARGO_BIN_EXE_cli_fixture"),
+            binaries.path().join(format!("{backend}.exe")),
+        )
+        .unwrap();
+    }
     std::fs::write(binaries.path().join("claude.fixture-state"), "output_runaway").unwrap();
     let marker = binaries.path().join("claude.fixture-after-mismatch");
     let original_path = std::env::var_os("PATH");

@@ -4154,6 +4154,7 @@ enum ProcessAbortReason {
     OutputBudget,
     Persistence,
     ModelIntegrity,
+    ProviderFailure,
 }
 
 #[derive(Debug)]
@@ -5896,6 +5897,9 @@ impl TerminalService {
                 ProcessAbortReason::ModelIntegrity => TerminalError::ModelUnverified {
                     detail: "stream stopped by the model identity guard".into(),
                 },
+                ProcessAbortReason::ProviderFailure => {
+                    TerminalError::Process("stream stopped after a provider error".into())
+                }
             });
         }
         let _ = self
@@ -6558,6 +6562,32 @@ fn coordinate_process_events_blocking(
             signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
             return Err(error);
         }
+        if backend == CliBackend::Claude && kind == TerminalEventKind::Error {
+            // Audit the decoded diagnostic before stopping, and redact it again
+            // before propagating it outside the terminal event stream.
+            signal_process_abort(
+                &abort_token,
+                &abort_reason,
+                ProcessAbortReason::ProviderFailure,
+            );
+            let diagnostic = redact_secrets(&content)
+                .map_err(TerminalError::Redaction)?
+                .text;
+            return Err(
+                match adapters::classify_failure(backend, None, &diagnostic) {
+                    adapters::CliFailureKind::AuthenticationRequired => {
+                        TerminalError::AuthRequired(backend.label().into())
+                    }
+                    adapters::CliFailureKind::VersionUnsupported => {
+                        TerminalError::VersionUnsupported(backend.label().into())
+                    }
+                    adapters::CliFailureKind::RateLimited => {
+                        TerminalError::RateLimited(backend.label().into())
+                    }
+                    adapters::CliFailureKind::ProcessFailed => TerminalError::Process(diagnostic),
+                },
+            );
+        }
         summary.max_persist_ms = summary
             .max_persist_ms
             .max(persistence_started.elapsed().as_millis());
@@ -6922,6 +6952,7 @@ fn isolate_antigravity(
         "command(*)",
         "unsandboxed(*)",
         "execute_url(*)",
+        "search_web(*)",
     ];
     if mode == Hardening::Companion {
         deny.push("read_file(*)");
@@ -7293,12 +7324,7 @@ fn companion_envelope_miss(backend: CliBackend, stdout: &str) -> &'static str {
 fn claude_companion_error(stdout: &str) -> Option<String> {
     stdout.lines().rev().find_map(|line| {
         let value: Value = serde_json::from_str(line.trim()).ok()?;
-        (value.get("type").and_then(Value::as_str) == Some("result")
-            && value.get("is_error").and_then(Value::as_bool) == Some(true))
-        .then(|| value.get("result").and_then(Value::as_str))
-        .flatten()
-        .filter(|text| !text.trim().is_empty())
-        .map(str::to_owned)
+        adapters::claude_error_message(&value)
     })
 }
 
@@ -8483,7 +8509,7 @@ mod tests {
                 }
                 CliBackend::Antigravity => {
                     let deny = antigravity_deny_rules(&spec);
-                    for rule in ["write_file(*)", "command(*)", "read_file(*)"] {
+                    for rule in ["write_file(*)", "command(*)", "read_file(*)", "search_web(*)"] {
                         assert!(deny.iter().any(|value| value == rule), "{rule}");
                     }
                     assert!(spec.args.iter().any(|arg| arg == "--disable-slash-commands"));
@@ -8525,6 +8551,7 @@ mod tests {
             "command(*)",
             "unsandboxed(*)",
             "execute_url(*)",
+            "search_web(*)",
         ] {
             assert!(deny.iter().any(|value| value == rule), "{rule}");
         }
@@ -10674,6 +10701,82 @@ mod tests {
         .await
         .unwrap();
         (result, abort, reason, repository, run_id, data)
+    }
+
+    #[tokio::test]
+    async fn claude_synthetic_auth_failure_is_audited_without_a_model_mismatch() {
+        let frames = vec![
+            claude_frame(serde_json::json!({
+                "type":"system","subtype":"init","model":"claude-haiku-4-5-20251001"
+            })),
+            claude_frame(serde_json::json!({
+                "type":"assistant","error":"authentication_failed","is_api_error_message":true,
+                "message":{"id":"auth-error","model":"<synthetic>","content":[{
+                    "type":"text","text":"Failed to authenticate: OAuth session expired and could not be refreshed"
+                }]}
+            })),
+        ];
+        let (result, abort, _, repository, run_id, _data) =
+            run_claude_stream_against_ceiling(frames, None).await;
+        assert_eq!(result.unwrap_err().code(), "cli_auth_required");
+        assert!(abort.is_cancelled());
+        assert_eq!(repository.get_run(&run_id).unwrap().observed_model, None);
+        let events = repository.list_events(&run_id, 0, 100).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == TerminalEventKind::Error
+                    && event.content.contains("OAuth session expired"))
+        );
+        let db = repository.connection().unwrap();
+        let count: i64 = db.query_row(
+            "SELECT COUNT(*) FROM terminal_model_observations WHERE run_id=?1 AND is_generation=1",
+            [&run_id], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn claude_error_result_cannot_be_accepted_after_a_verified_generation() {
+        let mut frames = claude_message("m-1", 8, 0, Some(5));
+        frames.push(claude_frame(serde_json::json!({
+            "type":"result","is_error":true,"result":"API Error: Rate limit reached"
+        })));
+        let (result, abort, ..) = run_claude_stream_against_ceiling(frames, None).await;
+        assert_eq!(result.unwrap_err().code(), "cli_rate_limited");
+        assert!(abort.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn claude_synthetic_error_diagnostics_are_redacted_before_audit_and_return() {
+        let secret = "fixture-secret-1234567890";
+        let frames = vec![claude_frame(serde_json::json!({
+            "type":"assistant","is_api_error_message":true,
+            "message":{"model":"<synthetic>","content":[{
+                "type":"text","text":format!("API Error: Authorization: Bearer {secret}")
+            }]}
+        }))];
+        let (result, abort, _, repository, run_id, _data) =
+            run_claude_stream_against_ceiling(frames, None).await;
+        let error = result.unwrap_err();
+        assert_eq!(error.code(), "cli_process_failed");
+        assert!(!error.to_string().contains(secret));
+        assert!(error.to_string().contains("[REDACTED]"));
+        assert!(abort.is_cancelled());
+        let events = repository.list_events(&run_id, 0, 100).unwrap();
+        assert!(events.iter().all(|event| !event.content.contains(secret)));
+    }
+
+    #[tokio::test]
+    async fn claude_synthetic_success_and_marked_real_model_mismatch_still_fail_closed() {
+        for (model, error) in [("<synthetic>", false), ("claude-sonnet-5", true)] {
+            let frames = vec![claude_frame(serde_json::json!({
+                "type":"assistant","is_api_error_message":error,
+                "message":{"id":"m-1","model":model,"content":[{"type":"text","text":"answer"}]}
+            }))];
+            let (result, abort, ..) = run_claude_stream_against_ceiling(frames, None).await;
+            assert_eq!(result.unwrap_err().code(), "model_mismatch");
+            assert!(abort.is_cancelled());
+        }
     }
 
     /// "Haiku CLI teste 1" (2026-09-26): seven messages of 6,955, 393, 9,438,

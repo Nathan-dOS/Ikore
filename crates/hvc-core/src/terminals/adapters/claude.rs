@@ -80,6 +80,7 @@ impl CliAdapter for ClaudeAdapter {
             stream,
             bytes,
             |value| match event_type(value) {
+                _ if error_message(value).is_some() => TerminalEventKind::Error,
                 "system" => TerminalEventKind::System,
                 "result" => TerminalEventKind::Completed,
                 "error" => TerminalEventKind::Error,
@@ -120,8 +121,53 @@ impl CliAdapter for ClaudeAdapter {
     }
 
     fn classify_failure(&self, _exit_code: Option<i32>, stderr: &str) -> CliFailureKind {
+        let diagnostic = stderr.to_ascii_lowercase();
+        if diagnostic.contains("failed to authenticate")
+            || diagnostic.contains("oauth session expired")
+        {
+            return CliFailureKind::AuthenticationRequired;
+        }
         classify_failure_text(stderr)
     }
+}
+
+/// Claude emits local API failures as assistant messages with a placeholder
+/// model. These diagnostics are not model output or generation attestation.
+pub(super) fn error_message(value: &Value) -> Option<String> {
+    let synthetic_error = event_type(value) == "assistant"
+        && value.pointer("/message/model").and_then(Value::as_str) == Some("<synthetic>")
+        && (value.get("is_api_error_message").and_then(Value::as_bool) == Some(true)
+            || value
+                .get("error")
+                .and_then(Value::as_str)
+                .is_some_and(|error| !error.is_empty()));
+    let result_error = event_type(value) == "result"
+        && value.get("is_error").and_then(Value::as_bool) == Some(true);
+    if !synthetic_error && !result_error {
+        return None;
+    }
+    let text = if synthetic_error {
+        value
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter(|block| block["type"] == "text")
+                    .filter_map(|block| block["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+    } else {
+        value
+            .get("result")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    Some(
+        text.filter(|text| !text.trim().is_empty())
+            .unwrap_or_else(|| "Claude CLI reported an API error without a diagnostic.".into()),
+    )
 }
 
 /// Hard cap on one turn's thinking for a role set to a lower effort. On the
@@ -223,6 +269,73 @@ mod tests {
             br#"{"type":"system","subtype":"init","model":"claude-haiku-4-5-20251001"}"#,
         );
         assert!(!frame.is_model_generation);
-        assert_eq!(frame.observed_model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        assert_eq!(
+            frame.observed_model.as_deref(),
+            Some("claude-haiku-4-5-20251001")
+        );
+    }
+
+    #[test]
+    fn synthetic_api_errors_are_diagnostics_and_never_model_generations() {
+        for marker in [
+            serde_json::json!({"is_api_error_message":true}),
+            serde_json::json!({"error":"authentication_failed"}),
+        ] {
+            let mut event = serde_json::json!({"type":"assistant","message":{
+            "id":"auth-error","model":"<synthetic>","content":[{
+                "type":"text","text":"Failed to authenticate: OAuth session expired and could not be refreshed"
+            }]}});
+            event
+                .as_object_mut()
+                .unwrap()
+                .extend(marker.as_object().unwrap().clone());
+            let frame = ClaudeAdapter.normalize_frame("stdout", event.to_string().as_bytes());
+            assert_eq!(frame.kind, TerminalEventKind::Error);
+            assert!(!frame.is_model_generation);
+            assert_eq!(frame.observed_model.as_deref(), Some("<synthetic>"));
+            assert!(frame.content.contains("OAuth session expired"));
+        }
+        assert_eq!(
+            ClaudeAdapter.classify_failure(
+                None,
+                "Failed to authenticate: OAuth session expired and could not be refreshed"
+            ),
+            CliFailureKind::AuthenticationRequired
+        );
+    }
+
+    #[test]
+    fn synthetic_without_an_error_marker_and_real_model_errors_still_require_attestation() {
+        for (model, marker) in [
+            ("<synthetic>", serde_json::json!({})),
+            (
+                "claude-sonnet-5",
+                serde_json::json!({"is_api_error_message":true,"error":"unknown"}),
+            ),
+        ] {
+            let mut event = serde_json::json!({"type":"assistant","message":{
+                "id":"untrusted","model":model,"content":[{"type":"text","text":"answer"}]}});
+            event
+                .as_object_mut()
+                .unwrap()
+                .extend(marker.as_object().unwrap().clone());
+            let frame = ClaudeAdapter.normalize_frame("stdout", event.to_string().as_bytes());
+            assert!(frame.is_model_generation);
+            assert_eq!(frame.observed_model.as_deref(), Some(model));
+        }
+    }
+
+    #[test]
+    fn synthetic_error_without_text_remains_a_failure_and_companion_reads_early_errors() {
+        let event = serde_json::json!({"type":"assistant","is_api_error_message":true,
+            "message":{"model":"<synthetic>","content":[]}});
+        let frame = ClaudeAdapter.normalize_frame("stdout", event.to_string().as_bytes());
+        assert_eq!(frame.kind, TerminalEventKind::Error);
+        assert!(!frame.is_model_generation);
+        assert_eq!(frame.content, "Claude CLI reported an API error without a diagnostic.");
+        assert_eq!(
+            crate::terminals::claude_companion_error(&event.to_string()),
+            Some(frame.content)
+        );
     }
 }

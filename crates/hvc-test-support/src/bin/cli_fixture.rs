@@ -181,6 +181,18 @@ fn main() {
         }
     }
     if let Some(backend) = official_backend {
+        if backend == "claude" && fixture_state == "synthetic_auth_error" {
+            println!(
+                r#"{{"type":"system","subtype":"init","session_id":"fixture-auth-session","model":"claude-haiku-4-5-20251001"}}"#
+            );
+            println!(
+                r#"{{"type":"assistant","error":"authentication_failed","is_api_error_message":true,"message":{{"id":"fixture-auth-error","model":"<synthetic>","content":[{{"type":"text","text":"Failed to authenticate: OAuth session expired and could not be refreshed"}}]}}}}"#
+            );
+            println!(
+                r#"{{"type":"result","is_error":true,"result":"Failed to authenticate: OAuth session expired and could not be refreshed"}}"#
+            );
+            std::process::exit(1);
+        }
         if stdin.contains("<control_envelope_schema>") {
             if backend == "codex" {
                 let path = value_after(&args, "--output-schema").expect("Codex needs a schema");

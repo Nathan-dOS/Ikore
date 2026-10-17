@@ -13,6 +13,10 @@ mod custom;
 mod gemini;
 mod opencode;
 
+pub(super) fn claude_error_message(value: &Value) -> Option<String> {
+    claude::error_message(value)
+}
+
 pub(super) struct NormalizedCliFrame {
     pub kind: TerminalEventKind,
     pub content: String,
@@ -331,7 +335,10 @@ fn normalize_json_frame(
     };
     let kind = classify(&value);
     let is_model_generation = is_model_generation(backend, &value, kind);
-    let visible = extract_visible_text(&value);
+    let visible = (backend == CliBackend::Claude)
+        .then(|| claude::error_message(&value))
+        .flatten()
+        .or_else(|| extract_visible_text(&value));
     let is_text = visible.is_some();
     let content = visible.unwrap_or_else(|| format!("{}: {sanitized}", backend.label()));
     // Covers both known incremental-streaming shapes: Gemini's explicit
@@ -414,8 +421,10 @@ fn event_type(value: &Value) -> &str {
 fn is_model_generation(backend: CliBackend, value: &Value, kind: TerminalEventKind) -> bool {
     match backend {
         CliBackend::Claude => {
-            event_type(value) == "assistant"
-                || value.pointer("/event/type").and_then(Value::as_str) == Some("message_start")
+            kind != TerminalEventKind::Error
+                && (event_type(value) == "assistant"
+                    || value.pointer("/event/type").and_then(Value::as_str)
+                        == Some("message_start"))
         }
         CliBackend::Codex => {
             let event = event_type(value);
