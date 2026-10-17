@@ -1,0 +1,44 @@
+name: Stage 7 gate
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # 03:00 BRT
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["Cargo.lock", "third_party/**", "scripts/**"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  stage7:
+    name: stage7 gate (windows)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: windows-stage7
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-audit
+      - run: cargo fetch --locked # the supply-chain step uses cargo metadata --offline
+      - name: Etapa 7
+        shell: powershell # same PowerShell 5.1 as the local gate
+        run: ./scripts/gate-stage7.ps1
+      # Reports only. Do not upload the .exe while distribution is blocked.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: stage7-${{ github.run_number }}
+          path: target/stage7/** # timings.json, supply-chain.json, advisories/
+          retention-days: 14
