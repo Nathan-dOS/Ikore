@@ -40,6 +40,15 @@ impl SecretRedactor {
                     replacement: "Bearer [REDACTED]",
                 },
                 RedactionPattern {
+                    // OAuth access tokens read for the plan-quota meter (ADR-028) are JWTs and
+                    // can surface without a `Bearer` prefix, e.g. in a JSON body or an error.
+                    category: "jwt_token",
+                    regex: Regex::new(
+                        r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*",
+                    )?,
+                    replacement: "[REDACTED JWT]",
+                },
+                RedactionPattern {
                     category: "known_api_token",
                     regex: Regex::new(
                         r"(?i)\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b",
@@ -116,5 +125,34 @@ mod tests {
         assert!(!result.text.contains("user:pass"));
         assert!(!result.text.contains("\nfixture\n"));
         assert_eq!(result.categories.len(), 4);
+    }
+
+    #[test]
+    fn jwt_shaped_tokens_are_redacted() {
+        // Synthetic: base64url of {"alg":"none"} . {"sub":"fixture"} . "synthetic-signature".
+        let jwt = [
+            "eyJhbGciOiJub25lIn0",
+            "eyJzdWIiOiJmaXh0dXJlIn0",
+            "c3ludGhldGljLXNpZ25hdHVyZQ",
+        ]
+        .join(".");
+        let unsigned = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJmaXh0dXJlIn0.";
+        for input in [
+            format!(r#"{{"access_token":"{jwt}","expires_in":3600}}"#),
+            format!("request failed for token {jwt}: 401"),
+            format!("token={unsigned} trailing"),
+        ] {
+            let result = redact_secrets(&input).unwrap();
+            assert_eq!(result.categories, ["jwt_token"], "{input}");
+            assert!(!result.text.contains("eyJzdWIi"), "{}", result.text);
+            assert!(result.text.contains("[REDACTED JWT]"));
+        }
+
+        let bearer = redact_secrets(&format!("Authorization: Bearer {jwt}")).unwrap();
+        assert_eq!(bearer.categories, ["bearer_token"]);
+        assert!(!bearer.text.contains("eyJzdWIi"));
+
+        let harmless = "eyJ is how base64 JSON starts; v1.2.3 and a.b.c stay";
+        assert_eq!(redact_secrets(harmless).unwrap().text, harmless);
     }
 }
