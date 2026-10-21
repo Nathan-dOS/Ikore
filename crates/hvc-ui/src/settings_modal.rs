@@ -164,6 +164,9 @@ impl AppModel {
         if page == SettingsPage::Usage && previous != page && self.settings_modal.open {
             self.refresh_usage(cx);
         }
+        if page == SettingsPage::Connections && previous != page && self.settings_modal.open {
+            self.refresh_cli_connections(false, cx);
+        }
         cx.notify();
     }
 

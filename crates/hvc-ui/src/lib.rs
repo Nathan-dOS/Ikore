@@ -9,6 +9,7 @@ mod assets;
 mod chat;
 mod chat_view;
 mod choices;
+mod cli_connections;
 mod composition_ui;
 mod context_rail;
 mod errors;

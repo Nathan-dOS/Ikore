@@ -436,6 +436,7 @@ pub struct AppModel {
     vault_context_task: Option<Task<()>>,
     vault_document_tasks: HashMap<String, Task<()>>,
     settings_task: Option<Task<()>>,
+    cli_connections_task: Option<Task<()>>,
     /// A connection test in flight; separate from `settings_task` so a refresh never drops it.
     settings_test_task: Option<Task<()>>,
     /// A quiet Settings refresh is already scheduled (see `schedule_settings_quiet_refresh`).
@@ -880,6 +881,7 @@ impl AppModel {
             vault_context_task: None,
             vault_document_tasks: HashMap::new(),
             settings_task: None,
+            cli_connections_task: None,
             settings_test_task: None,
             settings_quiet_refresh_pending: false,
             embedding_readiness_task: None,
@@ -6059,7 +6061,53 @@ impl AppModel {
         if self.settings_page_visible(crate::settings::SettingsPage::Usage, cx) {
             self.refresh_usage(cx);
         }
+        if self.settings_page_visible(crate::settings::SettingsPage::Connections, cx) {
+            self.refresh_cli_connections(true, cx);
+        }
         self.refresh_settings_inner(false, cx);
+    }
+
+    pub(crate) fn refresh_cli_connections(&mut self, refresh: bool, cx: &mut Context<Self>) {
+        if self.lifecycle.is_disposed() || self.settings.read(cx).cli_connections_loading {
+            return;
+        }
+        let settings = self.settings.read(cx);
+        if !refresh
+            && settings.cli_connections.as_ref().is_some_and(|snapshot| {
+                chrono::DateTime::parse_from_rfc3339(&snapshot.checked_at).is_ok_and(|checked| {
+                    chrono::Utc::now()
+                        .signed_duration_since(checked)
+                        .num_seconds()
+                        < 60
+                })
+            })
+        {
+            return;
+        }
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        self.settings.update(cx, |settings, _| {
+            settings.cli_connections_loading = true;
+            settings.cli_connections_error = None;
+        });
+        cx.notify();
+        self.cli_connections_task = Some(cx.spawn(async move |this, cx| {
+            let result = backend.cli_connections(refresh).await;
+            let _ = this.update(cx, |model, cx| {
+                if model.lifecycle.is_disposed() {
+                    return;
+                }
+                model.settings.update(cx, |settings, _| {
+                    settings.cli_connections_loading = false;
+                    match result {
+                        Ok(snapshot) => settings.cli_connections = Some(snapshot),
+                        Err(error) => settings.cli_connections_error = Some(error),
+                    }
+                });
+                cx.notify();
+            });
+        }));
     }
 
     /// Refreshes providers, resilience and embedding readiness for the shell chrome without
@@ -7691,6 +7739,7 @@ impl AppModel {
         self.vault_context_task.take();
         self.vault_document_tasks.clear();
         let settings = self.settings_task.take();
+        self.cli_connections_task.take();
         self.agents_task.take();
         self.agents_notice_timer.take();
         self.model_catalog_task.take();

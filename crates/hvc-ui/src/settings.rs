@@ -64,6 +64,10 @@ pub(crate) struct SettingsSnapshot {
 }
 
 pub(crate) trait SettingsBackend: Send + Sync {
+    fn cli_connections(
+        &self,
+        refresh: bool,
+    ) -> SettingsFuture<hvc_core::terminals::CliConnectionsSnapshot>;
     fn preview_project_deletion(
         &self,
         project_id: String,
@@ -179,6 +183,21 @@ impl CoreSettingsBackend {
 }
 
 impl SettingsBackend for CoreSettingsBackend {
+    fn cli_connections(
+        &self,
+        refresh: bool,
+    ) -> SettingsFuture<hvc_core::terminals::CliConnectionsSnapshot> {
+        let terminals = self.core.terminals();
+        let runtime = self.core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn(async move { terminals.connections(refresh).await })
+                .await
+                .map_err(|error| {
+                    UiCommandError::worker(format!("CLI connection check interrupted: {error}"))
+                })
+        })
+    }
     fn preview_project_deletion(
         &self,
         project_id: String,
@@ -639,7 +658,7 @@ impl SettingsPage {
                 "Review local projects and permanently delete their repository and project data."
             }
             Self::Shortcuts => "Every keyboard shortcut, grouped by where it works.",
-            Self::Connections => "LLM providers, default models and the keys stored for them.",
+            Self::Connections => "API providers, CLI connections and subscription plan usage.",
             Self::Routes => "Ordered fallbacks across connections and the agents bound to them.",
             Self::Embeddings => "Vector search over your notes, served by a local Ollama.",
             Self::SecondBrain => "How far agents navigate the note graph and resolve code from it.",
@@ -692,7 +711,9 @@ impl SettingsPage {
             Self::Usage => "tokens cost billing input output chart",
             Self::Projects => "repository delete remove folder disk pulsations companion history",
             Self::Shortcuts => "keyboard hotkeys keybindings keys",
-            Self::Connections => "providers api keys openai anthropic ollama credentials",
+            Self::Connections => {
+                "providers api keys openai anthropic ollama credentials cli codex claude gemini opencode antigravity plan quota usage 5h weekly"
+            }
             Self::Routes => "routing fallback failover binding resilience cooldown",
             Self::Embeddings => "rag vectors ollama semantic search index",
             Self::SecondBrain => "adaptive navigation vault notes graph wikilinks",
@@ -855,6 +876,9 @@ pub(crate) enum StatusTone {
 
 #[derive(Debug)]
 pub(crate) struct SettingsModel {
+    pub(crate) cli_connections: Option<hvc_core::terminals::CliConnectionsSnapshot>,
+    pub(crate) cli_connections_loading: bool,
+    pub(crate) cli_connections_error: Option<UiCommandError>,
     pub(crate) usage: crate::usage::UsageState,
     pub(crate) deletion_preview: Option<ProjectDeletionPreview>,
     pub(crate) deletion_project_id: Option<String>,
@@ -899,6 +923,9 @@ pub(crate) struct SettingsModel {
 impl Default for SettingsModel {
     fn default() -> Self {
         Self {
+            cli_connections: None,
+            cli_connections_loading: false,
+            cli_connections_error: None,
             usage: Default::default(),
             deletion_preview: None,
             deletion_project_id: None,

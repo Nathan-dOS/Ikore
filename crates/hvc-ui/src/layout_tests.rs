@@ -2200,6 +2200,145 @@ fn settings_backdrop_closes_but_clicks_inside_the_panel_do_not(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn project_deletion_confirmation_has_a_readable_width_and_accepts_the_project_name(
+    cx: &mut TestAppContext,
+) {
+    use hvc_core::persistence_service::Project;
+    use hvc_core::project_deletion::ProjectDeletionPreview;
+    let (model, visual) = cx.add_window_view(|_, cx| {
+        let model = fixture(cx);
+        model.settings.update(cx, |settings, _| {
+            settings.deletion_project_id = Some("layout-project".into());
+            settings.deletion_preview = Some(ProjectDeletionPreview {
+                project: Project {
+                    id: "layout-project".into(),
+                    name: "Note-App-Online".into(),
+                    workspace_path: "C:/Projects/Note-App-Online".into(),
+                    is_archived: false,
+                    created_at: "now".into(),
+                    updated_at: "now".into(),
+                    last_opened_at: None,
+                },
+                pulsations: 3,
+                conversations: 2,
+                files: 12,
+                bytes: 4096,
+            });
+        });
+        model
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        open_settings(&model, visual, Some(SettingsPage::Projects));
+        let scroll = visual.debug_bounds("settings-content-scroll").unwrap();
+        visual.simulate_event(ScrollWheelEvent {
+            position: scroll.center(),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-1000.0))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        let input = visual.debug_bounds("sized-input:320").unwrap();
+        assert!(
+            input.size.width >= px(250.0) && input.size.width <= px(320.0),
+            "{input:?}"
+        );
+        assert!(input.left() >= scroll.left() && input.right() <= scroll.right());
+        model.update(visual, |model, cx| {
+            model
+                .settings_project_delete_input
+                .update(cx, |input, cx| input.clear(cx));
+        });
+        click(visual, "sized-input:320");
+        visual.simulate_input("Note-App-Online");
+        assert_eq!(
+            model.read_with(visual, |model, cx| {
+                model
+                    .settings_project_delete_input
+                    .read(cx)
+                    .value()
+                    .to_string()
+            }),
+            "Note-App-Online"
+        );
+    }
+}
+
+#[gpui::test]
+fn connections_show_cli_plan_windows_without_an_open_project_and_keep_bars_inside_cards(
+    cx: &mut TestAppContext,
+) {
+    use hvc_core::terminals::{
+        CliAvailability, CliAvailabilityState, CliCapabilities, CliConnectionStatus,
+        CliConnectionsSnapshot, CliOutputFormat, CliQuotaBucket,
+    };
+    let (model, visual) = cx.add_window_view(|_, cx| {
+        let mut model = fixture(cx);
+        with_settings_items(&mut model, cx);
+        model
+            .workspace
+            .update(cx, |workspace, _| workspace.project_id = None);
+        model.settings.update(cx, |settings, _| {
+            settings.cli_connections = Some(CliConnectionsSnapshot {
+                checked_at: "2026-10-17T12:00:00Z".into(),
+                connections: vec![CliConnectionStatus {
+                    availability: CliAvailability {
+                        backend: CliBackend::Codex,
+                        state: CliAvailabilityState::Available,
+                        executable_path: Some("C:/CLI/codex.exe".into()),
+                        version: Some("0.162.1".into()),
+                        diagnostic: None,
+                        install_url: "",
+                        install_command: "",
+                        capabilities: CliCapabilities {
+                            output_format: CliOutputFormat::JsonLines,
+                            structured_output: true,
+                            native_resume: true,
+                            thinking_levels: vec![],
+                            auth_probe: true,
+                            read_only: true,
+                            model_catalog: true,
+                        },
+                        quota: ["5h", "weekly"]
+                            .into_iter()
+                            .map(|window| CliQuotaBucket {
+                                group: "Codex".into(),
+                                window: window.into(),
+                                remaining_percent: 75,
+                                reset_time: Some("2099-10-18T12:00:00Z".into()),
+                            })
+                            .collect(),
+                    },
+                    plan: Some("plus".into()),
+                    quota_source: Some("CLI app-server"),
+                    quota_diagnostic: None,
+                }],
+            });
+        });
+        model
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        open_settings(&model, visual, Some(SettingsPage::Connections));
+        assert!(visual.debug_bounds("settings-connection:conn-1").is_some());
+        model.update(visual, |model, cx| {
+            model.open_settings_entry(crate::settings_search::entry_by_id("cli-connections"), cx);
+        });
+        visual.run_until_parked();
+        let card = visual.debug_bounds("settings-cli:codex").unwrap();
+        let pane = visual.debug_bounds("settings-content-scroll").unwrap();
+        assert!(card.size.width > px(250.0));
+        assert!(card.left() >= pane.left() && card.right() <= pane.right());
+        for index in 0..2 {
+            let bar = visual
+                .debug_bounds(leak(format!("settings-cli-quota-bar:codex:{index}")))
+                .unwrap();
+            assert!(bar.size.width > px(200.0));
+            assert!(bar.left() >= card.left() && bar.right() <= card.right());
+        }
+    }
+}
+
+#[gpui::test]
 fn permanent_deletion_keeps_settings_open_and_prevents_page_navigation(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
     visual.simulate_resize(size(px(960.0), px(640.0)));

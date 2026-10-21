@@ -71,7 +71,7 @@ pub(crate) fn projects_page(model: &AppModel, cx: &mut Context<AppModel>) -> Pag
                 ]))
                 .section("Permanent deletion",section("Permanent deletion",None,vec![
                     warning_note("This removes the repository folder and project data. Provider usage remains attributed to this project in separate local history. The operation cannot be undone."),
-                    stacked_row("project-deletion",None,div().flex().flex_col().gap_2().child(note(format!("Type {} to confirm:",project.name))).child(model.settings_project_delete_input.clone())),
+                    stacked_row("project-deletion",None,div().flex().flex_col().gap_2().child(note(format!("Type {} to confirm:",project.name))).child(sized_input(model.settings_project_delete_input.clone(), INPUT_MEDIUM))),
                     action_with("settings-delete-project","Delete repository permanently",ButtonVariant::Danger,confirmed && !busy && !loading,cx,|model,cx|model.confirm_project_deletion(cx)).into_any_element(),
                 ]));
         } else {
@@ -205,6 +205,10 @@ pub(crate) fn connections_page(
         .section(
             "Providers",
             section("Providers", describe("connections-list"), rows),
+        )
+        .section(
+            "CLI connections",
+            crate::cli_connections::section(model, hl, cx),
         )
 }
 

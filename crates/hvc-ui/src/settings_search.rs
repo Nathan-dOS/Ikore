@@ -137,6 +137,14 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
     ),
     // Connections
     entry(
+        "cli-connections",
+        P::Connections,
+        "CLI connections",
+        "CLI connections and plan usage",
+        "Installed CLIs, login status and provider-reported subscription limits, including 5-hour and weekly windows when available.",
+        "cli codex claude gemini opencode antigravity login plan quota usage 5h weekly subscription reset",
+    ),
+    entry(
         "connections-list",
         P::Connections,
         "Providers",

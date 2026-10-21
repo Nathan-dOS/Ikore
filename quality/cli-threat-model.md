@@ -76,3 +76,26 @@ V29 stores the host-owned pulsation ID alongside existing counters, without copy
 - **Auth probe.** `-p /usage --output-format json` runs in the developer's own root (an empty root sends `/usage` to the model as text). It spends no model turn and also yields the quota shown on the agent card; quota labels are bounded and sanitized.
 
 Residual risk accepted by Nathan (2026-10-14): the deny rules are `agy`'s own permission engine, an external dependency that could change between versions; a pulsation's writes would still land only in the read-only snapshot, and publication happens only from the JSON `artifacts` array. `--gemini_dir` is an undocumented flag found in the binary; `agy` rejects unknown flags, so a version that drops it fails the launch instead of running unconfined.
+
+## Connections and subscription usage — 2026-10-17
+
+Settings lists global CLI connection checks independently of the active project and API
+configuration. Antigravity reuses its existing `/usage` probe. Codex uses its CLI's stdio
+`app-server` protocol: `initialize`, `initialized`, then `account/rateLimits/read`. The host
+does not create a thread, start a model turn or read credential files for this query.
+The CLI still initializes its own local state and authenticates through its normal configuration.
+
+The executable uses the existing secured launcher, reduced environment, temporary working
+directory, hidden Windows process and Job Object. The exchange has a 20-second deadline and
+a shared 64 KiB stdout budget. Stderr is discarded, and protocol errors become a generic
+unavailable message; raw replies and account fields are never logged or persisted.
+Only bounded plan/group labels, validated percentages and valid reset timestamps enter the
+connection snapshot. Multi-bucket limits take precedence over the legacy single bucket;
+missing durations do not imply a five-hour or weekly window. Expired windows are labeled
+as awaiting refresh and have no current percentage or bar. Other CLIs explicitly report
+when their connection check cannot provide subscription usage.
+
+Hermetic evidence: `codex_usage_initializes_then_reads_limits_without_creating_a_thread`,
+`codex_usage_rejects_oversized_and_error_replies`, the `codex_plan_usage_*` parser tests,
+`plan_windows_past_their_reset_are_never_shown_as_current_usage`, and the Connections layout
+test at 960 and 1440 pixels. `codex_plan_usage_live_read` is an opt-in authenticated check.

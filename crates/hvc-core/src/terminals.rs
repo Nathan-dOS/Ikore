@@ -29,6 +29,7 @@ mod codex_model_provenance;
 mod model_catalog;
 pub(crate) mod model_identity;
 mod observation_report;
+mod plan_usage;
 #[cfg(test)]
 mod recovery_tests;
 
@@ -40,6 +41,7 @@ pub(crate) use model_catalog::{validate_catalog_effort, validate_catalog_model_s
 pub use observation_report::{
     CliObservationGroup, CliObservationRun, ObservationOutcome, PulsationTimeBreakdown,
 };
+pub use plan_usage::{CliConnectionStatus, CliConnectionsSnapshot};
 
 #[cfg(windows)]
 pub(crate) struct ProcessTreeJob {
@@ -3354,9 +3356,8 @@ pub struct CliCapabilities {
     pub model_catalog: bool,
 }
 
-/// One window of a CLI subscription's usage allowance, as the CLI's own auth probe reported it.
-/// Antigravity bills by quota rather than by token price, so this is the only cost signal it
-/// gives; the other CLIs report none.
+/// One window of a CLI subscription's usage allowance. Antigravity supplies it through its
+/// auth probe; the Connections page also reads Codex windows through the CLI app-server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CliQuotaBucket {
@@ -3380,7 +3381,7 @@ pub struct CliAvailability {
     pub install_url: &'static str,
     pub install_command: &'static str,
     pub capabilities: CliCapabilities,
-    /// Remaining usage allowance, lowest first. Empty when the CLI reports none.
+    /// Remaining usage allowance. Empty when the CLI reports none.
     pub quota: Vec<CliQuotaBucket>,
 }
 
@@ -4667,6 +4668,11 @@ impl TerminalService {
             self.discovery_with(true, discover).await;
         }
         Ok(())
+    }
+
+    /// Global CLI connections and subscription usage; does not require an open project.
+    pub async fn connections(&self, refresh: bool) -> CliConnectionsSnapshot {
+        plan_usage::connections(self.discovery(refresh).await).await
     }
 
     pub async fn model_catalog(
