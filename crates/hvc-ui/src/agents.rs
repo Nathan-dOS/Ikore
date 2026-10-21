@@ -239,7 +239,14 @@ impl AgentsBackend for CoreAgentsBackend {
 
     fn start_manual(&self, request: StartManualRunRequest) -> AgentsFuture<TerminalRun> {
         let terminals = self.core.terminals();
-        Box::pin(async move { terminals.start_manual(request).map_err(terminal_error) })
+        let runtime = self.core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn(async move { terminals.start_manual(request).await })
+                .await
+                .map_err(|error| UiCommandError::worker(error.to_string()))?
+                .map_err(terminal_error)
+        })
     }
 
     fn start_free_form(&self, request: StartFreeFormRunRequest) -> AgentsFuture<TerminalRun> {
@@ -247,7 +254,7 @@ impl AgentsBackend for CoreAgentsBackend {
         let runtime = self.core.runtime_handle().clone();
         Box::pin(async move {
             runtime
-                .spawn_blocking(move || terminals.start_free_form(request))
+                .spawn(async move { terminals.start_free_form(request).await })
                 .await
                 .map_err(|error| {
                     UiCommandError::worker(format!("free-form agent worker interrupted: {error}"))
@@ -302,7 +309,7 @@ impl AgentsBackend for CoreAgentsBackend {
         let runtime = self.core.runtime_handle().clone();
         Box::pin(async move {
             runtime
-                .spawn_blocking(move || terminals.resume_manual(request))
+                .spawn(async move { terminals.resume_manual(request).await })
                 .await
                 .map_err(|error| {
                     UiCommandError::worker(format!("worker de retomada interrompido: {error}"))

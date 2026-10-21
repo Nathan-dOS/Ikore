@@ -1237,6 +1237,14 @@ impl AppModel {
                                 navigate = Some(AppView::Forge);
                             }
                             Operation::Dispatch(title, selection) => {
+                                core.runtime_handle()
+                                    .block_on(core.terminals().refresh_stage_discovery(&project))
+                                    .map_err(|error| {
+                                        hvc_core::persistence_service::PersistenceServiceError::Cli {
+                                            code: error.code().into(),
+                                            message: error.to_string(),
+                                        }
+                                    })?;
                                 let p = tasks.dispatch(CreatePulsationFromTasksRequest {
                                     project_id: project.clone(),
                                     request_id: key,

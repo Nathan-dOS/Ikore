@@ -29,6 +29,8 @@ mod codex_model_provenance;
 mod model_catalog;
 pub(crate) mod model_identity;
 mod observation_report;
+#[cfg(test)]
+mod recovery_tests;
 
 pub use model_catalog::{
     CliModelCatalogEntry, CliModelCatalogService, CliModelCatalogSnapshot, CliModelCatalogSource,
@@ -4494,9 +4496,8 @@ impl TerminalService {
 
     /// The cached discovery items, but only when still inside
     /// `CLI_DISCOVERY_CACHE_TTL`. `None` means "must (re)scan" — either the
-    /// cache is empty or stale. Synchronous on purpose: `resolve_launch`
-    /// cannot await, so this is the single source of truth both it and
-    /// `discovery()` read, instead of duplicating the TTL check.
+    /// cache is empty or stale. Shared with synchronous cache consumers so
+    /// diagnostics and discovery use the same TTL check.
     fn cache_if_fresh(&self) -> Option<Vec<CliAvailability>> {
         self.discovery_cache
             .lock()
@@ -4547,9 +4548,22 @@ impl TerminalService {
     /// the background, one rescan at a time: re-probing every installed CLI
     /// on the critical path cost 11-16 s at the first stage after a
     /// checkpoint longer than the TTL (ToDoListWebView, 2026-09-22). No
-    /// snapshot, or the backend missing or unhealthy in it, still waits for a
-    /// fresh scan; the launch itself re-verifies the binary either way.
+    /// snapshot, or the backend missing or unhealthy in it (even inside the
+    /// TTL), waits for a fresh scan so signing in or repairing the CLI takes
+    /// effect on the next attempt. The launch re-verifies the binary either way.
     async fn discovery_for_launch(&self, backend: CliBackend) -> Vec<CliAvailability> {
+        self.discovery_for_launch_with(backend, || scan_cli_discovery(self.runtime.clone()))
+            .await
+    }
+
+    async fn discovery_for_launch_with<F>(
+        &self,
+        backend: CliBackend,
+        discover: impl FnOnce() -> F,
+    ) -> Vec<CliAvailability>
+    where
+        F: std::future::Future<Output = Vec<CliAvailability>>,
+    {
         let snapshot = self
             .discovery_cache
             .lock()
@@ -4562,16 +4576,35 @@ impl TerminalService {
                 )
             });
         match snapshot {
-            Some((true, items)) => items,
-            Some((false, items))
+            Some((fresh, items))
                 if items.iter().any(|item| {
                     item.backend == backend && item.state == CliAvailabilityState::Available
                 }) =>
             {
-                self.refresh_discovery_in_background();
+                if !fresh {
+                    self.refresh_discovery_in_background();
+                }
                 items
             }
-            _ => self.discovery(false).await,
+            _ => self.discovery_with(true, discover).await,
+        }
+    }
+
+    fn invalidate_discovery_after_failure(&self, backend: CliBackend, error: &TerminalError) {
+        if matches!(
+            error,
+            TerminalError::AuthRequired(_)
+                | TerminalError::VersionUnsupported(_)
+                | TerminalError::NotFound(_)
+                | TerminalError::Io(_)
+                | TerminalError::Security(_)
+        ) && let Some(cache) = self
+            .discovery_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+        {
+            cache.items.retain(|item| item.backend != backend);
         }
     }
 
@@ -4592,6 +4625,48 @@ impl TerminalService {
 
     pub async fn refresh_discovery(&self) -> Vec<CliAvailability> {
         self.discovery(true).await
+    }
+
+    /// Rechecks unhealthy CLI selections before dispatch's cached stage preflight.
+    /// Healthy selections keep the dispatch path free of additional CLI probes.
+    pub async fn refresh_stage_discovery(&self, project_id: &str) -> Result<(), TerminalError> {
+        self.refresh_stage_discovery_with(project_id, || scan_cli_discovery(self.runtime.clone()))
+            .await
+    }
+
+    async fn refresh_stage_discovery_with<F>(
+        &self,
+        project_id: &str,
+        discover: impl FnOnce() -> F,
+    ) -> Result<(), TerminalError>
+    where
+        F: std::future::Future<Output = Vec<CliAvailability>>,
+    {
+        let mut backends = HashSet::new();
+        for (_, _, role) in crate::orchestration::catalog::STAGES {
+            match self.repository.get_config(project_id, role) {
+                Ok(config)
+                    if config.execution_mode == AgentExecutionMode::CliProcess
+                        && config.backend != CliBackend::Custom =>
+                {
+                    backends.insert(config.backend);
+                }
+                Ok(_) | Err(TerminalError::NotFound(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let snapshot = self.cached_discovery();
+        let needs_refresh = backends.iter().any(|backend| {
+            snapshot.as_ref().is_none_or(|(items, _)| {
+                !items.iter().any(|item| {
+                    item.backend == *backend && item.state == CliAvailabilityState::Available
+                })
+            })
+        });
+        if needs_refresh {
+            self.discovery_with(true, discover).await;
+        }
+        Ok(())
     }
 
     pub async fn model_catalog(
@@ -4644,7 +4719,7 @@ impl TerminalService {
             request.model_source,
         )?;
         let availability = self
-            .discovery(false)
+            .discovery_for_launch(request.backend)
             .await
             .into_iter()
             .find(|item| item.backend == request.backend)
@@ -4720,6 +4795,9 @@ impl TerminalService {
         .await;
         drop(hardening_guard);
         drop(schema_guard);
+        if let Err(error) = &result {
+            self.invalidate_discovery_after_failure(request.backend, error);
+        }
         result
     }
 
@@ -4858,7 +4936,7 @@ impl TerminalService {
         }
     }
 
-    fn resolve_launch(
+    async fn resolve_launch(
         &self,
         backend: CliBackend,
         custom_executable: Option<&str>,
@@ -4873,13 +4951,8 @@ impl TerminalService {
             ));
         }
         let availability = self
-            .cache_if_fresh()
-            .ok_or_else(|| {
-                TerminalError::Validation(
-                    "the CLI diagnostics have not run yet or expired; refresh the panel before starting"
-                        .into(),
-                )
-            })?
+            .discovery_for_launch(backend)
+            .await
             .into_iter()
             .find(|item| item.backend == backend)
             .ok_or_else(|| TerminalError::NotFound(format!("{} CLI", backend.label())))?;
@@ -4899,7 +4972,7 @@ impl TerminalService {
         ))
     }
 
-    pub fn start_manual(
+    pub async fn start_manual(
         self: &Arc<Self>,
         request: StartManualRunRequest,
     ) -> Result<TerminalRun, TerminalError> {
@@ -4933,8 +5006,9 @@ impl TerminalService {
                 "CLI Mode is disabled by the local kill switch".into(),
             ));
         }
-        let (executable, detected_version, _) =
-            self.resolve_launch(config.backend, config.custom_executable.as_deref())?;
+        let (executable, detected_version, _) = self
+            .resolve_launch(config.backend, config.custom_executable.as_deref())
+            .await?;
         let workspace = self.repository.project_workspace(&request.project_id)?;
         let spec = build_process_spec(CliInvocationRequest {
             executable,
@@ -4982,7 +5056,7 @@ impl TerminalService {
         Ok(run)
     }
 
-    pub fn start_free_form(
+    pub async fn start_free_form(
         self: &Arc<Self>,
         request: StartFreeFormRunRequest,
     ) -> Result<TerminalRun, TerminalError> {
@@ -5009,8 +5083,9 @@ impl TerminalService {
                 "manual runs are available only in CLI Mode".into(),
             ));
         }
-        let (executable, detected_version, _) =
-            self.resolve_launch(slot.backend, slot.custom_executable.as_deref())?;
+        let (executable, detected_version, _) = self
+            .resolve_launch(slot.backend, slot.custom_executable.as_deref())
+            .await?;
         let workspace = self.repository.project_workspace(&request.project_id)?;
         let spec = build_process_spec(CliInvocationRequest {
             executable,
@@ -5063,7 +5138,7 @@ impl TerminalService {
         Ok(run)
     }
 
-    pub fn resume_manual(
+    pub async fn resume_manual(
         self: &Arc<Self>,
         request: ResumeManualRunRequest,
     ) -> Result<TerminalRun, TerminalError> {
@@ -5152,8 +5227,9 @@ impl TerminalService {
                 "the backend or model changed since the chosen session".into(),
             ));
         }
-        let (executable, detected_version, capabilities) =
-            self.resolve_launch(backend, custom_executable.as_deref())?;
+        let (executable, detected_version, capabilities) = self
+            .resolve_launch(backend, custom_executable.as_deref())
+            .await?;
         if !capabilities.native_resume {
             return Err(TerminalError::Validation(format!(
                 "{} does not offer compatible native resuming in this version",
@@ -6035,6 +6111,20 @@ impl TerminalService {
             status.code(),
             &process_events.last_stderr,
         );
+        if termination == ProcessTermination::Exited && !status.success() {
+            let setup_error = match failure_kind {
+                adapters::CliFailureKind::AuthenticationRequired => Some(
+                    TerminalError::AuthRequired(spec_backend(run).label().into()),
+                ),
+                adapters::CliFailureKind::VersionUnsupported => Some(
+                    TerminalError::VersionUnsupported(spec_backend(run).label().into()),
+                ),
+                _ => None,
+            };
+            if let Some(error) = setup_error {
+                self.invalidate_discovery_after_failure(spec_backend(run), &error);
+            }
+        }
         let (terminal_status, error_code, error_message, event_kind, final_message) =
             match termination {
                 ProcessTermination::Cancelled => (
@@ -6098,6 +6188,9 @@ impl TerminalService {
     }
 
     fn record_process_failure(&self, run: &TerminalRun, error: &TerminalError) {
+        if let Some(backend) = run.backend {
+            self.invalidate_discovery_after_failure(backend, error);
+        }
         let current = self.repository.get_run(&run.id).ok();
         if current.is_some_and(|current| current.status.is_active()) {
             let (status, event_kind) = if matches!(error, TerminalError::Cancelled) {

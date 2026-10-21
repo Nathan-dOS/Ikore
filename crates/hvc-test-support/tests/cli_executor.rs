@@ -404,6 +404,7 @@ async fn official_adapters_capture_and_resume_the_exact_native_session() {
                 agent_role: AgentRole::BackendAgent,
                 prompt: "primeiro turno".into(),
             })
+            .await
             .unwrap();
         wait_for_status(&harness, &initial.id, TerminalRunStatus::Completed).await;
         let initial = harness.terminals.repository().get_run(&initial.id).unwrap();
@@ -418,6 +419,7 @@ async fn official_adapters_capture_and_resume_the_exact_native_session() {
                 source_run_id: initial.id.clone(),
                 prompt: "segundo turno".into(),
             })
+            .await
             .unwrap();
         wait_for_status(&harness, &resumed.id, TerminalRunStatus::Completed).await;
         let resumed = harness.terminals.repository().get_run(&resumed.id).unwrap();
@@ -1462,6 +1464,7 @@ async fn manual_cancel_before_spawn_finishes_as_cancelled_without_fallback() {
             agent_role: AgentRole::BackendAgent,
             prompt: "cancel fixture".into(),
         })
+        .await
         .unwrap();
     assert!(harness.terminals.cancel_run(&run.id));
     wait_for_status(&harness, &run.id, TerminalRunStatus::Cancelled).await;

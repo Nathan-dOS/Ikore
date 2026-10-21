@@ -282,6 +282,13 @@ impl TurnFailure {
                 "The scope, brief and recent messages together are larger than the configured context budget, so the request was not sent.",
                 "Shorten the feature scope, or raise the context limit in Settings, then send your message again.",
             ),
+            TurnFailureKind::ProviderSetup
+                if self.technical.contains("model_unverified")
+                    && self.technical.contains("CLI default has no fixed model ID") => text(
+                "The agent needs an explicit CLI model.",
+                "This agent is configured to use the CLI default, which does not identify a fixed model the app can verify. Your message is saved.",
+                "Open Agents, choose and save an explicit model for the agent handling this reply, then select Try again. No app restart is needed.",
+            ),
             TurnFailureKind::ProviderSetup => FailureExplanation {
                 summary: match &self.subject {
                     Some(subject) => format!("{subject} could not be used for this reply."),
@@ -598,6 +605,66 @@ mod tests {
         let auth = TurnFailure::from_terminal(&TerminalError::AuthRequired("Claude".into()));
         assert_eq!(auth.subject.as_deref(), Some("Claude"));
         assert!(auth.explain().summary.starts_with("Claude "));
+    }
+
+    #[test]
+    fn an_unverifiable_cli_default_explains_how_to_choose_a_model_without_restarting() {
+        for backend in crate::terminals::CliBackend::ALL {
+            let failure = TurnFailure::from_terminal(&TerminalError::ModelUnverified {
+                detail: format!("{} CLI default has no fixed model ID", backend.label()),
+            });
+            assert_eq!(failure.kind, TurnFailureKind::ProviderSetup);
+            assert_eq!(
+                failure.explain(),
+                FailureExplanation {
+                    summary: "The agent needs an explicit CLI model.".into(),
+                    cause: "This agent is configured to use the CLI default, which does not identify a fixed model the app can verify. Your message is saved.".into(),
+                    remedy: "Open Agents, choose and save an explicit model for the agent handling this reply, then select Try again. No app restart is needed.".into(),
+                },
+                "{backend:?}",
+            );
+            assert!(failure.retry_allowed());
+            assert!(!failure.ask_agent_allowed());
+        }
+    }
+
+    #[test]
+    fn other_setup_and_model_identity_errors_keep_their_existing_explanations() {
+        let generic = TurnFailure::new(TurnFailureKind::ProviderSetup, "raw").explain();
+        for error in [
+            TerminalError::NotFound("Codex".into()),
+            TerminalError::ModelUnverified {
+                detail: "completed CLI run has no persisted generation model".into(),
+            },
+            TerminalError::ModelMismatch {
+                expected: "selected-model".into(),
+                observed: "another-model".into(),
+            },
+            TerminalError::Validation("Codex CLI default has no fixed model ID".into()),
+        ] {
+            assert_eq!(
+                TurnFailure::from_terminal(&error).explain(),
+                generic,
+                "{error}"
+            );
+        }
+        let auth = TurnFailure::from_terminal(&TerminalError::AuthRequired("Claude".into()));
+        assert_eq!(
+            auth.explain(),
+            FailureExplanation {
+                summary: "Claude could not be used for this reply.".into(),
+                cause: generic.cause,
+                remedy: generic.remedy,
+            }
+        );
+        let transient = TurnFailure::new(
+            TurnFailureKind::ProviderTransient,
+            "model_unverified: Codex CLI default has no fixed model ID",
+        );
+        assert_eq!(
+            transient.explain().summary,
+            "The model could not finish this reply."
+        );
     }
 
     #[test]
