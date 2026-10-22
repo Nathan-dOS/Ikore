@@ -54,14 +54,14 @@ impl QuotaSource {
         match self {
             Self::CodexAppServer => "Codex app-server",
             Self::CodexRollout => "Codex session logs",
-            Self::CodexEndpoint => "Codex sign-in Â· chatgpt.com",
-            Self::ClaudeEndpoint => "Claude Code sign-in Â· api.anthropic.com",
+            Self::CodexEndpoint => "Codex sign-in · chatgpt.com",
+            Self::ClaudeEndpoint => "Claude Code sign-in · api.anthropic.com",
             Self::ClaudeStreamEvent => "Claude run events",
             Self::AntigravityUsage => "agy /usage",
         }
     }
 
-    /// The two collectors that read the CLI's own access token (ADR-028 Â§3).
+    /// The two collectors that read the CLI's own access token (ADR-028 §3).
     pub const fn reads_credential(self) -> bool {
         matches!(self, Self::CodexEndpoint | Self::ClaudeEndpoint)
     }
@@ -73,6 +73,8 @@ pub enum UnavailableReason {
     NotSignedIn,
     SignInExpired,
     CliMissing,
+    /// The CLI's own version or sign-in check did not complete.
+    CliCheckFailed,
     VersionUnsupported,
     CredentialStoreNotFile,
     RateLimited,
@@ -95,6 +97,9 @@ impl UnavailableReason {
                 "The CLI's access token expired. It renews the next time the CLI runs; otherwise sign in again."
             }
             Self::CliMissing => "The CLI is not installed.",
+            Self::CliCheckFailed => {
+                "The CLI did not answer its version or sign-in check. Refresh to check it again."
+            }
             Self::VersionUnsupported => "This CLI version is not validated.",
             Self::CredentialStoreNotFile => {
                 "The CLI keeps its sign-in in the system credential store, which the app does not read."
@@ -133,7 +138,7 @@ pub struct QuotaWindow {
 }
 
 impl QuotaWindow {
-    /// Validates a reported window (G8): a number outside 0â€“100, a non-finite value or a
+    /// Validates a reported window (G8): a number outside 0–100, a non-finite value or a
     /// zero-length window rejects the whole reply instead of being clamped or guessed.
     pub fn new(
         scope: Option<&str>,
@@ -186,7 +191,7 @@ impl QuotaWindow {
         Some(self.resets_at? - Duration::minutes(i64::from(self.window_minutes?)))
     }
 
-    /// The share of the window already elapsed (the pace marker), in 0â€“1.
+    /// The share of the window already elapsed (the pace marker), in 0–1.
     pub fn elapsed_fraction(&self, now: DateTime<Utc>) -> Option<f64> {
         let start = self.starts_at()?;
         let length = f64::from(self.window_minutes?) * 60.0;
@@ -319,6 +324,11 @@ mod tests {
         assert_eq!(window_label(Some(43_200)), "30 days");
         assert_eq!(window_label(Some(45)), "45 min");
         assert_eq!(window_label(None), "Limit");
+        // The UI shows source labels verbatim; their separator must survive as one character.
+        assert_eq!(
+            QuotaSource::ClaudeEndpoint.label(),
+            "Claude Code sign-in \u{b7} api.anthropic.com"
+        );
     }
 
     #[test]

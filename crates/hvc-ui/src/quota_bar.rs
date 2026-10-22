@@ -394,10 +394,17 @@ pub(crate) fn window_row(
             div()
                 .text_xs()
                 .text_color(theme::text_muted())
-                .child(SharedString::from(reset_line(window, projection, now)))
-                .when(pace_ahead && !window.is_exhausted(), |line| {
-                    line.child(" · ahead of the pace marker")
-                }),
+                // One text run, so the pace note wraps with the reset line instead of
+                // starting a block of its own.
+                .child(SharedString::from(format!(
+                    "{}{}",
+                    reset_line(window, projection, now),
+                    if pace_ahead && !window.is_exhausted() {
+                        " · ahead of the pace marker"
+                    } else {
+                        ""
+                    }
+                ))),
         )
         .into_any_element()
 }
@@ -429,6 +436,9 @@ pub(crate) fn state_label(quota: &BackendQuota, now: DateTime<Utc>) -> (String, 
         }
         QuotaState::Unavailable(UnavailableReason::CliMissing) => {
             ("Not installed".into(), theme::text_muted())
+        }
+        QuotaState::Unavailable(UnavailableReason::CliCheckFailed) => {
+            ("CLI check failed".into(), theme::warning())
         }
         QuotaState::Unavailable(UnavailableReason::VersionUnsupported) => {
             ("Version not validated".into(), theme::warning())

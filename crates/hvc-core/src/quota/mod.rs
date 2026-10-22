@@ -425,7 +425,7 @@ fn cli_reason(availability: Option<&CliAvailability>) -> Option<UnavailableReaso
         ) => Some(UnavailableReason::VersionUnsupported),
         Some(CliAvailabilityState::Unsupported) => Some(UnavailableReason::Disabled),
         Some(CliAvailabilityState::Probing | CliAvailabilityState::ProbeFailed) => {
-            Some(UnavailableReason::SourceFailed)
+            Some(UnavailableReason::CliCheckFailed)
         }
     }
 }

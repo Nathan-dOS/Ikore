@@ -1,4 +1,4 @@
-//! Pace and projection for one usage window (ADR-028 Â§6). The projection is an estimate and is
+//! Pace and projection for one usage window (ADR-028 §6). The projection is an estimate and is
 //! withheld when too little of the window has elapsed or too few samples exist.
 
 use super::model::QuotaWindow;
@@ -77,7 +77,7 @@ mod tests {
     }
 
     fn window(used: f64) -> QuotaWindow {
-        // 10:00 â†’ 15:00 window.
+        // 10:00 → 15:00 window.
         QuotaWindow::new(None, used, Some(300), Some(at("2026-10-21T15:00:00Z"))).unwrap()
     }
 
