@@ -117,6 +117,7 @@ pub fn apply_destination_edits(
     anchors: &[AnchorBindingV1],
     operations: &[&EditOperationV1],
 ) -> Result<Reconstructed, CompositionError> {
+    guard_redacted_edits(original, &[], anchors, operations)?;
     let Some(first) = operations.first() else {
         return Err(reject(
             ErrorCode::InvalidShape,
@@ -187,6 +188,63 @@ pub fn apply_destination_edits(
             apply_anchor_replacements(original, anchors, operations)
         }
     }
+}
+
+/// A redacted view never grants authority to reconstruct a protected region.
+/// Original bytes outside an edited anchor remain local and unchanged.
+pub fn guard_redacted_edits(
+    original: Option<&[u8]>,
+    spans: &[crate::secret_redactor::RedactionSpan],
+    anchors: &[AnchorBindingV1],
+    operations: &[&EditOperationV1],
+) -> Result<(), CompositionError> {
+    for operation in operations {
+        let content = match operation {
+            EditOperationV1::CreateFile { content, .. }
+            | EditOperationV1::ReplaceFile { content, .. }
+            | EditOperationV1::ReplaceAnchor { content, .. } => content,
+        };
+        let previous = match operation {
+            EditOperationV1::CreateFile { .. } => "",
+            EditOperationV1::ReplaceFile { .. } => original
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .unwrap_or(""),
+            EditOperationV1::ReplaceAnchor { anchor_ref, .. } => anchors
+                .iter()
+                .find(|anchor| &anchor.anchor_ref == anchor_ref)
+                .and_then(|anchor| {
+                    original?.get(anchor.start_byte as usize..anchor.end_byte as usize)
+                })
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .unwrap_or(""),
+        };
+        if crate::secret_redactor::introduces_redaction_marker(previous, content) {
+            return Err(reject(
+                ErrorCode::ContractConflict,
+                "The proposed edit contains a redaction marker. Resolve the protected context before editing.",
+            ));
+        }
+        let protected = match operation {
+            EditOperationV1::ReplaceFile { .. } => !spans.is_empty(),
+            EditOperationV1::ReplaceAnchor { anchor_ref, .. } => anchors
+                .iter()
+                .find(|anchor| &anchor.anchor_ref == anchor_ref)
+                .is_some_and(|anchor| {
+                    spans.iter().any(|span| {
+                        (anchor.start_byte as usize) < span.end_byte
+                            && span.start_byte < anchor.end_byte as usize
+                    })
+                }),
+            EditOperationV1::CreateFile { .. } => false,
+        };
+        if protected {
+            return Err(reject(
+                ErrorCode::ContractConflict,
+                "The proposed edit overlaps protected context. Use a disjoint anchor or resolve the protected region explicitly.",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn apply_anchor_replacements(
@@ -289,6 +347,83 @@ mod tests {
     use super::super::references::ReferenceTable;
     use super::super::{RelPath, SourceRole};
     use super::*;
+
+    #[test]
+    fn protected_regions_reject_overlaps_but_disjoint_edits_preserve_original_bytes() {
+        let original =
+            "const KEY: &str = \"sk-proj-abcdefghijklmnopqrst\";\r\nfn café() { old }\r\n";
+        let (_, anchors) = issue(original.as_bytes(), &[(1, 1), (2, 2)]);
+        let view = crate::secret_redactor::redact_context(original).unwrap();
+        assert!(!view.spans.is_empty());
+        let blocked = anchor_edit("anchor_1", "const KEY: &str = \"changed\";\r\n");
+        assert_eq!(
+            guard_redacted_edits(
+                Some(original.as_bytes()),
+                &view.spans,
+                &anchors,
+                &[&blocked]
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::ContractConflict
+        );
+        let whole = EditOperationV1::ReplaceFile {
+            source_ref: handle("src_1"),
+            content: "new".into(),
+        };
+        assert!(
+            guard_redacted_edits(Some(original.as_bytes()), &view.spans, &anchors, &[&whole])
+                .is_err()
+        );
+        let allowed = anchor_edit("anchor_2", "fn café() { new }\r\n");
+        guard_redacted_edits(
+            Some(original.as_bytes()),
+            &view.spans,
+            &anchors,
+            &[&allowed],
+        )
+        .unwrap();
+        let result =
+            apply_destination_edits(Some(original.as_bytes()), &anchors, &[&allowed]).unwrap();
+        assert_eq!(result.content, original.replace("{ old }", "{ new }"));
+        assert_eq!(anchors[0].source_sha256, Sha256Hex::of(original.as_bytes()));
+    }
+
+    #[test]
+    fn every_edit_operation_rejects_generated_redaction_markers() {
+        let marker = "<REDACTED_SECRET:KNOWN_API_TOKEN_1>";
+        let operations = [
+            EditOperationV1::CreateFile {
+                destination_ref: handle("plan_1"),
+                content: marker.into(),
+            },
+            EditOperationV1::ReplaceFile {
+                source_ref: handle("src_1"),
+                content: marker.into(),
+            },
+            anchor_edit("anchor_1", marker),
+        ];
+        for operation in &operations {
+            assert_eq!(
+                apply_destination_edits(None, &[], &[operation])
+                    .unwrap_err()
+                    .code,
+                ErrorCode::ContractConflict
+            );
+        }
+        let original =
+            "const MARKER: &str = \"<REDACTED_SECRET:KNOWN_API_TOKEN_1>\";\nfn old() {}\n";
+        let preserved = EditOperationV1::ReplaceFile {
+            source_ref: handle("src_1"),
+            content: original.replace("fn old", "fn new"),
+        };
+        assert!(apply_destination_edits(Some(original.as_bytes()), &[], &[&preserved]).is_ok());
+        let copied = EditOperationV1::ReplaceFile {
+            source_ref: handle("src_1"),
+            content: format!("{original}// {marker}\n"),
+        };
+        assert!(apply_destination_edits(Some(original.as_bytes()), &[], &[&copied]).is_err());
+    }
 
     fn handle(text: &str) -> Handle {
         Handle::new(text).unwrap()

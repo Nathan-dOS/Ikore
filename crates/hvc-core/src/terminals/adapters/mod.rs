@@ -3,7 +3,7 @@ use serde_json::Value;
 use super::{
     CliBackend, CliCapabilities, CliInvocationRequest, CliOutputFormat, CliProcessSpec,
     CliQuotaBucket, TerminalError, TerminalEventKind, ThinkingLevel, extract_visible_text,
-    sanitize_terminal_text,
+    sanitize_cli_frame_text, sanitize_terminal_text,
 };
 
 mod antigravity;
@@ -300,7 +300,7 @@ fn normalize_json_frame(
     bytes: &[u8],
     classify: impl FnOnce(&Value) -> TerminalEventKind,
 ) -> NormalizedCliFrame {
-    let sanitized = sanitize_terminal_text(bytes);
+    let sanitized = sanitize_cli_frame_text(bytes);
     if stream == "stderr" {
         return NormalizedCliFrame {
             kind: TerminalEventKind::Stderr,
@@ -348,7 +348,7 @@ fn normalize_json_frame(
         || event_type(&value) == "stream_event";
     NormalizedCliFrame {
         kind,
-        content: sanitize_terminal_text(content.as_bytes()),
+        content: sanitize_cli_frame_text(content.as_bytes()),
         native_session_id: find_session_id(&value),
         observed_model: find_model_id(&value),
         message_id: find_message_id(&value),

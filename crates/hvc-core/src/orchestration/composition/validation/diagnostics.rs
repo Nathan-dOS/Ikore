@@ -23,7 +23,11 @@ impl<F: Fn(&str) -> Option<Handle> + Sync> PathResolver for F {
 pub const MAX_DIAGNOSTICS: usize = 64;
 
 fn bounded(text: &str) -> String {
-    let trimmed = text.trim();
+    // Decode structured tool fields first, sanitize second, then bound text.
+    let sanitized = crate::secret_redactor::redact_secrets(text)
+        .map(|result| result.text)
+        .unwrap_or_else(|_| "Validation detail withheld: sanitization unavailable.".into());
+    let trimmed = sanitized.trim();
     if trimmed.chars().count() > MAX_TEXT_CHARS {
         let mut out: String = trimmed.chars().take(MAX_TEXT_CHARS - 3).collect();
         out.push_str("...");
@@ -34,6 +38,9 @@ fn bounded(text: &str) -> String {
 }
 
 fn code(text: &str) -> Handle {
+    if crate::secret_redactor::redact_secrets(text).map_or(true, |result| result.count > 0) {
+        return Handle::new("diagnostic").unwrap();
+    }
     let mut slug = String::with_capacity(text.len());
     for ch in text.chars() {
         let lower = ch.to_ascii_lowercase();
@@ -244,6 +251,20 @@ pub fn exit_diagnostic(exit_code: Option<i32>, stderr_tail: &str) -> DiagnosticV
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoded_diagnostics_are_sanitized_before_text_limits() {
+        let encoded = r#"{"reason":"compiler-message","message":{"level":"error","code":null,"message":"credential sk-proj-\u0061bcdefghijklmnopqrst","spans":[]}}"#;
+        let rows = parse_cargo_json(encoded, &|_: &str| None);
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].message.contains("abcdefghijklmnopqrst"));
+        assert!(rows[0].message.contains("<REDACTED_SECRET:"));
+        let long = format!(
+            "{}sk-proj-abcdefghijklmnopqrst",
+            "a ".repeat(MAX_TEXT_CHARS / 2 - 8)
+        );
+        assert!(!bounded(&long).contains("sk-proj-"));
+    }
 
     fn resolver(path: &str) -> Option<Handle> {
         (path.replace('\\', "/").ends_with("src/lib.rs")).then(|| Handle::new("src_1").unwrap())

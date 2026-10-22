@@ -542,6 +542,14 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
     ),
     // Stage composition
     entry(
+        "secret-sanitization",
+        P::Composition,
+        "Secret protection",
+        "Secret protection and fixture authorizations",
+        "Always-on context sanitization, project counters and local authorizations for exact synthetic fixture occurrences. Detected values are never displayed.",
+        "secret credential redaction sanitization synthetic fixture exception security",
+    ),
+    entry(
         "composition-enabled",
         P::Composition,
         "Composed batches",

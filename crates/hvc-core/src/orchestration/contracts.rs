@@ -849,6 +849,8 @@ pub enum LearningState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PulsationCoordinationSnapshot {
+    #[serde(default)]
+    pub sanitization: crate::sanitization::SanitizationSummary,
     pub description_editable: bool,
     pub context_disposition: Option<String>,
     pub diagnostic: Option<String>,

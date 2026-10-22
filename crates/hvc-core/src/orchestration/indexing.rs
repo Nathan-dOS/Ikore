@@ -14,6 +14,30 @@ pub(super) struct BackgroundClaim {
 }
 
 impl PersistenceService {
+    /// Vectors are derived data. Qualify them independently of the original
+    /// document hash, and restart the scan after a detector-policy change.
+    fn qualify_embedding_policy(
+        &self,
+        db: &Connection,
+        root: &str,
+    ) -> Result<(), PersistenceServiceError> {
+        let tx = db.unchecked_transaction()?;
+        let version: Option<String> = tx.query_row(
+            "SELECT sanitization_policy_version FROM embedding_sync_state WHERE workspace_path=?1", [root], |row| row.get(0),
+        ).optional()?;
+        if version.as_deref() == Some(crate::secret_redactor::SANITIZATION_POLICY_VERSION) {
+            return Ok(());
+        }
+        let cancelled = tx.prepare("SELECT j.id FROM jobs j JOIN embedding_deltas d ON d.job_id=j.id WHERE d.workspace_path=?1 AND j.status IN ('pending','running','interrupted')")?
+            .query_map([root], |row| row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+        for id in &cancelled {
+            tx.execute("UPDATE jobs SET status='failed',cancellation_reason='superseded',updated_at=?2 WHERE id=?1", params![id,Self::now_iso()])?;
+        }
+        tx.execute("INSERT INTO embedding_sync_state(workspace_path,next_reconcile_at,dirty,scan_cursor,sanitization_policy_version) VALUES(?1,?2,1,'',?3) ON CONFLICT(workspace_path) DO UPDATE SET dirty=1,scan_cursor='',revision=revision+1,retry_failed=1,sanitization_policy_version=excluded.sanitization_policy_version", params![root,Self::now_iso(),crate::secret_redactor::SANITIZATION_POLICY_VERSION])?;
+        tx.commit()?;
+        self.signal_cancelled_jobs(&cancelled);
+        Ok(())
+    }
     pub(super) fn indexing_configuration_changed(
         &self,
         config: &AgentRuntimeConfig,
@@ -105,6 +129,7 @@ impl PersistenceService {
             .map(|content| ContentSha256::of(content.as_bytes()).as_str().to_string());
         let config = self.load_runtime_config()?;
         let mut db = self.connection()?;
+        self.qualify_embedding_policy(&db, &key)?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let project = tx
             .prepare("SELECT id,workspace_path FROM projects WHERE is_archived=0")?
@@ -133,8 +158,8 @@ impl PersistenceService {
             .optional()?;
         let stored: Option<String> = tx
             .query_row(
-                "SELECT revision_hash FROM workspace_note_embeddings WHERE workspace_path=?1 AND relative_path=?2 AND embedding_model=?3",
-                params![key, relative_path, config.embedding_model],
+                "SELECT revision_hash FROM workspace_note_embeddings WHERE workspace_path=?1 AND relative_path=?2 AND embedding_model=?3 AND sanitization_policy_version=?4",
+                params![key, relative_path, config.embedding_model, crate::secret_redactor::SANITIZATION_POLICY_VERSION],
                 |row| row.get(0),
             )
             .optional()?;
@@ -235,6 +260,7 @@ impl PersistenceService {
         let root = root.canonicalize()?;
         let key = root.to_string_lossy().to_string();
         let db = self.connection()?;
+        self.qualify_embedding_policy(&db, &key)?;
         let (cursor, revision): (String,u64) = db.query_row("SELECT CASE WHEN embedding_model=?2 THEN scan_cursor ELSE '' END, revision FROM embedding_sync_state WHERE workspace_path=?1",params![key,model],|r| Ok((r.get(0)?,r.get(1)?))).optional()?.unwrap_or_default();
         let retry_failed = retry_failed
             || db
@@ -334,7 +360,7 @@ impl PersistenceService {
                 response.skipped_count += 1;
                 continue;
             }
-            let stored: Option<String> = tx.query_row("SELECT revision_hash FROM workspace_note_embeddings WHERE workspace_path=?1 AND relative_path=?2 AND embedding_model=?3",params![key,path,model],|r|r.get(0)).optional()?;
+            let stored: Option<String> = tx.query_row("SELECT revision_hash FROM workspace_note_embeddings WHERE workspace_path=?1 AND relative_path=?2 AND embedding_model=?3 AND sanitization_policy_version=?4",params![key,path,model,crate::secret_redactor::SANITIZATION_POLICY_VERSION],|r|r.get(0)).optional()?;
             if stored == hash && prior.as_ref().is_none_or(|(_, h, _, _)| h == &hash) {
                 response.skipped_count += 1;
                 continue;
@@ -405,6 +431,7 @@ impl PersistenceService {
                 if crate::orchestration::publication::safe_target(Path::new(root), "knowledge/obsidian", false).is_err() { continue; }
                 if let Ok(root)=Path::new(root).canonicalize() {
                     db.execute("INSERT OR IGNORE INTO embedding_sync_state(workspace_path,next_reconcile_at) VALUES(?1,?2)",params![root.to_string_lossy(),service.clock.now().to_rfc3339()])?;
+                    service.qualify_embedding_policy(&db, &root.to_string_lossy())?;
                 }
             }
             let main_waiting:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM runtime_slots WHERE job_class='main') OR EXISTS(SELECT 1 FROM jobs WHERE job_class='main' AND status='pending' AND cancellation_reason IS NULL) OR EXISTS(SELECT 1 FROM artifact_publications WHERE job_class='main' AND state IN ('pending','applying'))",[],|r|r.get(0))?;
@@ -516,7 +543,34 @@ impl PersistenceService {
             .filter(|c| workspace_service::is_embedding_document(&path, c))
             .map(|c| ContentSha256::of(c.as_bytes()).as_str().to_string());
         let vector = if hash.is_some() && current == hash {
-            let prompt = strip_frontmatter_for_embedding(content.as_deref().unwrap_or(""));
+            let sanitization_started = std::time::Instant::now();
+            let sanitized =
+                crate::secret_redactor::redact_context(content.as_deref().unwrap_or(""))
+                    .map_err(invalid)?;
+            let project: Option<String> = self.connection()?.query_row(
+                "SELECT project_id FROM jobs WHERE id=?1",
+                [&claim.job.id],
+                |row| row.get(0),
+            )?;
+            if let Some(project) = project {
+                let result = sanitized.result();
+                crate::sanitization::SanitizationStore::new(self.database_path())
+                    .record_input(
+                        &project,
+                        None,
+                        &format!("embedding:{}:{}", claim.job.id, claim.generation),
+                        crate::secret_redactor::SANITIZATION_POLICY_VERSION,
+                        result.count,
+                        &result.categories,
+                        content.as_deref().unwrap_or("").len(),
+                        sanitization_started
+                            .elapsed()
+                            .as_millis()
+                            .min(u64::MAX as u128) as u64,
+                    )
+                    .map_err(invalid)?;
+            }
+            let prompt = strip_frontmatter_for_embedding(&sanitized.text);
             let vector = tokio::select! {
                 _=shutdown.cancelled()=>return Err(PersistenceServiceError::Cancelled("Indexing shut down.".into())),
                 _=claim.cancellation.cancelled()=>return Err(PersistenceServiceError::Cancelled("Delta superado.".into())),
@@ -545,7 +599,7 @@ impl PersistenceService {
                 Self::mark_index_dirty(&tx,Path::new(&root))?;
             } else {
                 if let Some(vector)=vector {
-                    tx.execute("INSERT INTO workspace_note_embeddings(id,workspace_path,relative_path,revision_hash,embedding_model,embedding_vector_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(workspace_path,relative_path,embedding_model) DO UPDATE SET revision_hash=excluded.revision_hash,embedding_vector_json=excluded.embedding_vector_json,updated_at=excluded.updated_at",params![Uuid::new_v4().to_string(),root,path,hash,model,vector,Self::now_iso()])?;
+                    tx.execute("INSERT INTO workspace_note_embeddings(id,workspace_path,relative_path,revision_hash,embedding_model,embedding_vector_json,updated_at,sanitization_policy_version) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(workspace_path,relative_path,embedding_model) DO UPDATE SET revision_hash=excluded.revision_hash,embedding_vector_json=excluded.embedding_vector_json,updated_at=excluded.updated_at,sanitization_policy_version=excluded.sanitization_policy_version",params![Uuid::new_v4().to_string(),root,path,hash,model,vector,Self::now_iso(),crate::secret_redactor::SANITIZATION_POLICY_VERSION])?;
                 } else { tx.execute("DELETE FROM workspace_note_embeddings WHERE workspace_path=?1 AND relative_path=?2 AND embedding_model=?3",params![root,path,model])?; }
                 tx.execute("UPDATE jobs SET status='done',finished_at=?2,updated_at=?2 WHERE id=?1",params![id,Self::now_iso()])?;
                 processed = true;

@@ -1503,7 +1503,9 @@ async fn retrieve_context_candidates(
     let remaining_timeout =
         std::time::Duration::from_millis(policy.timeout_ms).saturating_sub(started.elapsed());
     let query_embedding = if semantic_requested && !remaining_timeout.is_zero() {
-        let query = context_embedding_query(input);
+        let query = crate::secret_redactor::redact_context(&context_embedding_query(input))
+            .map_err(AgentRuntimeError::Validation)?
+            .text;
         tokio::select! {
             _ = cancellation.cancelled() => return Err(AgentRuntimeError::Cancelled),
             result = tokio::time::timeout(
@@ -1946,8 +1948,10 @@ fn select_physical_references_for_stage<'a>(
 /// slicing in characters used to append a truncation marker to untruncated
 /// accented text, telling the model context was missing when it was not.
 pub(crate) fn clip_text(content: &str, max_chars: usize) -> String {
+    let content = crate::llm::adapter::sanitize_model_text(content)
+        .unwrap_or_else(|_| "[content unavailable after sanitization]".into());
     match content.char_indices().nth(max_chars) {
-        None => content.to_string(),
+        None => content,
         Some((offset, _)) => format!("{}\n...[truncated]", &content[..offset]),
     }
 }
@@ -2064,11 +2068,13 @@ fn rerank_candidates_with_embedding(
                 "SELECT embedding_vector_json, revision_hash
                  FROM workspace_note_embeddings
                  WHERE workspace_path = ?1 AND relative_path = ?2 AND embedding_model = ?3
+                   AND sanitization_policy_version = ?4
                  LIMIT 1",
                 params![
                     canonical_key.as_ref(),
                     relative_path.as_str(),
-                    config.embedding_model.as_str()
+                    config.embedding_model.as_str(),
+                    crate::secret_redactor::SANITIZATION_POLICY_VERSION
                 ],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
@@ -2823,7 +2829,7 @@ mod m4_context_tests {
     }
     fn db(input: &StageExecutionInput) -> Connection {
         let db = Connection::open(&input.runtime_db_path).unwrap();
-        db.execute_batch("CREATE TABLE workspace_note_embeddings(workspace_path TEXT,relative_path TEXT,embedding_model TEXT,revision_hash TEXT,embedding_vector_json TEXT);").unwrap();
+        db.execute_batch("CREATE TABLE workspace_note_embeddings(workspace_path TEXT,relative_path TEXT,embedding_model TEXT,revision_hash TEXT,embedding_vector_json TEXT,sanitization_policy_version TEXT NOT NULL DEFAULT '');").unwrap();
         db
     }
     #[test]
@@ -2835,10 +2841,11 @@ mod m4_context_tests {
         std::fs::write(root.path().join("b.md"), "billing").unwrap();
         let config = AgentRuntimeConfig::default();
         db.execute(
-            "INSERT INTO workspace_note_embeddings VALUES(?1,'a.md',?2,'old','[1,0]')",
+            "INSERT INTO workspace_note_embeddings VALUES(?1,'a.md',?2,'old','[1,0]',?3)",
             params![
                 root.path().canonicalize().unwrap().to_string_lossy(),
-                config.embedding_model
+                config.embedding_model,
+                crate::secret_redactor::SANITIZATION_POLICY_VERSION
             ],
         )
         .unwrap();

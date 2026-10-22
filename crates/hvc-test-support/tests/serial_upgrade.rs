@@ -127,7 +127,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -290,7 +290,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        48
+        49
     );
     assert_eq!(
         db.query_row(
@@ -831,7 +831,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -987,7 +987,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1084,7 +1084,7 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     let (error, failure, notices): (String, Option<String>, Option<String>) = db
         .query_row(
@@ -1153,7 +1153,7 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1228,7 +1228,7 @@ fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1323,7 +1323,7 @@ fn v47_to_v48_adds_quota_history_with_validated_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     let insert = |values: &str| {
         db.execute(
@@ -1347,4 +1347,117 @@ fn v47_to_v48_adds_quota_history_with_validated_columns() {
     ] {
         insert(rejected).expect_err(rejected);
     }
+}
+
+#[test]
+fn v48_to_v49_preserves_history_and_requires_new_sanitization_evidence() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("repo");
+    fs::create_dir(&workspace).unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(48))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','Legacy',?1,'now','now')",[workspace.to_str().unwrap()]).unwrap();
+    db.execute("INSERT INTO workspace_note_embeddings(id,workspace_path,relative_path,revision_hash,embedding_model,embedding_vector_json,updated_at) VALUES('vector',?1,'note.md','original-revision','fixture-model','[0.25,0.75]','now')",[workspace.to_str().unwrap()]).unwrap();
+    db.execute("INSERT INTO embedding_sync_state(workspace_path,next_reconcile_at,embedding_model) VALUES(?1,'now','fixture-model')",[workspace.to_str().unwrap()]).unwrap();
+    let original = "legacy password = synthetic-original-value";
+    db.execute_batch("INSERT INTO provider_routes(id,name,created_at,updated_at) VALUES('legacy-route','Legacy route','now','now');").unwrap();
+    db.execute("INSERT INTO llm_route_executions(id,generation_id,project_id,route_id,agent_role,stage,strategy,mode,status,decision_json,visible_output,visible_output_complete,started_at) VALUES('legacy-api','g','p','legacy-route','backend_agent','Code','priority','off','completed','{}',?1,1,'now')",[original]).unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        49
+    );
+    for table in [
+        "project_secret_redaction_exceptions",
+        "secret_sanitization_receipts",
+        "secret_sanitization_source_maps",
+        "secret_publication_guards",
+    ] {
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |r| r.get::<_, u32>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+    let vector: (String,String,String) = db.query_row("SELECT revision_hash,embedding_vector_json,sanitization_policy_version FROM workspace_note_embeddings WHERE id='vector'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!(
+        vector,
+        (
+            "original-revision".into(),
+            "[0.25,0.75]".into(),
+            String::new()
+        )
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT sanitization_policy_version FROM embedding_sync_state",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        ""
+    );
+    let legacy: (String,u64,String) = db.query_row("SELECT visible_output,output_redaction_count,output_redaction_categories_json FROM llm_route_executions WHERE id='legacy-api'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!(legacy, (original.into(), 0, "[]".into()));
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM secret_sanitization_receipts",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        0
+    );
+
+    let store = hvc_core::sanitization::SanitizationStore::new(&path);
+    assert_eq!(store.summary("p", None).unwrap().output_redaction_count, 0);
+    for _ in 0..2 {
+        store
+            .record_input(
+                "p",
+                None,
+                "new-call",
+                hvc_core::secret_redactor::SANITIZATION_POLICY_VERSION,
+                1,
+                &["sensitive_variable".into()],
+                40,
+                1,
+            )
+            .unwrap();
+    }
+    let receipt: (u32, u64) = db
+        .query_row(
+            "SELECT COUNT(*),SUM(exception_count) FROM secret_sanitization_receipts",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(receipt, (1, 0));
+    drop(db);
+    PersistenceService::initialize(root.path()).unwrap();
+    let summary = store.summary("p", None).unwrap();
+    assert_eq!(
+        (
+            summary.entries_examined,
+            summary.input_redaction_count,
+            summary.output_redaction_count
+        ),
+        (1, 1, 0)
+    );
 }

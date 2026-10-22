@@ -491,6 +491,32 @@ impl PersistenceService {
                 return self.park_without_execution(job, parent_run_id, stage, &failure);
             }
         };
+        let sanitization = crate::sanitization::SanitizationStore::new(self.database_path());
+        let sanitization_policy = sanitization.policy_for_project(&project.id).map_err(|_| {
+            PersistenceServiceError::Validation(
+                "Context sanitization policy is unavailable.".into(),
+            )
+        })?;
+        preparation.sanitization_policy_identity = sanitization_policy.identity.clone();
+        for (handle, original) in &preparation.delivered {
+            let path = preparation
+                .table
+                .entry(handle)
+                .and_then(comp::ReferenceEntryV1::relative_path)
+                .ok_or_else(|| {
+                    PersistenceServiceError::Validation(
+                        "The context source has no trusted path.".into(),
+                    )
+                })?;
+            let view = sanitization
+                .sanitize_source_with_policy(&sanitization_policy, path.as_str(), original)
+                .map_err(|_| {
+                    PersistenceServiceError::Validation(
+                        "Context sanitization is unavailable.".into(),
+                    )
+                })?;
+            preparation.source_redactions.insert(handle.clone(), view);
+        }
         // Checks the approved specification made mandatory for a criterion
         // are required regardless of the profile's own flag.
         let promoted_checks = recipes::promoted_check_refs(&inputs);
@@ -1829,6 +1855,7 @@ impl PersistenceService {
             "recipe": comp::policy::RECIPE_POLICY_ID,
             "commonRules": common_rules(),
             "policies": all_policies(),
+            "sanitizationPolicy": preparation.sanitization_policy_identity,
         });
         let (recipe_snapshot_id, policy_sha) =
             Self::snapshot_policy(&tx, "recipe", None, &recipe_snapshot)?;
@@ -2008,6 +2035,15 @@ impl PersistenceService {
                     continue;
                 };
                 if !matches!(response, UnitModelResponseV1::Completed { .. }) {
+                    continue;
+                }
+                let index = PlanIndex::new(&plan);
+                let Ok(child) =
+                    validate_child(&index, &unit.spec, &preparation.approved, &response)
+                else {
+                    continue;
+                };
+                if recipes::reconstruct_artifacts(&plan, preparation, &child).is_err() {
                     continue;
                 }
                 let reused_attempt: Option<String> = tx
@@ -2420,17 +2456,52 @@ impl PersistenceService {
         runtime_config: &AgentRuntimeConfig,
         cancellation: &CancellationToken,
     ) -> Result<AttemptResult, PersistenceServiceError> {
+        let sanitization_started = std::time::Instant::now();
         let policy = policy_for(kind);
+        let sanitization = crate::sanitization::SanitizationStore::new(self.database_path());
+        let current_policy = sanitization.policy_for_project(&project.id).map_err(|_| {
+            PersistenceServiceError::Validation(
+                "Context sanitization policy is unavailable.".into(),
+            )
+        })?;
+        if current_policy.identity != preparation.sanitization_policy_identity {
+            return Err(PersistenceServiceError::Validation(
+                "The sanitization policy changed; restart the stage before dispatch.".into(),
+            ));
+        }
         // Validated predecessor outputs this unit reads (SC-004): reconstructed
         // from the persisted responses, never from the live workspace.
         let candidates = self.candidate_inputs(execution, index, preparation, &unit.spec)?;
+        let candidate_redactions = candidates
+            .iter()
+            .map(|(handle, content)| {
+                let path = preparation
+                    .table
+                    .entry(handle)
+                    .and_then(comp::ReferenceEntryV1::relative_path)
+                    .ok_or_else(|| {
+                        PersistenceServiceError::Validation(
+                            "A candidate source has no trusted path.".into(),
+                        )
+                    })?;
+                sanitization
+                    .sanitize_source_with_policy(&current_policy, path.as_str(), content)
+                    .map_err(|_| {
+                        PersistenceServiceError::Validation(
+                            "Candidate sanitization is unavailable.".into(),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut prompt_inputs = recipes::prompt_inputs(preparation, &unit.spec);
         prompt_inputs.correction = correction;
         prompt_inputs.dependency_outputs = candidates
             .iter()
-            .map(|(handle, content)| DeliveredSource {
+            .zip(&candidate_redactions)
+            .map(|((handle, content), view)| DeliveredSource {
                 handle,
                 content,
+                redaction: Some(view),
                 replaceable: false,
             })
             .collect();
@@ -2458,10 +2529,22 @@ impl PersistenceService {
             &prompt_inputs,
             profile.schema_flavor,
         );
+        let prepared = crate::secret_redactor::PreparedModelInput::with_authorized_ranges(
+            &prompt.system,
+            &prompt.user,
+            &preparation.sanitization_policy_identity,
+            &[],
+            &prompt.authorized_user_ranges,
+        )
+        .map_err(|_| {
+            PersistenceServiceError::Validation("Model input sanitization is unavailable.".into())
+        })?;
         let response_schema = executor_response_schema(kind, profile.schema_flavor);
         let strict = executor_response_schema(kind, SchemaFlavor::Strict);
-        let prompt_chars = (prompt.chars + response_schema.to_string().chars().count())
-            .min(u32::MAX as usize) as u32;
+        let prompt_chars = (prepared.system_prompt().chars().count()
+            + prepared.user_prompt().chars().count()
+            + response_schema.to_string().chars().count())
+        .min(u32::MAX as usize) as u32;
 
         // Reservation + attempt in one transaction; nothing external yet.
         let (attempt, unit) = {
@@ -2545,8 +2628,8 @@ impl PersistenceService {
                 role,
             ),
             stage: execution.stage.as_db_value().to_string(),
-            system_prompt: prompt.system.clone(),
-            user_prompt: prompt.user.clone(),
+            system_prompt: prepared.system_prompt().to_owned(),
+            user_prompt: prepared.user_prompt().to_owned(),
             response_format: crate::llm::ResponseFormat::JsonSchema {
                 name: RESPONSE_SCHEMA_NAME.to_string(),
                 schema: response_schema.clone(),
@@ -2561,6 +2644,7 @@ impl PersistenceService {
             legacy_provider: runtime_config.provider.as_str().to_string(),
             legacy_model: runtime_config.model.clone(),
             dispatch: crate::llm::DispatchPolicy {
+                prepared_input: Some(prepared.clone()),
                 cli_timeout: Some(crate::agent_timeout::CliTimeoutBudget::for_role(
                     role,
                     runtime_config.timeout_ms,
@@ -2579,12 +2663,22 @@ impl PersistenceService {
                 host_validated: true,
             },
         };
-        let dispatch_sha =
-            comp::Sha256Hex::of(format!("{}\n{}", prompt.system, prompt.user).as_bytes());
+        let dispatch_sha = comp::canonical_sha256(
+            &serde_json::json!({
+                "system": prepared.system_prompt(), "user": prepared.user_prompt(),
+                "sanitizationPolicy": prepared.policy_identity(),
+                "responseFormat": request.response_format,
+                "strictSchema": request.dispatch.strict_schema,
+            }),
+            &[],
+        )
+        .map_err(|e| composition_invalid(&e))?;
         // The frozen spec plus the exact candidate bytes delivered to this attempt.
         let input_sha = comp::canonical_sha256(
             &serde_json::json!({
                 "spec": comp::canonical_sha256(&unit.spec, &[]).map_err(|e| composition_invalid(&e))?,
+                "sanitizationPolicy": prepared.policy_identity(),
+                "dispatch": dispatch_sha,
                 "candidates": candidates
                     .iter()
                     .map(|(handle, content)| (handle.as_str(), comp::Sha256Hex::of(content.as_bytes())))
@@ -2593,13 +2687,103 @@ impl PersistenceService {
             &[],
         )
         .map_err(|e| composition_invalid(&e))?;
-        if let Err(error) = Self::mark_attempt_started(
-            &self.connection()?,
-            &attempt,
-            request.execution_id.as_str(),
-            dispatch_sha.as_str(),
-            input_sha.as_str(),
-        ) {
+        let persisted_input = (|| -> Result<(), PersistenceServiceError> {
+            let source_views = unit
+                .spec
+                .input_refs
+                .iter()
+                .filter_map(|handle| preparation.source_redactions.get(handle))
+                .chain(candidate_redactions.iter());
+            let mut count = prepared.redaction_count();
+            let mut exception_ids = std::collections::BTreeSet::new();
+            let mut categories = prepared
+                .categories()
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            for view in source_views {
+                count = count.saturating_add(view.spans.len() as u64);
+                categories.extend(view.spans.iter().map(|span| span.category.clone()));
+                exception_ids.extend(view.applied_exceptions.iter().cloned());
+            }
+            let source_bytes = unit
+                .spec
+                .input_refs
+                .iter()
+                .filter_map(|handle| preparation.delivered.get(handle))
+                .map(String::len)
+                .chain(candidates.iter().map(|(_, content)| content.len()))
+                .sum::<usize>();
+            sanitization
+                .record_input(
+                    &project.id,
+                    Some(&execution.pulsation_id),
+                    request.execution_id.as_str(),
+                    &preparation.sanitization_policy_identity,
+                    count,
+                    &categories.into_iter().collect::<Vec<_>>(),
+                    source_bytes.saturating_add(prepared.original_bytes()),
+                    sanitization_started
+                        .elapsed()
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64,
+                )
+                .map_err(|_| {
+                    PersistenceServiceError::Validation(
+                        "The sanitization receipt could not be persisted.".into(),
+                    )
+                })?;
+            sanitization
+                .record_exception_uses(
+                    request.execution_id.as_str(),
+                    &exception_ids.into_iter().collect::<Vec<_>>(),
+                )
+                .map_err(|_| {
+                    PersistenceServiceError::Validation(
+                        "The fixture authorization receipt could not be persisted.".into(),
+                    )
+                })?;
+            let record =
+                |handle: &comp::Handle,
+                 original: &str,
+                 view: &crate::secret_redactor::ContextRedaction| {
+                    sanitization
+                        .record_source_map(
+                            &project.id,
+                            &execution.pulsation_id,
+                            request.execution_id.as_str(),
+                            handle.as_str(),
+                            comp::Sha256Hex::of(original.as_bytes()).as_str(),
+                            comp::Sha256Hex::of(view.text.as_bytes()).as_str(),
+                            &preparation.sanitization_policy_identity,
+                            &view.spans,
+                        )
+                        .map_err(|_| {
+                            PersistenceServiceError::Validation(
+                                "The sanitization evidence could not be persisted.".into(),
+                            )
+                        })
+                };
+            for handle in &unit.spec.input_refs {
+                if let (Some(original), Some(view)) = (
+                    preparation.delivered.get(handle),
+                    preparation.source_redactions.get(handle),
+                ) {
+                    record(handle, original, view)?;
+                }
+            }
+            for ((handle, original), view) in candidates.iter().zip(&candidate_redactions) {
+                record(handle, original, view)?;
+            }
+            Self::mark_attempt_started(
+                &self.connection()?,
+                &attempt,
+                request.execution_id.as_str(),
+                dispatch_sha.as_str(),
+                input_sha.as_str(),
+            )
+        })();
+        if let Err(error) = persisted_input {
             // Nothing left the host: the permit goes back to the pool and the
             // attempt closes without a charge.
             let db = self.connection()?;
@@ -2712,7 +2896,8 @@ impl PersistenceService {
                 if index.plan().check_refs.is_empty() {
                     host_notes = comp::validate::normalize_without_checks(&mut response);
                 }
-                validate_child(index, &unit.spec, &preparation.approved, &response)?;
+                let child = validate_child(index, &unit.spec, &preparation.approved, &response)?;
+                recipes::reconstruct_artifacts(&execution.plan, preparation, &child)?;
                 Ok(response)
             },
         );
@@ -2877,7 +3062,21 @@ impl PersistenceService {
         schema: &serde_json::Value,
         validation_error: Option<&str>,
     ) -> Result<(), PersistenceServiceError> {
-        let structured = serde_json::from_str::<serde_json::Value>(&output.raw_output)
+        let safe_text = |text: &str| {
+            crate::llm::adapter::sanitize_model_text(text)
+                .unwrap_or_else(|_| crate::secret_redactor::OMITTED_CONTENT.to_owned())
+        };
+        let safe_json = |value: &serde_json::Value| {
+            let mut value = value.clone();
+            if crate::llm::adapter::sanitize_json_strings(&mut value).is_err() {
+                value = serde_json::json!({"contentOmitted": true});
+            }
+            value.to_string()
+        };
+        // This row is an observation. The operational response remains in
+        // memory and, after validation, in the immutable work-unit result.
+        let raw_output = safe_text(&output.raw_output);
+        let structured = serde_json::from_str::<serde_json::Value>(&raw_output)
             .ok()
             .filter(|_| validation_error.is_none())
             .map(|value| value.to_string());
@@ -2891,12 +3090,12 @@ impl PersistenceService {
                 attempt.agent_run_id,
                 job.id,
                 job.pulsation_id,
-                output.request_payload.to_string(),
-                output.response_payload.to_string(),
-                output.raw_output,
+                safe_json(&output.request_payload),
+                safe_json(&output.response_payload),
+                raw_output,
                 structured,
-                schema.to_string(),
-                validation_error,
+                safe_json(schema),
+                validation_error.map(safe_text),
                 now
             ],
         )?;
@@ -2906,8 +3105,8 @@ impl PersistenceService {
                 attempt.agent_run_id,
                 output.input_tokens,
                 output.output_tokens,
-                output.provider,
-                output.model,
+                safe_text(&output.provider),
+                safe_text(&output.model),
                 output.execution_id,
                 now
             ],
@@ -2974,6 +3173,7 @@ impl PersistenceService {
             &outcome,
             &super::serial::AcceptanceProvenance {
                 stage_execution_id: Some(&execution.id),
+                sanitization_policy_identity: Some(&preparation.sanitization_policy_identity),
                 expected_overrides: None,
                 language_guard: ArtifactLanguageGuard::HostRendered,
             },
@@ -3000,6 +3200,18 @@ impl PersistenceService {
         receipt_ids: Vec<comp::Uuid>,
         host_findings: Vec<String>,
     ) -> Result<(), PersistenceServiceError> {
+        let policy = crate::sanitization::SanitizationStore::new(self.database_path())
+            .policy_for_project(execution.plan.parent_fence.project_id.as_str())
+            .map_err(|_| {
+                PersistenceServiceError::Validation(
+                    "Context sanitization policy is unavailable.".into(),
+                )
+            })?;
+        if policy.identity != preparation.sanitization_policy_identity {
+            return Err(PersistenceServiceError::Validation(
+                "The sanitization policy changed; the stage requires revalidation.".into(),
+            ));
+        }
         let db = self.connection()?;
         let units = Self::load_units(&db, &execution.id)?;
         let index = PlanIndex::new(&execution.plan);
@@ -3139,6 +3351,7 @@ impl PersistenceService {
             &outcome,
             &super::serial::AcceptanceProvenance {
                 stage_execution_id: Some(&execution.id),
+                sanitization_policy_identity: Some(&preparation.sanitization_policy_identity),
                 expected_overrides: Some(&expected),
                 language_guard: ArtifactLanguageGuard::HostRendered,
             },

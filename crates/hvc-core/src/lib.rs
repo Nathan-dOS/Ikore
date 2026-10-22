@@ -19,6 +19,7 @@ pub mod project_deletion;
 pub mod quota;
 pub mod reports;
 pub mod repository_context;
+pub mod sanitization;
 pub mod secret_redactor;
 pub mod stage_briefs;
 pub mod terminals;

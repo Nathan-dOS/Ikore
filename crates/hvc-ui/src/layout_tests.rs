@@ -252,6 +252,57 @@ fn pulsation_groups_keep_user_choices_when_leaving_and_returning(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn review_clipboard_uses_a_sanitized_derivative_of_the_candidate(cx: &mut TestAppContext) {
+    use hvc_core::persistence_service::{HitlCheckpoint, HitlReviewDocument};
+    let secret = "sk-proj-syntheticabcdefghijklmnop";
+    let original = format!("# Candidate\n\nconst KEY = \"{secret}\";\n");
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |model, cx| {
+        model.pulsations.update(cx, |state, _| {
+            state.pulsations[0].status = PulsationStatus::Checkpoint;
+            let pulse = state.pulsations[0].clone();
+            state.hitl.load_checkpoint(
+                Some(&pulse),
+                Some(HitlCheckpoint {
+                    pulsation_id: pulse.id.clone(),
+                    checkpoint_id: "secret-review".into(),
+                    state_version: 1,
+                }),
+            );
+            let (generation, checkpoint) = state.hitl.begin_documents().unwrap();
+            state.hitl.finish_documents(
+                generation,
+                &checkpoint,
+                Ok(vec![HitlReviewDocument {
+                    artifact_id: "secret-artifact".into(),
+                    name: "Candidate".into(),
+                    kind: "stage_output".into(),
+                    relative_path: Some("src/lib.rs".into()),
+                    content: original.clone(),
+                }]),
+            );
+            state.detail_section = PulsationDetailSection::Review;
+        });
+    });
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Pulsations);
+    click(visual, "review-copy-document");
+    visual.update(|_, cx| {
+        let copied = cx.read_from_clipboard().unwrap().text().unwrap();
+        assert!(!copied.contains(secret));
+        assert!(copied.contains("<REDACTED_SECRET:"));
+    });
+    assert!(original.contains(secret));
+    assert_eq!(
+        model.read_with(visual, |m, cx| m.pulsations.read(cx).hitl.documents[0]
+            .artifact
+            .content
+            .clone()),
+        original
+    );
+}
+
+#[gpui::test]
 fn complete_review_and_workspace_readers_fit_small_and_large_windows(cx: &mut TestAppContext) {
     use hvc_core::persistence_service::{HitlCheckpoint, HitlReviewDocument};
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
@@ -1535,6 +1586,7 @@ fn composed_detail(pulse: &Pulsation) -> hvc_core::orchestration::PulsationCoord
             }
         };
     PulsationCoordinationSnapshot {
+        sanitization: Default::default(),
         description_editable: false,
         context_disposition: None,
         diagnostic: None,
@@ -2121,6 +2173,8 @@ fn with_settings_items(model: &mut AppModel, cx: &mut Context<AppModel>) {
             overrides: vec![],
             cli_observation_trial: None,
             cli_observation_report: None,
+            sanitization_exceptions: vec![],
+            sanitization_summary: Default::default(),
         });
         settings.selected_connection_id = Some("conn-1".into());
         settings.selected_route_id = Some("route-1".into());
@@ -2632,6 +2686,52 @@ fn settings_pickers_open_above_the_modal(cx: &mut TestAppContext) {
 
 /// Search text and screen text come from the same index; every entry must be on its page (in
 /// the list or the drill-in detail it belongs to).
+#[gpui::test]
+fn sanitization_preview_cannot_authorize_another_project_or_path(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| {
+        let mut model = fixture(cx);
+        with_settings_items(&mut model, cx);
+        model
+            .sanitization_path_input
+            .update(cx, |input, cx| input.set_value("tests/fixture.rs", cx));
+        model.settings.update(cx, |settings, _| {
+            settings.sanitization_preview = Some((
+                "another-project".into(),
+                hvc_core::sanitization::SanitizationFilePreview {
+                    relative_path: "tests/fixture.rs".into(),
+                    original_file_sha256: "a".repeat(64),
+                    spans: vec![hvc_core::secret_redactor::RedactionSpan {
+                        start_byte: 10,
+                        end_byte: 30,
+                        detector_id: "known_api_token".into(),
+                        detector_version: 1,
+                        category: "known_api_token".into(),
+                        marker: "<REDACTED_SECRET:KNOWN_API_TOKEN_1>".into(),
+                    }],
+                },
+            ));
+        });
+        model.open_settings(Some(SettingsPage::Composition), cx);
+        model
+    });
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("sanitization-authorize-0").is_none());
+    model.update(visual, |model, cx| {
+        model.settings.update(cx, |settings, _| {
+            settings.sanitization_preview.as_mut().unwrap().0 = "layout-project".into();
+        });
+        model
+            .sanitization_path_input
+            .update(cx, |input, cx| input.set_value("tests/other.rs", cx));
+        cx.notify();
+    });
+    let (_, fresh) = visual.add_window_view(|_, _| ModelHarness(model.clone()));
+    fresh.simulate_resize(size(px(1440.0), px(900.0)));
+    fresh.run_until_parked();
+    assert!(fresh.debug_bounds("sanitization-authorize-0").is_none());
+}
+
 #[gpui::test]
 fn every_settings_search_entry_is_rendered_on_its_page(cx: &mut TestAppContext) {
     use crate::settings_search::{ENTRIES, EntryScope};

@@ -52,9 +52,12 @@ pub struct ChatCommandError {
 
 impl ChatCommandError {
     fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        let message = redact_secrets(&message.into())
+            .map(|result| result.text)
+            .unwrap_or_else(|_| "Chat details unavailable after sanitization.".into());
         Self {
             code: code.into(),
-            message: message.into(),
+            message,
         }
     }
 
@@ -1653,6 +1656,8 @@ struct ToolResult {
     call: NormalizedToolCall,
     content: String,
     is_error: bool,
+    /// Only a repository reader may issue this source-aware projection.
+    prepared_content: Option<crate::secret_redactor::PreparedModelInput>,
 }
 
 #[derive(Debug, Clone)]
@@ -2073,13 +2078,56 @@ impl ChatService {
                     ],
                 )?;
                 let remaining_reads = MAX_TOOL_CALLS.saturating_sub(total_tool_calls);
+                let store = crate::sanitization::SanitizationStore::new(&self.db_path);
+                let policy = store
+                    .policy_for_project(&context.conversation.project_id)
+                    .map_err(|_| {
+                        ChatCommandError::new(
+                            "sanitization_failed",
+                            "Companion policy unavailable.",
+                        )
+                    })?;
+                let (prepared_messages, prepared_exchanges) =
+                    prepare_companion_inputs(&messages, &exchanges, policy.identity()).map_err(
+                        |_| {
+                            ChatCommandError::new(
+                                "sanitization_failed",
+                                "Companion input unavailable after sanitization.",
+                            )
+                        },
+                    )?;
                 let prompt = build_cli_companion_prompt(
-                    &messages,
-                    &exchanges,
+                    &prepared_messages,
+                    &prepared_exchanges,
                     repair,
                     backend,
                     remaining_reads,
                 );
+                let proof =
+                    prepare_cli_companion_input(&prompt, policy.identity()).map_err(|_| {
+                        ChatCommandError::new(
+                            "sanitization_failed",
+                            "Companion input unavailable after sanitization.",
+                        )
+                    })?;
+                store
+                    .record_input(
+                        &context.conversation.project_id,
+                        None,
+                        &model_call_id,
+                        proof.policy_identity(),
+                        proof.redaction_count(),
+                        proof.categories(),
+                        proof.original_bytes(),
+                        0,
+                    )
+                    .map_err(|_| {
+                        ChatCommandError::new(
+                            "sanitization_failed",
+                            "Companion sanitization receipt unavailable.",
+                        )
+                    })?;
+                let prompt = proof.user_prompt().to_owned();
                 let started = Instant::now();
                 let outcome = terminals
                     .execute_companion_round(
@@ -2101,6 +2149,7 @@ impl ChatService {
                             model_profile: context.conversation.model_profile.clone(),
                             model_source: context.conversation.model_source,
                             prompt,
+                            prepared_input: Some(proof),
                             schema: companion_schema_for_backend(backend),
                         },
                         &context.cancellation,
@@ -2284,10 +2333,27 @@ impl ChatService {
         calls: &[NormalizedToolCall],
         emit_events: bool,
     ) -> Result<Vec<ToolResult>, ChatCommandError> {
+        let mut safe_calls = calls.to_vec();
+        for call in &mut safe_calls {
+            crate::llm::adapter::sanitize_json_strings(&mut call.arguments).map_err(|_| {
+                ChatCommandError::new(
+                    "sanitization_failed",
+                    "Tool arguments unavailable after sanitization.",
+                )
+            })?;
+        }
+        let calls = safe_calls.as_slice();
         let mut persisted_ids = HashMap::new();
         for call in calls {
             let row_id = Uuid::new_v4().to_string();
-            let arguments = serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".into());
+            let mut safe_arguments = call.arguments.clone();
+            crate::llm::adapter::sanitize_json_strings(&mut safe_arguments).map_err(|_| {
+                ChatCommandError::new(
+                    "sanitization_failed",
+                    "Tool arguments unavailable after sanitization.",
+                )
+            })?;
+            let arguments = serde_json::to_string(&safe_arguments).unwrap_or_else(|_| "{}".into());
             self.connection()?.execute(
                 "INSERT INTO chat_tool_calls (
                    id, assistant_message_id, model_call_id, round_index, tool_call_id,
@@ -2321,7 +2387,7 @@ impl ChatService {
             }
         }
 
-        let executions = stream::iter(calls.iter().cloned())
+        let mut executions = stream::iter(calls.iter().cloned())
             .map(|call| {
                 let repository = repository.clone();
                 let db_path = self.db_path.clone();
@@ -2337,12 +2403,25 @@ impl ChatService {
                         content: json!({ "error": format!("Internal tool failure: {error}") })
                             .to_string(),
                         is_error: true,
+                        prepared_content: None,
                     })
                 }
             })
             .buffer_unordered(4)
             .collect::<Vec<_>>()
             .await;
+
+        for result in &mut executions {
+            if result.prepared_content.is_none() {
+                result.content = crate::llm::adapter::sanitize_model_text(&result.content)
+                    .map_err(|_| {
+                        ChatCommandError::new(
+                            "sanitization_failed",
+                            "Tool result unavailable after sanitization.",
+                        )
+                    })?;
+            }
+        }
 
         for result in &executions {
             let summary = summarize_tool_result(result);
@@ -2393,6 +2472,12 @@ impl ChatService {
         context: &TurnContext,
         content: &str,
     ) -> Result<(), ChatCommandError> {
+        let content = crate::llm::adapter::sanitize_model_text(content).map_err(|_| {
+            ChatCommandError::new(
+                "sanitization_failed",
+                "Response unavailable after sanitization.",
+            )
+        })?;
         self.replace_message_content(&context.assistant_message_id, "")?;
         let characters: Vec<char> = content.chars().collect();
         for chunk in characters.chunks(96) {
@@ -2431,6 +2516,19 @@ impl ChatService {
         let messages = rows
             .collect::<Result<Vec<_>, _>>()
             .map_err(ChatCommandError::from)?;
+        let messages = messages
+            .into_iter()
+            .map(|mut message| {
+                message.content = crate::llm::adapter::sanitize_model_text(&message.content)
+                    .map_err(|_| {
+                        ChatCommandError::new(
+                            "sanitization_failed",
+                            "History unavailable after sanitization.",
+                        )
+                    })?;
+                Ok(message)
+            })
+            .collect::<Result<Vec<_>, ChatCommandError>>()?;
         let context_window: Option<u64> = connection
             .query_row(
                 "SELECT e.context_window
@@ -2614,44 +2712,90 @@ enum TurnOutcome {
     Failed(ChatCommandError),
 }
 
-fn execute_repository_tool(repository: &RepositoryContext, call: NormalizedToolCall) -> ToolResult {
+fn execute_repository_tool_with_policy(
+    repository: &RepositoryContext,
+    call: NormalizedToolCall,
+    trusted: Option<(
+        &crate::sanitization::SanitizationStore,
+        &crate::sanitization::SanitizationPolicySnapshot,
+    )>,
+) -> ToolResult {
+    let sanitize = |path: &str, content: &str| match trusted {
+        Some((store, policy)) => {
+            let started = Instant::now();
+            let projection = store.sanitize_source_with_policy(policy, path, content)?;
+            let result = projection.result();
+            store.record_input(
+                policy.project_id(),
+                None,
+                &format!("companion-source:{}", Uuid::new_v4()),
+                policy.identity(),
+                result.count,
+                &result.categories,
+                content.len(),
+                started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            )?;
+            Ok(projection)
+        }
+        None => crate::secret_redactor::redact_context(content),
+    };
     let outcome = match call.name.as_str() {
         "list_repository_tree" => {
             serde_json::from_value::<ListRepositoryTreeArgs>(call.arguments.clone())
-                .map_err(|error| format!("Invalid arguments: {error}"))
+                .map_err(|_| "Invalid repository arguments.".to_owned())
                 .and_then(|args| repository.list_tree(args).map_err(|error| error.0))
-                .and_then(|result| {
-                    serde_json::to_string(&result).map_err(|error| error.to_string())
+                .and_then(|result| serde_json::to_value(result).map_err(|error| error.to_string()))
+                .and_then(|mut value| {
+                    crate::llm::adapter::sanitize_json_strings(&mut value)
+                        .map_err(|_| "Sanitization failed.".to_owned())?;
+                    Ok(value.to_string())
                 })
         }
         "search_repository" => {
             serde_json::from_value::<SearchRepositoryArgs>(call.arguments.clone())
-                .map_err(|error| format!("Invalid arguments: {error}"))
-                .and_then(|args| repository.search(args).map_err(|error| error.0))
-                .and_then(|result| {
+                .map_err(|_| "Invalid repository arguments.".to_owned())
+                .and_then(|args| {
+                    repository
+                        .search_with_sanitizer(args, sanitize)
+                        .map_err(|error| error.0)
+                })
+                .and_then(|mut result| {
+                    for item in &mut result.matches {
+                        item.path = redact_secrets(&item.path)?.text;
+                    }
                     serde_json::to_string(&result).map_err(|error| error.to_string())
                 })
         }
         "read_repository_file" => {
             serde_json::from_value::<ReadRepositoryFileArgs>(call.arguments.clone())
-                .map_err(|error| format!("Invalid arguments: {error}"))
-                .and_then(|args| repository.read_file(args).map_err(|error| error.0))
-                .and_then(|result| {
+                .map_err(|_| "Invalid repository arguments.".to_owned())
+                .and_then(|args| {
+                    repository
+                        .read_file_with_sanitizer(args, sanitize)
+                        .map_err(|error| error.0)
+                })
+                .and_then(|mut result| {
+                    result.path = redact_secrets(&result.path)?.text;
                     serde_json::to_string(&result).map_err(|error| error.to_string())
                 })
         }
         _ => Err("Tool is not in the repository read-only allowlist.".into()),
     };
     match outcome {
-        Ok(content) => ToolResult {
-            call,
-            content,
-            is_error: false,
-        },
+        Ok(content) => {
+            // This sealed fragment contains only host metadata and a projection
+            // computed from complete, path-checked files. It cannot authorize
+            // the same text in any other message or tool argument.
+            let identity = trusted.map_or(crate::secret_redactor::SANITIZATION_POLICY_VERSION, |(_, policy)| policy.identity());
+            let ranges = if content.is_empty() { vec![] } else { std::iter::once(0..content.len()).collect::<Vec<_>>() };
+            match crate::secret_redactor::PreparedModelInput::with_authorized_ranges("", &content, identity, &[], &ranges) {
+                Ok(prepared) => ToolResult { call, content, is_error: false, prepared_content: Some(prepared) },
+                Err(_) => ToolResult { call, content: json!({"error":"Repository content unavailable after sanitization."}).to_string(), is_error: true, prepared_content: None },
+            }
+        }
         Err(message) => ToolResult {
-            call,
-            content: json!({ "error": message }).to_string(),
-            is_error: true,
+            call, content: json!({ "error": redact_secrets(&message).map(|r|r.text).unwrap_or_else(|_| "Repository content unavailable.".into()) }).to_string(),
+            is_error: true, prepared_content: None,
         },
     }
 }
@@ -2708,12 +2852,19 @@ fn execute_companion_tool(
 ) -> ToolResult {
     let outcome = match call.name.as_str() {
         "list_repository_tree" | "search_repository" | "read_repository_file" => {
-            let result = execute_repository_tool(repository, call.clone());
-            if result.is_error {
-                Err(result.content)
-            } else {
-                Ok(result.content)
-            }
+            let store = crate::sanitization::SanitizationStore::new(db_path);
+            return match store.policy_for_project(project_id) {
+                Ok(policy) => {
+                    execute_repository_tool_with_policy(repository, call, Some((&store, &policy)))
+                }
+                Err(_) => ToolResult {
+                    call,
+                    content: json!({"error":"Repository policy unavailable after sanitization."})
+                        .to_string(),
+                    is_error: true,
+                    prepared_content: None,
+                },
+            };
         }
         "list_agent_runs" => serde_json::from_value::<ListAgentRunsArgs>(call.arguments.clone())
             .map_err(|error| format!("Invalid arguments: {error}"))
@@ -2746,17 +2897,20 @@ fn execute_companion_tool(
                 call,
                 content,
                 is_error: false,
+                prepared_content: None,
             },
             Err(message) => ToolResult {
                 call,
                 content: json!({ "error": message }).to_string(),
                 is_error: true,
+                prepared_content: None,
             },
         },
         Err(message) => ToolResult {
             call,
             content: json!({ "error": message }).to_string(),
             is_error: true,
+            prepared_content: None,
         },
     }
 }
@@ -2844,6 +2998,7 @@ fn refresh_agent_output_index(connection: &mut Connection, project_id: &str) -> 
         content: String,
         created_at: String,
         updated_at: String,
+        continuation: Option<(String, Option<String>)>,
     }
 
     let mut documents = Vec::<Document>::new();
@@ -2879,6 +3034,7 @@ fn refresh_agent_output_index(connection: &mut Connection, project_id: &str) -> 
                     content: row.get(6)?,
                     created_at: row.get(7)?,
                     updated_at: row.get(8)?,
+                    continuation: None,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -2912,6 +3068,7 @@ fn refresh_agent_output_index(connection: &mut Connection, project_id: &str) -> 
                     content: row.get(4)?,
                     created_at: row.get(5)?,
                     updated_at: row.get(6)?,
+                    continuation: None,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -2924,9 +3081,10 @@ fn refresh_agent_output_index(connection: &mut Connection, project_id: &str) -> 
         let mut statement = connection
             .prepare(
                 "SELECT e.id,e.run_id,e.sequence,COALESCE(r.agent_role,r.free_form_label),
-                        r.backend,r.model,r.status,e.content,e.created_at
+                        r.backend,r.model,r.status,e.content,e.created_at,e.stream
                  FROM terminal_events e JOIN terminal_runs r ON r.id=e.run_id
-                 WHERE r.project_id=?1 AND e.kind IN ('message','tool_result','stdout')",
+                 WHERE r.project_id=?1 AND e.kind IN ('message','tool_result','stdout')
+                 ORDER BY e.run_id,e.sequence",
             )
             .map_err(|error| error.to_string())?;
         let rows = statement
@@ -2952,6 +3110,7 @@ fn refresh_agent_output_index(connection: &mut Connection, project_id: &str) -> 
                     content: row.get(7)?,
                     created_at: row.get(8)?,
                     updated_at: row.get(8)?,
+                    continuation: Some((run_id, row.get(9)?)),
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -2961,6 +3120,56 @@ fn refresh_agent_output_index(connection: &mut Connection, project_id: &str) -> 
         );
     }
 
+    // Older runs may have persisted deltas individually. Reconstruct each
+    // stream before masking, then project the spans back onto its documents.
+    // This preserves stable references without trusting old redaction flags.
+    let mut groups = BTreeMap::<(String, Option<String>), Vec<usize>>::new();
+    for document in &mut documents {
+        if document.source_kind == "agent_run_output" && document.status != "completed" {
+            document.content = crate::secret_redactor::OMITTED_CONTENT.into();
+        }
+    }
+    for (index, document) in documents.iter().enumerate() {
+        if let Some(group) = &document.continuation {
+            groups.entry(group.clone()).or_default().push(index);
+        }
+    }
+    for indices in groups.into_values() {
+        if indices
+            .iter()
+            .any(|index| documents[*index].status != "completed")
+        {
+            for index in indices {
+                documents[index].content = crate::secret_redactor::OMITTED_CONTENT.into();
+            }
+            continue;
+        }
+        let mut complete = String::new();
+        let mut ranges = Vec::new();
+        for index in &indices {
+            let start = complete.len();
+            complete.push_str(&documents[*index].content);
+            ranges.push(start..complete.len());
+            if complete.len() > crate::secret_redactor::MAX_SANITIZATION_BYTES {
+                break;
+            }
+        }
+        if complete.len() > crate::secret_redactor::MAX_SANITIZATION_BYTES {
+            for index in indices {
+                documents[index].content = crate::secret_redactor::OMITTED_CONTENT.into();
+            }
+            continue;
+        }
+        let projection = crate::secret_redactor::redact_context(&complete)?;
+        for (index, range) in indices.into_iter().zip(ranges) {
+            documents[index].content = crate::secret_redactor::render_redacted_range(
+                &complete,
+                &projection.spans,
+                range.start,
+                range.end,
+            )?;
+        }
+    }
     let workspace_path: String = connection
         .query_row(
             "SELECT workspace_path FROM projects WHERE id=?1",
@@ -3276,7 +3485,8 @@ fn sanitize_companion_tool_content(
 fn redact_output_projection(content: &str, workspace_path: &str) -> Result<String, String> {
     static WINDOWS_PATH: OnceLock<Regex> = OnceLock::new();
     static POSIX_PATH: OnceLock<Regex> = OnceLock::new();
-    let mut content = redact_secrets(content)?.text;
+    let mut content = crate::llm::adapter::sanitize_model_text(content)
+        .map_err(|_| "Content unavailable after sanitization.".to_owned())?;
     if !workspace_path.is_empty() {
         content = content.replace(workspace_path, "[WORKSPACE]");
         content = content.replace(&workspace_path.replace('\\', "/"), "[WORKSPACE]");
@@ -3326,15 +3536,38 @@ impl ChatService {
         exchanges: &[ToolExchange],
         usage: &UsageRecorder,
     ) -> Result<ModelResponse, ModelFailure> {
+        let policy = crate::sanitization::SanitizationStore::new(&self.db_path)
+            .policy_for_project(&context.conversation.project_id)
+            .map_err(|_| sanitization_failure())?;
+        let (messages, exchanges) =
+            prepare_companion_inputs(messages, exchanges, policy.identity())?;
         let payload = match profile.protocol {
             ProviderProtocol::OpenaiResponses => {
-                build_openai_responses_payload(model, messages, exchanges)
+                build_openai_responses_payload(model, &messages, &exchanges)
             }
-            ProviderProtocol::OpenaiChat => build_openai_chat_payload(model, messages, exchanges),
+            ProviderProtocol::OpenaiChat => build_openai_chat_payload(model, &messages, &exchanges),
             ProviderProtocol::AnthropicMessages => {
-                build_anthropic_payload(model, messages, exchanges)
+                build_anthropic_payload(model, &messages, &exchanges)
             }
         };
+        let input_bytes = serde_json::to_vec(&payload)
+            .map_err(|_| sanitization_failure())?
+            .len();
+        if input_bytes > crate::secret_redactor::MAX_SANITIZATION_BYTES {
+            return Err(sanitization_failure());
+        }
+        crate::sanitization::SanitizationStore::new(&self.db_path)
+            .record_input(
+                &context.conversation.project_id,
+                None,
+                &format!("companion-api:{}:{}", context.execution_id, Uuid::new_v4()),
+                policy.identity(),
+                0,
+                &[],
+                input_bytes,
+                0,
+            )
+            .map_err(|_| sanitization_failure())?;
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         match profile.auth_style {
@@ -3398,11 +3631,13 @@ impl ChatService {
             })?;
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.map_err(|_| ModelFailure {
-                code: "invalid_response".into(),
-                message: "Could not read the provider's error response.".into(),
-                retryable: false,
-            })?;
+            let body = crate::llm::adapter::bounded_response_text(response)
+                .await
+                .map_err(|_| ModelFailure {
+                    code: "invalid_response".into(),
+                    message: "Could not read the provider's error response.".into(),
+                    retryable: false,
+                })?;
             let value: Value = serde_json::from_str(&body).unwrap_or_else(|_| json!({}));
             usage.observe(&crate::usage::api::parse_usage(profile.protocol, &value));
             let message = provider_error_message(&value);
@@ -3427,28 +3662,31 @@ impl ChatService {
             .unwrap_or_default()
             .to_ascii_lowercase();
         if content_type.contains("application/json") {
-            let body = response
-                .text()
+            let body = crate::llm::adapter::bounded_response_text(response)
                 .await
                 .map_err(|_| invalid_response("Could not read the provider's response."))?;
             let value: Value = serde_json::from_str(&body)
                 .map_err(|_| invalid_response("The provider returned an invalid JSON response."))?;
             usage.observe(&crate::usage::api::parse_usage(profile.protocol, &value));
-            return match profile.protocol {
+            let mut response = match profile.protocol {
                 ProviderProtocol::OpenaiResponses => parse_openai_responses(&value),
                 ProviderProtocol::OpenaiChat => parse_openai_chat(&value),
                 ProviderProtocol::AnthropicMessages => parse_anthropic(&value),
-            };
+            }?;
+            sanitize_model_response(&mut response)?;
+            return Ok(response);
         }
-        self.parse_streaming_response(response, profile.protocol, context, usage)
-            .await
+        let mut response = self
+            .parse_streaming_response(response, profile.protocol, usage)
+            .await?;
+        sanitize_model_response(&mut response)?;
+        Ok(response)
     }
 
     async fn parse_streaming_response(
         &self,
         response: reqwest::Response,
         protocol: ProviderProtocol,
-        context: &TurnContext,
         usage: &UsageRecorder,
     ) -> Result<ModelResponse, ModelFailure> {
         let mut parser = SseParser::new(protocol);
@@ -3457,12 +3695,16 @@ impl ChatService {
         let mut partial_calls = BTreeMap::<usize, PartialToolCall>::new();
         let mut input_tokens = None;
         let mut output_tokens = None;
+        let mut completed = false;
+        let mut received_bytes = 0usize;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|_| ModelFailure {
                 code: "stream_failed".into(),
                 message: "The provider stream was interrupted.".into(),
                 retryable: content.is_empty(),
             })?;
+            crate::llm::adapter::add_stream_bytes(&mut received_bytes, chunk.len())
+                .map_err(|_| sanitization_failure())?;
             let parsed_events = parser.push(&chunk);
             usage.observe(parser.usage());
             let events = parsed_events.map_err(|error| ModelFailure {
@@ -3470,9 +3712,11 @@ impl ChatService {
                 message: error.message,
                 retryable: content.is_empty(),
             })?;
-            self.consume_stream_events(
+            completed |= events
+                .iter()
+                .any(|event| matches!(event, ParsedStreamEvent::Completed));
+            Self::consume_stream_events(
                 events,
-                context,
                 &mut content,
                 &mut partial_calls,
                 &mut input_tokens,
@@ -3486,14 +3730,23 @@ impl ChatService {
             message: error.message,
             retryable: content.is_empty(),
         })?;
-        self.consume_stream_events(
+        completed |= events
+            .iter()
+            .any(|event| matches!(event, ParsedStreamEvent::Completed));
+        Self::consume_stream_events(
             events,
-            context,
             &mut content,
             &mut partial_calls,
             &mut input_tokens,
             &mut output_tokens,
         )?;
+        if !completed {
+            return Err(ModelFailure {
+                code: "stream_failed".into(),
+                message: "The provider stream ended before confirming completion.".into(),
+                retryable: true,
+            });
+        }
         let tool_calls = partial_calls
             .into_values()
             .map(|call| {
@@ -3522,38 +3775,72 @@ impl ChatService {
             tool_calls,
             input_tokens,
             output_tokens,
-            streamed: true,
+            // Text has deliberately not been made observable while incomplete.
+            streamed: false,
         })
     }
 
     fn consume_stream_events(
-        &self,
         events: Vec<ParsedStreamEvent>,
-        context: &TurnContext,
         content: &mut String,
         partial_calls: &mut BTreeMap<usize, PartialToolCall>,
         input_tokens: &mut Option<i64>,
         output_tokens: &mut Option<i64>,
     ) -> Result<(), ModelFailure> {
+        let mut retained_bytes = partial_calls.values().fold(content.len(), |bytes, call| {
+            bytes
+                .saturating_add(call.id.len())
+                .saturating_add(call.name.len())
+                .saturating_add(call.arguments.len())
+        });
+        if partial_calls.len() > MAX_TOOL_CALLS
+            || retained_bytes > crate::secret_redactor::MAX_SANITIZATION_BYTES
+        {
+            return Err(sanitization_failure());
+        }
         for event in events {
             match event {
                 ParsedStreamEvent::Delta(delta) => {
+                    if retained_bytes.saturating_add(delta.len())
+                        > crate::secret_redactor::MAX_SANITIZATION_BYTES
+                    {
+                        return Err(sanitization_failure());
+                    }
+                    retained_bytes += delta.len();
                     content.push_str(&delta);
-                    self.append_message_content(&context.assistant_message_id, &delta)
-                        .map_err(model_persistence_failure)?;
-                    self.emit_turn_event(
-                        ChatEventKind::TokenDelta,
-                        context,
-                        ChatEventDetail::TokenDelta { delta },
-                    )
-                    .map_err(model_persistence_failure)?;
                 }
                 ParsedStreamEvent::ToolCallStarted { index, id, name } => {
+                    let existing = partial_calls.get(&index);
+                    if existing.is_none() && partial_calls.len() >= MAX_TOOL_CALLS {
+                        return Err(sanitization_failure());
+                    }
+                    let added_bytes = additional_fragment_bytes(
+                        existing.map_or("", |call| call.id.as_str()),
+                        &id,
+                    )
+                    .saturating_add(additional_fragment_bytes(
+                        existing.map_or("", |call| call.name.as_str()),
+                        &name,
+                    ));
+                    if retained_bytes.saturating_add(added_bytes)
+                        > crate::secret_redactor::MAX_SANITIZATION_BYTES
+                    {
+                        return Err(sanitization_failure());
+                    }
+                    retained_bytes += added_bytes;
                     let partial = partial_calls.entry(index).or_default();
                     merge_fragment(&mut partial.id, &id);
                     merge_fragment(&mut partial.name, &name);
                 }
                 ParsedStreamEvent::ToolArgumentsDelta { index, delta } => {
+                    if (!partial_calls.contains_key(&index)
+                        && partial_calls.len() >= MAX_TOOL_CALLS)
+                        || retained_bytes.saturating_add(delta.len())
+                            > crate::secret_redactor::MAX_SANITIZATION_BYTES
+                    {
+                        return Err(sanitization_failure());
+                    }
+                    retained_bytes += delta.len();
                     partial_calls
                         .entry(index)
                         .or_default()
@@ -3578,6 +3865,60 @@ impl ChatService {
     }
 }
 
+fn sanitization_failure() -> ModelFailure {
+    ModelFailure {
+        code: "sanitization_failed".into(),
+        message: "Content unavailable after sanitization.".into(),
+        retryable: false,
+    }
+}
+
+fn sanitize_model_response(response: &mut ModelResponse) -> Result<(), ModelFailure> {
+    response.content = crate::llm::adapter::sanitize_model_text(&response.content)
+        .map_err(|_| sanitization_failure())?;
+    for call in &mut response.tool_calls {
+        crate::llm::adapter::sanitize_json_strings(&mut call.arguments)
+            .map_err(|_| sanitization_failure())?;
+    }
+    Ok(())
+}
+
+fn prepare_companion_inputs(
+    messages: &[ProtocolMessage],
+    exchanges: &[ToolExchange],
+    policy_identity: &str,
+) -> Result<(Vec<ProtocolMessage>, Vec<ToolExchange>), ModelFailure> {
+    let mut messages = messages.to_vec();
+    for message in &mut messages {
+        message.content = crate::llm::adapter::sanitize_model_text(&message.content)
+            .map_err(|_| sanitization_failure())?;
+    }
+    let mut exchanges = exchanges.to_vec();
+    for exchange in &mut exchanges {
+        exchange.assistant_content =
+            crate::llm::adapter::sanitize_model_text(&exchange.assistant_content)
+                .map_err(|_| sanitization_failure())?;
+        for call in &mut exchange.calls {
+            crate::llm::adapter::sanitize_json_strings(&mut call.arguments)
+                .map_err(|_| sanitization_failure())?;
+        }
+        for result in &mut exchange.results {
+            if let Some(proof) = &result.prepared_content {
+                proof
+                    .verify_matches("", &result.content)
+                    .map_err(|_| sanitization_failure())?;
+                if proof.policy_identity() != policy_identity {
+                    return Err(sanitization_failure());
+                }
+            } else {
+                result.content = crate::llm::adapter::sanitize_model_text(&result.content)
+                    .map_err(|_| sanitization_failure())?;
+            }
+        }
+    }
+    Ok((messages, exchanges))
+}
+
 #[derive(Default)]
 struct PartialToolCall {
     id: String,
@@ -3586,17 +3927,17 @@ struct PartialToolCall {
 }
 
 fn merge_fragment(target: &mut String, fragment: &str) {
-    if fragment.is_empty() || target == fragment || target.ends_with(fragment) {
+    if additional_fragment_bytes(target, fragment) == 0 {
         return;
     }
     target.push_str(fragment);
 }
 
-fn model_persistence_failure(error: ChatCommandError) -> ModelFailure {
-    ModelFailure {
-        code: error.code,
-        message: error.message,
-        retryable: false,
+fn additional_fragment_bytes(target: &str, fragment: &str) -> usize {
+    if fragment.is_empty() || target == fragment || target.ends_with(fragment) {
+        0
+    } else {
+        fragment.len()
     }
 }
 
@@ -3850,6 +4191,35 @@ fn build_cli_companion_prompt(
         serde_json::to_string(&companion_schema_for_backend(backend))
             .unwrap_or_else(|_| "{}".into()),
         repair_instruction,
+    )
+}
+
+fn prepare_cli_companion_input(
+    prompt: &str,
+    identity: &str,
+) -> Result<crate::secret_redactor::PreparedModelInput, String> {
+    // The only relaxed segment is constructed from already prepared tool
+    // results and arguments. JSON escapes every untrusted newline, so these
+    // host delimiters cannot be forged by a result's text.
+    let prefix = "<tool_exchanges>\n";
+    let start = prompt.rfind(prefix).ok_or("missing_companion_tools")? + prefix.len();
+    let end = prompt
+        .rfind("\n</tool_exchanges>")
+        .ok_or("missing_companion_tools")?;
+    if start > end {
+        return Err("invalid_companion_tools".into());
+    }
+    let ranges = if start == end {
+        vec![]
+    } else {
+        std::iter::once(start..end).collect::<Vec<_>>()
+    };
+    crate::secret_redactor::PreparedModelInput::with_authorized_ranges(
+        "",
+        prompt,
+        identity,
+        &[],
+        &ranges,
     )
 }
 
@@ -4362,11 +4732,13 @@ fn invalid_response(message: &str) -> ModelFailure {
 }
 
 fn provider_error_message(value: &Value) -> String {
-    value
+    let raw = value
         .pointer("/error/message")
         .or_else(|| value.get("message"))
         .and_then(Value::as_str)
-        .unwrap_or("The provider returned an error without a message.")
+        .unwrap_or("The provider returned an error without a message.");
+    crate::llm::adapter::sanitize_model_text(raw)
+        .unwrap_or_else(|_| "Provider details unavailable after sanitization.".into())
         .chars()
         .take(500)
         .collect()
@@ -4388,6 +4760,299 @@ mod tests {
     use super::*;
     use crate::llm::error::LlmError;
     use crate::persistence_service::PersistenceService;
+
+    #[tokio::test]
+    async fn companion_stream_requires_completion_before_any_observable_output() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        #[derive(Default)]
+        struct Events(AtomicUsize);
+        impl ChatEventSink for Events {
+            fn emit(&self, _: &ChatEventEnvelope) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let (_temp, _workspace, prepared_service) = prepare_chat();
+        let events = Arc::new(Events::default());
+        let service = ChatService::new(
+            &prepared_service.db_path,
+            Arc::new(TestCredentials),
+            events.clone(),
+        );
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        for (protocol, delta, terminator) in [
+            (
+                ProviderProtocol::OpenaiChat,
+                "data: {\"choices\":[{\"delta\":{\"content\":\"partial-prefix-sk-proj-syn\"}}]}\n\n",
+                "data: [DONE]\n\n",
+            ),
+            (
+                ProviderProtocol::OpenaiResponses,
+                "event: response.output_text.delta\ndata: {\"delta\":\"partial-prefix-sk-proj-syn\"}\n\n",
+                "event: response.completed\ndata: {}\n\n",
+            ),
+            (
+                ProviderProtocol::AnthropicMessages,
+                "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"partial-prefix-sk-proj-syn\"}}\n\n",
+                "event: message_stop\ndata: {}\n\n",
+            ),
+        ] {
+            for confirmed in [false, true] {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let endpoint = format!("http://{}", listener.local_addr().unwrap());
+                let body = format!("{delta}{}", if confirmed { terminator } else { "" });
+                let server = tokio::spawn(async move {
+                    tokio::time::timeout(Duration::from_secs(5), async move {
+                        let (mut socket, _) = listener.accept().await.unwrap();
+                        let mut request = [0u8;4096];
+                        assert!(socket.read(&mut request).await.unwrap()>0);
+                        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+                    }).await.unwrap();
+                });
+                let usage = UsageRecorder::new(
+                    &service.db_path,
+                    UsageContext {
+                        source_kind: "chat_model_call".into(),
+                        source_id: Uuid::new_v4().to_string(),
+                        pulsation_id: None,
+                        project_id: Some("project-a".into()),
+                        transport: UsageTransport::Api,
+                        provider_id: "fixture".into(),
+                        requested_model: Some("fixture-model".into()),
+                        started_at: now_iso(),
+                    },
+                );
+                let response = client.get(endpoint).send().await.unwrap();
+                let outcome = service
+                    .parse_streaming_response(response, protocol, &usage)
+                    .await;
+                if confirmed {
+                    assert_eq!(outcome.unwrap().content, "partial-prefix-sk-proj-syn");
+                } else {
+                    let error = outcome.unwrap_err();
+                    assert_eq!(error.code, "stream_failed");
+                    assert!(!format!("{error:?}").contains("partial-prefix"));
+                }
+                usage.finish(confirmed).unwrap();
+                server.await.unwrap();
+                assert_eq!(events.0.load(Ordering::SeqCst), 0);
+                let messages: i64 = service
+                    .connection()
+                    .unwrap()
+                    .query_row("SELECT COUNT(*) FROM chat_messages", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(messages, 0);
+            }
+        }
+    }
+
+    fn consume_companion_test_events(
+        events: Vec<ParsedStreamEvent>,
+        content: &mut String,
+        calls: &mut BTreeMap<usize, PartialToolCall>,
+    ) -> Result<(), ModelFailure> {
+        ChatService::consume_stream_events(events, content, calls, &mut None, &mut None)
+    }
+
+    #[test]
+    fn companion_stream_limits_tool_call_cardinality_before_insertion() {
+        let mut content = String::new();
+        let mut calls = BTreeMap::new();
+        consume_companion_test_events(
+            (0..MAX_TOOL_CALLS)
+                .map(|index| ParsedStreamEvent::ToolArgumentsDelta {
+                    index: index + 100,
+                    delta: "{}".into(),
+                })
+                .collect(),
+            &mut content,
+            &mut calls,
+        )
+        .unwrap();
+        for event in [
+            ParsedStreamEvent::ToolCallStarted {
+                index: 999,
+                id: "new-call".into(),
+                name: "read_repository_file".into(),
+            },
+            ParsedStreamEvent::ToolArgumentsDelta {
+                index: 999,
+                delta: "{}".into(),
+            },
+        ] {
+            let error =
+                consume_companion_test_events(vec![event], &mut content, &mut calls).unwrap_err();
+            assert_eq!(error.code, "sanitization_failed");
+            assert!(!error.retryable);
+            assert_eq!(calls.len(), MAX_TOOL_CALLS);
+            assert!(!calls.contains_key(&999));
+        }
+    }
+
+    #[test]
+    fn companion_stream_bounds_combined_text_and_tool_fields_before_growth() {
+        let mut content = "x".repeat(crate::secret_redactor::MAX_SANITIZATION_BYTES - 4);
+        let mut calls = BTreeMap::from([(
+            0,
+            PartialToolCall {
+                id: "a".into(),
+                name: "b".into(),
+                arguments: "c".into(),
+            },
+        )]);
+        consume_companion_test_events(
+            vec![ParsedStreamEvent::ToolArgumentsDelta {
+                index: 0,
+                delta: "d".into(),
+            }],
+            &mut content,
+            &mut calls,
+        )
+        .unwrap();
+        for event in [
+            ParsedStreamEvent::Delta("e".into()),
+            ParsedStreamEvent::ToolArgumentsDelta {
+                index: 0,
+                delta: "e".into(),
+            },
+            ParsedStreamEvent::ToolCallStarted {
+                index: 0,
+                id: "a1".into(),
+                name: "b1".into(),
+            },
+        ] {
+            let error =
+                consume_companion_test_events(vec![event], &mut content, &mut calls).unwrap_err();
+            assert_eq!(error.code, "sanitization_failed");
+            assert!(!error.retryable);
+            assert_eq!(
+                content.len(),
+                crate::secret_redactor::MAX_SANITIZATION_BYTES - 4
+            );
+            assert_eq!(calls[&0].id, "a");
+            assert_eq!(calls[&0].name, "b");
+            assert_eq!(calls[&0].arguments, "cd");
+        }
+        // Retransmitted IDs/names do not consume the byte budget twice.
+        consume_companion_test_events(
+            vec![ParsedStreamEvent::ToolCallStarted {
+                index: 0,
+                id: "a".into(),
+                name: "b".into(),
+            }],
+            &mut content,
+            &mut calls,
+        )
+        .unwrap();
+        calls.clear();
+        content.push_str("xxx");
+        for event in [
+            ParsedStreamEvent::ToolCallStarted {
+                index: 1,
+                id: "ab".into(),
+                name: String::new(),
+            },
+            ParsedStreamEvent::ToolArgumentsDelta {
+                index: 1,
+                delta: "ab".into(),
+            },
+        ] {
+            assert!(consume_companion_test_events(vec![event], &mut content, &mut calls).is_err());
+            assert!(calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn companion_exception_stays_in_its_file_result_across_api_and_cli() {
+        let (_temp, workspace, service) = prepare_chat();
+        let secret = "sk-proj-syntheticabcdefghijklmnop";
+        std::fs::write(
+            workspace.join("fixture.rs"),
+            format!("const FIXTURE: &str = \"{secret}\";\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("other.rs"),
+            format!("const FIXTURE: &str = \"{secret}\";\n"),
+        )
+        .unwrap();
+        let store = crate::sanitization::SanitizationStore::new(&service.db_path);
+        let preview = store.preview_file("project-a", "fixture.rs").unwrap();
+        let span = &preview.spans[0];
+        store
+            .create_exception(&crate::sanitization::CreateSecretRedactionException {
+                project_id: "project-a".into(),
+                relative_path: "fixture.rs".into(),
+                detector_id: span.detector_id.clone(),
+                detector_version: span.detector_version,
+                original_file_sha256: preview.original_file_sha256.clone(),
+                start_byte: span.start_byte,
+                end_byte: span.end_byte,
+                reason: "Synthetic fixture for a sanitizer test.".into(),
+            })
+            .unwrap();
+        let repo = RepositoryContext::new(&workspace).unwrap();
+        let read = |path: &str| {
+            execute_companion_tool(
+                &service.db_path,
+                "project-a",
+                &repo,
+                NormalizedToolCall {
+                    id: path.into(),
+                    name: "read_repository_file".into(),
+                    arguments: json!({"path":path}),
+                },
+            )
+        };
+        let allowed = read("fixture.rs");
+        let blocked = read("other.rs");
+        assert!(allowed.content.contains(secret));
+        assert!(!blocked.content.contains(secret));
+        let messages = vec![ProtocolMessage {
+            role: "user".into(),
+            content: secret.into(),
+        }];
+        let exchanges = vec![ToolExchange {
+            assistant_content: String::new(),
+            calls: vec![],
+            results: vec![allowed, blocked],
+        }];
+        let identity = store.policy_for_project("project-a").unwrap().identity;
+        let (messages, exchanges) =
+            prepare_companion_inputs(&messages, &exchanges, &identity).unwrap();
+        assert!(!messages[0].content.contains(secret));
+        let api = build_openai_chat_payload("fixture-model", &messages, &exchanges);
+        assert_eq!(api.to_string().matches(secret).count(), 1);
+        let prompt =
+            build_cli_companion_prompt(&messages, &exchanges, false, CliBackend::Claude, 4);
+        let proof = prepare_cli_companion_input(&prompt, &identity).unwrap();
+        assert_eq!(proof.user_prompt().matches(secret).count(), 1);
+        proof.verify().unwrap();
+        assert!(prepare_companion_inputs(&messages, &exchanges, "revoked-policy").is_err());
+    }
+
+    #[test]
+    fn companion_reprojects_legacy_terminal_secret_across_event_boundaries() {
+        let (_temp, _workspace, service) = prepare_chat();
+        let mut db = service.connection().unwrap();
+        let now = now_iso();
+        db.execute("INSERT INTO terminal_runs(id,project_id,agent_role,origin,execution_mode,backend,status,created_at,updated_at) VALUES('legacy-split','project-a','backend_agent','manual','cli_process','codex','completed',?1,?1)", [&now]).unwrap();
+        let secret = "sk-proj-syntheticabcdefghijklmnop";
+        for (sequence, fragment) in [(1, &secret[..10]), (2, &secret[10..])] {
+            db.execute("INSERT INTO terminal_events(id,run_id,sequence,kind,stream,content,created_at) VALUES(?1,'legacy-split',?2,'message','stdout',?3,?4)", params![format!("legacy-event-{sequence}"),sequence,fragment,now]).unwrap();
+        }
+        refresh_agent_output_index(&mut db, "project-a").unwrap();
+        let projected:String=db.query_row("SELECT group_concat(content,'') FROM companion_agent_output_documents WHERE project_id='project-a' AND source_kind='terminal_event'",[],|row|row.get(0)).unwrap();
+        assert!(!projected.contains(secret));
+        assert!(!projected.contains(&secret[10..]));
+        let original:String=db.query_row("SELECT group_concat(content,'') FROM terminal_events WHERE run_id='legacy-split' ORDER BY sequence",[],|row|row.get(0)).unwrap();
+        assert_eq!(original, secret);
+    }
 
     #[derive(Default)]
     struct TestCredentials;

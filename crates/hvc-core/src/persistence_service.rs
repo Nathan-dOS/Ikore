@@ -45,6 +45,19 @@ use crate::terminals::{
     CliBackend, CliObservationReport, CliObservationTrial, TerminalRepository, TerminalService,
 };
 
+fn sanitized_observation_text(text: &str) -> String {
+    crate::llm::adapter::sanitize_model_text(text)
+        .unwrap_or_else(|_| crate::secret_redactor::OMITTED_CONTENT.into())
+}
+
+fn sanitized_observation_json(value: &Value) -> Value {
+    let mut value = value.clone();
+    if crate::llm::adapter::sanitize_json_strings(&mut value).is_err() {
+        return Value::String(crate::secret_redactor::OMITTED_CONTENT.into());
+    }
+    value
+}
+
 #[path = "orchestration/anticipation.rs"]
 mod anticipation;
 #[path = "orchestration/brownfield_context.rs"]
@@ -3297,8 +3310,8 @@ impl PersistenceService {
         let (raw_output, validation_error) = attempt.unwrap_or((None, None));
         Ok(StageFailureDetail {
             checkpoint_id: checkpoint_id.to_string(),
-            raw_output,
-            validation_error,
+            raw_output: raw_output.map(|text| sanitized_observation_text(&text)),
+            validation_error: validation_error.map(|text| sanitized_observation_text(&text)),
         })
     }
 
@@ -4093,9 +4106,19 @@ impl PersistenceService {
         &self,
         request: GetAgentApiExecutionSnapshotRequest,
     ) -> Result<PathBuf, PersistenceServiceError> {
-        let snapshot = self
-            .get_agent_api_execution_snapshot(request.clone())?
-            .snapshot;
+        // Authorize the target before reading its private original evidence.
+        if !self.llm_repository.execution_belongs_to_target(
+            &request.project_id,
+            &request.target,
+            &request.execution_id,
+        )? {
+            return Err(PersistenceServiceError::NotFound(
+                "API execution was not found for this project and agent.".into(),
+            ));
+        }
+        let (snapshot, original_evidence_sha256) = self
+            .llm_repository
+            .execution_snapshot_with_evidence(&request.execution_id)?;
         let workspace_path: String = self
             .connection()?
             .query_row(
@@ -4112,18 +4135,26 @@ impl PersistenceService {
             .join("api-exports");
         fs::create_dir_all(&directory)?;
         let destination = directory.join(format!("api-{}.json", request.execution_id));
-        let payload = serde_json::to_vec_pretty(&serde_json::json!({
+        let mut export = serde_json::json!({
             "schemaVersion": 1,
             "redacted": true,
             "projectId": request.project_id,
             "target": request.target,
             "snapshot": snapshot,
-        }))
-        .map_err(|error| {
-            PersistenceServiceError::Runtime(format!(
-                "Failed to serialize redacted API execution: {error}"
-            ))
-        })?;
+        });
+        crate::llm::adapter::sanitize_json_strings(&mut export)?;
+        let canonical = crate::llm::repository::canonical_evidence_json(&export)?;
+        export["sanitization"] = serde_json::json!({
+            "policy": crate::secret_redactor::SANITIZATION_POLICY_VERSION,
+            "originalEvidenceSha256": original_evidence_sha256,
+            "sanitizedContentSha256": crate::secret_redactor::text_sha256(&canonical),
+            "hashScope": "UTF-8 compact JSON with recursively sorted object keys and arrays in original order; original: selected raw execution evidence; sanitized: export envelope excluding sanitization metadata and final file bytes",
+        });
+        let payload = serde_json::to_vec_pretty(&export)
+            .map_err(|_| PersistenceServiceError::Llm(crate::llm::adapter::sanitization_error()))?;
+        if payload.len() > crate::secret_redactor::MAX_SANITIZATION_BYTES {
+            return Err(crate::llm::adapter::sanitization_error().into());
+        }
         let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
         std::io::Write::write_all(&mut temporary, &payload)?;
         temporary
@@ -4421,7 +4452,17 @@ impl PersistenceService {
 
         let mut runs = Vec::new();
         for row in rows {
-            runs.push(row?);
+            let mut run = row?;
+            run.raw_output = run.raw_output.map(|text| sanitized_observation_text(&text));
+            run.structured_output = run
+                .structured_output
+                .map(|value| sanitized_observation_json(&value));
+            run.last_error = run.last_error.map(|text| sanitized_observation_text(&text));
+            run.validation_error = run
+                .validation_error
+                .map(|text| sanitized_observation_text(&text));
+            run.tool_trace = run.tool_trace.map(|text| sanitized_observation_text(&text));
+            runs.push(run);
         }
 
         Ok(ListAgentRunsResponse { runs })
@@ -4772,13 +4813,13 @@ impl PersistenceService {
                 agent_run_id,
                 job.id.as_str(),
                 job.pulsation_id.as_deref(),
-                execution.request_payload.to_string(),
-                execution.response_payload.to_string(),
-                execution.raw_output.as_str(),
-                execution.structured_output.to_string(),
-                execution.schema_json.to_string(),
-                validation_error,
-                execution.tool_trace.to_string(),
+                sanitized_observation_json(&execution.request_payload).to_string(),
+                sanitized_observation_json(&execution.response_payload).to_string(),
+                sanitized_observation_text(&execution.raw_output),
+                sanitized_observation_json(&execution.structured_output).to_string(),
+                sanitized_observation_json(&execution.schema_json).to_string(),
+                validation_error.map(sanitized_observation_text),
+                sanitized_observation_json(&execution.tool_trace).to_string(),
                 now
             ],
         )?;
@@ -4825,10 +4866,10 @@ impl PersistenceService {
                 agent_run_id,
                 job.id.as_str(),
                 job.pulsation_id.as_deref(),
-                output.request_payload.to_string(),
-                output.response_payload.to_string(),
-                output.raw_output.as_str(),
-                validation_error,
+                sanitized_observation_json(&output.request_payload).to_string(),
+                sanitized_observation_json(&output.response_payload).to_string(),
+                sanitized_observation_text(&output.raw_output),
+                sanitized_observation_text(validation_error),
                 now
             ],
         )?;
@@ -5957,7 +5998,12 @@ impl PersistenceService {
                     error: row.get(1)?,
                 })
             })
-            .optional()?;
+            .optional()?
+            .map(|mut attempt| {
+                attempt.raw_output = sanitized_observation_text(&attempt.raw_output);
+                attempt.error = sanitized_observation_text(&attempt.error);
+                attempt
+            });
         let execution_input = StageExecutionInput {
             anticipatory,
             handoff: Some(handoff),
@@ -7860,6 +7906,49 @@ mod tests {
     }
 
     #[test]
+    fn observational_agent_outputs_are_sanitized_without_mutating_machine_artifacts() {
+        let fixture = serial::tests::Fixture::new(PulsationStage::Code);
+        let secret = "sk-proj-syntheticabcdefghijklmnop";
+        let mut output = fixture.output("advance", Some("src/fixture.rs"), secret);
+        output.request_payload = Value::Object(serde_json::Map::from_iter([(
+            secret.to_owned(),
+            Value::String("source metadata".into()),
+        )]));
+        output.response_payload =
+            serde_json::json!({"nested":serde_json::json!({"key":secret}).to_string()});
+        let db = fixture.service.connection().unwrap();
+        PersistenceService::persist_agent_run_output(
+            &db,
+            &fixture.run,
+            &fixture.job,
+            &output,
+            Some(secret),
+        )
+        .unwrap();
+        let observed:String=db.query_row("SELECT request_payload||response_payload||raw_output||structured_output||validation_error FROM agent_run_outputs WHERE agent_run_id=?1",[&fixture.run],|row|row.get(0)).unwrap();
+        assert!(!observed.contains(secret));
+        assert_eq!(output.artifacts[0].content, secret);
+        // Simulate a database from before this policy, without rewriting it.
+        db.execute("UPDATE agent_run_outputs SET raw_output=?1,structured_output=?2,tool_trace=?2 WHERE agent_run_id=?3",params![secret,serde_json::json!({"legacy":secret}).to_string(),fixture.run]).unwrap();
+        let listed = fixture
+            .service
+            .list_agent_runs(ListAgentRunsRequest {
+                pulsation_id: Some(fixture.pulse.id.clone()),
+                project_id: Some(fixture.pulse.project_id.clone()),
+            })
+            .unwrap();
+        assert!(!serde_json::to_string(&listed).unwrap().contains(secret));
+        let original: String = db
+            .query_row(
+                "SELECT raw_output FROM agent_run_outputs WHERE agent_run_id=?1",
+                [&fixture.run],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(original, secret);
+    }
+
+    #[test]
     fn phase5_agent_run_persists_structured_output() {
         let root = tempfile::tempdir().expect("workspace tempdir should be created");
         fs::write(
@@ -9006,7 +9095,72 @@ mod tests {
     }
 
     #[test]
-    fn finishing_cancelled_stream_preserves_visible_partial_output() {
+    fn api_export_distinguishes_original_evidence_from_the_sanitized_envelope() {
+        let (workspace, service) = prepare_service();
+        let project = service
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace
+                    .path()
+                    .join("api-export")
+                    .to_string_lossy()
+                    .into_owned(),
+                name: Some("API export".into()),
+            })
+            .unwrap()
+            .project;
+        let original = r#"{"password":"synthetic multi word secret","note":"legacy"}"#;
+        let db = service.connection().unwrap();
+        db.execute(
+            "INSERT INTO llm_route_executions(id,generation_id,project_id,route_id,agent_role,stage,strategy,mode,status,decision_json,visible_output,visible_output_complete,started_at)
+             VALUES ('export-execution','generation',?1,'legacy-default','backend_agent','Code','priority','on','completed','{}',?2,1,?3)",
+            params![project.id, original, Utc::now().to_rfc3339()],
+        ).unwrap();
+        let (_, evidence_sha) = service
+            .llm_repository
+            .execution_snapshot_with_evidence("export-execution")
+            .unwrap();
+        let request = GetAgentApiExecutionSnapshotRequest {
+            project_id: project.id.clone(),
+            target: crate::llm::AgentExecutionTarget::canonical(
+                crate::llm::AgentRole::BackendAgent,
+            ),
+            execution_id: "export-execution".into(),
+        };
+        let path = service.export_agent_api_execution(request.clone()).unwrap();
+        let bytes = fs::read_to_string(&path).unwrap();
+        assert!(!bytes.contains("synthetic multi word secret"));
+        assert!(bytes.contains("<REDACTED_SECRET:"));
+        let mut export: serde_json::Value = serde_json::from_str(&bytes).unwrap();
+        let metadata = export
+            .as_object_mut()
+            .unwrap()
+            .remove("sanitization")
+            .unwrap();
+        assert_eq!(metadata["originalEvidenceSha256"], evidence_sha);
+        assert_eq!(
+            metadata["sanitizedContentSha256"],
+            crate::secret_redactor::text_sha256(
+                &crate::llm::repository::canonical_evidence_json(&export).unwrap()
+            )
+        );
+        assert_ne!(
+            metadata["originalEvidenceSha256"],
+            metadata["sanitizedContentSha256"]
+        );
+        service.export_agent_api_execution(request).unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), bytes);
+        let persisted: String = db
+            .query_row(
+                "SELECT visible_output FROM llm_route_executions WHERE id='export-execution'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted, original);
+    }
+
+    #[test]
+    fn finishing_cancelled_stream_withholds_unqualified_partial_output() {
         let (workspace, service) = prepare_service();
         let project = service
             .create_project(CreateProjectRequest {
@@ -9041,7 +9195,7 @@ mod tests {
             .execution_snapshot("cancelled-execution")
             .unwrap();
         assert_eq!(snapshot.status, "cancelled");
-        assert_eq!(snapshot.visible_output.as_deref(), Some("partial"));
+        assert!(snapshot.visible_output.is_none());
         assert!(!snapshot.visible_output_complete);
     }
 
@@ -9266,7 +9420,7 @@ mod tests {
     }
 
     #[test]
-    fn router_never_falls_back_after_a_visible_stream_delta() {
+    fn router_withholds_incomplete_stream_and_can_try_the_next_target() {
         use crate::llm::{
             AgentRole, ExecutionId, GenerationId, LlmErrorKind, LlmGateway, LlmRequest,
             ResponseFormat,
@@ -9391,17 +9545,17 @@ mod tests {
                     .llm_router
                     .execute(&request, &CancellationToken::new()),
             )
-            .expect_err("visible partial must stop the route");
-        assert_eq!(error.kind, LlmErrorKind::Timeout);
-        assert_eq!(error.visible_partial.as_deref(), Some("partial"));
+            .expect_err("both targets are unavailable");
+        assert_eq!(error.kind, LlmErrorKind::AllTargetsExhausted);
+        assert!(error.visible_partial.is_none());
         let snapshot = service
             .llm_repository
             .execution_snapshot(request.execution_id.as_str())
             .unwrap();
-        assert_eq!(snapshot.status, "stream_failed");
-        assert_eq!(snapshot.visible_output.as_deref(), Some("partial"));
+        assert_eq!(snapshot.status, "failed");
+        assert!(snapshot.visible_output.is_none());
         assert!(!snapshot.visible_output_complete);
-        assert_eq!(snapshot.attempts.len(), 1);
+        assert_eq!(snapshot.attempts.len(), 2);
         stream_server.join().unwrap();
     }
 

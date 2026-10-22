@@ -324,6 +324,8 @@ pub struct AppModel {
     pub(crate) last_revision_feedback: Option<String>,
     pub(crate) preparation_threshold_input: Entity<NativeTextInput>,
     pub(crate) composition_override_model_input: Entity<NativeTextInput>,
+    pub(crate) sanitization_path_input: Entity<NativeTextInput>,
+    pub(crate) sanitization_reason_input: Entity<NativeTextInput>,
     pub(crate) context_limit_input: Entity<NativeTextInput>,
     preparation_scope: Option<(String, u64, Option<String>)>,
     pub(crate) learning_graph_decisions:
@@ -601,6 +603,10 @@ impl AppModel {
             cx.new(|cx| NativeTextInput::new("Threshold from 0 to 100", cx));
         let composition_override_model_input =
             cx.new(|cx| NativeTextInput::new("Model id (empty = inherit from the stage)", cx));
+        let sanitization_path_input =
+            cx.new(|cx| NativeTextInput::new("Repository path, e.g. tests/fixtures/client.rs", cx));
+        let sanitization_reason_input =
+            cx.new(|cx| NativeTextInput::new("Why is this occurrence a synthetic fixture?", cx));
         let context_limit_input =
             cx.new(|cx| NativeTextInput::new("Context budget: 2,000 to 80,000 characters", cx));
         let vault_search_input = cx.new(|cx| NativeTextInput::new("Text or regex", cx));
@@ -718,6 +724,8 @@ impl AppModel {
             cx.observe(&settings_connection_secret_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_route_name_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_project_delete_input, |_, _, cx| cx.notify()),
+            cx.observe(&sanitization_path_input, |_, _, cx| cx.notify()),
+            cx.observe(&sanitization_reason_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_embedding_model_input, |_, _, cx| cx.notify()),
             cx.observe(&chat_draft_input, |_, _, cx| cx.notify()),
             cx.subscribe(
@@ -787,6 +795,8 @@ impl AppModel {
             last_revision_feedback: None,
             preparation_threshold_input,
             composition_override_model_input,
+            sanitization_path_input,
+            sanitization_reason_input,
             context_limit_input,
             specification_answer_inputs: Vec::new(),
             preparation_scope: None,
@@ -9854,6 +9864,7 @@ mod tests {
     ) -> hvc_core::orchestration::PulsationCoordinationSnapshot {
         use hvc_core::orchestration::*;
         PulsationCoordinationSnapshot {
+            sanitization: Default::default(),
             description_editable: !with_questions,
             context_disposition: None,
             diagnostic: None,

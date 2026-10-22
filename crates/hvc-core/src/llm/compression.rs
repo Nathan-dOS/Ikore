@@ -74,6 +74,8 @@ pub fn preview_compression(request: CompressionPreviewRequest) -> CompressionPre
     let original = request.content;
     let original_bytes = original.len();
     let hash = sha256(original.as_bytes());
+    // Compression may fail open; sanitization may never fall back to raw text.
+    let original = redact(&original);
 
     let (candidate, filter_name, result) = if original_bytes > MAX_COMPRESSION_INPUT_BYTES {
         (original.clone(), None, "input_too_large".to_string())
@@ -188,10 +190,9 @@ fn compress_vault_prose(input: &str) -> String {
 }
 
 pub fn redact(input: &str) -> String {
-    let bearer = Regex::new(r"(?i)bearer\s+[A-Za-z0-9._\-]+").expect("valid bearer regex");
-    let keys = Regex::new(r"(?i)(api[_ -]?key[=: ]+)\S+").expect("valid api key regex");
-    let redacted = bearer.replace_all(input, "Bearer [REDACTED]");
-    keys.replace_all(&redacted, "$1[REDACTED]").to_string()
+    crate::secret_redactor::redact_secrets(input)
+        .map(|result| result.text)
+        .unwrap_or_else(|_| "[content unavailable after sanitization]".into())
 }
 
 fn sha256(input: &[u8]) -> String {

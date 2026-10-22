@@ -485,7 +485,9 @@ impl PersistenceService {
             raw: String,
             limit: usize,
         ) {
-            let text = raw.chars().take(limit).collect::<String>();
+            let sanitized = crate::llm::adapter::sanitize_model_text(&raw)
+                .unwrap_or_else(|_| "[content unavailable after sanitization]".into());
+            let text = sanitized.chars().take(limit).collect::<String>();
             if text.chars().count() < raw.chars().count() {
                 input.omitted += 1;
             }

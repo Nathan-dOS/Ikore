@@ -1082,9 +1082,12 @@ impl SqliteLlmRepository {
         output_tokens: Option<i64>,
         cost: Option<f64>,
     ) -> Result<(), LlmError> {
+        let provider_code = provider_code
+            .map(super::adapter::sanitize_model_text)
+            .transpose()?;
         self.connection()?.execute(
             "UPDATE llm_attempts SET outcome=?1,error_kind=?2,http_status=?3,provider_code=?4,latency_ms=?5,input_tokens=?6,output_tokens=?7,estimated_cost_usd=?8,finished_at=?9 WHERE id=?10",
-            params![outcome,error_kind,http_status,provider_code,latency_ms,input_tokens,output_tokens,cost,Utc::now().to_rfc3339(),id]
+            params![outcome,error_kind,http_status,provider_code.as_deref(),latency_ms,input_tokens,output_tokens,cost,Utc::now().to_rfc3339(),id]
         ).map_err(db_error)?;
         Ok(())
     }
@@ -1140,17 +1143,49 @@ impl SqliteLlmRepository {
         visible_output: Option<&str>,
         complete: bool,
     ) -> Result<(), LlmError> {
+        let visible_output = visible_output
+            .map(super::adapter::sanitize_model_text)
+            .transpose()?;
         self.connection()?.execute(
-            "UPDATE llm_route_executions SET status=?1,next_eligible_at=?2,visible_output=COALESCE(?3,visible_output),visible_output_complete=?4,finished_at=?5 WHERE id=?6",
-            params![status,next_eligible_at,visible_output,complete,Utc::now().to_rfc3339(),id]
+            "UPDATE llm_route_executions SET status=?1,next_eligible_at=?2,visible_output=CASE WHEN ?4=1 THEN ?3 ELSE NULL END,visible_output_complete=?4,finished_at=?5 WHERE id=?6",
+            params![status,next_eligible_at,if complete { visible_output.as_deref() } else { None },complete,Utc::now().to_rfc3339(),id]
         ).map_err(db_error)?;
         Ok(())
     }
 
-    pub fn update_visible_output(&self, id: &str, visible_output: &str) -> Result<(), LlmError> {
+    /// One final logical output per execution. Repeated writes replace the
+    /// same evidence rather than multiplying counters across retries/views.
+    pub fn record_output_redaction(
+        &self,
+        id: &str,
+        count: u64,
+        categories: &[String],
+    ) -> Result<(), LlmError> {
+        let categories = categories
+            .iter()
+            .map(|category| super::adapter::sanitize_model_text(category))
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+        let categories =
+            serde_json::to_string(&categories).map_err(|_| super::adapter::sanitization_error())?;
+        let changed = self.connection()?.execute(
+            "UPDATE llm_route_executions SET output_redaction_count=?2,output_redaction_categories_json=?3 WHERE id=?1 AND status='completed' AND visible_output_complete=1",
+            params![id,count.min(i64::MAX as u64) as i64,categories],
+        ).map_err(db_error)?;
+        if changed != 1 {
+            return Err(LlmError::new(
+                LlmErrorKind::InvalidRequest,
+                "Output sanitization evidence requires a complete execution.",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Compatibility entry point: incomplete fragments cannot be qualified
+    /// independently, so they are deliberately withheld from durable history.
+    pub fn update_visible_output(&self, id: &str, _visible_output: &str) -> Result<(), LlmError> {
         self.connection()?.execute(
-            "UPDATE llm_route_executions SET visible_output=?1,visible_output_complete=0 WHERE id=?2",
-            params![visible_output, id],
+            "UPDATE llm_route_executions SET visible_output=NULL,visible_output_complete=0 WHERE id=?1",
+            params![id],
         ).map_err(db_error)?;
         Ok(())
     }
@@ -1458,6 +1493,16 @@ impl SqliteLlmRepository {
     }
 
     pub fn execution_snapshot(&self, id: &str) -> Result<LlmExecutionSnapshot, LlmError> {
+        self.execution_snapshot_with_evidence(id)
+            .map(|(view, _)| view)
+    }
+
+    /// Hash the complete selected evidence before producing its observable view.
+    /// This hash never identifies an isolated matched value.
+    pub(crate) fn execution_snapshot_with_evidence(
+        &self,
+        id: &str,
+    ) -> Result<(LlmExecutionSnapshot, String), LlmError> {
         let connection = self.connection()?;
         let base=connection.query_row(
             "SELECT generation_id,route_id,status,decision_json,next_eligible_at,visible_output,visible_output_complete FROM llm_route_executions WHERE id=?1",params![id],
@@ -1465,18 +1510,45 @@ impl SqliteLlmRepository {
         ).optional().map_err(db_error)?.ok_or_else(||LlmError::new(LlmErrorKind::InvalidRequest,"LLM execution not found."))?;
         let mut statement=connection.prepare("SELECT ordinal,connection_id,provider_id,model_id,outcome,error_kind,http_status,latency_ms,input_tokens,output_tokens,estimated_cost_usd,started_at,finished_at FROM llm_attempts WHERE execution_id=?1 ORDER BY ordinal").map_err(db_error)?;
         let rows=statement.query_map(params![id],|row|Ok(json!({"ordinal":row.get::<_,u32>(0)?,"connectionId":row.get::<_,String>(1)?,"providerId":row.get::<_,String>(2)?,"modelId":row.get::<_,String>(3)?,"outcome":row.get::<_,String>(4)?,"errorKind":row.get::<_,Option<String>>(5)?,"httpStatus":row.get::<_,Option<u16>>(6)?,"latencyMs":row.get::<_,Option<u64>>(7)?,"inputTokens":row.get::<_,Option<i64>>(8)?,"outputTokens":row.get::<_,Option<i64>>(9)?,"estimatedCostUsd":row.get::<_,Option<f64>>(10)?,"startedAt":row.get::<_,String>(11)?,"finishedAt":row.get::<_,Option<String>>(12)?}))).map_err(db_error)?;
-        let attempts = rows.collect::<Result<Vec<_>, _>>().map_err(db_error)?;
-        Ok(LlmExecutionSnapshot {
-            execution_id: id.to_string(),
-            generation_id: base.0,
-            route_id: base.1,
-            status: base.2,
-            decision: serde_json::from_str(&base.3).unwrap_or(Value::Null),
-            next_eligible_at: base.4,
-            visible_output: base.5,
-            visible_output_complete: base.6,
-            attempts,
-        })
+        let mut attempts = rows.collect::<Result<Vec<_>, _>>().map_err(db_error)?;
+        let evidence = json!({
+            "executionId": id,
+            "generationId": base.0,
+            "routeId": base.1,
+            "status": base.2,
+            "decisionJson": base.3,
+            "nextEligibleAt": base.4,
+            "visibleOutput": base.5,
+            "visibleOutputComplete": base.6,
+            "attempts": attempts,
+        });
+        let evidence = canonical_evidence_json(&evidence)?;
+        let original_evidence_sha256 = crate::secret_redactor::text_sha256(&evidence);
+        for attempt in &mut attempts {
+            super::adapter::sanitize_json_strings(attempt)?;
+        }
+        let mut decision = serde_json::from_str(&base.3).unwrap_or(Value::Null);
+        super::adapter::sanitize_json_strings(&mut decision)?;
+        Ok((
+            LlmExecutionSnapshot {
+                execution_id: id.to_string(),
+                generation_id: base.0,
+                route_id: base.1,
+                status: base.2,
+                decision,
+                next_eligible_at: base.4,
+                visible_output: if base.6 {
+                    base.5
+                        .map(|text| super::adapter::sanitize_model_text(&text))
+                        .transpose()?
+                } else {
+                    None
+                },
+                visible_output_complete: base.6,
+                attempts,
+            },
+            original_evidence_sha256,
+        ))
     }
 
     pub fn routing_metrics(&self) -> Result<Vec<LlmRoutingMetric>, LlmError> {
@@ -1643,7 +1715,18 @@ impl SqliteLlmRepository {
                 })
             })
             .map_err(db_error)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(db_error)
+        let mut items = rows.collect::<Result<Vec<_>, _>>().map_err(db_error)?;
+        for item in &mut items {
+            item.visible_output = if item.visible_output_complete {
+                item.visible_output
+                    .take()
+                    .map(|text| super::adapter::sanitize_model_text(&text))
+                    .transpose()?
+            } else {
+                None
+            };
+        }
+        Ok(items)
     }
 
     pub fn execution_belongs_to_target(
@@ -1949,4 +2032,31 @@ pub fn endpoint_origin(endpoint: &str) -> String {
             )
         })
         .unwrap_or_else(|| endpoint.to_string())
+}
+
+/// Stable envelope hashing regardless of serde_json's preserve_order feature.
+pub(crate) fn canonical_evidence_json(value: &Value) -> Result<String, LlmError> {
+    fn sorted(value: Value) -> Value {
+        match value {
+            Value::Object(fields) => {
+                let ordered = fields
+                    .into_iter()
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                Value::Object(
+                    ordered
+                        .into_iter()
+                        .map(|(key, value)| (key, sorted(value)))
+                        .collect(),
+                )
+            }
+            Value::Array(values) => Value::Array(values.into_iter().map(sorted).collect()),
+            value => value,
+        }
+    }
+    let text = serde_json::to_string(&sorted(value.clone()))
+        .map_err(|_| super::adapter::sanitization_error())?;
+    if text.len() > crate::secret_redactor::MAX_SANITIZATION_BYTES {
+        return Err(super::adapter::sanitization_error());
+    }
+    Ok(text)
 }

@@ -22,7 +22,11 @@ use uuid::Uuid;
 use crate::agent_timeout::{AgentTimeoutPolicy, ProgressWatchdog, TimeoutReason};
 use crate::llm::{AgentRole, LlmRequest, ResponseFormat};
 use crate::repository_context::RepositoryContext;
-use crate::secret_redactor::redact_secrets;
+use crate::sanitization::{SanitizationPolicySnapshot, SanitizationStore};
+use crate::secret_redactor::{
+    PreparedModelInput, RedactionResult, SANITIZATION_POLICY_VERSION, redact_context,
+    redact_secrets,
+};
 
 mod adapters;
 mod codex_model_provenance;
@@ -174,7 +178,7 @@ const MAX_MODEL_CHARS: usize = 200;
 const MAX_CUSTOM_ARGS: usize = 64;
 const MAX_CUSTOM_ARG_CHARS: usize = 1_024;
 const MAX_EVENT_CHARS: usize = 64 * 1_024;
-const MAX_PENDING_STREAM_BYTES: usize = 256 * 1_024;
+const MAX_PENDING_STREAM_BYTES: usize = MAX_RUN_OUTPUT_BYTES;
 const MAX_RUN_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 /// How much of the CLI prompt is kept on the agent run. Without it the stored
 /// request is only the transport mode, so a rejected generation cannot be
@@ -2186,6 +2190,7 @@ impl TerminalRepository {
         session_id: &str,
     ) -> Result<TerminalRun, TerminalError> {
         let session_id = required(session_id, "sessionId")?;
+        validate_public_cli_identity(session_id)?;
         if session_id.len() > 256 {
             return Err(TerminalError::Validation(
                 "the CLI session identifier exceeds the limit".into(),
@@ -2218,6 +2223,7 @@ impl TerminalRepository {
         model: &str,
     ) -> Result<TerminalRun, TerminalError> {
         let model = required(model, "observedModel")?;
+        validate_public_cli_identity(model)?;
         if model.len() > MAX_MODEL_CHARS || model.chars().any(char::is_control) {
             return Err(TerminalError::Validation(
                 "observed model ID is invalid".into(),
@@ -2248,6 +2254,9 @@ impl TerminalRepository {
             ("parentInvocationId", parent_invocation_id, 256),
             ("agentId", agent_id, 256),
         ] {
+            if let Some(value) = value {
+                validate_public_cli_identity(value)?;
+            }
             if value.is_some_and(|value| {
                 value.trim().is_empty()
                     || value.chars().count() > max_chars
@@ -2372,6 +2381,24 @@ impl TerminalRepository {
         stream: Option<&str>,
         content: &str,
     ) -> Result<TerminalEvent, TerminalError> {
+        // Scan the complete bounded value before display truncation. In particular a
+        // private-key footer must not be discarded before the scanner sees it.
+        if content.len() > MAX_RUN_OUTPUT_BYTES {
+            return Err(TerminalError::OutputLimit);
+        }
+        let sanitized = sanitize_terminal_text_bounded(content.as_bytes(), MAX_RUN_OUTPUT_BYTES);
+        let redacted = redact_secrets(&sanitized).map_err(TerminalError::Redaction)?;
+        self.append_redacted_event(run_id, sequence, kind, stream, redacted)
+    }
+
+    fn append_redacted_event(
+        &self,
+        run_id: &str,
+        sequence: u64,
+        kind: TerminalEventKind,
+        stream: Option<&str>,
+        redacted: RedactionResult,
+    ) -> Result<TerminalEvent, TerminalError> {
         if sequence == 0 {
             return Err(TerminalError::Validation(
                 "sequence must be greater than zero".into(),
@@ -2380,15 +2407,13 @@ impl TerminalRepository {
         if !matches!(stream, None | Some("stdout") | Some("stderr")) {
             return Err(TerminalError::Validation("invalid stream".into()));
         }
-        let sanitized = sanitize_terminal_text(content.as_bytes());
-        let redacted = redact_secrets(&sanitized).map_err(TerminalError::Redaction)?;
         let event = TerminalEvent {
             id: Uuid::new_v4().to_string(),
             run_id: required(run_id, "runId")?.to_string(),
             sequence,
             kind,
             stream: stream.map(str::to_owned),
-            content: redacted.text,
+            content: sanitize_terminal_text(redacted.text.as_bytes()),
             redaction_count: redacted.count,
             redaction_categories: redacted.categories,
             created_at: Utc::now().to_rfc3339(),
@@ -2438,42 +2463,26 @@ impl TerminalRepository {
         after_sequence: u64,
         limit: usize,
     ) -> Result<Vec<TerminalEvent>, TerminalError> {
+        Ok(self
+            .redacted_run_events(run_id)?
+            .into_iter()
+            .filter(|event| event.sequence > after_sequence)
+            .take(limit.clamp(1, 500))
+            .collect())
+    }
+
+    fn redacted_run_events(&self, run_id: &str) -> Result<Vec<TerminalEvent>, TerminalError> {
         let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT id,run_id,sequence,kind,stream,content,created_at,
-                    redaction_count,redaction_categories_json FROM terminal_events
-             WHERE run_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3",
+        let mut events = read_run_history_events(&connection, run_id)?;
+        let known_policy: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM secret_sanitization_receipts receipt
+             JOIN terminal_runs run ON run.id=?1 AND receipt.project_id=run.project_id
+             WHERE receipt.call_id=run.id OR receipt.call_id=run.llm_execution_id)",
+            [run_id],
+            |row| row.get(0),
         )?;
-        let rows = statement.query_map(
-            params![
-                required(run_id, "runId")?,
-                after_sequence,
-                limit.clamp(1, 500)
-            ],
-            |row| {
-                let kind: String = row.get(3)?;
-                let categories: String = row.get(8)?;
-                Ok(TerminalEvent {
-                    id: row.get(0)?,
-                    run_id: row.get(1)?,
-                    sequence: row.get(2)?,
-                    kind: TerminalEventKind::parse(&kind).ok_or_else(|| invalid_column(3, kind))?,
-                    stream: row.get(4)?,
-                    content: row.get(5)?,
-                    redaction_count: row.get(7)?,
-                    redaction_categories: serde_json::from_str(&categories).map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            8,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })?,
-                    created_at: row.get(6)?,
-                })
-            },
-        )?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(TerminalError::from)
+        sanitize_history_events(&mut events, known_policy)?;
+        Ok(events)
     }
 
     pub fn clear_history(
@@ -2617,36 +2626,95 @@ impl TerminalRepository {
         run_id: &str,
     ) -> Result<PathBuf, TerminalError> {
         let project_id = required(project_id, "projectId")?;
-        let run = self.get_run(run_id)?;
+        let run_id = required(run_id, "runId")?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        // Freeze the selected original evidence before deriving either hash or
+        // projection. Diagnostic fields normally redacted by map_run must be
+        // restored only in this private, in-memory envelope.
+        let run = transaction.query_row(
+            "SELECT id,project_id,agent_role,origin,execution_mode,backend,model,native_session_id,
+                    pulsation_id,job_id,agent_run_id,llm_execution_id,status,exit_code,error_code,
+                    error_message,created_at,started_at,finished_at,updated_at,deadline_at,
+                    termination_reason,output_bytes,event_count,workspace_snapshot_hash,
+                    launch_identity_sha256,detected_cli_version,adapter_contract_version,
+                    slot_kind,free_form_slot_id,slot_id,parent_run_id,continuation_reason,
+                    session_fingerprint,requested_model_profile,model_source,observed_model,observation_trial_id
+             FROM terminal_runs WHERE id=?1",
+            [run_id],
+            |row| {
+                let mut run = map_run(row)?;
+                run.error_message = row.get(15)?;
+                run.termination_reason = row.get(21)?;
+                run.detected_cli_version = row.get(26)?;
+                run.continuation_reason = row.get(32)?;
+                Ok(run)
+            },
+        ).optional().map_err(|_| TerminalError::Redaction(
+            "Terminal export evidence could not be read safely.".into(),
+        ))?.ok_or_else(|| TerminalError::NotFound("run".into()))?;
         if run.project_id != project_id {
             return Err(TerminalError::Validation(
                 "the run belongs to another project".into(),
             ));
         }
-        let mut events = Vec::new();
-        let mut after_sequence = 0;
-        loop {
-            let page = self.list_events(run_id, after_sequence, 500)?;
-            let Some(last) = page.last() else {
-                break;
-            };
-            after_sequence = last.sequence;
-            events.extend(page);
-            if events.len() >= MAX_RUN_EVENTS {
-                break;
+        let mut events = read_run_history_events(&transaction, run_id).map_err(|error| {
+            if matches!(error, TerminalError::OutputLimit) {
+                error
+            } else {
+                TerminalError::Redaction(
+                    "Terminal export evidence could not be read safely.".into(),
+                )
             }
-        }
-        let workspace = self.project_workspace(project_id)?;
-        let directory = workspace.join(".hard-vibe-code").join("terminal-exports");
-        fs::create_dir_all(&directory)?;
-        let file_name = format!("terminal-{}.json", required(run_id, "runId")?);
-        let destination = directory.join(file_name);
-        let payload = serde_json::to_vec_pretty(&serde_json::json!({
+        })?;
+        let known_policy: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM secret_sanitization_receipts receipt
+             JOIN terminal_runs run ON run.id=?1 AND receipt.project_id=run.project_id
+             WHERE receipt.call_id=run.id OR receipt.call_id=run.llm_execution_id)",
+            [run_id],
+            |row| row.get(0),
+        )?;
+        transaction.commit()?;
+        let mut projection = serde_json::json!({
             "schemaVersion": 1,
             "redacted": true,
             "run": run,
-            "events": events,
-        }))?;
+            "events": &events,
+        });
+        canonicalize_terminal_export(&mut projection);
+        let original_evidence_sha256 = format!(
+            "{:x}",
+            Sha256::digest(terminal_export_bytes(
+                &projection,
+                false,
+                MAX_RUN_OUTPUT_BYTES
+            )?)
+        );
+        sanitize_history_events(&mut events, known_policy)?;
+        projection["events"] = serde_json::to_value(events)?;
+        redact_json_strings(&mut projection)?;
+        canonicalize_terminal_export(&mut projection);
+        let sanitized_content_sha256 = format!(
+            "{:x}",
+            Sha256::digest(terminal_export_bytes(
+                &projection,
+                false,
+                MAX_RUN_OUTPUT_BYTES
+            )?)
+        );
+        projection["sanitization"] = serde_json::json!({
+            "policy": SANITIZATION_POLICY_VERSION,
+            "originalEvidenceSha256": original_evidence_sha256,
+            "sanitizedContentSha256": sanitized_content_sha256,
+            "hashScope": "complete schemaVersion/redacted/run/events envelope before sanitization metadata; original: selected original run fields and ordered events; sanitized: derived safe content",
+            "hashFormat": "SHA-256 of compact UTF-8 JSON; recursively sorted object keys; arrays in original order; no trailing newline",
+        });
+        canonicalize_terminal_export(&mut projection);
+        let payload = terminal_export_bytes(&projection, true, MAX_RUN_OUTPUT_BYTES)?;
+        let workspace = self.project_workspace(project_id)?;
+        let directory = workspace.join(".hard-vibe-code").join("terminal-exports");
+        fs::create_dir_all(&directory)?;
+        let destination = directory.join(format!("terminal-{run_id}.json"));
         let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
         std::io::Write::write_all(&mut temporary, &payload)?;
         temporary
@@ -3022,24 +3090,33 @@ fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<TerminalRun> {
         status: TerminalRunStatus::parse(&status).ok_or_else(|| invalid_column(12, status))?,
         exit_code: row.get(13)?,
         error_code: row.get(14)?,
-        error_message: row.get(15)?,
+        error_message: redacted_run_text(row, 15)?,
         created_at: row.get(16)?,
         started_at: row.get(17)?,
         finished_at: row.get(18)?,
         updated_at: row.get(19)?,
         deadline_at: row.get(20)?,
-        termination_reason: row.get(21)?,
+        termination_reason: redacted_run_text(row, 21)?,
         output_bytes: row.get(22)?,
         event_count: row.get(23)?,
         workspace_snapshot_hash: row.get(24)?,
         launch_identity_sha256: row.get(25)?,
-        detected_cli_version: row.get(26)?,
+        detected_cli_version: redacted_run_text(row, 26)?,
         adapter_contract_version: row.get(27)?,
         parent_run_id: row.get(31)?,
-        continuation_reason: row.get(32)?,
+        continuation_reason: redacted_run_text(row, 32)?,
         session_fingerprint: row.get(33)?,
         observation_trial_id: row.get(37)?,
     })
+}
+
+fn redacted_run_text(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<String>> {
+    let text: Option<String> = row.get(index)?;
+    Ok(text.map(|text| {
+        redact_secrets(&text)
+            .map(|result| result.text)
+            .unwrap_or_else(|_| "[Diagnostic omitted: sanitization failed.]".into())
+    }))
 }
 
 fn map_cli_observation_trial(row: &rusqlite::Row<'_>) -> rusqlite::Result<CliObservationTrial> {
@@ -4062,11 +4139,35 @@ pub struct CliProcessSpec {
 }
 
 pub fn build_process_spec(request: CliInvocationRequest) -> Result<CliProcessSpec, TerminalError> {
+    let mut request = request;
+    request.prompt = redact_context(&request.prompt)
+        .map_err(TerminalError::Redaction)?
+        .text;
     adapters::build_process_spec(request)
+}
+
+fn verified_cli_input(
+    system: &str,
+    user: &str,
+    prepared: Option<&PreparedModelInput>,
+) -> Result<PreparedModelInput, TerminalError> {
+    match prepared {
+        Some(prepared) => {
+            prepared
+                .verify_matches(system, user)
+                .map_err(TerminalError::Redaction)?;
+            Ok(prepared.clone())
+        }
+        None => PreparedModelInput::new(system, user).map_err(TerminalError::Redaction),
+    }
 }
 
 pub fn sanitize_terminal_text(bytes: &[u8]) -> String {
     sanitize_terminal_text_bounded(bytes, MAX_EVENT_CHARS)
+}
+
+fn sanitize_cli_frame_text(bytes: &[u8]) -> String {
+    sanitize_terminal_text_bounded(bytes, MAX_RUN_OUTPUT_BYTES)
 }
 
 pub fn sanitize_terminal_text_bounded(bytes: &[u8], max_chars: usize) -> String {
@@ -4181,7 +4282,7 @@ pub struct ResumeManualRunRequest {
     pub prompt: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CliCompletion {
     pub terminal_run_id: String,
     pub backend: CliBackend,
@@ -4189,6 +4290,17 @@ pub struct CliCompletion {
     pub raw_output: String,
     pub request_payload: Value,
     pub response_payload: Value,
+}
+
+impl std::fmt::Debug for CliCompletion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CliCompletion")
+            .field("terminal_run_id", &self.terminal_run_id)
+            .field("backend", &self.backend)
+            .field("operational_output_bytes", &self.raw_output.len())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -4200,6 +4312,7 @@ pub struct CompanionCliRoundRequest {
     pub model_profile: Option<String>,
     pub model_source: CliModelSelectionSource,
     pub prompt: String,
+    pub prepared_input: Option<PreparedModelInput>,
     pub schema: Value,
 }
 
@@ -4215,7 +4328,6 @@ pub struct CompanionCliRoundOutput {
     pub redaction_count: u64,
 }
 
-#[derive(Debug)]
 struct CliProcessOutcome {
     success: bool,
     exit_code: Option<i32>,
@@ -4223,6 +4335,17 @@ struct CliProcessOutcome {
     termination: ProcessTermination,
     /// The provider's stop reason for the final turn, when it reported one.
     finish_reason: Option<String>,
+}
+
+impl std::fmt::Debug for CliProcessOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CliProcessOutcome")
+            .field("success", &self.success)
+            .field("exit_code", &self.exit_code)
+            .field("operational_output_bytes", &self.raw_output.len())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4255,7 +4378,7 @@ enum ProcessStreamItem {
     },
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct ProcessEventSummary {
     max_queue_delay_ms: u128,
     max_persist_ms: u128,
@@ -4268,6 +4391,21 @@ struct ProcessEventSummary {
     model_generation_count: u64,
     verified_model_generation_count: u64,
     model_observation_count: u64,
+}
+
+impl std::fmt::Debug for ProcessEventSummary {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProcessEventSummary")
+            .field("operational_output_bytes", &self.raw_output.len())
+            .field("diagnostic_bytes", &self.last_stderr.len())
+            .field("model_generation_count", &self.model_generation_count)
+            .field(
+                "verified_model_generation_count",
+                &self.verified_model_generation_count,
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -4327,6 +4465,27 @@ pub struct TerminalService {
 }
 
 impl TerminalService {
+    fn record_prepared_cli_input(
+        &self,
+        project: &str,
+        pulse: Option<&str>,
+        call_id: &str,
+        prepared: &PreparedModelInput,
+    ) -> Result<(), TerminalError> {
+        prepared.verify().map_err(TerminalError::Redaction)?;
+        SanitizationStore::new(&self.repository.db_path)
+            .record_input(
+                project,
+                pulse,
+                call_id,
+                prepared.policy_identity(),
+                prepared.redaction_count(),
+                prepared.categories(),
+                prepared.original_bytes(),
+                0,
+            )
+            .map_err(TerminalError::Redaction)
+    }
     pub fn new(
         db_path: impl Into<PathBuf>,
         runtime: Handle,
@@ -4851,16 +5010,21 @@ impl TerminalService {
             None
         };
         let native_schema = matches!(request.backend, CliBackend::Codex | CliBackend::Claude);
-        let mut prompt = request.prompt;
+        let prepared = verified_cli_input("", &request.prompt, request.prepared_input.as_ref())?;
+        let mut prompt = prepared.user_prompt().to_owned();
         if !native_schema {
             prompt.push_str(
                 "\n\nReturn only one JSON object that satisfies this control envelope schema. Do not wrap it in Markdown:\n",
             );
-            prompt.push_str(&serde_json::to_string(&request.schema)?);
+            prompt.push_str(
+                &redact_context(&serde_json::to_string(&request.schema)?)
+                    .map_err(TerminalError::Redaction)?
+                    .text,
+            );
         }
         let requested_model = request.model.clone();
         let requested_profile = request.model_profile.clone();
-        let mut spec = build_process_spec(CliInvocationRequest {
+        let mut spec = adapters::build_process_spec(CliInvocationRequest {
             executable,
             backend: request.backend,
             model: request.model,
@@ -4873,6 +5037,12 @@ impl TerminalService {
             resume_session_id: None,
         })?;
         let hardening_guard = harden_spec(request.backend, Hardening::Companion, &mut spec)?;
+        self.record_prepared_cli_input(
+            &request.project_id,
+            request.usage_context.pulsation_id.as_deref(),
+            &request.usage_context.source_id,
+            &prepared,
+        )?;
         validate_companion_launch_selection(
             &spec,
             request.backend,
@@ -5073,7 +5243,9 @@ impl TerminalService {
         self: &Arc<Self>,
         request: StartManualRunRequest,
     ) -> Result<TerminalRun, TerminalError> {
-        let prompt = required(&request.prompt, "prompt")?.to_string();
+        let prepared_prompt = PreparedModelInput::new("", required(&request.prompt, "prompt")?)
+            .map_err(TerminalError::Redaction)?;
+        let prompt = prepared_prompt.user_prompt().to_owned();
         if self
             .repository
             .has_active_automatic_run(&request.project_id, request.agent_role)?
@@ -5138,6 +5310,12 @@ impl TerminalService {
         let run = self
             .repository
             .set_adapter_metadata(&run.id, detected_version.as_deref())?;
+        self.record_prepared_cli_input(
+            &run.project_id,
+            run.pulsation_id.as_deref(),
+            &run.id,
+            &prepared_prompt,
+        )?;
         let cancellation = CancellationToken::new();
         self.active
             .lock()
@@ -5157,7 +5335,9 @@ impl TerminalService {
         self: &Arc<Self>,
         request: StartFreeFormRunRequest,
     ) -> Result<TerminalRun, TerminalError> {
-        let prompt = required(&request.prompt, "prompt")?.to_string();
+        let prepared_prompt = PreparedModelInput::new("", required(&request.prompt, "prompt")?)
+            .map_err(TerminalError::Redaction)?;
+        let prompt = prepared_prompt.user_prompt().to_owned();
         if cli_mode_disabled() {
             return Err(TerminalError::Validation(
                 "CLI Mode is disabled by the local kill switch".into(),
@@ -5220,6 +5400,12 @@ impl TerminalService {
         let run = self
             .repository
             .set_adapter_metadata(&run.id, detected_version.as_deref())?;
+        self.record_prepared_cli_input(
+            &run.project_id,
+            run.pulsation_id.as_deref(),
+            &run.id,
+            &prepared_prompt,
+        )?;
         let cancellation = CancellationToken::new();
         self.active
             .lock()
@@ -5239,7 +5425,9 @@ impl TerminalService {
         self: &Arc<Self>,
         request: ResumeManualRunRequest,
     ) -> Result<TerminalRun, TerminalError> {
-        let prompt = required(&request.prompt, "prompt")?.to_string();
+        let prepared_prompt = PreparedModelInput::new("", required(&request.prompt, "prompt")?)
+            .map_err(TerminalError::Redaction)?;
+        let prompt = prepared_prompt.user_prompt().to_owned();
         if cli_mode_disabled() {
             return Err(TerminalError::Validation(
                 "CLI Mode is disabled by the local kill switch".into(),
@@ -5370,6 +5558,12 @@ impl TerminalService {
         let run = self
             .repository
             .set_adapter_metadata(&run.id, detected_version.as_deref())?;
+        self.record_prepared_cli_input(
+            &run.project_id,
+            run.pulsation_id.as_deref(),
+            &run.id,
+            &prepared_prompt,
+        )?;
         let cancellation = CancellationToken::new();
         self.active
             .lock()
@@ -5618,9 +5812,15 @@ impl TerminalService {
         } else {
             None
         };
+        let prepared = verified_cli_input(
+            &request.system_prompt,
+            &request.user_prompt,
+            request.dispatch.prepared_input.as_ref(),
+        )?;
         let mut prompt = format!(
             "<system>\n{}\n</system>\n<user>\n{}\n</user>",
-            request.system_prompt, request.user_prompt
+            prepared.system_prompt(),
+            prepared.user_prompt()
         );
         if matches!(
             config.backend,
@@ -5628,7 +5828,11 @@ impl TerminalService {
         ) && let Some(schema) = schema.as_ref()
         {
             prompt.push_str("\nReturn only valid JSON that satisfies this schema. Follow the request language contract; generated artifacts must be English:\n");
-            prompt.push_str(&serde_json::to_string(schema)?);
+            prompt.push_str(
+                &redact_context(&serde_json::to_string(schema)?)
+                    .map_err(TerminalError::Redaction)?
+                    .text,
+            );
         }
         // Discovery receives only host-selected context, with the Companion's tool restrictions.
         let discovery_directory = feature_discovery.then(tempfile::tempdir).transpose()?;
@@ -5639,7 +5843,9 @@ impl TerminalService {
         let recorded_prompt =
             crate::agent_runtime::clip_text(&prompt, CLI_REQUEST_PROMPT_MAX_CHARS);
         let recorded_prompt_chars = prompt.chars().count();
-        let mut spec = build_process_spec(CliInvocationRequest {
+        // The proof was verified above. Re-scanning this projection without its
+        // source provenance would discard trusted, content-bound exceptions.
+        let mut spec = adapters::build_process_spec(CliInvocationRequest {
             executable,
             backend: config.backend,
             model: config.model.clone(),
@@ -5736,6 +5942,12 @@ impl TerminalService {
         let run = self
             .repository
             .set_adapter_metadata(&run.id, detected_version.as_deref())?;
+        self.record_prepared_cli_input(
+            &run.project_id,
+            run.pulsation_id.as_deref(),
+            run.llm_execution_id.as_deref().unwrap_or(&run.id),
+            &prepared,
+        )?;
         let local_cancellation = CancellationToken::new();
         self.active
             .lock()
@@ -5911,9 +6123,19 @@ impl TerminalService {
             return Err(TerminalError::Timeout);
         }
         let backend = spec_backend(run);
+        let sanitization_db_path = self.repository.db_path.clone();
+        let sanitization_run = run.clone();
         let (safe_workspace, secured_launch) = tokio::task::spawn_blocking(move || {
+            let store = SanitizationStore::new(&sanitization_db_path);
+            let policy = store
+                .policy_for_project(&sanitization_run.project_id)
+                .map_err(TerminalError::Redaction)?;
+            validate_cli_input_policy(&sanitization_db_path, &sanitization_run, &policy)?;
             Ok::<_, TerminalError>((
-                prepare_safe_cli_workspace(&workspace)?,
+                prepare_safe_cli_workspace_with_policy(
+                    &workspace,
+                    Some((&store, &policy, &sanitization_run)),
+                )?,
                 secure_launch_spec(spec, backend)?,
             ))
         })
@@ -6079,7 +6301,8 @@ impl TerminalService {
                 .min(timeout_policy.max_timeout_ms);
         }
         let watchdog = deadline.map(|_| ProgressWatchdog::new(timeout_policy));
-        let coordinator_task = tokio::spawn(coordinate_process_events(
+        let output_completion = Arc::new(Mutex::new(None));
+        let coordinator_task = tokio::spawn(coordinate_process_events_with_completion(
             self.repository.clone(),
             self.event_sink.clone(),
             running,
@@ -6091,6 +6314,7 @@ impl TerminalService {
                 .clone()
                 .unwrap_or_else(|| ProgressWatchdog::new(AgentTimeoutPolicy::manual())),
             output_ceiling,
+            Some(Arc::clone(&output_completion)),
         ));
         let stdout_task = tokio::spawn(read_process_stream(
             "stdout",
@@ -6108,7 +6332,6 @@ impl TerminalService {
             spec_backend(run),
             Arc::clone(&read_clock),
         ));
-        drop(stream_sender);
         let (status, termination) = if let Some(watchdog) = watchdog.as_ref() {
             tokio::select! {
                 status=child.wait()=>(status?,ProcessTermination::Exited),
@@ -6166,6 +6389,11 @@ impl TerminalService {
         stderr_task.await.map_err(|error| {
             TerminalError::Process(format!("leitor stderr interrompido: {error}"))
         })?;
+        *output_completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(termination == ProcessTermination::Exited && status.success());
+        drop(stream_sender);
         let process_events = coordinator_task.await.map_err(|error| {
             TerminalError::Process(format!("coordenador de eventos interrompido: {error}"))
         })??;
@@ -6398,6 +6626,7 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
 ) {
     let mut buffer = [0u8; 8192];
     let mut pending = Vec::new();
+    let mut received_bytes = 0usize;
     loop {
         let read = match reader.read(&mut buffer).await {
             Ok(value) => value,
@@ -6427,6 +6656,17 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
             }
             break;
         }
+        received_bytes = received_bytes.saturating_add(read);
+        if received_bytes > MAX_RUN_OUTPUT_BYTES {
+            let _ = sender
+                .send(ProcessStreamItem::ReadError {
+                    stream,
+                    message: "CLI output exceeded the safe complete-stream limit".into(),
+                    received_at: Instant::now(),
+                })
+                .await;
+            return;
+        }
         read_clock.record_read();
         if let Some(watchdog) = watchdog.as_ref() {
             watchdog.record_activity();
@@ -6449,22 +6689,15 @@ async fn read_process_stream<R: AsyncRead + Unpin>(
                 return;
             }
         }
-        while pending.len() > MAX_PENDING_STREAM_BYTES {
-            let frame = pending.drain(..MAX_EVENT_CHARS).collect::<Vec<_>>();
-            if let Some(watchdog) = watchdog.as_ref() {
-                observe_received_frame(watchdog, backend, stream, &frame);
-            }
-            if sender
-                .send(ProcessStreamItem::Frame {
+        if pending.len() > MAX_PENDING_STREAM_BYTES {
+            let _ = sender
+                .send(ProcessStreamItem::ReadError {
                     stream,
-                    bytes: frame,
+                    message: "CLI frame exceeded the safe complete-frame limit".into(),
                     received_at: Instant::now(),
                 })
-                .await
-                .is_err()
-            {
-                return;
-            }
+                .await;
+            return;
         }
     }
 }
@@ -6511,7 +6744,60 @@ fn observe_received_frame(
     }
 }
 
+#[cfg(test)]
 async fn coordinate_process_events(
+    repository: TerminalRepository,
+    event_sink: Arc<dyn TerminalEventSink>,
+    run: TerminalRun,
+    backend: CliBackend,
+    receiver: mpsc::Receiver<ProcessStreamItem>,
+    abort_token: CancellationToken,
+    abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
+    watchdog: ProgressWatchdog,
+    output_ceiling: Option<u64>,
+) -> Result<ProcessEventSummary, TerminalError> {
+    coordinate_process_events_with_completion(
+        repository,
+        event_sink,
+        run,
+        backend,
+        receiver,
+        abort_token,
+        abort_reason,
+        watchdog,
+        output_ceiling,
+        None,
+    )
+    .await
+}
+
+#[cfg(test)]
+fn coordinate_process_events_blocking(
+    repository: TerminalRepository,
+    event_sink: Arc<dyn TerminalEventSink>,
+    run: TerminalRun,
+    backend: CliBackend,
+    receiver: mpsc::Receiver<ProcessStreamItem>,
+    abort_token: CancellationToken,
+    abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
+    codex_sessions_root: Option<PathBuf>,
+    output_ceiling: Option<u64>,
+) -> Result<ProcessEventSummary, TerminalError> {
+    coordinate_process_events_blocking_inner(
+        repository,
+        event_sink,
+        run,
+        backend,
+        receiver,
+        abort_token,
+        abort_reason,
+        codex_sessions_root,
+        output_ceiling,
+        None,
+    )
+}
+
+async fn coordinate_process_events_with_completion(
     repository: TerminalRepository,
     event_sink: Arc<dyn TerminalEventSink>,
     run: TerminalRun,
@@ -6521,11 +6807,12 @@ async fn coordinate_process_events(
     abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
     _watchdog: ProgressWatchdog,
     output_ceiling: Option<u64>,
+    output_completion: Option<Arc<Mutex<Option<bool>>>>,
 ) -> Result<ProcessEventSummary, TerminalError> {
     let failure_token = abort_token.clone();
     let failure_reason = abort_reason.clone();
     let result = tokio::task::spawn_blocking(move || {
-        coordinate_process_events_blocking(
+        coordinate_process_events_blocking_inner(
             repository,
             event_sink,
             run,
@@ -6535,6 +6822,7 @@ async fn coordinate_process_events(
             abort_reason,
             None,
             output_ceiling,
+            output_completion,
         )
     })
     .await
@@ -6550,7 +6838,7 @@ async fn coordinate_process_events(
     result
 }
 
-fn coordinate_process_events_blocking(
+fn coordinate_process_events_blocking_inner(
     repository: TerminalRepository,
     event_sink: Arc<dyn TerminalEventSink>,
     run: TerminalRun,
@@ -6560,6 +6848,7 @@ fn coordinate_process_events_blocking(
     abort_reason: Arc<Mutex<Option<ProcessAbortReason>>>,
     codex_sessions_root: Option<PathBuf>,
     output_ceiling: Option<u64>,
+    output_completion: Option<Arc<Mutex<Option<bool>>>>,
 ) -> Result<ProcessEventSummary, TerminalError> {
     let mut writer = AuditWriter {
         repository: &repository,
@@ -6568,6 +6857,7 @@ fn coordinate_process_events_blocking(
         sequence: repository.next_event_sequence(&run.id)?,
         raw_output_delta_active: false,
         pending: None,
+        held: Vec::new(),
     };
     let mut event_count = 0usize;
     let mut observed_bytes = 0usize;
@@ -6909,30 +7199,38 @@ fn coordinate_process_events_blocking(
             return Err(error);
         }
         if backend == CliBackend::Claude && kind == TerminalEventKind::Error {
-            // Audit the decoded diagnostic before stopping, and redact it again
-            // before propagating it outside the terminal event stream.
+            // An error terminates a possibly incomplete stream. Discard every
+            // held fragment; only a host-owned classification may leave memory.
             signal_process_abort(
                 &abort_token,
                 &abort_reason,
                 ProcessAbortReason::ProviderFailure,
             );
-            let diagnostic = redact_secrets(&content)
-                .map_err(TerminalError::Redaction)?
-                .text;
-            return Err(
-                match adapters::classify_failure(backend, None, &diagnostic) {
-                    adapters::CliFailureKind::AuthenticationRequired => {
-                        TerminalError::AuthRequired(backend.label().into())
-                    }
-                    adapters::CliFailureKind::VersionUnsupported => {
-                        TerminalError::VersionUnsupported(backend.label().into())
-                    }
-                    adapters::CliFailureKind::RateLimited => {
-                        TerminalError::RateLimited(backend.label().into())
-                    }
-                    adapters::CliFailureKind::ProcessFailed => TerminalError::Process(diagnostic),
-                },
-            );
+            let error = match adapters::classify_failure(backend, None, &content) {
+                adapters::CliFailureKind::AuthenticationRequired => {
+                    TerminalError::AuthRequired(backend.label().into())
+                }
+                adapters::CliFailureKind::VersionUnsupported => {
+                    TerminalError::VersionUnsupported(backend.label().into())
+                }
+                adapters::CliFailureKind::RateLimited => {
+                    TerminalError::RateLimited(backend.label().into())
+                }
+                adapters::CliFailureKind::ProcessFailed => TerminalError::Process(
+                    "The CLI reported a provider failure; incomplete output was withheld.".into(),
+                ),
+            };
+            let safe_diagnostic = error.to_string();
+            persist_and_emit(
+                &repository,
+                &event_sink,
+                &run,
+                repository.next_event_sequence(&run.id)?,
+                TerminalEventKind::Error,
+                Some(stream),
+                &safe_diagnostic,
+            )?;
+            return Err(error);
         }
         summary.max_persist_ms = summary
             .max_persist_ms
@@ -6941,6 +7239,26 @@ fn coordinate_process_events_blocking(
     if let Err(error) = writer.flush(&mut summary) {
         signal_process_abort(&abort_token, &abort_reason, ProcessAbortReason::Persistence);
         return Err(error);
+    }
+    if output_completion.as_ref().is_some_and(|completion| {
+        *completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            != Some(true)
+    }) {
+        let failure = adapters::classify_failure(backend, None, &summary.last_stderr);
+        summary.raw_output.clear();
+        summary.last_stderr = match failure {
+            adapters::CliFailureKind::AuthenticationRequired => "authentication required",
+            adapters::CliFailureKind::VersionUnsupported => "unsupported version",
+            adapters::CliFailureKind::RateLimited => "rate limit reached",
+            adapters::CliFailureKind::ProcessFailed => {
+                "CLI output withheld after incomplete execution"
+            }
+        }
+        .into();
+        usage.mark_partial()?;
+        return Ok(summary);
     }
     if !summary.raw_output.trim().is_empty() && summary.model_generation_count == 0 {
         signal_process_abort(
@@ -6970,7 +7288,23 @@ fn coordinate_process_events_blocking(
     }
     if incomplete_stream {
         usage.mark_partial()?;
+        return Err(TerminalError::Process(
+            "CLI output was incomplete; content was withheld.".into(),
+        ));
     }
+    if let Some(reason) = summary
+        .finish_reason
+        .as_ref()
+        .filter(|reason| adapters::is_output_truncation(reason))
+    {
+        usage.mark_partial()?;
+        return Err(TerminalError::OutputTruncated {
+            backend: backend.label().into(),
+            reason: reason.clone(),
+            produced_chars: summary.raw_output.chars().count(),
+        });
+    }
+    writer.finish(&mut summary)?;
     Ok(summary)
 }
 
@@ -7012,7 +7346,16 @@ impl PendingDeltas {
     }
 }
 
-/// Persists and emits a run's events in order, coalescing stream deltas.
+struct HeldAuditEvent {
+    kind: TerminalEventKind,
+    stream: String,
+    is_text: bool,
+    content: String,
+}
+
+/// Coalesces content in memory. Publication waits for a complete successful
+/// stream, so a secret split over arbitrary frames or timer windows is scanned
+/// before any fragment reaches SQLite or subscribers.
 struct AuditWriter<'a> {
     repository: &'a TerminalRepository,
     event_sink: &'a Arc<dyn TerminalEventSink>,
@@ -7021,6 +7364,7 @@ struct AuditWriter<'a> {
     sequence: u64,
     raw_output_delta_active: bool,
     pending: Option<PendingDeltas>,
+    held: Vec<HeldAuditEvent>,
 }
 
 impl AuditWriter<'_> {
@@ -7077,37 +7421,408 @@ impl AuditWriter<'_> {
         content: &str,
         summary: &mut ProcessEventSummary,
     ) -> Result<(), TerminalError> {
-        let event = persist_and_emit(
-            self.repository,
-            self.event_sink,
-            self.run,
-            self.sequence,
+        let metadata;
+        let content = if !is_text && stream == "stdout" {
+            metadata = format!("CLI {} received.", kind.as_str());
+            metadata.as_str()
+        } else {
+            content
+        };
+        self.held.push(HeldAuditEvent {
             kind,
-            Some(stream),
-            content,
-        )?;
+            stream: stream.into(),
+            is_text,
+            content: content.into(),
+        });
         if is_text
             && matches!(
-                event.kind,
+                kind,
                 TerminalEventKind::Completed
                     | TerminalEventKind::Message
                     | TerminalEventKind::Stdout
             )
         {
-            let delta = is_delta && event.kind == TerminalEventKind::Message;
+            let delta = is_delta && kind == TerminalEventKind::Message;
             if delta && self.raw_output_delta_active {
-                summary.raw_output.push_str(&event.content);
+                summary.raw_output.push_str(content);
             } else {
-                summary.raw_output.clone_from(&event.content);
+                summary.raw_output = content.into();
                 self.raw_output_delta_active = delta;
             }
         }
         if stream == "stderr" {
-            summary.last_stderr.clone_from(&event.content);
+            summary.last_stderr = content.into();
         }
         self.sequence = self.sequence.saturating_add(1);
         Ok(())
     }
+
+    fn finish(&mut self, summary: &mut ProcessEventSummary) -> Result<(), TerminalError> {
+        let segments = self
+            .held
+            .iter()
+            .map(|event| {
+                (
+                    if event.stream == "stdout" && !event.is_text {
+                        "stdout-metadata"
+                    } else {
+                        event.stream.as_str()
+                    },
+                    event.content.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let sanitized = redact_continuous_segments(&segments)?;
+        let mut sequence = self.sequence.saturating_sub(self.held.len() as u64);
+        summary.last_stderr.clear();
+        // raw_output is the operational response assembled from the original
+        // decoded segments. Only the observer projection below is persisted
+        // and emitted; replacing raw_output here would corrupt edit literals.
+        for (held, redacted) in self.held.iter().zip(sanitized) {
+            let event = self.repository.append_redacted_event(
+                &self.run.id,
+                sequence,
+                held.kind,
+                Some(&held.stream),
+                redacted,
+            )?;
+            let run = self.repository.get_run(&self.run.id)?;
+            self.event_sink.emit(&TerminalEventEnvelope {
+                protocol_version: 2,
+                project_id: run.project_id.clone(),
+                agent_role: run.agent_role,
+                run_id: run.id.clone(),
+                sequence,
+                run,
+                event: event.clone(),
+            });
+            if held.stream == "stderr" {
+                summary.last_stderr.clone_from(&event.content);
+            }
+            sequence = sequence.saturating_add(1);
+        }
+        self.held.clear();
+        Ok(())
+    }
+}
+
+/// Redacts each stream as a continuous value and projects the safe text back
+/// onto its original event boundaries. A marker belongs to the event where the
+/// occurrence began; continuation events never retain the secret's suffix.
+/// Decoded JSON can change offsets: its complete safe projection belongs to
+/// the first segment, while later segments of that stream become empty.
+fn redact_continuous_segments(
+    segments: &[(&str, &str)],
+) -> Result<Vec<RedactionResult>, TerminalError> {
+    let mut streams: HashMap<&str, String> = HashMap::new();
+    let mut ranges = Vec::with_capacity(segments.len());
+    let mut total = 0usize;
+    for (stream, content) in segments {
+        total = total.saturating_add(content.len());
+        if total > MAX_RUN_OUTPUT_BYTES {
+            return Err(TerminalError::OutputLimit);
+        }
+        let text = streams.entry(stream).or_default();
+        let start = text.len();
+        text.push_str(content);
+        ranges.push((start, text.len()));
+    }
+    let redactions = streams
+        .iter()
+        .map(|(stream, text)| {
+            if serde_json::from_str::<Value>(text).is_ok() {
+                crate::llm::adapter::sanitize_model_text_counted(text)
+                    .map(|redacted| (*stream, (Some(redacted), Vec::new())))
+                    .map_err(|_| TerminalError::Redaction("CLI JSON sanitization failed.".into()))
+            } else {
+                redact_context(text)
+                    .map(|redacted| (*stream, (None, redacted.spans)))
+                    .map_err(TerminalError::Redaction)
+            }
+        })
+        .collect::<Result<HashMap<_, _>, _>>()?;
+    let occurrence_count = redactions.values().fold(0u64, |count, (json, spans)| {
+        count.saturating_add(json.as_ref().map_or(spans.len() as u64, |json| json.count))
+    });
+    if occurrence_count > crate::secret_redactor::MAX_REDACTION_SPANS as u64 {
+        return Err(TerminalError::Redaction(
+            "CLI sanitization occurrence limit exceeded.".into(),
+        ));
+    }
+    let mut projected_json_streams = HashSet::new();
+    segments
+        .iter()
+        .zip(ranges)
+        .map(|((stream, _), (start, end))| {
+            let original = &streams[stream];
+            let (json, spans) = &redactions[stream];
+            if let Some(json) = json {
+                return Ok(if projected_json_streams.insert(*stream) {
+                    json.clone()
+                } else {
+                    RedactionResult {
+                        text: String::new(),
+                        count: 0,
+                        categories: Vec::new(),
+                    }
+                });
+            }
+            let mut cursor = start;
+            let mut text = String::new();
+            let mut count = 0u64;
+            let mut categories = Vec::new();
+            for span in spans
+                .iter()
+                .filter(|span| span.start_byte < end && span.end_byte > start)
+            {
+                if cursor < span.start_byte {
+                    text.push_str(&original[cursor..span.start_byte.min(end)]);
+                }
+                if span.start_byte >= start {
+                    text.push_str(&span.marker);
+                    count = count.saturating_add(1);
+                    if !categories.contains(&span.category) {
+                        categories.push(span.category.clone());
+                    }
+                }
+                text.extend(
+                    original[span.start_byte.max(start)..span.end_byte.min(end)]
+                        .chars()
+                        .filter(|character| matches!(*character, '\r' | '\n')),
+                );
+                cursor = cursor.max(span.end_byte.min(end));
+            }
+            if cursor < end {
+                text.push_str(&original[cursor..end]);
+            }
+            Ok(RedactionResult {
+                text,
+                count,
+                categories,
+            })
+        })
+        .collect()
+}
+
+fn read_run_history_events(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<Vec<TerminalEvent>, TerminalError> {
+    let mut statement = connection.prepare(
+        "SELECT id,run_id,sequence,kind,stream,content,created_at,
+                redaction_count,redaction_categories_json FROM terminal_events
+         WHERE run_id=?1 ORDER BY sequence LIMIT ?2",
+    )?;
+    let rows = statement.query_map(
+        params![required(run_id, "runId")?, MAX_RUN_EVENTS + 1],
+        |row| {
+            let kind: String = row.get(3)?;
+            let categories: String = row.get(8)?;
+            Ok(TerminalEvent {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                sequence: row.get(2)?,
+                kind: TerminalEventKind::parse(&kind).ok_or_else(|| invalid_column(3, kind))?,
+                stream: row.get(4)?,
+                content: row.get(5)?,
+                redaction_count: row.get(7)?,
+                redaction_categories: serde_json::from_str(&categories).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        8,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?,
+                created_at: row.get(6)?,
+            })
+        },
+    )?;
+    let events = rows.collect::<Result<Vec<_>, _>>()?;
+    if events.len() > MAX_RUN_EVENTS {
+        return Err(TerminalError::OutputLimit);
+    }
+    Ok(events)
+}
+
+/// Both export digests cover the full v1 envelope without the `sanitization`
+/// member. Sort recursively so verification does not depend on serde_json's
+/// map implementation; arrays retain their evidence order.
+fn canonicalize_terminal_export(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            let mut entries = std::mem::take(object).into_iter().collect::<Vec<_>>();
+            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            for (key, mut child) in entries {
+                canonicalize_terminal_export(&mut child);
+                object.insert(key, child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                canonicalize_terminal_export(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Bound encoded bytes too: JSON escaping and pretty-printing can exceed the
+/// limit even when the underlying text fits. No partial payload is published.
+fn terminal_export_bytes(
+    value: &Value,
+    pretty: bool,
+    limit: usize,
+) -> Result<Vec<u8>, TerminalError> {
+    struct BoundedExport {
+        bytes: Vec<u8>,
+        limit: usize,
+        exceeded: bool,
+    }
+    impl std::io::Write for BoundedExport {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+                self.exceeded = true;
+                return Err(std::io::Error::other("terminal export exceeded byte limit"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = BoundedExport {
+        bytes: Vec::new(),
+        limit,
+        exceeded: false,
+    };
+    let result = if pretty {
+        serde_json::to_writer_pretty(&mut writer, value)
+    } else {
+        serde_json::to_writer(&mut writer, value)
+    };
+    if writer.exceeded {
+        return Err(TerminalError::OutputLimit);
+    }
+    result.map_err(|_| TerminalError::Redaction("Terminal export serialization failed.".into()))?;
+    Ok(writer.bytes)
+}
+
+fn sanitize_history_events(
+    events: &mut [TerminalEvent],
+    known_policy: bool,
+) -> Result<(), TerminalError> {
+    if !known_policy {
+        let mut legacy_streams = HashSet::new();
+        for event in events
+            .iter()
+            .filter(|event| event.content.contains("[REDACTED"))
+        {
+            if let Some(stream) = event.stream.as_deref()
+                && events
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.stream.as_deref() == Some(stream) && !candidate.content.is_empty()
+                    })
+                    .count()
+                    > 1
+            {
+                legacy_streams.insert(stream.to_owned());
+            }
+        }
+        for event in events.iter_mut() {
+            if event
+                .stream
+                .as_deref()
+                .is_some_and(|stream| legacy_streams.contains(stream))
+            {
+                event.content =
+                    "[Legacy stream omitted: fragmented redaction cannot be reconstructed safely.]"
+                        .into();
+            }
+        }
+    }
+    for event in events.iter_mut() {
+        if event.stream.as_deref() == Some("stdout")
+            && event.content.lines().any(|line| {
+                [
+                    "Codex: ",
+                    "Claude: ",
+                    "Gemini: ",
+                    "OpenCode: ",
+                    "Antigravity: ",
+                ]
+                .iter()
+                .any(|prefix| {
+                    line.strip_prefix(prefix)
+                        .is_some_and(|value| serde_json::from_str::<Value>(value).is_ok())
+                })
+            })
+        {
+            event.content = format!(
+                "CLI {} received; historical protocol payload omitted.",
+                event.kind.as_str()
+            );
+        }
+    }
+    let segments = events
+        .iter()
+        .map(|event| {
+            (
+                if event.stream.as_deref() == Some("stdout")
+                    && event.content.starts_with("CLI ")
+                    && event.content.contains("received")
+                {
+                    "stdout-metadata"
+                } else {
+                    event.stream.as_deref().unwrap_or("system")
+                },
+                event.content.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let sanitized = redact_continuous_segments(&segments)?;
+    for (event, redacted) in events.iter_mut().zip(sanitized) {
+        event.content = redacted.text;
+        event.redaction_count = event.redaction_count.saturating_add(redacted.count);
+        for category in redacted.categories {
+            if !event.redaction_categories.contains(&category) {
+                event.redaction_categories.push(category);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_public_cli_identity(value: &str) -> Result<(), TerminalError> {
+    if !redact_context(value)
+        .map_err(TerminalError::Redaction)?
+        .spans
+        .is_empty()
+    {
+        return Err(TerminalError::Validation(
+            "CLI identity contained sensitive content".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn redact_json_strings(value: &mut Value) -> Result<(), TerminalError> {
+    redact_json_strings_count(value).map(|_| ())
+}
+
+fn redact_json_strings_count(value: &mut Value) -> Result<u64, TerminalError> {
+    let original = terminal_export_bytes(value, false, MAX_RUN_OUTPUT_BYTES)?;
+    let original = std::str::from_utf8(&original)
+        .map_err(|_| TerminalError::Redaction("CLI JSON sanitization failed.".into()))?;
+    let redacted = crate::llm::adapter::sanitize_model_text_counted(original)
+        .map_err(|_| TerminalError::Redaction("CLI JSON sanitization failed.".into()))?;
+    if redacted.text.len() > MAX_RUN_OUTPUT_BYTES {
+        return Err(TerminalError::OutputLimit);
+    }
+    *value = serde_json::from_str(&redacted.text)
+        .map_err(|_| TerminalError::Redaction("CLI JSON sanitization failed.".into()))?;
+    Ok(redacted.count)
 }
 
 fn persist_and_emit(
@@ -7391,6 +8106,7 @@ fn companion_model_evidence(
         let Some(model) = frame.observed_model else {
             continue;
         };
+        validate_public_cli_identity(&model)?;
         if let Some(requested) = requested {
             match model_identity::verify_model(
                 Some(backend.as_str()),
@@ -7546,19 +8262,20 @@ async fn run_companion_process(
     let status = termination
         .1
         .ok_or_else(|| TerminalError::Process("Companion CLI status is unavailable".into()))?;
-    let sanitized_stdout = sanitize_terminal_text(&stdout);
-    let sanitized_stderr = sanitize_terminal_text(&stderr);
-    let stdout = redact_secrets(&sanitized_stdout).map_err(TerminalError::Redaction)?;
+    // Decode/reassemble the complete control envelope before redaction. Scanning
+    // raw JSONL cannot recognize a token split over escaped delta strings.
+    let stdout = sanitize_cli_frame_text(&stdout);
+    let sanitized_stderr = sanitize_cli_frame_text(&stderr);
     let stderr = redact_secrets(&sanitized_stderr).map_err(TerminalError::Redaction)?;
     let claude_error = (backend == CliBackend::Claude)
-        .then(|| claude_companion_error(&stdout.text))
+        .then(|| claude_companion_error(&stdout))
         .flatten();
     if !status.success() || claude_error.is_some() {
         // Codex reports provider failures in JSONL stdout, often with empty stderr.
         // Decode only error events; never expose reasoning or the control stream.
         let diagnostic = match backend {
             CliBackend::Codex => {
-                codex_companion_error(&stdout.text).unwrap_or_else(|| stderr.text.clone())
+                codex_companion_error(&stdout).unwrap_or_else(|| stderr.text.clone())
             }
             // Claude reports API failures in its stream-json `result` event
             // with an empty stderr; without this the developer saw only
@@ -7567,7 +8284,7 @@ async fn run_companion_process(
             _ => stderr.text.clone(),
         };
         // Decode before the final redaction, including JSON-escaped credentials.
-        let diagnostic = redact_secrets(&sanitize_terminal_text(diagnostic.as_bytes()))
+        let diagnostic = redact_secrets(&sanitize_cli_frame_text(diagnostic.as_bytes()))
             .map_err(TerminalError::Redaction)?
             .text;
         return Err(
@@ -7595,22 +8312,27 @@ async fn run_companion_process(
             },
         );
     }
-    let envelope_json = extract_companion_envelope_json(&stdout.text).ok_or_else(|| {
+    let envelope_json = extract_companion_envelope_json(&stdout).ok_or_else(|| {
         TerminalError::Process(format!(
             "Companion CLI returned an invalid control envelope ({})",
-            companion_envelope_miss(backend, &stdout.text)
+            companion_envelope_miss(backend, &stdout)
         ))
     })?;
+    let mut envelope: Value = serde_json::from_str(&envelope_json).map_err(|_| {
+        TerminalError::Process("Companion CLI returned an invalid control envelope".into())
+    })?;
+    let redaction_count = redact_json_strings_count(&mut envelope)?;
+    let envelope_json = serde_json::to_string(&envelope)?;
     let (observed_model, model_verification) =
-        companion_model_evidence(backend, requested_model.as_deref(), &stdout.text)?;
+        companion_model_evidence(backend, requested_model.as_deref(), &stdout)?;
     Ok(CompanionCliRoundOutput {
         envelope_json,
         observed_model,
         model_verification,
         detected_cli_version,
         exit_code: status.code(),
-        output_bytes: stdout.text.len().saturating_add(stderr.text.len()),
-        redaction_count: stdout.count.saturating_add(stderr.count),
+        output_bytes: stdout.len().saturating_add(stderr.text.len()),
+        redaction_count: redaction_count.saturating_add(stderr.count),
     })
 }
 
@@ -7905,6 +8627,7 @@ fn deadline_timestamp(deadline: Instant) -> String {
 fn session_fingerprint(run: &TerminalRun, workspace_snapshot_hash: &str) -> String {
     let mut digest = Sha256::new();
     for part in [
+        SANITIZATION_POLICY_VERSION,
         run.project_id.as_str(),
         run.slot_id.as_str(),
         run.backend.map(CliBackend::as_str).unwrap_or_default(),
@@ -7915,6 +8638,28 @@ fn session_fingerprint(run: &TerminalRun, workspace_snapshot_hash: &str) -> Stri
         digest.update([0]);
     }
     format!("{:x}", digest.finalize())
+}
+
+fn validate_cli_input_policy(
+    db_path: &Path,
+    run: &TerminalRun,
+    policy: &SanitizationPolicySnapshot,
+) -> Result<(), TerminalError> {
+    let receipt: Option<String> = TerminalRepository::new(db_path).connection()?.query_row(
+        "SELECT policy_identity FROM secret_sanitization_receipts WHERE project_id=?1 AND call_id=?2",
+        params![run.project_id, run.llm_execution_id.as_deref().unwrap_or(&run.id)],
+        |row| row.get(0),
+    ).optional()?;
+    match receipt.as_deref() {
+        Some(identity)
+            if identity == policy.identity() || identity == SANITIZATION_POLICY_VERSION =>
+        {
+            Ok(())
+        }
+        _ => Err(TerminalError::Redaction(
+            "sanitization_policy_changed_before_cli_launch".into(),
+        )),
+    }
 }
 
 fn validate_resume_parent(
@@ -7959,7 +8704,20 @@ fn validate_resume_parent(
     Ok(())
 }
 
+#[cfg(test)]
 fn prepare_safe_cli_workspace(workspace: &Path) -> Result<SafeCliWorkspace, TerminalError> {
+    prepare_safe_cli_workspace_with_policy(workspace, None)
+}
+
+fn prepare_safe_cli_workspace_with_policy(
+    workspace: &Path,
+    sanitization: Option<(
+        &SanitizationStore,
+        &SanitizationPolicySnapshot,
+        &TerminalRun,
+    )>,
+) -> Result<SafeCliWorkspace, TerminalError> {
+    let started = Instant::now();
     let context = RepositoryContext::new(workspace)
         .map_err(|error| TerminalError::Security(error.to_string()))?;
     let files = context
@@ -7970,8 +8728,27 @@ fn prepare_safe_cli_workspace(workspace: &Path) -> Result<SafeCliWorkspace, Term
         .tempdir()
         .map_err(TerminalError::Io)?;
     let mut digest = Sha256::new();
+    digest.update(SANITIZATION_POLICY_VERSION.as_bytes());
+    digest.update([0]);
+    if let Some((_, policy, _)) = sanitization {
+        digest.update(policy.identity().as_bytes());
+        digest.update([0]);
+    }
     let mut manifest_files = Vec::with_capacity(files.len());
+    let mut redaction_count = 0u64;
+    let mut redaction_categories = HashSet::new();
+    let mut applied_exceptions = Vec::new();
+    let mut input_bytes = 0usize;
     for file in files {
+        if !redact_context(&file.relative_path)
+            .map_err(TerminalError::Redaction)?
+            .spans
+            .is_empty()
+        {
+            return Err(TerminalError::Security(
+                "A snapshot filename contained sensitive content".into(),
+            ));
+        }
         let relative = Path::new(&file.relative_path);
         if relative.is_absolute()
             || relative
@@ -7982,20 +8759,36 @@ fn prepare_safe_cli_workspace(workspace: &Path) -> Result<SafeCliWorkspace, Term
                 "snapshot tentou materializar path fora da raiz".into(),
             ));
         }
+        input_bytes = input_bytes.saturating_add(file.content.len());
+        let redacted = match sanitization {
+            Some((store, policy, _)) => {
+                store.sanitize_source_with_policy(policy, &file.relative_path, &file.content)
+            }
+            None => redact_context(&file.content),
+        }
+        .map_err(TerminalError::Redaction)?;
+        redaction_count = redaction_count.saturating_add(redacted.spans.len() as u64);
+        redaction_categories.extend(redacted.spans.iter().map(|span| span.category.clone()));
+        applied_exceptions.extend(redacted.applied_exceptions);
         digest.update(file.relative_path.as_bytes());
         digest.update([0]);
-        digest.update(file.content.as_bytes());
+        // Resume is tied to the immutable baseline as well as the delivered
+        // projection. Two different secrets can produce identical safe text.
+        digest.update(Sha256::digest(file.content.as_bytes()));
+        digest.update([0]);
+        digest.update(redacted.text.as_bytes());
         digest.update([0]);
         let destination = directory.path().join(relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&destination, file.content.as_bytes())?;
+        fs::write(&destination, redacted.text.as_bytes())?;
         manifest_files.push(file.relative_path);
     }
     let manifest_hash = format!("{:x}", digest.finalize());
     let manifest = serde_json::json!({
         "schemaVersion": 1,
+        "sanitizationVersion": SANITIZATION_POLICY_VERSION,
         "manifestSha256": manifest_hash,
         "files": manifest_files,
     });
@@ -8014,6 +8807,25 @@ fn prepare_safe_cli_workspace(workspace: &Path) -> Result<SafeCliWorkspace, Term
             .permissions();
         permissions.set_readonly(true);
         fs::set_permissions(entry.path(), permissions)?;
+    }
+    if let Some((store, policy, run)) = sanitization {
+        let mut categories = redaction_categories.into_iter().collect::<Vec<_>>();
+        categories.sort();
+        store
+            .record_input(
+                &run.project_id,
+                run.pulsation_id.as_deref(),
+                &format!("cli-snapshot:{}", run.id),
+                policy.identity(),
+                redaction_count,
+                &categories,
+                input_bytes,
+                started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            )
+            .map_err(TerminalError::Redaction)?;
+        store
+            .record_exception_uses(&format!("cli-snapshot:{}", run.id), &applied_exceptions)
+            .map_err(TerminalError::Redaction)?;
     }
     Ok(SafeCliWorkspace {
         directory,
@@ -9494,6 +10306,551 @@ mod tests {
     }
 
     #[test]
+    fn cli_sanitization_guards_stdin_for_every_backend_and_preserves_the_original() {
+        let original = "Authorization: Bearer synthetic_cli_secret_value";
+        for backend in [
+            CliBackend::Codex,
+            CliBackend::Claude,
+            CliBackend::Gemini,
+            CliBackend::Opencode,
+            CliBackend::Antigravity,
+            CliBackend::Custom,
+        ] {
+            let spec = build_process_spec(CliInvocationRequest {
+                executable: std::env::current_exe().unwrap(),
+                backend,
+                model: None,
+                model_profile: None,
+                thinking_level: ThinkingLevel::Default,
+                prompt: original.into(),
+                schema_file: None,
+                schema: None,
+                custom_args: Vec::new(),
+                resume_session_id: None,
+            })
+            .unwrap();
+            let stdin = String::from_utf8(spec.stdin_payload).unwrap();
+            assert!(!stdin.contains("synthetic_cli_secret_value"), "{backend:?}");
+            assert!(stdin.contains("<REDACTED_SECRET:"), "{backend:?}");
+            assert!(
+                spec.args
+                    .iter()
+                    .all(|arg| !arg.contains("synthetic_cli_secret_value"))
+            );
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        fs::write(workspace.path().join("config.rs"), original).unwrap();
+        let snapshot = prepare_safe_cli_workspace(workspace.path()).unwrap();
+        let view = fs::read_to_string(snapshot.path().join("config.rs")).unwrap();
+        assert!(!view.contains("synthetic_cli_secret_value"));
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("config.rs")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn cli_sanitization_rejects_changed_preparation_instead_of_silently_repreparing() {
+        let prepared = PreparedModelInput::new("system", "original input").unwrap();
+        assert!(verified_cli_input("system", "original input", Some(&prepared)).is_ok());
+        for (system, user) in [
+            ("changed system", "original input"),
+            ("system", "changed input"),
+        ] {
+            assert!(matches!(
+                verified_cli_input(system, user, Some(&prepared)),
+                Err(TerminalError::Redaction(_))
+            ));
+        }
+        assert!(verified_cli_input("system", "unprepared input", None).is_ok());
+    }
+
+    #[tokio::test]
+    async fn cli_sanitization_preserves_operational_edit_literals_and_masks_only_observers() {
+        let (_data, repository, run) = audit_test_run();
+        let run_id = run.id.clone();
+        let collected = Arc::new(CollectTerminalEvents::default());
+        let literal = "const TOKEN: &str = \"ghp_synthetic_operational_fixture\";\r\n";
+        let original_response = serde_json::json!({
+            "outputLanguage": "en", "edits": [{"content": literal}]
+        })
+        .to_string();
+        let (sender, receiver) = mpsc::channel(2);
+        sender.send(ProcessStreamItem::Frame {
+            stream: "stdout", received_at: Instant::now(),
+            bytes: serde_json::json!({"type":"item.completed", "model":"fixture",
+                "item":{"id":"operational-fixture","type":"agent_message","text":original_response}})
+                .to_string().into_bytes(),
+        }).await.unwrap();
+        drop(sender);
+        let summary = coordinate_process_events(
+            repository.clone(),
+            collected.clone(),
+            run,
+            CliBackend::Codex,
+            receiver,
+            CancellationToken::new(),
+            Arc::new(Mutex::new(None)),
+            ProgressWatchdog::new(AgentTimeoutPolicy::default()),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.raw_output, original_response);
+        let parsed: Value = serde_json::from_str(&summary.raw_output).unwrap();
+        assert_eq!(
+            parsed["edits"][0]["content"].as_str().unwrap().as_bytes(),
+            literal.as_bytes()
+        );
+        let events = repository.list_events(&run_id, 0, 100).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| event.content.contains("<REDACTED_SECRET:"))
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !event.content.contains("ghp_synthetic_operational_fixture"))
+        );
+        assert!(collected.envelopes.lock().unwrap().iter().all(|envelope| {
+            !envelope
+                .event
+                .content
+                .contains("ghp_synthetic_operational_fixture")
+        }));
+        assert!(!format!("{summary:?}").contains("ghp_synthetic_operational_fixture"));
+    }
+
+    #[test]
+    fn cli_sanitization_redacts_continuations_and_isolates_streams() {
+        let parts = [
+            ("stdout", "Authorization: Bearer synthetic_"),
+            ("stderr", "ordinary warning"),
+            ("stdout", "split_token_value"),
+        ];
+        let result = redact_continuous_segments(&parts).unwrap();
+        assert!(result[0].text.contains("<REDACTED_SECRET:"));
+        assert!(result[2].text.is_empty());
+        assert_eq!(result[1].text, "ordinary warning");
+        assert_eq!(result.iter().map(|r| r.count).sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn cli_sanitization_snapshot_exception_changes_resume_identity() {
+        let (_data, repository, run) = audit_test_run();
+        let workspace = tempfile::tempdir().unwrap();
+        let original = "Authorization: Bearer synthetic_snapshot_fixture";
+        fs::write(workspace.path().join("fixture.rs"), original).unwrap();
+        repository
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET workspace_path=?1 WHERE id=?2",
+                params![workspace.path().to_string_lossy(), run.project_id],
+            )
+            .unwrap();
+        let store = SanitizationStore::new(&repository.db_path);
+        let first_policy = store.policy_for_project(&run.project_id).unwrap();
+        let first = prepare_safe_cli_workspace_with_policy(
+            workspace.path(),
+            Some((&store, &first_policy, &run)),
+        )
+        .unwrap();
+        assert!(
+            !fs::read_to_string(first.path().join("fixture.rs"))
+                .unwrap()
+                .contains("synthetic_snapshot_fixture")
+        );
+        let preview = store.preview_file(&run.project_id, "fixture.rs").unwrap();
+        let span = &preview.spans[0];
+        store
+            .create_exception(&crate::sanitization::CreateSecretRedactionException {
+                project_id: run.project_id.clone(),
+                relative_path: "fixture.rs".into(),
+                detector_id: span.detector_id.clone(),
+                detector_version: span.detector_version,
+                original_file_sha256: preview.original_file_sha256,
+                start_byte: span.start_byte,
+                end_byte: span.end_byte,
+                reason: "Synthetic fixture reviewed locally".into(),
+            })
+            .unwrap();
+        let second_policy = store.policy_for_project(&run.project_id).unwrap();
+        let second = prepare_safe_cli_workspace_with_policy(
+            workspace.path(),
+            Some((&store, &second_policy, &run)),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(second.path().join("fixture.rs")).unwrap(),
+            original
+        );
+        assert_ne!(first.manifest_hash, second.manifest_hash);
+        assert_ne!(
+            session_fingerprint(&run, &first.manifest_hash),
+            session_fingerprint(&run, &second.manifest_hash)
+        );
+    }
+
+    #[test]
+    fn cli_sanitization_original_change_invalidates_identical_projected_snapshot() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path().join("config.rs");
+        fs::write(&path, "Authorization: Bearer synthetic_first_value").unwrap();
+        let first = prepare_safe_cli_workspace(workspace.path()).unwrap();
+        fs::write(&path, "Authorization: Bearer synthetic_second_value").unwrap();
+        let second = prepare_safe_cli_workspace(workspace.path()).unwrap();
+        assert_eq!(
+            fs::read(first.path().join("config.rs")).unwrap(),
+            fs::read(second.path().join("config.rs")).unwrap()
+        );
+        assert_ne!(first.manifest_hash, second.manifest_hash);
+    }
+
+    #[test]
+    fn cli_sanitization_rejects_policy_revoked_between_input_and_snapshot() {
+        let (_data, repository, run) = audit_test_run();
+        let store = SanitizationStore::new(&repository.db_path);
+        let before = store.policy_for_project(&run.project_id).unwrap();
+        store
+            .record_input(
+                &run.project_id,
+                None,
+                &run.id,
+                before.identity(),
+                0,
+                &[],
+                0,
+                0,
+            )
+            .unwrap();
+        validate_cli_input_policy(&repository.db_path, &run, &before).unwrap();
+        let mut changed = before.clone();
+        changed.identity = "changed-after-input-preparation".into();
+        assert!(validate_cli_input_policy(&repository.db_path, &run, &changed).is_err());
+        repository
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE secret_sanitization_receipts SET policy_identity=?1 WHERE call_id=?2",
+                params![SANITIZATION_POLICY_VERSION, run.id],
+            )
+            .unwrap();
+        validate_cli_input_policy(&repository.db_path, &run, &changed).unwrap();
+    }
+
+    #[test]
+    fn cli_sanitization_history_rescans_before_pagination_and_export() {
+        let (_data, repository, run) = audit_test_run();
+        let db = repository.connection().unwrap();
+        for (sequence, content) in [
+            (1, "Authorization: Bearer synthetic_"),
+            (2, "legacy_split_value"),
+        ] {
+            db.execute("INSERT INTO terminal_events(id,run_id,sequence,kind,stream,content,created_at,redaction_count,redaction_categories_json) VALUES(?1,?2,?3,'message','stdout',?4,'2026-10-22T00:00:00Z',0,'[]')",
+                params![format!("legacy-{sequence}"), run.id, sequence, content]).unwrap();
+        }
+        let first = repository.list_events(&run.id, 0, 1).unwrap();
+        let second = repository.list_events(&run.id, 1, 1).unwrap();
+        assert!(first[0].content.contains("<REDACTED_SECRET:"));
+        assert!(second[0].content.is_empty());
+        // The view is safe without rewriting legacy evidence in place.
+        let raw: String = db
+            .query_row(
+                "SELECT content FROM terminal_events WHERE run_id=?1 AND sequence=2",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, "legacy_split_value");
+    }
+
+    #[test]
+    fn cli_sanitization_legacy_export_hashes_original_and_safe_envelopes_separately() {
+        let (_data, repository, mut run) = audit_test_run();
+        let workspace = tempfile::tempdir().unwrap();
+        let db = repository.connection().unwrap();
+        db.execute(
+            "UPDATE projects SET workspace_path=?1 WHERE id=?2",
+            params![workspace.path().to_string_lossy(), run.project_id],
+        )
+        .unwrap();
+        let diagnostic = "Authorization: Bearer synthetic_legacy_diagnostic";
+        run.error_message = Some(diagnostic.into());
+        db.execute(
+            "UPDATE terminal_runs SET error_message=?1 WHERE id=?2",
+            params![diagnostic, run.id],
+        )
+        .unwrap();
+        let fragments = [
+            "before\nAuthorization: Bearer synthetic_",
+            "legacy_export_value\nvisible tail",
+        ];
+        for (index, content) in fragments.iter().enumerate() {
+            let sequence = index + 1;
+            db.execute("INSERT INTO terminal_events(id,run_id,sequence,kind,stream,content,created_at,redaction_count,redaction_categories_json) VALUES(?1,?2,?3,'message','stdout',?4,'2026-10-22T00:00:00Z',0,'[]')",
+                params![format!("legacy-export-{sequence}"), run.id, sequence, content]).unwrap();
+        }
+        let original_events = read_run_history_events(&db, &run.id).unwrap();
+        let mut original_envelope = serde_json::json!({
+            "schemaVersion": 1, "redacted": true,
+            "run": run, "events": original_events,
+        });
+        canonicalize_terminal_export(&mut original_envelope);
+        let original_hash = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&original_envelope).unwrap())
+        );
+        let path = repository
+            .export_run_history(&run.project_id, &run.id)
+            .unwrap();
+        let exported = fs::read_to_string(path).unwrap();
+        let mut envelope: Value = serde_json::from_str(&exported).unwrap();
+        let metadata = envelope
+            .as_object_mut()
+            .unwrap()
+            .remove("sanitization")
+            .unwrap();
+        assert_eq!(envelope["schemaVersion"], 1);
+        assert_eq!(envelope["redacted"], true);
+        assert_eq!(metadata["policy"], SANITIZATION_POLICY_VERSION);
+        assert_eq!(metadata["originalEvidenceSha256"], original_hash);
+        canonicalize_terminal_export(&mut envelope);
+        let sanitized_hash = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&envelope).unwrap())
+        );
+        assert_eq!(metadata["sanitizedContentSha256"], sanitized_hash);
+        assert_ne!(
+            metadata["originalEvidenceSha256"],
+            metadata["sanitizedContentSha256"]
+        );
+        assert!(
+            metadata["hashFormat"]
+                .as_str()
+                .unwrap()
+                .contains("no trailing newline")
+        );
+        assert_eq!(envelope["events"].as_array().unwrap().len(), 2);
+        assert!(
+            envelope["events"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("<REDACTED_SECRET:")
+        );
+        assert_eq!(envelope["events"][1]["content"], "\nvisible tail");
+        assert!(!exported.contains("synthetic_"));
+        assert!(!exported.contains("legacy_export_value"));
+        assert!(!exported.contains("legacy_diagnostic"));
+        // Export only derives a view; the exact original evidence remains in SQLite.
+        let after = read_run_history_events(&db, &run.id).unwrap();
+        assert_eq!(
+            after
+                .iter()
+                .map(|event| event.content.as_str())
+                .collect::<Vec<_>>(),
+            fragments
+        );
+        let raw_diagnostic: String = db
+            .query_row(
+                "SELECT error_message FROM terminal_runs WHERE id=?1",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw_diagnostic, diagnostic);
+    }
+
+    #[test]
+    fn cli_sanitization_export_bounds_encoded_bytes_with_typed_failure() {
+        let value = serde_json::json!({"text": "\0\n\"".repeat(80)});
+        for pretty in [false, true] {
+            let expected = if pretty {
+                serde_json::to_vec_pretty(&value).unwrap()
+            } else {
+                serde_json::to_vec(&value).unwrap()
+            };
+            assert!(matches!(
+                terminal_export_bytes(&value, pretty, expected.len() - 1),
+                Err(TerminalError::OutputLimit)
+            ));
+            assert_eq!(
+                terminal_export_bytes(&value, pretty, expected.len()).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn cli_sanitization_legacy_unicode_json_stream_decodes_before_history_and_export() {
+        let (_data, repository, run) = audit_test_run();
+        let workspace = tempfile::tempdir().unwrap();
+        let db = repository.connection().unwrap();
+        db.execute(
+            "UPDATE projects SET workspace_path=?1 WHERE id=?2",
+            params![workspace.path().to_string_lossy(), run.project_id],
+        )
+        .unwrap();
+        let original = r#"{"\u0070assword":"\u0061rbitrary phrase","nested":"{\"\\u0074oken\":\"\\u006eested phrase\"}","public":"ok"}"#;
+        let split = original.len() / 2;
+        let fragments = [&original[..split], &original[split..]];
+        for (index, content) in fragments.iter().enumerate() {
+            let sequence = index + 1;
+            db.execute("INSERT INTO terminal_events(id,run_id,sequence,kind,stream,content,created_at,redaction_count,redaction_categories_json) VALUES(?1,?2,?3,'message','stdout',?4,'2026-10-22T00:00:00Z',0,'[]')",
+                params![format!("legacy-json-{sequence}"), run.id, sequence, content]).unwrap();
+        }
+        let events = repository.list_events(&run.id, 0, 100).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events[1].content.is_empty());
+        assert_eq!(events[1].redaction_count, 0);
+        assert_eq!(events[0].redaction_count, 2);
+        let projected: Value = serde_json::from_str(&events[0].content).unwrap();
+        assert!(
+            projected["password"]
+                .as_str()
+                .unwrap()
+                .starts_with("<REDACTED_SECRET:")
+        );
+        let nested: Value = serde_json::from_str(projected["nested"].as_str().unwrap()).unwrap();
+        assert!(
+            nested["token"]
+                .as_str()
+                .unwrap()
+                .starts_with("<REDACTED_SECRET:")
+        );
+        assert_eq!(projected["public"], "ok");
+        let export = repository
+            .export_run_history(&run.project_id, &run.id)
+            .unwrap();
+        let exported = fs::read_to_string(export).unwrap();
+        assert!(!exported.contains("arbitrary phrase"));
+        assert!(!exported.contains("nested phrase"));
+        assert!(!exported.contains("rbitrary phrase"));
+        assert!(!exported.contains("ested phrase"));
+        let envelope: Value = serde_json::from_str(&exported).unwrap();
+        assert_eq!(envelope["events"][0]["content"], events[0].content);
+        assert_eq!(envelope["events"][1]["content"], "");
+        let originals = read_run_history_events(&db, &run.id).unwrap();
+        assert_eq!(
+            originals
+                .iter()
+                .map(|event| event.content.as_str())
+                .collect::<String>(),
+            original
+        );
+    }
+
+    #[test]
+    fn cli_sanitization_multiline_regions_preserve_crlf_across_every_segment_boundary() {
+        let original = "before\r\n-----BEGIN PRIVATE KEY-----\r\nprivate-synthetic-body\r\n-----END PRIVATE KEY-----\r\nafter";
+        let expected = redact_context(original).unwrap().text;
+        for split in 1..original.len() {
+            let projected = redact_continuous_segments(&[
+                ("stdout", &original[..split]),
+                ("stdout", &original[split..]),
+            ])
+            .unwrap();
+            assert_eq!(
+                projected
+                    .iter()
+                    .map(|part| part.text.as_str())
+                    .collect::<String>(),
+                expected
+            );
+            assert_eq!(projected.iter().map(|part| part.count).sum::<u64>(), 1);
+        }
+    }
+
+    #[test]
+    fn cli_sanitization_json_envelope_preserves_yaml_render_linebreaks_and_masks_keys() {
+        let yaml = "name: visible\nitems:\n  - first\n  - second\n";
+        let split = yaml.find("items:").unwrap();
+        let projected =
+            redact_continuous_segments(&[("stdout", &yaml[..split]), ("stdout", &yaml[split..])])
+                .unwrap();
+        assert_eq!(projected[0].text, &yaml[..split]);
+        assert_eq!(projected[1].text, &yaml[split..]);
+        assert_eq!(projected.iter().map(|part| part.count).sum::<u64>(), 0);
+        let key = "ghp_syntheticabcdefghijklmnop";
+        let mut envelope = serde_json::json!({"render": yaml, key: "public"});
+        assert_eq!(redact_json_strings_count(&mut envelope).unwrap(), 1);
+        assert_eq!(envelope["render"], yaml);
+        assert!(!envelope.as_object().unwrap().contains_key(key));
+        assert!(
+            envelope
+                .as_object()
+                .unwrap()
+                .keys()
+                .any(|key| key.starts_with("<REDACTED_SECRET:"))
+        );
+    }
+
+    #[test]
+    fn cli_sanitization_omits_unrecoverable_legacy_fragments_after_old_markers() {
+        let (_data, repository, run) = audit_test_run();
+        let db = repository.connection().unwrap();
+        for (sequence, content) in [(1, "Bearer [REDACTED]"), (2, "unrecoverable-tail")] {
+            db.execute("INSERT INTO terminal_events(id,run_id,sequence,kind,stream,content,created_at,redaction_count,redaction_categories_json) VALUES(?1,?2,?3,'message','stdout',?4,'2026-10-22T00:00:00Z',0,'[]')",
+                params![format!("legacy-old-{sequence}"), run.id, sequence, content]).unwrap();
+        }
+        db.execute(
+            "UPDATE terminal_runs SET error_message=?1 WHERE id=?2",
+            params!["Authorization: Bearer synthetic_legacy_error_value", run.id],
+        )
+        .unwrap();
+        assert!(
+            !repository
+                .get_run(&run.id)
+                .unwrap()
+                .error_message
+                .unwrap()
+                .contains("synthetic_legacy_error_value")
+        );
+        let events = repository.list_events(&run.id, 0, 100).unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|event| event.content.contains("Legacy stream omitted"))
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !event.content.contains("unrecoverable-tail"))
+        );
+    }
+
+    #[tokio::test]
+    async fn cli_sanitization_discards_incomplete_output_without_emitting_fragments() {
+        let (_data, repository, run) = audit_test_run();
+        let id = run.id.clone();
+        let collected = Arc::new(CollectTerminalEvents::default());
+        let (sender, receiver) = mpsc::channel(4);
+        sender.send(ProcessStreamItem::Frame {
+            stream: "stdout", received_at: Instant::now(),
+            bytes: br#"{"type":"item.completed","model":"fixture","item":{"type":"agent_message","text":"-----BEGIN PRIVATE KEY-----\nsynthetic-partial"}}"#.to_vec(),
+        }).await.unwrap();
+        drop(sender);
+        let summary = coordinate_process_events_with_completion(
+            repository.clone(),
+            collected.clone(),
+            run,
+            CliBackend::Codex,
+            receiver,
+            CancellationToken::new(),
+            Arc::new(Mutex::new(None)),
+            ProgressWatchdog::new(AgentTimeoutPolicy::default()),
+            None,
+            Some(Arc::new(Mutex::new(Some(false)))),
+        )
+        .await
+        .unwrap();
+        assert!(summary.raw_output.is_empty());
+        assert!(repository.list_events(&id, 0, 100).unwrap().is_empty());
+        assert!(collected.envelopes.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn normalizes_structured_tool_events() {
         let (kind, text) = normalize_cli_frame(
             CliBackend::Gemini,
@@ -9818,7 +11175,11 @@ mod tests {
             )
             .unwrap();
         let redacted = &repository.list_events(&run.id, 1, 20).unwrap()[0];
-        assert_eq!(redacted.content, "Authorization: Bearer [REDACTED]");
+        assert!(
+            redacted
+                .content
+                .starts_with("Authorization: Bearer <REDACTED_SECRET:")
+        );
         assert_eq!(redacted.redaction_count, 1);
         assert_eq!(redacted.redaction_categories, ["bearer_token"]);
         assert!(matches!(
@@ -10762,33 +12123,62 @@ mod tests {
         assert_eq!(summary.raw_output, "final answer");
         assert_eq!(summary.verified_model_generation_count, 1);
         let events = repository.list_events(&run_id, 0, 1000).unwrap();
-        // init, message_start, 40 text deltas, 20 raw deltas, result.
+        // Complete safe text keeps its order; protocol-only deltas collapse to
+        // host metadata rather than exposing their serialized partial payloads.
         assert_eq!(events.len(), 5, "{events:#?}");
         assert!(
             events
                 .windows(2)
                 .all(|pair| pair[0].sequence < pair[1].sequence)
         );
-        assert!(events[0].content.contains("\"subtype\":\"init\""));
-        assert!(events[1].content.contains("message_start"));
+        assert_eq!(
+            events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            vec![
+                TerminalEventKind::System,
+                TerminalEventKind::Message,
+                TerminalEventKind::Message,
+                TerminalEventKind::Message,
+                TerminalEventKind::Completed,
+            ]
+        );
+        assert_eq!(events[0].content, "CLI system received.");
+        assert_eq!(events[1].content, "CLI message received.");
         let words = (0..40).map(|word| format!("w{word} ")).collect::<String>();
         assert_eq!(events[2].content, words);
-        assert_eq!(events[3].content.lines().count(), 20);
+        assert_eq!(events[3].content, "CLI message received.");
         assert!(
-            events[3]
-                .content
-                .lines()
-                .all(|line| line.contains("input_json_delta"))
+            events
+                .iter()
+                .all(|event| !event.content.contains("input_json_delta")
+                    && !event.content.contains("partial_json"))
         );
         assert_eq!(events[4].content, "final answer");
+        let generation: (String, String, u64) = repository
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT message_id,model_id,event_sequence FROM terminal_model_observations
+             WHERE run_id=?1 AND is_generation=1",
+                [&run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            generation,
+            (
+                "m-1".into(),
+                "claude-haiku-4-5-20251001".into(),
+                events[1].sequence
+            )
+        );
         let stored = repository.get_run(&run_id).unwrap();
         assert_eq!(stored.native_session_id.as_deref(), Some("s-1"));
         assert_eq!(stored.event_count, 5);
     }
 
-    /// Deltas never wait for the next frame: a pause in the stream writes them.
+    /// A pause must never publish a prefix that later becomes a secret.
     #[tokio::test]
-    async fn buffered_deltas_are_written_when_the_stream_pauses() {
+    async fn buffered_deltas_wait_for_completion_and_redact_across_timer_windows() {
         let (_data, repository, mut run) = audit_test_run();
         run.model = Some("haiku".into());
         let run_id = run.id.clone();
@@ -10810,26 +12200,27 @@ mod tests {
             }
         });
         sender.send(message_start()).await.unwrap();
-        for word in ["a ", "b ", "c"] {
-            sender.send(text_delta(word)).await.unwrap();
-        }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !repository
-            .list_events(&run_id, 0, 100)
-            .unwrap()
-            .iter()
-            .any(|event| event.content == "a b c")
-        {
-            assert!(
-                Instant::now() < deadline,
-                "the paused deltas were never written"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        sender
+            .send(text_delta("Authorization: Bearer synthetic-"))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert!(repository.list_events(&run_id, 0, 100).unwrap().is_empty());
+        sender.send(text_delta("split-secret-value")).await.unwrap();
         drop(sender);
         let summary = audit.await.unwrap().unwrap();
-        assert_eq!(summary.raw_output, "a b c");
-        assert_eq!(repository.list_events(&run_id, 0, 100).unwrap().len(), 2);
+        assert_eq!(
+            summary.raw_output,
+            "Authorization: Bearer synthetic-split-secret-value"
+        );
+        assert!(!format!("{summary:?}").contains("synthetic-split-secret-value"));
+        let events = repository.list_events(&run_id, 0, 100).unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|event| !event.content.contains("synthetic-")
+                    && !event.content.contains("split-secret-value"))
+        );
     }
 
     fn audit_test_run() -> (tempfile::TempDir, TerminalRepository, TerminalRun) {
@@ -11209,7 +12600,7 @@ mod tests {
             events
                 .iter()
                 .any(|event| event.kind == TerminalEventKind::Error
-                    && event.content.contains("OAuth session expired"))
+                    && event.content.contains("requires authentication"))
         );
         let db = repository.connection().unwrap();
         let count: i64 = db.query_row(
@@ -11243,7 +12634,7 @@ mod tests {
         let error = result.unwrap_err();
         assert_eq!(error.code(), "cli_process_failed");
         assert!(!error.to_string().contains(secret));
-        assert!(error.to_string().contains("[REDACTED]"));
+        assert!(error.to_string().contains("incomplete output was withheld"));
         assert!(abort.is_cancelled());
         let events = repository.list_events(&run_id, 0, 100).unwrap();
         assert!(events.iter().all(|event| !event.content.contains(secret)));

@@ -1126,6 +1126,8 @@ fn artifact_preview_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
     let Some((id, content)) = model.pulsations.read(cx).artifact_preview.clone() else {
         return div().into_any_element();
     };
+    let content = hvc_core::sanitization::sanitized_observation(&content);
+    let sanitized = crate::pulsations::has_sanitized_regions(&content);
     let pages = content.chars().count().max(1).div_ceil(8000);
     let page = model.artifact_preview_page.min(pages - 1);
     let text: String = content.chars().skip(page * 8000).take(8000).collect();
@@ -1139,10 +1141,13 @@ fn artifact_preview_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         .flex_col()
         .gap_2()
         .child(format!(
-            "Persisted content · {id} · page {}/{}",
+            "{} · {id} · page {}/{}",
+            if sanitized { "Sanitized content" } else { "Persisted content" },
             page + 1,
             pages
         ))
+        .when(sanitized, |panel| panel.child(div().text_xs().text_color(theme::warning())
+            .child("Protected regions are masked in this preview and its copy. Original artifact bytes are preserved locally.")))
         .child(div().id("artifact-preview-scroll").text_sm().child(text))
         .child(preparation_button(
             "artifact-prev",
@@ -1166,7 +1171,7 @@ fn artifact_preview_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
         ))
         .child(preparation_button(
             "artifact-copy",
-            "Copy full content",
+            if sanitized { "Copy sanitized content" } else { "Copy full content" },
             true,
             cx,
             move |_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(content.clone())),
@@ -1312,6 +1317,12 @@ fn coordination_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElemen
         return div().into_any_element();
     };
     let active = state.active_id();
+    let protection = state
+        .details
+        .iter()
+        .find(|detail| Some(detail.pulsation_id.as_str()) == active.as_deref())
+        .map(|detail| detail.sanitization.clone())
+        .unwrap_or_default();
     let blocked = snapshot.pipeline.base_state == BaseState::NeedsReview;
     let input = model.reconciliation_input.clone();
     let can_confirm = blocked
@@ -1330,6 +1341,11 @@ fn coordination_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElemen
         .child(div().text_sm().child(format!("Base #{} · {} · owner: {}",snapshot.pipeline.base_epoch,
             match snapshot.pipeline.base_state {BaseState::Ready=>"consistent",BaseState::Publishing=>"publishing in progress",BaseState::NeedsReview=>"review required"},
             snapshot.pipeline.active_pulsation_id.as_deref().unwrap_or("idle"))))
+        .child(div().mt_2().text_xs().text_color(theme::text_muted()).child(format!(
+            "Secret protection · {} input occurrences masked in {} inputs · {} output occurrences masked · {} exceptions applied{}",
+            protection.input_redaction_count, protection.entries_examined, protection.output_redaction_count, protection.exceptions_applied,
+            if protection.categories.is_empty() { String::new() } else { format!(" · {}", protection.categories.join(", ")) }
+        )))
         .when(blocked, |panel| panel
             .child(div().mt_2().text_color(theme::warning()).child(snapshot.pipeline.blocking_reason.unwrap_or_default()))
             .child(div().mt_2().text_sm().child("Inspect files in your external editor; the app editor opens .md/.txt. Adopting the current base does not undo changes or declare success. Choose which work to resume; others will remain preserved and blocked."))
@@ -2102,6 +2118,7 @@ mod tests {
                             updated_at: String::new(),
                         }];
                         state.details = vec![PulsationCoordinationSnapshot {
+                            sanitization: Default::default(),
                             pulsation_id: "pulse-terminal".into(),
                             project_id: "project-terminal".into(),
                             queue_sequence: 1,

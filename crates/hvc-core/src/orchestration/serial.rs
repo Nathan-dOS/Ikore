@@ -273,6 +273,7 @@ fn revision_diff(
 #[derive(Debug, Clone, Default)]
 pub(super) struct AcceptanceProvenance<'a> {
     pub stage_execution_id: Option<&'a str>,
+    pub sanitization_policy_identity: Option<&'a str>,
     /// Keyed by the ASCII-lowercased relative path.
     pub expected_overrides: Option<&'a HashMap<String, ExpectedFileContent>>,
     /// `ModelAuthored` for the legacy stage; the composed stage validated
@@ -734,6 +735,16 @@ impl PersistenceService {
             .as_deref()
             .ok_or_else(|| invalid("No pulsation"))?;
         let now = Self::now_iso();
+        if let Some(frozen_policy) = provenance.sanitization_policy_identity {
+            let current_policy =
+                crate::sanitization::SanitizationStore::policy_on(tx, &current.project_id)
+                    .map_err(invalid)?;
+            if frozen_policy != current_policy.identity {
+                return Err(invalid(
+                    "The sanitization policy changed before acceptance; prepare the stage again.",
+                ));
+            }
+        }
         tx.execute("INSERT INTO stage_acceptances(job_id,generation,agent_run_id,fence_json,outcome_json,handoff_json,accepted_at,stage_execution_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![job.id,handoff.recipient.generation,run_id,serde_json::to_string(&handoff.recipient).map_err(invalid)?,serde_json::to_string(outcome).map_err(invalid)?,serde_json::to_string(handoff).map_err(invalid)?,now,provenance.stage_execution_id])?;
         let disposition = stage_disposition_with(current.stage, outcome, provenance.language_guard)
             .map_err(invalid)?;
@@ -813,7 +824,61 @@ impl PersistenceService {
                             .find(|base| base.relative_path.as_str().eq_ignore_ascii_case(path))
                             .map(|base| base.content_sha256.as_str().to_owned()),
                     };
+                    let original = match expected.as_deref() {
+                        Some(expected_hash) => {
+                            let original = crate::repository_context::RepositoryContext::new(root)
+                                .and_then(|repository| {
+                                    repository.read_original_for_sanitization(path)
+                                })
+                                .map_err(|_| {
+                                    invalid("Publication baseline unavailable for sanitization.")
+                                })?;
+                            if crate::secret_redactor::text_sha256(&original) != expected_hash {
+                                return Err(invalid(
+                                    "Publication baseline changed during sanitization.",
+                                ));
+                            }
+                            original
+                        }
+                        None => String::new(),
+                    };
+                    if crate::secret_redactor::introduces_redaction_marker(
+                        &original,
+                        &artifact.content,
+                    ) {
+                        return Err(invalid(
+                            "Publication introduces a secret placeholder; resolve locally and prepare again.",
+                        ));
+                    }
+                    let sanitization_policy =
+                        crate::sanitization::SanitizationStore::policy_on(tx, &current.project_id)
+                            .map_err(invalid)?;
+                    if provenance.stage_execution_id.is_none()
+                        && !crate::sanitization::SanitizationStore::sanitize_source_projection(
+                            &sanitization_policy,
+                            path,
+                            &original,
+                        )
+                        .map_err(invalid)?
+                        .spans
+                        .is_empty()
+                    {
+                        return Err(invalid(
+                            "Whole-file publication overlaps a protected secret region.",
+                        ));
+                    }
+
                     tx.execute("INSERT INTO artifact_publications(artifact_id,project_id,pulsation_id,relative_path,expected_sha256,desired_sha256,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,current.project_id,pulse,path,expected,hash.as_str(),now])?;
+                    crate::sanitization::SanitizationStore::record_publication_guard_on(
+                        tx,
+                        &current.project_id,
+                        pulse,
+                        &id,
+                        expected.as_deref(),
+                        hash.as_str(),
+                        &sanitization_policy.identity,
+                    )
+                    .map_err(invalid)?;
                 }
             }
         }
@@ -1180,13 +1245,72 @@ impl PersistenceService {
         if class != "background" && self.user_cancellation_pending(&pulse) {
             return Ok(());
         }
+        let project_id: String = tx.query_row(
+            "SELECT project_id FROM pulsations WHERE id=?1",
+            [&pulse],
+            |row| row.get(0),
+        )?;
+        let sanitization_guard = (|| -> Result<(), String> {
+            let existing = crate::sanitization::SanitizationStore::assert_publication_safe_on(
+                &tx,
+                &project_id,
+                id,
+                expected.as_deref(),
+                &desired,
+            );
+            if existing
+                .as_ref()
+                .is_err_and(|error| error == "publication_sanitization_evidence_missing")
+            {
+                // Requalify legacy/background whole-file intents, never infer safe anchor edits.
+                let target = publication::observed_hash(Path::new(&root), &path)
+                    .map_err(|_| "sanitization_baseline_unavailable".to_string())?;
+                let already_applied = target.as_ref().is_some_and(|hash| hash.as_str() == desired);
+                if already_applied && crate::secret_redactor::contains_redaction_marker(&content) {
+                    return Err("publication_sanitization_requalification_required".into());
+                }
+                let original = if target.is_some() {
+                    crate::repository_context::RepositoryContext::new(Path::new(&root))
+                        .and_then(|repository| repository.read_original_for_sanitization(&path))
+                        .map_err(|_| "sanitization_baseline_unavailable".to_string())?
+                } else {
+                    String::new()
+                };
+                if !already_applied
+                    && target.as_ref().map(ContentSha256::as_str) != expected.as_deref()
+                {
+                    return Err("publication_sanitization_baseline_changed".into());
+                }
+                if !crate::secret_redactor::redact_context(&original)?
+                    .spans
+                    .is_empty()
+                    || crate::secret_redactor::introduces_redaction_marker(&original, &content)
+                {
+                    return Err("publication_sanitization_requalification_required".into());
+                }
+                let policy = crate::sanitization::SanitizationStore::policy_on(&tx, &project_id)?;
+                crate::sanitization::SanitizationStore::record_publication_guard_on(
+                    &tx,
+                    &project_id,
+                    &pulse,
+                    id,
+                    expected.as_deref(),
+                    &desired,
+                    &policy.identity,
+                )?;
+                return Ok(());
+            }
+            existing
+        })();
         let expected = expected
             .map(ContentSha256::try_from)
             .transpose()
             .map_err(invalid)?
             .map(ExpectedFileContent::Present)
             .unwrap_or(ExpectedFileContent::Absent);
-        let result = if ContentSha256::of(content.as_bytes()).as_str() != desired
+        let result = if let Err(error) = sanitization_guard {
+            Err(invalid(error))
+        } else if ContentSha256::of(content.as_bytes()).as_str() != desired
             || desired != artifact_hash
         {
             Err(invalid(

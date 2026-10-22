@@ -16,6 +16,156 @@ use crate::settings_ui::{
 use crate::theme;
 
 impl AppModel {
+    pub(crate) fn preview_sanitization_file(&mut self, cx: &mut Context<Self>) {
+        if self.settings.read(cx).busy || self.settings.read(cx).sanitization_preview_loading {
+            return;
+        }
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(project) = self.composition_project(cx) else {
+            return;
+        };
+        let path = self
+            .sanitization_path_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
+        if path.is_empty() {
+            return;
+        }
+        let generation = self.settings.update(cx, |settings, _| {
+            settings.sanitization_preview_generation =
+                settings.sanitization_preview_generation.saturating_add(1);
+            settings.sanitization_preview = None;
+            settings.sanitization_preview_loading = true;
+            settings.error = None;
+            settings.sanitization_preview_generation
+        });
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = backend
+                .preview_sanitization_file(project.project_id.clone(), path.clone())
+                .await;
+            let _ = this.update(cx, |model, cx| {
+                let current_path = model
+                    .sanitization_path_input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .to_owned();
+                model.settings.update(cx, |settings, _| {
+                    if settings.sanitization_preview_generation != generation {
+                        return;
+                    }
+                    settings.sanitization_preview_loading = false;
+                    let current_project = settings
+                        .snapshot
+                        .as_ref()
+                        .and_then(|s| s.composition.as_ref())
+                        .map(|s| &s.project_id);
+                    if current_project != Some(&project.project_id) || current_path != path {
+                        return;
+                    }
+                    match result {
+                        Ok(preview) => {
+                            settings.sanitization_preview = Some((project.project_id, preview))
+                        }
+                        Err(error) => settings.error = Some(error),
+                    }
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn authorize_synthetic_occurrence(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.settings.read(cx).busy {
+            return;
+        }
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(project) = self.composition_project(cx) else {
+            return;
+        };
+        let Some((preview_project, preview)) = self.settings.read(cx).sanitization_preview.clone()
+        else {
+            return;
+        };
+        let path = self.sanitization_path_input.read(cx).value().trim();
+        let reason = self
+            .sanitization_reason_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
+        if preview_project != project.project_id
+            || path != preview.relative_path
+            || reason.is_empty()
+        {
+            return;
+        }
+        let Some(span) = preview.spans.get(index) else {
+            return;
+        };
+        if project.sanitization_exceptions.iter().any(|e| {
+            e.active
+                && e.relative_path == preview.relative_path
+                && e.original_file_sha256 == preview.original_file_sha256
+                && e.start_byte == span.start_byte
+                && e.end_byte == span.end_byte
+                && e.detector_id == span.detector_id
+                && e.detector_version == span.detector_version
+        }) {
+            return;
+        }
+        let request = hvc_core::sanitization::CreateSecretRedactionException {
+            project_id: project.project_id,
+            relative_path: preview.relative_path,
+            detector_id: span.detector_id.clone(),
+            detector_version: span.detector_version,
+            original_file_sha256: preview.original_file_sha256,
+            start_byte: span.start_byte,
+            end_byte: span.end_byte,
+            reason,
+        };
+        self.run_settings_operation(Box::pin(async move {
+            backend.create_sanitization_exception(request).await?;
+            Ok("Synthetic occurrence authorized locally for this exact file version. New calls use the updated policy.".into())
+        }), cx);
+    }
+
+    pub(crate) fn remove_sanitization_exception(
+        &mut self,
+        exception_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.read(cx).busy {
+            return;
+        }
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(project) = self.composition_project(cx) else {
+            return;
+        };
+        self.run_settings_operation(
+            Box::pin(async move {
+                backend
+                    .remove_sanitization_exception(project.project_id, exception_id)
+                    .await?;
+                Ok(
+                    "Synthetic occurrence authorization removed. New calls use the updated policy."
+                        .into(),
+                )
+            }),
+            cx,
+        );
+    }
+
     fn composition_project(&self, cx: &Context<Self>) -> Option<CompositionProjectSettings> {
         self.settings
             .read(cx)
@@ -394,6 +544,117 @@ fn list_line(text: String) -> gpui::Div {
         .child(div().flex_1().min_w_0().text_sm().child(text))
 }
 
+fn sanitization_controls(
+    model: &AppModel,
+    project: &CompositionProjectSettings,
+    busy: bool,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let settings = model.settings.read(cx);
+    let loading = settings.sanitization_preview_loading;
+    let preview = settings.sanitization_preview.clone();
+    let path = model
+        .sanitization_path_input
+        .read(cx)
+        .value()
+        .trim()
+        .to_owned();
+    let reason_ready = !model
+        .sanitization_reason_input
+        .read(cx)
+        .value()
+        .trim()
+        .is_empty();
+    let summary = &project.sanitization_summary;
+    let mut controls = div().flex().flex_col().gap_3()
+        .child(note("Protection is always active. Known credential patterns are masked before model input and evidence export; unknown formats may be missed. Sensitive files remain blocked."))
+        .child(readout(format!("Project history · {} inputs examined · {} input occurrences masked · {} output occurrences masked · {} fixture authorizations applied · {} bytes examined · {} ms", summary.entries_examined, summary.input_redaction_count, summary.output_redaction_count, summary.exceptions_applied, summary.examined_bytes, summary.duration_ms)))
+        .when(!summary.categories.is_empty(), |v| v.child(hint(format!("Detected categories: {}", summary.categories.join(", ")))))
+        .child(note("Authorize only a synthetic test fixture. Approval is local to this project, file version, detector and occurrence; changing the file makes it inactive. The matched value is never shown here."))
+        .child(div().flex().flex_wrap().items_center().gap_2()
+            .child(crate::sizing::sized_input(model.sanitization_path_input.clone(), crate::sizing::INPUT_LONG))
+            .child(crate::settings_view::action("sanitization-preview", if loading { "Inspecting…" } else { "Inspect file" }, !busy && !loading && !path.is_empty(), cx, |model, cx| model.preview_sanitization_file(cx))))
+        .child(crate::sizing::sized_input(model.sanitization_reason_input.clone(), crate::sizing::INPUT_LONG));
+    if let Some((_, preview)) =
+        preview.filter(|(id, p)| id == &project.project_id && p.relative_path == path)
+    {
+        if preview.spans.is_empty() {
+            controls = controls.child(hint(
+                "No catalogued secret occurrence was detected in this file.",
+            ));
+        }
+        for (index, span) in preview.spans.iter().enumerate() {
+            let allowed = project.sanitization_exceptions.iter().any(|e| {
+                e.active
+                    && e.relative_path == preview.relative_path
+                    && e.original_file_sha256 == preview.original_file_sha256
+                    && e.start_byte == span.start_byte
+                    && e.end_byte == span.end_byte
+                    && e.detector_id == span.detector_id
+                    && e.detector_version == span.detector_version
+            });
+            controls = controls.child(
+                list_line(format!(
+                    "{} · bytes {}–{} · {} v{}",
+                    span.category,
+                    span.start_byte,
+                    span.end_byte,
+                    span.detector_id,
+                    span.detector_version
+                ))
+                .child(crate::widgets::btn(
+                    gpui::SharedString::from(format!("sanitization-authorize-{index}")),
+                    if allowed {
+                        "Authorized"
+                    } else {
+                        "Authorize synthetic fixture"
+                    },
+                    crate::widgets::ButtonVariant::Secondary,
+                    !busy && !loading && reason_ready && !allowed,
+                    cx,
+                    move |model, cx| model.authorize_synthetic_occurrence(index, cx),
+                )),
+            );
+        }
+    }
+    if project.sanitization_exceptions.is_empty() {
+        controls = controls.child(hint("No local fixture authorization is configured."));
+    }
+    for exception in &project.sanitization_exceptions {
+        let id = exception.id.clone();
+        controls = controls.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    list_line(format!(
+                        "{} · {} · bytes {}–{} · {}",
+                        exception.relative_path,
+                        exception.detector_id,
+                        exception.start_byte,
+                        exception.end_byte,
+                        if exception.active {
+                            "active for this file version"
+                        } else {
+                            "inactive: file or occurrence changed"
+                        }
+                    ))
+                    .child(crate::widgets::btn(
+                        gpui::SharedString::from(format!("sanitization-remove-{id}")),
+                        "Remove",
+                        crate::widgets::ButtonVariant::Danger,
+                        !busy,
+                        cx,
+                        move |model, cx| model.remove_sanitization_exception(id.clone(), cx),
+                    )),
+                )
+                .child(hint(format!("Reason: {}", exception.reason))),
+        );
+    }
+    controls.into_any_element()
+}
+
 /// Settings → Stage composition: the per-project opt-in, host validation with its checks, and
 /// specialty overrides. The experimental knobs live on the Labs page.
 pub(crate) fn composition_page(
@@ -425,6 +686,7 @@ pub(crate) fn composition_page(
             .any(|(profile, _)| profile.check_ref == preset.check_ref)
     });
     let override_mode_cli = override_mode.as_ref() == "cli_process";
+    let sanitization = sanitization_controls(model, &project, busy, cx);
 
     let checks = div()
         .flex()
@@ -560,6 +822,14 @@ pub(crate) fn composition_page(
     PageContent::new(SettingsPage::Composition.label())
         .description("Changes affect batches created and stages admitted from now on.")
         .meta(format!("Project · {}", project.project_name))
+        .section(
+            "Secret protection",
+            section(
+                "Secret protection",
+                None,
+                vec![stacked_row("secret-sanitization", hl, sanitization)],
+            ),
+        )
         .section(
             "Composed batches",
             section(

@@ -206,9 +206,9 @@ pub fn classify_stage_failure(error: &PersistenceServiceError) -> Option<Failure
             | LlmErrorKind::Permission
             | LlmErrorKind::ModelNotFound
             | LlmErrorKind::RouteConflict => FailureClass::ProviderConfiguration,
-            LlmErrorKind::ModelMismatch | LlmErrorKind::ModelUnverified => {
-                FailureClass::HostContract
-            }
+            LlmErrorKind::ModelMismatch
+            | LlmErrorKind::ModelUnverified
+            | LlmErrorKind::Sanitization => FailureClass::HostContract,
             LlmErrorKind::InvalidRequest
             | LlmErrorKind::InvalidResponse
             | LlmErrorKind::StreamFailed

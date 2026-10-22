@@ -953,3 +953,183 @@ fn duplicate_artifact_destinations_are_a_retryable_model_output_error() {
         Err(PersistenceServiceError::ModelOutputInvalid(_))
     ));
 }
+
+#[test]
+fn sanitization_rejects_placeholder_publication_without_writing_a_candidate() {
+    let f = Fixture::new(PulsationStage::Code);
+    assert!(
+        f.accept(&f.output(
+            "advance",
+            Some("code.rs"),
+            "const KEY: &str = \"<REDACTED_SECRET:KNOWN_API_TOKEN_1>\";\n"
+        ))
+        .is_err()
+    );
+    assert!(!f.workspace.path().join("code.rs").exists());
+    assert_eq!(f.count("artifacts"), 0);
+}
+
+#[test]
+fn sanitization_publication_guard_survives_recovery_and_rejects_tampering() {
+    let f = Fixture::new(PulsationStage::Code);
+    f.accept(&f.output("advance", Some("code.rs"), "pub fn safe() {}\n"))
+        .unwrap();
+    let db = f.service.connection().unwrap();
+    assert_eq!(f.count("secret_publication_guards"), 1);
+    db.execute(
+        "UPDATE secret_publication_guards SET desired_sha256=?1",
+        ["0".repeat(64)],
+    )
+    .unwrap();
+    f.service.recover_interrupted_jobs().unwrap();
+    assert!(!f.workspace.path().join("code.rs").exists());
+    let state: String = db
+        .query_row("SELECT state FROM artifact_publications", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(state, "conflict");
+}
+
+#[test]
+fn sanitization_policy_change_requires_new_publication_preparation() {
+    let f = Fixture::new(PulsationStage::Code);
+    f.accept(&f.output("advance", Some("code.rs"), "pub fn safe() {}\n"))
+        .unwrap();
+    fs::write(
+        f.workspace.path().join("fixture.rs"),
+        "ghp_syntheticabcdefghijklmnop",
+    )
+    .unwrap();
+    let store = crate::sanitization::SanitizationStore::new(f.service.database_path());
+    let preview = store
+        .preview_file(&f.pulse.project_id, "fixture.rs")
+        .unwrap();
+    let span = &preview.spans[0];
+    store
+        .create_exception(&crate::sanitization::CreateSecretRedactionException {
+            project_id: f.pulse.project_id.clone(),
+            relative_path: "fixture.rs".into(),
+            detector_id: span.detector_id.clone(),
+            detector_version: span.detector_version,
+            original_file_sha256: preview.original_file_sha256,
+            start_byte: span.start_byte,
+            end_byte: span.end_byte,
+            reason: "A synthetic fixture approved locally".into(),
+        })
+        .unwrap();
+    f.service.recover_interrupted_jobs().unwrap();
+    assert!(!f.workspace.path().join("code.rs").exists());
+    assert_eq!(
+        f.service
+            .connection()
+            .unwrap()
+            .query_row("SELECT state FROM artifact_publications", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+        "conflict"
+    );
+}
+
+#[test]
+fn sanitization_acceptance_checks_the_frozen_policy_inside_its_transaction() {
+    let f = Fixture::new(PulsationStage::Code);
+    let store = crate::sanitization::SanitizationStore::new(f.service.database_path());
+    let frozen = store
+        .policy_for_project(&f.pulse.project_id)
+        .unwrap()
+        .identity;
+    fs::write(
+        f.workspace.path().join("fixture.rs"),
+        "ghp_syntheticabcdefghijklmnop",
+    )
+    .unwrap();
+    let preview = store
+        .preview_file(&f.pulse.project_id, "fixture.rs")
+        .unwrap();
+    let span = &preview.spans[0];
+    store
+        .create_exception(&crate::sanitization::CreateSecretRedactionException {
+            project_id: f.pulse.project_id.clone(),
+            relative_path: "fixture.rs".into(),
+            detector_id: span.detector_id.clone(),
+            detector_version: span.detector_version,
+            original_file_sha256: preview.original_file_sha256,
+            start_byte: span.start_byte,
+            end_byte: span.end_byte,
+            reason: "A synthetic fixture approved locally".into(),
+        })
+        .unwrap();
+    let mut db = f.service.connection().unwrap();
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let current = PersistenceService::find_pulsation_by_id(&tx, &f.pulse.id)
+        .unwrap()
+        .unwrap();
+    let outcome = f
+        .output("advance", Some("code.rs"), "pub fn safe() {}\n")
+        .outcome()
+        .unwrap();
+    let error = PersistenceService::accept_stage_outcome_in_tx(
+        &tx,
+        &f.job,
+        &f.run,
+        &f.handoff,
+        &current,
+        &outcome,
+        &AcceptanceProvenance {
+            sanitization_policy_identity: Some(&frozen),
+            ..Default::default()
+        },
+        f.workspace.path(),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("policy changed before acceptance")
+    );
+    tx.rollback().unwrap();
+    assert_eq!(f.count("stage_acceptances"), 0);
+    assert!(!f.workspace.path().join("code.rs").exists());
+}
+
+#[test]
+fn sanitization_legacy_uncertain_write_with_placeholder_is_not_acknowledged() {
+    let f = Fixture::new(PulsationStage::Code);
+    f.accept(&f.output("advance", Some("code.rs"), "pub fn safe() {}\n"))
+        .unwrap();
+    let content = "const KEY: &str = \"<REDACTED_SECRET:KNOWN_API_TOKEN_1>\";\n";
+    let digest = ContentSha256::of(content.as_bytes());
+    let db = f.service.connection().unwrap();
+    db.execute(
+        "UPDATE artifacts SET content=?1,content_sha256=?2",
+        params![content, digest.as_str()],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE artifact_publications SET desired_sha256=?1",
+        [digest.as_str()],
+    )
+    .unwrap();
+    db.execute("DELETE FROM secret_publication_guards", [])
+        .unwrap();
+    fs::write(f.workspace.path().join("code.rs"), content).unwrap();
+    f.service.recover_interrupted_jobs().unwrap();
+    assert_eq!(
+        fs::read_to_string(f.workspace.path().join("code.rs")).unwrap(),
+        content
+    );
+    assert_eq!(f.count("secret_publication_guards"), 0);
+    assert_eq!(
+        db.query_row("SELECT state FROM artifact_publications", [], |row| row
+            .get::<_, String>(
+            0
+        ))
+        .unwrap(),
+        "conflict"
+    );
+}

@@ -189,15 +189,33 @@ async fn argv_is_literal_and_the_environment_is_reduced() {
 
 #[tokio::test]
 async fn oversized_output_is_capped_and_marked_truncated_without_deadlock() {
-    let receipt = run(&["big-output", "4194304"], 60, 16_384).await;
+    let receipt = tokio::time::timeout(
+        Duration::from_secs(20),
+        run(&["big-output", "4194304"], 60, 16_384),
+    )
+    .await
+    .expect("the runner must drain all 4 MiB after reaching its retained-log limit");
     assert_eq!(
         receipt.status,
-        ReceiptStatus::Passed,
-        "truncation is not a failure"
+        ReceiptStatus::Error,
+        "an incomplete observation cannot qualify a successful validation"
     );
+    assert_eq!(receipt.exit_code, Some(0), "the process finishes draining");
     assert!(receipt.stdout.truncated);
+    assert_eq!(
+        receipt.stdout.text,
+        "[output withheld: validation log limit exceeded]"
+    );
+    assert!(!receipt.stdout.text.contains("0123456789abcdef"));
     assert!(receipt.stdout.text.len() <= 16_384);
     assert!(!receipt.stderr.truncated);
+    assert!(receipt.stderr.text.is_empty());
+    assert!(
+        receipt
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("evidence is incomplete"))
+    );
 }
 
 #[tokio::test]

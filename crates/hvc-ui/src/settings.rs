@@ -44,6 +44,8 @@ pub(crate) struct CompositionProjectSettings {
     )>,
     pub(crate) cli_observation_trial: Option<hvc_core::terminals::CliObservationTrial>,
     pub(crate) cli_observation_report: Option<hvc_core::terminals::CliObservationReport>,
+    pub(crate) sanitization_exceptions: Vec<hvc_core::sanitization::SecretRedactionException>,
+    pub(crate) sanitization_summary: hvc_core::sanitization::SanitizationSummary,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +66,20 @@ pub(crate) struct SettingsSnapshot {
 }
 
 pub(crate) trait SettingsBackend: Send + Sync {
+    fn preview_sanitization_file(
+        &self,
+        project_id: String,
+        relative_path: String,
+    ) -> SettingsFuture<hvc_core::sanitization::SanitizationFilePreview>;
+    fn create_sanitization_exception(
+        &self,
+        request: hvc_core::sanitization::CreateSecretRedactionException,
+    ) -> SettingsFuture<()>;
+    fn remove_sanitization_exception(
+        &self,
+        project_id: String,
+        exception_id: String,
+    ) -> SettingsFuture<()>;
     fn cli_connections(
         &self,
         refresh: bool,
@@ -196,6 +212,39 @@ impl CoreSettingsBackend {
 }
 
 impl SettingsBackend for CoreSettingsBackend {
+    fn preview_sanitization_file(
+        &self,
+        project_id: String,
+        relative_path: String,
+    ) -> SettingsFuture<hvc_core::sanitization::SanitizationFilePreview> {
+        self.blocking(move |persistence| {
+            hvc_core::sanitization::SanitizationStore::new(persistence.database_path())
+                .preview_file(&project_id, &relative_path)
+                .map_err(hvc_core::persistence_service::PersistenceServiceError::Validation)
+        })
+    }
+    fn create_sanitization_exception(
+        &self,
+        request: hvc_core::sanitization::CreateSecretRedactionException,
+    ) -> SettingsFuture<()> {
+        self.blocking(move |persistence| {
+            hvc_core::sanitization::SanitizationStore::new(persistence.database_path())
+                .create_exception(&request)
+                .map(|_| ())
+                .map_err(hvc_core::persistence_service::PersistenceServiceError::Validation)
+        })
+    }
+    fn remove_sanitization_exception(
+        &self,
+        project_id: String,
+        exception_id: String,
+    ) -> SettingsFuture<()> {
+        self.blocking(move |persistence| {
+            hvc_core::sanitization::SanitizationStore::new(persistence.database_path())
+                .remove_exception(&project_id, &exception_id)
+                .map_err(hvc_core::persistence_service::PersistenceServiceError::Validation)
+        })
+    }
     fn cli_connections(
         &self,
         refresh: bool,
@@ -366,6 +415,10 @@ impl SettingsBackend for CoreSettingsBackend {
                     let persistence = core.persistence();
                     let composition = match persistence.get_last_active_project()?.project {
                         Some(project) => Some(CompositionProjectSettings {
+                            sanitization_exceptions: hvc_core::sanitization::SanitizationStore::new(persistence.database_path())
+                                .list_exceptions(&project.id).map_err(hvc_core::persistence_service::PersistenceServiceError::Validation)?,
+                            sanitization_summary: hvc_core::sanitization::SanitizationStore::new(persistence.database_path())
+                                .summary(&project.id, None).map_err(hvc_core::persistence_service::PersistenceServiceError::Validation)?,
                             settings: persistence.get_composition_settings(&project.id)?,
                             profiles: persistence.list_validation_profiles(&project.id)?,
                             presets: persistence.detect_validation_presets(&project.id)?,
@@ -940,6 +993,10 @@ pub(crate) enum StatusTone {
 
 #[derive(Debug)]
 pub(crate) struct SettingsModel {
+    pub(crate) sanitization_preview:
+        Option<(String, hvc_core::sanitization::SanitizationFilePreview)>,
+    pub(crate) sanitization_preview_loading: bool,
+    pub(crate) sanitization_preview_generation: u64,
     pub(crate) cli_connections: Option<hvc_core::terminals::CliConnectionsSnapshot>,
     pub(crate) cli_connections_loading: bool,
     pub(crate) cli_connections_error: Option<UiCommandError>,
@@ -987,6 +1044,9 @@ pub(crate) struct SettingsModel {
 impl Default for SettingsModel {
     fn default() -> Self {
         Self {
+            sanitization_preview: None,
+            sanitization_preview_loading: false,
+            sanitization_preview_generation: 0,
             cli_connections: None,
             cli_connections_loading: false,
             cli_connections_error: None,

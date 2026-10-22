@@ -103,7 +103,7 @@ impl CliAdapter for AntigravityAdapter {
         if stream == "stderr" {
             return frame;
         }
-        let Ok(value) = serde_json::from_str::<Value>(&sanitize_terminal_text(bytes)) else {
+        let Ok(value) = serde_json::from_str::<Value>(&sanitize_cli_frame_text(bytes)) else {
             return frame;
         };
         match frame_event(&value) {
@@ -118,7 +118,7 @@ impl CliAdapter for AntigravityAdapter {
                         .get("text_delta")
                         .and_then(Value::as_str)
                         .unwrap_or_default();
-                    frame.content = sanitize_terminal_text(delta.as_bytes());
+                    frame.content = sanitize_cli_frame_text(delta.as_bytes());
                     frame.is_text = !frame.content.is_empty();
                     frame.is_delta = true;
                 } else if kind == "tool" {
@@ -126,7 +126,7 @@ impl CliAdapter for AntigravityAdapter {
                         .get("tool_name")
                         .and_then(Value::as_str)
                         .unwrap_or("tool");
-                    frame.content = sanitize_terminal_text(
+                    frame.content = sanitize_cli_frame_text(
                         if frame.kind == TerminalEventKind::ToolUse {
                             let parameters = step
                                 .pointer("/tool_info/parameters")
@@ -158,7 +158,7 @@ impl CliAdapter for AntigravityAdapter {
                         .unwrap_or_default()
                         .to_owned(),
                 };
-                frame.content = sanitize_terminal_text(content.as_bytes());
+                frame.content = sanitize_cli_frame_text(content.as_bytes());
                 frame.is_text = !frame.content.trim().is_empty();
                 frame.is_delta = false;
             }

@@ -66,7 +66,11 @@ impl ProviderProfile {
 
         let mut error = LlmError::new(kind, sanitize_provider_message(message));
         error.http_status = Some(status);
-        error.provider_code = provider_code.map(ToOwned::to_owned);
+        error.provider_code = provider_code.map(|code| {
+            crate::secret_redactor::redact_secrets(code)
+                .map(|result| result.text)
+                .unwrap_or_else(|_| "provider_code_unavailable".into())
+        });
         error.retry_after_ms = retry_after_ms;
         error
     }
@@ -314,13 +318,12 @@ fn sanitize_provider_message(message: &str) -> String {
     if trimmed.is_empty() {
         return "The provider returned an error without a message.".to_string();
     }
-    let without_bearer = regex::Regex::new(r"(?i)bearer\s+[A-Za-z0-9._\-]+")
-        .expect("valid bearer regex")
-        .replace_all(trimmed, "Bearer [REDACTED]");
-    let without_keys = regex::Regex::new(r"(?i)(api[_ -]?key[=: ]+)\S+")
-        .expect("valid api key regex")
-        .replace_all(&without_bearer, "$1[REDACTED]");
-    without_keys.chars().take(500).collect()
+    crate::secret_redactor::redact_secrets(trimmed)
+        .map(|result| result.text)
+        .unwrap_or_else(|_| "Provider details unavailable after sanitization.".into())
+        .chars()
+        .take(500)
+        .collect()
 }
 
 #[cfg(test)]

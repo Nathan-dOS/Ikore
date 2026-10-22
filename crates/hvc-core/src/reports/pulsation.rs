@@ -146,6 +146,23 @@ pub struct RejectedOutput {
 
 /// Renders the complete, self-contained report document.
 pub fn render_pulsation_report(report: &PulsationReport) -> String {
+    fn omitted() -> String {
+        document(
+            "Report unavailable",
+            "Report content was omitted because sanitization could not be completed.",
+            &SafeHtml::text(crate::secret_redactor::OMITTED_CONTENT),
+        )
+    }
+    let Ok(original_json) = super::analysis::canonical_report_json(report) else {
+        return omitted();
+    };
+    // Decode each field before host formatting combines it with labels. A
+    // JSON-escaped credential must not become opaque inside a title/tooltip.
+    let observed = observed_report(report);
+    let Ok(observed_json) = super::analysis::canonical_report_json(&observed) else {
+        return omitted();
+    };
+    let report = &observed;
     let pulsation = &report.pulsation;
     let mut page = SafeHtml::markup(SPRITE);
     page.push_markup("<div class=\"page\">")
@@ -168,17 +185,78 @@ pub fn render_pulsation_report(report: &PulsationReport) -> String {
     if !report.rejected_outputs.is_empty() {
         page.push(&rejected_outputs(&report.rejected_outputs));
     }
+    if original_json != observed_json {
+        page.push_markup("<div hidden id=\"sanitization-metadata\"")
+            .push_attr("data-policy", crate::secret_redactor::SANITIZATION_POLICY_VERSION)
+            .push_attr("data-original-evidence-sha256", &crate::secret_redactor::text_sha256(&original_json))
+            .push_attr("data-sanitized-content-sha256", &crate::secret_redactor::text_sha256(&observed_json))
+            .push_attr("data-hash-scope", "UTF-8 compact JSON of the typed PulsationReport with recursively sorted object keys and original array order; hashes exclude this metadata and the final HTML bytes.")
+            .push_markup("></div>");
+    }
     page.push_markup("</main>")
         .push(&footer())
         .push_markup("</div>");
-    document(
+    let output = document(
         &format!("Pulsation report · {}", pulsation.feature_name),
         &format!(
             "Host-rendered report of pulsation {} ({}).",
             pulsation.id, pulsation.feature_name
         ),
         &page,
-    )
+    );
+    if output.len() > crate::secret_redactor::MAX_SANITIZATION_BYTES {
+        omitted()
+    } else {
+        output
+    }
+}
+
+fn observed_report(report: &PulsationReport) -> PulsationReport {
+    fn text(value: &mut String) {
+        *value = crate::sanitization::sanitized_observation(value);
+    }
+    fn optional(value: &mut Option<String>) {
+        if let Some(value) = value {
+            text(value);
+        }
+    }
+    fn strings(values: &mut [String]) {
+        for value in values {
+            text(value);
+        }
+    }
+    let mut report = report.clone();
+    text(&mut report.pulsation.id);
+    text(&mut report.pulsation.feature_name);
+    text(&mut report.pulsation.created_at);
+    text(&mut report.pulsation.updated_at);
+    if let Some(outcome) = &mut report.outcome {
+        strings(&mut outcome.blockers);
+        for criterion in &mut outcome.criteria {
+            text(&mut criterion.criterion_id);
+            text(&mut criterion.description);
+            text(&mut criterion.task_title);
+            text(&mut criterion.explanation);
+            strings(&mut criterion.check_refs);
+        }
+        for check in &mut outcome.checks {
+            text(&mut check.check_ref);
+            optional(&mut check.command);
+            optional(&mut check.receipt_id);
+        }
+        for file in &mut outcome.files {
+            text(&mut file.path);
+        }
+    }
+    for quota in &mut report.run.plan_quota {
+        text(&mut quota.cli);
+        text(&mut quota.window);
+    }
+    for output in &mut report.rejected_outputs {
+        text(&mut output.agent);
+        text(&mut output.error);
+    }
+    report
 }
 
 // ---------------------------------------------------------------------------
@@ -1382,6 +1460,7 @@ mod tests {
     fn rendering_is_pure_and_matches_the_golden_file() {
         let report = sample();
         let first = render_pulsation_report(&report);
+        assert!(!first.contains("id=\"sanitization-metadata\""));
         assert_eq!(first, render_pulsation_report(&report));
         let round_trip: PulsationReport =
             serde_json::from_value(serde_json::to_value(&report).unwrap()).unwrap();
@@ -1396,6 +1475,77 @@ mod tests {
             golden == first,
             "{GOLDEN} differs from the renderer output; rerun with HVC_UPDATE_GOLDEN=1 after reviewing the change"
         );
+    }
+
+    #[test]
+    fn reports_sanitize_fields_before_formatting_without_changing_the_typed_record() {
+        let mut report = sample();
+        let encoded = r#"{"message":"sk-proj-\u0061bcdefghijklmnopqrst"}"#;
+        report.pulsation.feature_name = encoded.into();
+        report.rejected_outputs[0].error = encoded.into();
+        let outcome = report.outcome.as_mut().unwrap();
+        outcome.criteria[0].description = "Authorization: Bearer synthetic-credential-value".into();
+        outcome.criteria[0].task_title = encoded.into();
+        outcome.criteria[0].explanation = "ghp_syntheticabcdefghijklmnop".into();
+        let original = serde_json::to_string(&report).unwrap();
+        let original_sha = crate::secret_redactor::text_sha256(&original);
+        let id = report.pulsation.id.clone();
+        let receipt = report.outcome.as_ref().unwrap().checks[0]
+            .receipt_id
+            .clone();
+        let output = render_pulsation_report(&report);
+        let original_envelope_sha = crate::secret_redactor::text_sha256(
+            &super::super::analysis::canonical_report_json(&report).unwrap(),
+        );
+        let observed_envelope_sha = crate::secret_redactor::text_sha256(
+            &super::super::analysis::canonical_report_json(&observed_report(&report)).unwrap(),
+        );
+        assert_ne!(original_envelope_sha, observed_envelope_sha);
+        assert!(output.contains("<div hidden id=\"sanitization-metadata\""));
+        assert!(output.contains(&format!(
+            "data-original-evidence-sha256=\"{original_envelope_sha}\""
+        )));
+        assert!(output.contains(&format!(
+            "data-sanitized-content-sha256=\"{observed_envelope_sha}\""
+        )));
+        assert!(output.contains("hashes exclude this metadata and the final HTML bytes"));
+        for forbidden in [
+            "bcdefghijklmnopqrst",
+            "synthetic-credential-value",
+            "ghp_synthetic",
+            "\\u0061",
+        ] {
+            assert!(
+                !output.contains(forbidden),
+                "report exposed a credential representation"
+            );
+        }
+        assert!(output.contains("&lt;REDACTED_SECRET:"));
+        assert!(output.contains("Content-Security-Policy"));
+        assert!(!output.contains("<script"));
+        assert_eq!(report.pulsation.id, id);
+        assert_eq!(
+            report.outcome.as_ref().unwrap().checks[0].receipt_id,
+            receipt
+        );
+        assert_eq!(
+            crate::secret_redactor::text_sha256(&serde_json::to_string(&report).unwrap()),
+            original_sha
+        );
+    }
+
+    #[test]
+    fn report_serialization_overflow_returns_only_a_neutral_omission() {
+        let mut report = sample();
+        report.pulsation.feature_name = format!(
+            "private-sentinel {}",
+            "x".repeat(crate::secret_redactor::MAX_SANITIZATION_BYTES)
+        );
+        let output = render_pulsation_report(&report);
+        assert!(output.contains(crate::secret_redactor::OMITTED_CONTENT));
+        assert!(!output.contains("private-sentinel"));
+        assert!(!output.contains(&report.pulsation.id));
+        assert!(!output.contains("sanitization-metadata"));
     }
 
     #[test]

@@ -134,12 +134,55 @@ async fn drain<R: tokio::io::AsyncRead + Unpin>(
     (kept, truncated)
 }
 
-fn excerpt(bytes: &[u8], truncated: bool) -> LogExcerptV1 {
+fn excerpt(bytes: &[u8], truncated: bool) -> Result<LogExcerptV1, String> {
+    if truncated {
+        // A bounded prefix can end halfway through a credential. Withholding
+        // the stream is safe even when its final delimiter was discarded.
+        return Ok(LogExcerptV1 {
+            text: "[output withheld: validation log limit exceeded]".into(),
+            truncated: true,
+        });
+    }
+    fn sanitize_json(value: &mut serde_json::Value) -> Result<(), String> {
+        match value {
+            serde_json::Value::String(text) => {
+                *text = crate::secret_redactor::redact_secrets(text)?.text
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    sanitize_json(value)?;
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                let mut safe = serde_json::Map::new();
+                for (key, mut value) in std::mem::take(fields) {
+                    sanitize_json(&mut value)?;
+                    safe.insert(crate::secret_redactor::redact_secrets(&key)?.text, value);
+                }
+                *fields = safe;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
     let text = String::from_utf8_lossy(bytes);
-    let text = crate::secret_redactor::redact_secrets(&text)
-        .map(|r| r.text)
-        .unwrap_or_else(|_| text.into_owned());
-    LogExcerptV1 { text, truncated }
+    let mut decoded = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(line) {
+            sanitize_json(&mut value)?;
+            decoded.push_str(
+                &serde_json::to_string(&value)
+                    .map_err(|_| "validation_log_serialization_failed")?,
+            );
+            if line.ends_with('\n') {
+                decoded.push('\n');
+            }
+        } else {
+            decoded.push_str(line);
+        }
+    }
+    let text = crate::secret_redactor::redact_secrets(&decoded).map(|r| r.text)?;
+    Ok(LogExcerptV1 { text, truncated })
 }
 
 fn empty_receipt(
@@ -184,6 +227,9 @@ fn empty_receipt(
 }
 
 fn error_diagnostic(message: &str) -> DiagnosticV1 {
+    let message = crate::secret_redactor::redact_secrets(message)
+        .map(|r| r.text)
+        .unwrap_or_else(|_| "Validation detail withheld: sanitization unavailable.".into());
     DiagnosticV1 {
         severity: Severity::Error,
         code: super::super::Handle::new("runner_error").unwrap(),
@@ -333,8 +379,23 @@ pub async fn run_check(
     let (stdout_bytes, stdout_truncated) = stdout_task.await.unwrap_or_default();
     let (stderr_bytes, stderr_truncated) = stderr_task.await.unwrap_or_default();
     drop(job);
-    let stdout = excerpt(&stdout_bytes, stdout_truncated);
-    let stderr = excerpt(&stderr_bytes, stderr_truncated);
+    let stdout_result = excerpt(&stdout_bytes, stdout_truncated);
+    let stderr_result = excerpt(&stderr_bytes, stderr_truncated);
+    let unavailable = stdout_result.is_err() || stderr_result.is_err();
+    let withheld = || LogExcerptV1 {
+        text: "[output withheld: sanitization unavailable]".into(),
+        truncated: false,
+    };
+    let stdout = stdout_result.unwrap_or_else(|_| withheld());
+    let stderr = stderr_result.unwrap_or_else(|_| withheld());
+    let status = if unavailable || stdout_truncated || stderr_truncated {
+        Some((
+            ReceiptStatus::Error,
+            "Validation evidence is incomplete or sanitization is unavailable.".to_owned(),
+        ))
+    } else {
+        status
+    };
 
     let mut diagnostics = parse_diagnostics(profile, &stdout.text, &stderr.text, resolver);
     let status = match status {
@@ -393,4 +454,26 @@ fn parse_diagnostics(
     combined.push('\n');
     combined.push_str(stdout);
     diagnostics::parse_generic(&combined, resolver)
+}
+
+#[cfg(test)]
+mod sanitization_tests {
+    use super::*;
+
+    #[test]
+    fn complete_logs_redact_secrets_and_truncated_prefixes_are_withheld() {
+        let secret = b"\xc3\xa9 Authorization: Bearer synthetic-credential-value";
+        let complete = excerpt(secret, false).unwrap();
+        assert!(!complete.text.contains("synthetic-credential-value"));
+        assert!(complete.text.contains("<REDACTED_SECRET:"));
+        let truncated =
+            excerpt(b"-----BEGIN PRIVATE KEY-----\npartial-private-value", true).unwrap();
+        assert!(truncated.truncated);
+        assert!(!truncated.text.contains("partial-private-value"));
+        assert!(!truncated.text.contains("BEGIN PRIVATE KEY"));
+        let escaped = br#"{"message":"sk-proj-\u0061bcdefghijklmnopqrst"}"#;
+        let decoded = excerpt(escaped, false).unwrap();
+        assert!(!decoded.text.contains("bcdefghijklmnopqrst"));
+        assert!(decoded.text.contains("<REDACTED_SECRET:"));
+    }
 }

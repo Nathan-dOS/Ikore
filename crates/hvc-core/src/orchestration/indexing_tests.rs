@@ -22,14 +22,16 @@ impl RecordingSink {
 #[derive(Default)]
 struct Embeddings {
     calls: AtomicUsize,
+    prompts: StdMutex<Vec<String>>,
     fail: AtomicBool,
     hold: AtomicBool,
     started: tokio::sync::Notify,
     resume: tokio::sync::Notify,
 }
 impl crate::embedding_service::EmbeddingGateway for Embeddings {
-    fn embed<'a>(&'a self, _: &'a str, _: &'a str) -> EmbeddingFuture<'a> {
+    fn embed<'a>(&'a self, _: &'a str, prompt: &'a str) -> EmbeddingFuture<'a> {
         Box::pin(async move {
+            self.prompts.lock().unwrap().push(prompt.to_owned());
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.started.notify_one();
             if self.hold.load(Ordering::SeqCst) {
@@ -131,6 +133,47 @@ fn delta_queue_coalesces_changes_deletions_and_model_switches() {
         let db=f.service.connection().unwrap();
         let active:i64=db.query_row("SELECT COUNT(*) FROM workspace_note_embeddings WHERE embedding_model='fixture-new-model'",[],|r|r.get(0)).unwrap();
         assert_eq!(active,0);
+    });
+}
+
+#[test]
+fn embedding_sanitization_policy_invalidates_vectors_without_rewriting_source_hash() {
+    let (f, gateway) = fixture();
+    let raw = "# Synthetic\nOPENAI_API_KEY=sk-proj-syntheticabcdefghijklmnop\n";
+    runtime().block_on(async {
+        write(&f, raw);
+        enqueue(&f).await;
+        f.service
+            .process_indexing(&CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(gateway.calls.load(Ordering::SeqCst), 1);
+        assert!(!gateway.prompts.lock().unwrap()[0].contains("sk-proj-syntheticabcdefghijklmnop"));
+        let db = f.service.connection().unwrap();
+        db.execute(
+            "UPDATE workspace_note_embeddings SET sanitization_policy_version='old-policy'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE embedding_sync_state SET sanitization_policy_version='old-policy',dirty=0",
+            [],
+        )
+        .unwrap();
+        f.service
+            .process_indexing(&CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(gateway.calls.load(Ordering::SeqCst), 2);
+        let (hash, version): (String, String) = db
+            .query_row(
+                "SELECT revision_hash,sanitization_policy_version FROM workspace_note_embeddings",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(hash, ContentSha256::of(raw.as_bytes()).as_str());
+        assert_eq!(version, crate::secret_redactor::SANITIZATION_POLICY_VERSION);
     });
 }
 

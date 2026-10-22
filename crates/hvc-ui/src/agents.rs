@@ -1034,9 +1034,9 @@ impl AgentsModel {
         self.record_llm_batch(std::slice::from_ref(envelope))
     }
 
-    /// Projects a persisted LLM stream in one paint batch. Token text is retained only until the
-    /// end of this call, then redacted as a complete visible segment. This preserves redaction for
-    /// secrets split across chunks without repeatedly rebuilding accumulated output per token.
+    /// Current v2 events contain completed, sanitized model text. Batch it for
+    /// painting; legacy token fragments are omitted because paint boundaries
+    /// cannot establish where a secret ends.
     pub(crate) fn record_llm_batch(&mut self, envelopes: &[LlmEventEnvelope]) -> bool {
         let mut gap = false;
         let mut pending_output = HashMap::<AgentIdentifier, String>::new();
@@ -1079,7 +1079,20 @@ impl AgentsModel {
             }
 
             if let LlmStreamEvent::TokenDelta { text } = &envelope.event {
-                pending_output.entry(identifier).or_default().push_str(text);
+                if envelope.protocol_version < 2 {
+                    self.flush_api_output(&identifier, pending_output.remove(&identifier));
+                    let notice = "output · [Legacy API output omitted: complete sanitized content is unavailable.]";
+                    if self
+                        .api_activity
+                        .get(&identifier)
+                        .and_then(|lines| lines.last())
+                        .is_none_or(|line| line != notice)
+                    {
+                        self.push_api_activity(identifier, notice.into());
+                    }
+                } else {
+                    pending_output.entry(identifier).or_default().push_str(text);
+                }
                 continue;
             }
             self.flush_api_output(&identifier, pending_output.remove(&identifier));
@@ -1112,9 +1125,7 @@ impl AgentsModel {
             };
             self.push_api_activity(
                 identifier,
-                hvc_core::secret_redactor::redact_secrets(&line)
-                    .map(|result| result.text)
-                    .unwrap_or_else(|_| "[content unavailable after redaction]".into()),
+                hvc_core::sanitization::sanitized_observation(&line),
             );
             if matches!(
                 &envelope.event,
@@ -1133,6 +1144,9 @@ impl AgentsModel {
         let Some(output) = output.filter(|output| !output.is_empty()) else {
             return;
         };
+        // Decode contextual/nested JSON before adding viewer chrome or cutting
+        // the visible tail, which would otherwise hide its assignment context.
+        let output = hvc_core::sanitization::sanitized_observation(&output);
         let activity = self.api_activity.entry(identifier.clone()).or_default();
         let target = if activity
             .last()
@@ -1148,9 +1162,7 @@ impl AgentsModel {
             *target = target.chars().take(64 * 1024).collect();
             target.push_str("\n[visible output truncated]");
         }
-        *target = hvc_core::secret_redactor::redact_secrets(target)
-            .map(|result| result.text)
-            .unwrap_or_else(|_| "[content unavailable after redaction]".into());
+        *target = hvc_core::sanitization::sanitized_observation(target);
         if activity.len() > 200 {
             activity.drain(..activity.len() - 200);
         }
@@ -1480,7 +1492,11 @@ mod tests {
 
         let activity = &model.api_activity[&AgentIdentifier::Canonical(AgentRole::BackendAgent)];
         assert_eq!(activity.len(), 200);
-        assert!(activity.iter().all(|line| line.contains("[REDACTED]")));
+        assert!(
+            activity
+                .iter()
+                .all(|line| { hvc_core::secret_redactor::contains_redaction_marker(line) })
+        );
         assert!(
             activity
                 .iter()
@@ -1501,7 +1517,7 @@ mod tests {
         };
         let events = [
             LlmEventEnvelope {
-                protocol_version: 1,
+                protocol_version: 2,
                 execution_id: "execution-1".into(),
                 generation_id: "generation-1".into(),
                 sequence: 1,
@@ -1511,7 +1527,7 @@ mod tests {
                 },
             },
             LlmEventEnvelope {
-                protocol_version: 1,
+                protocol_version: 2,
                 execution_id: "execution-1".into(),
                 generation_id: "generation-1".into(),
                 sequence: 2,
@@ -1525,8 +1541,27 @@ mod tests {
         assert!(!model.record_llm_batch(&events));
         let activity = &model.api_activity[&AgentIdentifier::Canonical(AgentRole::BackendAgent)];
         assert_eq!(activity.len(), 1);
-        assert!(activity[0].contains("[REDACTED]"));
+        assert!(hvc_core::secret_redactor::contains_redaction_marker(
+            &activity[0]
+        ));
         assert!(!activity[0].contains("fixture-secret-token"));
+        assert!(!activity[0].contains("secret-token"));
+        assert!(activity[0].contains('✓'));
         assert_eq!(model.api_sequences["execution-1"], 2);
+
+        // A v1 replay can split the same secret across separate paint batches.
+        // Never append its suffix to a marker produced by an earlier paint.
+        let mut legacy = self::model();
+        legacy.viewer_enabled = true;
+        for mut event in events {
+            event.protocol_version = 1;
+            assert!(!legacy.record_llm(&event));
+        }
+        let activity = &legacy.api_activity[&AgentIdentifier::Canonical(AgentRole::BackendAgent)];
+        assert_eq!(activity.len(), 1);
+        assert!(activity[0].contains("Legacy API output omitted"));
+        assert!(!activity[0].contains("fixture-"));
+        assert!(!activity[0].contains("secret-token"));
+        assert_eq!(legacy.api_sequences["execution-1"], 2);
     }
 }

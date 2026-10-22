@@ -14,7 +14,7 @@ use hvc_core::persistence_service::{CreateProjectRequest, PersistenceService};
 use hvc_core::terminals::{
     AgentExecutionMode, CliAvailabilityState, CliBackend, CliModelCatalogState,
     CliModelSelectionSource, ResumeManualRunRequest, StartManualRunRequest, TerminalEventEnvelope,
-    TerminalEventSink, TerminalRunStatus, TerminalService, ThinkingLevel,
+    TerminalEventKind, TerminalEventSink, TerminalRunStatus, TerminalService, ThinkingLevel,
     UpdateCliAgentConfigRequest,
 };
 use tempfile::TempDir;
@@ -585,14 +585,22 @@ async fn claude_synthetic_auth_error_reports_login_failure_instead_of_model_mism
         .await
         .unwrap_err();
     assert_eq!(error.code(), "cli_auth_required");
+    assert!(error.to_string().contains("requires authentication"));
+    assert!(!error.to_string().contains("OAuth session expired"));
     let db = rusqlite::Connection::open(&h.database_path).unwrap();
-    let (run_id, status, code, observed): (String, String, String, Option<String>) = db.query_row(
-        "SELECT id,status,error_code,observed_model FROM terminal_runs ORDER BY created_at DESC LIMIT 1",
-        [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+    let (run_id, status, code, observed, diagnostic): (String, String, String, Option<String>, Option<String>) = db.query_row(
+        "SELECT id,status,error_code,observed_model,error_message FROM terminal_runs ORDER BY created_at DESC LIMIT 1",
+        [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
     ).unwrap();
     assert_eq!(status, "failed");
     assert_eq!(code, "cli_auth_required");
     assert_eq!(observed, None);
+    assert!(
+        diagnostic
+            .as_deref()
+            .unwrap_or_default()
+            .contains("requires authentication")
+    );
     let events = h
         .terminals
         .repository()
@@ -601,13 +609,24 @@ async fn claude_synthetic_auth_error_reports_login_failure_instead_of_model_mism
     assert!(
         events
             .iter()
-            .any(|event| event.content.contains("OAuth session expired"))
+            .any(|event| event.kind == TerminalEventKind::Error
+                && event.content.contains("requires authentication"))
     );
+    // Provider diagnostics belong to an incomplete stream. Preserve the
+    // actionable host classification while withholding the raw provider text.
     assert!(
-        !events
+        events
             .iter()
-            .any(|event| event.content.contains("model_mismatch"))
+            .all(|event| !event.content.contains("OAuth session expired")
+                && !event.content.contains("<synthetic>")
+                && !event.content.contains("model_mismatch"))
     );
+    let persisted: String = db.query_row(
+        "SELECT COALESCE(group_concat(content, char(10)), '') FROM terminal_events WHERE run_id=?1",
+        [&run_id], |row| row.get(0),
+    ).unwrap();
+    assert!(!persisted.contains("OAuth session expired"));
+    assert!(!persisted.contains("<synthetic>"));
 }
 
 /// "Haiku CLI teste 1" (2026-09-26): a Claude run spent 44,354 output tokens

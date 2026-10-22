@@ -429,6 +429,13 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
     let show_feedback = hitl.show_feedback;
     let expanded = pulsations.diff_expanded;
     let documents = hitl.documents.clone();
+    let protected_view = documents
+        .iter()
+        .any(|document| crate::pulsations::has_sanitized_regions(&document.artifact.content))
+        || hitl.brief.as_ref().is_some_and(|brief| {
+            serde_json::to_string(brief)
+                .is_ok_and(|text| crate::pulsations::has_sanitized_regions(&text))
+        });
     // The Brief tab (ADR-027) shares the reader with the documents; the decision
     // bar and its gate do not change with it.
     let has_brief_tab = hitl.has_brief_tab() && !documents.is_empty();
@@ -691,7 +698,7 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
             )
         })
         .when_some(active_document.clone(), |panel, document| {
-            let copy = document.artifact.content.clone();
+            let copy = hvc_core::sanitization::sanitized_observation(&document.artifact.content);
             panel.child(
                 div()
                     .flex_shrink_0()
@@ -750,10 +757,12 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                             .on_click(move |_, _, cx| {
                                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))
                             })
-                            .child("Copy Markdown"),
+                            .child(if protected_view { "Copy sanitized Markdown" } else { "Copy Markdown" }),
                     ),
             )
         })
+        .when(protected_view, |panel| panel.child(div().px_3().py_2().text_xs().text_color(theme::warning())
+            .child("Sanitized review view: protected regions are masked. Approval still refers to the original candidate; local file bytes are preserved.")))
         .child(
             div()
                 .id(reader_id)

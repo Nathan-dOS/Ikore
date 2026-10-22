@@ -23,6 +23,7 @@ pub enum LlmErrorKind {
     RouteConflict,
     AllTargetsExhausted,
     Persistence,
+    Sanitization,
 }
 
 impl LlmErrorKind {
@@ -40,6 +41,7 @@ impl LlmErrorKind {
             Self::BackgroundDeferred => "background_deferred",
             Self::InvalidRequest => "validation_error",
             Self::Persistence => "db_error",
+            Self::Sanitization => "sanitization_failed",
             _ => "runtime_error",
         }
     }
@@ -91,9 +93,12 @@ pub struct LlmError {
 
 impl LlmError {
     pub fn new(kind: LlmErrorKind, message: impl Into<String>) -> Self {
+        let message = crate::secret_redactor::redact_secrets(&message.into())
+            .map(|result| result.text)
+            .unwrap_or_else(|_| "LLM details unavailable after sanitization.".into());
         Self {
             kind,
-            message: message.into(),
+            message,
             provider_id: None,
             connection_id: None,
             model_id: None,

@@ -634,6 +634,57 @@ fn analyze_checkpoint_waits(
     }))
 }
 
+fn sanitized_analysis(mut report: Value) -> Result<Value, AnalysisError> {
+    let original = canonical_report_json(&report)?;
+    crate::llm::adapter::sanitize_json_strings(&mut report)
+        .map_err(|_| "Report sanitization is unavailable.")?;
+    let sanitized = canonical_report_json(&report)?;
+    report
+        .as_object_mut()
+        .ok_or("The report envelope is not an object.")?
+        .insert(
+            "sanitization".into(),
+            json!({
+                "policy": crate::secret_redactor::SANITIZATION_POLICY_VERSION,
+                "originalEvidenceSha256": crate::secret_redactor::text_sha256(&original),
+                "sanitizedContentSha256": crate::secret_redactor::text_sha256(&sanitized),
+                "hashScope": REPORT_HASH_JSON_SCOPE,
+            }),
+        );
+    // Metadata must not push the exported serialized unit over the same cap.
+    canonical_report_json(&report)?;
+    Ok(report)
+}
+
+pub(super) const REPORT_HASH_JSON_SCOPE: &str = "UTF-8 compact JSON with recursively sorted object keys and arrays in original order; hashes cover the report envelope before sanitization metadata, not the exported file bytes.";
+
+pub(super) fn canonical_report_json<T: serde::Serialize>(
+    value: &T,
+) -> Result<String, AnalysisError> {
+    fn sorted(value: Value) -> Value {
+        match value {
+            Value::Object(fields) => {
+                let ordered = fields.into_iter().collect::<BTreeMap<_, _>>();
+                Value::Object(
+                    ordered
+                        .into_iter()
+                        .map(|(key, value)| (key, sorted(value)))
+                        .collect(),
+                )
+            }
+            Value::Array(values) => Value::Array(values.into_iter().map(sorted).collect()),
+            value => value,
+        }
+    }
+    let value = serde_json::to_value(value).map_err(|_| "Report envelope serialization failed.")?;
+    let text = serde_json::to_string(&sorted(value))
+        .map_err(|_| "Report envelope serialization failed.")?;
+    if text.len() > crate::secret_redactor::MAX_SANITIZATION_BYTES {
+        return Err("Report envelope exceeds the sanitization limit.".into());
+    }
+    Ok(text)
+}
+
 fn analyze_retrieval(connection: &Connection, pulsation: &str) -> Result<Value, AnalysisError> {
     let mut statement = connection.prepare(
         "SELECT COUNT(*),SUM(fallback_used),SUM(duration_ms),SUM(considered_total),SUM(delivered_total),SUM(cited_total),COUNT(max_similarity) FROM context_retrieval_runs WHERE pulsation_id=?1",
@@ -789,7 +840,7 @@ pub fn analyze(database: &Path, selector: &Selector) -> Result<Value, AnalysisEr
     let overall_cli = staged.cli_seconds + learning_usage.cli_seconds + background.cli_seconds;
     let overall_api = staged.api_seconds + learning_usage.api_seconds + background.api_seconds;
 
-    Ok(json!({
+    sanitized_analysis(json!({
         "schema_version": 1,
         "generated_at": chrono::Utc::now().to_rfc3339(),
         "database": database.display().to_string(),
@@ -1169,6 +1220,80 @@ mod tests {
     use super::*;
     use crate::persistence_service::{PulsationStage, PulsationStatus};
     use crate::reports::render_pulsation_report;
+
+    #[test]
+    fn analysis_exports_sanitize_nested_runtime_fields_without_rewriting_source_identity() {
+        let original = json!({
+            "pulsation": {"id":"a016468b-33f6-4db8-b451-10b58f43303c", "feature_name":"ghp_syntheticabcdefghijklmnop"},
+            "validation_errors":[{"validation_error":r#"{"message":"sk-proj-\u0061bcdefghijklmnopqrst"}"#}],
+            "criteria":[{"description":"Authorization: Bearer synthetic-credential-value"}],
+            "original_file_sha256":"a".repeat(64),
+        });
+        let original_sha = crate::secret_redactor::text_sha256(&original.to_string());
+        let observed = sanitized_analysis(original.clone()).unwrap();
+        let metadata = observed["sanitization"].clone();
+        let mut observed_data = observed.clone();
+        observed_data
+            .as_object_mut()
+            .unwrap()
+            .remove("sanitization");
+        assert_eq!(
+            metadata["policy"],
+            crate::secret_redactor::SANITIZATION_POLICY_VERSION
+        );
+        assert_eq!(
+            metadata["originalEvidenceSha256"],
+            crate::secret_redactor::text_sha256(&canonical_report_json(&original).unwrap())
+        );
+        assert_eq!(
+            metadata["sanitizedContentSha256"],
+            crate::secret_redactor::text_sha256(&canonical_report_json(&observed_data).unwrap())
+        );
+        assert_ne!(
+            metadata["originalEvidenceSha256"],
+            metadata["sanitizedContentSha256"]
+        );
+        assert!(
+            metadata["hashScope"]
+                .as_str()
+                .unwrap()
+                .contains("before sanitization metadata")
+        );
+        let exported = observed.to_string();
+        for forbidden in [
+            "ghp_synthetic",
+            "bcdefghijklmnopqrst",
+            "synthetic-credential-value",
+            "\\u0061",
+        ] {
+            assert!(!exported.contains(forbidden));
+        }
+        assert_eq!(observed["pulsation"]["id"], original["pulsation"]["id"]);
+        assert_eq!(
+            observed["original_file_sha256"],
+            original["original_file_sha256"]
+        );
+        assert_eq!(
+            crate::secret_redactor::text_sha256(&original.to_string()),
+            original_sha
+        );
+    }
+
+    #[test]
+    fn report_json_hashing_is_ordered_and_serialized_units_are_bounded() {
+        let first: Value = serde_json::from_str(r#"{"z":[{"b":2,"a":1}],"a":0}"#).unwrap();
+        let reordered: Value = serde_json::from_str(r#"{"a":0,"z":[{"a":1,"b":2}]}"#).unwrap();
+        assert_eq!(
+            canonical_report_json(&first).unwrap(),
+            canonical_report_json(&reordered).unwrap()
+        );
+        assert_eq!(
+            canonical_report_json(&first).unwrap(),
+            r#"{"a":0,"z":[{"a":1,"b":2}]}"#
+        );
+        let oversized = json!({"pulsation":{"feature_name":"x".repeat(crate::secret_redactor::MAX_SANITIZATION_BYTES)}});
+        assert!(sanitized_analysis(oversized).is_err());
+    }
 
     fn analysis() -> Value {
         json!({

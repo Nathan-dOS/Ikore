@@ -95,7 +95,7 @@ impl CliAdapter for CustomAdapter {
             } else {
                 TerminalEventKind::Stdout
             },
-            content: sanitize_terminal_text(bytes),
+            content: sanitize_cli_frame_text(bytes),
             native_session_id: None,
             observed_model: None,
             message_id: None,

@@ -1,7 +1,7 @@
 //! Escaped HTML building blocks shared by host-rendered reports.
 //!
 //! Every runtime string reaches the output through [`SafeHtml::text`],
-//! [`SafeHtml::push_text`] or [`SafeHtml::push_attr`], which escape it. Markup
+//! [`SafeHtml::push_text`] or [`SafeHtml::push_attr`], which sanitize and escape it. Markup
 //! only comes from `&'static str` literals written in this crate, so text that
 //! came from a model or a repository can never become a tag or an attribute.
 
@@ -45,7 +45,10 @@ impl SafeHtml {
     }
 
     pub fn push_text(&mut self, value: &str) -> &mut Self {
-        escape_into(&mut self.0, value);
+        escape_into(
+            &mut self.0,
+            &crate::sanitization::sanitized_observation(value),
+        );
         self
     }
 
@@ -55,7 +58,10 @@ impl SafeHtml {
         self.0.push(' ');
         self.0.push_str(name);
         self.0.push_str("=\"");
-        escape_into(&mut self.0, value);
+        escape_into(
+            &mut self.0,
+            &crate::sanitization::sanitized_observation(value),
+        );
         self.0.push('"');
         self
     }
@@ -139,6 +145,26 @@ pub fn document(title: &str, description: &str, body: &SafeHtml) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_text_and_attributes_are_sanitized_before_html_escaping() {
+        let encoded = r#"{"message":"sk-proj-\u0061bcdefghijklmnopqrst"}"#;
+        let mut html = SafeHtml::markup("<span");
+        html.push_attr("title", encoded)
+            .push_markup(">")
+            .push_text(encoded)
+            .push_markup("</span>");
+        let output = html.into_string();
+        assert!(!output.contains("bcdefghijklmnopqrst"));
+        assert!(!output.contains("\\u0061"));
+        assert!(output.contains("&lt;REDACTED_SECRET:"));
+        assert!(!output.contains("<REDACTED_SECRET:"));
+        // HTML escaping remains a separate public primitive.
+        assert_eq!(
+            escape("sk-proj-syntheticabcdefghijklmnop"),
+            "sk-proj-syntheticabcdefghijklmnop"
+        );
+    }
 
     #[test]
     fn escapes_every_structural_character() {

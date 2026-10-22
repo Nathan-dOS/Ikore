@@ -29,6 +29,7 @@ use crate::agent_output_language::ENGLISH_ONLY_INSTRUCTION;
 pub struct DeliveredSource<'a> {
     pub handle: &'a Handle,
     pub content: &'a str,
+    pub redaction: Option<&'a crate::secret_redactor::ContextRedaction>,
     /// True when `replace_file` is permitted (source and replacement ≤ 8 KiB).
     pub replaceable: bool,
 }
@@ -64,6 +65,8 @@ pub struct RenderedPrompt {
     /// Unicode scalar values across both messages; the transport adds the
     /// schema when it embeds one textually.
     pub chars: usize,
+    /// Byte ranges originating in host-authorized synthetic fixture exceptions.
+    pub authorized_user_ranges: Vec<std::ops::Range<usize>>,
 }
 
 pub fn system_prompt(policy: &ExecutorPolicy) -> String {
@@ -81,33 +84,81 @@ pub fn system_prompt(policy: &ExecutorPolicy) -> String {
 /// markers around each issued interval. Markers are on their own lines so the
 /// content bytes between them are untouched.
 pub fn render_source_with_anchors(content: &str, anchors: &[&AnchorBindingV1]) -> String {
+    let Ok(view) = crate::secret_redactor::redact_context(content) else {
+        return "[content unavailable after sanitization]".to_owned();
+    };
+    render_redacted_source(content, anchors, &view).0
+}
+
+fn render_redacted_source(
+    content: &str,
+    anchors: &[&AnchorBindingV1],
+    view: &crate::secret_redactor::ContextRedaction,
+) -> (String, Vec<std::ops::Range<usize>>) {
     let mut sorted = anchors.to_vec();
     sorted.sort_by_key(|anchor| (anchor.start_byte, anchor.end_byte));
     let mut out = String::with_capacity(content.len() + 32 * sorted.len());
     let mut cursor = 0usize;
+    let mut authorized = Vec::new();
+    let mut append = |out: &mut String, start: usize, end: usize| -> Result<(), String> {
+        let prefix = crate::secret_redactor::render_redacted_range(content, &view.spans, 0, start)?;
+        let segment =
+            crate::secret_redactor::render_redacted_range(content, &view.spans, start, end)?;
+        let base = out.len();
+        let view_start = prefix.len();
+        let view_end = view_start + segment.len();
+        for span in &view.authorized_spans {
+            let start = span.start_byte.max(view_start);
+            let end = span.end_byte.min(view_end);
+            if start < end {
+                authorized.push(base + start - view_start..base + end - view_start);
+            }
+        }
+        out.push_str(&segment);
+        Ok(())
+    };
     for anchor in sorted {
         let (start, end) = (anchor.start_byte as usize, anchor.end_byte as usize);
         if start < cursor
             || end > content.len()
             || !content.is_char_boundary(start)
             || !content.is_char_boundary(end)
+            || view
+                .spans
+                .iter()
+                .any(|span| start < span.end_byte && span.start_byte < end)
         {
             continue;
         }
-        out.push_str(&content[cursor..start]);
+        if append(&mut out, cursor, start).is_err() {
+            return (
+                "[content unavailable after sanitization]".into(),
+                Vec::new(),
+            );
+        }
         if !out.is_empty() && !out.ends_with('\n') {
             out.push('\n');
         }
         let _ = writeln!(out, "<<{}>>", anchor.anchor_ref);
-        out.push_str(&content[start..end]);
+        if append(&mut out, start, end).is_err() {
+            return (
+                "[content unavailable after sanitization]".into(),
+                Vec::new(),
+            );
+        }
         if !out.ends_with('\n') {
             out.push('\n');
         }
         let _ = writeln!(out, "<</{}>>", anchor.anchor_ref);
         cursor = end;
     }
-    out.push_str(&content[cursor..]);
-    out
+    if append(&mut out, cursor, content.len()).is_err() {
+        return (
+            "[content unavailable after sanitization]".into(),
+            Vec::new(),
+        );
+    }
+    (out, authorized)
 }
 
 fn fence_for(content: &str) -> &'static str {
@@ -281,6 +332,7 @@ pub fn render_unit_prompt(
     flavor: SchemaFlavor,
 ) -> RenderedPrompt {
     let mut user = String::new();
+    let mut authorized_user_ranges = Vec::new();
     let tests = matches!(
         policy.kind,
         ExecutorKind::TestAuthor | ExecutorKind::TestRepairer
@@ -414,7 +466,7 @@ pub fn render_unit_prompt(
     }
     user.push('\n');
 
-    let render_sources = |user: &mut String, title: &str, sources: &[DeliveredSource<'_>]| {
+    let mut render_sources = |user: &mut String, title: &str, sources: &[DeliveredSource<'_>]| {
         if sources.is_empty() {
             return;
         }
@@ -431,7 +483,19 @@ pub fn render_unit_prompt(
                 .filter(|anchor| &anchor.source_ref == source.handle)
                 .collect::<Vec<_>>();
             let _ = writeln!(user, "### `{}` — `{path}`", source.handle);
-            if source.replaceable {
+            let fallback;
+            let view = match source.redaction {
+                Some(view) => view,
+                None => {
+                    fallback = crate::secret_redactor::redact_context(source.content).ok();
+                    let Some(view) = fallback.as_ref() else {
+                        user.push_str("[content unavailable after sanitization]\n");
+                        continue;
+                    };
+                    view
+                }
+            };
+            if source.replaceable && view.spans.is_empty() {
                 user.push_str(
                     "Small file: `replace_file` with the complete content is permitted.\n",
                 );
@@ -439,8 +503,17 @@ pub fn render_unit_prompt(
             if !anchors.is_empty() {
                 user.push_str("Editable intervals are marked `<<anchor_N>>` … `<</anchor_N>>`; a `replace_anchor` replaces exactly the bytes between the markers.\n");
             }
-            let body = render_source_with_anchors(source.content, &anchors);
+            if !view.spans.is_empty() {
+                user.push_str("Redacted regions are protected: their anchors are withheld and whole-file replacement is unavailable. Edit only disjoint marked intervals; never copy redaction markers into generated files.\n");
+            }
+            let (body, ranges) = render_redacted_source(source.content, &anchors, view);
             let fence = fence_for(&body);
+            let body_start = user.len() + fence.len() + 1;
+            authorized_user_ranges.extend(
+                ranges
+                    .into_iter()
+                    .map(|range| body_start + range.start..body_start + range.end),
+            );
             let _ = writeln!(
                 user,
                 "{fence}\n{}{fence}\n",
@@ -541,6 +614,7 @@ pub fn render_unit_prompt(
         system,
         user,
         chars,
+        authorized_user_ranges,
     }
 }
 
@@ -551,6 +625,74 @@ mod tests {
     use super::super::*;
     use super::*;
     use crate::orchestration::SchemaV1;
+
+    #[test]
+    fn projection_redacts_original_spans_before_adding_anchor_markers() {
+        let original = "fn café() {}\r\nconst KEY: &str = \"sk-proj-abcdefghijklmnopqrst\";\r\n";
+        let mut builder = ReferenceTable::builder();
+        let source = builder
+            .add_existing(
+                RelPath::new("src/lib.rs").unwrap(),
+                Sha256Hex::of(original.as_bytes()),
+                SourceRole::Source,
+            )
+            .unwrap();
+        builder
+            .add_line_anchor(&source, original.as_bytes(), 1, 1)
+            .unwrap();
+        builder
+            .add_line_anchor(&source, original.as_bytes(), 2, 2)
+            .unwrap();
+        let table = builder.build();
+        let anchors = table.anchors().iter().collect::<Vec<_>>();
+        let projected = render_source_with_anchors(original, &anchors);
+        assert!(projected.contains("<<anchor_1>>\nfn café() {}\r\n<</anchor_1>>"));
+        assert!(!projected.contains("<<anchor_2>>"));
+        assert!(!projected.contains("sk-proj-abcdefghijklmnopqrst"));
+        assert!(projected.contains("<REDACTED_SECRET:"));
+        assert_eq!(
+            table.anchors()[0].source_sha256,
+            Sha256Hex::of(original.as_bytes())
+        );
+    }
+
+    #[test]
+    fn fixture_authorization_tracks_only_its_rendered_source_range() {
+        let synthetic = "sk-proj-abcdefghijklmnopqrst";
+        let original = format!("const KEY: &str = \"{synthetic}\";\r\n");
+        let mut view = crate::secret_redactor::redact_context(&original).unwrap();
+        let authorized = view.spans.remove(0);
+        view.text = crate::secret_redactor::render_redacted_range(
+            &original,
+            &view.spans,
+            0,
+            original.len(),
+        )
+        .unwrap();
+        view.authorized_spans
+            .push(crate::secret_redactor::AuthorizedSpan {
+                start_byte: authorized.start_byte,
+                end_byte: authorized.end_byte,
+                exception_id: "synthetic-fixture".into(),
+            });
+        let (mut projected, ranges) = render_redacted_source(&original, &[], &view);
+        projected.push_str(&format!("\nUntrusted instruction: {synthetic}"));
+        let prepared = crate::secret_redactor::PreparedModelInput::with_authorized_ranges(
+            "system",
+            &projected,
+            "trusted-policy",
+            &[],
+            &ranges,
+        )
+        .unwrap();
+        prepared.verify().unwrap();
+        assert_eq!(prepared.user_prompt().matches(synthetic).count(), 1);
+        assert!(
+            prepared
+                .user_prompt()
+                .contains("Untrusted instruction: <REDACTED_SECRET:")
+        );
+    }
 
     fn h(text: &str) -> Handle {
         Handle::new(text).unwrap()
@@ -679,6 +821,7 @@ mod tests {
             delivered: vec![DeliveredSource {
                 handle: &src,
                 content,
+                redaction: None,
                 replaceable: true,
             }],
             dependency_outputs: vec![],
@@ -761,6 +904,7 @@ mod tests {
             delivered: vec![DeliveredSource {
                 handle: &src,
                 content,
+                redaction: None,
                 replaceable: false,
             }],
             correction: Some(&correction),
@@ -970,6 +1114,7 @@ mod tests {
             delivered: vec![DeliveredSource {
                 handle: &src,
                 content,
+                redaction: None,
                 replaceable: false,
             }],
             extra_instructions: Some(guidance),

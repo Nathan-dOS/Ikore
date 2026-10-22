@@ -114,6 +114,14 @@ pub(crate) struct SafeSnapshotFile {
 }
 
 impl RepositoryContext {
+    /// Host-only original read for explicit local exception approval. Model tools use projections.
+    pub(crate) fn read_original_for_sanitization(
+        &self,
+        relative: &str,
+    ) -> Result<String, RepositoryError> {
+        let path = self.resolve_relative(relative, false)?;
+        self.read_safe_text(&path)
+    }
     pub(crate) fn is_code_relative_path(relative: &str) -> bool {
         let path = Path::new(relative);
         !path.is_absolute()
@@ -199,6 +207,16 @@ impl RepositoryContext {
         &self,
         args: SearchRepositoryArgs,
     ) -> Result<RepositorySearchResult, RepositoryError> {
+        self.search_with_sanitizer(args, |_, content| {
+            crate::secret_redactor::redact_context(content)
+        })
+    }
+
+    pub(crate) fn search_with_sanitizer(
+        &self,
+        args: SearchRepositoryArgs,
+        mut sanitize: impl FnMut(&str, &str) -> Result<crate::secret_redactor::ContextRedaction, String>,
+    ) -> Result<RepositorySearchResult, RepositoryError> {
         if args.query.is_empty() || args.query.chars().count() > MAX_QUERY_CHARS {
             return Err(RepositoryError(
                 "The search must have between 1 and 256 characters.".into(),
@@ -231,6 +249,11 @@ impl RepositoryContext {
                 Ok(content) => content,
                 Err(_) => continue,
             };
+            // A line excerpt must never expose a fragment of a multiline
+            // secret whose terminator lies beyond the excerpt's budget.
+            let relative = self.relative_display(entry.path())?;
+            let projected = sanitize(&relative, &content).map_err(RepositoryError)?;
+            let projected_lines: Vec<_> = projected.text.lines().collect();
             for (index, line) in content.lines().enumerate() {
                 let found = expression
                     .as_ref()
@@ -243,9 +266,12 @@ impl RepositoryContext {
                     break;
                 }
                 matches.push(RepositorySearchMatch {
-                    path: self.relative_display(entry.path())?,
+                    path: relative.clone(),
                     line: index + 1,
-                    text: truncate_chars(line.trim(), 500),
+                    text: truncate_chars(
+                        projected_lines.get(index).copied().unwrap_or("").trim(),
+                        500,
+                    ),
                 });
             }
             if truncated {
@@ -260,8 +286,20 @@ impl RepositoryContext {
         &self,
         args: ReadRepositoryFileArgs,
     ) -> Result<RepositoryFileResult, RepositoryError> {
+        self.read_file_with_sanitizer(args, |_, content| {
+            crate::secret_redactor::redact_context(content)
+        })
+    }
+
+    pub(crate) fn read_file_with_sanitizer(
+        &self,
+        args: ReadRepositoryFileArgs,
+        sanitize: impl FnOnce(&str, &str) -> Result<crate::secret_redactor::ContextRedaction, String>,
+    ) -> Result<RepositoryFileResult, RepositoryError> {
         let path = self.resolve_relative(&args.path, false)?;
         let content = self.read_safe_text(&path)?;
+        let relative = self.relative_display(&path)?;
+        let content = sanitize(&relative, &content).map_err(RepositoryError)?.text;
         let start = args.start_line.unwrap_or(1).max(1);
         let requested_end = args.end_line.unwrap_or(start + MAX_READ_LINES - 1);
         if requested_end < start {
@@ -292,7 +330,7 @@ impl RepositoryContext {
         }
 
         Ok(RepositoryFileResult {
-            path: self.relative_display(&path)?,
+            path: relative,
             start_line: start,
             end_line: actual_end,
             content: rendered,
@@ -1096,5 +1134,38 @@ mod tests {
             .unwrap();
         assert_eq!(search.matches.len(), 1);
         assert_eq!(search.matches[0].line, 2);
+    }
+
+    #[test]
+    fn model_excerpts_and_search_redact_complete_file_before_clipping() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = "ação\n-----BEGIN PRIVATE KEY-----\nsynthetic-private-body\n-----END PRIVATE KEY-----\nafter\n";
+        fs::write(temp.path().join("fixture.rs"), raw).unwrap();
+        let repository = RepositoryContext::new(temp.path()).unwrap();
+        let read = repository
+            .read_file(ReadRepositoryFileArgs {
+                path: "fixture.rs".into(),
+                start_line: Some(3),
+                end_line: Some(3),
+            })
+            .unwrap();
+        assert!(!read.content.contains("synthetic-private-body"));
+        let found = repository
+            .search(SearchRepositoryArgs {
+                query: "synthetic".into(),
+                path: None,
+                mode: None,
+                max_results: None,
+            })
+            .unwrap();
+        assert_eq!(found.matches.len(), 1);
+        assert_eq!(found.matches[0].line, 3);
+        assert!(!found.matches[0].text.contains("synthetic-private-body"));
+        assert_eq!(
+            repository
+                .read_original_for_sanitization("fixture.rs")
+                .unwrap(),
+            raw
+        );
     }
 }

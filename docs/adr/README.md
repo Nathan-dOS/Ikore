@@ -122,3 +122,16 @@ existing human checkpoint; it never switches provider by itself.
 
 See the [threat model](../../quality/cli-threat-model.md) and the
 [quota module](../../crates/hvc-core/src/quota/mod.rs).
+
+## ADR-030: deterministic secret sanitization
+
+The host prepares model context and CLI snapshots independently of the original
+bytes used for exact edits. Local, occurrence-bound synthetic-fixture
+authorizations retain source provenance through delivery; no global value
+allowlist is used. Text becomes observable only after completion and
+sanitization. Publication checks protected regions, introduced placeholders and
+durable evidence under the current policy, including after restart.
+
+This boundary covers host-provided content and a finite detector catalog, while
+native CLI tools remain available. See [secret sanitization](../secret-sanitization.md)
+and the [validation report](../../quality/secret-sanitization-validation-2026-10-22.md).

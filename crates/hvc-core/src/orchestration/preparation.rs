@@ -358,6 +358,12 @@ impl PersistenceService {
                 None
             };
             result.push(PulsationCoordinationSnapshot {
+                sanitization: crate::sanitization::SanitizationStore::summary_on(
+                    db,
+                    project,
+                    Some(&pulse),
+                )
+                .map_err(invalid)?,
                 description_editable: !started
                     && matches!(status, PulsationStatus::Planning | PulsationStatus::Running),
                 context_disposition: disposition,

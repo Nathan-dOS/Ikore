@@ -15,7 +15,6 @@ use tokio_util::sync::CancellationToken;
 use super::adapter::AccountingSink;
 use super::adapter::{AdapterCall, LlmAdapter, ProtocolAdapter, TokenDeltaSink};
 use super::catalog::{estimate_cost_usd, model_entry};
-use super::compression::redact;
 use super::credentials::CredentialStore;
 use super::domain::{
     AgentExecutionTarget, Clock, DispatchPolicy, GatewayFuture, JitterSource, LlmEventEnvelope,
@@ -266,6 +265,54 @@ impl ProviderRouter {
                 "LLM execution cancelled.",
             ));
         }
+        // The final transport boundary never accepts raw prompts or a stale
+        // proof. Retries and fallback targets share this immutable projection.
+        let mut prepared_request = request.clone();
+        super::adapter::sanitize_request_schema(&mut prepared_request)?;
+        let sanitization_started = Instant::now();
+        let prepared = match &request.dispatch.prepared_input {
+            Some(prepared) => {
+                prepared
+                    .verify_matches(&request.system_prompt, &request.user_prompt)
+                    .map_err(|_| super::adapter::sanitization_error())?;
+                if prepared.policy_identity() != crate::secret_redactor::SANITIZATION_POLICY_VERSION
+                {
+                    let current = crate::sanitization::SanitizationStore::new(
+                        self.repository.database_path(),
+                    )
+                    .policy_for_project(&request.project_id)
+                    .map_err(|_| super::adapter::sanitization_error())?;
+                    if current.identity() != prepared.policy_identity() {
+                        return Err(super::adapter::sanitization_error());
+                    }
+                }
+                prepared.clone()
+            }
+            None => crate::secret_redactor::PreparedModelInput::new(
+                &request.system_prompt,
+                &request.user_prompt,
+            )
+            .map_err(|_| super::adapter::sanitization_error())?,
+        };
+        prepared_request.system_prompt = prepared.system_prompt().to_owned();
+        prepared_request.user_prompt = prepared.user_prompt().to_owned();
+        crate::sanitization::SanitizationStore::new(self.repository.database_path())
+            .record_input(
+                &request.project_id,
+                request.pulsation_id.as_deref(),
+                request.execution_id.as_str(),
+                prepared.policy_identity(),
+                prepared.redaction_count(),
+                prepared.categories(),
+                prepared.original_bytes(),
+                sanitization_started
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            )
+            .map_err(|_| super::adapter::sanitization_error())?;
+        prepared_request.dispatch.prepared_input = Some(prepared);
+        let request = &prepared_request;
         let mode = if matches!(&request.target, AgentExecutionTarget::FreeForm { .. }) {
             // FreeForm API execution is explicitly bound per slot. It must never
             // fall through to the global legacy provider/model configuration.
@@ -604,11 +651,8 @@ impl ProviderRouter {
                 provider_id: target.connection.provider_id.0.clone(),
                 model: model.clone(),
             });
-            let delta_sink = BatchingDeltaSink::new(
-                emitter.clone(),
-                self.repository.clone(),
-                request.execution_id.0.clone(),
-            );
+            // Text stays private until the complete answer has passed redaction.
+            let delta_sink = NoopDeltaSink;
             let adapter = self.adapters.get(&profile.protocol).ok_or_else(|| {
                 LlmError::new(
                     LlmErrorKind::InvalidRequest,
@@ -666,8 +710,7 @@ impl ProviderRouter {
                     )
                 })?;
             drop(permit);
-            delta_sink.flush();
-            let visible_partial = delta_sink.visible_output();
+            let visible_partial: Option<String> = None;
             let latency_ms = started.elapsed().as_millis() as u64;
 
             let mut result = match outcome {
@@ -685,6 +728,14 @@ impl ProviderRouter {
                     "Chamada cancelada por prioridade ou encerramento.",
                 ));
             }
+            let mut result = result.and_then(|mut output| {
+                let projection = super::adapter::sanitize_model_text_counted(&output.content)?;
+                output.output_redaction_count = projection.count;
+                output.output_redaction_categories = projection.categories;
+                let mut observed_payload = output.response_payload.clone();
+                super::adapter::sanitize_json_strings(&mut observed_payload)?;
+                Ok((output, projection.text))
+            });
             if let Err(error) = &mut result
                 && error.kind != LlmErrorKind::Cancelled
                 && error.visible_partial.is_none()
@@ -692,7 +743,7 @@ impl ProviderRouter {
                 error.visible_partial = visible_partial.clone();
             }
             match result {
-                Ok(output) => {
+                Ok((output, observed_content)) => {
                     persist_api_model_observations(
                         &self.repository,
                         &attempt_id,
@@ -840,6 +891,14 @@ impl ProviderRouter {
                         Some(&output.content),
                         true,
                     )?;
+                    self.repository.record_output_redaction(
+                        request.execution_id.as_str(),
+                        output.output_redaction_count,
+                        &output.output_redaction_categories,
+                    )?;
+                    emitter.emit(LlmStreamEvent::TokenDelta {
+                        text: observed_content,
+                    });
                     emitter.emit(LlmStreamEvent::RouteCompleted {
                         provider_id: profile.id.clone(),
                         connection_id: target.connection.id.0.clone(),
@@ -866,9 +925,14 @@ impl ProviderRouter {
                     });
                 }
                 Err(mut error) => {
+                    // An interrupted response has not been qualified as a
+                    // complete message and must never become visible history.
+                    error.visible_partial = None;
                     if matches!(
                         error.kind,
-                        LlmErrorKind::ModelMismatch | LlmErrorKind::ModelUnverified
+                        LlmErrorKind::ModelMismatch
+                            | LlmErrorKind::ModelUnverified
+                            | LlmErrorKind::Sanitization
                     ) {
                         error.provider_id = Some(profile.id.clone());
                         error.connection_id = Some(target.connection.id.0.clone());
@@ -903,7 +967,9 @@ impl ProviderRouter {
                     }
                     if matches!(
                         error.kind,
-                        LlmErrorKind::ModelMismatch | LlmErrorKind::ModelUnverified
+                        LlmErrorKind::ModelMismatch
+                            | LlmErrorKind::ModelUnverified
+                            | LlmErrorKind::Sanitization
                     ) {
                         self.repository.finish_execution(
                             request.execution_id.as_str(),
@@ -1455,109 +1521,6 @@ impl ExecutionEmitter {
             sequence: self.sequence.fetch_add(1, Ordering::SeqCst) + 1,
             context: Some(self.context.clone()),
             event,
-        });
-    }
-}
-
-struct DeltaState {
-    pending: String,
-    visible: String,
-    timer_active: bool,
-}
-
-struct BatchingDeltaSink {
-    state: Arc<Mutex<DeltaState>>,
-    emitter: ExecutionEmitter,
-    repository: SqliteLlmRepository,
-    execution_id: String,
-}
-
-impl BatchingDeltaSink {
-    fn new(
-        emitter: ExecutionEmitter,
-        repository: SqliteLlmRepository,
-        execution_id: String,
-    ) -> Self {
-        Self {
-            state: Arc::new(Mutex::new(DeltaState {
-                pending: String::new(),
-                visible: String::new(),
-                timer_active: false,
-            })),
-            emitter,
-            repository,
-            execution_id,
-        }
-    }
-
-    fn flush(&self) {
-        flush_delta_state(
-            &self.state,
-            &self.emitter,
-            &self.repository,
-            &self.execution_id,
-        );
-    }
-
-    fn visible_output(&self) -> Option<String> {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        (!state.visible.is_empty()).then(|| redact(&state.visible))
-    }
-}
-
-impl TokenDeltaSink for BatchingDeltaSink {
-    fn push(&self, delta: &str) {
-        let mut schedule = false;
-        let mut flush_now = false;
-        {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.pending.push_str(delta);
-            state.visible.push_str(delta);
-            if state.pending.len() >= 1024 {
-                flush_now = true;
-            } else if !state.timer_active {
-                state.timer_active = true;
-                schedule = true;
-            }
-        }
-        if flush_now {
-            self.flush();
-        } else if schedule {
-            let state = self.state.clone();
-            let emitter = self.emitter.clone();
-            let repository = self.repository.clone();
-            let execution_id = self.execution_id.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-                flush_delta_state(&state, &emitter, &repository, &execution_id);
-            });
-        }
-    }
-}
-
-fn flush_delta_state(
-    state: &Arc<Mutex<DeltaState>>,
-    emitter: &ExecutionEmitter,
-    repository: &SqliteLlmRepository,
-    execution_id: &str,
-) {
-    let (delta, visible) = {
-        let mut state = state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.timer_active = false;
-        (std::mem::take(&mut state.pending), state.visible.clone())
-    };
-    if !delta.is_empty() {
-        let _ = repository.update_visible_output(execution_id, &redact(&visible));
-        emitter.emit(LlmStreamEvent::TokenDelta {
-            text: redact(&delta),
         });
     }
 }

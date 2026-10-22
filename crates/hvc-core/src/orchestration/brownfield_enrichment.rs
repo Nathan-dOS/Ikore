@@ -301,7 +301,12 @@ impl PersistenceService {
                 .map_err(|error| invalid(error.to_string()))?;
             sources.push(BrownfieldEnrichmentSource {
                 revision: snapshot.revision().clone(),
-                content: snapshot.content().chars().take(8_000).collect(),
+                content: crate::secret_redactor::redact_context(snapshot.content())
+                    .map_err(invalid)?
+                    .text
+                    .chars()
+                    .take(8_000)
+                    .collect(),
             });
         }
         let input = BrownfieldEnrichmentInput {

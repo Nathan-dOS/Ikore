@@ -124,6 +124,166 @@ impl CorePulsationsBackend {
     }
 }
 
+fn observed_documents(
+    mut documents: Vec<hvc_core::persistence_service::HitlReviewDocument>,
+) -> Vec<hvc_core::persistence_service::HitlReviewDocument> {
+    for document in &mut documents {
+        document.content = hvc_core::sanitization::sanitized_observation(&document.content);
+        document.name = hvc_core::sanitization::sanitized_observation(&document.name);
+    }
+    documents
+}
+
+pub(crate) fn has_sanitized_regions(text: &str) -> bool {
+    hvc_core::secret_redactor::contains_redaction_marker(text)
+        || text.contains(hvc_core::secret_redactor::OMITTED_CONTENT)
+}
+
+fn observed_brief(
+    mut brief: hvc_core::orchestration::review_brief::ReviewBrief,
+) -> hvc_core::orchestration::review_brief::ReviewBrief {
+    use hvc_core::orchestration::review_brief::*;
+    fn text(value: &mut String) {
+        *value = hvc_core::sanitization::sanitized_observation(value);
+    }
+    fn optional(value: &mut Option<String>) {
+        if let Some(value) = value {
+            text(value);
+        }
+    }
+    fn strings(values: &mut [String]) {
+        for value in values {
+            text(value);
+        }
+    }
+    fn units(values: &mut [BriefUnit]) {
+        for value in values {
+            text(&mut value.key);
+            text(&mut value.objective);
+            strings(&mut value.destinations);
+            strings(&mut value.criteria);
+            strings(&mut value.depends_on);
+            strings(&mut value.interfaces);
+        }
+    }
+    fn files(values: &mut [BriefFileGroup]) {
+        for group in values {
+            text(&mut group.root);
+            for file in &mut group.files {
+                text(&mut file.path);
+                for interface in &mut file.interfaces {
+                    text(&mut interface.description);
+                }
+            }
+        }
+    }
+    fn checks(values: &mut [BriefCheck]) {
+        for value in values {
+            text(&mut value.check_ref);
+            optional(&mut value.receipt);
+        }
+    }
+    optional(&mut brief.objective);
+    strings(&mut brief.counts);
+    strings(&mut brief.verified);
+    if let Some(revision) = &mut brief.revision {
+        optional(&mut revision.feedback);
+        if let Some(changes) = &mut revision.changes {
+            for change in changes {
+                text(&mut change.label);
+                optional(&mut change.before);
+                optional(&mut change.after);
+            }
+        }
+    }
+    for item in &mut brief.judgement {
+        text(&mut item.label);
+        text(&mut item.text);
+        optional(&mut item.detail);
+        strings(&mut item.refs);
+    }
+    match &mut brief.visual {
+        StageVisual::Specification(visual) => {
+            strings(&mut visual.exclusions);
+            files(&mut visual.files);
+            units(&mut visual.units);
+            for interface in &mut visual.unattached_interfaces {
+                text(&mut interface.description);
+            }
+            for task in &mut visual.tasks {
+                text(&mut task.task_id);
+                text(&mut task.title);
+                for criterion in &mut task.criteria {
+                    text(&mut criterion.criterion_id);
+                    text(&mut criterion.description);
+                    text(&mut criterion.requirement);
+                    text(&mut criterion.verification_intent);
+                    strings(&mut criterion.checks);
+                    optional(&mut criterion.not_applicable_reason);
+                }
+            }
+        }
+        StageVisual::Contract(visual) => {
+            units(&mut visual.units);
+            for interface in &mut visual.interfaces {
+                text(&mut interface.key);
+                text(&mut interface.signature);
+                strings(&mut interface.invariants);
+                strings(&mut interface.sources);
+                strings(&mut interface.criteria);
+                strings(&mut interface.units);
+            }
+        }
+        StageVisual::Test(visual) => {
+            checks(&mut visual.checks);
+            files(&mut visual.files);
+            for coverage in &mut visual.coverage {
+                text(&mut coverage.task_id);
+                text(&mut coverage.criterion_id);
+                text(&mut coverage.description);
+                text(&mut coverage.task_title);
+                text(&mut coverage.explanation);
+                strings(&mut coverage.tests);
+                strings(&mut coverage.declared_checks);
+            }
+        }
+        StageVisual::Integrator(visual) => {
+            checks(&mut visual.checks);
+            strings(&mut visual.blockers);
+            for verdict in &mut visual.verdicts {
+                text(&mut verdict.task_id);
+                text(&mut verdict.criterion_id);
+                text(&mut verdict.description);
+                text(&mut verdict.task_title);
+                text(&mut verdict.explanation);
+                strings(&mut verdict.checks);
+            }
+            for publication in &mut visual.publications {
+                text(&mut publication.path);
+            }
+        }
+    }
+    brief
+}
+
+fn observed_visualization(
+    mut visualization: hvc_core::orchestration::review_brief::CheckpointVisualization,
+) -> hvc_core::orchestration::review_brief::CheckpointVisualization {
+    visualization.diagnostic = visualization
+        .diagnostic
+        .map(|text| hvc_core::sanitization::sanitized_observation(&text));
+    if let Some(note) = &mut visualization.note {
+        note.headline = hvc_core::sanitization::sanitized_observation(&note.headline);
+        for item in &mut note.notes {
+            item.text = hvc_core::sanitization::sanitized_observation(&item.text);
+            for reference in &mut item.refs {
+                *reference = hvc_core::sanitization::sanitized_observation(reference);
+            }
+        }
+    }
+    visualization
+}
+
 impl PulsationsBackend for CorePulsationsBackend {
     fn review_documents(
         &self,
@@ -136,6 +296,7 @@ impl PulsationsBackend for CorePulsationsBackend {
                 .spawn_blocking(move || core.persistence().read_hitl_review(&checkpoint))
                 .await
                 .map_err(|e| Self::worker_error("review", e))?
+                .map(observed_documents)
                 .map_err(|e| e.to_string())
         })
     }
@@ -150,6 +311,7 @@ impl PulsationsBackend for CorePulsationsBackend {
                 .spawn_blocking(move || core.persistence().read_checkpoint_brief(&checkpoint))
                 .await
                 .map_err(|e| Self::worker_error("review brief", e))?
+                .map(|brief| brief.map(observed_brief))
                 .map_err(|e| e.to_string())
         })
     }
@@ -168,6 +330,7 @@ impl PulsationsBackend for CorePulsationsBackend {
                 })
                 .await
                 .map_err(|e| Self::worker_error("visualizer note", e))?
+                .map(|note| note.map(observed_visualization))
                 .map_err(|e| e.to_string())
         })
     }
@@ -227,6 +390,7 @@ impl PulsationsBackend for CorePulsationsBackend {
                 .spawn_blocking(move || core.persistence().read_artifact_content(&pulse, &artifact))
                 .await
                 .map_err(|e| Self::worker_error("content", e))?
+                .map(|content| hvc_core::sanitization::sanitized_observation(&content))
                 .map_err(|e| e.to_string())
         })
     }
@@ -828,6 +992,56 @@ pub(crate) fn status_label(status: PulsationStatus, terminal_reason: Option<&str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observational_review_projects_content_without_mutating_the_original_candidate() {
+        use hvc_core::orchestration::review_brief::*;
+        let secret = "sk-proj-syntheticabcdefghijklmnop";
+        let original = hvc_core::persistence_service::HitlReviewDocument {
+            artifact_id: "stable-artifact".into(),
+            name: "Candidate".into(),
+            kind: "code".into(),
+            relative_path: Some("src/lib.rs".into()),
+            content: format!("const KEY: &str = \"{secret}\";\r\nfn updated() {{}}\r\n"),
+        };
+        let projected = observed_documents(vec![original.clone()]).remove(0);
+        assert!(original.content.contains(secret));
+        assert!(!projected.content.contains(secret));
+        assert!(has_sanitized_regions(&projected.content));
+        assert_eq!(projected.artifact_id, original.artifact_id);
+        assert_eq!(projected.relative_path, original.relative_path);
+        assert!(projected.content.ends_with("fn updated() {}\r\n"));
+        let brief = ReviewBrief {
+            stage: PulsationStage::Integrator,
+            next_stage: None,
+            objective: Some(secret.into()),
+            counts: vec!["1 criterion".into()],
+            verified: vec!["Host checks passed".into()],
+            revision: Some(RevisionDiff {
+                feedback: Some(secret.into()),
+                changes: None,
+            }),
+            judgement: vec![JudgementItem {
+                kind: JudgementKind::Decision,
+                label: "D1".into(),
+                text: secret.into(),
+                detail: Some(secret.into()),
+                refs: vec!["src/lib.rs".into()],
+            }],
+            visual: StageVisual::Integrator(IntegratorVisual {
+                verdicts: vec![],
+                blockers: vec![secret.into()],
+                checks: vec![],
+                publications: vec![],
+            }),
+        };
+        let observed = observed_brief(brief.clone());
+        assert!(serde_json::to_string(&brief).unwrap().contains(secret));
+        assert!(!serde_json::to_string(&observed).unwrap().contains(secret));
+        assert_eq!(observed.stage, brief.stage);
+        assert_eq!(observed.counts, brief.counts);
+        assert_eq!(observed.judgement[0].label, brief.judgement[0].label);
+    }
 
     #[test]
     fn newest_first_preserves_selection_and_group_choices_across_transitions() {

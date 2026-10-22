@@ -24,6 +24,11 @@ use crate::orchestration::composition::{
 use crate::terminals::{AgentExecutionMode, CliBackend, SpecialtyOverride, ThinkingLevel};
 use crate::usage::UsageTotals;
 
+fn protected_diagnostic(text: &str) -> String {
+    crate::llm::adapter::sanitize_model_text(text)
+        .unwrap_or_else(|_| crate::secret_redactor::OMITTED_CONTENT.to_owned())
+}
+
 pub(crate) fn composition_invalid(error: &CompositionError) -> PersistenceServiceError {
     PersistenceServiceError::Validation(format!(
         "{} {}: {}",
@@ -657,6 +662,7 @@ impl PersistenceService {
         next: ExecutionStatus,
         blocked: Option<(&str, &str)>,
     ) -> Result<(), PersistenceServiceError> {
+        let blocked_reason = blocked.map(|(_, reason)| protected_diagnostic(reason));
         let expected = expected
             .iter()
             .map(|status| format!("'{}'", execution_status_str(*status)))
@@ -670,7 +676,7 @@ impl PersistenceService {
                 execution_id,
                 execution_status_str(next),
                 blocked.map(|b| b.0),
-                blocked.map(|b| b.1),
+                blocked_reason,
                 Self::now_iso()
             ],
         )?;
@@ -740,13 +746,14 @@ impl PersistenceService {
         next: UnitState,
         failure: Option<(&str, &str)>,
     ) -> Result<(), PersistenceServiceError> {
+        let failure_message = failure.map(|(_, message)| protected_diagnostic(message));
         let changed = db.execute(
             "UPDATE stage_work_units SET state=?2,state_version=state_version+1,failure_code=?3,failure_message=?4,updated_at=?5 WHERE id=?1 AND generation=?6 AND state_version=?7",
             params![
                 unit.id,
                 unit_state_str(next),
                 failure.map(|f| f.0),
-                failure.map(|f| f.1),
+                failure_message,
                 Self::now_iso(),
                 unit.generation,
                 unit.state_version
@@ -911,6 +918,8 @@ impl PersistenceService {
         observed_model: Option<&str>,
         result_sha256: Option<&str>,
     ) -> Result<(), PersistenceServiceError> {
+        let diagnostic = diagnostic.map(protected_diagnostic);
+        let observed_model = observed_model.map(protected_diagnostic);
         let now = Self::now_iso();
         db.execute(
             "UPDATE stage_work_unit_attempts SET state=?2,error_code=?3,diagnostic=?4,observed_model=COALESCE(?5,observed_model),result_sha256=?6,finished_at=?7,updated_at=?7 WHERE id=?1 AND state IN ('reserved','running')",
@@ -986,7 +995,7 @@ impl PersistenceService {
                     effective_model: if model.trim().is_empty() {
                         "unknown".into()
                     } else {
-                        model.chars().take(256).collect()
+                        protected_diagnostic(&model).chars().take(256).collect()
                     },
                     profile_snapshot_id: comp::Uuid::new(profile)
                         .map_err(|e| composition_invalid(&e))?,
@@ -1034,7 +1043,7 @@ impl PersistenceService {
             blocked_reason: execution
                 .blocked_reason
                 .clone()
-                .map(|r| r.chars().take(4_000).collect()),
+                .map(|r| protected_diagnostic(&r).chars().take(4_000).collect()),
             checks,
             remaining_budget: RemainingBudgetV1 { ..remaining },
             usage: usage_summary(&totals),
@@ -1599,6 +1608,7 @@ impl PersistenceService {
         stage_execution_id: &str,
         remaining: &RemainingBudgetV1,
     ) -> Result<bool, PersistenceServiceError> {
+        let diagnostic = protected_diagnostic(diagnostic);
         if !matches!(
             current.status,
             PulsationStatus::Running | PulsationStatus::Planning
@@ -1872,6 +1882,47 @@ mod tests {
             schema_flavor: SchemaFlavor::Canonical,
             attempt_limit: 1,
             source: "test".into(),
+        }
+    }
+
+    #[test]
+    fn failure_diagnostics_are_sanitized_before_sqlite() {
+        let fixture = fixture();
+        let db = fixture.service.connection().unwrap();
+        let unit = unit(&db, &fixture.execution);
+        let diagnostic = r#"{"message":"Authorization: Bearer synthetic-credential-value"}"#;
+        PersistenceService::transition_unit(
+            &db,
+            &unit,
+            UnitState::Failed,
+            Some(("failure", diagnostic)),
+        )
+        .unwrap();
+        PersistenceService::transition_execution(
+            &db,
+            &fixture.execution,
+            &[ExecutionStatus::Planned],
+            ExecutionStatus::Parked,
+            Some(("failure", diagnostic)),
+        )
+        .unwrap();
+        for (table, column, id) in [
+            ("stage_work_units", "failure_message", unit.id.as_str()),
+            (
+                "stage_executions",
+                "blocked_reason",
+                fixture.execution.as_str(),
+            ),
+        ] {
+            let stored: String = db
+                .query_row(
+                    &format!("SELECT {column} FROM {table} WHERE id=?1"),
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(!stored.contains("synthetic-credential-value"));
+            assert!(stored.contains("<REDACTED_SECRET:"));
         }
     }
 

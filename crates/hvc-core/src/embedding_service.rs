@@ -86,6 +86,15 @@ pub fn model_names_match(installed: &str, configured: &str) -> bool {
     base(installed) == base(configured)
 }
 
+fn validate_embedding_model(model: &str) -> Result<(), EmbeddingError> {
+    let unavailable = || EmbeddingError("Embedding model unavailable after sanitization.".into());
+    let projected = crate::llm::adapter::sanitize_model_text(model).map_err(|_| unavailable())?;
+    if projected != model {
+        return Err(unavailable());
+    }
+    Ok(())
+}
+
 pub struct OllamaEmbeddingGateway {
     client: Client,
     base_url: String,
@@ -116,6 +125,12 @@ impl OllamaEmbeddingGateway {
     /// tried first; the legacy endpoint is only a fallback for Ollama installs old enough not to
     /// have `/api/embed` at all (surfaced as a 404).
     async fn embed_legacy(&self, model: &str, prompt: &str) -> Result<Vec<f64>, EmbeddingError> {
+        validate_embedding_model(model)?;
+        let prompt = crate::secret_redactor::redact_context(prompt)
+            .map_err(|_| {
+                EmbeddingError("Embedding content unavailable after sanitization.".into())
+            })?
+            .text;
         let response = self
             .client
             .post(format!("{}/api/embeddings", self.base_url))
@@ -153,6 +168,9 @@ impl OllamaEmbeddingGateway {
         match response.json::<Value>().await {
             Ok(body) => match body.get("error").and_then(Value::as_str) {
                 Some(detail) => {
+                    let detail = crate::secret_redactor::redact_secrets(detail)
+                        .map(|result| result.text)
+                        .unwrap_or_else(|_| "details unavailable after sanitization".into());
                     format!("Ollama embedding failed with HTTP status {status}: {detail}")
                 }
                 None => format!("Ollama embedding failed with HTTP status {status}."),
@@ -165,6 +183,12 @@ impl OllamaEmbeddingGateway {
 impl EmbeddingGateway for OllamaEmbeddingGateway {
     fn embed<'a>(&'a self, model: &'a str, prompt: &'a str) -> EmbeddingFuture<'a> {
         Box::pin(async move {
+            validate_embedding_model(model)?;
+            let prompt = crate::secret_redactor::redact_context(prompt)
+                .map_err(|_| {
+                    EmbeddingError("Embedding content unavailable after sanitization.".into())
+                })?
+                .text;
             let response = self
                 .client
                 .post(format!("{}/api/embed", self.base_url))
@@ -173,7 +197,7 @@ impl EmbeddingGateway for OllamaEmbeddingGateway {
                 .await
                 .map_err(|error| EmbeddingError(format!("Failed to call Ollama: {error}")))?;
             if response.status() == reqwest::StatusCode::NOT_FOUND {
-                return self.embed_legacy(model, prompt).await;
+                return self.embed_legacy(model, &prompt).await;
             }
             if !response.status().is_success() {
                 return Err(EmbeddingError(Self::describe_failure(response).await));
@@ -237,6 +261,7 @@ impl EmbeddingGateway for OllamaEmbeddingGateway {
         on_event: &'a (dyn Fn(ModelPullEvent) + Send + Sync),
     ) -> ModelPullFuture<'a> {
         Box::pin(async move {
+            validate_embedding_model(model)?;
             on_event(ModelPullEvent::Started {
                 model: model.to_string(),
             });
@@ -416,6 +441,47 @@ mod tests {
     }
 
     #[test]
+    fn embedding_model_metadata_is_checked_before_modern_or_legacy_http() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let gateway = OllamaEmbeddingGateway::with_base_url(
+            Client::builder().no_proxy().build().unwrap(),
+            format!("http://{}", listener.local_addr().unwrap()),
+        );
+        let runtime = runtime();
+        for model in [
+            "sk-proj-syntheticabcdefghijklmnop",
+            r#"{"token":"\u0073k-proj-syntheticabcdefghijklmnop"}"#,
+        ] {
+            for legacy in [false, true] {
+                let error = if legacy {
+                    runtime.block_on(gateway.embed_legacy(model, "safe input"))
+                } else {
+                    runtime.block_on(gateway.embed(model, "safe input"))
+                }
+                .unwrap_err();
+                assert_eq!(error.0, "Embedding model unavailable after sanitization.");
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+            }
+            let events = Mutex::new(Vec::new());
+            let on_event = |event| events.lock().unwrap().push(event);
+            let error = runtime
+                .block_on(gateway.pull_model(model, &on_event))
+                .unwrap_err();
+            assert_eq!(error.0, "Embedding model unavailable after sanitization.");
+            assert!(events.lock().unwrap().is_empty());
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+        validate_embedding_model("nomic-embed-text:latest").unwrap();
+    }
+
+    #[test]
     fn embed_uses_the_modern_endpoint_and_reads_the_first_embedding_row() {
         let (url, handle) =
             spawn_http_response(r#"{"model":"nomic-embed-text","embeddings":[[0.1,0.2,0.3]]}"#);
@@ -425,6 +491,65 @@ mod tests {
             .unwrap();
         assert_eq!(vector, vec![0.1, 0.2, 0.3]);
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn embedding_modern_and_legacy_wire_payloads_are_sanitized() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let mut seen = Vec::new();
+            for (status, body) in [(404, "{}"), (200, r#"{"embedding":[0.4,0.5]}"#)] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut chunk = [0u8; 4096];
+                    let count = stream.read(&mut chunk).unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..end]);
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (key, value) = line.split_once(':')?;
+                                key.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse().unwrap())
+                            })
+                            .unwrap();
+                        if bytes.len() >= end + 4 + length {
+                            seen.push(String::from_utf8(bytes[end + 4..].to_vec()).unwrap());
+                            break;
+                        }
+                    }
+                }
+                write!(stream,"HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            }
+            seen
+        });
+        let gateway = OllamaEmbeddingGateway::with_base_url(
+            Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap(),
+            url,
+        );
+        runtime()
+            .block_on(gateway.embed(
+                "nomic-embed-text",
+                "OPENAI_API_KEY=sk-proj-syntheticabcdefghijklmnop",
+            ))
+            .unwrap();
+        let payloads = server.join().unwrap();
+        assert_eq!(payloads.len(), 2);
+        for body in payloads {
+            assert!(!body.contains("sk-proj-syntheticabcdefghijklmnop"));
+            assert!(body.contains("REDACTED_SECRET"));
+        }
     }
 
     #[test]

@@ -44,6 +44,8 @@ pub enum TurnFailureKind {
     DependencyUnresolved,
     /// The request would not fit the configured context budget.
     ContextTooLarge,
+    /// The host could not qualify the input before external dispatch.
+    Sanitization,
     /// Credentials, CLI installation or sign-in, route or model selection.
     ProviderSetup,
     /// Timeout, network, rate limit, process crash.
@@ -60,7 +62,10 @@ pub enum TurnFailureKind {
 impl TurnFailureKind {
     /// Resending the same message is a reasonable next step.
     pub const fn retry_allowed(self) -> bool {
-        !matches!(self, Self::ContextTooLarge | Self::Cancelled)
+        !matches!(
+            self,
+            Self::ContextTooLarge | Self::Sanitization | Self::Cancelled
+        )
     }
 
     /// The reply reached the host and was wrong, so the agent can be told what
@@ -135,6 +140,7 @@ impl TurnFailure {
             OutputSchema => TurnFailureKind::ReplyUnreadable,
             Cancelled => TurnFailureKind::Cancelled,
             InvalidRequest | Persistence => TurnFailureKind::Unclassified,
+            Sanitization => TurnFailureKind::Sanitization,
         };
         let mut technical = error.safe_cause();
         if !error.causes.is_empty() {
@@ -149,6 +155,7 @@ impl TurnFailure {
 
     pub(crate) fn from_terminal(error: &TerminalError) -> Self {
         let kind = match error {
+            TerminalError::Redaction(_) => TurnFailureKind::Sanitization,
             TerminalError::AuthRequired(_)
             | TerminalError::VersionUnsupported(_)
             | TerminalError::NotFound(_)
@@ -189,6 +196,12 @@ impl TurnFailure {
             "prerequisite was not supplied",
         ]) {
             TurnFailureKind::DependencyUnresolved
+        } else if has(&[
+            "sanitization_failed",
+            "cli_redaction_failed",
+            "sanitization_input_limit",
+        ]) {
+            TurnFailureKind::Sanitization
         } else if has(&["exceeds the context budget"]) {
             TurnFailureKind::ContextTooLarge
         } else if has(&["changed while the", "no longer active"]) {
@@ -276,6 +289,11 @@ impl TurnFailure {
                 "The agent named a prerequisite feature the app does not have.",
                 "It used an identifier that is not one of this project's features (for example a task identifier), so the suggestion could not be matched and the reply was not applied.",
                 "Try again, or ask the agent to name the prerequisite by its feature title.",
+            ),
+            TurnFailureKind::Sanitization => text(
+                "The host could not sanitize this input.",
+                "The call stopped before sending unqualified content.",
+                "Review the input size and local sanitization configuration, then submit a new turn.",
             ),
             TurnFailureKind::ContextTooLarge => text(
                 "The conversation no longer fits the agent's context limit.",
@@ -566,6 +584,7 @@ mod tests {
             (LlmErrorKind::OutputSchema, TurnFailureKind::ReplyUnreadable),
             (LlmErrorKind::Cancelled, TurnFailureKind::Cancelled),
             (LlmErrorKind::InvalidRequest, TurnFailureKind::Unclassified),
+            (LlmErrorKind::Sanitization, TurnFailureKind::Sanitization),
         ];
         for (llm, expected) in cases {
             let error = LlmError::new(llm, "boom").with_target("openai", "conn", "model");

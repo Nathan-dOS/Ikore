@@ -273,6 +273,9 @@ pub struct UnitDispatch {
 /// Per-request dispatch controls that the router and transports must honour.
 #[derive(Debug, Clone, Default)]
 pub struct DispatchPolicy {
+    /// Host-issued proof for source-aware exception ranges. A transport must
+    /// verify it against the current prompt before using these bytes.
+    pub prepared_input: Option<crate::secret_redactor::PreparedModelInput>,
     /// Explicit CLI initial/progressive/absolute budget. Absent callers retain
     /// `LlmRequest::deadline` as their hard ceiling, including shorter test budgets.
     /// API routing deliberately ignores this transport-specific override.
@@ -324,7 +327,7 @@ pub struct LlmUsage {
     pub output_tokens: Option<i64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LlmResponse {
     pub execution_id: ExecutionId,
     pub generation_id: GenerationId,
@@ -338,6 +341,21 @@ pub struct LlmResponse {
     pub usage: LlmUsage,
     pub estimated_cost_usd: Option<f64>,
     pub finish_reason: Option<String>,
+}
+
+impl std::fmt::Debug for LlmResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LlmResponse")
+            .field("execution_id", &self.execution_id)
+            .field("generation_id", &self.generation_id)
+            .field("route_id", &self.route_id)
+            .field("connection_id", &self.connection_id)
+            .field("provider_id", &self.provider_id)
+            .field("content_bytes", &self.content.len())
+            .field("usage", &self.usage)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

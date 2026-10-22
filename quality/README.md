@@ -15,6 +15,7 @@ historical check applies to the source and environment identified in that report
 | CLI process boundary | [Threat model](cli-threat-model.md) |
 | Synchronization and human recovery | [Synchronization report](cerebro-sync-validation-2026-09-09.md) |
 | Context telemetry and Learning | [Validation](learning-context-optimization.md) |
+| Deterministic secret sanitization | [2026-10-22 implementation and validation](secret-sanitization-validation-2026-10-22.md) |
 | Repository hygiene | [2026-10-17 change record](repository-hygiene-2026-10-17.md) |
 
 ## Historical design references

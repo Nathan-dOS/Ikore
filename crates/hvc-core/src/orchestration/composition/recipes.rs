@@ -123,16 +123,32 @@ impl StageInputs {
 }
 
 /// The frozen preparation of one stage before dispatch.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct StagePreparation {
     pub table: ReferenceTable,
     pub drafts: Vec<UnitDraft>,
     pub approved: ApprovedContext,
     pub delivered: BTreeMap<Handle, String>,
+    /// Model-facing derivatives. `delivered` remains the immutable edit base.
+    pub source_redactions: BTreeMap<Handle, crate::secret_redactor::ContextRedaction>,
+    pub sanitization_policy_identity: String,
     pub requirements: Vec<(Handle, String)>,
     pub decisions: Vec<String>,
     pub interfaces: Vec<InterfaceGroupV1>,
     pub extra_instructions: Option<String>,
+}
+
+impl std::fmt::Debug for StagePreparation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StagePreparation")
+            .field("sources", &self.delivered.len())
+            .field("units", &self.drafts.len())
+            .field(
+                "sanitization_policy_identity",
+                &self.sanitization_policy_identity,
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 /// Host-side outputs after the unit is validated.
@@ -696,11 +712,27 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
             draft.task_refs = all_tasks(&table);
         }
     }
+    let source_redactions = delivered
+        .iter()
+        .map(|(handle, content)| {
+            crate::secret_redactor::redact_context(content)
+                .map(|view| (handle.clone(), view))
+                .map_err(|_| {
+                    recipe_error(
+                        ErrorCode::HostContractError,
+                        "Context sanitization is unavailable.",
+                    )
+                })
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
     Ok(StagePreparation {
         table,
         drafts,
         approved,
         delivered,
+        source_redactions,
+        sanitization_policy_identity: crate::secret_redactor::SANITIZATION_POLICY_VERSION
+            .to_owned(),
         requirements,
         decisions,
         interfaces,
@@ -1019,8 +1051,13 @@ pub fn prompt_inputs<'a>(
             Some(DeliveredSource {
                 handle,
                 content,
+                redaction: preparation.source_redactions.get(handle),
                 replaceable: unit.owned_destination_refs.contains(handle)
-                    && content.len() <= MAX_REPLACE_FILE_BYTES,
+                    && content.len() <= MAX_REPLACE_FILE_BYTES
+                    && preparation
+                        .source_redactions
+                        .get(handle)
+                        .is_some_and(|view| view.spans.is_empty()),
             })
         })
         .collect();
@@ -1093,6 +1130,14 @@ pub fn reconstruct_artifacts(
             .filter(|anchor| anchor.source_ref == group.destination)
             .cloned()
             .collect::<Vec<_>>();
+        if let Some(view) = preparation.source_redactions.get(&group.destination) {
+            super::edits::guard_redacted_edits(original, &view.spans, &anchors, &group.operations)?;
+        } else if original.is_some() {
+            return Err(recipe_error(
+                ErrorCode::HostContractError,
+                "The edit base has no sanitization map.",
+            ));
+        }
         let reconstructed = apply_destination_edits(original, &anchors, &group.operations)?;
         let path = entry.relative_path().cloned();
         let kind = match entry.source_role() {

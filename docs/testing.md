@@ -100,3 +100,18 @@ Linux failures are fixed. [`nightly.yml`](../.github/workflows/nightly.yml) runs
 the complete Stage 7 gate, and [`security.yml`](../.github/workflows/security.yml)
 runs `cargo audit` and the license and source audit. The jobs call the same
 aliases as local runs, with no retries.
+
+## Secret sanitization qualification
+
+[Secret sanitization](secret-sanitization.md) describes the source/projection and
+publication contracts. Relevant tests are in `secret_redactor`, `sanitization`,
+CLI/Companion transport fixtures, composition and the review UI. The measured
+scanner probe is hermetic:
+
+```powershell
+cargo run --locked -p hvc-core --example secret_sanitization_benchmark
+```
+
+The probe reports its build profile, sizes and timings. Whole-process peak memory
+is measured separately; scanner timing is not a claim about provider latency or
+the complete desktop application's memory.
