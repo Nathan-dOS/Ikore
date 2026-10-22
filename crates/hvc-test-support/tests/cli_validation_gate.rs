@@ -6,8 +6,8 @@ mod composition_support;
 
 use composition_support::*;
 use hvc_core::persistence_service::{
-    CLI_VALIDATION_FAILED, CLI_VERSION_UNVALIDATED, CliFallbackDecision, PulsationStatus,
-    ResolveCliFallbackRequest, ValidateCliFallbackRequest,
+    CLI_QUOTA_LOW, CLI_VALIDATION_FAILED, CLI_VERSION_UNVALIDATED, CliFallbackDecision,
+    PulsationStatus, ResolveCliFallbackRequest, ValidateCliFallbackRequest,
 };
 
 static PATH_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
@@ -29,13 +29,18 @@ impl Drop for PathRestore {
 
 /// Puts a `cli_fixture` copy named `gemini.exe` first on PATH, in `state`.
 fn install_gemini_fixture(state: &str) -> (tempfile::TempDir, PathRestore) {
+    install_fixture("gemini", state)
+}
+
+/// Puts a `cli_fixture` copy named `<name>.exe` first on PATH, in `state`.
+fn install_fixture(name: &str, state: &str) -> (tempfile::TempDir, PathRestore) {
     let binaries = tempfile::tempdir().unwrap();
     std::fs::copy(
         env!("CARGO_BIN_EXE_cli_fixture"),
-        binaries.path().join("gemini.exe"),
+        binaries.path().join(format!("{name}.exe")),
     )
     .unwrap();
-    std::fs::write(binaries.path().join("gemini.fixture-state"), state).unwrap();
+    std::fs::write(binaries.path().join(format!("{name}.fixture-state")), state).unwrap();
     let original_path = std::env::var_os("PATH");
     let restore = PathRestore(original_path.clone());
     let mut paths = vec![binaries.path().to_path_buf()];
@@ -261,4 +266,86 @@ fn a_cli_that_fails_validation_leaves_only_switching_provider_or_aborting() {
     let (status, _, decision) = current_fallback(&harness, &fallback.checkpoint_id);
     assert_eq!(status, "approved");
     assert_eq!(decision.as_deref(), Some("use_api"));
+}
+
+/// ADR-028 pre-flight: a stage whose CLI is nearly out of its plan window asks first. The job
+/// parks on the CLI fallback checkpoint before anything launches, no provider is switched, and
+/// "Continue with CLI" lets the same stage run without asking again in that window.
+#[test]
+fn preflight_quota_warning_opens_a_human_checkpoint_and_never_switches_provider() {
+    let _lock = PATH_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_binaries, _restore) = install_fixture("claude", "ok");
+    let harness = Harness::start(|facts, _, _| completed_reply(facts));
+    harness.wait_for_checkpoint("SPECIFICATION");
+    let terminals = harness.route_role_to_official_cli("contract_agent", "claude");
+    // A Claude run event reporting 95% of the 5-hour window, as the meter receives it.
+    let resets = chrono::Utc::now().timestamp() + 3_600;
+    let frame = format!(
+        r#"{{"type":"rate_limit_event","rate_limit_info":{{"status":"allowed_warning","unifiedWindows":{{"five_hour":{{"utilization":0.95,"resetsAt":{resets}}},"seven_day":{{"utilization":0.4,"resetsAt":{}}}}}}}}}"#,
+        resets + 86_400
+    );
+    assert!(
+        terminals
+            .quota_meter()
+            .observe_claude_frame(frame.as_bytes())
+    );
+    harness.approve();
+
+    let fallback = wait_for_cli_fallback(&harness);
+    assert_eq!(fallback.error_code, CLI_QUOTA_LOW);
+    assert!(
+        fallback.diagnostic.contains("Claude 5h window is 95% used"),
+        "{}",
+        fallback.diagnostic
+    );
+    let count = |sql: &str| -> i64 {
+        harness
+            .db()
+            .query_row(sql, [&harness.pulse], |r| r.get(0))
+            .unwrap()
+    };
+    // Nothing launched, and no provider switch was recorded.
+    assert_eq!(
+        count("SELECT COUNT(*) FROM terminal_runs WHERE pulsation_id=?1"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM pulse_execution_overrides WHERE pulsation_id=?1"),
+        0
+    );
+    assert_eq!(pulsation_status(&harness), "checkpoint");
+
+    // "Continue with CLI": the requeued job launches the CLI and is not asked again.
+    let resolved = harness
+        .service
+        .resolve_cli_fallback(ResolveCliFallbackRequest {
+            checkpoint_id: fallback.checkpoint_id.clone(),
+            expected_state_version: fallback.state_version,
+            decision: CliFallbackDecision::RetryCli,
+        })
+        .unwrap();
+    assert_ne!(resolved.pulsation.status, PulsationStatus::Checkpoint);
+    wait_until(&harness.service, &harness.pulse, |db| {
+        db.query_row(
+            "SELECT COUNT(*) FROM terminal_runs WHERE pulsation_id=?1",
+            [&harness.pulse],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    });
+    assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM cli_fallback_requests WHERE pulsation_id=?1 AND error_code='cli_quota_low' AND decision IS NULL"
+        ),
+        0,
+        "the developer is not asked twice in the same window"
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM pulse_execution_overrides WHERE pulsation_id=?1"),
+        0
+    );
 }

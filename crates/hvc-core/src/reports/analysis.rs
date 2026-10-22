@@ -14,7 +14,8 @@ use std::path::Path;
 use crate::llm::AgentRole;
 use crate::orchestration::catalog::STAGES;
 use crate::reports::{
-    PulsationReport, RejectedOutput, ReportPulsation, ReportRun, ReportStage, ReportTokens,
+    PulsationReport, RejectedOutput, ReportPlanQuota, ReportPulsation, ReportRun, ReportStage,
+    ReportTokens,
 };
 use chrono::{DateTime, FixedOffset};
 use rusqlite::{Connection, OpenFlags};
@@ -839,7 +840,52 @@ pub fn analyze(database: &Path, selector: &Selector) -> Result<Value, AnalysisEr
         "checkpoints": checkpoints,
         "retrieval": analyze_retrieval(&connection, &pulsation)?,
         "validation_errors": load_validation_errors(&connection, &pulsation)?,
+        "plan_quota": analyze_plan_quota(database, &runs[..cli_runs]),
     }))
+}
+
+/// Plan-window change summed over the pulsation's CLI runs, per CLI and window (ADR-028).
+/// Runs without both boundary samples, or whose window reset mid-run, contribute nothing.
+/// CLI label, scope and window length.
+type QuotaWindowKey = (&'static str, Option<String>, Option<u32>);
+
+fn analyze_plan_quota(database: &Path, runs: &[AgentRun]) -> Value {
+    let store = crate::quota::QuotaStore::new(database);
+    // Summed change and whether any run overlapped, per window; ordered for stable output.
+    let mut totals: BTreeMap<QuotaWindowKey, (f64, bool)> = BTreeMap::new();
+    let deltas = store
+        .run_deltas_many(runs.iter().map(|run| run.id.as_str()))
+        .unwrap_or_default();
+    for run_deltas in deltas.into_values() {
+        for delta in run_deltas {
+            let total = totals
+                .entry((
+                    delta.backend.label(),
+                    delta.scope.clone(),
+                    delta.window_minutes,
+                ))
+                .or_default();
+            total.0 += delta.delta();
+            total.1 |= delta.approximate;
+        }
+    }
+    Value::Array(
+        totals
+            .into_iter()
+            .map(|((cli, scope, minutes), (delta, approximate))| {
+                let window = crate::quota::window_label(minutes);
+                json!({
+                    "cli": cli,
+                    "window": match scope {
+                        Some(scope) => format!("{window} · {scope}"),
+                        None => window,
+                    },
+                    "delta_percent": (delta * 10.0).round() / 10.0,
+                    "approximate": approximate,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// Maps an [`analyze`] report onto the typed input of the HTML pulsation report
@@ -902,6 +948,19 @@ pub fn to_html_report(report: &Value) -> Result<PulsationReport, AnalysisError> 
                 discarded_output: count(&totals["tokens_discarded"]["output"]),
             },
             stages,
+            plan_quota: report["plan_quota"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|quota| {
+                    Some(ReportPlanQuota {
+                        cli: quota["cli"].as_str()?.to_owned(),
+                        window: quota["window"].as_str()?.to_owned(),
+                        delta_percent: quota["delta_percent"].as_f64()?,
+                        approximate: quota["approximate"].as_bool().unwrap_or(false),
+                    })
+                })
+                .collect(),
         },
         rejected_outputs: report["validation_errors"]
             .as_array()
@@ -995,6 +1054,19 @@ pub fn render_text(report: &Value) -> String {
         out.push_str(&format!(
             "  attribution          {} runs matched to their attempt by order (no persisted link)\n",
             totals["cli_runs_linked_by_inference"],
+        ));
+    }
+    for quota in report["plan_quota"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "  plan usage           {} {} {:+.1}%{}\n",
+            quota["cli"].as_str().unwrap_or("-"),
+            quota["window"].as_str().unwrap_or("-"),
+            quota["delta_percent"].as_f64().unwrap_or(0.0),
+            if quota["approximate"].as_bool() == Some(true) {
+                " (approx.)"
+            } else {
+                ""
+            },
         ));
     }
 

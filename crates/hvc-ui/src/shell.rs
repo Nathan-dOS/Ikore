@@ -160,6 +160,7 @@ fn parse_qa_window_size(value: &str) -> Option<(f32, f32)> {
 impl Render for AppModel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.observe_performance_frame(window);
+        self.note_window_activation(window.is_window_active(), cx);
         let active = self.active_view();
         let badges = self.sidebar_badges(cx);
         self.collect_notifications(cx);
@@ -279,6 +280,7 @@ impl Render for AppModel {
             )
             .child(status_bar(self, badges, cx))
             .child(self.notification_overlay(window, cx))
+            .children(crate::quota_bar::popover(self, window, cx))
             .when_some(self.choice_menu.clone(), |d, menu| {
                 d.child(gpui::deferred(menu).with_priority(20))
             })
@@ -378,6 +380,7 @@ fn header(
                 .items_center()
                 .justify_end()
                 .gap_1()
+                .children(crate::quota_bar::header_pill(model, cx))
                 .child(header_health(model, cx))
                 .child(crate::widgets::icon_button(
                     "notifications",

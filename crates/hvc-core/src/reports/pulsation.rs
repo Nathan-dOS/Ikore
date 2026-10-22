@@ -103,6 +103,19 @@ pub struct ReportRun {
     pub unblock_wait_seconds: f64,
     pub tokens: ReportTokens,
     pub stages: Vec<ReportStage>,
+    /// Plan-window change measured around this pulsation's CLI runs (ADR-028).
+    #[serde(default)]
+    pub plan_quota: Vec<ReportPlanQuota>,
+}
+
+/// The used-percent change of one CLI plan window over the pulsation's runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportPlanQuota {
+    pub cli: String,
+    pub window: String,
+    pub delta_percent: f64,
+    /// Another run of the same CLI overlapped one of these runs.
+    pub approximate: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1168,6 +1181,29 @@ fn stage_table(run: &ReportRun) -> SafeHtml {
             compact(tokens.discarded_output as f64),
         ))
         .push_markup("</p>");
+    if !run.plan_quota.is_empty() {
+        let parts = run
+            .plan_quota
+            .iter()
+            .map(|quota| {
+                format!(
+                    "{} {} {:+.1}%{}",
+                    quota.cli,
+                    quota.window,
+                    quota.delta_percent,
+                    if quota.approximate { " (approx.)" } else { "" }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        html.push_markup(
+            "<p class=\"dim\" id=\"plan-quota\" style=\"margin-top:4px;font-size:12.5px\">",
+        )
+        .push_text(&format!(
+            "Plan usage during this pulsation's CLI runs: {parts}. Usage elsewhere on the same account in the same minutes also counts."
+        ))
+        .push_markup("</p>");
+    }
     html
 }
 
@@ -1332,6 +1368,7 @@ mod tests {
                     stage(PulsationStage::Test, 1, 271.0, 35_000, 6_800),
                     stage(PulsationStage::Integrator, 1, 138.0, 15_000, 3_900),
                 ],
+                plan_quota: Vec::new(),
             },
             rejected_outputs: vec![RejectedOutput {
                 agent: "Contract".into(),
@@ -1385,6 +1422,12 @@ mod tests {
             file.path = hostile.into();
         }
         report.rejected_outputs[0].agent = hostile.into();
+        report.run.plan_quota.push(ReportPlanQuota {
+            cli: hostile.into(),
+            window: hostile.into(),
+            delta_percent: 4.0,
+            approximate: true,
+        });
         report.rejected_outputs[0].error = hostile.into();
 
         let out = render_pulsation_report(&report);

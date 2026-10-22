@@ -83,6 +83,7 @@ pub(crate) fn fixture(cx: &mut Context<AppModel>) -> AppModel {
                 fallbacks: vec![],
                 free_form_bindings: vec![],
                 api_executions: Default::default(),
+                quota_deltas: Default::default(),
             },
         );
     });
@@ -2263,55 +2264,136 @@ fn project_deletion_confirmation_has_a_readable_width_and_accepts_the_project_na
     }
 }
 
+/// A plan-quota overview as the meter produces it: Codex fresh with a tight 5h window, Claude
+/// fresh with its first-use disclosure pending, Antigravity signed out.
+fn quota_overview_fixture() -> hvc_core::quota::QuotaOverview {
+    use hvc_core::quota::{
+        BackendQuota, CredentialDisclosure, Projection, QuotaOverview, QuotaSnapshot, QuotaSource,
+        QuotaState, QuotaWindow, SourceStatus, UnavailableReason,
+    };
+    let now = chrono::Utc::now();
+    let window = |used: f64, minutes: u32, hours_left: i64| {
+        QuotaWindow::new(
+            None,
+            used,
+            Some(minutes),
+            Some(now + chrono::Duration::hours(hours_left)),
+        )
+        .unwrap()
+    };
+    let sources = |backend: CliBackend, active: QuotaSource| {
+        hvc_core::quota::source_chain(backend)
+            .iter()
+            .map(|&source| SourceStatus {
+                source,
+                enabled: true,
+                active: source == active,
+                last_error: None,
+            })
+            .collect::<Vec<_>>()
+    };
+    QuotaOverview {
+        checked_at: now,
+        credential_collectors_off: None,
+        backends: vec![
+            BackendQuota {
+                backend: CliBackend::Codex,
+                state: QuotaState::Fresh,
+                snapshot: Some(QuotaSnapshot::new(
+                    CliBackend::Codex,
+                    Some("plus"),
+                    vec![window(92.0, 300, 2), window(16.0, 10_080, 100)],
+                    QuotaSource::CodexAppServer,
+                    now,
+                )),
+                projections: vec![
+                    Some(Projection {
+                        exhausts_at: now + chrono::Duration::minutes(40),
+                        before_reset: true,
+                    }),
+                    None,
+                ],
+                sources: sources(CliBackend::Codex, QuotaSource::CodexAppServer),
+                disclosure: None,
+                endpoint_switch: Some(true),
+            },
+            BackendQuota {
+                backend: CliBackend::Claude,
+                state: QuotaState::Fresh,
+                snapshot: Some(QuotaSnapshot::new(
+                    CliBackend::Claude,
+                    None,
+                    vec![window(30.0, 300, 3), window(60.0, 10_080, 30)],
+                    QuotaSource::ClaudeEndpoint,
+                    now,
+                )),
+                projections: vec![None, None],
+                sources: sources(CliBackend::Claude, QuotaSource::ClaudeEndpoint),
+                disclosure: Some(CredentialDisclosure {
+                    backend: CliBackend::Claude,
+                    file: "D:/fixture/.claude/.credentials.json".into(),
+                    host: "api.anthropic.com",
+                }),
+                endpoint_switch: Some(true),
+            },
+            BackendQuota {
+                backend: CliBackend::Antigravity,
+                state: QuotaState::Unavailable(UnavailableReason::NotSignedIn),
+                snapshot: None,
+                projections: vec![],
+                sources: sources(CliBackend::Antigravity, QuotaSource::AntigravityUsage),
+                disclosure: None,
+                endpoint_switch: None,
+            },
+        ],
+    }
+}
+
 #[gpui::test]
 fn connections_show_cli_plan_windows_without_an_open_project_and_keep_bars_inside_cards(
     cx: &mut TestAppContext,
 ) {
     use hvc_core::terminals::{
         CliAvailability, CliAvailabilityState, CliCapabilities, CliConnectionStatus,
-        CliConnectionsSnapshot, CliOutputFormat, CliQuotaBucket,
+        CliConnectionsSnapshot, CliOutputFormat,
     };
+    let overview = quota_overview_fixture();
     let (model, visual) = cx.add_window_view(|_, cx| {
         let mut model = fixture(cx);
         with_settings_items(&mut model, cx);
         model
             .workspace
             .update(cx, |workspace, _| workspace.project_id = None);
+        let availability = |backend: CliBackend| CliAvailability {
+            backend,
+            state: CliAvailabilityState::Available,
+            executable_path: Some(format!("C:/CLI/{}.exe", backend.as_str()).into()),
+            version: Some("1.0.0".into()),
+            diagnostic: None,
+            install_url: "",
+            install_command: "",
+            capabilities: CliCapabilities {
+                output_format: CliOutputFormat::JsonLines,
+                structured_output: true,
+                native_resume: true,
+                thinking_levels: vec![],
+                auth_probe: true,
+                read_only: true,
+                model_catalog: true,
+            },
+            quota: vec![],
+        };
         model.settings.update(cx, |settings, _| {
             settings.cli_connections = Some(CliConnectionsSnapshot {
-                checked_at: "2026-10-17T12:00:00Z".into(),
-                connections: vec![CliConnectionStatus {
-                    availability: CliAvailability {
-                        backend: CliBackend::Codex,
-                        state: CliAvailabilityState::Available,
-                        executable_path: Some("C:/CLI/codex.exe".into()),
-                        version: Some("0.162.1".into()),
-                        diagnostic: None,
-                        install_url: "",
-                        install_command: "",
-                        capabilities: CliCapabilities {
-                            output_format: CliOutputFormat::JsonLines,
-                            structured_output: true,
-                            native_resume: true,
-                            thinking_levels: vec![],
-                            auth_probe: true,
-                            read_only: true,
-                            model_catalog: true,
-                        },
-                        quota: ["5h", "weekly"]
-                            .into_iter()
-                            .map(|window| CliQuotaBucket {
-                                group: "Codex".into(),
-                                window: window.into(),
-                                remaining_percent: 75,
-                                reset_time: Some("2099-10-18T12:00:00Z".into()),
-                            })
-                            .collect(),
-                    },
-                    plan: Some("plus".into()),
-                    quota_source: Some("CLI app-server"),
-                    quota_diagnostic: None,
-                }],
+                checked_at: "2026-10-21T12:00:00Z".into(),
+                connections: [CliBackend::Codex, CliBackend::Claude]
+                    .into_iter()
+                    .map(|backend| CliConnectionStatus {
+                        availability: availability(backend),
+                        quota: overview.backend(backend).cloned(),
+                    })
+                    .collect(),
+                overview: overview.clone(),
             });
         });
         model
@@ -2330,14 +2412,119 @@ fn connections_show_cli_plan_windows_without_an_open_project_and_keep_bars_insid
         assert!(card.left() >= pane.left() && card.right() <= pane.right());
         for index in 0..2 {
             let bar = visual
-                .debug_bounds(leak(format!("settings-cli-quota-bar:codex:{index}")))
+                .debug_bounds(leak(format!("quota-window:settings:codex:{index}:bar")))
                 .unwrap();
             assert!(bar.size.width > px(200.0));
             assert!(bar.left() >= card.left() && bar.right() <= card.right());
+            let pace = visual
+                .debug_bounds(leak(format!(
+                    "quota-window:settings:codex:{index}:bar:pace"
+                )))
+                .unwrap();
+            assert!(pace.left() >= bar.left() && pace.right() <= bar.right() + px(2.0));
+        }
+        let switch = visual.debug_bounds("quota-endpoint-codex").unwrap();
+        assert!(switch.right() <= card.right());
+        let claude = visual.debug_bounds("settings-cli:claude").unwrap();
+        let disclosure = visual.debug_bounds("quota-disclosure:claude").unwrap();
+        assert!(disclosure.left() >= claude.left() && disclosure.right() <= claude.right());
+        for button in [
+            "quota-disclosure-keep:claude",
+            "quota-disclosure-off:claude",
+        ] {
+            let button = visual.debug_bounds(button).unwrap();
+            assert!(button.size.height >= px(24.0));
+            assert!(button.right() <= disclosure.right());
         }
     }
 }
 
+#[gpui::test]
+fn the_quota_pill_shows_the_worst_window_and_opens_every_window(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |model, cx| {
+        model.quota.overview = Some(quota_overview_fixture());
+        cx.notify();
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Home);
+        let header = visual.debug_bounds("header").unwrap();
+        let context = visual.debug_bounds("header-context").unwrap();
+        let pill = visual.debug_bounds("header-quota").unwrap();
+        let health = visual.debug_bounds("header-health").unwrap();
+        assert!(
+            context.right() <= pill.left(),
+            "pill overlaps the readout at {width}"
+        );
+        assert!(pill.right() <= health.left());
+        assert!(pill.top() >= header.top() && pill.bottom() <= header.bottom());
+        assert!(pill.size.width > px(60.0));
+
+        click(visual, "header-quota");
+        let popover = visual
+            .debug_bounds("quota-popover")
+            .expect("the pill opens the popover");
+        assert!(popover.top() >= header.bottom());
+        assert!(popover.right() <= px(width) && popover.left() >= px(0.0));
+        for backend in ["codex", "claude", "antigravity"] {
+            let section = visual
+                .debug_bounds(leak(format!("quota:popover:{backend}")))
+                .unwrap();
+            assert!(section.left() >= popover.left() && section.right() <= popover.right());
+        }
+        for index in 0..2 {
+            let bar = visual
+                .debug_bounds(leak(format!("quota-window:popover:codex:{index}:bar")))
+                .unwrap();
+            assert!(bar.size.width > px(150.0));
+        }
+        // Signed out: a state line, no bar.
+        assert!(
+            visual
+                .debug_bounds("quota-window:popover:antigravity:0")
+                .is_none()
+        );
+        assert!(visual.debug_bounds("quota-disclosure:claude").is_some());
+        model.update(visual, |model, cx| {
+            assert!(model.quota.popover_open);
+            model.quota.popover_open = false;
+            cx.notify();
+        });
+        visual.run_until_parked();
+
+        // The Agents card of a Codex agent shows the same bars, tightest first.
+        select(&model, visual, AppView::Agents);
+        let column = visual.debug_bounds("agents-cli-scroll").unwrap();
+        let rows = visual.debug_bounds("agent-quota:task_specifier").unwrap();
+        assert!(rows.left() >= column.left() && rows.right() <= column.right());
+        let tightest = visual
+            .debug_bounds("agent-quota:task_specifier:0:bar")
+            .unwrap();
+        assert!(tightest.size.width > px(150.0));
+    }
+}
+
+#[gpui::test]
+fn the_quota_pill_is_hidden_when_no_metered_cli_is_installed(cx: &mut TestAppContext) {
+    // A separate window: debug bounds are never cleared between frames.
+    let (_, visual) = cx.add_window_view(|_, cx| {
+        let mut model = fixture(cx);
+        let mut overview = quota_overview_fixture();
+        for quota in &mut overview.backends {
+            quota.state = hvc_core::quota::QuotaState::Unavailable(
+                hvc_core::quota::UnavailableReason::CliMissing,
+            );
+            quota.snapshot = None;
+        }
+        model.quota.overview = Some(overview);
+        model
+    });
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("header-health").is_some());
+    assert!(visual.debug_bounds("header-quota").is_none());
+}
 #[gpui::test]
 fn permanent_deletion_keeps_settings_open_and_prevents_page_navigation(cx: &mut TestAppContext) {
     let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
@@ -4161,6 +4348,7 @@ fn controls_size_to_content_instead_of_the_panel(cx: &mut TestAppContext) {
                     fallbacks: vec![],
                     free_form_bindings: vec![],
                     api_executions: Default::default(),
+                    quota_deltas: Default::default(),
                 },
             );
         });

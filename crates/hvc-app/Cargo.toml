@@ -10,6 +10,11 @@ description = "Native GPUI desktop application for Hard Vibe Code"
 name = "hard-vibe-code"
 path = "src/main.rs"
 
+[features]
+# ADR-028 G10: a public build may ship with `--no-default-features`.
+default = ["quota-credential-collectors"]
+quota-credential-collectors = ["hvc-ui/quota-credential-collectors"]
+
 [dependencies]
 anyhow.workspace = true
 gpui.workspace = true

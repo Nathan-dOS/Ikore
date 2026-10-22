@@ -13,7 +13,7 @@ test = true
 
 [dependencies]
 chrono.workspace = true
-hvc-core.workspace = true
+hvc-core = { workspace = true, features = ["quota-credential-collectors"] }
 refinery = { version = "0.8", features = ["rusqlite"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde.workspace = true

@@ -11,7 +11,7 @@ Design references: [public summaries](../docs/adr/README.md); [historical archiv
 - O workspace, seus arquivos, configurações de fornecedor e instruções são entrada não confiável.
 - A saída da CLI também é entrada não confiável, mesmo quando o executável foi descoberto como oficial.
 - O banco local e o event bus só podem receber conteúdo depois de sanitização e redaction.
-- O keyring é a única fronteira autorizada para segredos de API; o painel Agents nunca persiste a chave em configuração ou histórico.
+- O keyring é a única fronteira autorizada para segredos de API; o painel Agents nunca persiste a chave em configuração ou histórico. Única exceção, definida no ADR-028: o host pode ler, somente em memória e sob as garantias G1–G10, o token de acesso que a própria CLI de assinatura (Claude Code, Codex) guarda no seu diretório padrão, para consultar o uso do plano. Veja "Plan-quota meter and CLI credential reads" abaixo.
 - Custom é código local explicitamente confiado pelo usuário, mas continua limitado a executável direto e snapshot seguro.
 
 ## Ameaças e controles
@@ -41,6 +41,8 @@ Design references: [public summaries](../docs/adr/README.md); [historical archiv
 ## Decisão de risco
 
 Nenhum risco crítico ou alto conhecido permanece aberto no código coberto pelo runtime hermético. Os riscos residuais acima são de severidade média ou menor, têm comportamento fail-closed e não autorizam fallback, shell ou acesso cruzado silencioso.
+
+Exception: the plan-quota credential read (ADR-028) carries a policy risk — provider terms and client identification — that has not been assessed, so this statement does not cover it until ADR-028 G10 is completed.
 
 ## Forge analysis and failure recovery — 2026-09-09
 
@@ -99,3 +101,38 @@ Hermetic evidence: `codex_usage_initializes_then_reads_limits_without_creating_a
 `codex_usage_rejects_oversized_and_error_replies`, the `codex_plan_usage_*` parser tests,
 `plan_windows_past_their_reset_are_never_shown_as_current_usage`, and the Connections layout
 test at 960 and 1440 pixels. `codex_plan_usage_live_read` is an opt-in authenticated check.
+
+## Plan-quota meter and CLI credential reads — 2026-10-21
+
+ADR-028 adds a meter for the 5-hour and weekly plan windows of Claude Code, Codex and Antigravity. Antigravity uses the existing `/usage` probe and reads no credential. Codex prefers the `app-server` query described above, then the `rate_limits` records of its rollouts. Two collectors may read a credential: the provider usage endpoint for Claude (primary) and for Codex (last resort). This is the only place the host reads another application's token.
+
+Rollout reads are bounded tail reads (256 KiB of the newest rollouts, lines up to 64 KiB) that parse only `rate_limits` records; no session content is kept, and `CODEX_HOME` is honored.
+
+Trust boundaries added:
+
+- The CLI's credential file is a secret owned by that CLI. The Claude Code binary lists it among sensitive paths (next to `~/.ssh/**` and `~/.aws/**`); HVC's host read happens outside any agent workspace.
+- Any process running as the same Windows user can already read these files. The added risk is HVC's own outbound use of the token and its handling in memory, not a new file-access capability.
+- Provider responses are untrusted input, like CLI output.
+
+| Threat | Impact | Control | Automated evidence |
+|---|---|---|---|
+| Token reaches a log, event, error, SQLite row, snapshot or the UI model | credential exposure at rest or on screen | token held in a redacting, zeroize-on-drop wrapper; no `Debug`/`Display` of the value; secret redactor extended to JWT-shaped tokens; snapshot table has no secret or identifier column (G2) | `quota_token_never_reaches_logs_events_database_or_errors`, `jwt_shaped_tokens_are_redacted`, `quota_snapshots_store_no_secrets_or_account_identifiers` |
+| Token sent to an unintended host (configurable URL, redirect, URL built from CLI output) | credential exfiltration | compile-time constant hosts, TLS with validation, no redirects followed (G4) | `quota_collectors_send_only_to_pinned_hosts_and_refuse_redirects` |
+| HVC refreshes or rewrites the CLI credential | developer signed out of the CLI, or a corrupted store | no call to a provider token endpoint, no write to CLI files; expired token reports `SignInExpired` (G3) | `quota_never_refreshes_or_writes_cli_credentials`, `quota_expired_token_reports_sign_in_expired_without_a_request` |
+| Agent, prompt injection, MCP or workspace snapshot reaches the token | agent-visible credential | collectors run only in the host; token never in prompts, CLI environment, argv, snapshots or Companion tools; vendor configuration stays excluded from workspaces (G5) | existing `safe_cli_workspace_excludes_secrets_ignored_files_and_vendor_configuration` plus `quota_token_is_absent_from_cli_environment_and_argv` |
+| Wrong credential store or over-reading fields | broader secret access than intended | read only the CLI's own file under `CLAUDE_CONFIG_DIR`/`~/.claude` or `CODEX_HOME`/`~/.codex`; deserialize only the needed fields; never touch an OS keyring entry; keyring-stored credentials report `CredentialStoreNotFile` (G1) | `quota_credentials_are_read_from_the_cli_directory_only`, `quota_ignores_refresh_and_id_tokens_and_api_keys` |
+| Hostile, oversized or changed provider response | crash, memory growth, wrong numbers | bounded body, typed parse, unknown fields ignored, out-of-range or unparsable values make the source `Unavailable(UnexpectedResponse)` (G8) | `quota_response_shape_changes_fail_closed` |
+| Excess requests, rate limiting or account flagging | blocked endpoint, annoyed provider | 55 s cache, doubling backoff to 15 min, `429`/`403` honored, polling only while visible and signed in (G6) | `quota_backoff_doubles_to_the_cap_and_honors_429` |
+| Developer unaware that HVC reads a token | consent gap | a one-time first-use disclosure names the file read and the host contacted, with a Turn off button; Settings shows the active source per CLI and an off switch; `HVC_DISABLE_QUOTA_ENDPOINTS=1` kill switch (G7) | `quota_kill_switch_disables_credential_collectors_only`, `quota_first_use_disclosure_names_the_file_and_host_and_can_turn_it_off` |
+| Stale or invented numbers drive a decision | wrong pre-flight advice | `Stale` state with age, windows past `resets_at` not shown as current, no interpolation across sources; projections labeled as estimates (G8) | `quota_window_past_its_reset_is_not_current`, `quota_projection_is_withheld_with_too_little_data` |
+| Pre-flight quota check changes execution on its own | silent provider switch or API spend | advisory only: opens the existing human checkpoint, never blocks silently, never falls back (ADR-010, ADR-021) | `preflight_quota_warning_opens_a_human_checkpoint_and_never_switches_provider` |
+| History table keeps sensitive data or grows without bound | privacy and disk | no token, account id, email or body stored; 30-day retention plus run-boundary samples, pruned automatically | `quota_retention_prunes_after_30_days_and_keeps_run_boundary_samples` |
+| Impersonating the official client; provider terms | account action, policy conflict, reputational cost | **not a technical control.** Honest identification is tried first; any impersonation is an explicit, recorded maintainer decision; provider terms are checked before the repository opens; credential collectors sit behind a Cargo feature (G9, G10) | none; tracked as an open item in ADR-028 |
+
+Residual risks:
+
+- The token is in process memory while a request is built and sent. A memory-reading attacker with the same privileges, or a crash dump, could expose it. Mitigations are a short lifetime, zeroize on drop and no token in panic or error text. Severity: medium.
+- The provider endpoints are undocumented and can change or disappear without notice. The meter fails closed and degrades to the next source; the Claude bar then relies on run-time events. Severity: low to medium.
+- The Codex endpoint may reject a `rustls` client. This costs availability, not security. Severity: low.
+- **Provider terms and client identification are not assessed.** Until ADR-028 G10 is completed, this item has no severity and must not be described as "no known high risk".
+- Qualification with real accounts is opt-in and outside the hermetic CI, as for every CLI backend.

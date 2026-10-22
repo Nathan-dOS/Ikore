@@ -31,6 +31,8 @@ pub(crate) struct AgentsDashboardSnapshot {
     pub(crate) fallbacks: Vec<CliFallbackCheckpoint>,
     pub(crate) free_form_bindings: Vec<FreeFormProviderRouteBinding>,
     pub(crate) api_executions: HashMap<String, Vec<LlmExecutionListItem>>,
+    /// Plan-window change per recent CLI run, by run id (ADR-028 attribution).
+    pub(crate) quota_deltas: HashMap<String, Vec<hvc_core::quota::RunQuotaDelta>>,
 }
 
 pub(crate) trait AgentsBackend: Send + Sync {
@@ -157,11 +159,19 @@ fn complete_dashboard_snapshot(
             .executions;
         api_executions.insert(key, executions);
     }
+    let quota_deltas = core.terminals().quota_meter().run_deltas_many(
+        terminals
+            .agents
+            .iter()
+            .flat_map(|agent| &agent.recent_runs)
+            .map(|run| run.id.as_str()),
+    );
     Ok(AgentsDashboardSnapshot {
         terminals,
         fallbacks,
         free_form_bindings,
         api_executions,
+        quota_deltas,
     })
 }
 
@@ -675,6 +685,7 @@ pub(crate) struct AgentsModel {
     pub(crate) api_activity: HashMap<AgentIdentifier, Vec<String>>,
     pub(crate) api_filters: HashMap<String, ApiActivityFilter>,
     pub(crate) api_executions: HashMap<String, Vec<LlmExecutionListItem>>,
+    pub(crate) quota_deltas: HashMap<String, Vec<hvc_core::quota::RunQuotaDelta>>,
     pub(crate) active_api_execution_by_slot: HashMap<String, String>,
     pub(crate) model_catalogs: HashMap<CliBackend, CliModelCatalogSnapshot>,
     pub(crate) active_model_picker: Option<CliModelPickerState>,
@@ -714,6 +725,7 @@ impl Default for AgentsModel {
             api_activity: HashMap::new(),
             api_filters: HashMap::new(),
             api_executions: HashMap::new(),
+            quota_deltas: HashMap::new(),
             active_api_execution_by_slot: HashMap::new(),
             model_catalogs: HashMap::new(),
             active_model_picker: None,
@@ -850,6 +862,7 @@ impl AgentsModel {
         self.fallbacks = snapshot.fallbacks;
         self.free_form_bindings = snapshot.free_form_bindings;
         self.api_executions = snapshot.api_executions;
+        self.quota_deltas = snapshot.quota_deltas;
         if self
             .pending_fallback_cancel
             .as_ref()
@@ -1377,6 +1390,7 @@ mod tests {
                 fallbacks: vec![],
                 free_form_bindings: vec![],
                 api_executions: HashMap::new(),
+                quota_deltas: Default::default(),
             }
         ));
         assert_eq!(
@@ -1402,6 +1416,7 @@ mod tests {
                 fallbacks: vec![],
                 free_form_bindings: vec![],
                 api_executions: HashMap::new(),
+                quota_deltas: Default::default(),
             }
         ));
         assert!(!model.in_flight());

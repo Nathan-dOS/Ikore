@@ -1,90 +1,77 @@
-//! Read-only subscription usage for the global Connections page.
+//! The global Connections page model, and the Codex `app-server` collector of the plan-quota
+//! meter (ADR-028, Codex source 1).
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use super::{
-    CliAvailability, CliAvailabilityState, CliBackend, CliQuotaBucket, ProcessTreeJob,
-    configure_hidden, copy_safe_environment, secure_probe_spec,
+    CliAvailability, CliBackend, ProcessTreeJob, configure_hidden, copy_safe_environment,
+    secure_probe_spec,
+};
+use crate::quota::sources::{codex_scope, epoch_seconds};
+use crate::quota::{
+    BackendQuota, QuotaOverview, QuotaReading, QuotaWindow, UnavailableReason, model::MAX_WINDOWS,
 };
 
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
 const MAX_LIMIT_GROUPS: usize = 16;
 const USAGE_TIMEOUT: Duration = Duration::from_secs(20);
 
-#[derive(Debug, Clone, Serialize)]
+/// One CLI on the global Connections page: its discovery state and its plan usage.
+#[derive(Debug, Clone)]
 pub struct CliConnectionStatus {
     pub availability: CliAvailability,
-    pub plan: Option<String>,
-    pub quota_source: Option<&'static str>,
-    pub quota_diagnostic: Option<String>,
+    /// `None` for CLIs the plan-quota meter does not cover.
+    pub quota: Option<BackendQuota>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct CliConnectionsSnapshot {
     pub connections: Vec<CliConnectionStatus>,
+    pub overview: QuotaOverview,
     pub checked_at: String,
 }
 
-pub(super) async fn connections(discovery: Vec<CliAvailability>) -> CliConnectionsSnapshot {
-    let mut connections = Vec::new();
-    for availability in discovery {
-        if availability.backend == CliBackend::Custom {
-            // Custom executables belong to individual agent configurations, not a global login.
-            continue;
-        }
-        let mut connection = CliConnectionStatus {
+pub(super) fn connections(
+    discovery: Vec<CliAvailability>,
+    overview: QuotaOverview,
+) -> CliConnectionsSnapshot {
+    let connections = discovery
+        .into_iter()
+        // Custom executables belong to individual agent configurations, not a global login.
+        .filter(|availability| availability.backend != CliBackend::Custom)
+        .map(|availability| CliConnectionStatus {
+            quota: overview.backend(availability.backend).cloned(),
             availability,
-            plan: None,
-            quota_source: None,
-            quota_diagnostic: None,
-        };
-        if connection.availability.state == CliAvailabilityState::Available {
-            if connection.availability.backend == CliBackend::Codex {
-                if let Some(executable) = &connection.availability.executable_path {
-                    match codex_usage(executable).await {
-                        Ok(usage) => {
-                            connection.plan = usage.plan;
-                            connection.availability.quota = usage.quota;
-                            connection.quota_source = Some("CLI app-server");
-                        }
-                        Err(_) => {
-                            // RPC errors can contain account details. Keep raw output out of UI/logs.
-                            connection.quota_diagnostic = Some(
-                                "Plan usage is unavailable. Reload to retry; API-key accounts may not expose plan limits."
-                                    .into(),
-                            );
-                        }
-                    }
-                }
-            } else if connection.availability.backend == CliBackend::Antigravity
-                && !connection.availability.quota.is_empty()
-            {
-                connection.quota_source = Some("CLI /usage");
-            }
-            if connection.availability.quota.is_empty() && connection.quota_diagnostic.is_none() {
-                connection.quota_diagnostic = Some(
-                    "This CLI does not report plan usage through its connection check.".into(),
-                );
-            }
-        }
-        connections.push(connection);
-    }
+        })
+        .collect();
     CliConnectionsSnapshot {
         connections,
-        checked_at: Utc::now().to_rfc3339(),
+        checked_at: overview.checked_at.to_rfc3339(),
+        overview,
     }
 }
+/// One `account/rateLimits/read` exchange with the CLI's own stdio app-server: no thread, no
+/// model turn, no credential read by the host.
+pub(crate) async fn read_codex_app_server_usage(
+    executable: &Path,
+) -> Result<QuotaReading, UnavailableReason> {
+    codex_usage(executable)
+        .await
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::InvalidData => UnavailableReason::UnexpectedResponse,
+            _ => UnavailableReason::SourceFailed,
+        })
+}
 
-async fn codex_usage(executable: &Path) -> std::io::Result<CodexUsage> {
+async fn codex_usage(executable: &Path) -> std::io::Result<QuotaReading> {
     let spec = secure_probe_spec(CliBackend::Codex, executable, vec!["app-server".into()]).await?;
     let directory = tempfile::tempdir()?;
     let mut command = Command::new(&spec.executable);
@@ -118,7 +105,7 @@ async fn codex_usage(executable: &Path) -> std::io::Result<CodexUsage> {
 async fn read_codex_usage(
     mut stdin: impl AsyncWrite + Unpin,
     stdout: impl AsyncRead + Unpin,
-) -> std::io::Result<CodexUsage> {
+) -> std::io::Result<QuotaReading> {
     // One budget across all notifications and replies, including an unterminated line.
     let mut reader = BufReader::new(stdout.take(MAX_RESPONSE_BYTES + 1));
     let mut budget = MAX_RESPONSE_BYTES as usize;
@@ -169,12 +156,6 @@ async fn reply(
     }
 }
 
-#[derive(Debug)]
-struct CodexUsage {
-    plan: Option<String>,
-    quota: Vec<CliQuotaBucket>,
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RateLimitsResponse {
@@ -185,6 +166,7 @@ struct RateLimitsResponse {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RateLimits {
+    limit_id: Option<String>,
     limit_name: Option<String>,
     plan_type: Option<String>,
     primary: Option<RateWindow>,
@@ -195,62 +177,49 @@ struct RateLimits {
 #[serde(rename_all = "camelCase")]
 struct RateWindow {
     used_percent: u8,
-    window_duration_mins: Option<u64>,
+    window_duration_mins: Option<u32>,
     resets_at: Option<i64>,
 }
 
-fn parse_codex_usage(value: Value) -> std::io::Result<CodexUsage> {
+fn parse_codex_usage(value: Value) -> std::io::Result<QuotaReading> {
     let response: RateLimitsResponse =
         serde_json::from_value(value).map_err(|_| invalid_response())?;
     let groups = match response.rate_limits_by_limit_id {
         Some(groups) if !groups.is_empty() => groups,
-        _ => BTreeMap::from([("Codex".to_string(), response.rate_limits)]),
+        _ => BTreeMap::from([("codex".to_string(), response.rate_limits)]),
     };
-    let mut usage = CodexUsage {
+    let mut usage = QuotaReading {
         plan: None,
-        quota: Vec::new(),
+        windows: Vec::new(),
+        observed_at: None,
     };
     for (id, limits) in groups.into_iter().take(MAX_LIMIT_GROUPS) {
         if usage.plan.is_none() {
-            usage.plan = limits.plan_type.map(|plan| label(&plan));
+            usage.plan = limits.plan_type;
         }
-        let group = label(limits.limit_name.as_deref().unwrap_or(&id));
-        for (fallback, window) in [("Primary", limits.primary), ("Secondary", limits.secondary)] {
-            let Some(window) = window else { continue };
-            if window.used_percent > 100 || window.window_duration_mins == Some(0) {
-                return Err(invalid_response());
-            }
-            let reset_time = window
+        let scope = codex_scope(
+            Some(limits.limit_id.as_deref().unwrap_or(&id)),
+            limits.limit_name.as_deref(),
+        );
+        for window in [limits.primary, limits.secondary].into_iter().flatten() {
+            let resets_at = window
                 .resets_at
-                .map(|epoch| {
-                    DateTime::from_timestamp(epoch, 0)
-                        .map(|time| time.to_rfc3339())
-                        .ok_or_else(invalid_response)
-                })
-                .transpose()?;
-            let window_label = match window.window_duration_mins {
-                Some(10080) => "weekly".into(),
-                Some(minutes) if minutes % 60 == 0 => format!("{}h", minutes / 60),
-                Some(minutes) => format!("{minutes} min"),
-                None => fallback.into(),
-            };
-            usage.quota.push(CliQuotaBucket {
-                group: group.clone(),
-                window: window_label,
-                remaining_percent: 100 - window.used_percent,
-                reset_time,
-            });
+                .map(epoch_seconds)
+                .transpose()
+                .map_err(|_| invalid_response())?;
+            usage.windows.push(
+                QuotaWindow::new(
+                    scope.as_deref(),
+                    f64::from(window.used_percent),
+                    window.window_duration_mins,
+                    resets_at,
+                )
+                .map_err(|_| invalid_response())?,
+            );
         }
     }
+    usage.windows.truncate(MAX_WINDOWS);
     Ok(usage)
-}
-
-fn label(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(120)
-        .collect()
 }
 
 fn invalid_response() -> std::io::Error {
@@ -274,12 +243,14 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(usage.plan.as_deref(), Some("plus"));
-        assert_eq!(usage.quota.len(), 3);
-        assert_eq!(usage.quota[0].window, "5h");
-        assert_eq!(usage.quota[0].remaining_percent, 100);
-        assert!(usage.quota[0].reset_time.is_some());
-        assert_eq!(usage.quota[1].window, "weekly");
-        assert_eq!(usage.quota[1].remaining_percent, 0);
+        assert_eq!(usage.windows.len(), 3);
+        assert_eq!(usage.windows[0].label(), "5h");
+        assert_eq!(usage.windows[0].scope, None);
+        assert_eq!(usage.windows[0].used_percent, 0.0);
+        assert!(usage.windows[0].resets_at.is_some());
+        assert_eq!(usage.windows[1].label(), "Weekly");
+        assert!(usage.windows[1].is_exhausted());
+        assert_eq!(usage.windows[2].scope.as_deref(), Some("other"));
     }
 
     #[test]
@@ -290,13 +261,14 @@ mod tests {
                 "rateLimitsByLimitId": extra
             }))
             .unwrap();
-            assert_eq!(usage.quota[0].window, "Primary");
-            assert_eq!(usage.quota[0].remaining_percent, 88);
+            assert_eq!(usage.windows[0].window_minutes, None);
+            assert_eq!(usage.windows[0].label(), "Limit");
+            assert_eq!(usage.windows[0].used_percent, 12.0);
         }
         assert!(
             parse_codex_usage(json!({"rateLimits": {}}))
                 .unwrap()
-                .quota
+                .windows
                 .is_empty()
         );
         for invalid in [json!(-1), json!(101), json!(12.5), json!("12")] {
@@ -310,6 +282,12 @@ mod tests {
         assert!(
             parse_codex_usage(json!({"rateLimits": {"primary": {
                 "usedPercent": 1, "resetsAt": i64::MAX
+            }}}))
+            .is_err()
+        );
+        assert!(
+            parse_codex_usage(json!({"rateLimits": {"primary": {
+                "usedPercent": 1, "windowDurationMins": 0
             }}}))
             .is_err()
         );
@@ -350,7 +328,7 @@ mod tests {
             }
         });
         let usage = read_codex_usage(write, read).await.unwrap();
-        assert_eq!(usage.quota[0].remaining_percent, 80);
+        assert_eq!(usage.windows[0].used_percent, 20.0);
         server.await.unwrap();
     }
 
@@ -376,15 +354,25 @@ mod tests {
             .into_iter()
             .find(|cli| cli.backend == CliBackend::Codex)
             .unwrap();
+        let started = std::time::Instant::now();
         let usage = codex_usage(cli.executable_path.as_deref().expect("Codex installed"))
             .await
             .unwrap();
-        assert!(!usage.quota.is_empty());
-        assert!(
+        // Spike S1: latency of one app-server exchange, and the window shapes it returns.
+        println!(
+            "S1 app-server: elapsed_ms={} plan={:?} windows={:?}",
+            started.elapsed().as_millis(),
+            usage.plan,
             usage
-                .quota
+                .windows
                 .iter()
-                .all(|window| window.remaining_percent <= 100)
+                .map(|window| (
+                    window.scope.clone(),
+                    window.window_minutes,
+                    window.resets_at.is_some()
+                ))
+                .collect::<Vec<_>>()
         );
+        assert!(!usage.windows.is_empty());
     }
 }

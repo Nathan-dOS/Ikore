@@ -437,6 +437,8 @@ pub struct AppModel {
     vault_document_tasks: HashMap<String, Task<()>>,
     settings_task: Option<Task<()>>,
     cli_connections_task: Option<Task<()>>,
+    /// Plan usage of the subscription CLIs (ADR-028): header pill, popover and cards.
+    pub(crate) quota: crate::quota_bar::QuotaUi,
     /// A connection test in flight; separate from `settings_task` so a refresh never drops it.
     settings_test_task: Option<Task<()>>,
     /// A quiet Settings refresh is already scheduled (see `schedule_settings_quiet_refresh`).
@@ -501,6 +503,7 @@ impl AppModel {
         model.logs_backend = Some(logs_backend);
         model.chat_backend = Some(chat_backend);
         model.start_lifecycle(cx);
+        model.start_quota_poller(cx);
         cx.on_app_quit(|model, cx| model.flush_pending_session(cx))
             .detach();
         model.restore_last_session(cx);
@@ -882,6 +885,7 @@ impl AppModel {
             vault_document_tasks: HashMap::new(),
             settings_task: None,
             cli_connections_task: None,
+            quota: Default::default(),
             settings_test_task: None,
             settings_quiet_refresh_pending: false,
             embedding_readiness_task: None,
@@ -1972,6 +1976,7 @@ impl AppModel {
             || self.settings_modal.open
             || self.active_dropdown.is_some()
             || self.notifications.history_open
+            || self.quota.popover_open
             || self.agents.read(cx).active_model_picker.is_some()
             || (self.active_view() == AppView::Chat
                 && !self.chat_draft_input.read(cx).value().trim().is_empty())
@@ -5872,6 +5877,11 @@ impl AppModel {
                 format!("{agent}: updated CLI needs validation before the pulsation continues"),
                 HeaderNoticeKind::Warning,
             )
+        } else if code == hvc_core::persistence_service::CLI_QUOTA_LOW {
+            (
+                format!("{agent}: plan quota is low — the stage waits for your decision"),
+                HeaderNoticeKind::Warning,
+            )
         } else {
             (
                 format!("{agent}: CLI fallback awaiting your decision"),
@@ -6097,6 +6107,9 @@ impl AppModel {
             let _ = this.update(cx, |model, cx| {
                 if model.lifecycle.is_disposed() {
                     return;
+                }
+                if let Ok(snapshot) = &result {
+                    model.apply_quota_overview(snapshot.overview.clone(), cx);
                 }
                 model.settings.update(cx, |settings, _| {
                     settings.cli_connections_loading = false;
@@ -7740,6 +7753,7 @@ impl AppModel {
         self.vault_document_tasks.clear();
         let settings = self.settings_task.take();
         self.cli_connections_task.take();
+        self.quota.dispose();
         self.agents_task.take();
         self.agents_notice_timer.take();
         self.model_catalog_task.take();

@@ -81,7 +81,8 @@ impl CliAdapter for ClaudeAdapter {
             bytes,
             |value| match event_type(value) {
                 _ if error_message(value).is_some() => TerminalEventKind::Error,
-                "system" => TerminalEventKind::System,
+                // Plan-quota telemetry for the meter (ADR-028), never model text.
+                "system" | "rate_limit_event" => TerminalEventKind::System,
                 "result" => TerminalEventKind::Completed,
                 "error" => TerminalEventKind::Error,
                 "user" => TerminalEventKind::ToolResult,
@@ -264,6 +265,18 @@ mod tests {
             budget(&spec(ThinkingLevel::High, Some("low"))).as_deref(),
             Some("4096")
         );
+    }
+
+    #[test]
+    fn rate_limit_events_are_system_telemetry_not_model_text() {
+        let line = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../hvc-test-support/fixtures/quota/claude/rate-limit-event.jsonl"
+        ))
+        .unwrap();
+        let frame = ClaudeAdapter.normalize_frame("stdout", line.trim().as_bytes());
+        assert_eq!(frame.kind, TerminalEventKind::System);
+        assert!(!frame.is_text && !frame.is_model_generation);
     }
 
     #[test]

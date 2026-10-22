@@ -102,3 +102,23 @@ is rendered by the host, with lifecycle cleanup tied to its pulsation.
 Implementation: [review brief](../../crates/hvc-core/src/orchestration/review_brief/mod.rs)
 and [reports](../../crates/hvc-core/src/reports/mod.rs).
 Integration evidence: [2026-10-17 report](../../quality/main-merge-validation-2026-10-17.md).
+
+## ADR-028: plan-quota meter
+
+The host shows how much of each subscription CLI's 5-hour and weekly windows is
+used. Sources are tried in order: official or local channels first (Codex
+`app-server`, Codex rollout records, Claude run events, Antigravity `/usage`).
+For Claude and Codex the host may also read the CLI's own access token from the
+CLI's default credential file and query the provider's usage endpoint. This is a
+narrow exception to the keyring-only secret rule: the token stays in memory, is
+sent only to fixed provider hosts, is never refreshed or written back, and never
+reaches agents, logs, events or the database. Responses are validated and the
+meter fails closed; it never shows a guessed number. A one-time notice
+names the file read and the host contacted, and a kill switch
+(`HVC_DISABLE_QUOTA_ENDPOINTS=1`) and a per-CLI setting turn the credential read
+off; a build without the `quota-credential-collectors` feature has no credential
+reader at all. A pre-flight check before each stage is advisory and uses the
+existing human checkpoint; it never switches provider by itself.
+
+See the [threat model](../../quality/cli-threat-model.md) and the
+[quota module](../../crates/hvc-core/src/quota/mod.rs).

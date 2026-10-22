@@ -36,6 +36,7 @@ mod performance;
 mod pipeline_status;
 mod pulsations;
 mod pulsations_view;
+mod quota_bar;
 mod resolution;
 mod resolution_view;
 mod review_brief_view;
