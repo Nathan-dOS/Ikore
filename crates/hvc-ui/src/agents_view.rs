@@ -560,7 +560,18 @@ fn fallback_panel(
     // cancel).
     let unvalidated = fallback.error_code == CLI_VERSION_UNVALIDATED;
     let validation_failed = fallback.error_code == CLI_VALIDATION_FAILED;
-    let (title, provider_label, is_error) = if unvalidated {
+    // ADR-028 pre-flight: nothing failed; the stage asks before spending the last of a window.
+    let quota_low = fallback.error_code == hvc_core::persistence_service::CLI_QUOTA_LOW;
+    let (title, provider_label, is_error) = if quota_low {
+        (
+            format!(
+                "Plan quota low — decide before this stage · {} · {}",
+                descriptor.name, fallback.feature_name
+            ),
+            "Use API",
+            false,
+        )
+    } else if unvalidated {
         (
             format!(
                 "CLI updated — validation required · {} · {}",
@@ -668,7 +679,12 @@ fn fallback_panel(
         .when(!unvalidated && !validation_failed, |card| {
             card.child(action_button(
                 SharedString::from(format!("fallback-retry:{checkpoint_for_retry}")),
-                "Retry CLI".into(),
+                if quota_low {
+                    "Continue with CLI"
+                } else {
+                    "Retry CLI"
+                }
+                .into(),
                 !busy,
                 false,
                 cx,
@@ -979,6 +995,9 @@ fn agent_detail_panel(
                     let run_events = selected_run
                         .and_then(|run| agents_model.events_by_run.get(&run.id))
                         .cloned();
+                    let run_quota = selected_run.and_then(|run| {
+                        crate::quota_bar::run_delta_line(agents_model.quota_deltas.get(&run.id)?)
+                    });
                     let history_clear_armed = agents_model.pending_history_clear == Some(role);
                     let pipeline_cancel_armed = active_run
                         .and_then(|run| run.pulsation_id.as_deref())
@@ -1053,6 +1072,8 @@ fn agent_detail_panel(
                             busy,
                             selected_run
                                 .is_some_and(|r| model.notifications.copied.contains_key(&r.id)),
+                            model.quota.backend(agent.config.backend).cloned(),
+                            run_quota,
                             cx,
                         ))
                         .into_any_element()
@@ -2016,6 +2037,8 @@ fn agent_card(
     running: bool,
     busy: bool,
     history_copied: bool,
+    quota: Option<hvc_core::quota::BackendQuota>,
+    run_quota: Option<String>,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     let role = agent.config.agent_role;
@@ -2227,20 +2250,12 @@ fn agent_card(
                     .child(identity),
             )
         })
+        // The same plan-usage bar as the header popover (ADR-028), for this card's CLI.
         .when_some(
-            availability.and_then(|availability| quota_line(&availability.quota)),
-            |card, (line, low)| {
-                card.child(
-                    div()
-                        .text_xs()
-                        .text_color(if low {
-                            theme::warning()
-                        } else {
-                            theme::text_muted()
-                        })
-                        .child(line),
-                )
-            },
+            quota.as_ref().and_then(|quota| {
+                crate::quota_bar::card_rows(quota, role.as_str(), chrono::Utc::now())
+            }),
+            |card, rows| card.child(rows),
         )
         .when_some(install_guidance, |card, (command, url)| {
             let command_for_copy = command.clone();
@@ -2307,6 +2322,17 @@ fn agent_card(
                                 run_metadata(selected_run)
                             )),
                     )
+                    .when_some(run_quota.clone(), |row, line| {
+                        let selector = format!("agent-run-quota:{}", role.as_str());
+                        row.child(
+                            div()
+                                .debug_selector(move || selector.clone())
+                                .w_full()
+                                .text_xs()
+                                .text_color(theme::text_muted())
+                                .child(line),
+                        )
+                    })
                     .child(icon_action(
                         SharedString::from(format!("agent-history-older:{}", role.as_str())),
                         Icon::ChevronLeft,
@@ -3764,38 +3790,6 @@ fn empty_state(message: &'static str) -> AnyElement {
     crate::widgets::empty_state(message)
 }
 
-/// Windows the quota line shows at most; the core already sorts them lowest first.
-const MAX_QUOTA_WINDOWS_SHOWN: usize = 4;
-/// Below this share left, a quota window is worth the warning colour.
-const LOW_QUOTA_PERCENT: u8 = 10;
-
-/// One muted line with what is left of a quota-billed CLI's allowance, e.g.
-/// `Quota · Claude and GPT models 2% (5h, resets 14/10/2026 18:11:40) · Gemini Models 92% (5h)`.
-/// Only the tightest window names its reset, the one that decides when work can resume.
-fn quota_line(quota: &[hvc_core::terminals::CliQuotaBucket]) -> Option<(String, bool)> {
-    let first = quota.first()?;
-    let parts = quota
-        .iter()
-        .take(MAX_QUOTA_WINDOWS_SHOWN)
-        .enumerate()
-        .map(|(index, bucket)| {
-            let reset = (index == 0)
-                .then_some(bucket.reset_time.as_deref())
-                .flatten()
-                .map(|reset| format!(", resets {}", crate::time::format_timestamp(reset)))
-                .unwrap_or_default();
-            format!(
-                "{} {}% ({}{reset})",
-                bucket.group, bucket.remaining_percent, bucket.window
-            )
-        })
-        .collect::<Vec<_>>();
-    Some((
-        format!("Quota · {}", parts.join(" · ")),
-        first.remaining_percent < LOW_QUOTA_PERCENT,
-    ))
-}
-
 fn availability_status(
     availability: Option<&hvc_core::terminals::CliAvailability>,
 ) -> &'static str {
@@ -3836,32 +3830,6 @@ fn status_color(status: Option<TerminalRunStatus>) -> Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_quota_line_is_bounded_and_warns_only_when_the_tightest_window_is_low() {
-        let bucket = |group: &str, percent: u8| hvc_core::terminals::CliQuotaBucket {
-            group: group.into(),
-            window: "5h".into(),
-            remaining_percent: percent,
-            reset_time: Some("not a timestamp".into()),
-        };
-        assert_eq!(quota_line(&[]), None);
-        let (line, low) = quota_line(&[
-            bucket("Claude and GPT models", 2),
-            bucket("Gemini Models", 92),
-            bucket("Gemini Models", 95),
-            bucket("Claude and GPT models", 96),
-            bucket("Hidden", 99),
-        ])
-        .unwrap();
-        assert!(low);
-        assert!(line.starts_with("Quota · Claude and GPT models 2% (5h, resets not a timestamp)"));
-        assert!(line.contains("Gemini Models 92% (5h)"));
-        assert!(!line.contains("Hidden"), "at most four windows are shown");
-        assert_eq!(line.matches("resets").count(), 1);
-        let (_, low) = quota_line(&[bucket("Gemini Models", 40)]).unwrap();
-        assert!(!low);
-    }
 
     #[test]
     fn searchable_model_picker_filters_a_thousand_entries_by_all_supported_fields() {

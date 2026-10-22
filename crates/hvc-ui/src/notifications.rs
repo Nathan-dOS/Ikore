@@ -227,6 +227,7 @@ impl AppModel {
             }
         } else {
             self.close_dropdown(cx);
+            self.quota.popover_open = false;
             self.notifications.return_focus = window.focused(cx);
             self.notifications.history_open = true;
             self.notifications.queue.mark_read();

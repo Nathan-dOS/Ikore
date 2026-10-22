@@ -68,6 +68,19 @@ pub(crate) trait SettingsBackend: Send + Sync {
         &self,
         refresh: bool,
     ) -> SettingsFuture<hvc_core::terminals::CliConnectionsSnapshot>;
+    /// Plan usage of the metered CLIs (ADR-028); `force` is the Refresh button.
+    fn quota_overview(&self, force: bool) -> SettingsFuture<hvc_core::quota::QuotaOverview>;
+    /// Credential collectors run only while the window is active (ADR-028 G6).
+    fn set_quota_foreground(&self, foreground: bool);
+    fn set_quota_endpoint(
+        &self,
+        backend: hvc_core::terminals::CliBackend,
+        enabled: bool,
+    ) -> SettingsFuture<()>;
+    fn acknowledge_quota_disclosure(
+        &self,
+        backend: hvc_core::terminals::CliBackend,
+    ) -> SettingsFuture<()>;
     fn preview_project_deletion(
         &self,
         project_id: String,
@@ -196,6 +209,57 @@ impl SettingsBackend for CoreSettingsBackend {
                 .map_err(|error| {
                     UiCommandError::worker(format!("CLI connection check interrupted: {error}"))
                 })
+        })
+    }
+    fn quota_overview(&self, force: bool) -> SettingsFuture<hvc_core::quota::QuotaOverview> {
+        let terminals = self.core.terminals();
+        let runtime = self.core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn(async move { terminals.quota_overview(force).await })
+                .await
+                .map_err(|error| {
+                    UiCommandError::worker(format!("plan usage check interrupted: {error}"))
+                })
+        })
+    }
+    fn set_quota_foreground(&self, foreground: bool) {
+        self.core
+            .terminals()
+            .quota_meter()
+            .set_foreground(foreground);
+    }
+    fn set_quota_endpoint(
+        &self,
+        backend: hvc_core::terminals::CliBackend,
+        enabled: bool,
+    ) -> SettingsFuture<()> {
+        let terminals = self.core.terminals();
+        let runtime = self.core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    terminals
+                        .quota_meter()
+                        .set_endpoint_switch(backend, enabled)
+                })
+                .await
+                .map_err(|error| UiCommandError::worker(error.to_string()))?
+                .map_err(|error| UiCommandError::worker(error.to_string()))
+        })
+    }
+    fn acknowledge_quota_disclosure(
+        &self,
+        backend: hvc_core::terminals::CliBackend,
+    ) -> SettingsFuture<()> {
+        let terminals = self.core.terminals();
+        let runtime = self.core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || terminals.quota_meter().acknowledge_disclosure(backend))
+                .await
+                .map_err(|error| UiCommandError::worker(error.to_string()))?
+                .map_err(|error| UiCommandError::worker(error.to_string()))
         })
     }
     fn preview_project_deletion(

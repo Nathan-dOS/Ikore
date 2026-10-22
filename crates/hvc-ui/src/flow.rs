@@ -166,6 +166,8 @@ pub(crate) fn next_steps(model: &AppModel, cx: &App) -> Vec<NextStep> {
                         == hvc_core::persistence_service::CLI_VALIDATION_FAILED
                     {
                         "Switch provider or abort".into()
+                    } else if fallback.error_code == hvc_core::persistence_service::CLI_QUOTA_LOW {
+                        "Decide: plan quota low".into()
                     } else {
                         "Decide CLI fallback".into()
                     },

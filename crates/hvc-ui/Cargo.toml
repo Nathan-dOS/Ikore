@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 description = "GPUI views and native design system for Hard Vibe Code"
 
+[features]
+default = ["quota-credential-collectors"]
+quota-credential-collectors = ["hvc-core/quota-credential-collectors"]
+
 [dependencies]
 uuid = { version = "1", features = ["v4"] }
 anyhow.workspace = true

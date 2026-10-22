@@ -994,6 +994,8 @@ pub struct ValidateCliFallbackResponse {
 
 /// Error code of a fallback opened before dispatch because the CLI is newer than validated.
 pub const CLI_VERSION_UNVALIDATED: &str = "cli_version_unvalidated";
+/// The stage's CLI is low on its plan window (ADR-028 pre-flight); advisory.
+pub const CLI_QUOTA_LOW: &str = "cli_quota_low";
 /// Error code the same fallback carries after a validation probe failed: only switching the
 /// provider or aborting remain.
 pub const CLI_VALIDATION_FAILED: &str = "cli_validation_failed";
@@ -1498,12 +1500,65 @@ impl PersistenceService {
         let discovery = cached
             .as_ref()
             .map(|(items, fresh)| (items.as_slice(), *fresh));
-        Ok(crate::orchestration::stage_preflight::check_stages(
+        let mut issues = crate::orchestration::stage_preflight::check_stages(
             db,
             &self.llm_repository,
             project_id,
             discovery,
-        )?)
+        )?;
+        issues.extend(self.quota_preflight_warnings(db, project_id)?);
+        Ok(issues)
+    }
+
+    /// Non-blocking dispatch warnings (ADR-028 §6): one per CLI whose tightest plan window is
+    /// low. Each stage on that CLI still asks before it runs (`quota_preflight_gate`).
+    fn quota_preflight_warnings(
+        &self,
+        db: &Connection,
+        project_id: &str,
+    ) -> Result<
+        Vec<crate::orchestration::stage_preflight::StagePreflightIssue>,
+        PersistenceServiceError,
+    > {
+        let Some(terminals) = self
+            .terminal_service
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        else {
+            return Ok(Vec::new());
+        };
+        let mut seen = HashSet::new();
+        let mut issues = Vec::new();
+        for (_, stage, role) in crate::orchestration::catalog::STAGES {
+            let backend: Option<String> = db
+                .query_row(
+                    "SELECT backend FROM cli_agent_configs
+                     WHERE project_id=?1 AND agent_role=?2 AND execution_mode='cli_process'",
+                    params![project_id, role.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(backend) = backend.as_deref().and_then(CliBackend::parse) else {
+                continue;
+            };
+            if !seen.insert(backend) {
+                continue;
+            }
+            if let Some(finding) = terminals.quota_meter().preflight(backend, None) {
+                issues.push(crate::orchestration::stage_preflight::StagePreflightIssue {
+                    stage: stage.to_string(),
+                    role: role.as_str().to_string(),
+                    blocking: false,
+                    message: format!(
+                        "Plan quota: {} Stages on {} ask before they run.",
+                        finding.message(),
+                        backend.label()
+                    ),
+                });
+            }
+        }
+        Ok(issues)
     }
 
     pub fn attach_indexing_event_sink(&self, sink: Arc<dyn IndexingEventSink>) {
@@ -4978,6 +5033,97 @@ impl PersistenceService {
             })
     }
 
+    /// ADR-028 pre-flight: the plan window of the CLI this job is about to launch is nearly used
+    /// up, or projected to run out before the stage typically finishes. Advisory only: the job
+    /// parks on the CLI fallback checkpoint and the developer continues, switches to the API or
+    /// cancels; nothing switches on its own. `None` for API transports, stale or missing quota
+    /// data, and when the developer already chose to continue on this CLI in the current window.
+    async fn quota_preflight_gate(
+        &self,
+        job: &Job,
+    ) -> Result<Option<crate::quota::QuotaPreflight>, PersistenceServiceError> {
+        let Some(stage) = Self::stage_from_job_kind(&job.kind) else {
+            return Ok(None);
+        };
+        let Some(pulsation_id) = job.pulsation_id.as_deref() else {
+            return Ok(None);
+        };
+        let role = AgentRole::for_stage(stage.as_db_value());
+        let (planned, project_id) = {
+            let connection = self.connection()?;
+            let project_id: Option<String> = connection
+                .query_row(
+                    "SELECT project_id FROM pulsations WHERE id=?1",
+                    [pulsation_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            (
+                Self::planned_transport(&connection, job, role.as_str())?,
+                project_id,
+            )
+        };
+        let Some((transport, _)) = planned else {
+            return Ok(None);
+        };
+        let Some(backend) = transport.strip_prefix("cli:").and_then(CliBackend::parse) else {
+            return Ok(None);
+        };
+        let terminals = self
+            .terminal_service
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(terminals) = terminals else {
+            return Ok(None);
+        };
+        let expected = match &project_id {
+            Some(project_id) => self.typical_stage_duration(project_id, role)?,
+            None => None,
+        };
+        let Some(finding) = terminals.quota_meter().preflight(backend, expected) else {
+            return Ok(None);
+        };
+        let since = finding.window.starts_at().map(|start| start.to_rfc3339());
+        let continued: bool = self.connection()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM cli_fallback_requests
+               WHERE pulsation_id=?1 AND agent_role=?2 AND error_code=?3 AND decision='retry_cli'
+                 AND (?4 IS NULL OR julianday(resolved_at)>=julianday(?4)))",
+            params![pulsation_id, role.as_str(), CLI_QUOTA_LOW, since],
+            |row| row.get(0),
+        )?;
+        Ok((!continued).then_some(finding))
+    }
+
+    /// Median duration of the role's last completed CLI runs in this project, if any.
+    fn typical_stage_duration(
+        &self,
+        project_id: &str,
+        role: AgentRole,
+    ) -> Result<Option<chrono::Duration>, PersistenceServiceError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT (julianday(finished_at)-julianday(started_at))*86400.0 FROM terminal_runs
+             WHERE project_id=?1 AND agent_role=?2 AND status='completed'
+               AND started_at IS NOT NULL AND finished_at IS NOT NULL
+             ORDER BY finished_at DESC LIMIT 9",
+        )?;
+        let mut seconds = statement
+            .query_map(params![project_id, role.as_str()], |row| {
+                row.get::<_, Option<f64>>(0)
+            })?
+            .filter_map(|value| value.ok().flatten())
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .collect::<Vec<_>>();
+        if seconds.is_empty() {
+            return Ok(None);
+        }
+        seconds.sort_by(f64::total_cmp);
+        Ok(Some(chrono::Duration::seconds(
+            seconds[seconds.len() / 2] as i64,
+        )))
+    }
+
     /// Runs the contract probe for the CLI behind a `cli_version_unvalidated` (or
     /// `cli_validation_failed`) fallback. A passing probe resumes the pulsation as `RetryCli`
     /// would; a failing one rewrites the fallback as `cli_validation_failed`, which leaves the
@@ -5370,7 +5516,11 @@ impl PersistenceService {
             PulsationStatus::Checkpoint,
             stage,
             "cli_fallback_requested",
-            Some("The CLI failed and needs an explicit decision before the API is used."),
+            Some(if error_code == CLI_QUOTA_LOW {
+                "The CLI's plan window is nearly used up; the stage waits for a decision before it runs."
+            } else {
+                "The CLI failed and needs an explicit decision before the API is used."
+            }),
         )?;
         let state_version: u64 = transaction.query_row(
             "SELECT state_version FROM pulsations WHERE id=?1",
@@ -5944,6 +6094,18 @@ impl PersistenceService {
                 CLI_VERSION_UNVALIDATED,
                 &unvalidated.diagnostic(),
             )?;
+            self.unregister_job_cancellation(&job.id);
+            self.wake_scheduler();
+            return Ok(());
+        }
+
+        // ADR-028: a CLI that is low on its plan window asks before the stage runs. Advisory -
+        // the developer decides on the same checkpoint; nothing switches provider by itself.
+        if let Some(finding) = self.quota_preflight_gate(job).await? {
+            if let Some(pulsation_id) = job.pulsation_id.as_deref() {
+                self.begin_stage_job_async(job, pulsation_id).await?;
+            }
+            self.open_cli_fallback(job, &agent_run_id, CLI_QUOTA_LOW, &finding.message())?;
             self.unregister_job_cancellation(&job.id);
             self.wake_scheduler();
             return Ok(());

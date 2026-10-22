@@ -127,7 +127,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        47
+        48
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -290,7 +290,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        47
+        48
     );
     assert_eq!(
         db.query_row(
@@ -831,7 +831,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        47
+        48
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -987,7 +987,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        47
+        48
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1084,7 +1084,7 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        47
+        48
     );
     let (error, failure, notices): (String, Option<String>, Option<String>) = db
         .query_row(
@@ -1153,7 +1153,7 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        47
+        48
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1228,7 +1228,7 @@ fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        47
+        48
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1299,4 +1299,52 @@ fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
         .unwrap(),
         0
     );
+}
+
+/// V48 adds the plan-quota history (ADR-028). Its constraints reject values a collector should
+/// never produce, and a periodic sample cannot carry a run id.
+#[test]
+fn v47_to_v48_adds_quota_history_with_validated_columns() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(47))
+        .run(&mut db)
+        .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        48
+    );
+    let insert = |values: &str| {
+        db.execute(
+            &format!(
+                "INSERT INTO quota_snapshots(backend,scope,window_minutes,used_percent,resets_at,source,plan,observed_at,kind,run_id,pulsation_id) VALUES({values})"
+            ),
+            [],
+        )
+    };
+    insert("'codex',NULL,300,42.5,'2026-10-21T15:00:00.000Z','codex_app_server','plus','2026-10-21T12:00:00.000Z','sample',NULL,NULL")
+        .expect("a periodic sample");
+    insert("'claude',NULL,10080,0,NULL,'claude_endpoint',NULL,'2026-10-21T12:00:00.000Z','run_start','run','pulse'")
+        .expect("a run-boundary sample");
+    for rejected in [
+        "'codex',NULL,300,100.5,NULL,'codex_app_server',NULL,'now','sample',NULL,NULL",
+        "'codex',NULL,0,10,NULL,'codex_app_server',NULL,'now','sample',NULL,NULL",
+        "'custom',NULL,300,10,NULL,'codex_app_server',NULL,'now','sample',NULL,NULL",
+        "'codex',NULL,300,10,NULL,'web_scrape',NULL,'now','sample',NULL,NULL",
+        "'codex',NULL,300,10,NULL,'codex_app_server',NULL,'now','sample','run',NULL",
+        "'codex',NULL,300,10,NULL,'codex_app_server',NULL,'now','run_end',NULL,NULL",
+    ] {
+        insert(rejected).expect_err(rejected);
+    }
 }

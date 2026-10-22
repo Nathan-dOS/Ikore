@@ -379,7 +379,11 @@ impl Harness {
     /// Routes one stage role through an official CLI backend found on PATH (the test puts a
     /// `cli_fixture` copy there under the backend's name). Attaches a terminal service like
     /// `route_role_to_cli_bridge` does.
-    pub fn route_role_to_official_cli(&self, role: &str, backend: &str) {
+    pub fn route_role_to_official_cli(
+        &self,
+        role: &str,
+        backend: &str,
+    ) -> Arc<hvc_core::terminals::TerminalService> {
         let model = match backend {
             "claude" => "haiku",
             "codex" => "gpt-5.6-luna",
@@ -397,13 +401,15 @@ impl Harness {
             .repository()
             .ensure_project_configs(&self.project, false)
             .unwrap();
-        self.service.attach_terminal_service(Arc::new(terminals));
+        let terminals = Arc::new(terminals);
+        self.service.attach_terminal_service(terminals.clone());
         self.db()
             .execute(
                 "UPDATE cli_agent_configs SET execution_mode='cli_process',backend=?3,model=?4,custom_executable=NULL,custom_args_json='[]',version=version+1 WHERE project_id=?1 AND agent_role=?2",
                 rusqlite::params![self.project, role, backend, model],
             )
             .unwrap();
+        terminals
     }
 
     /// The runtime the worker runs on, for tests that must await host APIs.

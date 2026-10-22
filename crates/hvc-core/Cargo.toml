@@ -6,6 +6,12 @@ authors.workspace = true
 license.workspace = true
 description = "Framework-agnostic domain and application core for Hard Vibe Code"
 
+[features]
+# ADR-028 G10: the plan-quota collectors that read a CLI's own access token. On in
+# development; a public build can turn it off without affecting the other sources.
+default = ["quota-credential-collectors"]
+quota-credential-collectors = ["dep:zeroize"]
+
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
@@ -35,6 +41,8 @@ tree-sitter-rust = "=0.24.2"
 tree-sitter-typescript = "=0.23.2"
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
+# Only the plan-quota credential collectors (ADR-028) use it.
+zeroize = { version = "1.9", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

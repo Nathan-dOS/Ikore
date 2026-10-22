@@ -41,6 +41,7 @@ pub(crate) use model_catalog::{validate_catalog_effort, validate_catalog_model_s
 pub use observation_report::{
     CliObservationGroup, CliObservationRun, ObservationOutcome, PulsationTimeBreakdown,
 };
+pub(crate) use plan_usage::read_codex_app_server_usage;
 pub use plan_usage::{CliConnectionStatus, CliConnectionsSnapshot};
 
 #[cfg(windows)]
@@ -1044,13 +1045,21 @@ pub trait TerminalEventSink: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct TerminalRepository {
     db_path: PathBuf,
+    /// Receives Claude's `rate_limit_event` frames from the run coordinator (ADR-028).
+    quota: Option<Arc<crate::quota::QuotaMeter>>,
 }
 
 impl TerminalRepository {
     pub fn new(db_path: impl Into<PathBuf>) -> Self {
         Self {
             db_path: db_path.into(),
+            quota: None,
         }
+    }
+
+    fn with_quota_meter(mut self, quota: Arc<crate::quota::QuotaMeter>) -> Self {
+        self.quota = Some(quota);
+        self
     }
 
     fn connection(&self) -> Result<Connection, TerminalError> {
@@ -3448,6 +3457,27 @@ pub fn discover_clis() -> Vec<CliAvailability> {
         .collect()
 }
 
+/// A synthetic discovery entry for tests in other modules.
+#[cfg(test)]
+pub(crate) fn test_availability(
+    backend: CliBackend,
+    state: CliAvailabilityState,
+) -> CliAvailability {
+    let (install_url, install_command) = install_guidance(backend);
+    CliAvailability {
+        backend,
+        state,
+        executable_path: (state != CliAvailabilityState::Missing)
+            .then(|| PathBuf::from(format!("fixture-{}.exe", backend.as_str()))),
+        version: Some("fixture".into()),
+        diagnostic: None,
+        install_url,
+        install_command,
+        capabilities: adapters::capabilities(backend, None),
+        quota: Vec::new(),
+    }
+}
+
 pub async fn discover_clis_with_probes() -> Vec<CliAvailability> {
     let mut discovered = stream::iter(discover_clis())
         .map(probe_cli_availability)
@@ -4293,6 +4323,7 @@ pub struct TerminalService {
     /// Single-flight guard of the background rescan `discovery_for_launch`
     /// starts when it serves a stale snapshot.
     discovery_refreshing: Arc<std::sync::atomic::AtomicBool>,
+    quota: Arc<crate::quota::QuotaMeter>,
 }
 
 impl TerminalService {
@@ -4302,7 +4333,8 @@ impl TerminalService {
         event_sink: Arc<dyn TerminalEventSink>,
     ) -> Result<Self, TerminalError> {
         let db_path = db_path.into();
-        let repository = TerminalRepository::new(db_path.clone());
+        let quota = Arc::new(crate::quota::QuotaMeter::new(db_path.clone()));
+        let repository = TerminalRepository::new(db_path.clone()).with_quota_meter(quota.clone());
         repository.recover_interrupted_runs()?;
         Ok(Self {
             repository,
@@ -4313,11 +4345,65 @@ impl TerminalService {
             active_changed: Notify::new(),
             discovery_cache: Arc::new(Mutex::new(None)),
             discovery_refreshing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            quota,
         })
     }
 
     pub fn repository(&self) -> &TerminalRepository {
         &self.repository
+    }
+
+    /// The plan-quota meter (ADR-028).
+    pub fn quota_meter(&self) -> &Arc<crate::quota::QuotaMeter> {
+        &self.quota
+    }
+
+    /// When the cached discovery was probed; Antigravity's quota windows date from then.
+    fn discovery_observed_at(&self) -> chrono::DateTime<Utc> {
+        self.discovery_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|cache| chrono::Duration::from_std(cache.discovered_at.elapsed()).ok())
+            .map_or_else(Utc::now, |age| Utc::now() - age)
+    }
+
+    /// Plan usage of every metered CLI. Discovery comes from its cache (rescanned after its
+    /// TTL); `force` re-probes the CLIs and skips the meter's cache, as the Refresh button does.
+    pub async fn quota_overview(&self, force: bool) -> crate::quota::QuotaOverview {
+        let discovery = self.discovery(force).await;
+        self.quota
+            .refresh(&discovery, self.discovery_observed_at(), force)
+            .await
+    }
+
+    /// Records the quota at a run boundary in the background; never delays or fails the run.
+    fn record_quota_boundary(&self, run: &TerminalRun, kind: crate::quota::SampleKind) {
+        let Some(backend) = run.backend else {
+            return;
+        };
+        if !crate::quota::METERED_BACKENDS.contains(&backend) {
+            return;
+        }
+        let availability = self
+            .cached_discovery()
+            .and_then(|(items, _)| items.into_iter().find(|item| item.backend == backend));
+        let discovered_at = self.discovery_observed_at();
+        let quota = self.quota.clone();
+        let run_id = run.id.clone();
+        let pulsation_id = run.pulsation_id.clone();
+        self.runtime.spawn(async move {
+            quota
+                .refresh_and_record_boundary(
+                    availability,
+                    discovered_at,
+                    backend,
+                    run_id,
+                    pulsation_id,
+                    kind,
+                )
+                .await;
+        });
     }
 
     /// Backends that are installed, supported and authenticated right now, in
@@ -4672,7 +4758,12 @@ impl TerminalService {
 
     /// Global CLI connections and subscription usage; does not require an open project.
     pub async fn connections(&self, refresh: bool) -> CliConnectionsSnapshot {
-        plan_usage::connections(self.discovery(refresh).await).await
+        let discovery = self.discovery(refresh).await;
+        let overview = self
+            .quota
+            .refresh(&discovery, self.discovery_observed_at(), refresh)
+            .await;
+        plan_usage::connections(discovery, overview)
     }
 
     pub async fn model_catalog(
@@ -5961,6 +6052,7 @@ impl TerminalService {
             None,
             "Run in progress.",
         )?;
+        self.record_quota_boundary(run, crate::quota::SampleKind::RunStart);
         let (stream_sender, stream_receiver) = mpsc::channel(PROCESS_EVENT_CHANNEL_CAPACITY);
         let abort_token = CancellationToken::new();
         let abort_reason = Arc::new(Mutex::new(None));
@@ -6177,6 +6269,7 @@ impl TerminalService {
             error_code,
             error_message,
         )?;
+        self.record_quota_boundary(run, crate::quota::SampleKind::RunEnd);
         self.emit(
             run,
             self.repository.next_event_sequence(&run.id)?,
@@ -6199,6 +6292,8 @@ impl TerminalService {
         }
         let current = self.repository.get_run(&run.id).ok();
         if current.is_some_and(|current| current.status.is_active()) {
+            // Only a run that recorded a start sample gets an end sample.
+            self.record_quota_boundary(run, crate::quota::SampleKind::RunEnd);
             let (status, event_kind) = if matches!(error, TerminalError::Cancelled) {
                 (TerminalRunStatus::Cancelled, TerminalEventKind::Warning)
             } else {
@@ -6541,6 +6636,12 @@ fn coordinate_process_events_blocking(
         let (frame, stream, input_bytes) = match item {
             ProcessStreamItem::Frame { stream, bytes, .. } => {
                 let input_bytes = bytes.len();
+                if stream == "stdout"
+                    && backend == CliBackend::Claude
+                    && let Some(quota) = &repository.quota
+                {
+                    quota.observe_claude_frame(&bytes);
+                }
                 if stream == "stdout"
                     && let Err(error) = usage.observe_line(&bytes)
                 {
@@ -7032,21 +7133,24 @@ fn persist_and_emit(
     Ok(event)
 }
 
+/// The only host variables a spawned CLI inherits.
+pub(crate) const SAFE_ENVIRONMENT: [&str; 12] = [
+    "PATH",
+    "PATHEXT",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TEMP",
+    "TMP",
+    "SystemRoot",
+    "ComSpec",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramData",
+];
+
 fn copy_safe_environment(command: &mut Command) {
-    for name in [
-        "PATH",
-        "PATHEXT",
-        "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "TEMP",
-        "TMP",
-        "SystemRoot",
-        "ComSpec",
-        "ProgramFiles",
-        "ProgramFiles(x86)",
-        "ProgramData",
-    ] {
+    for name in SAFE_ENVIRONMENT {
         if let Some(value) = env::var_os(name) {
             command.env(name, value);
         }
@@ -7759,12 +7863,7 @@ pub(crate) fn extract_companion_envelope_json(output: &str) -> Option<String> {
 }
 
 fn cli_mode_disabled() -> bool {
-    env::var("HVC_DISABLE_CLI_MODE").is_ok_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
+    crate::quota::env_flag("HVC_DISABLE_CLI_MODE")
 }
 
 /// One full probe of every CLI, with the local kill switch applied.

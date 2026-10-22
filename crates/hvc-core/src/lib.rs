@@ -16,6 +16,7 @@ pub mod llm;
 pub mod orchestration;
 pub mod persistence_service;
 pub mod project_deletion;
+pub mod quota;
 pub mod reports;
 pub mod repository_context;
 pub mod secret_redactor;
