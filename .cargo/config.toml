@@ -5,3 +5,9 @@ test-editor = "test --locked -p hvc-editor -p hvc-ui -- --test-threads=2"
 test-support = "test --locked -p hvc-test-support -p hvc-ui -- --test-threads=2"
 test-core = "test --locked -p hvc-core -- --test-threads=2"
 test-all = "test --locked --workspace -- --test-threads=2"
+
+# CI split. test-unit + test-integration + doctests = test-all.
+test-unit = "test --locked --workspace --lib --bins -- --test-threads=2"
+test-integration = "test --locked --workspace --test * --example pulsation_ui_fixture -- --test-threads=2"
+# Linux/Docker headless harness: crates without GPUI.
+test-headless = "test --locked -p hvc-core -p hvc-editor -p hvc-test-support -- --test-threads=2"

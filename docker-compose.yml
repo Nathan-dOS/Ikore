@@ -1,57 +1,44 @@
+# Linux headless harness for hvc-core, hvc-editor and hvc-test-support.
+# Every service is one-shot and behind a profile:
+#   docker compose --profile tools build
+#   docker compose --profile tools run --rm test-runner
+x-hvc-base: &hvc-base
+  build:
+    context: .
+    args:
+      RUST_IMAGE: ${RUST_IMAGE:-rust:1.98.0-bookworm}
+      RUST_TOOLCHAIN: ${RUST_TOOLCHAIN:-1.98.0}
+  image: hard-vibe-code:1.98.0
+  working_dir: /workspace
+  environment:
+    CI: ${CI:-false}
+    RUST_BACKTRACE: "1"
+  volumes:
+    - .:/workspace
+    - cargo_registry:/usr/local/cargo/registry
+    - cargo_git:/usr/local/cargo/git
+    - cargo_target:/workspace/target
+
 services:
   test-runner:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        RUST_IMAGE: ${RUST_IMAGE:-rust:1.98.0-bookworm}
-        RUST_TOOLCHAIN: ${RUST_TOOLCHAIN:-1.98.0}
-    image: hard-vibe-code:1.98.0
+    <<: *hvc-base
     profiles: ["tools", "ci"]
-    working_dir: /workspace
-    command: cargo test -p hvc-core -p hvc-editor -p hvc-test-support
-    environment:
-      CI: "true"
-      RUST_BACKTRACE: "1"
-    volumes:
-      - .:/workspace
-      - cargo_registry:/usr/local/cargo/registry
-      - cargo_git:/usr/local/cargo/git
-      - cargo_target:/workspace/target
+    command: cargo test-headless
 
   cargo-check:
-    image: hard-vibe-code:1.98.0
+    <<: *hvc-base
     profiles: ["tools", "ci"]
-    working_dir: /workspace
-    command: cargo check -p hvc-core -p hvc-editor -p hvc-test-support
-    environment:
-      RUST_BACKTRACE: "1"
-    volumes:
-      - .:/workspace
-      - cargo_registry:/usr/local/cargo/registry
-      - cargo_git:/usr/local/cargo/git
-      - cargo_target:/workspace/target
+    command: cargo check --locked -p hvc-core -p hvc-editor -p hvc-test-support --all-targets
 
   clippy-check:
-    image: hard-vibe-code:1.98.0
+    <<: *hvc-base
     profiles: ["tools", "ci"]
-    working_dir: /workspace
-    command: cargo clippy -p hvc-core -p hvc-editor -p hvc-test-support -- -D warnings
-    environment:
-      RUST_BACKTRACE: "1"
-    volumes:
-      - .:/workspace
-      - cargo_registry:/usr/local/cargo/registry
-      - cargo_git:/usr/local/cargo/git
-      - cargo_target:/workspace/target
+    command: cargo clippy --locked -p hvc-core -p hvc-editor -p hvc-test-support --all-targets -- -D warnings
 
   fmt-check:
-    image: hard-vibe-code:1.98.0
+    <<: *hvc-base
     profiles: ["tools", "ci"]
-    working_dir: /workspace
     command: cargo fmt --all -- --check
-    volumes:
-      - .:/workspace
 
 volumes:
   cargo_registry:
