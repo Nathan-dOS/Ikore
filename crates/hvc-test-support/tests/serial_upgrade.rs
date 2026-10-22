@@ -127,7 +127,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        49
+        50
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -290,7 +290,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        49
+        50
     );
     assert_eq!(
         db.query_row(
@@ -831,7 +831,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        49
+        50
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -987,7 +987,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        49
+        50
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1084,7 +1084,7 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        49
+        50
     );
     let (error, failure, notices): (String, Option<String>, Option<String>) = db
         .query_row(
@@ -1153,7 +1153,7 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        49
+        50
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1228,7 +1228,7 @@ fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        49
+        50
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1323,7 +1323,7 @@ fn v47_to_v48_adds_quota_history_with_validated_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        49
+        50
     );
     let insert = |values: &str| {
         db.execute(
@@ -1349,22 +1349,22 @@ fn v47_to_v48_adds_quota_history_with_validated_columns() {
     }
 }
 
-/// V49 rebuilds the role-constrained configuration, slot and run tables again
+/// V50 rebuilds the role-constrained configuration, slot and run tables again
 /// to admit the Notes Scribe and the `notes` run origin (ADR-029), and adds the
 /// Companion notes and their Scribe turns. Existing rows and the events hanging
 /// off a run must survive, unknown roles and origins must still be rejected, a
 /// ready note must carry its text and a note may run only one turn at a time.
 #[test]
-fn v48_to_v49_admits_the_notes_scribe_and_adds_companion_notes() {
+fn v49_to_v50_admits_the_notes_scribe_and_adds_companion_notes() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("hard-vibe-code.db");
     let mut db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     cli_migrations::migrations::runner()
-        .set_target(refinery::Target::Version(48))
+        .set_target(refinery::Target::Version(49))
         .run(&mut db)
         .unwrap();
-    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V48 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V49 fixture','C:/fixture','now','now')",[]).unwrap();
     db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version) VALUES('pulse','p','Work','Code','running','now','now',4)",[]).unwrap();
     db.execute("INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,thinking_level,custom_args_json,version,created_at,updated_at) VALUES('p','visualizer','cli_process','claude','high','[]',2,'now','now')",[]).unwrap();
     db.execute("INSERT INTO terminal_slots(id,project_id,kind,agent_role,label,created_at,updated_at) VALUES('slot','p','canonical','visualizer','Visualizer','now','now')",[]).unwrap();
@@ -1382,7 +1382,7 @@ fn v48_to_v49_admits_the_notes_scribe_and_adds_companion_notes() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        49
+        50
     );
     let (backend, version): (String, u32) = db
         .query_row(

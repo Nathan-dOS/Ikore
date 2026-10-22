@@ -4,12 +4,12 @@
 -- The Scribe is a canonical role routed like any other (API or CLI), so the
 -- tables whose role column is CHECK-constrained for configuration, slots and
 -- runs gain 'notes_scribe', and terminal runs gain the 'notes' origin. The
--- definitions are the tables as V47 left them (V48 did not touch them).
+-- definitions are the tables as V47 left them (V48 and V49 did not touch them).
 -- `legacy_alter_table` keeps DROP+RENAME from rewriting FK clauses elsewhere,
 -- as in V46/V47; the runner applies migrations with foreign keys off.
 PRAGMA legacy_alter_table=ON;
 
-CREATE TABLE cli_agent_configs_v49 (
+CREATE TABLE cli_agent_configs_v50 (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   agent_role TEXT NOT NULL CHECK(agent_role IN (
     'intake_router','task_specifier','contract_agent','backend_agent',
@@ -31,13 +31,13 @@ CREATE TABLE cli_agent_configs_v49 (
   CHECK(model_source IN ('default','catalog','manual')),
   PRIMARY KEY(project_id,agent_role)
 );
-INSERT INTO cli_agent_configs_v49("project_id","agent_role","execution_mode","backend","model","thinking_level","custom_executable","custom_args_json","custom_risk_ack","version","created_at","updated_at","model_profile","model_source")
+INSERT INTO cli_agent_configs_v50("project_id","agent_role","execution_mode","backend","model","thinking_level","custom_executable","custom_args_json","custom_risk_ack","version","created_at","updated_at","model_profile","model_source")
 SELECT "project_id","agent_role","execution_mode","backend","model","thinking_level","custom_executable","custom_args_json","custom_risk_ack","version","created_at","updated_at","model_profile","model_source" FROM cli_agent_configs;
 DROP TABLE cli_agent_configs;
-ALTER TABLE cli_agent_configs_v49 RENAME TO cli_agent_configs;
+ALTER TABLE cli_agent_configs_v50 RENAME TO cli_agent_configs;
 CREATE INDEX idx_cli_agent_configs_project ON cli_agent_configs(project_id);
 
-CREATE TABLE terminal_slots_v49 (
+CREATE TABLE terminal_slots_v50 (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   kind TEXT NOT NULL CHECK(kind IN ('canonical','free_form','ephemeral')),
@@ -71,16 +71,16 @@ CREATE TABLE terminal_slots_v49 (
     OR (kind='free_form' AND agent_role IS NULL)
   )
 );
-INSERT INTO terminal_slots_v49("id","project_id","kind","agent_role","label","execution_mode","backend","model","thinking_level","session_policy","custom_executable","custom_args_json","custom_risk_ack","position","archived","version","created_at","updated_at","model_profile","model_source")
+INSERT INTO terminal_slots_v50("id","project_id","kind","agent_role","label","execution_mode","backend","model","thinking_level","session_policy","custom_executable","custom_args_json","custom_risk_ack","position","archived","version","created_at","updated_at","model_profile","model_source")
 SELECT "id","project_id","kind","agent_role","label","execution_mode","backend","model","thinking_level","session_policy","custom_executable","custom_args_json","custom_risk_ack","position","archived","version","created_at","updated_at","model_profile","model_source" FROM terminal_slots;
 DROP TABLE terminal_slots;
-ALTER TABLE terminal_slots_v49 RENAME TO terminal_slots;
+ALTER TABLE terminal_slots_v50 RENAME TO terminal_slots;
 CREATE UNIQUE INDEX idx_terminal_slots_canonical_role
   ON terminal_slots(project_id,agent_role) WHERE kind='canonical';
 CREATE INDEX idx_terminal_slots_project_position
   ON terminal_slots(project_id,archived,kind,position);
 
-CREATE TABLE terminal_runs_v49 (
+CREATE TABLE terminal_runs_v50 (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   slot_kind TEXT NOT NULL DEFAULT 'canonical'
@@ -140,10 +140,10 @@ CREATE TABLE terminal_runs_v49 (
     OR (slot_kind='free_form' AND agent_role IS NULL AND free_form_slot_id IS NOT NULL)
   )
 );
-INSERT INTO terminal_runs_v49("id","project_id","slot_kind","agent_role","free_form_slot_id","free_form_label","origin","execution_mode","backend","model","native_session_id","pulsation_id","job_id","agent_run_id","llm_execution_id","status","exit_code","error_code","error_message","created_at","started_at","finished_at","updated_at","deadline_at","termination_reason","output_bytes","event_count","workspace_snapshot_hash","launch_identity_sha256","detected_cli_version","adapter_contract_version","slot_id","parent_run_id","continuation_reason","session_fingerprint","requested_model_profile","model_source","observed_model","observation_trial_id","max_transport_silence_ms")
+INSERT INTO terminal_runs_v50("id","project_id","slot_kind","agent_role","free_form_slot_id","free_form_label","origin","execution_mode","backend","model","native_session_id","pulsation_id","job_id","agent_run_id","llm_execution_id","status","exit_code","error_code","error_message","created_at","started_at","finished_at","updated_at","deadline_at","termination_reason","output_bytes","event_count","workspace_snapshot_hash","launch_identity_sha256","detected_cli_version","adapter_contract_version","slot_id","parent_run_id","continuation_reason","session_fingerprint","requested_model_profile","model_source","observed_model","observation_trial_id","max_transport_silence_ms")
 SELECT "id","project_id","slot_kind","agent_role","free_form_slot_id","free_form_label","origin","execution_mode","backend","model","native_session_id","pulsation_id","job_id","agent_run_id","llm_execution_id","status","exit_code","error_code","error_message","created_at","started_at","finished_at","updated_at","deadline_at","termination_reason","output_bytes","event_count","workspace_snapshot_hash","launch_identity_sha256","detected_cli_version","adapter_contract_version","slot_id","parent_run_id","continuation_reason","session_fingerprint","requested_model_profile","model_source","observed_model","observation_trial_id","max_transport_silence_ms" FROM terminal_runs;
 DROP TABLE terminal_runs;
-ALTER TABLE terminal_runs_v49 RENAME TO terminal_runs;
+ALTER TABLE terminal_runs_v50 RENAME TO terminal_runs;
 CREATE INDEX idx_terminal_runs_active ON terminal_runs(project_id,status,updated_at DESC)
   WHERE status IN ('queued','starting','running');
 CREATE INDEX idx_terminal_runs_observation_trial
