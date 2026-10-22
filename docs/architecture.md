@@ -47,6 +47,12 @@ Supported stage failures can park at a checkpoint for the actions offered by
 the host: Retry, revision to a permitted stage, or Abort. Shared budgets and
 generation checks continue to apply. See [ADR-021](adr/README.md#adr-021-stage-failure-checkpoints).
 
+Companion notes sit outside the pipeline. A capture is stored before the Notes
+Scribe structures it; the Scribe has no tools or repository and changes only
+its own note through a host-validated contract. Notes never create tasks,
+features or pulsations. See [ADR-029](adr/README.md#adr-029-companion-notes)
+and [companion_notes](../crates/hvc-core/src/companion_notes/mod.rs).
+
 ## Storage and context
 
 SQLite stores domain state, migrations, events, checkpoints and usage records.
