@@ -31,6 +31,8 @@ mod logs;
 mod logs_view;
 mod motion;
 mod native_editor;
+mod notes;
+mod notes_view;
 mod notifications;
 mod performance;
 mod pipeline_status;

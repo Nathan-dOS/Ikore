@@ -218,9 +218,56 @@ pub fn format_time_range(start: Option<&str>, end: Option<&str>, fallback: &str)
     }
 }
 
+/// "just now", "3 min ago", "2 h ago" (under two days), "5 d ago". A time in
+/// the future reads as "just now": clocks drift, and a negative age is noise.
+pub fn relative_since(at: DateTime<chrono::Utc>, now: DateTime<chrono::Utc>) -> String {
+    let minutes = (now - at).num_minutes().max(0);
+    if minutes < 1 {
+        "just now".into()
+    } else if minutes < 60 {
+        format!("{minutes} min ago")
+    } else if minutes < 48 * 60 {
+        format!("{} h ago", minutes / 60)
+    } else {
+        format!("{} d ago", minutes / (24 * 60))
+    }
+}
+
+/// [`relative_since`] for a stored RFC-3339 timestamp; an unreadable one is
+/// shown as stored.
+pub fn relative_timestamp(rfc3339: &str, now: DateTime<chrono::Utc>) -> String {
+    match DateTime::parse_from_rfc3339(rfc3339.trim()) {
+        Ok(at) => relative_since(at.with_timezone(&chrono::Utc), now),
+        Err(_) => rfc3339.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_times_read_in_the_largest_whole_unit() {
+        let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let ago = |minutes: i64| now - chrono::Duration::minutes(minutes);
+        assert_eq!(relative_since(ago(0), now), "just now");
+        assert_eq!(
+            relative_since(now + chrono::Duration::minutes(5), now),
+            "just now"
+        );
+        assert_eq!(relative_since(ago(3), now), "3 min ago");
+        assert_eq!(relative_since(ago(59), now), "59 min ago");
+        assert_eq!(relative_since(ago(60), now), "1 h ago");
+        assert_eq!(relative_since(ago(47 * 60), now), "47 h ago");
+        assert_eq!(relative_since(ago(48 * 60), now), "2 d ago");
+        assert_eq!(
+            relative_timestamp("2026-10-22T11:30:00+00:00", now),
+            "30 min ago"
+        );
+        assert_eq!(relative_timestamp("yesterday", now), "yesterday");
+    }
 
     #[test]
     fn format_system_time_produces_non_empty_localized_string() {

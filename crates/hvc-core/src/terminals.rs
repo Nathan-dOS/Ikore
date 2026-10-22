@@ -463,6 +463,8 @@ pub enum ExecutionOrigin {
     Manual,
     /// The Visualizer's notes on a checkpoint's Review Brief (ADR-027 M5).
     Review,
+    /// The Notes Scribe structuring or refining a Companion note (ADR-029).
+    Notes,
 }
 
 impl ExecutionOrigin {
@@ -473,6 +475,7 @@ impl ExecutionOrigin {
             Self::Learning => "learning",
             Self::Manual => "manual",
             Self::Review => "review",
+            Self::Notes => "notes",
         }
     }
 
@@ -483,6 +486,7 @@ impl ExecutionOrigin {
             "learning" => Some(Self::Learning),
             "manual" => Some(Self::Manual),
             "review" => Some(Self::Review),
+            "notes" => Some(Self::Notes),
             _ => None,
         }
     }
@@ -621,7 +625,7 @@ pub struct CanonicalAgentDescriptor {
     pub color_key: &'static str,
 }
 
-pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 9] = [
+pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 10] = [
     CanonicalAgentDescriptor {
         role: AgentRole::FeatureAgent,
         name: "FeatureAgent",
@@ -684,6 +688,13 @@ pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 9] = [
         glyph: "~",
         stage: "Review",
         color_key: "violet",
+    },
+    CanonicalAgentDescriptor {
+        role: AgentRole::NotesScribe,
+        name: "NotesScribe",
+        glyph: "=",
+        stage: "Notes",
+        color_key: "orange",
     },
 ];
 
@@ -1092,6 +1103,23 @@ impl TerminalRepository {
         };
         let transaction = connection.transaction()?;
         for (position, role) in AgentRole::ALL.into_iter().enumerate() {
+            if role == AgentRole::NotesScribe {
+                // A first note should not fail on a route nobody chose: start from the
+                // Feature Agent's, which already serves this project's one-shot planning
+                // calls. A Custom route is not inherited, because the Scribe refuses it.
+                transaction.execute(
+                    "INSERT OR IGNORE INTO cli_agent_configs(
+                       project_id,agent_role,execution_mode,backend,model,thinking_level,
+                       custom_args_json,custom_risk_ack,version,created_at,updated_at,
+                       model_profile,model_source
+                     )
+                     SELECT project_id,?2,execution_mode,backend,model,thinking_level,
+                            '[]',0,1,?3,?3,model_profile,model_source
+                     FROM cli_agent_configs
+                     WHERE project_id=?1 AND agent_role='feature_agent' AND backend<>'custom'",
+                    params![project_id, role.as_str(), now],
+                )?;
+            }
             transaction.execute(
                 "INSERT OR IGNORE INTO cli_agent_configs(
                    project_id,agent_role,execution_mode,backend,thinking_level,
@@ -3198,6 +3226,17 @@ fn validate_model_selection(
         ));
     }
     Ok(())
+}
+
+/// The instruction appended with the schema for CLIs that cannot enforce one.
+/// Notes follow the developer's language (ADR-029), so the English clause that
+/// holds every other role's artifacts must not reach the Notes Scribe.
+fn schema_prompt_suffix(role: AgentRole) -> &'static str {
+    if role == AgentRole::NotesScribe {
+        "\nReturn only valid JSON that satisfies this schema. Follow the request language contract:\n"
+    } else {
+        "\nReturn only valid JSON that satisfies this schema. Follow the request language contract; generated artifacts must be English:\n"
+    }
 }
 
 /// Automatic agent invocations need an explicit, stable model that the host can
@@ -5543,11 +5582,17 @@ impl TerminalService {
         }
         let feature_discovery =
             request.pulsation_id.is_none() && request.job_chain.starts_with("feature:");
-        if feature_discovery && config.backend == CliBackend::Custom {
-            return Err(TerminalError::Validation(
+        let notes_scribe = agent_role == AgentRole::NotesScribe;
+        // Both read only host-selected text, so both get the Companion's restrictions.
+        let companion_scoped = feature_discovery || notes_scribe;
+        if companion_scoped && config.backend == CliBackend::Custom {
+            return Err(TerminalError::Validation(if notes_scribe {
+                "The Notes Scribe requires an official read-only CLI adapter or API transport"
+                    .into()
+            } else {
                 "Feature discovery requires an official read-only CLI adapter or API transport"
-                    .into(),
-            ));
+                    .into()
+            }));
         }
         if cli_mode_disabled() {
             return Err(TerminalError::Validation(
@@ -5627,11 +5672,12 @@ impl TerminalService {
             CliBackend::Gemini | CliBackend::Opencode | CliBackend::Custom
         ) && let Some(schema) = schema.as_ref()
         {
-            prompt.push_str("\nReturn only valid JSON that satisfies this schema. Follow the request language contract; generated artifacts must be English:\n");
+            prompt.push_str(schema_prompt_suffix(agent_role));
             prompt.push_str(&serde_json::to_string(schema)?);
         }
-        // Discovery receives only host-selected context, with the Companion's tool restrictions.
-        let discovery_directory = feature_discovery.then(tempfile::tempdir).transpose()?;
+        // Discovery and the Scribe receive only host-selected context, with the
+        // Companion's tool restrictions.
+        let discovery_directory = companion_scoped.then(tempfile::tempdir).transpose()?;
         let workspace = match &discovery_directory {
             Some(directory) => directory.path().to_path_buf(),
             None => self.repository.project_workspace(&request.project_id)?,
@@ -5656,14 +5702,16 @@ impl TerminalService {
         // shell tools back, contradicting the read-only contract in its prompt.
         let hardening_guard = harden_spec(
             config.backend,
-            if feature_discovery {
+            if companion_scoped {
                 Hardening::Companion
             } else {
                 Hardening::Pipeline
             },
             &mut spec,
         )?;
-        let origin = if feature_discovery {
+        let origin = if notes_scribe {
+            ExecutionOrigin::Notes
+        } else if feature_discovery {
             ExecutionOrigin::Feature
         } else if agent_role == AgentRole::LearningAgent {
             ExecutionOrigin::Learning
@@ -8273,6 +8321,88 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    /// A project whose `notes_scribe` route was never created, with the
+    /// Feature Agent on the given backend.
+    fn scribe_route_fixture(
+        feature_backend: &str,
+    ) -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        TerminalRepository,
+        String,
+    ) {
+        use crate::persistence_service::{CreateProjectRequest, PersistenceService};
+
+        let data = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let persistence = PersistenceService::initialize(data.path()).unwrap();
+        let project = persistence
+            .create_project(CreateProjectRequest {
+                workspace_path: workspace.path().to_string_lossy().into_owned(),
+                name: Some("Scribe route".into()),
+            })
+            .unwrap()
+            .project;
+        let repository = TerminalRepository::new(persistence.database_path());
+        repository
+            .ensure_project_configs(&project.id, false)
+            .unwrap();
+        let db = repository.connection().unwrap();
+        db.execute(
+            "DELETE FROM cli_agent_configs WHERE project_id=?1 AND agent_role='notes_scribe'",
+            [&project.id],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE cli_agent_configs SET execution_mode='cli_process',backend=?2,model='sonnet',
+                    thinking_level='high',model_source='manual'
+             WHERE project_id=?1 AND agent_role='feature_agent'",
+            params![project.id, feature_backend],
+        )
+        .unwrap();
+        (data, workspace, repository, project.id)
+    }
+
+    #[test]
+    fn notes_scribe_route_starts_from_the_feature_agent_route() {
+        let (_data, _workspace, repository, project) = scribe_route_fixture("claude");
+        repository.ensure_project_configs(&project, false).unwrap();
+        let scribe = repository
+            .get_config(&project, AgentRole::NotesScribe)
+            .unwrap();
+        assert_eq!(scribe.execution_mode, AgentExecutionMode::CliProcess);
+        assert_eq!(scribe.backend, CliBackend::Claude);
+        assert_eq!(scribe.model.as_deref(), Some("sonnet"));
+        assert_eq!(scribe.thinking_level, ThinkingLevel::High);
+        assert_eq!(scribe.model_source, CliModelSelectionSource::Manual);
+        assert!(scribe.custom_executable.is_none() && !scribe.custom_risk_ack);
+    }
+
+    #[test]
+    fn notes_scribe_route_does_not_inherit_a_custom_feature_agent_route() {
+        let (_data, _workspace, repository, project) = scribe_route_fixture("custom");
+        repository.ensure_project_configs(&project, false).unwrap();
+        let scribe = repository
+            .get_config(&project, AgentRole::NotesScribe)
+            .unwrap();
+        assert_eq!(scribe.execution_mode, AgentExecutionMode::ApiDirect);
+        assert_eq!(scribe.backend, CliBackend::Codex);
+        assert!(scribe.model.is_none());
+    }
+
+    #[test]
+    fn schema_suffix_keeps_artifacts_english_except_for_the_notes_scribe() {
+        for role in AgentRole::ALL {
+            let suffix = schema_prompt_suffix(role);
+            assert!(suffix.contains("Return only valid JSON"));
+            assert_eq!(
+                suffix.contains("must be English"),
+                role != AgentRole::NotesScribe,
+                "{role:?}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn only_gemini_gates_an_unvalidated_newer_version_and_only_until_validated() {

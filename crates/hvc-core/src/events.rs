@@ -16,6 +16,8 @@ pub const DEFAULT_EVENT_CAPACITY: usize = 1_024;
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     Forge(crate::feature_forge::ForgeEvent),
+    /// A Companion note changed (ADR-029); the UI reloads its snapshot.
+    Notes(crate::companion_notes::NotesEvent),
     WorkspaceChanged(WorkspaceChangedEvent),
     Llm(LlmEventEnvelope),
     Chat(ChatEventEnvelope),
@@ -28,6 +30,7 @@ impl AppEvent {
     pub fn event_name(&self) -> &'static str {
         match self {
             Self::Forge(_) => "forge://changed",
+            Self::Notes(_) => "notes://changed",
             Self::WorkspaceChanged(_) => crate::workspace_service::WORKSPACE_CHANGED_EVENT,
             Self::Llm(envelope) => envelope.event.event_name(),
             Self::Chat(envelope) => envelope.event_name(),

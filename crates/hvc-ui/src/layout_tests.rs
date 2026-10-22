@@ -1832,6 +1832,7 @@ fn nav_rail_selects_every_view_and_pins_settings_at_the_bottom(cx: &mut TestAppC
                 AppView::Agents => "rail-nav-agents",
                 AppView::Logs => "rail-nav-logs",
                 AppView::Chat => "rail-nav-chat",
+                AppView::Notes => "rail-nav-notes",
                 AppView::Workspace => "rail-nav-workspace",
                 AppView::Settings => unreachable!("settings is not a rail view"),
             };
@@ -1932,22 +1933,24 @@ fn keyboard_shortcuts_follow_rail_order(cx: &mut TestAppContext) {
     visual.run_until_parked();
     // Own the focus first so the keystrokes reach the shell's action handlers.
     click(visual, "rail-nav-home");
-    for (index, view) in crate::shell::RAIL_VIEWS.iter().enumerate() {
-        visual.simulate_keystrokes(&format!("ctrl-{}", index + 1));
+    for (view, keys) in crate::shell::RAIL_SHORTCUTS {
+        visual.simulate_keystrokes(keys);
         visual.run_until_parked();
         assert_eq!(
             model.read_with(visual, |model, _| model.active_view()),
-            *view,
-            "ctrl-{} did not select {view:?}",
-            index + 1
+            view,
+            "{keys} did not select {view:?}"
         );
     }
+    // Existing shortcuts keep their keys; the Notes view took the next free one.
+    assert!(crate::shell::RAIL_SHORTCUTS.contains(&(AppView::Workspace, "ctrl-8")));
+    assert!(crate::shell::RAIL_SHORTCUTS.contains(&(AppView::Notes, "ctrl-9")));
     visual.simulate_keystrokes("ctrl-,");
     visual.run_until_parked();
     assert!(model.read_with(visual, |model, _| model.settings_modal.open));
     assert_eq!(
         model.read_with(visual, |model, _| model.active_view()),
-        AppView::Workspace
+        AppView::Notes
     );
     visual.simulate_keystrokes("ctrl-shift-]");
     visual.run_until_parked();
@@ -5426,4 +5429,295 @@ fn a_pending_or_omitted_visualizer_note_is_one_quiet_line(cx: &mut TestAppContex
     assert!(line.left() >= reader.left() && line.right() <= reader.right() + px(1.0));
     assert!(visual.debug_bounds("brief-visualizer").is_none());
     assert!(visual.debug_bounds("brief-visualizer-pending").is_none());
+}
+
+// ---------------------------------------------------------------------------
+// ADR-029: the Notes view
+// ---------------------------------------------------------------------------
+
+fn layout_note(
+    id: &str,
+    status: hvc_core::companion_notes::NoteStatus,
+) -> hvc_core::companion_notes::CompanionNote {
+    use hvc_core::companion_notes::{CompanionNote, NoteSource, NoteStatus, NoteTag};
+    let ready = status == NoteStatus::Ready;
+    CompanionNote {
+        id: id.into(),
+        project_id: "layout-project".into(),
+        revision: if ready { 2 } else { 1 },
+        status,
+        source_type: NoteSource::Text,
+        raw_input: format!("Loose thought {id}: the save button disappears in dark mode"),
+        raw_redactions: 1,
+        title: ready.then(|| format!("Save button contrast {id}")),
+        summary: ready.then(|| "The save button is invisible on the dark theme.".into()),
+        content_markdown: ready
+            .then(|| "### Problem\n- Low contrast\n- Users miss the action".into()),
+        tags: if ready {
+            vec![NoteTag::UiUx, NoteTag::Bug]
+        } else {
+            vec![]
+        },
+        output_language: ready.then(|| "en".into()),
+        created_at: "2026-10-22T12:00:00Z".into(),
+        updated_at: "2026-10-22T12:00:00Z".into(),
+    }
+}
+
+fn notes_fixture(
+    model: &Entity<AppModel>,
+    visual: &mut VisualTestContext,
+    notes: Vec<hvc_core::companion_notes::CompanionNote>,
+    selected: Option<&str>,
+) {
+    select(model, visual, AppView::Notes);
+    model.update(visual, |m, cx| {
+        m.notes.project_id = Some("layout-project".into());
+        m.notes.snapshot.notes = notes;
+        m.notes.selected = selected.map(Into::into);
+        cx.notify();
+    });
+    visual.run_until_parked();
+}
+
+#[gpui::test]
+fn notes_master_and_detail_fit_both_supported_window_sizes(cx: &mut TestAppContext) {
+    use hvc_core::companion_notes::NoteStatus;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        notes_fixture(
+            &model,
+            visual,
+            vec![
+                layout_note("n1", NoteStatus::Ready),
+                layout_note("n2", NoteStatus::Structuring),
+            ],
+            Some("n1"),
+        );
+        let left = visual.debug_bounds("notes-columns-left").unwrap();
+        let right = visual.debug_bounds("notes-columns-right").unwrap();
+        let rail = visual.debug_bounds("rail").unwrap();
+        let status_bar = visual.debug_bounds("status-bar").unwrap();
+        assert!(left.left() >= rail.right() && left.right() <= right.left());
+        assert!(
+            right.right() <= px(width),
+            "detail overflows at {width}: {right:?}"
+        );
+        assert!(
+            right.size.width >= px(359.0),
+            "the detail column is squeezed at {width}: {right:?}"
+        );
+        for selector in [
+            "notes-capture",
+            "notes-capture-save",
+            "notes-search",
+            "notes-tag-filter",
+            "notes-list",
+            "note-n1",
+            "note-n2",
+        ] {
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector} at {width}"));
+            assert!(
+                bounds.left() >= left.left() && bounds.right() <= left.right() + px(1.0),
+                "{selector} escaped the list column at {width}: {bounds:?}"
+            );
+        }
+        for selector in [
+            "notes-detail",
+            "note-title",
+            "note-summary",
+            "note-content",
+            "note-agent-label",
+            "note-raw-toggle",
+            "note-delete",
+            "notes-refine",
+            "notes-refine-send",
+        ] {
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector} at {width}"));
+            assert!(
+                bounds.left() >= right.left() && bounds.right() <= right.right() + px(1.0),
+                "{selector} escaped the detail column at {width}: {bounds:?}"
+            );
+        }
+        let composer = visual.debug_bounds("notes-refine").unwrap();
+        assert!(
+            composer.bottom() <= status_bar.top(),
+            "the refinement composer is pushed off screen at {width}: {composer:?}, detail {:?}, pane {right:?}, list column {left:?}",
+            visual.debug_bounds("notes-detail")
+        );
+    }
+}
+
+#[gpui::test]
+fn notes_empty_states_guide_the_first_capture_and_clear_filters(cx: &mut TestAppContext) {
+    use hvc_core::companion_notes::{NoteStatus, NoteTag};
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    notes_fixture(&model, visual, vec![], None);
+    assert!(visual.debug_bounds("notes-empty").is_some());
+    assert!(visual.debug_bounds("notes-detail").is_some());
+
+    notes_fixture(
+        &model,
+        visual,
+        vec![layout_note("n1", NoteStatus::Ready)],
+        None,
+    );
+    model.update(visual, |m, cx| {
+        m.notes.tag_filter.insert(NoteTag::Performance);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("notes-no-matches").is_some());
+    click(visual, "notes-clear-filters");
+    assert!(model.read_with(visual, |m, _| m.notes.tag_filter.is_empty()));
+    assert!(visual.debug_bounds("note-n1").is_some());
+
+    click(visual, "notes-tag-ui_ux");
+    assert!(model.read_with(visual, |m, _| m.notes.tag_filter.contains(&NoteTag::UiUx)));
+    assert!(
+        visual.debug_bounds("note-n1").is_some(),
+        "the note carries the tag"
+    );
+    // Voice capture is a later phase: no source filter until a spoken note exists. It never
+    // rendered in this window, so its selector cannot be a stale one.
+    assert!(!model.read_with(visual, |m, _| m.notes.has_voice_notes()));
+    assert!(visual.debug_bounds("notes-source-all").is_none());
+}
+
+#[gpui::test]
+fn a_note_card_selects_the_note_and_the_drawer_shows_the_raw_text(cx: &mut TestAppContext) {
+    use hvc_core::companion_notes::NoteStatus;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    notes_fixture(
+        &model,
+        visual,
+        vec![
+            layout_note("n1", NoteStatus::Ready),
+            layout_note("n2", NoteStatus::Structuring),
+        ],
+        None,
+    );
+    assert!(
+        visual.debug_bounds("Structuring").is_some(),
+        "the pending note says so"
+    );
+    click(visual, "note-n1");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.notes.selected.clone()),
+        Some("n1".into())
+    );
+    assert!(visual.debug_bounds("note-summary").is_some());
+    click(visual, "note-raw-toggle");
+    assert!(model.read_with(visual, |m, _| m.notes.raw_open));
+    assert!(visual.debug_bounds("note-raw").is_some());
+}
+
+#[gpui::test]
+fn a_running_note_offers_cancel_and_holds_the_composer(cx: &mut TestAppContext) {
+    use hvc_core::companion_notes::NoteStatus;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    notes_fixture(
+        &model,
+        visual,
+        vec![layout_note("n1", NoteStatus::Ready)],
+        Some("n1"),
+    );
+    model.update(visual, |m, cx| {
+        m.notes
+            .snapshot
+            .running
+            .insert("n1".into(), "turn-1".into());
+        m.notes
+            .refine
+            .update(cx, |input, cx| input.set_value("Shorter", cx));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("note-working").is_some());
+    assert!(visual.debug_bounds("note-cancel").is_some());
+    assert_eq!(
+        model.read_with(visual, |m, cx| m.sidebar_badges(cx).notes_running),
+        1
+    );
+    // Send is disabled while the Scribe works; a click changes nothing.
+    click(visual, "notes-refine-send");
+    assert_eq!(
+        model.read_with(visual, |m, cx| m.notes.refine.read(cx).value().to_string()),
+        "Shorter"
+    );
+}
+
+#[gpui::test]
+fn a_failed_note_explains_itself_and_offers_to_structure_again(cx: &mut TestAppContext) {
+    use hvc_core::companion_notes::{NoteStatus, NoteTurn, NoteTurnKind};
+    use hvc_core::feature_forge::{TurnFailure, TurnFailureKind};
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    notes_fixture(
+        &model,
+        visual,
+        vec![layout_note("n1", NoteStatus::Failed)],
+        Some("n1"),
+    );
+    model.update(visual, |m, cx| {
+        m.notes.history = vec![NoteTurn {
+            id: "t1".into(),
+            note_id: "n1".into(),
+            note_revision: 1,
+            ordinal: 1,
+            kind: NoteTurnKind::Structure,
+            status: "failed".into(),
+            user_message: None,
+            user_redactions: 0,
+            assistant_message: None,
+            failure: Some(TurnFailure::new(
+                TurnFailureKind::ProviderSetup,
+                "the provider refused the request",
+            )),
+            notices: vec![],
+            calls: 1,
+            created_at: "2026-10-22T12:00:00Z".into(),
+        }];
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("note-failed").is_some());
+    assert!(visual.debug_bounds("note-retry-structure").is_some());
+    click(visual, "note-failure-detail");
+    assert!(model.read_with(visual, |m, _| m.notes.expanded_failures.contains("t1")));
+    // Refinement waits for a structured note.
+    assert!(visual.debug_bounds("notes-refine").is_some());
+    assert!(visual.debug_bounds("note-summary").is_none());
+}
+
+#[gpui::test]
+fn deleting_a_note_takes_two_clicks_and_navigation_disarms_it(cx: &mut TestAppContext) {
+    use hvc_core::companion_notes::NoteStatus;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    notes_fixture(
+        &model,
+        visual,
+        vec![layout_note("n1", NoteStatus::Ready)],
+        Some("n1"),
+    );
+    let before = visual.debug_bounds("note-delete").unwrap();
+    click(visual, "note-delete");
+    assert_eq!(
+        model.read_with(visual, |m, _| m.notes.confirm_delete.clone()),
+        Some("n1".into())
+    );
+    let armed = visual.debug_bounds("note-delete").unwrap();
+    assert_eq!(armed.top(), before.top(), "arming does not move the button");
+    select(&model, visual, AppView::Chat);
+    select(&model, visual, AppView::Notes);
+    assert!(model.read_with(visual, |m, _| m.notes.confirm_delete.is_none()));
 }

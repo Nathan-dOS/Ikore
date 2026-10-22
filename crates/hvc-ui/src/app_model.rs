@@ -81,19 +81,21 @@ pub enum AppView {
     Pulsations,
     Vault,
     Chat,
+    Notes,
     Agents,
     Settings,
     Logs,
 }
 
 impl AppView {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Home,
         Self::Forge,
         Self::Workspace,
         Self::Pulsations,
         Self::Vault,
         Self::Chat,
+        Self::Notes,
         Self::Agents,
         Self::Settings,
         Self::Logs,
@@ -107,6 +109,7 @@ impl AppView {
             Self::Forge => "forge",
             Self::Vault => "vault",
             Self::Chat => "chat",
+            Self::Notes => "notes",
             Self::Agents => "agents",
             Self::Settings => "settings",
             Self::Logs => "logs",
@@ -121,6 +124,7 @@ impl AppView {
             Self::Forge => "Forge — Tasks & Features",
             Self::Vault => "Vault & Graph",
             Self::Chat => "Chat / Companion",
+            Self::Notes => "Notes / Scribe",
             Self::Agents => "Agents & Terminais",
             Self::Settings => "Settings & AI Runtime",
             Self::Logs => "Logs & Observability",
@@ -135,6 +139,7 @@ impl AppView {
             Self::Forge => "Forge",
             Self::Vault => "Vault",
             Self::Chat => "Companion",
+            Self::Notes => "Notes",
             Self::Agents => "Agents",
             Self::Settings => "Settings",
             Self::Logs => "Logs",
@@ -150,6 +155,7 @@ impl AppView {
             Self::Forge => Icon::Hammer,
             Self::Vault => Icon::Vault,
             Self::Chat => Icon::MessageSquare,
+            Self::Notes => Icon::NotebookPen,
             Self::Agents => Icon::Bot,
             Self::Settings => Icon::Settings,
             Self::Logs => Icon::ScrollText,
@@ -164,6 +170,7 @@ impl AppView {
             Self::Forge => "Task backlog, discovery, and feature planning",
             Self::Vault => "Markdown notes, links, and workspace context",
             Self::Chat => "Conversation, streaming, and read-only tools",
+            Self::Notes => "Loose ideas the Notes Scribe turns into structured notes",
             Self::Agents => "CLI/API execution of the seven canonical agents",
             Self::Settings => "Providers, LLM routing, and local preferences",
             Self::Logs => "Typed events and runtime diagnostics",
@@ -204,7 +211,7 @@ impl AppTab {
         match self {
             Self::Agent => &[AppView::Agents, AppView::Logs],
             Self::Engine => &[AppView::Forge, AppView::Pulsations, AppView::Vault],
-            Self::Companion => &[AppView::Chat, AppView::Workspace],
+            Self::Companion => &[AppView::Chat, AppView::Notes, AppView::Workspace],
         }
     }
 
@@ -269,6 +276,8 @@ pub struct TabBadges {
     pub engine_awaiting_hitl: usize,
     pub engine_running_jobs: usize,
     pub companion_streaming: usize,
+    /// Notes the Notes Scribe is working on.
+    pub notes_running: usize,
     /// Open Specification clarification checkpoints across the project.
     pub clarifications: usize,
     /// CLI runs parked on a fallback decision.
@@ -278,6 +287,7 @@ pub struct TabBadges {
 pub struct AppModel {
     pub(crate) core: Option<Arc<AppCore>>,
     pub(crate) forge: crate::forge::ForgeUi,
+    pub(crate) notes: crate::notes::NotesUi,
     session_persistence: Option<Arc<dyn SessionPersistence>>,
     workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
     pulsations_backend: Option<Arc<dyn PulsationsBackend>>,
@@ -301,6 +311,8 @@ pub struct AppModel {
     /// from the incubation split because a form and a transcript want different
     /// proportions.
     pub(crate) forge_triage_split: Entity<crate::split_pane::SplitPaneState>,
+    /// Notes: the capture and list column against the selected note.
+    pub(crate) notes_split: Entity<crate::split_pane::SplitPaneState>,
     /// Vault: files/search column | (graph | inspector).
     pub(crate) vault_files_split: Entity<crate::split_pane::SplitPaneState>,
     pub(crate) vault_detail_split: Entity<crate::split_pane::SplitPaneState>,
@@ -681,6 +693,8 @@ impl AppModel {
             cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.55, 300.0, 260.0));
         let forge_triage_split =
             cx.new(|_| crate::split_pane::SplitPaneState::proportional(0.58, 300.0, 260.0));
+        let notes_split =
+            cx.new(|_| crate::split_pane::SplitPaneState::new(300.0, 240.0, 440.0, 360.0));
         // Right minimum = graph + inspector minimums plus their sash, so the files column
         // never pushes the inspector out at the 960 px window.
         let vault_files_split =
@@ -695,6 +709,7 @@ impl AppModel {
             cx.observe(&forge_feature_split, |_, _, cx| cx.notify()),
             cx.observe(&forge_incubation_split, |_, _, cx| cx.notify()),
             cx.observe(&forge_triage_split, |_, _, cx| cx.notify()),
+            cx.observe(&notes_split, |_, _, cx| cx.notify()),
             cx.observe(&vault_files_split, |_, _, cx| cx.notify()),
             cx.observe(&vault_detail_split, |_, _, cx| cx.notify()),
             cx.observe(&editor, |model, _, cx| {
@@ -753,6 +768,7 @@ impl AppModel {
         Self {
             core,
             forge: crate::forge::ForgeUi::new(cx),
+            notes: crate::notes::NotesUi::new(cx),
             session_persistence,
             workspace_backend,
             pulsations_backend: None,
@@ -771,6 +787,7 @@ impl AppModel {
             forge_feature_split,
             forge_incubation_split,
             forge_triage_split,
+            notes_split,
             vault_files_split,
             vault_detail_split,
             vault: cx.new(|_| VaultModel::default()),
@@ -1032,6 +1049,7 @@ impl AppModel {
             engine_awaiting_hitl: pulsations.awaiting_hitl,
             engine_running_jobs: pulsations.running_jobs,
             companion_streaming: usize::from(self.chat.read(cx).streaming),
+            notes_running: self.notes.snapshot.running.len(),
             clarifications: self.resolution.read(cx).chips.len(),
             agent_fallbacks: agents.fallbacks.len(),
         }
@@ -1059,6 +1077,7 @@ impl AppModel {
         self.confirm_stage_reject = false;
         self.confirm_failure_abort = false;
         self.confirm_brownfield_revoke = false;
+        self.notes.confirm_delete = None;
         self.active_dropdown = None;
         self.choice_menu = None;
         self.status = format!("{} view active", view.short_label()).into();
@@ -1090,6 +1109,7 @@ impl AppModel {
                 }
             }
             AppView::Forge => self.refresh_forge(cx),
+            AppView::Notes => self.refresh_notes(cx),
             // Both explorers show the same tree; either one opening consumes the stale marker.
             AppView::Vault | AppView::Workspace if self.vault.read(cx).stale => {
                 self.schedule_vault_refresh(cx)
@@ -6392,6 +6412,7 @@ impl AppModel {
         self.vault
             .update(cx, |vault, _| *vault = VaultModel::default());
         self.forge = crate::forge::ForgeUi::new(cx);
+        self.notes = crate::notes::NotesUi::new(cx);
         self.navigation
             .update(cx, |navigation, _| navigation.active = AppView::Home);
     }
@@ -7317,6 +7338,7 @@ impl AppModel {
         match self.active_view {
             AppView::Agents => self.refresh_agents(cx),
             AppView::Forge => self.refresh_forge(cx),
+            AppView::Notes => self.refresh_notes(cx),
             AppView::Pulsations => self.refresh_pulsation_usage(cx),
             AppView::Chat => {
                 let project = self
@@ -7959,6 +7981,18 @@ impl AppModel {
                         ACTIVITY_COALESCE_WINDOW,
                     );
                     self.refresh_forge(cx);
+                }
+            }
+            AppEvent::Notes(event) => {
+                if self
+                    .workspace
+                    .read(cx)
+                    .project_id
+                    .as_ref()
+                    .is_some_and(|p| p.as_ref() == event.project_id)
+                {
+                    // Reports what finished once the snapshot shows it (`notes.rs`).
+                    self.refresh_notes(cx);
                 }
             }
             AppEvent::WorkspaceChanged(event) => {

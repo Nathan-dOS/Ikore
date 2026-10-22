@@ -518,6 +518,7 @@ impl AppModel {
                 "integrator",
                 "learning_agent",
                 "visualizer",
+                "notes_scribe",
             ]
             .into_iter()
             .map(|r| Choice::new(r, r, settings.binding_agent_role.as_ref() == r))
@@ -531,6 +532,7 @@ impl AppModel {
                 "Integrator",
                 "Learning",
                 "Review",
+                "Notes",
             ]
             .into_iter()
             .map(|r| Choice::new(r, r, settings.binding_stage.as_ref() == r))

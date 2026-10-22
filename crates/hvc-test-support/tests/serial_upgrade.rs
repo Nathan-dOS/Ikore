@@ -127,7 +127,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -290,7 +290,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        48
+        49
     );
     assert_eq!(
         db.query_row(
@@ -831,7 +831,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -987,7 +987,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1084,7 +1084,7 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     let (error, failure, notices): (String, Option<String>, Option<String>) = db
         .query_row(
@@ -1153,7 +1153,7 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1228,7 +1228,7 @@ fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1323,7 +1323,7 @@ fn v47_to_v48_adds_quota_history_with_validated_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        48
+        49
     );
     let insert = |values: &str| {
         db.execute(
@@ -1347,4 +1347,172 @@ fn v47_to_v48_adds_quota_history_with_validated_columns() {
     ] {
         insert(rejected).expect_err(rejected);
     }
+}
+
+/// V49 rebuilds the role-constrained configuration, slot and run tables again
+/// to admit the Notes Scribe and the `notes` run origin (ADR-029), and adds the
+/// Companion notes and their Scribe turns. Existing rows and the events hanging
+/// off a run must survive, unknown roles and origins must still be rejected, a
+/// ready note must carry its text and a note may run only one turn at a time.
+#[test]
+fn v48_to_v49_admits_the_notes_scribe_and_adds_companion_notes() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(48))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V48 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version) VALUES('pulse','p','Work','Code','running','now','now',4)",[]).unwrap();
+    db.execute("INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,thinking_level,custom_args_json,version,created_at,updated_at) VALUES('p','visualizer','cli_process','claude','high','[]',2,'now','now')",[]).unwrap();
+    db.execute("INSERT INTO terminal_slots(id,project_id,kind,agent_role,label,created_at,updated_at) VALUES('slot','p','canonical','visualizer','Visualizer','now','now')",[]).unwrap();
+    db.execute("INSERT INTO terminal_runs(id,project_id,slot_kind,agent_role,origin,execution_mode,backend,pulsation_id,status,created_at,updated_at,slot_id) VALUES('run','p','canonical','visualizer','review','cli_process','claude','pulse','completed','now','now','slot')",[]).unwrap();
+    db.execute("INSERT INTO terminal_events(id,run_id,sequence,kind,stream,content,created_at) VALUES('event','run',1,'stdout','stdout','done','now')",[]).unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        49
+    );
+    let (backend, version): (String, u32) = db
+        .query_row(
+            "SELECT backend,version FROM cli_agent_configs WHERE project_id='p' AND agent_role='visualizer'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((backend.as_str(), version), ("claude", 2));
+    let (slot, origin, events): (String, String, u32) = db
+        .query_row(
+            "SELECT r.slot_id,r.origin,(SELECT count(*) FROM terminal_events WHERE run_id=r.id) FROM terminal_runs r WHERE r.id='run'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (slot.as_str(), origin.as_str(), events),
+        ("slot", "review", 1)
+    );
+
+    db.execute("INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,thinking_level,custom_args_json,version,created_at,updated_at) VALUES('p','notes_scribe','api_direct','codex','default','[]',1,'now','now')",[])
+        .expect("the Notes Scribe can be configured");
+    db.execute("INSERT INTO terminal_slots(id,project_id,kind,agent_role,label,created_at,updated_at) VALUES('scribe-slot','p','canonical','notes_scribe','NotesScribe','now','now')",[])
+        .expect("the Notes Scribe has a canonical slot");
+    db.execute("INSERT INTO terminal_runs(id,project_id,slot_kind,agent_role,origin,execution_mode,backend,status,created_at,updated_at,slot_id) VALUES('notes-run','p','canonical','notes_scribe','notes','cli_process','codex','queued','now','now','scribe-slot')",[])
+        .expect("a Scribe run carries the notes origin and no pulsation");
+    db.execute(
+        "UPDATE cli_agent_configs SET agent_role='narrator' WHERE agent_role='notes_scribe'",
+        [],
+    )
+    .expect_err("an unknown role is still rejected");
+    db.execute(
+        "UPDATE terminal_runs SET origin='narration' WHERE id='notes-run'",
+        [],
+    )
+    .expect_err("an unknown origin is still rejected");
+
+    db.execute("INSERT INTO companion_notes(id,project_id,capture_request_id,raw_input,created_at,updated_at) VALUES('note','p','capture-1','Save button vanishes in dark mode','now','now')",[])
+        .expect("a capture is stored before the Scribe answers");
+    db.execute("INSERT INTO companion_notes(id,project_id,capture_request_id,raw_input,created_at,updated_at) VALUES('again','p','capture-1','Other text','now','now')",[])
+        .expect_err("a capture request id is used once per project");
+    db.execute(
+        "UPDATE companion_notes SET status='ready' WHERE id='note'",
+        [],
+    )
+    .expect_err("a ready note carries its text");
+    db.execute("UPDATE companion_notes SET status='ready',title='Save button in dark mode',summary='The button disappears.',content_markdown='- Contrast',output_language='en',tags_json='[\"ui_ux\"]' WHERE id='note'", [])
+        .expect("a structured note becomes ready");
+    db.execute(
+        "UPDATE companion_notes SET tags_json='{}' WHERE id='note'",
+        [],
+    )
+    .expect_err("tags are a JSON array");
+    db.execute("INSERT INTO companion_note_turns(id,note_id,note_revision,ordinal,request_id,kind,status,created_at,updated_at) VALUES('t1','note',1,1,'r1','structure','running','now','now')",[])
+        .expect("a structuring turn");
+    db.execute("INSERT INTO companion_note_turns(id,note_id,note_revision,ordinal,request_id,kind,status,user_message,created_at,updated_at) VALUES('t2','note',1,2,'r2','refine','running','Shorter','now','now')",[])
+        .expect_err("a note runs one turn at a time");
+    db.execute("INSERT INTO companion_note_turns(id,note_id,note_revision,ordinal,request_id,kind,status,created_at,updated_at) VALUES('t3','note',1,3,'r3','refine','failed','now','now')",[])
+        .expect_err("a refinement carries the developer's message");
+    db.execute(
+        "UPDATE companion_note_turns SET status='completed' WHERE id='t1'",
+        [],
+    )
+    .expect_err("a completed turn carries the reply");
+
+    let columns = |table: &str| -> Vec<String> {
+        db.prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        columns("companion_notes"),
+        [
+            "id",
+            "project_id",
+            "capture_request_id",
+            "revision",
+            "status",
+            "source_type",
+            "raw_input",
+            "raw_redactions",
+            "title",
+            "summary",
+            "content_markdown",
+            "tags_json",
+            "output_language",
+            "created_at",
+            "updated_at"
+        ]
+    );
+    assert_eq!(
+        columns("companion_note_turns"),
+        [
+            "id",
+            "note_id",
+            "note_revision",
+            "ordinal",
+            "request_id",
+            "kind",
+            "status",
+            "user_message",
+            "user_redactions",
+            "assistant_message",
+            "response_json",
+            "failure_json",
+            "notices_json",
+            "calls",
+            "created_at",
+            "updated_at"
+        ]
+    );
+    db.execute("DELETE FROM companion_notes WHERE id='note'", [])
+        .unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM companion_note_turns", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        0,
+        "turns go with their note"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
 }

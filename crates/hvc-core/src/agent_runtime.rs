@@ -255,6 +255,9 @@ impl AgentRuntimeConfig {
             // A headline and at most three short notes; the Visualizer caps
             // its own request well below this floor.
             AgentRole::Visualizer => 800,
+            // A title, a summary, up to 4000 characters of Markdown and a reply,
+            // often in a language that tokenizes less densely than English.
+            AgentRole::NotesScribe => 2_400,
         };
         self.max_output_tokens.max(floor)
     }
