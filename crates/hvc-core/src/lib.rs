@@ -26,6 +26,7 @@ pub mod stage_briefs;
 pub mod terminals;
 mod terminals_host;
 pub mod usage;
+pub mod voice;
 pub mod workspace_service;
 
 pub use agent_timeout::{AgentTimeoutPolicy, ProgressWatchdog, TimeoutReason};

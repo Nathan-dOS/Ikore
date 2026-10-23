@@ -33,6 +33,7 @@ próprio GPUI 0.2.2, sob Apache-2.0, documentado em
 - `crates/hvc-app`: composition root e binário GPUI.
 - `crates/hvc-contracts`: shared execution, stage, timeout, usage and redaction values.
 - `crates/hvc-terminal`: CLI services, repository, adapters, process isolation and subscription quota.
+- `crates/hvc-voice`: local dictation: pinned speech runtime and model, microphone capture, global push-to-talk and earcons.
 - `crates/hvc-core`: domínio, persistência, workspace, LLM, Chat e barramento tipado.
 - `crates/hvc-ui`: native shell, three header tabs, nine views, and the GPUI design system.
 - `crates/hvc-editor`: Rope, seleção, undo/redo, diff, Markdown e Tree-sitter.
@@ -140,7 +141,7 @@ registra comandos, tempos, inventário e as pendências encontradas no gate.
 ## Docker (Linux headless harness)
 
 Docker does not run the app: GPUI needs the Windows backend. The image runs
-`hvc-contracts`, `hvc-terminal`, `hvc-core`, `hvc-editor` and `hvc-test-support` on Linux, with the same command
+`hvc-contracts`, `hvc-terminal`, `hvc-voice`, `hvc-core`, `hvc-editor` and `hvc-test-support` on Linux, with the same command
 locally and in the CI `linux headless (docker)` job. Every service is one-shot
 and behind a profile, so `docker compose up` starts nothing:
 
@@ -221,6 +222,18 @@ in core. See [ADR-030](docs/adr/030-terminal-boundary.md) and the
 [architecture](docs/architecture.md). The
 [2026-10-23 validation report](quality/rust-boundaries-validation-2026-10-23.md)
 records the test inventory, build measurements and remaining validation limits.
+
+## Voice dictation
+
+Settings → Voice dictation downloads NVIDIA's NeMo-Speech.cpp runtime (about
+5 MB) and the Nemotron 3.5 ASR 0.6B model (about 710 MB) into
+`%LOCALAPPDATA%\com.hardvibecode.desktop\voice`. Both are pinned by URL, size
+and SHA-256 and are refused on any mismatch. Holding the push-to-talk shortcut
+(default `Ctrl+Shift+F9`, any two or three of Ctrl/Alt/Shift with F1–F10)
+records from the microphone anywhere in Windows; releasing it transcribes the
+recording on the CPU, in whatever language was spoken, and saves it as a voice
+note in the open project. No audio is kept. Windows only. See
+[ADR-029](docs/adr/README.md#adr-029-companion-notes).
 
 ```powershell
 cargo test-contracts

@@ -686,6 +686,7 @@ pub(crate) enum SettingsPage {
     Connections,
     Routes,
     Embeddings,
+    Voice,
     SecondBrain,
     Preparation,
     Composition,
@@ -715,7 +716,7 @@ impl SettingsGroup {
 }
 
 impl SettingsPage {
-    pub(crate) const ALL: [Self; 13] = [
+    pub(crate) const ALL: [Self; 14] = [
         Self::General,
         Self::Usage,
         Self::Projects,
@@ -723,6 +724,7 @@ impl SettingsPage {
         Self::Connections,
         Self::Routes,
         Self::Embeddings,
+        Self::Voice,
         Self::SecondBrain,
         Self::Preparation,
         Self::Composition,
@@ -740,6 +742,7 @@ impl SettingsPage {
             Self::Connections => "connections",
             Self::Routes => "routes",
             Self::Embeddings => "embeddings",
+            Self::Voice => "voice",
             Self::SecondBrain => "second-brain",
             Self::Preparation => "preparation",
             Self::Composition => "composition",
@@ -758,6 +761,7 @@ impl SettingsPage {
             Self::Connections => "Connections",
             Self::Routes => "Routes",
             Self::Embeddings => "Embeddings & RAG",
+            Self::Voice => "Voice dictation",
             Self::SecondBrain => "Second Brain",
             Self::Preparation => "Preparation & context",
             Self::Composition => "Stage composition",
@@ -778,6 +782,7 @@ impl SettingsPage {
             Self::Connections => "API providers, CLI connections and subscription plan usage.",
             Self::Routes => "Ordered fallbacks across connections and the agents bound to them.",
             Self::Embeddings => "Vector search over your notes, served by a local Ollama.",
+            Self::Voice => "Speak a note with a held shortcut; a local model transcribes it.",
             Self::SecondBrain => "How far agents navigate the note graph and resolve code from it.",
             Self::Preparation => {
                 "Refinement before Specification, the handoff budget and learning after a run."
@@ -799,6 +804,7 @@ impl SettingsPage {
             Self::Connections => Icon::Plug,
             Self::Routes => Icon::Route,
             Self::Embeddings => Icon::Database,
+            Self::Voice => Icon::Mic,
             Self::SecondBrain => Icon::Brain,
             Self::Preparation => Icon::ListTodo,
             Self::Composition => Icon::Workflow,
@@ -813,9 +819,11 @@ impl SettingsPage {
             Self::General | Self::Usage | Self::Projects | Self::Shortcuts => {
                 SettingsGroup::General
             }
-            Self::Connections | Self::Routes | Self::Embeddings | Self::SecondBrain => {
-                SettingsGroup::AiModels
-            }
+            Self::Connections
+            | Self::Routes
+            | Self::Embeddings
+            | Self::Voice
+            | Self::SecondBrain => SettingsGroup::AiModels,
             Self::Preparation | Self::Composition | Self::Timeouts => SettingsGroup::Pipeline,
             Self::Labs | Self::About => SettingsGroup::System,
         }
@@ -833,6 +841,7 @@ impl SettingsPage {
             }
             Self::Routes => "routing fallback failover binding resilience cooldown",
             Self::Embeddings => "rag vectors ollama semantic search index",
+            Self::Voice => "speech microphone push to talk hotkey dictation transcription nemotron",
             Self::SecondBrain => "adaptive navigation vault notes graph wikilinks",
             Self::Preparation => "taskrefine prespec vagueness budget learning brownfield",
             Self::Composition => "v4 composed batches units validation checks overrides",
@@ -846,7 +855,12 @@ impl SettingsPage {
     pub(crate) fn needs_snapshot(self) -> bool {
         !matches!(
             self,
-            Self::General | Self::Usage | Self::Shortcuts | Self::Timeouts | Self::About
+            Self::General
+                | Self::Usage
+                | Self::Shortcuts
+                | Self::Voice
+                | Self::Timeouts
+                | Self::About
         )
     }
 }

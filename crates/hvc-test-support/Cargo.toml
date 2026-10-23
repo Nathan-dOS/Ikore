@@ -23,5 +23,9 @@ tokio.workspace = true
 tokio-util.workspace = true
 walkdir = "2"
 
+[dev-dependencies]
+hvc-voice.workspace = true
+sha2 = "0.10"
+
 [lints]
 workspace = true

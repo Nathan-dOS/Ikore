@@ -2706,6 +2706,7 @@ dependencies = [
  "globset",
  "hvc-contracts",
  "hvc-terminal",
+ "hvc-voice",
  "icu_normalizer",
  "ignore",
  "jsonschema",
@@ -2773,10 +2774,12 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "hvc-core",
+ "hvc-voice",
  "refinery",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -2797,6 +2800,23 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "hvc-voice"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

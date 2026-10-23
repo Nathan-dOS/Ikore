@@ -150,6 +150,9 @@ impl AppModel {
         if id.starts_with("usage-") {
             return self.usage_choices(id, cx);
         }
+        if let Some(choices) = self.voice_choices(id) {
+            return choices;
+        }
         let (field, key) = id.split_once(':').unwrap_or((id, ""));
         if field == "agent-filter" || field == "free-form-filter" {
             let filter_key = if field == "free-form-filter" {
@@ -555,6 +558,10 @@ impl AppModel {
         }
         if id.starts_with("usage-") {
             self.apply_usage_choice(id, value, cx);
+            return;
+        }
+        if id.starts_with("voice-") {
+            self.apply_voice_choice(id, value, cx);
             return;
         }
         let (field, key) = id.split_once(':').unwrap_or((id, ""));

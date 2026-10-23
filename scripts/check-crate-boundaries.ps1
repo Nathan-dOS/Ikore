@@ -12,8 +12,9 @@ try {
     $metadata = $metadataText | ConvertFrom-Json
     $contracts = @($metadata.packages | Where-Object { $_.name -eq 'hvc-contracts' -and $null -eq $_.source })
     $terminal = @($metadata.packages | Where-Object { $_.name -eq 'hvc-terminal' -and $null -eq $_.source })
-    if ($contracts.Count -ne 1 -or $terminal.Count -ne 1) {
-        throw 'The workspace must contain exactly one hvc-contracts and one hvc-terminal package.'
+    $voice = @($metadata.packages | Where-Object { $_.name -eq 'hvc-voice' -and $null -eq $_.source })
+    if ($contracts.Count -ne 1 -or $terminal.Count -ne 1 -or $voice.Count -ne 1) {
+        throw 'The workspace must contain exactly one hvc-contracts, one hvc-terminal and one hvc-voice package.'
     }
     foreach ($dependency in $contracts[0].dependencies) {
         if ($dependency.name -notin @('serde', 'serde_json')) {
@@ -29,7 +30,14 @@ try {
             throw "hvc-terminal has a forbidden dependency on $($dependency.name), including build/dev edges."
         }
     }
-    Write-Output 'Crate boundaries passed: contracts are independent; terminal has no dependency on the host or GPUI.'
+    # Voice is a leaf: no local crate at all, so the host can depend on it
+    # without the speech runtime ever reaching back into the app or GPUI.
+    foreach ($dependency in $voice[0].dependencies) {
+        if ($dependency.name -eq 'gpui' -or $dependency.path) {
+            throw "hvc-voice has a forbidden dependency on $($dependency.name), including build/dev edges."
+        }
+    }
+    Write-Output 'Crate boundaries passed: contracts are independent; terminal and voice have no dependency on the host or GPUI.'
 }
 finally {
     Pop-Location
