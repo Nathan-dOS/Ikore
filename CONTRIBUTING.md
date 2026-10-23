@@ -39,7 +39,7 @@ and Linux/macOS portability of the headless crates.
 | Platform | What works |
 |---|---|
 | **Windows 10/11 x64** | Everything: the desktop app (`hvc-app`), the UI (`hvc-ui`), the complete test suite, release builds and the smoke test. This is the CI reference platform. |
-| **Linux / macOS** | Only the headless crates (`hvc-contracts`, `hvc-terminal`, `hvc-core`, `hvc-editor`, `hvc-test-support`), natively with `-p` or through Docker. GPUI is configured with the Windows backend only, so `hvc-ui` and `hvc-app` do not build on these platforms. |
+| **Linux / macOS** | Only the headless crates (`hvc-contracts`, `hvc-terminal`, `hvc-voice`, `hvc-core`, `hvc-editor`, `hvc-test-support`), natively with `-p` or through Docker. Voice dictation reports itself unsupported there. GPUI is configured with the Windows backend only, so `hvc-ui` and `hvc-app` do not build on these platforms. |
 
 Some tests still fail on Linux because of platform-specific code (CLI process
 and terminal handling). They are tracked in dedicated issues. If you work on
@@ -194,6 +194,10 @@ Scopes already used in the history: `core`, `ui`, `brownfield`, `terminals`,
      repository, process isolation and quota. Neither depends on core, UI or
      test-support, including development dependencies. Run
      `scripts/check-crate-boundaries.ps1` to validate the graph.
+   - `hvc-voice` owns the speech runtime install, microphone capture, global
+     push-to-talk and earcons. It is a leaf: no local crate and no `gpui`,
+     including development dependencies. Its Win32 calls stay behind
+     `#[cfg(windows)]` with a `SAFETY` comment on every `unsafe` block.
    - `hvc-ui` calls the core through typed Rust APIs, with no JSON and no IPC.
    - `hvc-editor` owns the rope, selection, undo/redo, diff, Markdown and
      Tree-sitter support.

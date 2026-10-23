@@ -135,10 +135,20 @@ repository and no workspace; CLI runs are Companion-hardened and refuse the
 Custom backend. Every rule in its prompt has a host check, and a rejected answer
 gets one corrective call. Notes follow the developer's language, a narrow
 exception to ADR-013: they are working memos that no agent consumes. The Scribe
-never creates or changes tasks, features or pulsations. Voice capture is a later,
-spike-gated phase.
+never creates or changes tasks, features or pulsations.
 
-See the [notes module](../../crates/hvc-core/src/companion_notes/mod.rs) and the
+Voice dictation (phases 2–3) is local. Ollama has no speech-to-text, so HVC
+installs NVIDIA NeMo-Speech.cpp 0.2.0 (Apache-2.0) and the Nemotron 3.5 ASR
+Streaming 0.6B model (OpenMDW 1.1) itself, from Settings, each pinned by URL,
+size and SHA-256. There is one fixed model; users do not pick or add models. A
+global push-to-talk shortcut (default `Ctrl+Shift+F9`) records while held, with
+a start earcon; on release one CPU process transcribes the recording with
+automatic language detection and the text becomes a voice note in the open
+project, through the same capture path as typed text. Audio never outlives the
+transcription, and holds shorter than half a second are discarded. Windows only.
+
+See the [notes module](../../crates/hvc-core/src/companion_notes/mod.rs), the
+[voice service](../../crates/hvc-core/src/voice.rs) and the
 [threat model](../../quality/cli-threat-model.md).
 
 ## ADR-030: deterministic secret sanitization

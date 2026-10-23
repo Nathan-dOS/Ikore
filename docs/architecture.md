@@ -9,6 +9,7 @@ The terminal and shared-contract boundaries were separated in ADR-030 (2026-10-2
 | [hvc-app](../crates/hvc-app/src/main.rs) | Application startup and composition root |
 | [hvc-contracts](../crates/hvc-contracts/src/lib.rs) | Shared execution, stage, timeout, usage and redaction values |
 | [hvc-terminal](../crates/hvc-terminal/src/lib.rs) | CLI services, repository, adapters, process isolation, discovery and subscription quota |
+| [hvc-voice](../crates/hvc-voice/src/lib.rs) | Pinned speech runtime install, microphone capture, global push-to-talk and earcons |
 | [hvc-core](../crates/hvc-core/src/lib.rs) | Domain, migrations, workspace, provider routing, orchestration and terminal host integration |
 | [hvc-ui](../crates/hvc-ui/src/lib.rs) | Native views, review controls and design system |
 | [hvc-editor](../crates/hvc-editor/src/lib.rs) | Text model, selection, undo, diff and Markdown support |
@@ -22,7 +23,8 @@ core also using contracts directly. Terminal has no dependency on core, UI or
 the integration harness, including development dependencies. Shared values are
 reexported through their established core paths. Core service facades retain
 the existing constructors and adapt application requests to the CLI subsystem.
-The [boundary check](../scripts/check-crate-boundaries.ps1) validates the Cargo
+Core also depends on `hvc-voice`, a leaf with no local dependency at all. The
+[boundary check](../scripts/check-crate-boundaries.ps1) validates the Cargo
 graph, including optional features and build/development edges.
 
 Core supplies the terminal's host capabilities: authorized input preparation,
@@ -69,6 +71,14 @@ Scribe structures it; the Scribe has no tools or repository and changes only
 its own note through a host-validated contract. Notes never create tasks,
 features or pulsations. See [ADR-029](adr/README.md#adr-029-companion-notes)
 and [companion_notes](../crates/hvc-core/src/companion_notes/mod.rs).
+
+Voice dictation feeds the same capture path. The core
+[voice service](../crates/hvc-core/src/voice.rs) owns the settings, installs the
+pinned runtime and model on request and registers the global push-to-talk only
+once both are ready. A held shortcut records 16 kHz mono audio in memory; on
+release the WAV is written to a scratch file, transcribed by one short-lived
+`nemo-speech` process and deleted, and the text is captured as a `voice` note in
+the open project. No resident speech server runs.
 
 ## Storage and context
 
