@@ -1,0 +1,448 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-23",
+  "implementationBaseline": "325ddbdd392be36188fac1ffec549235ea340a1c",
+  "status": "completed",
+  "environment": {
+    "platform": "Windows x64",
+    "rust": "1.98.0",
+    "cargoTestThreadsPerBinary": 2,
+    "filesystemNote": "Tests/builds ran outside the filesystem sandbox so Windows atomic rename and hard-link operations work."
+  },
+  "workspaceTestInventory": "rust-boundaries-tests-2026-10-23.json",
+  "sourceFingerprint": "rust-boundaries-sources-2026-10-23.json",
+  "commandChecks": [
+    {
+      "name": "fmt",
+      "exitCode": 0,
+      "log": "target/extraction/final-fmt.log",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "startedAtUtc": "2026-10-23T15:37:31.3722129Z",
+      "seconds": 4.6196513
+    },
+    {
+      "name": "boundaries",
+      "exitCode": 0,
+      "log": "target/extraction/final-boundaries.log",
+      "command": [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/check-crate-boundaries.ps1"
+      ],
+      "startedAtUtc": "2026-10-23T15:37:36.000967Z",
+      "seconds": 0.4611886
+    },
+    {
+      "name": "core-tests",
+      "exitCode": 0,
+      "log": "target/extraction/final-core-tests.log",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-core",
+        "--lib",
+        "--",
+        "--test-threads=2"
+      ],
+      "startedAtUtc": "2026-10-23T15:37:36.4650504Z",
+      "seconds": 314.0462553
+    },
+    {
+      "name": "core-doc",
+      "exitCode": 0,
+      "log": "target/extraction/final-core-doc.log",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-core",
+        "--doc"
+      ],
+      "startedAtUtc": "2026-10-23T15:42:50.5155228Z",
+      "seconds": 49.6902878
+    },
+    {
+      "name": "clippy",
+      "exitCode": 0,
+      "log": "target/extraction/final-clippy.log",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "-j4",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "startedAtUtc": "2026-10-23T15:43:40.2103059Z",
+      "seconds": 26.2240596
+    },
+    {
+      "name": "app-features-off",
+      "exitCode": 0,
+      "log": "target/extraction/final-app-features-off.log",
+      "command": [
+        "cargo",
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-app",
+        "--no-default-features",
+        "--bins",
+        "-j4"
+      ],
+      "startedAtUtc": "2026-10-23T15:44:06.4367886Z",
+      "seconds": 28.6317377
+    },
+    {
+      "name": "release",
+      "exitCode": 101,
+      "log": "target/extraction/final-release.log",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--offline",
+        "--release",
+        "-p",
+        "hvc-app",
+        "-j4"
+      ],
+      "startedAtUtc": "2026-10-23T15:44:35.0723792Z",
+      "seconds": 444.2920905
+    },
+    {
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--offline",
+        "--release",
+        "-p",
+        "hvc-app",
+        "-j4",
+        "--target-dir",
+        "target/release-check"
+      ],
+      "log": "target/extraction/final-release-isolated.log",
+      "name": "release-isolated",
+      "seconds": 265.7838505,
+      "exitCode": 0
+    },
+    {
+      "command": [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/smoke-windows.ps1",
+        "-BinaryPath",
+        "target/release-check/release/hard-vibe-code.exe"
+      ],
+      "log": "target/extraction/final-smoke.log",
+      "name": "smoke",
+      "seconds": 2.1149402,
+      "exitCode": 0
+    }
+  ],
+  "requiredSuccessfulCheckNames": [
+    "fmt",
+    "boundaries",
+    "core-tests",
+    "core-doc",
+    "clippy",
+    "app-features-off",
+    "release-isolated",
+    "smoke"
+  ],
+  "remainingWorkspace": {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--workspace",
+      "--exclude",
+      "hvc-core",
+      "--",
+      "--test-threads=2"
+    ],
+    "result": {
+      "seconds": 731.660832,
+      "exitCode": 0
+    },
+    "log": "target/extraction/remaining-workspace-tests.log"
+  },
+  "collectorsDisabled": {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "-p",
+      "hvc-contracts",
+      "-p",
+      "hvc-terminal",
+      "--no-default-features",
+      "-j4",
+      "--",
+      "--test-threads=2"
+    ],
+    "result": {
+      "seconds": 65.5774543,
+      "exitCode": 0
+    },
+    "contractsPassed": 10,
+    "terminalPassed": 181,
+    "ignored": 1,
+    "log": "target/extraction/terminal-off-tests.log"
+  },
+  "movedTestInventory": {
+    "original": {
+      "terminal": 84,
+      "recovery": 12,
+      "catalog": 11,
+      "quota": 16
+    },
+    "destinations": {
+      "terminal": 116,
+      "coreHost": 5,
+      "integration": 2
+    },
+    "uniquePreserved": 123,
+    "missing": [],
+    "duplicates": []
+  },
+  "newTestFunctions": {
+    "crates/hvc-contracts/tests/contracts.rs": [
+      "stage_vocabulary_preserves_database_names_roles_and_wire_values",
+      "historical_stage_alias_and_unknown_fallback_do_not_expand_the_wire_contract",
+      "stage_order_and_checkpoint_boundaries_are_unchanged",
+      "every_role_keeps_its_persisted_identifier",
+      "execution_targets_keep_distinct_lifecycle_and_serialization_keys",
+      "response_formats_preserve_tagged_schema_content",
+      "unit_dispatch_preserves_frozen_profile_attribution_fields",
+      "role_timeout_budgets_keep_their_existing_absolute_limits",
+      "cli_budget_clamps_requested_initial_time_without_shortening_absolute_deadline",
+      "usage_contracts_preserve_unknown_counters_and_transport_values"
+    ],
+    "crates/hvc-core/src/terminals_host_tests.rs": [
+      "terminal_host_rejects_a_forged_proof_without_consuming_its_getters",
+      "terminal_host_rejects_a_proof_for_changed_prompts",
+      "terminal_host_returns_the_validated_concrete_proof_instead_of_candidate_getters",
+      "terminal_host_preserves_only_the_authorized_occurrence_and_redacts_unprepared_input",
+      "native_terminal_fixture_schema_matches_migrated_host_columns",
+      "terminal_host_reports_production_redaction_categories"
+    ],
+    "crates/hvc-terminal/src/quota/meter_tests.rs": [
+      "collectors_disabled_build_uses_local_sources_without_credentials_or_disclosure"
+    ],
+    "crates/hvc-core/src/chat_service.rs": [
+      "fallback_runtime_failure_finalizes_pending_turn_and_releases_waiters"
+    ],
+    "crates/hvc-test-support/tests/terminal_host_integration.rs": [
+      "stage_dispatch_keeps_preflight_blockers_when_the_recheck_still_requires_login_core_preflight"
+    ]
+  },
+  "newFunctionCount": 19,
+  "newDoctests": {
+    "path": "crates/hvc-core/src/app_core.rs",
+    "count": 2,
+    "cases": [
+      "retained guard compiles",
+      "discarded guard fails under deny(unused_must_use)"
+    ]
+  },
+  "windowsSmoke": {
+    "binary": "target/release-check/release/hard-vibe-code.exe",
+    "database": "target/smoke-data/200215f5768f452abe4721eadf26dc8a/hard-vibe-code.db",
+    "windowHandle": 723826,
+    "gracefulShutdown": true,
+    "exitCode": 0,
+    "binarySha256": "04a0a9272184bea67fb344cdfdacf4ffb095c2bee2cdfdac635bf8dd086952ab",
+    "binaryBytes": 31269376
+  },
+  "defaultReleasePath": {
+    "status": "blocked_by_running_existing_executable",
+    "attemptExitCode": 101,
+    "validatedAlternative": "target/release-check/release/hard-vibe-code.exe"
+  },
+  "dependencyComparison": {
+    "externalPackageVersionsAndChecksumsUnchanged": true,
+    "externalPackages": 776,
+    "addedLocalPackages": [
+      "hvc-contracts",
+      "hvc-terminal"
+    ]
+  },
+  "advisoryComparison": {
+    "database": {
+      "advisory-count": 1351,
+      "last-commit": "84d943a6deeb8cc6c6f632531aaf4f1c62275239",
+      "last-updated": "2026-10-23T16:42:16+02:00"
+    },
+    "baseline": [
+      {
+        "id": "RUSTSEC-2026-0285",
+        "package": "rustls",
+        "version": "0.23.43"
+      },
+      {
+        "id": "RUSTSEC-2026-0338",
+        "package": "quinn-proto",
+        "version": "0.11.17"
+      },
+      {
+        "id": "RUSTSEC-2026-0340",
+        "package": "quinn-proto",
+        "version": "0.11.17"
+      },
+      {
+        "id": "RUSTSEC-2026-0343",
+        "package": "quinn-proto",
+        "version": "0.11.17"
+      },
+      {
+        "id": "RUSTSEC-2026-0346",
+        "package": "rustls",
+        "version": "0.23.43"
+      },
+      {
+        "id": "RUSTSEC-2026-0348",
+        "package": "rustls",
+        "version": "0.23.43"
+      },
+      {
+        "id": "RUSTSEC-2026-0349",
+        "package": "rustls",
+        "version": "0.23.43"
+      },
+      {
+        "id": "RUSTSEC-2026-0381",
+        "package": "webpki-roots",
+        "version": "1.0.9"
+      },
+      {
+        "id": "RUSTSEC-2026-0382",
+        "package": "rustls-webpki",
+        "version": "0.103.15"
+      }
+    ],
+    "current": [
+      {
+        "id": "RUSTSEC-2026-0285",
+        "package": "rustls",
+        "version": "0.23.43"
+      },
+      {
+        "id": "RUSTSEC-2026-0338",
+        "package": "quinn-proto",
+        "version": "0.11.17"
+      },
+      {
+        "id": "RUSTSEC-2026-0340",
+        "package": "quinn-proto",
+        "version": "0.11.17"
+      },
+      {
+        "id": "RUSTSEC-2026-0343",
+        "package": "quinn-proto",
+        "version": "0.11.17"
+      },
+      {
+        "id": "RUSTSEC-2026-0346",
+        "package": "rustls",
+        "version": "0.23.43"
+      },
+      {
+        "id": "RUSTSEC-2026-0348",
+        "package": "rustls",
+        "version": "0.23.43"
+      },
+      {
+        "id": "RUSTSEC-2026-0349",
+        "package": "rustls",
+        "version": "0.23.43"
+      },
+      {
+        "id": "RUSTSEC-2026-0381",
+        "package": "webpki-roots",
+        "version": "1.0.9"
+      },
+      {
+        "id": "RUSTSEC-2026-0382",
+        "package": "rustls-webpki",
+        "version": "0.103.15"
+      }
+    ],
+    "unchanged": true,
+    "currentExitCode": 1,
+    "baselineExitCode": 1
+  },
+  "supplyChain": {
+    "auditedAt": "2026-10-23T14:57:50.5002059Z",
+    "target": "x86_64-pc-windows-msvc",
+    "technicalPassed": true,
+    "legalBlockers": [
+      {
+        "id": "zed-55470",
+        "title": "GPL transitive dependencies reported upstream for GPUI",
+        "url": "https://github.com/zed-industries/zed/issues/55470",
+        "status": "open",
+        "verifiedAt": "2026-08-26",
+        "disposition": "distribution_blocking",
+        "scope": "binary",
+        "note": "The Windows graph pinned to gpui 0.2.2 does not contain sum_tree/ztracing/zlog, but the approved policy keeps binary distribution blocked while the upstream issue stays open or lacks an explicit legal decision. Source publication is governed by publicationScopes.source."
+      }
+    ],
+    "distributionAllowed": false
+  },
+  "composeConfiguration": {
+    "exitCode": 0
+  },
+  "structure": {
+    "containsTauri": false,
+    "treeExitCode": 0,
+    "passed": true,
+    "legacyPathsPresent": []
+  },
+  "linuxContainerExecution": {
+    "verified": false,
+    "reason": "Docker Linux engine pipe unavailable; stopped service could not be started with available OS privileges."
+  },
+  "stage7Certification": {
+    "certified": false,
+    "singleGateInvocationExecuted": false,
+    "advisoryAuditExitCode": 1,
+    "distributionAllowed": false,
+    "requiredTechnicalChecksPassedWithIsolatedRelease": true
+  },
+  "rawArtifacts": "target/extraction and target/rust-guide-benchmarks are local ignored evidence, not shipped files.",
+  "benchmark": "rust-boundaries-benchmark-2026-10-23.json",
+  "sourceConsistencyBeforeMeasurements": {
+    "checkedFiles": 891,
+    "changed": [],
+    "missing": [],
+    "added": [],
+    "sameAsValidatedSnapshot": true
+  }
+}

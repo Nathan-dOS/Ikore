@@ -1919,8 +1919,8 @@ mod tests {
     /// file among its own `inputRefs` (baseline inputs still valid for a unit
     /// with no predecessor - see `planner.rs`). A model that then cited that
     /// same handle in `evidence.inputRefs` was rejected with SC-004
-    /// reference_conflict even though it was only repeating what its own plan
-    /// told it, forcing an avoidable code_implementer -> code_repairer round
+    /// `reference_conflict` even though it was only repeating what its own plan
+    /// told it, forcing an avoidable `code_implementer` -> `code_repairer` round
     /// trip. Only a handle never assigned to the unit at all should reject.
     #[test]
     fn evidence_may_cite_a_units_own_assigned_new_file() {
@@ -2054,7 +2054,7 @@ mod tests {
     }
 
     /// "Haiku CLI teste 1" (2026-09-26): the Specification approved a load-time
-    /// criterion as not_applicable, Test covered it so, and the host still
+    /// criterion as `not_applicable`, Test covered it so, and the host still
     /// demanded an evidence item; the Retry then invented a load-time test.
     #[test]
     fn an_approved_not_applicable_coverage_needs_no_evidence_item() {

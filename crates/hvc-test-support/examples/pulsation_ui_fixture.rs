@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only harnesses fail immediately when fixture setup is invalid"
+)]
 //! Isolated fixture provider for manual M5 GPUI smoke. No worker; the GUI owns the supervisor.
 //! Start with a NEW directory under target/. Pass --resume only for a marked fixture whose
 //! 45-minute server expired. Close GUI then create STOP to terminate the fixture.
@@ -5,7 +9,9 @@ use hvc_core::{
     AppCoreDependencies,
     llm::{LlmEventEnvelope, LlmEventSink},
     orchestration::PreparationSettings,
-    persistence_service::*,
+    persistence_service::{
+        CreatePulsationRequest, EnsureProjectForWorkspaceRequest, PersistenceService,
+    },
     workspace_service::bootstrap_greenfield_workspace,
 };
 use hvc_test_support::{

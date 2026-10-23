@@ -3,7 +3,12 @@ use crate::{
     text_input::{NativeTextInput, Submit},
 };
 use gpui::{AppContext, Context, Entity, Subscription};
-use hvc_core::feature_forge::*;
+use hvc_core::feature_forge::{
+    AcceptanceCriterion, CreateFeatureRequest, CreatePulsationFromTasksRequest, CreateTasksRequest,
+    DependencyOrigin, Feature, FeatureEvaluation, FeatureForgeService, FeatureState, FeatureTurn,
+    ForgeNavigation, ForgeSnapshot, ForgeViewSnapshot, TaskDraft, TaskKind, TaskSelection,
+    TaskService, TurnKind, Wave, WorkTask, failure_actions,
+};
 use std::collections::{HashMap, HashSet};
 
 /// Sections of the merged Forge view (Tasks/Backlog + Feature Forge, see the UI flow plan Part 1.1).
@@ -1449,6 +1454,7 @@ impl AppModel {
 mod tests {
     use super::*;
     use gpui::{Focusable, Modifiers, TestAppContext, VisualTestContext, px, size};
+    use hvc_core::feature_forge::{TurnFailure, TurnFailureKind};
     use hvc_core::persistence_service::{Pulsation, PulsationStage, PulsationStatus};
 
     fn feature() -> Feature {

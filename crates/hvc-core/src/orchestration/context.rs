@@ -92,7 +92,7 @@ pub struct SourceRevision {
 }
 
 /// Captured bytes, not a path that will be read again later. Construction is not
-/// permission to read a file: production callers must use RepositoryContext.
+/// permission to read a file: production callers must use `RepositoryContext`.
 #[derive(Clone)]
 pub struct SourceSnapshot {
     revision: SourceRevision,
@@ -626,7 +626,7 @@ pub type CodeContextFuture<'a> =
     Pin<Box<dyn Future<Output = Result<CodeContextFacts, ContractError>> + Send + 'a>>;
 
 /// Collection is independent of pulsations and can serve a first request without
-/// PreSpec or a vault. RoutedCodeContextService adds structural extraction behind this contract.
+/// `PreSpec` or a vault. `RoutedCodeContextService` adds structural extraction behind this contract.
 pub trait CodeContextService: Send + Sync {
     fn collect<'a>(
         &'a self,

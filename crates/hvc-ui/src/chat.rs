@@ -653,7 +653,7 @@ impl ChatModel {
 
     /// The panel always shows the open conversation's real target: before,
     /// it reset to API/Codex on every visit while the conversation kept
-    /// sending to its own stored backend (ToDoListWebView, 2026-09-22).
+    /// sending to its own stored backend (`ToDoListWebView`, 2026-09-22).
     pub(crate) fn sync_panel_with_active_conversation(&mut self) {
         let Some(conversation) = self.active_conversation_record().cloned() else {
             return;
@@ -1017,7 +1017,7 @@ mod tests {
         assert_eq!(model.rendered_messages().1, 60 - CHAT_RENDER_WINDOW);
     }
 
-    /// ToDoListWebView, 2026-09-22: the panel showed "Codex" after every visit
+    /// `ToDoListWebView`, 2026-09-22: the panel showed "Codex" after every visit
     /// while the open conversation kept sending to Claude. The panel now shows
     /// the open conversation's target, and the remembered project target
     /// when none is open.

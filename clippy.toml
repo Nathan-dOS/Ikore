@@ -1,0 +1,2 @@
+# Test fixtures deliberately fail immediately when their setup is invalid.
+allow-unwrap-in-tests = true

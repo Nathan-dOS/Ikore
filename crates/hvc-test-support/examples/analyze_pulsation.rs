@@ -1,7 +1,7 @@
 //! Post-run analysis of a pulsation recorded in the execution database.
 //!
 //! Usage:
-//!   analyze_pulsation [--db PATH] [--id ID | --latest | --latest-done]
+//!   `analyze_pulsation` [--db PATH] [--id ID | --latest | --latest-done]
 //!                     [--json OUTPUT.json] [--html OUTPUT.html]
 //!
 //! With no selector it analyzes the most recent pulsation that reached `done`.

@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
+)]
 //! Real serial worker + provider parser + SQLite + host publisher (no cfg(test) fallback).
 use hvc_core::{
     AppCoreDependencies,

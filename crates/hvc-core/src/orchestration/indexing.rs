@@ -1,5 +1,11 @@
 //! Deterministic, coalesced note deltas. All network work uses the supervisor background slot.
-use super::*;
+use super::{
+    AgentRuntimeConfig, CancellationToken, Connection, Duration, Job, JobStatus, OptionalExtension,
+    Path, PathBuf, PersistenceService, PersistenceServiceError, ReindexWorkspaceEmbeddingsRequest,
+    ReindexWorkspaceEmbeddingsResponse, SETTING_RUNTIME_EMBEDDING_ENABLED,
+    SETTING_RUNTIME_EMBEDDING_MODEL, Uuid, coordination, fs, params,
+    strip_frontmatter_for_embedding,
+};
 use crate::{
     orchestration::{ContentSha256, IndexingEvent, JobClass},
     workspace_service,

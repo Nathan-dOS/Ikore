@@ -1,6 +1,11 @@
 use super::*;
 use crate::agent_runtime::GeneratedArtifact;
+use crate::persistence_service::AgentRuntimeConfig;
+use crate::persistence_service::CancelPulsationJobsRequest;
+use crate::persistence_service::CreatePulsationRequest;
+use crate::persistence_service::EnsureProjectForWorkspaceRequest;
 use serde_json::json;
+use std::fs;
 
 pub(crate) struct Fixture {
     _data: tempfile::TempDir,

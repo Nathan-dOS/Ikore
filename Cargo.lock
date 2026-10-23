@@ -2688,6 +2688,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hvc-contracts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hvc-core"
 version = "0.1.0"
 dependencies = [
@@ -2696,6 +2704,8 @@ dependencies = [
  "fs2",
  "futures",
  "globset",
+ "hvc-contracts",
+ "hvc-terminal",
  "icu_normalizer",
  "ignore",
  "jsonschema",
@@ -2719,8 +2729,6 @@ dependencies = [
  "tree-sitter-typescript",
  "uuid",
  "walkdir",
- "windows-sys 0.61.2",
- "zeroize",
 ]
 
 [[package]]
@@ -2733,6 +2741,30 @@ dependencies = [
  "thiserror 2.0.20",
  "tree-sitter",
  "tree-sitter-md",
+]
+
+[[package]]
+name = "hvc-terminal"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "hvc-contracts",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.23",
+ "uuid",
+ "walkdir",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

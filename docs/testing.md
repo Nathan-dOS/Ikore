@@ -10,7 +10,9 @@ two test threads per binary:
 
 | Command | Selection |
 |---|---|
-| `cargo test-core` | Core |
+| `cargo test-contracts` | Shared contracts and serialization compatibility |
+| `cargo test-terminal` | Shared contracts and native terminal subsystem |
+| `cargo test-core` | Shared contracts, terminal and core host integration |
 | `cargo test-ui` | UI |
 | `cargo test-editor` | Editor and consuming UI |
 | `cargo test-support` | Harnesses, integration tests and consuming UI |
@@ -68,15 +70,25 @@ The gate includes structure, formatting, strict Clippy, workspace tests,
 release build, Windows smoke and dependency audits. Skipping an audit does not
 certify a complete passing gate.
 
-The [2026-10-17 integration report](../quality/main-merge-validation-2026-10-17.md)
-records 1,228 passing tests and ten existing ignored tests. The complete gate
-failed on seven RustSec findings; distribution policy also remains blocking.
-Those are dated results, not validation of later changes.
+The [2026-10-23 boundary validation](../quality/rust-boundaries-validation-2026-10-23.md)
+records 1,421 passing tests, zero failures and 13 ignored tests across all 45
+default workspace targets. Execution used three disjoint selections: the
+workspace excluding core, core library tests and core doctests. The isolated
+collectors-disabled selection additionally passed ten contract tests and 181
+terminal tests, with one ignored test.
+
+Strict workspace/all-target Clippy, formatting, crate boundaries and the
+public app build without collectors passed. Nine RustSec findings remain
+identical to the original lockfile under the same advisory database; binary
+distribution policy remains blocking. See the dated report for release/smoke,
+build measurements and the unverified local Docker execution. The
+[2026-10-17 integration report](../quality/main-merge-validation-2026-10-17.md)
+retains the earlier baseline and its then-current advisory count.
 
 ## Linux and Docker
 
 The [Docker Compose services](../docker-compose.yml) run headless
-core/editor/test-support tools. They are one-shot and behind profiles, so
+contracts/terminal/core/editor/test-support tools. They are one-shot and behind profiles, so
 `docker compose up` starts nothing:
 
 ```powershell
@@ -115,3 +127,22 @@ cargo run --locked -p hvc-core --example secret_sanitization_benchmark
 The probe reports its build profile, sizes and timings. Whole-process peak memory
 is measured separately; scanner timing is not a claim about provider latency or
 the complete desktop application's memory.
+
+## Terminal extraction and feature boundaries
+
+Run `scripts/check-crate-boundaries.ps1` to inspect all Cargo edges. Pure
+terminal tests do not depend on core or test-support. Integration tests retain
+the real host policies and migrations.
+
+The integration harness enables credential collectors. Check the disabled
+production graph independently of development targets:
+
+```powershell
+cargo check --locked -p hvc-app --no-default-features --bins
+cargo tree -p hvc-app --no-default-features -e normal,build,features
+cargo test --locked -p hvc-terminal --lib --no-default-features -- --test-threads=2
+```
+
+Check the terminal-to-zeroize optional edge, not global absence of zeroize:
+other libraries can use zeroize independently. The full workspace tests exercise
+the default collector configuration. See [ADR-030](adr/030-terminal-boundary.md).

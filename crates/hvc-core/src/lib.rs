@@ -24,6 +24,7 @@ pub mod sanitization;
 pub mod secret_redactor;
 pub mod stage_briefs;
 pub mod terminals;
+mod terminals_host;
 pub mod usage;
 pub mod workspace_service;
 

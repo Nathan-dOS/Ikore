@@ -11,6 +11,7 @@ historical check applies to the source and environment identified in that report
 | Architecture and design | [Overview](../docs/architecture.md), [design summaries](../docs/adr/README.md) |
 | Test commands and isolation | [Testing guide](../docs/testing.md) |
 | Latest integrated baseline | [2026-10-17 merge](main-merge-validation-2026-10-17.md) |
+| Contracts and terminal boundaries | [2026-10-23 implementation and validation](rust-boundaries-validation-2026-10-23.md), [test inventory](rust-boundaries-tests-2026-10-23.json) |
 | Test workflow | [2026-10-15 validation](test-workflow-validation-2026-10-15.md) |
 | CLI process boundary | [Threat model](cli-threat-model.md) |
 | Synchronization and human recovery | [Synchronization report](cerebro-sync-validation-2026-09-09.md) |

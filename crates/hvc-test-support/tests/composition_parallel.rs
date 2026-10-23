@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
+)]
 //! Pipeline v4 bounded parallel engine (ADR-022, M6): independent units of
 //! a stage run together up to the frozen cap, the round settles before any
 //! decision, outcomes apply in plan order, a failed sibling parks the

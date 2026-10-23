@@ -113,7 +113,7 @@ mod embedded {
 
 impl PersistenceService {
     /// Starts the explicitly developer-enabled, twenty-run CLI observation
-    /// experiment for one project. TerminalService consumes its slots only for
+    /// experiment for one project. `TerminalService` consumes its slots only for
     /// automatic Pulsation CLI work.
     pub fn start_cli_observation_trial(
         &self,
@@ -534,53 +534,7 @@ pub struct SaveUiSessionResponse {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum PulsationStage {
-    #[serde(rename = "Intake")]
-    Intake,
-    #[serde(rename = "SPECIFICATION")]
-    Specification,
-    #[serde(rename = "Contract")]
-    Contract,
-    #[serde(rename = "Code")]
-    Code,
-    #[serde(rename = "Test")]
-    Test,
-    #[serde(rename = "Integrator")]
-    Integrator,
-}
-
-impl PulsationStage {
-    pub(crate) fn as_db_value(self) -> &'static str {
-        crate::orchestration::catalog::STAGES
-            .iter()
-            .find(|(stage, _, _)| *stage == self)
-            .expect("six stages")
-            .1
-    }
-
-    fn from_db_value(raw: &str) -> Option<Self> {
-        crate::orchestration::catalog::parse_stage(raw)
-    }
-
-    pub(crate) fn next(self) -> Option<Self> {
-        match self {
-            Self::Intake => Some(Self::Specification),
-            Self::Specification => Some(Self::Contract),
-            Self::Contract => Some(Self::Code),
-            Self::Code => Some(Self::Test),
-            Self::Test => Some(Self::Integrator),
-            Self::Integrator => None,
-        }
-    }
-
-    pub(crate) fn requires_checkpoint(self) -> bool {
-        matches!(
-            self,
-            Self::Specification | Self::Contract | Self::Test | Self::Integrator
-        )
-    }
-}
+pub use hvc_contracts::stages::PulsationStage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -4508,7 +4462,7 @@ impl PersistenceService {
         self.reconcile_publications()
     }
 
-    /// Startup self-heal for the `elect_next_backend` state_version desync:
+    /// Startup self-heal for the `elect_next_backend` `state_version` desync:
     /// a job left `pending` by the CLI backend ladder could carry a
     /// `state_version` older than its pulsation's, fencing it out of
     /// `claim_next_pending_job` forever. Finds every such job, realigns its
@@ -8218,7 +8172,7 @@ mod tests {
     }
 
     /// Regression for the incident where a pulsation stayed stuck in
-    /// `Planning` forever after the OpenCode CLI failed and Codex was
+    /// `Planning` forever after the `OpenCode` CLI failed and Codex was
     /// elected in its place: `elect_next_backend` bumped the pulsation's
     /// `state_version` via `transition_pulsation` but the job UPDATE right
     /// after it never carried the new version along, fencing the job out of
@@ -8610,7 +8564,7 @@ mod tests {
 
     /// The ladder writes a CLI backend into the same row the API fallback uses.
     /// Choosing "use the API" afterwards has to clear it, or the row claims to
-    /// be api_direct while still naming a backend and the write is rejected.
+    /// be `api_direct` while still naming a backend and the write is rejected.
     #[test]
     fn authorizing_the_api_clears_a_backend_the_ladder_had_elected() {
         let (root, service) = prepare_service();

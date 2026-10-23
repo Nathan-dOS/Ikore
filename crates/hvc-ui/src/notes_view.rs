@@ -11,7 +11,9 @@ use crate::{
     widgets::{ButtonVariant, btn, btn_confirm, chip, empty_state, icon, info_tip},
 };
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
-use hvc_core::companion_notes::*;
+use hvc_core::companion_notes::{
+    CompanionNote, LIST_LIMIT, NoteSource, NoteStatus, NoteTag, NoteTurnKind, explain_note_failure,
+};
 use hvc_core::feature_forge::TurnFailureKind;
 use hvc_editor::parse_markdown;
 

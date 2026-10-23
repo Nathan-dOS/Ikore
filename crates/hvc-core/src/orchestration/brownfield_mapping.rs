@@ -5,7 +5,10 @@ use std::time::Instant;
 
 use rusqlite::TransactionBehavior;
 
-use super::*;
+use super::{
+    CancellationToken, Connection, Deserialize, Job, OptionalExtension, PersistenceService,
+    PersistenceServiceError, Serialize, brownfield_consent_key, coordination, params,
+};
 use crate::orchestration::{
     CollectionBudget, ContentSha256, ReferenceRelation, ReferenceResolution, RelativeSourcePath,
     SourceLanguage, SourceSnapshot, SourceStructuralFacts, StructuralParseStatus,
@@ -766,6 +769,8 @@ impl PersistenceService {
 
 #[cfg(test)]
 mod tests {
+    use uuid::Uuid;
+
     use super::*;
     use crate::persistence_service::CreateProjectRequest;
     use std::fs;

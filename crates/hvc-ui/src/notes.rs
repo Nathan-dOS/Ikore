@@ -13,7 +13,10 @@ use crate::{
     text_input::{NativeTextInput, Submit},
 };
 use gpui::{AppContext, Context, Entity, Subscription};
-use hvc_core::companion_notes::*;
+use hvc_core::companion_notes::{
+    CaptureNoteRequest, CompanionNote, CompanionNotesService, NoteSource, NoteStatus, NoteTag,
+    NoteTurn, NotesSnapshot,
+};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub(crate) struct NotesUi {

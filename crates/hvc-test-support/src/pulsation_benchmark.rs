@@ -7,8 +7,11 @@ use crate::{
 use hvc_core::{
     AppCoreDependencies,
     llm::{LlmEventEnvelope, LlmEventSink},
-    orchestration::*,
-    persistence_service::*,
+    orchestration::{ContentSha256, PreparationSettings},
+    persistence_service::{
+        ApplyHitlDecisionRequest, CreatePulsationRequest, EnsureProjectForWorkspaceRequest,
+        HitlDecision, PersistenceService,
+    },
 };
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};

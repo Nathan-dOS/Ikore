@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
+)]
 //! ADR-022 clarification loop preventive HITL gate (P5/A5.2): a composed
 //! batch that skipped the Forge dispatch gate (P1/A1.3) - greenfield
 //! exemption, no confirmed path - parks at Intake instead of letting

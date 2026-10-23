@@ -15,7 +15,7 @@ pub enum LegacyPulseLayout {
     MultipleActive,
 }
 
-/// V9 data only: no AppCore, worker, real profile or provider is started.
+/// V9 data only: no `AppCore`, worker, real profile or provider is started.
 /// The same file path exists in two repositories without a vault or AST parser.
 pub struct PulsationFixture {
     environment: IsolatedTestEnvironment,

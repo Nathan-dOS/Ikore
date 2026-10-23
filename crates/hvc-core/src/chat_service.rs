@@ -1085,39 +1085,29 @@ impl ChatService {
             user_message_id,
             assistant_message_id: assistant_message_id.clone(),
         };
-        let service = Arc::clone(self);
-        let root = workspace_root.to_path_buf();
-        let turn = async move {
-            service
-                .run_turn(TurnContext {
-                    conversation,
-                    connection: provider_connection,
-                    execution_id,
-                    generation_id,
-                    assistant_message_id,
-                    workspace_root: root,
-                    cancellation,
-                })
-                .await;
+        let context = TurnContext {
+            conversation,
+            connection: provider_connection,
+            execution_id,
+            generation_id,
+            assistant_message_id,
+            workspace_root: workspace_root.to_path_buf(),
+            cancellation,
         };
+        let service = Arc::clone(self);
         if let Some(handle) = &self.runtime_handle {
-            handle.spawn(turn);
+            handle.spawn(async move { service.run_turn(context).await });
         } else {
+            let background_context = context.clone();
             std::thread::Builder::new()
                 .name("hvc-chat-turn".into())
                 .spawn(move || {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
-                        .build()
-                        .expect("temporary chat runtime must start");
-                    runtime.block_on(turn);
+                        .build();
+                    service.run_turn_with_temporary_runtime(background_context, runtime);
                 })
-                .map_err(|error| {
-                    ChatCommandError::new(
-                        "runtime_unavailable",
-                        format!("Failed to start the chat turn: {error}"),
-                    )
-                })?;
+                .map_err(|error| self.fail_turn_start(&context, error))?;
         }
         Ok(response)
     }
@@ -1704,6 +1694,33 @@ struct CompanionControlCall {
 }
 
 impl ChatService {
+    fn run_turn_with_temporary_runtime(
+        &self,
+        context: TurnContext,
+        runtime: std::io::Result<tokio::runtime::Runtime>,
+    ) {
+        match runtime {
+            Ok(runtime) => runtime.block_on(self.run_turn(context)),
+            Err(error) => {
+                self.fail_turn_start(&context, error);
+            }
+        }
+    }
+
+    fn fail_turn_start(&self, context: &TurnContext, error: std::io::Error) -> ChatCommandError {
+        let error = ChatCommandError::new(
+            "runtime_unavailable",
+            format!("Failed to start the chat turn: {error}"),
+        );
+        let outcome = if context.cancellation.is_cancelled() {
+            TurnOutcome::Cancelled
+        } else {
+            TurnOutcome::Failed(error.clone())
+        };
+        self.finish_turn(context, Err(outcome));
+        error
+    }
+
     /// Closes the calls of a turn that ended with a round still in flight.
     fn close_running_model_calls(
         &self,
@@ -1751,6 +1768,10 @@ impl ChatService {
                 }
             }
         };
+        self.finish_turn(&context, result);
+    }
+
+    fn finish_turn(&self, context: &TurnContext, result: Result<(), TurnOutcome>) {
         // A timeout or cancellation drops the round in flight; its call row
         // stayed `running` forever (2026-09-26).
         match &result {
@@ -1769,7 +1790,7 @@ impl ChatService {
                     self.set_message_status(&context.assistant_message_id, "completed", None, None);
                 let _ = self.emit_turn_event(
                     ChatEventKind::TurnCompleted,
-                    &context,
+                    context,
                     ChatEventDetail::Empty {},
                 );
             }
@@ -1782,7 +1803,7 @@ impl ChatService {
                 );
                 let _ = self.emit_turn_event(
                     ChatEventKind::TurnCancelled,
-                    &context,
+                    context,
                     ChatEventDetail::Empty {},
                 );
             }
@@ -1795,7 +1816,7 @@ impl ChatService {
                 );
                 let _ = self.emit_turn_event(
                     ChatEventKind::TurnFailed,
-                    &context,
+                    context,
                     ChatEventDetail::Failed {
                         error: ChatEventError {
                             code: error.code,
@@ -5511,6 +5532,140 @@ mod tests {
             .unwrap();
         assert_eq!(message_count, 0);
         assert_eq!(title, "Nova conversa");
+    }
+
+    #[test]
+    fn fallback_runtime_failure_finalizes_pending_turn_and_releases_waiters() {
+        use futures::FutureExt;
+
+        #[derive(Default)]
+        struct Events(Mutex<Vec<ChatEventEnvelope>>);
+        impl ChatEventSink for Events {
+            fn emit(&self, envelope: &ChatEventEnvelope) {
+                self.0
+                    .lock()
+                    .expect("fixture events lock")
+                    .push(envelope.clone());
+            }
+        }
+
+        let (_temp, workspace, prepared_service) = prepare_chat();
+        let events = Arc::new(Events::default());
+        let service = ChatService::new(
+            &prepared_service.db_path,
+            Arc::new(TestCredentials),
+            events.clone(),
+        );
+        let conversation = service
+            .create_conversation(CreateChatConversationRequest {
+                project_id: "project-a".into(),
+                target: ChatExecutionTargetRequest::Api {
+                    connection_id: "connection-a".into(),
+                },
+            })
+            .expect("fixture conversation")
+            .conversation;
+
+        for (ordinal, cancelled) in [false, true].into_iter().enumerate() {
+            let context = TurnContext {
+                conversation: service
+                    .get_conversation_record(&conversation.id)
+                    .expect("fixture target"),
+                connection: None,
+                execution_id: Uuid::new_v4().to_string(),
+                generation_id: Uuid::new_v4().to_string(),
+                assistant_message_id: Uuid::new_v4().to_string(),
+                workspace_root: workspace.clone(),
+                cancellation: CancellationToken::new(),
+            };
+            service.connection().expect("fixture database").execute(
+                "INSERT INTO chat_messages(id,conversation_id,ordinal,role,content,status,execution_id,generation_id,created_at,updated_at)
+                 VALUES(?1,?2,?3,'assistant','','pending',?4,?5,?6,?6)",
+                params![context.assistant_message_id,conversation.id,ordinal as i64,context.execution_id,context.generation_id,now_iso()],
+            ).expect("fixture pending message");
+            service
+                .runtime
+                .turns
+                .lock()
+                .expect("fixture turns lock")
+                .insert(
+                    context.execution_id.clone(),
+                    ActiveTurn {
+                        conversation_id: conversation.id.clone(),
+                        cancellation: context.cancellation.clone(),
+                    },
+                );
+            service
+                .runtime
+                .sequences
+                .lock()
+                .expect("fixture sequences lock")
+                .insert(context.generation_id.clone(), 0);
+            let idle = service.runtime.turns_idle.notified();
+            let mut idle = std::pin::pin!(idle);
+            assert!(idle.as_mut().now_or_never().is_none());
+            if cancelled {
+                context.cancellation.cancel();
+            }
+
+            service.run_turn_with_temporary_runtime(
+                context.clone(),
+                Err(std::io::Error::other("fixture runtime capacity exhausted")),
+            );
+
+            let (status, code, sequence): (String, String, i64) = service
+                .connection()
+                .expect("fixture database")
+                .query_row(
+                    "SELECT status,error_code,last_sequence FROM chat_messages WHERE id=?1",
+                    [&context.assistant_message_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("persisted terminal status");
+            assert_eq!(status, if cancelled { "cancelled" } else { "failed" });
+            assert_eq!(
+                code,
+                if cancelled {
+                    "cancelled"
+                } else {
+                    "runtime_unavailable"
+                }
+            );
+            assert_eq!(sequence, 1);
+            assert!(
+                service
+                    .runtime
+                    .turns
+                    .lock()
+                    .expect("fixture turns lock")
+                    .is_empty()
+            );
+            assert!(
+                !service
+                    .runtime
+                    .sequences
+                    .lock()
+                    .expect("fixture sequences lock")
+                    .contains_key(&context.generation_id)
+            );
+            assert!(idle.as_mut().now_or_never().is_some());
+            let emitted = std::mem::take(&mut *events.0.lock().expect("fixture events lock"));
+            assert_eq!(emitted.len(), 1);
+            assert_eq!(emitted[0].execution_id, context.execution_id);
+            assert_eq!(
+                emitted[0].kind,
+                if cancelled {
+                    ChatEventKind::TurnCancelled
+                } else {
+                    ChatEventKind::TurnFailed
+                }
+            );
+            if !cancelled {
+                assert!(
+                    matches!(&emitted[0].detail, ChatEventDetail::Failed { error } if error.code == "runtime_unavailable")
+                );
+            }
+        }
     }
 
     #[test]

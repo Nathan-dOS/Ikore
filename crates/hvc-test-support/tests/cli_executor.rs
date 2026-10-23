@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
+)]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

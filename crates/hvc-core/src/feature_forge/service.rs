@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    CreateFeatureRequest, CreatePulsationFromTasksRequest, CreateTasksRequest, DependencyOrigin,
+    DispatchGateStatus, Feature, FeatureAgentRuntime, FeatureBrief, FeatureDependency,
+    FeatureEvaluation, FeatureState, FeatureTurn, ForgeNavigation, ForgeSnapshot, Serialize,
+    TaskDraft, TaskSelection, Wave, WorkTask,
+};
 use crate::orchestration::ContentSha256;
 use crate::persistence_service::{PersistenceService, PersistenceServiceError as Error};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -341,7 +346,7 @@ impl FeatureForgeService {
     }
 
     /// Read backlog, scope and conversation from one SQLite snapshot, so a
-    /// completing FeatureAgent turn cannot mix old scope with a new reply.
+    /// completing `FeatureAgent` turn cannot mix old scope with a new reply.
     pub fn view_snapshot(
         &self,
         project: &str,

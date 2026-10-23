@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only harnesses fail immediately when fixture setup is invalid"
+)]
 use std::env;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};

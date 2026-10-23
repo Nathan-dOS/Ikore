@@ -93,7 +93,9 @@ impl AppModel {
             backend.set_quota_foreground(active);
         }
         let stale = self.quota.overview.as_ref().is_none_or(|overview| {
-            Utc::now() - overview.checked_at > chrono::Duration::from_std(POLL_EVERY).unwrap()
+            Utc::now() - overview.checked_at
+                > chrono::Duration::from_std(POLL_EVERY)
+                    .expect("the fixed polling interval fits a chrono duration")
         });
         if active && stale {
             self.refresh_quota(false, cx);

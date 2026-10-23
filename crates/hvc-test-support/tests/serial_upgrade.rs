@@ -939,7 +939,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
 
 /// V35 widens `checkpoints.kind`/`purpose` to admit `path_confirmation` (the
 /// ADR-022 clarification-loop preventive HITL gate, P5) via the same
-/// legacy_alter_table rebuild V27 used; V36 adds
+/// `legacy_alter_table` rebuild V27 used; V36 adds
 /// `specification_resolution_conversations` (P4). A populated V34 database
 /// with one checkpoint of every pre-existing purpose, plus a clarification
 /// question set, must migrate without losing rows, indexes or foreign keys,

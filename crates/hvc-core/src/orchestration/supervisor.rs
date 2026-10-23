@@ -1,5 +1,7 @@
 //! One AppCore-owned supervisor; futures are joined, never detached lane tasks.
-use super::*;
+use super::{
+    CancellationToken, Duration, PersistenceService, PersistenceServiceError, coordination, sleep,
+};
 use crate::orchestration::JobClass;
 
 impl PersistenceService {

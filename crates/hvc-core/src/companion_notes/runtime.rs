@@ -5,7 +5,10 @@ use super::contract::{
     validate_reply,
 };
 use super::service::{history, note, running_turn};
-use super::*;
+use super::{
+    CONVERSATION_WINDOW, CaptureNoteRequest, CompanionNote, HashMap, MAX_CALLS, NoteStatus,
+    NoteTurnKind, NotesEvent, RAW_INPUT_MAX, REFINE_MESSAGE_MAX, reply_schema,
+};
 use crate::feature_forge::service::{check_project, id, invalid, json, now, text};
 use crate::feature_forge::{RequestError, TurnError, TurnFailure, TurnFailureKind};
 use crate::llm::AgentRole;

@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"claude-min-session"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"ok claude minimum"}]}}
+{"type":"result","result":"ok claude minimum","session_id":"claude-min-session"}

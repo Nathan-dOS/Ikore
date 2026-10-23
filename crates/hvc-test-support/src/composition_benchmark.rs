@@ -10,7 +10,9 @@
 //!
 //! Correctness is judged by each fixture's oracle - content predicates on
 //! the published files - never by the tests the workers authored.
-use crate::composition_replies::*;
+use crate::composition_replies::{
+    PromptFacts, ReplyOptions, between, parse_prompt, unit_response_with,
+};
 use crate::pulsation_benchmark::{configure_loopback, force_api_direct};
 use crate::{
     FixedEmbeddingGateway, IsolatedTestEnvironment, MemoryCredentialStore, RecordedRequest,
@@ -24,7 +26,11 @@ use hvc_core::{
     },
     llm::{LlmEventEnvelope, LlmEventSink},
     orchestration::{PreparationSettings, composition::settings::CompositionSettings},
-    persistence_service::*,
+    persistence_service::{
+        ApplyHitlDecisionRequest, EnsureProjectForWorkspaceRequest,
+        GetPulsationRuntimeSnapshotRequest, HitlDecision, PersistenceService,
+        ResolveStageFailureRequest, StageFailureDecision, UpdateAgentRuntimeConfigRequest,
+    },
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};

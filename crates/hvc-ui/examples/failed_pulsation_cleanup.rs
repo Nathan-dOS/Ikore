@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Manual visual fixtures fail immediately when isolated setup is invalid"
+)]
 //! Isolated native smoke of the "Leftover files" card:
 //! `cargo run -p hvc-ui --example failed_pulsation_cleanup`.
 //!

@@ -40,7 +40,7 @@ pub struct BrownfieldCoverageMetrics {
     pub extracted_partial_sources: u32,
     pub extracted_stale_sources: u32,
     pub extraction_failed_sources: u32,
-    /// Integer basis points (0..=10_000), avoiding floating-point serialization drift.
+    /// Integer basis points (`0..=10_000`), avoiding floating-point serialization drift.
     pub extraction_progress_basis_points: u32,
     /// Documentation counts distinct eligible sources and assigns one state per source.
     pub documentation_proposed_sources: u32,

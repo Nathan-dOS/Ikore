@@ -10,7 +10,10 @@
 //! decide about those.
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::*;
+use super::{
+    Connection, HashMap, Path, PathBuf, PersistenceService, PersistenceServiceError,
+    PulsationStatus, Uuid, coordination, fs, params,
+};
 use crate::orchestration::{
     CleanupDisposition, CleanupFailedPulsationFilesRequest, ContentSha256,
     FailedPulsationCleanupEntry, FailedPulsationCleanupPlan, FailedPulsationCleanupReport,
@@ -326,6 +329,8 @@ fn prune_empty_parents(root: &Path, removed: &Path) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use crate::persistence_service::PulsationStage;
+
     use super::*;
     use crate::agent_runtime::GeneratedArtifact;
     use crate::orchestration::BaseState;

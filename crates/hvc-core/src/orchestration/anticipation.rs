@@ -1,6 +1,13 @@
-//! One background slot: immediate successor Intake, then local PreSpec.
-use super::*;
-use crate::orchestration::*;
+//! One background slot: immediate successor Intake, then local `PreSpec`.
+use super::{
+    CancellationToken, Connection, Job, JobStatus, OptionalExtension, PathBuf, PersistenceService,
+    PersistenceServiceError, Uuid, coordination, params,
+};
+use crate::orchestration::{
+    CodeContextDiscoveryMode, CodeContextFacts, CodeContextRequest, CollectionBudget,
+    ContentSha256, ContextPackageV1, CoverageState, ExecutionFence, JobClass, RelativeSourcePath,
+    RoutedCodeContextService, SchemaV1, StageHandoffV1, VaguenessAssessment, task_refine,
+};
 use coordination::invalid;
 use rusqlite::TransactionBehavior;
 

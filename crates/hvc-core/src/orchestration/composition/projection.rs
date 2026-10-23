@@ -272,7 +272,7 @@ fn handle_list(handles: &[&Handle]) -> String {
 /// for a split stage. Task titles, decisions, interfaces and the stage
 /// guidance describe the whole batch; without this section a worker owning
 /// one file read the files of later siblings as missing destinations and
-/// failed with `scope_insufficient` (ToDoListWebView, 2026-09-22).
+/// failed with `scope_insufficient` (`ToDoListWebView`, 2026-09-22).
 fn render_unit_scope(
     user: &mut String,
     plan: &StageExecutionPlanV1,

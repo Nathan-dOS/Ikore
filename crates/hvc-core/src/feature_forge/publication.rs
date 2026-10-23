@@ -1,5 +1,8 @@
 //! Durable plan-note publication, sharing the host's canonical path and hash protocol.
-use super::{service::*, *};
+use super::{
+    Feature,
+    service::{FeatureForgeService, invalid},
+};
 use crate::{
     orchestration::{ExpectedFileContent, publication},
     persistence_service::PersistenceServiceError as Error,

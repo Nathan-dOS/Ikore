@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only harnesses fail immediately when fixture setup is invalid"
+)]
 use hvc_test_support::{
     brownfield_benchmark::percentile_u64,
     brownfield_graph_benchmark::{

@@ -1,4 +1,4 @@
-# Linux headless harness for hvc-core, hvc-editor and hvc-test-support.
+# Linux headless harness for contracts, terminal, core, editor and test-support.
 # Every service is one-shot and behind a profile:
 #   docker compose --profile tools build
 #   docker compose --profile tools run --rm test-runner
@@ -28,12 +28,12 @@ services:
   cargo-check:
     <<: *hvc-base
     profiles: ["tools", "ci"]
-    command: cargo check --locked -p hvc-core -p hvc-editor -p hvc-test-support --all-targets
+    command: cargo check --locked -p hvc-contracts -p hvc-terminal -p hvc-core -p hvc-editor -p hvc-test-support --all-targets
 
   clippy-check:
     <<: *hvc-base
     profiles: ["tools", "ci"]
-    command: cargo clippy --locked -p hvc-core -p hvc-editor -p hvc-test-support --all-targets -- -D warnings
+    command: cargo clippy --locked -p hvc-contracts -p hvc-terminal -p hvc-core -p hvc-editor -p hvc-test-support --all-targets -- -D warnings
 
   fmt-check:
     <<: *hvc-base

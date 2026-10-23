@@ -5,7 +5,11 @@ use std::path::Path;
 
 use rusqlite::TransactionBehavior;
 
-use super::*;
+use super::{
+    AgentRuntimeConfig, CancellationToken, Connection, Deserialize, Duration, OptionalExtension,
+    PersistenceService, PersistenceServiceError, Pulsation, Serialize, Uuid, Value, coordination,
+    indexing, params,
+};
 use crate::llm::{AgentExecutionTarget, AgentRole, LlmGateway, LlmRequest, ResponseFormat};
 use crate::orchestration::{
     ComponentProposalArtifactV1, ComponentProposalDraft, ContentSha256, RelativeSourcePath,
@@ -538,6 +542,9 @@ impl PersistenceService {
 
 #[cfg(test)]
 mod tests {
+    use crate::persistence_service::PulsationStage;
+
+    use crate::persistence_service::HitlDecision;
     use std::fs;
 
     use serde_json::json;

@@ -1,5 +1,8 @@
 //! Explicit, versioned adoption of a reviewed filesystem base. Never retries/overwrites conflicts.
-use super::*;
+use super::{
+    Connection, HashSet, Path, PersistenceService, PersistenceServiceError, Uuid, coordination,
+    params,
+};
 use crate::orchestration::{
     BaseState, ConfirmBaseReconciliationRequest, ContentSha256, ProjectCoordinationSnapshot,
     ProjectPipelineState, PublicationReview, QueuePosition, publication,

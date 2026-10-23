@@ -11,7 +11,7 @@
 //! - [`SchemaFlavor::Canonical`] is the registry shape (`anyOf` root, absent
 //!   keys for the other outcomes). Used where the schema is textual guidance
 //!   or the provider accepts a union root.
-//! - [`SchemaFlavor::Strict`] is the OpenAI Structured Outputs lowering: an
+//! - [`SchemaFlavor::Strict`] is the `OpenAI` Structured Outputs lowering: an
 //!   object root, every property required, non-applicable outcome fields
 //!   explicitly nullable, `const` as single-value `enum`, no `oneOf`, no
 //!   `uniqueItems`/`format`. The typed layer maps `null` back to "absent", so
@@ -154,7 +154,7 @@ fn collect_defs(roots: &[&Value]) -> BTreeMap<String, Value> {
     out
 }
 
-/// OpenAI Structured Outputs lowering, applied recursively.
+/// `OpenAI` Structured Outputs lowering, applied recursively.
 ///
 /// Walks only schema positions (`properties` values, `$defs` values, `items`,
 /// `anyOf`/`allOf` branches) so a *property named* `description` or an enum

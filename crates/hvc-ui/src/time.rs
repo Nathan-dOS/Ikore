@@ -62,6 +62,9 @@ pub fn format_local_date(dt: &DateTime<Local>) -> String {
     {
         let st = datetime_to_win32_systemtime(dt);
         let mut buf = [0u16; 64];
+        // SAFETY: `st` has the Win32 SYSTEMTIME layout and stays alive for the call;
+        // `buf` is writable for the supplied UTF-16 capacity, and null selects
+        // the locale's default date format. The API writes at most that capacity.
         let len = unsafe {
             GetDateFormatW(
                 LOCALE_USER_DEFAULT,
@@ -85,6 +88,9 @@ pub fn format_local_time(dt: &DateTime<Local>) -> String {
     {
         let st = datetime_to_win32_systemtime(dt);
         let mut buf = [0u16; 64];
+        // SAFETY: `st` has the Win32 SYSTEMTIME layout and stays alive for the call;
+        // `buf` is writable for the supplied UTF-16 capacity, and null selects
+        // the locale's default time format. The API writes at most that capacity.
         let len = unsafe {
             GetTimeFormatW(
                 LOCALE_USER_DEFAULT,

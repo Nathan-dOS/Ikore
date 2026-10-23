@@ -1,6 +1,36 @@
 use super::*;
+use crate::feature_forge::AcceptanceCriterion;
+use crate::feature_forge::CreateFeatureRequest;
+use crate::feature_forge::CreateTasksRequest;
+use crate::feature_forge::FeatureAgentResponse;
+use crate::feature_forge::FeatureAgentRuntime;
+use crate::feature_forge::FeatureBrief;
+use crate::feature_forge::FeatureForgeService;
+use crate::feature_forge::FeatureTurn;
+use crate::feature_forge::ForgeNavigation;
+use crate::feature_forge::TaskDraft;
+use crate::feature_forge::TaskKind;
+use crate::feature_forge::TaskService;
+use crate::feature_forge::TurnFailureKind;
+use crate::feature_forge::TurnKind;
+use crate::feature_forge::apply_approval;
+use crate::feature_forge::canonical_response_schema;
+use crate::feature_forge::dependency_analysis_schema;
+use crate::feature_forge::failure_actions;
+use crate::feature_forge::pipeline;
+use crate::feature_forge::response_schema;
+use crate::feature_forge::response_schema_for_backend;
+use crate::feature_forge::triage_analysis_schema;
+use crate::feature_forge::validate_task;
 use crate::orchestration::{ContentSha256, RelativeSourcePath, SourceRevision};
+use crate::persistence_service::AgentRuntimeConfig;
+use crate::persistence_service::ApplyHitlDecisionRequest;
+use crate::persistence_service::EnsureProjectForWorkspaceRequest;
+use crate::persistence_service::HitlDecision;
+use crate::persistence_service::ListPulsationsRequest;
+use crate::persistence_service::StageExecutionResult;
 use serde_json::json;
+use std::sync::Arc;
 
 struct Fixture {
     _data: tempfile::TempDir,
@@ -549,7 +579,7 @@ fn complete_six_stage_batch_requires_approved_integration() {
     );
 }
 
-/// Field incident, 2026-09-08: a free OpenCode model produced ONE artifact
+/// Field incident, 2026-09-08: a free `OpenCode` model produced ONE artifact
 /// for a SPECIFICATION stage but referenced `artifactPositions: [0, 1]` in
 /// taskEvidence - apparently padding the position count to match its two
 /// `criterionIds`, rather than counting what it actually returned. The host
@@ -1330,7 +1360,7 @@ fn active_agent_cli_backend_resolves_only_for_configured_cli_process_agents() {
     );
 }
 
-/// Returns one canned payload for every FeatureAgent call, without the
+/// Returns one canned payload for every `FeatureAgent` call, without the
 /// handshake semaphores `PlanningGateway` uses for its concurrency assertions.
 struct AnalysisGateway {
     response: String,

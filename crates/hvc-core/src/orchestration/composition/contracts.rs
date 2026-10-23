@@ -7,8 +7,8 @@
 //! rules as one parsed from a model. The conformance tests at the bottom prove
 //! parity with the documented registry for every published example.
 //!
-//! Naming: Rust fields are snake_case and serialize as camelCase; enum values
-//! serialize as snake_case exactly as the schema enumerates them.
+//! Naming: Rust fields are `snake_case` and serialize as camelCase; enum values
+//! serialize as `snake_case` exactly as the schema enumerates them.
 
 use std::collections::HashSet;
 use std::fmt;

@@ -449,7 +449,10 @@ impl RepositoryContext {
         ),
         crate::orchestration::ContractError,
     > {
-        use crate::orchestration::*;
+        use crate::orchestration::{
+            ContextCoverage, ContractError, CoverageState, DocumentationAvailability,
+            SourceSnapshot,
+        };
         budget.validate()?;
         let started = std::time::Instant::now();
         let mut coverage = ContextCoverage {
@@ -741,7 +744,10 @@ impl RepositoryContext {
         ),
         crate::orchestration::ContractError,
     > {
-        use crate::orchestration::*;
+        use crate::orchestration::{
+            ContextCoverage, ContractError, CoverageState, DocumentationAvailability,
+            RelativeSourcePath, SourceSnapshot,
+        };
         let started = std::time::Instant::now();
         let mut coverage = ContextCoverage {
             state: CoverageState::Complete,

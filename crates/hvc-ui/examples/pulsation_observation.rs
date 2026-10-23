@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Manual visual fixtures fail immediately when isolated setup is invalid"
+)]
 //! Isolated native smoke: `cargo run -p hvc-ui --example pulsation_observation`.
 //! A local scripted provider runs one real pulsation. Only this disposable
 //! fixture's checkpoints are auto-approved. No installed CLI or credentials are used.

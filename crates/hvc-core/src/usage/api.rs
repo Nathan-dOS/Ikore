@@ -1,4 +1,4 @@
-//! Normalization only; legacy LlmUsage remains unchanged for cost calculation.
+//! Normalization only; legacy `LlmUsage` remains unchanged for cost calculation.
 use std::{
     path::{Path, PathBuf},
     sync::Mutex,

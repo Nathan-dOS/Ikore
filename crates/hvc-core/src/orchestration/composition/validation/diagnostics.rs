@@ -39,7 +39,7 @@ fn bounded(text: &str) -> String {
 
 fn code(text: &str) -> Handle {
     if crate::secret_redactor::redact_secrets(text).map_or(true, |result| result.count > 0) {
-        return Handle::new("diagnostic").unwrap();
+        return Handle::new("diagnostic").expect("built-in diagnostic code is a valid handle");
     }
     let mut slug = String::with_capacity(text.len());
     for ch in text.chars() {
@@ -57,7 +57,9 @@ fn code(text: &str) -> Handle {
         slug
     };
     let slug: String = slug.chars().take(64).collect();
-    Handle::new(slug.trim_end_matches('_')).unwrap_or_else(|_| Handle::new("diagnostic").unwrap())
+    Handle::new(slug.trim_end_matches('_')).unwrap_or_else(|_| {
+        Handle::new("diagnostic").expect("built-in diagnostic code is a valid handle")
+    })
 }
 
 /// `cargo --message-format=json`: one JSON object per line; compiler
@@ -238,7 +240,7 @@ pub fn exit_diagnostic(exit_code: Option<i32>, stderr_tail: &str) -> DiagnosticV
         .trim();
     DiagnosticV1 {
         severity: Severity::Error,
-        code: Handle::new("check_failed").unwrap(),
+        code: Handle::new("check_failed").expect("built-in diagnostic code is a valid handle"),
         message: bounded(&match exit_code {
             Some(code) if tail.is_empty() => format!("The command exited with status {code}."),
             Some(code) => format!("The command exited with status {code}: {tail}"),

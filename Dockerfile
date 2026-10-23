@@ -3,7 +3,7 @@ ARG RUST_IMAGE=rust:1.98.0-bookworm
 FROM ${RUST_IMAGE}
 
 LABEL org.opencontainers.image.title="hard-vibe-code-headless"
-LABEL org.opencontainers.image.description="Linux headless harness for hvc-core, hvc-editor and hvc-test-support"
+LABEL org.opencontainers.image.description="Linux headless harness for HVC contracts, terminal, core, editor and test-support"
 LABEL org.opencontainers.image.source="https://github.com/Nathan-dOS/HARD-VC"
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -21,7 +21,7 @@ ARG RUST_TOOLCHAIN=1.98.0
 RUN rustup default ${RUST_TOOLCHAIN} && rustup component add clippy rustfmt
 
 WORKDIR /workspace
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY Cargo.toml Cargo.lock rust-toolchain.toml clippy.toml ./
 COPY .cargo ./.cargo
 COPY third_party ./third_party
 COPY crates ./crates

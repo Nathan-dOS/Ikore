@@ -1,7 +1,12 @@
 //! Typed human actions; inputs are scoped to the displayed revision/question set.
 use super::*;
 use crate::pulsations::PulsationAction;
-use hvc_core::orchestration::*;
+use hvc_core::orchestration::{
+    ClarificationAnswerV1, ConfirmDescriptionReviewRequest, LearningActionRequest,
+    LearningGraphDecision, LearningRefinementMode, ReviewLearningGraphDecision,
+    ReviewLearningGraphRequest, RevisePulsationDescriptionRequest,
+    SubmitSpecificationAnswersRequest, VaguenessScore, validate_specification_answers,
+};
 
 impl AppModel {
     pub(super) fn sync_preparation_inputs(&mut self, cx: &mut Context<Self>) {

@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
+)]
 //! Pipeline v4 with several cohesive units per stage (ADR-022, M3): units
 //! planned from the approved proposals, dependency order with candidate
 //! delivery, staging outside the workspace, ownership enforcement and reuse

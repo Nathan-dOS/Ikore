@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only harnesses fail immediately when fixture setup is invalid"
+)]
 pub mod brownfield_benchmark;
 pub mod brownfield_graph_benchmark;
 pub mod composition_benchmark;

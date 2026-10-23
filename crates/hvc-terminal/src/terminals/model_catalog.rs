@@ -1,0 +1,1040 @@
+use crate::host::TerminalHost;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::LazyLock;
+use std::time::Duration;
+
+use chrono::Utc;
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use uuid::Uuid;
+
+use super::{
+    CliAvailability, CliAvailabilityState, CliBackend, MAX_MODEL_CATALOG_OUTPUT_BYTES,
+    TerminalError, ThinkingLevel, run_bounded_probe_in_with_limit, sanitize_terminal_text_bounded,
+    secure_probe_spec,
+};
+
+const ADAPTER_CONTRACT_VERSION: u32 = 2;
+const MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(20);
+/// `agy` starts its language server (about 10 s) before it fetches the list.
+const SLOW_MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(45);
+/// Effort suffixes `agy models` appends to a model slug, in the order the picker shows them.
+const ANTIGRAVITY_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+const CLI_DEFAULT_ID: &str = "";
+/// Read-only, single-field config inspection cap: the CLI default-model detector never
+/// reads more than this many bytes of a local config file, and never logs their contents.
+const CLI_CONFIG_READ_CAP_BYTES: u64 = 64 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CliModelCatalogAsset {
+    #[allow(dead_code)]
+    schema_version: u32,
+    catalog_version: String,
+    backends: CliModelCatalogAssetBackends,
+}
+
+#[derive(Debug, Deserialize)]
+struct CliModelCatalogAssetBackends {
+    codex: CliModelCatalogAssetBackend,
+    claude: CliModelCatalogAssetBackend,
+    gemini: CliModelCatalogAssetBackend,
+}
+
+#[derive(Debug, Deserialize)]
+struct CliModelCatalogAssetBackend {
+    models: Vec<CliModelCatalogAssetEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CliModelCatalogAssetEntry {
+    provider_id: String,
+    model_id: String,
+    display_name: String,
+    context_window: Option<u64>,
+    input_cost_usd_per_million: Option<f64>,
+    output_cost_usd_per_million: Option<f64>,
+    #[serde(default)]
+    capabilities: Vec<String>,
+    #[serde(default)]
+    profiles: Vec<String>,
+}
+
+impl From<&CliModelCatalogAssetEntry> for CliModelCatalogEntry {
+    fn from(entry: &CliModelCatalogAssetEntry) -> Self {
+        Self {
+            provider_id: Some(entry.provider_id.clone()),
+            model_id: Some(entry.model_id.clone()),
+            display_name: entry.display_name.clone(),
+            context_window: entry.context_window,
+            input_cost_usd_per_million: entry.input_cost_usd_per_million,
+            output_cost_usd_per_million: entry.output_cost_usd_per_million,
+            capabilities: entry.capabilities.clone(),
+            profiles: entry.profiles.clone(),
+            raw_metadata: Value::Object(Default::default()),
+        }
+    }
+}
+
+static CLI_MODEL_CATALOG: LazyLock<CliModelCatalogAsset> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../../assets/cli-model-catalog-v1.json"))
+        .expect("the declarative CLI model catalog must contain valid JSON")
+});
+
+/// Version string of the embedded declarative CLI model catalog (e.g. `"2026-09-17.1"`),
+/// for display alongside the detected CLI version in the model picker header.
+pub fn cli_model_catalog_version() -> &'static str {
+    &CLI_MODEL_CATALOG.catalog_version
+}
+
+fn declarative_models(backend: CliBackend) -> Vec<CliModelCatalogEntry> {
+    let backends = &CLI_MODEL_CATALOG.backends;
+    let entries = match backend {
+        CliBackend::Codex => &backends.codex.models,
+        CliBackend::Claude => &backends.claude.models,
+        CliBackend::Gemini => &backends.gemini.models,
+        CliBackend::Opencode | CliBackend::Antigravity | CliBackend::Custom => return Vec::new(),
+    };
+    entries.iter().map(CliModelCatalogEntry::from).collect()
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliModelSelectionSource {
+    #[default]
+    Default,
+    Catalog,
+    Manual,
+}
+
+impl CliModelSelectionSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Catalog => "catalog",
+            Self::Manual => "manual",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "default" => Some(Self::Default),
+            "catalog" => Some(Self::Catalog),
+            "manual" => Some(Self::Manual),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliModelCatalogState {
+    Ready,
+    Stale,
+    Missing,
+    AuthRequired,
+    UnsupportedVersion,
+    Failed,
+}
+
+impl CliModelCatalogState {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Stale => "stale",
+            Self::Missing => "missing",
+            Self::AuthRequired => "auth_required",
+            Self::UnsupportedVersion => "unsupported_version",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "ready" => Some(Self::Ready),
+            "stale" => Some(Self::Stale),
+            "missing" => Some(Self::Missing),
+            "auth_required" => Some(Self::AuthRequired),
+            "unsupported_version" => Some(Self::UnsupportedVersion),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliModelCatalogSource {
+    Preset,
+    Cli,
+}
+
+impl CliModelCatalogSource {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Preset => "preset",
+            Self::Cli => "cli",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "preset" => Some(Self::Preset),
+            "cli" => Some(Self::Cli),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliModelCatalogEntry {
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub display_name: String,
+    pub context_window: Option<u64>,
+    pub input_cost_usd_per_million: Option<f64>,
+    pub output_cost_usd_per_million: Option<f64>,
+    pub capabilities: Vec<String>,
+    pub profiles: Vec<String>,
+    pub raw_metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliModelCatalogSnapshot {
+    pub project_id: String,
+    pub backend: CliBackend,
+    pub adapter_contract_version: u32,
+    pub state: CliModelCatalogState,
+    pub source: CliModelCatalogSource,
+    pub cli_version: Option<String>,
+    pub diagnostic: Option<String>,
+    pub refreshed_at: String,
+    pub models: Vec<CliModelCatalogEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CliModelCatalogService {
+    host: Arc<dyn TerminalHost>,
+    db_path: PathBuf,
+}
+
+impl CliModelCatalogService {
+    pub fn new(db_path: impl Into<PathBuf>, host: Arc<dyn TerminalHost>) -> Self {
+        Self {
+            host,
+            db_path: db_path.into(),
+        }
+    }
+
+    pub async fn catalog(
+        &self,
+        project_id: &str,
+        workspace: &Path,
+        backend: CliBackend,
+        availability: Option<&CliAvailability>,
+        refresh: bool,
+    ) -> Result<CliModelCatalogSnapshot, TerminalError> {
+        if backend == CliBackend::Custom {
+            return Err(TerminalError::Validation(
+                "Custom CLI does not expose a verified model catalog".into(),
+            ));
+        }
+        // OpenCode aggregates third-party providers and Antigravity lists what
+        // the signed-in account may use, so both are read from the CLI itself.
+        if !matches!(backend, CliBackend::Opencode | CliBackend::Antigravity) {
+            let home_dir = std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .map(PathBuf::from);
+            let snapshot = preset_snapshot(project_id, backend, availability, home_dir.as_deref());
+            self.save_snapshot(&snapshot)?;
+            return Ok(snapshot);
+        }
+
+        if !refresh && let Some(cached) = self.load_snapshot(project_id, backend)? {
+            return Ok(cached);
+        }
+
+        let label = backend.label();
+        let Some(availability) = availability else {
+            return self.cached_or_state(
+                project_id,
+                backend,
+                CliModelCatalogState::Missing,
+                &format!("{label} CLI was not discovered"),
+            );
+        };
+        if availability.state != CliAvailabilityState::Available {
+            let state = match availability.state {
+                CliAvailabilityState::Missing => CliModelCatalogState::Missing,
+                CliAvailabilityState::AuthRequired => CliModelCatalogState::AuthRequired,
+                CliAvailabilityState::UnsupportedVersion
+                | CliAvailabilityState::CapabilityMissing
+                | CliAvailabilityState::Unsupported => CliModelCatalogState::UnsupportedVersion,
+                _ => CliModelCatalogState::Failed,
+            };
+            return self.cached_or_state(
+                project_id,
+                backend,
+                state,
+                &availability
+                    .diagnostic
+                    .clone()
+                    .unwrap_or_else(|| format!("{label} model catalog is unavailable")),
+            );
+        }
+        let Some(executable) = availability.executable_path.as_deref() else {
+            return self.cached_or_state(
+                project_id,
+                backend,
+                CliModelCatalogState::Missing,
+                &format!("{label} executable path is unavailable"),
+            );
+        };
+
+        let (args, timeout) = if backend == CliBackend::Antigravity {
+            (vec!["models".to_string()], SLOW_MODEL_CATALOG_TIMEOUT)
+        } else {
+            let mut args = vec!["models".to_string(), "--verbose".to_string()];
+            if refresh {
+                args.push("--refresh".to_string());
+            }
+            (args, MODEL_CATALOG_TIMEOUT)
+        };
+        let spec = match secure_probe_spec(backend, executable, args).await {
+            Ok(spec) => spec,
+            Err(error) => {
+                return self.cached_or_state(
+                    project_id,
+                    backend,
+                    CliModelCatalogState::Failed,
+                    &format!("{label} model catalog launch was rejected: {error}"),
+                );
+            }
+        };
+        let output = tokio::time::timeout(
+            timeout,
+            run_bounded_probe_in_with_limit(spec, Some(workspace), MAX_MODEL_CATALOG_OUTPUT_BYTES),
+        )
+        .await;
+        let output = match output {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                return self.cached_or_state(
+                    project_id,
+                    backend,
+                    CliModelCatalogState::Failed,
+                    &format!("{label} model catalog probe failed: {error}"),
+                );
+            }
+            Err(_) => {
+                return self.cached_or_state(
+                    project_id,
+                    backend,
+                    CliModelCatalogState::Failed,
+                    &format!("{label} model catalog probe timed out"),
+                );
+            }
+        };
+        if !output.status.success() {
+            let diagnostic = sanitize_redacted(self.host.as_ref(), &output.stderr)?;
+            return self.cached_or_state(
+                project_id,
+                backend,
+                CliModelCatalogState::Failed,
+                &if diagnostic.trim().is_empty() {
+                    format!("{label} model catalog command failed")
+                } else {
+                    diagnostic.trim().to_owned()
+                },
+            );
+        }
+        let stdout = sanitize_redacted(self.host.as_ref(), &output.stdout)?;
+        let parsed = if backend == CliBackend::Antigravity {
+            parse_antigravity_models(&stdout)
+        } else {
+            parse_opencode_verbose_models(&stdout)
+        };
+        let models = match parsed {
+            Ok(models) if !models.is_empty() => models,
+            Ok(_) => {
+                return self.cached_or_state(
+                    project_id,
+                    backend,
+                    CliModelCatalogState::Failed,
+                    &format!("{label} returned an empty model catalog"),
+                );
+            }
+            Err(error) => {
+                return self.cached_or_state(
+                    project_id,
+                    backend,
+                    CliModelCatalogState::Failed,
+                    &error,
+                );
+            }
+        };
+        let snapshot = CliModelCatalogSnapshot {
+            project_id: project_id.to_string(),
+            backend,
+            adapter_contract_version: ADAPTER_CONTRACT_VERSION,
+            state: CliModelCatalogState::Ready,
+            source: CliModelCatalogSource::Cli,
+            cli_version: availability.version.clone(),
+            diagnostic: None,
+            refreshed_at: Utc::now().to_rfc3339(),
+            models: with_cli_default(models),
+        };
+        self.save_snapshot(&snapshot)?;
+        Ok(snapshot)
+    }
+
+    pub fn cached_catalog(
+        &self,
+        project_id: &str,
+        backend: CliBackend,
+    ) -> Result<Option<CliModelCatalogSnapshot>, TerminalError> {
+        self.load_snapshot(project_id, backend)
+    }
+
+    fn cached_or_state(
+        &self,
+        project_id: &str,
+        backend: CliBackend,
+        state: CliModelCatalogState,
+        diagnostic: &str,
+    ) -> Result<CliModelCatalogSnapshot, TerminalError> {
+        if let Some(mut cached) = self.load_snapshot(project_id, backend)? {
+            cached.state = CliModelCatalogState::Stale;
+            cached.diagnostic = Some(diagnostic.to_string());
+            return Ok(cached);
+        }
+        Ok(CliModelCatalogSnapshot {
+            project_id: project_id.to_string(),
+            backend,
+            adapter_contract_version: ADAPTER_CONTRACT_VERSION,
+            state,
+            source: CliModelCatalogSource::Cli,
+            cli_version: None,
+            diagnostic: Some(diagnostic.to_string()),
+            refreshed_at: Utc::now().to_rfc3339(),
+            models: vec![cli_default()],
+        })
+    }
+
+    fn connection(&self) -> Result<Connection, TerminalError> {
+        let connection = Connection::open(&self.db_path)?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        Ok(connection)
+    }
+
+    fn save_snapshot(&self, snapshot: &CliModelCatalogSnapshot) -> Result<(), TerminalError> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let existing_id: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM cli_model_catalog_snapshots WHERE project_id=?1 AND backend=?2",
+                params![snapshot.project_id, snapshot.backend.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let snapshot_id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        transaction.execute(
+            "INSERT INTO cli_model_catalog_snapshots(
+               id,project_id,backend,adapter_contract_version,state,source,cli_version,
+               diagnostic,refreshed_at,created_at
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)
+             ON CONFLICT(project_id,backend) DO UPDATE SET
+               adapter_contract_version=excluded.adapter_contract_version,
+               state=excluded.state,source=excluded.source,cli_version=excluded.cli_version,
+               diagnostic=excluded.diagnostic,refreshed_at=excluded.refreshed_at",
+            params![
+                snapshot_id,
+                snapshot.project_id,
+                snapshot.backend.as_str(),
+                snapshot.adapter_contract_version,
+                snapshot.state.as_str(),
+                snapshot.source.as_str(),
+                snapshot.cli_version,
+                snapshot.diagnostic,
+                snapshot.refreshed_at,
+            ],
+        )?;
+        transaction.execute(
+            "DELETE FROM cli_model_catalog_entries WHERE snapshot_id=?1",
+            [&snapshot_id],
+        )?;
+        for (position, model) in snapshot.models.iter().enumerate() {
+            transaction.execute(
+                "INSERT INTO cli_model_catalog_entries(
+                   snapshot_id,provider_id,model_id,display_name,context_window,
+                   input_cost_usd_per_million,output_cost_usd_per_million,
+                   capabilities_json,profiles_json,raw_metadata_json,position
+                 ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                params![
+                    snapshot_id,
+                    model.provider_id,
+                    model.model_id.as_deref().unwrap_or(CLI_DEFAULT_ID),
+                    model.display_name,
+                    model.context_window,
+                    model.input_cost_usd_per_million,
+                    model.output_cost_usd_per_million,
+                    serde_json::to_string(&model.capabilities)?,
+                    serde_json::to_string(&model.profiles)?,
+                    serde_json::to_string(&model.raw_metadata)?,
+                    position,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn load_snapshot(
+        &self,
+        project_id: &str,
+        backend: CliBackend,
+    ) -> Result<Option<CliModelCatalogSnapshot>, TerminalError> {
+        let connection = self.connection()?;
+        let metadata = connection
+            .query_row(
+                "SELECT id,adapter_contract_version,state,source,cli_version,diagnostic,refreshed_at
+                 FROM cli_model_catalog_snapshots WHERE project_id=?1 AND backend=?2",
+                params![project_id, backend.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            id,
+            adapter_contract_version,
+            state,
+            source,
+            cli_version,
+            diagnostic,
+            refreshed_at,
+        )) = metadata
+        else {
+            return Ok(None);
+        };
+        let mut statement = connection.prepare(
+            "SELECT provider_id,model_id,display_name,context_window,
+                    input_cost_usd_per_million,output_cost_usd_per_million,
+                    capabilities_json,profiles_json,raw_metadata_json
+             FROM cli_model_catalog_entries WHERE snapshot_id=?1 ORDER BY position,model_id",
+        )?;
+        let models = statement
+            .query_map([id], |row| {
+                let model_id = row.get::<_, String>(1)?;
+                let capabilities_json = row.get::<_, String>(6)?;
+                let profiles_json = row.get::<_, String>(7)?;
+                let raw_metadata_json = row.get::<_, String>(8)?;
+                Ok(CliModelCatalogEntry {
+                    provider_id: row.get(0)?,
+                    model_id: (!model_id.is_empty()).then_some(model_id),
+                    display_name: row.get(2)?,
+                    context_window: row.get(3)?,
+                    input_cost_usd_per_million: row.get(4)?,
+                    output_cost_usd_per_million: row.get(5)?,
+                    capabilities: serde_json::from_str(&capabilities_json).unwrap_or_default(),
+                    profiles: serde_json::from_str(&profiles_json).unwrap_or_default(),
+                    raw_metadata: serde_json::from_str(&raw_metadata_json)
+                        .unwrap_or_else(|_| Value::Object(Default::default())),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some(CliModelCatalogSnapshot {
+            project_id: project_id.to_string(),
+            backend,
+            adapter_contract_version,
+            state: CliModelCatalogState::parse(&state).unwrap_or(CliModelCatalogState::Failed),
+            source: CliModelCatalogSource::parse(&source).unwrap_or(CliModelCatalogSource::Preset),
+            cli_version,
+            diagnostic,
+            refreshed_at,
+            models,
+        }))
+    }
+}
+
+pub fn validate_catalog_model_selection(
+    connection: &Connection,
+    project_id: &str,
+    backend: CliBackend,
+    model: Option<&str>,
+    profile: Option<&str>,
+    source: CliModelSelectionSource,
+) -> Result<(), TerminalError> {
+    match source {
+        CliModelSelectionSource::Default => {
+            if model.is_some() || profile.is_some() {
+                return Err(TerminalError::Validation(
+                    "CLI default cannot include a model ID or model profile".into(),
+                ));
+            }
+        }
+        CliModelSelectionSource::Manual => {
+            if model.is_none() {
+                return Err(TerminalError::Validation(
+                    "manual model selection requires a model ID".into(),
+                ));
+            }
+            if profile.is_some() {
+                return Err(TerminalError::Validation(
+                    "unverified manual models cannot include a model profile".into(),
+                ));
+            }
+        }
+        CliModelSelectionSource::Catalog => {
+            let model = model.ok_or_else(|| {
+                TerminalError::Validation("catalog model selection requires a model ID".into())
+            })?;
+            if backend == CliBackend::Custom {
+                return Err(TerminalError::Validation(
+                    "Custom CLI does not expose a verified model catalog".into(),
+                ));
+            }
+            let profiles_json = connection
+                .query_row(
+                    "SELECT e.profiles_json
+                     FROM cli_model_catalog_entries e
+                     JOIN cli_model_catalog_snapshots s ON s.id=e.snapshot_id
+                     WHERE s.project_id=?1 AND s.backend=?2 AND e.model_id=?3
+                     LIMIT 1",
+                    params![project_id, backend.as_str(), model],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| {
+                    TerminalError::Validation(format!(
+                        "model {model} is not present in the project-scoped {} catalog",
+                        backend.label()
+                    ))
+                })?;
+            if let Some(profile) = profile {
+                let profiles =
+                    serde_json::from_str::<Vec<String>>(&profiles_json).map_err(|_| {
+                        TerminalError::Validation(
+                            "the cached model profile metadata is invalid".into(),
+                        )
+                    })?;
+                if !profiles.iter().any(|candidate| candidate == profile) {
+                    return Err(TerminalError::Validation(format!(
+                        "model profile {profile} is not supported by {model}"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `agy` sends a role's or specialty's thinking level as `--effort`, and each
+/// model offers its own levels (`gpt-oss-120b` only `medium` on 1.3.5); any
+/// other level fails the run inside the CLI. Without a catalog profile, which
+/// wins over the level, a level the project's catalog does not list for the
+/// model is refused here. A model the catalog lacks (manual) is left to the CLI.
+pub fn validate_catalog_effort(
+    connection: &Connection,
+    project_id: &str,
+    backend: CliBackend,
+    model: Option<&str>,
+    profile: Option<&str>,
+    thinking_level: ThinkingLevel,
+) -> Result<(), TerminalError> {
+    if backend != CliBackend::Antigravity
+        || profile.is_some()
+        || thinking_level == ThinkingLevel::Default
+    {
+        return Ok(());
+    }
+    let Some(model) = model else {
+        return Ok(());
+    };
+    let Some(profiles_json) = connection
+        .query_row(
+            "SELECT e.profiles_json
+             FROM cli_model_catalog_entries e
+             JOIN cli_model_catalog_snapshots s ON s.id=e.snapshot_id
+             WHERE s.project_id=?1 AND s.backend=?2 AND e.model_id=?3
+             LIMIT 1",
+            params![project_id, backend.as_str(), model],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(());
+    };
+    let offered = serde_json::from_str::<Vec<String>>(&profiles_json).map_err(|_| {
+        TerminalError::Validation("the cached model profile metadata is invalid".into())
+    })?;
+    if offered.iter().any(|level| level == thinking_level.as_str()) {
+        return Ok(());
+    }
+    let level = thinking_level.as_str();
+    let cli = backend.label();
+    Err(TerminalError::Validation(if offered.is_empty() {
+        format!("{model} offers no thinking level through {cli}; use Default, not {level}")
+    } else {
+        format!(
+            "{model} offers only {} through {cli}; thinking level {level} is not available",
+            offered.join(", ")
+        )
+    }))
+}
+
+fn sanitize_redacted(host: &dyn TerminalHost, bytes: &[u8]) -> Result<String, TerminalError> {
+    host.redact_secrets(&sanitize_terminal_text_bounded(
+        bytes,
+        MAX_MODEL_CATALOG_OUTPUT_BYTES,
+    ))
+    .map(|result| result.text)
+    .map_err(|error| TerminalError::Security(error.to_string()))
+}
+
+fn preset_snapshot(
+    project_id: &str,
+    backend: CliBackend,
+    availability: Option<&CliAvailability>,
+    home_dir: Option<&Path>,
+) -> CliModelCatalogSnapshot {
+    let (state, diagnostic) = match availability {
+        Some(item) if item.state == CliAvailabilityState::Available => {
+            (CliModelCatalogState::Ready, None)
+        }
+        Some(item) => (
+            match item.state {
+                CliAvailabilityState::Missing => CliModelCatalogState::Missing,
+                CliAvailabilityState::AuthRequired => CliModelCatalogState::AuthRequired,
+                CliAvailabilityState::UnsupportedVersion
+                | CliAvailabilityState::CapabilityMissing
+                | CliAvailabilityState::Unsupported => CliModelCatalogState::UnsupportedVersion,
+                _ => CliModelCatalogState::Failed,
+            },
+            item.diagnostic.clone(),
+        ),
+        None => (
+            CliModelCatalogState::Missing,
+            Some(format!("{} CLI was not discovered", backend.label())),
+        ),
+    };
+    let default_hint = home_dir.and_then(|dir| detect_cli_default_model(backend, dir));
+    let mut models = vec![cli_default_with_hint(default_hint)];
+    models.extend(declarative_models(backend));
+    CliModelCatalogSnapshot {
+        project_id: project_id.to_string(),
+        backend,
+        adapter_contract_version: ADAPTER_CONTRACT_VERSION,
+        state,
+        source: CliModelCatalogSource::Preset,
+        cli_version: availability.and_then(|item| item.version.clone()),
+        diagnostic,
+        refreshed_at: Utc::now().to_rfc3339(),
+        models,
+    }
+}
+
+fn cli_default() -> CliModelCatalogEntry {
+    cli_default_with_hint(None)
+}
+
+fn cli_default_with_hint(detected_model: Option<String>) -> CliModelCatalogEntry {
+    let display_name = match detected_model {
+        Some(model) => format!("CLI default (configured: {model})"),
+        None => "CLI default".into(),
+    };
+    CliModelCatalogEntry {
+        provider_id: None,
+        model_id: None,
+        display_name,
+        context_window: None,
+        input_cost_usd_per_million: None,
+        output_cost_usd_per_million: None,
+        capabilities: Vec::new(),
+        profiles: Vec::new(),
+        raw_metadata: Value::Object(Default::default()),
+    }
+}
+
+/// Reads only the `model` field from the CLI's own local config file to enrich the
+/// "CLI default" catalog entry label. Read-only, single-field, capped at
+/// [`CLI_CONFIG_READ_CAP_BYTES`], never logs or persists the file's contents, and fails
+/// closed to `None` on any error (missing file, unreadable, malformed, field absent).
+/// This is not a catalog refresh: no network access, no CLI invocation, no side effect.
+fn detect_cli_default_model(backend: CliBackend, home_dir: &Path) -> Option<String> {
+    match backend {
+        CliBackend::Codex => {
+            let contents = read_capped(&home_dir.join(".codex/config.toml"))?;
+            let value: toml::Value = toml::from_str(&contents).ok()?;
+            value.get("model")?.as_str().map(str::to_string)
+        }
+        CliBackend::Claude => {
+            for candidate in [
+                home_dir.join(".claude/settings.json"),
+                home_dir.join(".claude.json"),
+            ] {
+                if let Some(contents) = read_capped(&candidate)
+                    && let Ok(value) = serde_json::from_str::<Value>(&contents)
+                    && let Some(model) = value.get("model").and_then(Value::as_str)
+                {
+                    return Some(model.to_string());
+                }
+            }
+            None
+        }
+        CliBackend::Gemini => {
+            let contents = read_capped(&home_dir.join(".gemini/settings.json"))?;
+            let value: Value = serde_json::from_str(&contents).ok()?;
+            value.get("model")?.as_str().map(str::to_string)
+        }
+        CliBackend::Antigravity => {
+            let contents = read_capped(&home_dir.join(".gemini/antigravity-cli/settings.json"))?;
+            let value: Value = serde_json::from_str(&contents).ok()?;
+            value.get("model")?.as_str().map(str::to_string)
+        }
+        CliBackend::Opencode | CliBackend::Custom => None,
+    }
+}
+
+fn read_capped(path: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > CLI_CONFIG_READ_CAP_BYTES {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
+#[cfg(test)]
+fn preset(
+    provider: &str,
+    model: &str,
+    display_name: &str,
+    profiles: &[&str],
+) -> CliModelCatalogEntry {
+    CliModelCatalogEntry {
+        provider_id: Some(provider.into()),
+        model_id: Some(model.into()),
+        display_name: display_name.into(),
+        context_window: None,
+        input_cost_usd_per_million: None,
+        output_cost_usd_per_million: None,
+        capabilities: Vec::new(),
+        profiles: profiles.iter().map(|value| (*value).to_string()).collect(),
+        raw_metadata: Value::Object(Default::default()),
+    }
+}
+
+fn with_cli_default(mut models: Vec<CliModelCatalogEntry>) -> Vec<CliModelCatalogEntry> {
+    models.sort_by(|left, right| {
+        left.provider_id
+            .cmp(&right.provider_id)
+            .then_with(|| left.display_name.cmp(&right.display_name))
+    });
+    models.insert(0, cli_default());
+    models
+}
+
+pub(crate) fn parse_opencode_verbose_models(
+    output: &str,
+) -> Result<Vec<CliModelCatalogEntry>, String> {
+    let mut models = Vec::new();
+    let mut offset = 0usize;
+    while offset < output.len() {
+        let Some(relative_end) = output[offset..].find('\n') else {
+            break;
+        };
+        let line_end = offset + relative_end;
+        let candidate = output[offset..line_end].trim();
+        let metadata_start = line_end + 1;
+        offset = metadata_start;
+        if !is_opencode_model_reference(candidate) {
+            continue;
+        }
+        let tail = output[metadata_start..].trim_start();
+        let whitespace = output[metadata_start..].len() - tail.len();
+        let mut values = serde_json::Deserializer::from_str(tail).into_iter::<Value>();
+        let metadata = values
+            .next()
+            .transpose()
+            .map_err(|error| format!("invalid OpenCode metadata for {candidate}: {error}"))?
+            .ok_or_else(|| format!("missing OpenCode metadata for {candidate}"))?;
+        offset = metadata_start + whitespace + values.byte_offset();
+        models.push(normalize_opencode_model(candidate, metadata));
+    }
+    if models.is_empty() {
+        return Err("OpenCode verbose output did not contain any provider/model entries".into());
+    }
+    Ok(models)
+}
+
+/// Reads `agy models`: one `slug<TAB>label` line per model, where the slug ends in the
+/// effort it runs at (`gemini-3.8-flash-low`). Variants of one model become one entry whose
+/// profiles are those efforts, so the picker offers a model and then an effort - the same
+/// pair `--model` and `--effort` take.
+pub(crate) fn parse_antigravity_models(output: &str) -> Result<Vec<CliModelCatalogEntry>, String> {
+    let mut models: Vec<CliModelCatalogEntry> = Vec::new();
+    for line in output.lines() {
+        let Some((slug, label)) = line.trim().split_once('\t') else {
+            continue;
+        };
+        let (slug, label) = (slug.trim(), label.trim());
+        if slug.is_empty()
+            || slug.len() > 128
+            || !slug
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+        {
+            continue;
+        }
+        let (base, effort) = ANTIGRAVITY_EFFORTS
+            .iter()
+            .find_map(|effort| {
+                slug.strip_suffix(effort)?
+                    .strip_suffix('-')
+                    .filter(|base| !base.is_empty())
+                    .map(|base| (base, Some(*effort)))
+            })
+            .unwrap_or((slug, None));
+        let display_name = match effort {
+            Some(_) => label
+                .rsplit_once(" (")
+                .map_or(label, |(name, _)| name)
+                .to_string(),
+            None => label.to_string(),
+        };
+        let entry = match models
+            .iter()
+            .position(|entry| entry.model_id.as_deref() == Some(base))
+        {
+            Some(index) => &mut models[index],
+            None => {
+                models.push(CliModelCatalogEntry {
+                    provider_id: Some(antigravity_provider(base).into()),
+                    model_id: Some(base.to_string()),
+                    display_name: if display_name.is_empty() {
+                        base.to_string()
+                    } else {
+                        display_name
+                    },
+                    context_window: None,
+                    input_cost_usd_per_million: None,
+                    output_cost_usd_per_million: None,
+                    capabilities: Vec::new(),
+                    profiles: Vec::new(),
+                    raw_metadata: Value::Object(Default::default()),
+                });
+                models.last_mut().expect("an entry was just pushed")
+            }
+        };
+        if let Some(effort) = effort
+            && !entry.profiles.iter().any(|profile| profile == effort)
+        {
+            entry.profiles.push(effort.to_string());
+        }
+    }
+    for entry in &mut models {
+        entry.profiles.sort_by_key(|profile| {
+            ANTIGRAVITY_EFFORTS
+                .iter()
+                .position(|effort| effort == profile)
+                .unwrap_or(usize::MAX)
+        });
+    }
+    if models.is_empty() {
+        return Err("agy models did not list any model".into());
+    }
+    Ok(models)
+}
+
+/// The vendor behind a model `agy` serves; Antigravity itself is only the gateway.
+fn antigravity_provider(model: &str) -> &'static str {
+    if model.starts_with("gemini") {
+        "google"
+    } else if model.starts_with("claude") {
+        "anthropic"
+    } else if model.starts_with("gpt") {
+        "openai"
+    } else {
+        "antigravity"
+    }
+}
+
+fn is_opencode_model_reference(value: &str) -> bool {
+    let Some((provider, model)) = value.split_once('/') else {
+        return false;
+    };
+    !provider.is_empty()
+        && !model.is_empty()
+        && value.len() <= 512
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "/._:@+-".contains(character))
+}
+
+fn normalize_opencode_model(reference: &str, metadata: Value) -> CliModelCatalogEntry {
+    let (provider, _) = reference.split_once('/').unwrap_or_default();
+    let display_name = metadata
+        .get("name")
+        .or_else(|| metadata.get("displayName"))
+        .and_then(Value::as_str)
+        .unwrap_or(reference)
+        .to_string();
+    let context_window = metadata
+        .pointer("/limit/context")
+        .or_else(|| metadata.get("contextWindow"))
+        .and_then(Value::as_u64);
+    let input_cost = metadata.pointer("/cost/input").and_then(Value::as_f64);
+    let output_cost = metadata.pointer("/cost/output").and_then(Value::as_f64);
+    let mut profiles: Vec<String> = metadata
+        .get("variants")
+        .and_then(Value::as_object)
+        .map(|variants| variants.keys().cloned().collect())
+        .unwrap_or_default();
+    profiles.sort();
+    profiles.dedup();
+    let mut capabilities = metadata
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if let Some(modalities) = metadata.get("modalities").and_then(Value::as_object) {
+        capabilities.extend(modalities.keys().cloned());
+    }
+    capabilities.sort();
+    capabilities.dedup();
+    CliModelCatalogEntry {
+        provider_id: Some(provider.to_string()),
+        model_id: Some(reference.to_string()),
+        display_name,
+        context_window,
+        input_cost_usd_per_million: input_cost,
+        output_cost_usd_per_million: output_cost,
+        capabilities,
+        profiles,
+        raw_metadata: metadata,
+    }
+}
+
+#[cfg(test)]
+#[path = "model_catalog_tests.rs"]
+mod tests;

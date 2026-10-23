@@ -1,6 +1,10 @@
 use super::*;
 use crate::embedding_service::{EmbeddingError, EmbeddingFuture};
+use crate::persistence_service::IndexingEventSink;
+use crate::persistence_service::PulsationStage;
+use crate::persistence_service::PulsationStatus;
 use crate::persistence_service::serial::tests::Fixture;
+use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 

@@ -1,4 +1,10 @@
-use hvc_test_support::brownfield_benchmark::*;
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only harnesses fail immediately when fixture setup is invalid"
+)]
+use hvc_test_support::brownfield_benchmark::{
+    BrownfieldSample, FIXTURE_VERSION, TASK_DESCRIPTION, VaultMode, percentile_u64, run_sample,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 

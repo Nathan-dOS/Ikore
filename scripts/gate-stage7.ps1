@@ -78,6 +78,7 @@ function Assert-GpuiOnly {
 Push-Location $repositoryRoot
 try {
     Invoke-GateStep 'estrutura exclusivamente GPUI/Rust' { Assert-GpuiOnly }
+    Invoke-GateStep 'crate dependency boundaries' { & (Join-Path $PSScriptRoot 'check-crate-boundaries.ps1') }
     Invoke-GateStep 'cargo fmt' { cargo fmt --all -- --check }
     Invoke-GateStep 'Clippy' { cargo clippy --workspace --all-targets -- -D warnings }
     Invoke-GateStep 'testes Rust' { cargo test-all }

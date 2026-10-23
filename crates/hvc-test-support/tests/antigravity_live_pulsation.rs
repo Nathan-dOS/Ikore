@@ -1,7 +1,11 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
+)]
 //! ADR-010/022 live qualification: a pipeline v4 pulsation whose canonical
 //! roles, Learning included, all run on Antigravity's CLI (`agy`), driven by
 //! the same job worker the desktop app runs. Opt-in, it spends real quota:
-//!   cargo test -p hvc-test-support --test antigravity_live_pulsation -- --ignored --nocapture --test-threads=1
+//!   cargo test -p hvc-test-support --test `antigravity_live_pulsation` -- --ignored --nocapture --test-threads=1
 //! `HVC_LIVE_DB_OUT=<directory>` keeps a copy of each database for
 //! `analyze_pulsation --db <copy>`.
 mod composition_support;

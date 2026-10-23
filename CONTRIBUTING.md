@@ -39,7 +39,7 @@ and Linux/macOS portability of the headless crates.
 | Platform | What works |
 |---|---|
 | **Windows 10/11 x64** | Everything: the desktop app (`hvc-app`), the UI (`hvc-ui`), the complete test suite, release builds and the smoke test. This is the CI reference platform. |
-| **Linux / macOS** | Only the headless crates (`hvc-core`, `hvc-editor`, `hvc-test-support`), natively with `-p` or through Docker. GPUI is configured with the Windows backend only, so `hvc-ui` and `hvc-app` do not build on these platforms. |
+| **Linux / macOS** | Only the headless crates (`hvc-contracts`, `hvc-terminal`, `hvc-core`, `hvc-editor`, `hvc-test-support`), natively with `-p` or through Docker. GPUI is configured with the Windows backend only, so `hvc-ui` and `hvc-app` do not build on these platforms. |
 
 Some tests still fail on Linux because of platform-specific code (CLI process
 and terminal handling). They are tracked in dedicated issues. If you work on
@@ -188,8 +188,12 @@ Scopes already used in the history: `core`, `ui`, `brownfield`, `terminals`,
 ## 5. Architecture and quality guidelines
 
 1. **Crate boundaries**
-   - `hvc-core` is framework-agnostic: domain, persistence, CLI runtime, LLM
-     routing and orchestration. It must **not** depend on `gpui`.
+   - `hvc-core` is framework-agnostic: domain, migrations, workspace, LLM
+     routing, orchestration and terminal host integration. It must **not** depend on `gpui`.
+   - `hvc-contracts` owns shared values. `hvc-terminal` owns CLI services,
+     repository, process isolation and quota. Neither depends on core, UI or
+     test-support, including development dependencies. Run
+     `scripts/check-crate-boundaries.ps1` to validate the graph.
    - `hvc-ui` calls the core through typed Rust APIs, with no JSON and no IPC.
    - `hvc-editor` owns the rope, selection, undo/redo, diff, Markdown and
      Tree-sitter support.
@@ -295,3 +299,15 @@ Apache-2.0 license and notices.
 
 Source code is published; binary releases are not available yet. See
 `quality/distribution-policy.json` for the current distribution policy.
+
+## Rust style checks
+
+The seven application packages inherit selected workspace lints: unwrap usage,
+wildcard imports, documentation Markdown and undocumented unsafe blocks. CI
+retains `-D warnings`. `clippy.toml` permits unwraps in test functions/modules;
+test-only harness allowances have an explicit reason. Production I/O failures
+still require a `Result`, not a replacement `expect`.
+
+Use the existing formatter defaults. Do not introduce a global formatting
+configuration or reformat vendored GPUI as part of an application cleanup. Keep
+exhaustive internal event matches and justify each public API change separately.

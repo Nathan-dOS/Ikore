@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Manual visual fixtures fail immediately when isolated setup is invalid"
+)]
 //! Isolated native visual fixture: `cargo run -p hvc-ui --example fading_titles`.
 //! Uses no application database, project, credentials or provider connections.
 #[path = "../src/fading_title.rs"]

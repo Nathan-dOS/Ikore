@@ -1,0 +1,9 @@
+{
+  "adapterContractVersion": 2,
+  "catalogSource": "preset",
+  "models": [
+    { "id": "opus", "name": "Claude Opus", "profiles": ["low", "medium", "high"] },
+    { "id": "sonnet", "name": "Claude Sonnet", "profiles": ["low", "medium", "high"] },
+    { "id": "haiku", "name": "Claude Haiku", "profiles": [] }
+  ]
+}

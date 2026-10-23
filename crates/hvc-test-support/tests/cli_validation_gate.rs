@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
+)]
 //! A gated CLI (Gemini) installed above the adapter's validated ceiling parks the job on a CLI
 //! fallback checkpoint before anything launches. "Update & validate" runs the CLI for real and
 //! resumes the pulsation when the adapter contract still holds; a CLI that no longer answers the

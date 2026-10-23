@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only harnesses fail immediately when fixture setup is invalid"
+)]
 //! Development fixture for ADR-027: a v4 pulsation parked at its Specification
 //! checkpoint, so the real GUI can be opened on the Review Brief tab.
 //!
@@ -36,7 +40,10 @@ use hvc_core::{
         composition::{CheckKind, Handle, Uuid, ValidationCommandProfileV1},
         review_brief::failure_choices,
     },
-    persistence_service::*,
+    persistence_service::{
+        ApplyHitlDecisionRequest, EnsureProjectForWorkspaceRequest,
+        GetPulsationRuntimeSnapshotRequest, HitlDecision, PersistenceService,
+    },
     workspace_service::bootstrap_greenfield_workspace,
 };
 use hvc_test_support::composition_replies::{

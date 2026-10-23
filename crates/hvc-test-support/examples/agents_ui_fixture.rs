@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only harnesses fail immediately when fixture setup is invalid"
+)]
 //! Deterministic, isolated profile for visual QA of the Agents CLI/API panel.
 //! Usage: `cargo run -p hvc-test-support --example agents_ui_fixture -- <new-root>`.
 

@@ -155,7 +155,7 @@ pub fn parse_prompt(request: &RecordedRequest) -> PromptFacts {
 pub const VISUALIZER: &str = "visualizer";
 const VISUALIZER_PROMPT_START: &str = "You are the Visualizer";
 
-/// A valid ReviewBriefV1 for a Visualizer request: a headline and one note
+/// A valid `ReviewBriefV1` for a Visualizer request: a headline and one note
 /// citing the first delivered judgement item (or reference), emphasised.
 pub fn visualizer_response(user_prompt: &str) -> Value {
     let input: Value = serde_json::from_str(user_prompt).expect("Visualizer input JSON");

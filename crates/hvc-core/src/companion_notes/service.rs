@@ -1,6 +1,9 @@
 //! Reading and deleting notes. Everything that starts a Scribe turn lives in
 //! the runtime, which owns admission and cancellation.
-use super::*;
+use super::{
+    CompanionNote, LIST_LIMIT, NoteSource, NoteStatus, NoteTag, NoteTurn, NoteTurnKind,
+    NotesSnapshot,
+};
 use crate::feature_forge::service::{check_project, decode, invalid};
 use crate::persistence_service::{PersistenceService, PersistenceServiceError as Error};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};

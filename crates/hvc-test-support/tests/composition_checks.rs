@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
+)]
 //! Host checks inside a composed stage (ADR-022, M4; SC-011, SC-012,
 //! SC-022): a configured command runs against the assembled candidate
 //! after every unit validated; a required failure attributable to one

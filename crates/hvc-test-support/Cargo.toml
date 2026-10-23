@@ -22,3 +22,6 @@ tempfile = "3"
 tokio.workspace = true
 tokio-util.workspace = true
 walkdir = "2"
+
+[lints]
+workspace = true

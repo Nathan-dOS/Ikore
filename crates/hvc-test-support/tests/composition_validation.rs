@@ -2,6 +2,11 @@
 //! launch of a fixture command against a disposable candidate, bounded
 //! logs, reduced environment, timeout and process-tree termination, and
 //! receipts whose status is never inferred.
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only fixture helpers fail immediately on invalid isolated setup"
+)]
+
 use hvc_core::orchestration::SchemaV1;
 use hvc_core::orchestration::composition::validation::{
     ReceiptContext, materialize_candidate, profile::ProfileOrigin, resolve_profile, run_check,

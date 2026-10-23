@@ -10,51 +10,7 @@ use serde::{Deserialize, Serialize};
 pub mod api;
 pub mod cli;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TokenCounts {
-    pub input_tokens: Option<i64>,
-    pub output_tokens: Option<i64>,
-    pub total_tokens: Option<i64>,
-    pub cache_read_tokens: Option<i64>,
-    pub cache_write_tokens: Option<i64>,
-    pub reasoning_tokens: Option<i64>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct UsageMeasurement {
-    pub counts: TokenCounts,
-    pub observed_model: Option<String>,
-    pub partial: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UsageTransport {
-    Api,
-    Cli,
-}
-
-impl UsageTransport {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Api => "api",
-            Self::Cli => "cli",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct UsageContext {
-    pub pulsation_id: Option<String>,
-    pub source_kind: String,
-    pub source_id: String,
-    pub project_id: Option<String>,
-    pub transport: UsageTransport,
-    pub provider_id: String,
-    pub requested_model: Option<String>,
-    pub started_at: String,
-}
+pub use hvc_contracts::usage::{TokenCounts, UsageContext, UsageMeasurement, UsageTransport};
 
 fn connection(path: &Path, read_only: bool) -> rusqlite::Result<Connection> {
     let flags = if read_only {
@@ -286,7 +242,7 @@ pub struct UsageSummary {
     /// rows the totals count - a breakdown, never an addition.
     #[serde(default)]
     pub executors: Vec<ExecutorUsage>,
-    /// API attempts attributed to their persisted canonical or FreeForm target.
+    /// API attempts attributed to their persisted canonical or `FreeForm` target.
     /// This is a breakdown of the same ledger rows included in `totals`.
     #[serde(default)]
     pub agent_targets: Vec<AgentTargetUsage>,

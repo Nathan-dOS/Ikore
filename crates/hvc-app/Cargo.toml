@@ -24,3 +24,6 @@ tokio.workspace = true
 
 [build-dependencies]
 embed-resource = "3.0.8"
+
+[lints]
+workspace = true

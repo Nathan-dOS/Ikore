@@ -6,7 +6,7 @@
 //! existing turn machinery unchanged -- including its `chat_model_calls`
 //! accounting with `pulsation_id: None` -- so this module owns no LLM
 //! dispatch of its own, only the conversation's identity and lifecycle.
-use super::*;
+use super::{Connection, PersistenceService, PersistenceServiceError, Uuid, coordination, params};
 use coordination::invalid;
 use rusqlite::OptionalExtension;
 
@@ -25,7 +25,7 @@ struct CompanionTarget {
 }
 
 impl PersistenceService {
-    /// Returns the conversation_id for `question_set_id`'s resolution
+    /// Returns the `conversation_id` for `question_set_id`'s resolution
     /// conversation, creating one the first time it is opened. The
     /// conversation carries a real provider/model snapshot (never the
     /// `'specification'`/`'host-presented'` pair the rendered questions use),
@@ -246,6 +246,7 @@ mod tests {
         TaskKind, TaskSelection, TaskService, id,
     };
     use crate::orchestration::composition::settings::CompositionSettings;
+    use crate::persistence_service::EnsureProjectForWorkspaceRequest;
 
     struct Fixture {
         _data: tempfile::TempDir,

@@ -153,3 +153,10 @@ durable evidence under the current policy, including after restart.
 This boundary covers host-provided content and a finite detector catalog, while
 native CLI tools remain available. See [secret sanitization](../secret-sanitization.md)
 and the [validation report](../../quality/secret-sanitization-validation-2026-10-22.md).
+
+## ADR-030: terminal and shared-contract boundaries
+
+CLI services, repository, adapters, processes and subscription quota belong to
+`hvc-terminal`; shared values belong to `hvc-contracts`. Core retains host
+authorization, orchestration, migrations and compatibility facades. See the
+[decision and validation requirements](030-terminal-boundary.md).

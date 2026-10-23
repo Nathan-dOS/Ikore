@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
+)]
 //! Real provider/parser, fresh no-vault code context, durable Companion questions and resume.
 use hvc_core::{
     AppCoreDependencies,

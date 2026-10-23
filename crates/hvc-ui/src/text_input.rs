@@ -1000,7 +1000,10 @@ fn previous_word_boundary_utf16(text: &str, offset: usize) -> usize {
     }
     let word_start_byte = match trimmed.rfind(char::is_whitespace) {
         Some(idx) => {
-            let ws_char = trimmed[idx..].chars().next().unwrap();
+            let ws_char = trimmed[idx..]
+                .chars()
+                .next()
+                .expect("rfind returns the start of an existing whitespace character");
             idx + ws_char.len_utf8()
         }
         None => 0,

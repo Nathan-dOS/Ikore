@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
+)]
 //! ADR-027 M1, M3 and M4: the brief of every artifact checkpoint of a real v4
 //! pulsation is read from the exact waiting checkpoint, labelled from the
 //! frozen batch, refused once the checkpoint is stale, and compared with the

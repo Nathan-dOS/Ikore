@@ -1,6 +1,6 @@
 //! Temporary read-only audit of feature tasks. Delete after use.
 //!
-//! Opens the live database with SQLITE_OPEN_READ_ONLY so it is safe to run
+//! Opens the live database with `SQLITE_OPEN_READ_ONLY` so it is safe to run
 //! while the app holds the WAL.
 
 use rusqlite::{Connection, OpenFlags};

@@ -260,7 +260,11 @@ impl LogsModel {
                 };
                 groups.insert(key.clone(), (pulsation_id, title, status, Vec::new()));
             }
-            groups.get_mut(&key).unwrap().3.push(run.clone());
+            groups
+                .get_mut(&key)
+                .expect("every run group is inserted before its first member")
+                .3
+                .push(run.clone());
         }
 
         let pulsation_keys: Vec<&String> = group_keys.iter().filter(|k| *k != "general").collect();

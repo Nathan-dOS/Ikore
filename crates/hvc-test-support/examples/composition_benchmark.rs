@@ -1,14 +1,21 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only harnesses fail immediately when fixture setup is invalid"
+)]
 //! Cost/quality qualification of pipeline v4 (ADR-022, M7).
 //!
 //! Fixture mode (no cost, default):
-//!   cargo run -p hvc-test-support --example composition_benchmark -- --mode fixture
+//!   cargo run -p hvc-test-support --example `composition_benchmark` -- --mode fixture
 //! Pilot mode (real provider, explicit spend limit, never in CI):
-//!   cargo run -p hvc-test-support --example composition_benchmark -- --mode pilot \
-//!     --provider-id openai --endpoint-url https://api.openai.com/v1 \
-//!     --model-id <model> --api-key-env OPENAI_API_KEY --spend-limit-micro-usd 500000
+//!   cargo run -p hvc-test-support --example `composition_benchmark` -- --mode pilot \
+//!     --provider-id openai --endpoint-url <https://api.openai.com/v1> \
+//!     --model-id <model> --api-key-env `OPENAI_API_KEY` --spend-limit-micro-usd 500000
 //! Optional filters: --arm A,B,C,D  --fixture <id-substring>  --held-out (include held-out set)
 //!   --output-dir quality
-use hvc_test_support::composition_benchmark::*;
+use hvc_test_support::composition_benchmark::{
+    Arm, FIXTURE_VERSION, Fixture, Mode, PilotConfig, fixtures_sha256, load_fixtures,
+    qualification, render_markdown, run_observation, summarize,
+};
 use serde_json::json;
 use std::collections::BTreeMap;
 

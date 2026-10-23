@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
+)]
 //! Paired A/B of the Claude thinking budget on the stages that think the most.
 //!
 //! Paid and slow: it runs the real `claude` CLI found on PATH (Haiku) for
@@ -23,7 +27,7 @@ use std::time::{Duration, Instant};
 /// Generous: a Specification alone took 150 s in the analysed pulsation.
 const STAGE_DEADLINE: Duration = Duration::from_secs(15 * 60);
 
-/// The batch of "Haiku CLI teste 1" (ToDoListWebView, 2026-09-26), without
+/// The batch of "Haiku CLI teste 1" (`ToDoListWebView`, 2026-09-26), without
 /// its task dependencies and feature link.
 fn todo_task() -> TaskDraft {
     let criteria = [

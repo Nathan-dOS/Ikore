@@ -1,0 +1,2636 @@
+{
+  "schema_version": 2,
+  "status": "confirmed_pass",
+  "provisional": false,
+  "generated_at_utc": "2026-10-23T15:44:45.434453+00:00",
+  "method": "split_workspace",
+  "method_description": "Default workspace test targets were executed in three disjoint partitions: workspace excluding hvc-core, hvc-core unit library tests, and hvc-core doctests. This is not a successful single cargo test-all invocation.",
+  "partitions": [
+    {
+      "name": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log",
+      "source_log_sha256": "531b0c1a127ba66611e9cd8de2ce0500865496fd17114fd698f20300924dde9d",
+      "result_evidence": "target/extraction/remaining-workspace-result.json",
+      "record": {
+        "seconds": 731.660832,
+        "exitCode": 0
+      },
+      "exitCode": 0
+    },
+    {
+      "name": "core-tests",
+      "source_log": "target/extraction/final-core-tests.log",
+      "source_log_sha256": "7433fa303c92a72389e54f73d842cadaa7df5c8cd6028a6ce7be29178d946595",
+      "result_evidence": "target/extraction/final-validation-checks.json",
+      "record": {
+        "name": "core-tests",
+        "exitCode": 0,
+        "log": "target/extraction/final-core-tests.log",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "-p",
+          "hvc-core",
+          "--lib",
+          "--",
+          "--test-threads=2"
+        ],
+        "startedAtUtc": "2026-10-23T15:37:36.4650504Z",
+        "seconds": 314.0462553
+      },
+      "exitCode": 0
+    },
+    {
+      "name": "core-doc",
+      "source_log": "target/extraction/final-core-doc.log",
+      "source_log_sha256": "8f9ae675aae8e66ba64f43fe5aeb13d61c9f95b4e2963b2fdcad88b610fdd0fc",
+      "result_evidence": "target/extraction/final-validation-checks.json",
+      "record": {
+        "name": "core-doc",
+        "exitCode": 0,
+        "log": "target/extraction/final-core-doc.log",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "-p",
+          "hvc-core",
+          "--doc"
+        ],
+        "startedAtUtc": "2026-10-23T15:42:50.5155228Z",
+        "seconds": 49.6902878
+      },
+      "exitCode": 0
+    }
+  ],
+  "validation_checks": "target/extraction/final-validation-checks.json",
+  "parse_issues": [],
+  "target_coverage": {
+    "method": "Manifest and filesystem enumeration of default Cargo test targets",
+    "expected_target_count": 45,
+    "observed_target_count": 45,
+    "complete": true,
+    "missing": [],
+    "unexpected": [],
+    "duplicates": [],
+    "expected_targets": [
+      {
+        "crate": "hvc-app",
+        "kind": "unit",
+        "source": "src/main.rs",
+        "target_type": "binary"
+      },
+      {
+        "crate": "hvc-contracts",
+        "kind": "doc",
+        "source": null,
+        "target_type": "doctest"
+      },
+      {
+        "crate": "hvc-contracts",
+        "kind": "integration",
+        "source": "tests/contracts.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-contracts",
+        "kind": "unit",
+        "source": "src/lib.rs",
+        "target_type": "library"
+      },
+      {
+        "crate": "hvc-core",
+        "kind": "doc",
+        "source": null,
+        "target_type": "doctest"
+      },
+      {
+        "crate": "hvc-core",
+        "kind": "unit",
+        "source": "src/lib.rs",
+        "target_type": "library"
+      },
+      {
+        "crate": "hvc-editor",
+        "kind": "doc",
+        "source": null,
+        "target_type": "doctest"
+      },
+      {
+        "crate": "hvc-editor",
+        "kind": "unit",
+        "source": "src/lib.rs",
+        "target_type": "library"
+      },
+      {
+        "crate": "hvc-terminal",
+        "kind": "doc",
+        "source": null,
+        "target_type": "doctest"
+      },
+      {
+        "crate": "hvc-terminal",
+        "kind": "unit",
+        "source": "src/lib.rs",
+        "target_type": "library"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "doc",
+        "source": null,
+        "target_type": "doctest"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "example",
+        "source": "examples/pulsation_ui_fixture.rs",
+        "target_type": "example"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/antigravity_live_pulsation.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/brownfield_bf5.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/cli_executor.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/cli_validation_gate.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/composition_benchmark.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/composition_checks.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/composition_cli.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/composition_failures.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/composition_parallel.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/composition_path_confirmation.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/composition_pipeline.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/composition_recipes.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/composition_units.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/composition_validation.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/coordination_upgrade.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/corrective_retry.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/learning_worker.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/orchestration_baseline.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/preparation_workflow.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/pulsation_m5.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/review_brief.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/serial_upgrade.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/serial_worker.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/stage_failure_checkpoint.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/terminal_host_integration.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/thinking_budget_ab.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/token_usage.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "integration",
+        "source": "tests/workspace_flow.rs",
+        "target_type": "integration"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "unit",
+        "source": "src/bin/check_fixture.rs",
+        "target_type": "binary"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "unit",
+        "source": "src/bin/cli_fixture.rs",
+        "target_type": "binary"
+      },
+      {
+        "crate": "hvc-test-support",
+        "kind": "unit",
+        "source": "src/lib.rs",
+        "target_type": "library"
+      },
+      {
+        "crate": "hvc-ui",
+        "kind": "doc",
+        "source": null,
+        "target_type": "doctest"
+      },
+      {
+        "crate": "hvc-ui",
+        "kind": "unit",
+        "source": "src/lib.rs",
+        "target_type": "library"
+      }
+    ]
+  },
+  "incomplete_suites": 0,
+  "counting_policy": "Totals include completed suite summaries only; unit includes binary targets. Ignored tests are not counted as passed.",
+  "totals": {
+    "suites": 45,
+    "passed": 1421,
+    "failed": 0,
+    "ignored": 13,
+    "measured": 0,
+    "filtered_out": 0
+  },
+  "by_crate": {
+    "hvc-app": {
+      "suites": 1,
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    "hvc-contracts": {
+      "suites": 3,
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    "hvc-core": {
+      "suites": 2,
+      "passed": 743,
+      "failed": 0,
+      "ignored": 1,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    "hvc-editor": {
+      "suites": 2,
+      "passed": 17,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    "hvc-terminal": {
+      "suites": 2,
+      "passed": 197,
+      "failed": 0,
+      "ignored": 3,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    "hvc-test-support": {
+      "suites": 33,
+      "passed": 134,
+      "failed": 0,
+      "ignored": 9,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    "hvc-ui": {
+      "suites": 2,
+      "passed": 320,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    }
+  },
+  "by_kind": {
+    "doc": {
+      "suites": 6,
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    "example": {
+      "suites": 1,
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    "integration": {
+      "suites": 29,
+      "passed": 119,
+      "failed": 0,
+      "ignored": 9,
+      "measured": 0,
+      "filtered_out": 0
+    },
+    "unit": {
+      "suites": 9,
+      "passed": 1297,
+      "failed": 0,
+      "ignored": 4,
+      "measured": 0,
+      "filtered_out": 0
+    }
+  },
+  "by_crate_and_kind": {
+    "hvc-app": {
+      "unit": {
+        "suites": 1,
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      }
+    },
+    "hvc-contracts": {
+      "doc": {
+        "suites": 1,
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "integration": {
+        "suites": 1,
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "unit": {
+        "suites": 1,
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      }
+    },
+    "hvc-core": {
+      "doc": {
+        "suites": 1,
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "unit": {
+        "suites": 1,
+        "passed": 741,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered_out": 0
+      }
+    },
+    "hvc-editor": {
+      "doc": {
+        "suites": 1,
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "unit": {
+        "suites": 1,
+        "passed": 17,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      }
+    },
+    "hvc-terminal": {
+      "doc": {
+        "suites": 1,
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "unit": {
+        "suites": 1,
+        "passed": 197,
+        "failed": 0,
+        "ignored": 3,
+        "measured": 0,
+        "filtered_out": 0
+      }
+    },
+    "hvc-test-support": {
+      "doc": {
+        "suites": 1,
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "example": {
+        "suites": 1,
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "integration": {
+        "suites": 28,
+        "passed": 109,
+        "failed": 0,
+        "ignored": 9,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "unit": {
+        "suites": 3,
+        "passed": 22,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      }
+    },
+    "hvc-ui": {
+      "doc": {
+        "suites": 1,
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      },
+      "unit": {
+        "suites": 1,
+        "passed": 320,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0
+      }
+    }
+  },
+  "ignored_tests": [
+    {
+      "crate": "hvc-terminal",
+      "kind": "unit",
+      "name": "quota::endpoints::spikes::spike_claude_usage_endpoint_shape",
+      "reason": "spike S2: reads the signed-in Claude Code token and calls api.anthropic.com once",
+      "line": 73
+    },
+    {
+      "crate": "hvc-terminal",
+      "kind": "unit",
+      "name": "quota::endpoints::spikes::spike_codex_usage_endpoint_shape",
+      "reason": "spike S1: reads the signed-in Codex token and calls chatgpt.com once, honestly identified",
+      "line": 74
+    },
+    {
+      "crate": "hvc-terminal",
+      "kind": "unit",
+      "name": "terminals::plan_usage::tests::codex_plan_usage_live_read",
+      "reason": "requires an installed Codex CLI and a signed-in subscription account",
+      "line": 155
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "name": "authenticated_antigravity_runs_a_whole_pulsation_on_gemini_flash",
+      "reason": "Requires local Antigravity (agy) authentication and network; runs a whole pulsation on Gemini Flash",
+      "line": 309
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "name": "authenticated_antigravity_runs_the_specification_stage_on_claude_sonnet",
+      "reason": "Requires local Antigravity (agy) authentication, network and Claude/GPT quota; runs Intake and Specification",
+      "line": 310
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "name": "authenticated_antigravity_accepts_every_registry_payload_schema",
+      "reason": "Requires local Antigravity (agy) authentication and network; sends six synthetic prompts",
+      "line": 324
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "name": "authenticated_antigravity_companion_smoke",
+      "reason": "Requires local Antigravity (agy) authentication and network; sends one synthetic message",
+      "line": 325
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "name": "authenticated_antigravity_pipeline_smoke",
+      "reason": "Requires local Antigravity (agy) authentication and network; sends two synthetic prompts",
+      "line": 326
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "name": "authenticated_claude_model_identity_smoke",
+      "reason": "Requires local Claude authentication and network; sends one synthetic Haiku identity probe",
+      "line": 327
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "name": "authenticated_codex_companion_smoke",
+      "reason": "Requires local Codex authentication and network; sends only synthetic messages",
+      "line": 328
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "name": "authenticated_codex_turn_context_model_smoke",
+      "reason": "Requires local Codex authentication and network; sends one synthetic model identity probe",
+      "line": 329
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "name": "claude_thinking_budget_paired_ab_on_specification_and_contract",
+      "reason": "paid: runs the real Claude CLI (Haiku) for Specification and Contract",
+      "line": 573
+    },
+    {
+      "crate": "hvc-core",
+      "kind": "unit",
+      "name": "agent_runtime::prompt_tests::print_the_prompt_a_compact_model_receives",
+      "reason": "manual inspection aid",
+      "line": 36
+    }
+  ],
+  "suites": [
+    {
+      "crate": "hvc-app",
+      "kind": "unit",
+      "target": "unittests src\\main.rs",
+      "source": "src/main.rs",
+      "executable": "target\\debug\\deps\\hard_vibe_code-3ac6d522199b4cb1.exe",
+      "line": 9,
+      "announced_tests": 0,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 0,
+          "announced_line": 11,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 0,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.0,
+            "line": 13
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.0,
+        "line": 13,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-contracts",
+      "kind": "unit",
+      "target": "unittests src\\lib.rs",
+      "source": "src/lib.rs",
+      "executable": "target\\debug\\deps\\hvc_contracts-838d6b97012cadcd.exe",
+      "line": 15,
+      "announced_tests": 0,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 0,
+          "announced_line": 17,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 0,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.0,
+            "line": 19
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.0,
+        "line": 19,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-contracts",
+      "kind": "integration",
+      "target": "tests\\contracts.rs",
+      "source": "tests/contracts.rs",
+      "executable": "target\\debug\\deps\\contracts-fe9f519798ce8d4c.exe",
+      "line": 21,
+      "announced_tests": 10,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 10,
+          "announced_line": 23,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 10,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.0,
+            "line": 35
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.0,
+        "line": 35,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-editor",
+      "kind": "unit",
+      "target": "unittests src\\lib.rs",
+      "source": "src/lib.rs",
+      "executable": "target\\debug\\deps\\hvc_editor-8b00cac0c378bc90.exe",
+      "line": 37,
+      "announced_tests": 17,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 17,
+          "announced_line": 39,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 17,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.03,
+            "line": 58
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 17,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.03,
+        "line": 58,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-terminal",
+      "kind": "unit",
+      "target": "unittests src\\lib.rs",
+      "source": "src/lib.rs",
+      "executable": "target\\debug\\deps\\hvc_terminal-36c7d19ec9638424.exe",
+      "line": 60,
+      "announced_tests": 200,
+      "ignored_tests": [
+        {
+          "name": "quota::endpoints::spikes::spike_claude_usage_endpoint_shape",
+          "reason": "spike S2: reads the signed-in Claude Code token and calls api.anthropic.com once",
+          "line": 73
+        },
+        {
+          "name": "quota::endpoints::spikes::spike_codex_usage_endpoint_shape",
+          "reason": "spike S1: reads the signed-in Codex token and calls chatgpt.com once, honestly identified",
+          "line": 74
+        },
+        {
+          "name": "terminals::plan_usage::tests::codex_plan_usage_live_read",
+          "reason": "requires an installed Codex CLI and a signed-in subscription account",
+          "line": 155
+        }
+      ],
+      "subruns": [
+        {
+          "announced_tests": 200,
+          "announced_line": 62,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 197,
+            "failed": 0,
+            "ignored": 3,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 65.68,
+            "line": 264
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 197,
+        "failed": 0,
+        "ignored": 3,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 65.68,
+        "line": 264,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "unit",
+      "target": "unittests src\\lib.rs",
+      "source": "src/lib.rs",
+      "executable": "target\\debug\\deps\\hvc_test_support-60b50ffc15f51d70.exe",
+      "line": 266,
+      "announced_tests": 22,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 22,
+          "announced_line": 268,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 22,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 6.96,
+            "line": 292
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 22,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 6.96,
+        "line": 292,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "unit",
+      "target": "unittests src\\bin\\check_fixture.rs",
+      "source": "src/bin/check_fixture.rs",
+      "executable": "target\\debug\\deps\\check_fixture-a9fcde7e37839d55.exe",
+      "line": 294,
+      "announced_tests": 0,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 0,
+          "announced_line": 296,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 0,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.0,
+            "line": 298
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.0,
+        "line": 298,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "unit",
+      "target": "unittests src\\bin\\cli_fixture.rs",
+      "source": "src/bin/cli_fixture.rs",
+      "executable": "target\\debug\\deps\\cli_fixture-dd1b5eb91779e06e.exe",
+      "line": 300,
+      "announced_tests": 0,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 0,
+          "announced_line": 302,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 0,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.0,
+            "line": 304
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.0,
+        "line": 304,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\antigravity_live_pulsation.rs",
+      "source": "tests/antigravity_live_pulsation.rs",
+      "executable": "target\\debug\\deps\\antigravity_live_pulsation-6a27dffc349169a2.exe",
+      "line": 306,
+      "announced_tests": 2,
+      "ignored_tests": [
+        {
+          "name": "authenticated_antigravity_runs_a_whole_pulsation_on_gemini_flash",
+          "reason": "Requires local Antigravity (agy) authentication and network; runs a whole pulsation on Gemini Flash",
+          "line": 309
+        },
+        {
+          "name": "authenticated_antigravity_runs_the_specification_stage_on_claude_sonnet",
+          "reason": "Requires local Antigravity (agy) authentication, network and Claude/GPT quota; runs Intake and Specification",
+          "line": 310
+        }
+      ],
+      "subruns": [
+        {
+          "announced_tests": 2,
+          "announced_line": 308,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 0,
+            "failed": 0,
+            "ignored": 2,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.0,
+            "line": 312
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 2,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.0,
+        "line": 312,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\brownfield_bf5.rs",
+      "source": "tests/brownfield_bf5.rs",
+      "executable": "target\\debug\\deps\\brownfield_bf5-6c3731f54cafd611.exe",
+      "line": 314,
+      "announced_tests": 1,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 1,
+          "announced_line": 316,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 10.66,
+            "line": 319
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 10.66,
+        "line": 319,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\cli_executor.rs",
+      "source": "tests/cli_executor.rs",
+      "executable": "target\\debug\\deps\\cli_executor-06893738b0956abb.exe",
+      "line": 321,
+      "announced_tests": 20,
+      "ignored_tests": [
+        {
+          "name": "authenticated_antigravity_accepts_every_registry_payload_schema",
+          "reason": "Requires local Antigravity (agy) authentication and network; sends six synthetic prompts",
+          "line": 324
+        },
+        {
+          "name": "authenticated_antigravity_companion_smoke",
+          "reason": "Requires local Antigravity (agy) authentication and network; sends one synthetic message",
+          "line": 325
+        },
+        {
+          "name": "authenticated_antigravity_pipeline_smoke",
+          "reason": "Requires local Antigravity (agy) authentication and network; sends two synthetic prompts",
+          "line": 326
+        },
+        {
+          "name": "authenticated_claude_model_identity_smoke",
+          "reason": "Requires local Claude authentication and network; sends one synthetic Haiku identity probe",
+          "line": 327
+        },
+        {
+          "name": "authenticated_codex_companion_smoke",
+          "reason": "Requires local Codex authentication and network; sends only synthetic messages",
+          "line": 328
+        },
+        {
+          "name": "authenticated_codex_turn_context_model_smoke",
+          "reason": "Requires local Codex authentication and network; sends one synthetic model identity probe",
+          "line": 329
+        }
+      ],
+      "subruns": [
+        {
+          "announced_tests": 20,
+          "announced_line": 323,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 14,
+            "failed": 0,
+            "ignored": 6,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 49.59,
+            "line": 345
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 14,
+        "failed": 0,
+        "ignored": 6,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 49.59,
+        "line": 345,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\cli_validation_gate.rs",
+      "source": "tests/cli_validation_gate.rs",
+      "executable": "target\\debug\\deps\\cli_validation_gate-d3d8a6bc08e7789d.exe",
+      "line": 347,
+      "announced_tests": 3,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 3,
+          "announced_line": 349,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 3,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 37.53,
+            "line": 354
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 37.53,
+        "line": 354,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\composition_benchmark.rs",
+      "source": "tests/composition_benchmark.rs",
+      "executable": "target\\debug\\deps\\composition_benchmark-be7365f481f095cc.exe",
+      "line": 356,
+      "announced_tests": 2,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 2,
+          "announced_line": 358,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 2,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 15.25,
+            "line": 362
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 15.25,
+        "line": 362,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\composition_checks.rs",
+      "source": "tests/composition_checks.rs",
+      "executable": "target\\debug\\deps\\composition_checks-508fbe445381afa6.exe",
+      "line": 364,
+      "announced_tests": 5,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 5,
+          "announced_line": 366,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 5,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 21.57,
+            "line": 373
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 21.57,
+        "line": 373,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\composition_cli.rs",
+      "source": "tests/composition_cli.rs",
+      "executable": "target\\debug\\deps\\composition_cli-b74fe985d0f1e78e.exe",
+      "line": 375,
+      "announced_tests": 2,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 2,
+          "announced_line": 377,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 2,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 24.42,
+            "line": 381
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 24.42,
+        "line": 381,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\composition_failures.rs",
+      "source": "tests/composition_failures.rs",
+      "executable": "target\\debug\\deps\\composition_failures-537174d05274fbbc.exe",
+      "line": 383,
+      "announced_tests": 7,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 7,
+          "announced_line": 385,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 7,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 20.99,
+            "line": 394
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 20.99,
+        "line": 394,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\composition_parallel.rs",
+      "source": "tests/composition_parallel.rs",
+      "executable": "target\\debug\\deps\\composition_parallel-0f9fd25060bfbef2.exe",
+      "line": 396,
+      "announced_tests": 3,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 3,
+          "announced_line": 398,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 3,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 17.63,
+            "line": 403
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 17.63,
+        "line": 403,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\composition_path_confirmation.rs",
+      "source": "tests/composition_path_confirmation.rs",
+      "executable": "target\\debug\\deps\\composition_path_confirmation-2d805a799f1aab52.exe",
+      "line": 405,
+      "announced_tests": 3,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 3,
+          "announced_line": 407,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 3,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 3.67,
+            "line": 412
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 3.67,
+        "line": 412,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\composition_pipeline.rs",
+      "source": "tests/composition_pipeline.rs",
+      "executable": "target\\debug\\deps\\composition_pipeline-abdde0de8b6b0bf1.exe",
+      "line": 414,
+      "announced_tests": 1,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 1,
+          "announced_line": 416,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 5.32,
+            "line": 419
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 5.32,
+        "line": 419,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\composition_recipes.rs",
+      "source": "tests/composition_recipes.rs",
+      "executable": "target\\debug\\deps\\composition_recipes-a97f55f6b0088a18.exe",
+      "line": 421,
+      "announced_tests": 3,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 3,
+          "announced_line": 423,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 3,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 12.92,
+            "line": 428
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 12.92,
+        "line": 428,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\composition_units.rs",
+      "source": "tests/composition_units.rs",
+      "executable": "target\\debug\\deps\\composition_units-6827ec8406bf38ed.exe",
+      "line": 430,
+      "announced_tests": 6,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 6,
+          "announced_line": 432,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 6,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 22.66,
+            "line": 440
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 22.66,
+        "line": 440,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\composition_validation.rs",
+      "source": "tests/composition_validation.rs",
+      "executable": "target\\debug\\deps\\composition_validation-4b8edf614f469667.exe",
+      "line": 442,
+      "announced_tests": 6,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 6,
+          "announced_line": 444,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 6,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 3.15,
+            "line": 452
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 3.15,
+        "line": 452,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\coordination_upgrade.rs",
+      "source": "tests/coordination_upgrade.rs",
+      "executable": "target\\debug\\deps\\coordination_upgrade-fa9047c148657cd1.exe",
+      "line": 454,
+      "announced_tests": 2,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 2,
+          "announced_line": 456,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 2,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 1.15,
+            "line": 460
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 1.15,
+        "line": 460,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\corrective_retry.rs",
+      "source": "tests/corrective_retry.rs",
+      "executable": "target\\debug\\deps\\corrective_retry-8f72e0d280498ac2.exe",
+      "line": 462,
+      "announced_tests": 1,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 1,
+          "announced_line": 464,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 5.95,
+            "line": 467
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 5.95,
+        "line": 467,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\learning_worker.rs",
+      "source": "tests/learning_worker.rs",
+      "executable": "target\\debug\\deps\\learning_worker-09adab1f7a19f0b2.exe",
+      "line": 469,
+      "announced_tests": 2,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 2,
+          "announced_line": 471,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 2,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 3.44,
+            "line": 475
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 3.44,
+        "line": 475,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\orchestration_baseline.rs",
+      "source": "tests/orchestration_baseline.rs",
+      "executable": "target\\debug\\deps\\orchestration_baseline-7568cec270832f54.exe",
+      "line": 477,
+      "announced_tests": 9,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 9,
+          "announced_line": 479,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 9,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.6,
+            "line": 490
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.6,
+        "line": 490,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\preparation_workflow.rs",
+      "source": "tests/preparation_workflow.rs",
+      "executable": "target\\debug\\deps\\preparation_workflow-b941eaa49798b8af.exe",
+      "line": 492,
+      "announced_tests": 2,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 2,
+          "announced_line": 494,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 2,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 3.35,
+            "line": 498
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 3.35,
+        "line": 498,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\pulsation_m5.rs",
+      "source": "tests/pulsation_m5.rs",
+      "executable": "target\\debug\\deps\\pulsation_m5-4f8b7519ff2aff1a.exe",
+      "line": 500,
+      "announced_tests": 1,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 1,
+          "announced_line": 502,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 62.19,
+            "line": 506
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 62.19,
+        "line": 506,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\review_brief.rs",
+      "source": "tests/review_brief.rs",
+      "executable": "target\\debug\\deps\\review_brief-a77ebdd4468cb2e6.exe",
+      "line": 508,
+      "announced_tests": 7,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 7,
+          "announced_line": 510,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 7,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 37.09,
+            "line": 519
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 37.09,
+        "line": 519,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\serial_upgrade.rs",
+      "source": "tests/serial_upgrade.rs",
+      "executable": "target\\debug\\deps\\serial_upgrade-bf98615bf5dbfdaa.exe",
+      "line": 521,
+      "announced_tests": 19,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 19,
+          "announced_line": 523,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 19,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 11.34,
+            "line": 544
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 19,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 11.34,
+        "line": 544,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\serial_worker.rs",
+      "source": "tests/serial_worker.rs",
+      "executable": "target\\debug\\deps\\serial_worker-8cd5d95a4c85f9fd.exe",
+      "line": 546,
+      "announced_tests": 1,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 1,
+          "announced_line": 548,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 5.44,
+            "line": 551
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 5.44,
+        "line": 551,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\stage_failure_checkpoint.rs",
+      "source": "tests/stage_failure_checkpoint.rs",
+      "executable": "target\\debug\\deps\\stage_failure_checkpoint-63bbf5a8ee5cae13.exe",
+      "line": 553,
+      "announced_tests": 2,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 2,
+          "announced_line": 555,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 2,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 12.73,
+            "line": 559
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 12.73,
+        "line": 559,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\terminal_host_integration.rs",
+      "source": "tests/terminal_host_integration.rs",
+      "executable": "target\\debug\\deps\\terminal_host_integration-6f091b32fb03e58d.exe",
+      "line": 561,
+      "announced_tests": 3,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 3,
+          "announced_line": 563,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 3,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 3.81,
+            "line": 568
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 3.81,
+        "line": 568,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\thinking_budget_ab.rs",
+      "source": "tests/thinking_budget_ab.rs",
+      "executable": "target\\debug\\deps\\thinking_budget_ab-f6fb0214e38933b4.exe",
+      "line": 570,
+      "announced_tests": 1,
+      "ignored_tests": [
+        {
+          "name": "claude_thinking_budget_paired_ab_on_specification_and_contract",
+          "reason": "paid: runs the real Claude CLI (Haiku) for Specification and Contract",
+          "line": 573
+        }
+      ],
+      "subruns": [
+        {
+          "announced_tests": 1,
+          "announced_line": 572,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 0,
+            "failed": 0,
+            "ignored": 1,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.0,
+            "line": 575
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.0,
+        "line": 575,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\token_usage.rs",
+      "source": "tests/token_usage.rs",
+      "executable": "target\\debug\\deps\\token_usage-d0f2c30c7f8bd075.exe",
+      "line": 577,
+      "announced_tests": 3,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 3,
+          "announced_line": 579,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 3,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 2.28,
+            "line": 584
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 2.28,
+        "line": 584,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "integration",
+      "target": "tests\\workspace_flow.rs",
+      "source": "tests/workspace_flow.rs",
+      "executable": "target\\debug\\deps\\workspace_flow-8015149985b2e1d9.exe",
+      "line": 586,
+      "announced_tests": 1,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 1,
+          "announced_line": 588,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.03,
+            "line": 591
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.03,
+        "line": 591,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "example",
+      "target": "unittests examples\\pulsation_ui_fixture.rs",
+      "source": "examples/pulsation_ui_fixture.rs",
+      "executable": "target\\debug\\examples\\pulsation_ui_fixture-da8bbb6133df4dde.exe",
+      "line": 593,
+      "announced_tests": 3,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 3,
+          "announced_line": 595,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 3,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 1.14,
+            "line": 600
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 1.14,
+        "line": 600,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-ui",
+      "kind": "unit",
+      "target": "unittests src\\lib.rs",
+      "source": "src/lib.rs",
+      "executable": "target\\debug\\deps\\hvc_ui-a2f97d9a51fd3467.exe",
+      "line": 602,
+      "announced_tests": 320,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 320,
+          "announced_line": 604,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 320,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 85.58,
+            "line": 926
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 320,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 85.58,
+        "line": 926,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-contracts",
+      "kind": "doc",
+      "target": "hvc_contracts",
+      "source": null,
+      "executable": null,
+      "line": 928,
+      "announced_tests": 0,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 0,
+          "announced_line": 930,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 0,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.0,
+            "line": 932
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.0,
+        "line": 932,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-editor",
+      "kind": "doc",
+      "target": "hvc_editor",
+      "source": null,
+      "executable": null,
+      "line": 934,
+      "announced_tests": 0,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 0,
+          "announced_line": 936,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 0,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.0,
+            "line": 938
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.0,
+        "line": 938,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-terminal",
+      "kind": "doc",
+      "target": "hvc_terminal",
+      "source": null,
+      "executable": null,
+      "line": 940,
+      "announced_tests": 0,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 0,
+          "announced_line": 942,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 0,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.0,
+            "line": 944
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.0,
+        "line": 944,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-test-support",
+      "kind": "doc",
+      "target": "hvc_test_support",
+      "source": null,
+      "executable": null,
+      "line": 946,
+      "announced_tests": 0,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 0,
+          "announced_line": 948,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 0,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.0,
+            "line": 950
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.0,
+        "line": 950,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-ui",
+      "kind": "doc",
+      "target": "hvc_ui",
+      "source": null,
+      "executable": null,
+      "line": 952,
+      "announced_tests": 0,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 0,
+          "announced_line": 954,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 0,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.0,
+            "line": 956
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.0,
+        "line": 956,
+        "subrun_count": 1
+      },
+      "partition": "remaining-workspace",
+      "source_log": "target/extraction/remaining-workspace-tests.log"
+    },
+    {
+      "crate": "hvc-core",
+      "kind": "unit",
+      "target": "unittests src\\lib.rs",
+      "source": "src/lib.rs",
+      "executable": "target\\debug\\deps\\hvc_core-476240692d3f4a10.exe",
+      "line": 8,
+      "announced_tests": 742,
+      "ignored_tests": [
+        {
+          "name": "agent_runtime::prompt_tests::print_the_prompt_a_compact_model_receives",
+          "reason": "manual inspection aid",
+          "line": 36
+        }
+      ],
+      "subruns": [
+        {
+          "announced_tests": 742,
+          "announced_line": 10,
+          "ignored_start": 0,
+          "test_results": [],
+          "result": {
+            "outcome": "ok",
+            "passed": 741,
+            "failed": 0,
+            "ignored": 1,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 311.82,
+            "line": 754
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 741,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 311.82,
+        "line": 754,
+        "subrun_count": 1
+      },
+      "partition": "core-tests",
+      "source_log": "target/extraction/final-core-tests.log"
+    },
+    {
+      "crate": "hvc-core",
+      "kind": "doc",
+      "target": "hvc_core",
+      "source": null,
+      "executable": null,
+      "line": 9,
+      "announced_tests": 2,
+      "ignored_tests": [],
+      "subruns": [
+        {
+          "announced_tests": 1,
+          "announced_line": 11,
+          "ignored_start": 0,
+          "test_results": [
+            {
+              "name": "crates\\hvc-core\\src\\app_core.rs - app_core::DataDirectoryLock (line 127) - compile",
+              "outcome": "ok",
+              "line": 12
+            }
+          ],
+          "result": {
+            "outcome": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.0,
+            "line": 14
+          }
+        },
+        {
+          "announced_tests": 1,
+          "announced_line": 17,
+          "ignored_start": 0,
+          "test_results": [
+            {
+              "name": "crates\\hvc-core\\src\\app_core.rs - app_core::DataDirectoryLock (line 139) - compile fail",
+              "outcome": "ok",
+              "line": 18
+            }
+          ],
+          "result": {
+            "outcome": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filtered_out": 0,
+            "seconds": 0.22,
+            "line": 20
+          }
+        }
+      ],
+      "result": {
+        "outcome": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "seconds": 0.22,
+        "line": 20,
+        "subrun_count": 2
+      },
+      "partition": "core-doc",
+      "source_log": "target/extraction/final-core-doc.log"
+    }
+  ]
+}

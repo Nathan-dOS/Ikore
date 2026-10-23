@@ -6,7 +6,13 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator};
 
-use super::*;
+use super::{
+    CodeContextExtractor, CodeContextFacts, CollectionBudget, ContentSha256, ContextCoverage,
+    ContractError, CoverageState, DocumentationAvailability, ExtractorRevision, ObservedReference,
+    ReferenceBinding, ReferenceBindingKind, ReferenceDescriptor, ReferenceRelation,
+    ReferenceResolution, RelativeSourcePath, SchemaV1, SourceRevision, SourceSnapshot,
+    StructuredSymbol, StructuredSymbolKind, SymbolVisibility,
+};
 
 pub const TREE_SITTER_PARSER_VERSION: &str = "tree-sitter-0.26.13;rust-0.24.2;typescript-0.23.2";
 pub const RUST_QUERY_VERSION: &str = "rust-structure-v2";

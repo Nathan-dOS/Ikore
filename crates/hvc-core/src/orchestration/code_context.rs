@@ -1,5 +1,11 @@
-//! Safe lexical context for on-demand Specification AND optional PreSpec.
-use super::*;
+//! Safe lexical context for on-demand Specification AND optional `PreSpec`.
+use super::{
+    CodeContextDiscoveryMode, CodeContextExtractor, CodeContextFacts, CodeContextFuture,
+    CodeContextRequest, CodeContextService, ContentSha256, ContextCoverage, ContractError,
+    CoverageState, DocumentationAvailability, ExtractorRevision, ObservedReference,
+    ReferenceRelation, ReferenceResolution, SchemaV1, SourceSnapshot, TreeSitterExtractor,
+    task_refine,
+};
 use crate::repository_context::RepositoryContext;
 
 #[derive(Default)]
@@ -298,6 +304,9 @@ impl LexicalCodeContextService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestration::CollectionBudget;
+    use crate::orchestration::RelativeSourcePath;
+    use crate::orchestration::StructuredSymbolKind;
     use std::fs;
     use tokio_util::sync::CancellationToken;
 

@@ -1,6 +1,19 @@
 use super::*;
+use crate::llm::Clock;
 use crate::orchestration::ContractError;
+use crate::orchestration::ReviewLearningGraphDecision;
+use crate::orchestration::learning_report::LearningFinding;
+use crate::orchestration::learning_report::LearningGraphSelection;
+use crate::persistence_service::CancelPulsationJobsRequest;
+use crate::persistence_service::CreatePulsationRequest;
+use crate::persistence_service::EnsureProjectForWorkspaceRequest;
+use crate::persistence_service::HitlDecision;
+use crate::persistence_service::PulsationStage;
+use crate::persistence_service::PulsationStatus;
 use crate::persistence_service::serial::tests::Fixture;
+use chrono::Utc;
+use std::fs;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 struct Manual(Mutex<chrono::DateTime<Utc>>);
@@ -195,7 +208,7 @@ fn learning_v2_trims_an_over_limit_report_instead_of_rejecting_it() {
     ));
 }
 
-/// ToDoListWebView, 2026-09-22: an English report that quotes the developer's
+/// `ToDoListWebView`, 2026-09-22: an English report that quotes the developer's
 /// pulsation titles (`teste 3`, `Teste 2`) was rejected as Portuguese. Titles
 /// the host supplied as evidence are exempt; Portuguese prose still is not.
 #[test]

@@ -2305,7 +2305,7 @@ fn parse_structured_output(raw_output: &str) -> Result<Value, AgentRuntimeError>
 }
 
 /// Builds an actionable diagnostic for a failed structured-output parse: the
-/// serde_json error plus a character-safe snippet of the input around the
+/// `serde_json` error plus a character-safe snippet of the input around the
 /// failure point. A malformed model response (e.g. a nullable field bolted on
 /// after the object that should hold it, corrupting the surrounding brackets)
 /// used to surface only a generic message; this keeps the failure
@@ -2656,7 +2656,7 @@ mod tests {
     }
 
     /// `relativePath` is the only nullable, non-required field in the artifact
-    /// item schema. A free/compact OpenCode model incident (2026-09-08) showed
+    /// item schema. A free/compact `OpenCode` model incident (2026-09-08) showed
     /// it emit name/kind/content correctly, then bolt `"relativePath": null`
     /// on AFTER the object's closing brace instead of inside it, corrupting
     /// the surrounding array. Every other item schema in this module (

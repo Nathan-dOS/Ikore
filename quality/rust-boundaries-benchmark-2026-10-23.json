@@ -1,0 +1,1327 @@
+{
+  "schemaVersion": 1,
+  "status": "completed",
+  "metadata": {
+    "schemaVersion": 1,
+    "status": "completed",
+    "runId": "boundary-final-r2-20261023",
+    "preparedAtUtc": "2026-10-23T15:59:35.796296+00:00",
+    "baselineRevision": "325ddbdd392be36188fac1ffec549235ea340a1c",
+    "baselineArchiveSha256": "6ea597c91fc5716e4f68f77ac1ca7225c034832d41a8dd1292c471fd549bc3ee",
+    "snapshots": {
+      "before": {
+        "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+        "fileCount": 794,
+        "manifestPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-sources.json",
+        "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before"
+      },
+      "after": {
+        "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+        "fileCount": 891,
+        "manifestPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-sources.json",
+        "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after"
+      }
+    },
+    "cargoFlags": [
+      "check",
+      "--locked",
+      "--offline",
+      "-p",
+      "hvc-ui",
+      "--lib",
+      "-j4",
+      "--timings"
+    ],
+    "environmentOverrides": {
+      "CARGO_INCREMENTAL": "1",
+      "CARGO_TERM_COLOR": "never"
+    },
+    "clearedEnvironmentKeys": [
+      "RUSTFLAGS",
+      "RUSTDOCFLAGS",
+      "CARGO_ENCODED_RUSTFLAGS",
+      "CARGO_BUILD_RUSTFLAGS"
+    ],
+    "warmRuns": 3,
+    "incrementalRuns": 3,
+    "scenarios": {
+      "before": {
+        "terminal": {
+          "path": "crates/hvc-core/src/terminals.rs",
+          "original": "const CLI_OUTPUT_CEILING_FACTOR: u64 = 2;",
+          "replacement": "const CLI_OUTPUT_CEILING_FACTOR: u64 = 3;"
+        },
+        "core": {
+          "path": "crates/hvc-core/src/agent_runtime.rs",
+          "original": "const PREVIOUS_ATTEMPT_MAX_CHARS: usize = 60_000;",
+          "replacement": "const PREVIOUS_ATTEMPT_MAX_CHARS: usize = 60_001;"
+        },
+        "ui": {
+          "path": "crates/hvc-ui/src/theme.rs",
+          "original": "pub const CANVAS_RGB: u32 = 0x06080b;",
+          "replacement": "pub const CANVAS_RGB: u32 = 0x06080c;"
+        }
+      },
+      "after": {
+        "terminal": {
+          "path": "crates/hvc-terminal/src/terminals.rs",
+          "original": "const CLI_OUTPUT_CEILING_FACTOR: u64 = 2;",
+          "replacement": "const CLI_OUTPUT_CEILING_FACTOR: u64 = 3;"
+        },
+        "core": {
+          "path": "crates/hvc-core/src/agent_runtime.rs",
+          "original": "const PREVIOUS_ATTEMPT_MAX_CHARS: usize = 60_000;",
+          "replacement": "const PREVIOUS_ATTEMPT_MAX_CHARS: usize = 60_001;"
+        },
+        "ui": {
+          "path": "crates/hvc-ui/src/theme.rs",
+          "original": "pub const CANVAS_RGB: u32 = 0x06080b;",
+          "replacement": "pub const CANVAS_RGB: u32 = 0x06080c;"
+        }
+      }
+    },
+    "notes": [
+      "Cold means an empty Cargo target directory; operating-system file caches are not cleared.",
+      "Reset rebuilds restore the baseline between every incremental measurement and are reported separately.",
+      "Preparation invokes Git and copies files, but never invokes Cargo or accesses the network."
+    ],
+    "startedAtUtc": "2026-10-23T19:47:06.896281+00:00",
+    "system": "Windows",
+    "machine": "AMD64",
+    "logicalCpuCount": 12,
+    "finishedAtUtc": "2026-10-23T19:55:10.974511+00:00"
+  },
+  "summary": {
+    "runId": "boundary-final-r2-20261023",
+    "cargoFlags": [
+      "check",
+      "--locked",
+      "--offline",
+      "-p",
+      "hvc-ui",
+      "--lib",
+      "-j4",
+      "--timings"
+    ],
+    "sourceHashesRestored": true,
+    "summary": {
+      "cold/baseline": {
+        "samplesSeconds": {
+          "before": [
+            138.61523
+          ],
+          "after": [
+            117.668965
+          ]
+        },
+        "medianSeconds": {
+          "before": 138.61523,
+          "after": 117.668965
+        },
+        "afterVsBeforePercent": -15.111084835338795
+      },
+      "warm/baseline": {
+        "samplesSeconds": {
+          "before": [
+            1.393912,
+            1.261231,
+            1.256615
+          ],
+          "after": [
+            1.34539,
+            1.242142,
+            1.224007
+          ]
+        },
+        "medianSeconds": {
+          "before": 1.261231,
+          "after": 1.242142
+        },
+        "afterVsBeforePercent": -1.5135213137006498
+      },
+      "incremental/terminal": {
+        "samplesSeconds": {
+          "before": [
+            8.014056,
+            7.838765,
+            7.644517
+          ],
+          "after": [
+            8.501012,
+            8.344276,
+            7.864643
+          ]
+        },
+        "medianSeconds": {
+          "before": 7.838765,
+          "after": 8.344276
+        },
+        "afterVsBeforePercent": 6.448860247755861
+      },
+      "incremental/core": {
+        "samplesSeconds": {
+          "before": [
+            7.627031,
+            7.93375,
+            7.622039
+          ],
+          "after": [
+            7.69343,
+            7.088203,
+            6.906674
+          ]
+        },
+        "medianSeconds": {
+          "before": 7.627031,
+          "after": 7.088203
+        },
+        "afterVsBeforePercent": -7.064714959202334
+      },
+      "incremental/ui": {
+        "samplesSeconds": {
+          "before": [
+            2.690815,
+            2.699358,
+            2.696207
+          ],
+          "after": [
+            2.76227,
+            2.71095,
+            2.660912
+          ]
+        },
+        "medianSeconds": {
+          "before": 2.696207,
+          "after": 2.71095
+        },
+        "afterVsBeforePercent": 0.5468051970787258
+      }
+    }
+  },
+  "measurements": [
+    {
+      "snapshot": "before",
+      "phase": "cold",
+      "scenario": "baseline",
+      "repetition": 1,
+      "durationSeconds": 138.61523,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/001-before-cold-baseline-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/001-before-cold-baseline-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "cold",
+      "scenario": "baseline",
+      "repetition": 1,
+      "durationSeconds": 117.668965,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/002-after-cold-baseline-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/002-after-cold-baseline-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "warm",
+      "scenario": "baseline",
+      "repetition": 1,
+      "durationSeconds": 1.393912,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/003-before-warm-baseline-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/003-before-warm-baseline-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "warm",
+      "scenario": "baseline",
+      "repetition": 1,
+      "durationSeconds": 1.34539,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/004-after-warm-baseline-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/004-after-warm-baseline-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "warm",
+      "scenario": "baseline",
+      "repetition": 2,
+      "durationSeconds": 1.261231,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/005-before-warm-baseline-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/005-before-warm-baseline-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "warm",
+      "scenario": "baseline",
+      "repetition": 2,
+      "durationSeconds": 1.242142,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/006-after-warm-baseline-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/006-after-warm-baseline-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "warm",
+      "scenario": "baseline",
+      "repetition": 3,
+      "durationSeconds": 1.256615,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/007-before-warm-baseline-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/007-before-warm-baseline-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "warm",
+      "scenario": "baseline",
+      "repetition": 3,
+      "durationSeconds": 1.224007,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/008-after-warm-baseline-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/008-after-warm-baseline-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "incremental",
+      "scenario": "terminal",
+      "repetition": 1,
+      "durationSeconds": 8.014056,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/009-before-incremental-terminal-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/009-before-incremental-terminal-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "reset",
+      "scenario": "terminal",
+      "repetition": 1,
+      "durationSeconds": 7.855624,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/010-before-reset-terminal-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/010-before-reset-terminal-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "incremental",
+      "scenario": "terminal",
+      "repetition": 1,
+      "durationSeconds": 8.501012,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/011-after-incremental-terminal-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/011-after-incremental-terminal-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "reset",
+      "scenario": "terminal",
+      "repetition": 1,
+      "durationSeconds": 8.577393,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/012-after-reset-terminal-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/012-after-reset-terminal-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "incremental",
+      "scenario": "terminal",
+      "repetition": 2,
+      "durationSeconds": 7.838765,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/013-before-incremental-terminal-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/013-before-incremental-terminal-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "reset",
+      "scenario": "terminal",
+      "repetition": 2,
+      "durationSeconds": 7.674774,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/014-before-reset-terminal-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/014-before-reset-terminal-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "incremental",
+      "scenario": "terminal",
+      "repetition": 2,
+      "durationSeconds": 8.344276,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/015-after-incremental-terminal-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/015-after-incremental-terminal-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "reset",
+      "scenario": "terminal",
+      "repetition": 2,
+      "durationSeconds": 7.896153,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/016-after-reset-terminal-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/016-after-reset-terminal-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "incremental",
+      "scenario": "terminal",
+      "repetition": 3,
+      "durationSeconds": 7.644517,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/017-before-incremental-terminal-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/017-before-incremental-terminal-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "reset",
+      "scenario": "terminal",
+      "repetition": 3,
+      "durationSeconds": 8.104208,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/018-before-reset-terminal-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/018-before-reset-terminal-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "incremental",
+      "scenario": "terminal",
+      "repetition": 3,
+      "durationSeconds": 7.864643,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/019-after-incremental-terminal-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/019-after-incremental-terminal-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "reset",
+      "scenario": "terminal",
+      "repetition": 3,
+      "durationSeconds": 8.361573,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/020-after-reset-terminal-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/020-after-reset-terminal-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "incremental",
+      "scenario": "core",
+      "repetition": 1,
+      "durationSeconds": 7.627031,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/021-before-incremental-core-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/021-before-incremental-core-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "reset",
+      "scenario": "core",
+      "repetition": 1,
+      "durationSeconds": 7.693794,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/022-before-reset-core-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/022-before-reset-core-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "incremental",
+      "scenario": "core",
+      "repetition": 1,
+      "durationSeconds": 7.69343,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/023-after-incremental-core-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/023-after-incremental-core-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "reset",
+      "scenario": "core",
+      "repetition": 1,
+      "durationSeconds": 7.010061,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/024-after-reset-core-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/024-after-reset-core-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "incremental",
+      "scenario": "core",
+      "repetition": 2,
+      "durationSeconds": 7.93375,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/025-before-incremental-core-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/025-before-incremental-core-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "reset",
+      "scenario": "core",
+      "repetition": 2,
+      "durationSeconds": 8.626446,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/026-before-reset-core-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/026-before-reset-core-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "incremental",
+      "scenario": "core",
+      "repetition": 2,
+      "durationSeconds": 7.088203,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/027-after-incremental-core-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/027-after-incremental-core-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "reset",
+      "scenario": "core",
+      "repetition": 2,
+      "durationSeconds": 7.037384,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/028-after-reset-core-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/028-after-reset-core-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "incremental",
+      "scenario": "core",
+      "repetition": 3,
+      "durationSeconds": 7.622039,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/029-before-incremental-core-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/029-before-incremental-core-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "reset",
+      "scenario": "core",
+      "repetition": 3,
+      "durationSeconds": 7.619844,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/030-before-reset-core-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/030-before-reset-core-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "incremental",
+      "scenario": "core",
+      "repetition": 3,
+      "durationSeconds": 6.906674,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/031-after-incremental-core-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/031-after-incremental-core-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "reset",
+      "scenario": "core",
+      "repetition": 3,
+      "durationSeconds": 6.905891,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/032-after-reset-core-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/032-after-reset-core-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "incremental",
+      "scenario": "ui",
+      "repetition": 1,
+      "durationSeconds": 2.690815,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/033-before-incremental-ui-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/033-before-incremental-ui-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "reset",
+      "scenario": "ui",
+      "repetition": 1,
+      "durationSeconds": 2.679361,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/034-before-reset-ui-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/034-before-reset-ui-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "incremental",
+      "scenario": "ui",
+      "repetition": 1,
+      "durationSeconds": 2.76227,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/035-after-incremental-ui-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/035-after-incremental-ui-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "reset",
+      "scenario": "ui",
+      "repetition": 1,
+      "durationSeconds": 2.706587,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/036-after-reset-ui-1.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/036-after-reset-ui-1.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "incremental",
+      "scenario": "ui",
+      "repetition": 2,
+      "durationSeconds": 2.699358,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/037-before-incremental-ui-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/037-before-incremental-ui-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "reset",
+      "scenario": "ui",
+      "repetition": 2,
+      "durationSeconds": 2.720543,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/038-before-reset-ui-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/038-before-reset-ui-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "incremental",
+      "scenario": "ui",
+      "repetition": 2,
+      "durationSeconds": 2.71095,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/039-after-incremental-ui-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/039-after-incremental-ui-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "reset",
+      "scenario": "ui",
+      "repetition": 2,
+      "durationSeconds": 2.708471,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/040-after-reset-ui-2.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/040-after-reset-ui-2.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "incremental",
+      "scenario": "ui",
+      "repetition": 3,
+      "durationSeconds": 2.696207,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/041-before-incremental-ui-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/041-before-incremental-ui-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "before",
+      "phase": "reset",
+      "scenario": "ui",
+      "repetition": 3,
+      "durationSeconds": 2.665233,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/before-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/042-before-reset-ui-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/042-before-reset-ui-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-before/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "incremental",
+      "scenario": "ui",
+      "repetition": 3,
+      "durationSeconds": 2.660912,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/043-after-incremental-ui-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/043-after-incremental-ui-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    },
+    {
+      "snapshot": "after",
+      "phase": "reset",
+      "scenario": "ui",
+      "repetition": 3,
+      "durationSeconds": 2.683565,
+      "exitCode": 0,
+      "cargoFlags": [
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "hvc-ui",
+        "--lib",
+        "-j4",
+        "--timings"
+      ],
+      "sourcePath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/after-source",
+      "targetPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after",
+      "logPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/044-after-reset-ui-3.log",
+      "timingsReportPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/044-after-reset-ui-3.html",
+      "timingsPath": "target/rust-guide-benchmarks/boundary-final-r2-20261023/target-benchmark-after/cargo-timings"
+    }
+  ],
+  "artifactSha256ByRelativePath": {
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/001-before-cold-baseline-1.log": "deb7ab00f0ad9330175ae1d296b0c18be9ebb7af58632b02839967abeca7b974",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/001-before-cold-baseline-1.html": "930e1cfbc939e451636ed1a365c38d34b478312cd7e9dec19b018ddf88de4632",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/002-after-cold-baseline-1.log": "cb3501dadc6d3a3850013517560cdba9c6a65add8d0482fae3c9ba05dbade813",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/002-after-cold-baseline-1.html": "87155c75b1f48e13f36203776ef5615f071728616b0960c4a983750cc17110c2",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/003-before-warm-baseline-1.log": "6360065135359fc9ce7596550aee1aa5c967d4e01e8fe8910cbaadec95c70b50",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/003-before-warm-baseline-1.html": "f17965b60c5655821165b40777d4b346ddca3e6f85449a5ee2a650e9e1cf2ac5",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/004-after-warm-baseline-1.log": "2091d2a51207a0d33191f779758a76dce05a75a3ece8b73673fc20e18e5378d8",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/004-after-warm-baseline-1.html": "839dc18d982c4d6edc2d8f2c6481aa87a292280417fe07923022b3cc6407671a",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/005-before-warm-baseline-2.log": "f49369b6b2f332b3117eddf1f305ec766016c33deadd0d43d0d5547a6f59aa61",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/005-before-warm-baseline-2.html": "3f74fe199402eae72c53acd0e19616ad0bd1ed82baa7c78634f9182624dc10e5",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/006-after-warm-baseline-2.log": "2a330e274a578870597e65845d45a27c664e8b02ac5302b640b1b3eeb76e4e34",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/006-after-warm-baseline-2.html": "d86a16079b5f68bef5ffcc919f7d7e2d141b1cba89ff2c804c7acc49a316c6a5",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/007-before-warm-baseline-3.log": "e8ee9164d27c4f654a4d25f2e9a48ce5b1cd89db4caa67bc2f9f28e4e0d531e6",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/007-before-warm-baseline-3.html": "3f8462edd49eb27189262abec67cfadd0ea48b4b8a6dd5957fb0317b5c7b2751",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/008-after-warm-baseline-3.log": "852400ca14f6460a801e4c1e6fe7b9de3d65739f2bc02517a7c34c5c16ab4905",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/008-after-warm-baseline-3.html": "ae2587f03630d98c0bb08c3b9a9c611d575037b8f737ff29a49cb628f624074e",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/009-before-incremental-terminal-1.log": "5a00dc5d01ee1d2ec67b9827aee9bf98a0d06f38841c32db2280e5eba1822de9",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/009-before-incremental-terminal-1.html": "6a1fb153dae9b8ac186301709dee28ebf63de3a6703ca83456867769210ab520",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/010-before-reset-terminal-1.log": "78c078ccf79932042f5a0d8d1d7bb510dcfde7c1feda2e5568844f779fceaa48",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/010-before-reset-terminal-1.html": "32518f9d13220324c9bb183681c15f0bc50070546396313b6256ee6eb6cff824",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/011-after-incremental-terminal-1.log": "1079beea2600b1e1eaf64e02e304f7a9ca3e8e987eeb252d81590a4d23ea377a",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/011-after-incremental-terminal-1.html": "bf80f4a572fb2b10f8342cfc44bb37f28876e4f524b9b5fa040ce39f4900b6cc",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/012-after-reset-terminal-1.log": "b660eb62708e72022594745bc5b479ecf36840599a4456be347b6b388ed4f630",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/012-after-reset-terminal-1.html": "b6c6c3b7524e2eae8ad2564646c7147d7368706758616cf720bb02a735edf4ef",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/013-before-incremental-terminal-2.log": "46062457b195d9bd94c0ecfa9618097d469b86cecbc028177fb5bc0b7935e96f",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/013-before-incremental-terminal-2.html": "4f74b22f49ad113aa624b8630cb4ccf0401922afc807d4bef5b404dca85a8f55",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/014-before-reset-terminal-2.log": "bcf4a5bd82a986c24952dd9b8b9a7c4b240f1a6e061ed991e75a71bf8168bcfc",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/014-before-reset-terminal-2.html": "4dc3e8dc9e8c286da189d90716632236d22f6da35ecbc14492fd18e9be519474",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/015-after-incremental-terminal-2.log": "f7687233d76411f3d022122888c42696e626f2d6f5d05bfff553035ce221084b",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/015-after-incremental-terminal-2.html": "ee9ece1e9d17345347caebe0ffe0ec4ba082db51a622e8fe260c5ebf6b683020",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/016-after-reset-terminal-2.log": "f811ab0dc65e1ccaf9a789c149874ac18554d414604c7a31ff20ba525532c9db",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/016-after-reset-terminal-2.html": "576ac7929f81d7061da4dc700cd0af9dd88215f44bff43265d6f93acde4a8472",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/017-before-incremental-terminal-3.log": "a5914633de9d12f4ed9015c78f43717a1c5e66d742d9e9a1a76f93028f9e0c77",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/017-before-incremental-terminal-3.html": "61973c9255447262ea78dfadd5ed9b390422b43a4b4aa714a034fd51973de2c5",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/018-before-reset-terminal-3.log": "ad62705782cdb5182babf1b7af263f7695e1cee0128d080372d3999019fde81b",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/018-before-reset-terminal-3.html": "b5de63bd4ed8c3285082ddc251ae5c417f5a0f402c6c3e71769fbb8ee07fb13b",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/019-after-incremental-terminal-3.log": "b5ec951c047cfe7d9dcaafbe6ca17fa6b2905436fa01b73d2423381d53c5c7e8",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/019-after-incremental-terminal-3.html": "e441fde647c1a387701700abce65cc8f267b2ead093cb8df452931c84b63c162",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/020-after-reset-terminal-3.log": "b1d5cf7df53bb4b31847f9de48a51c0da6033099ee2defc86da9121ca0b16657",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/020-after-reset-terminal-3.html": "40e39d82a9ccc4516f372521b25ebdc6b9704b139b42f24bd2a3faeb0ccef986",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/021-before-incremental-core-1.log": "b73b89722e5e06c0188151427f2eb6e6f9ab3765ae3c43648ef3803d353b6ef5",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/021-before-incremental-core-1.html": "e4ef44145b451098e562e09efe2d4f20388c672e3d643460b44c7da26ecf6c7d",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/022-before-reset-core-1.log": "4783a164682a9aeabdb9f7c4c4d715244c829328d91a4db9a039d3f3fc95409f",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/022-before-reset-core-1.html": "57d9d551cb15ace71033b65276f340d2f4f6048b3e4cbd09a9e5acac6b1f1ef3",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/023-after-incremental-core-1.log": "1a4c29e86092e8c80cac9410d61ff1027c82f633d4a2ed6eacb9b73ab3cecf44",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/023-after-incremental-core-1.html": "808ef819c1ecf55abbe8bb18e7682a84ac6a6ca0cc3dd20d10820b10c8b3bcb6",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/024-after-reset-core-1.log": "1b7ff2a1ae69635559355aa7bf0626dd9aaf3013f1915d5fa19d7b39e9a93cf2",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/024-after-reset-core-1.html": "595dc1d647e5cd6b91bd78223f57767cbb27792d14301484328e6318106dba59",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/025-before-incremental-core-2.log": "a739f01fa970c7a2fad31166bd2e153671f156b7e871a443e31fbb20d6f71ec7",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/025-before-incremental-core-2.html": "34f87ee6a82e976040c922eb163a5a0ca84a52a055c58b462d37377c809fac08",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/026-before-reset-core-2.log": "caa8856d361751ea7c568168dc8ef960c96c0ff7a5105dc1f41cf26b159287d2",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/026-before-reset-core-2.html": "e21f121bf8e460db337e10b19901e01af71063b422acb4729f079a1c745a8198",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/027-after-incremental-core-2.log": "eb9a84bafccaffdb775955be4af0e22c035af48151e1dea73981959d66e50fa0",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/027-after-incremental-core-2.html": "6771fd49ae80a9fea7fab9e37c89dd1e90b1a15bc2471c6ecae4e1e580f8c4b2",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/028-after-reset-core-2.log": "fe99f9e3139179ce1e19b88d29935d277aa4ec15dad52207fb7ee1921de8d08c",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/028-after-reset-core-2.html": "1aae3f99aafeaee3679f465c58b7b52de239bdbd9c84d8fc94603b5c40bdb3fb",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/029-before-incremental-core-3.log": "4c05ad2fbc6f45ddea4e53ccd80e7a5288c180113c7308928628fedacfb0b4bb",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/029-before-incremental-core-3.html": "3707709b039cf065f32d5cbfe8b40ba4a9a9b62edaa3a07b02b776f0708c18f6",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/030-before-reset-core-3.log": "7bd5d29df5fb50e6b2e5fdb253e181400425292ece507225295c6f433c893706",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/030-before-reset-core-3.html": "c190e3e238139d89a0e0524cc2ee6c3b47b4ccb64aaed47d535017a7a53a6c5f",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/031-after-incremental-core-3.log": "b8d4b74f76c187e64edadef9656c0400fde775de30cc0167f3ae73a6f8629f25",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/031-after-incremental-core-3.html": "d8c926a5b8db66859345f3875fe7d4cbed1258199cb54aa4fd3752960227e01a",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/032-after-reset-core-3.log": "ae1fa7741c3ba5d5e9c644b6d4a57c6d843548373fce92ce318ea7e44439c527",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/032-after-reset-core-3.html": "7c8c2786815b8d2ffa7b07cbedd16aa9a1bca4eda503a1bca9c5048e155fae5e",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/033-before-incremental-ui-1.log": "4c4ea961b760f20d706cc518f7a83f44832abbef62ca496a0f48e50f83399239",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/033-before-incremental-ui-1.html": "fe10d98ece84fac1e2397031a6bd7d7d4071e5013ab52fe86ea4ade04a36e470",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/034-before-reset-ui-1.log": "f1d325f8c9f664e5a9610e508575961dabd3f59e6879dd2f40983619c271b3bc",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/034-before-reset-ui-1.html": "fc901ab8ba4455a0852aed642b4f71124b592dd722c01bd3550f7efb40a83924",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/035-after-incremental-ui-1.log": "a9b5047e71f5dbf99d7ffa9a814a4912f293511b3fe1859688699e00dcef086d",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/035-after-incremental-ui-1.html": "0245a78eb65e5ad870c26e3eccea562f2c9b1a3942679ead49b2f817d78c29fc",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/036-after-reset-ui-1.log": "b9bafbde7a006fb2b96f459150c6f7bb639fc88b4a87bd47f39ebdd01c8c13fa",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/036-after-reset-ui-1.html": "fe7205f8ae980737e06a41be71534bd6c605e234db87925f192b67bb302945f1",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/037-before-incremental-ui-2.log": "a59ff138f24aaf248347558416deedf68e2a8c0608bd5acb6f2be5803389feb6",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/037-before-incremental-ui-2.html": "e7746208f63b275eacda8e056fdcf5aaf5e092d059b99cfb032ab6209baa04a7",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/038-before-reset-ui-2.log": "7864a7c77938aba343d098486d31468a13c05534f6c5370132ff4348ccc168bd",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/038-before-reset-ui-2.html": "17269437b756ec65f145828649fcc9f0430683ecdcf6bf130d2161a81f9f9e8b",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/039-after-incremental-ui-2.log": "b11559dc5f19e4504ba095ba9b88d52375f0dfeddf7e7cb50e99ddbfec2209a8",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/039-after-incremental-ui-2.html": "96ac7758012ddd5c223f11ef16d911e9a727ed913c54c6dd7eb89de09a4c0e3c",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/040-after-reset-ui-2.log": "705d75e69cbc3e0332a58f9df9da8f7f856a545eb251fc90069541018cd44afe",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/040-after-reset-ui-2.html": "5a99da96b8b401612ea609c13d4d6313b71ea4abf3f7a9c115b88de9d3ad43c2",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/041-before-incremental-ui-3.log": "e65e5289d46455b5d16951835549c62f34c30972c67c79c5ab60d3eef8872978",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/041-before-incremental-ui-3.html": "bd3fec4f11dbcc28b282990e15fe12293f280da69bed13ecbc65275979b97e69",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/042-before-reset-ui-3.log": "366ec9c9df71624ba54ca16779d59f2fcd367b5dd8c44667b6f63fe4fa8ff2df",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/042-before-reset-ui-3.html": "a9e4e56d73d6108013440e24598205134f07b22aa4f0bb785e0339fa2507f061",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/043-after-incremental-ui-3.log": "a3c5f469f7933b7cfc329d62516adcc2254e145669b2e4a7fe2f1db4d7b43e04",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/043-after-incremental-ui-3.html": "f9379705f2f88206dbfb80cc5eced42b0e712b7cdbc693cd69ab785eb68a33fd",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/logs/044-after-reset-ui-3.log": "039dfab3e8916182489ff63d40099e9d0a3d64b1d21c96483b5a3880a623b443",
+    "target/rust-guide-benchmarks/boundary-final-r2-20261023/timings/044-after-reset-ui-3.html": "5ade269cae970649516159f5b4bc62d7fc647bda3652f1faa204cc0781abea1a"
+  },
+  "sourceManifestSha256BySnapshot": {
+    "before": "c0c617bd58324f76e9001db909a4f1227998007d9fb5c86630245cf3d62f59c6",
+    "after": "2037875cf05ec06954213cd94e76b522442a524c2169250f102dc6e7c603bb74"
+  },
+  "measurementHelperSha256": "cc1ccbac7e8c2ad6c865e9181f2aced327c04e16ec44d0cf57ba3841f41fb36b",
+  "validatedSourceFingerprint": "rust-boundaries-sources-2026-10-23.json",
+  "validatedWorkspaceSourcesUnchanged": true,
+  "workspaceConsistencyBeforeMeasurements": {
+    "checkedFiles": 891,
+    "changed": [],
+    "missing": [],
+    "added": [],
+    "sameAsValidatedSnapshot": true
+  },
+  "limitations": [
+    "Cold means an empty Cargo target directory; registry and OS caches were retained.",
+    "Cold has one sample per snapshot; warm and each incremental scenario have three samples.",
+    "Incremental probes repeat the same literal edit, retaining prior incremental states; reset rebuilds are excluded from medians.",
+    "These are local compile-check measurements; other edits, machines, background activity and CPU frequency can change elapsed times.",
+    "Application startup, rendering, model latency and runtime memory are not measured.",
+    "Raw logs, timing HTML and frozen sources are local ignored artifacts referenced by relative paths."
+  ]
+}

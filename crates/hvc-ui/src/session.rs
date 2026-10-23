@@ -149,7 +149,10 @@ impl HeaderNoticeQueue {
             existing.read = false;
             existing.created = std::time::SystemTime::now();
             if !existing.pending {
-                let mut repeated = self.entries.remove(index).unwrap();
+                let mut repeated = self
+                    .entries
+                    .remove(index)
+                    .expect("the matching notice index remains valid until removal");
                 repeated.pending = true;
                 self.entries.push_back(repeated);
             }

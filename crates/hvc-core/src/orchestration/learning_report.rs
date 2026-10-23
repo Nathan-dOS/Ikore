@@ -448,7 +448,7 @@ fn validate_findings<'a>(
 /// (the current request and `historical_summary` lines such as
 /// `failed: teste 3`). Quoting them verbatim is correct, but the English guard
 /// judged a title like `teste 3` as Portuguese prose and cost a whole extra
-/// Learning call (ToDoListWebView, 2026-09-22). Only these host-supplied
+/// Learning call (`ToDoListWebView`, 2026-09-22). Only these host-supplied
 /// names, short enough to be a title rather than a request body, are exempt.
 fn developer_titles(input: &LearningInputV2) -> Vec<&str> {
     let mut titles = input

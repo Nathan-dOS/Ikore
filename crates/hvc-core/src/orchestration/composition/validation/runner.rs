@@ -232,7 +232,8 @@ fn error_diagnostic(message: &str) -> DiagnosticV1 {
         .unwrap_or_else(|_| "Validation detail withheld: sanitization unavailable.".into());
     DiagnosticV1 {
         severity: Severity::Error,
-        code: super::super::Handle::new("runner_error").unwrap(),
+        code: super::super::Handle::new("runner_error")
+            .expect("built-in runner error code is a valid handle"),
         message: message.chars().take(2_000).collect(),
         source_ref: None,
     }

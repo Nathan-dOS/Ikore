@@ -2034,7 +2034,7 @@ pub fn endpoint_origin(endpoint: &str) -> String {
         .unwrap_or_else(|| endpoint.to_string())
 }
 
-/// Stable envelope hashing regardless of serde_json's preserve_order feature.
+/// Stable envelope hashing regardless of `serde_json`'s `preserve_order` feature.
 pub(crate) fn canonical_evidence_json(value: &Value) -> Result<String, LlmError> {
     fn sorted(value: Value) -> Value {
         match value {

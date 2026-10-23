@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
+)]
 //! Shared harness for the pipeline v4 integration tests: a scripted
 //! loopback provider whose replies are valid `UnitModelResponseV1` documents
 //! built from the handles the host rendered, plus the waits and approvals

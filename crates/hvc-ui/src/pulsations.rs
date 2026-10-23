@@ -142,7 +142,9 @@ pub(crate) fn has_sanitized_regions(text: &str) -> bool {
 fn observed_brief(
     mut brief: hvc_core::orchestration::review_brief::ReviewBrief,
 ) -> hvc_core::orchestration::review_brief::ReviewBrief {
-    use hvc_core::orchestration::review_brief::*;
+    use hvc_core::orchestration::review_brief::{
+        BriefCheck, BriefFileGroup, BriefUnit, StageVisual,
+    };
     fn text(value: &mut String) {
         *value = hvc_core::sanitization::sanitized_observation(value);
     }

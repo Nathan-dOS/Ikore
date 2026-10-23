@@ -1,5 +1,8 @@
 //! SQLite admission and executor slots. Ownership survives HITL and process shutdown.
-use super::*;
+use super::{
+    CancellationToken, Connection, Job, JobStatus, OptionalExtension, PersistenceService,
+    PersistenceServiceError, PulsationStatus, params,
+};
 use crate::orchestration::JobClass;
 
 #[cfg(test)]
@@ -299,7 +302,7 @@ impl PersistenceService {
         Ok(())
     }
 
-    /// Called only at startup, before any executor exists and under the AppCore lock.
+    /// Called only at startup, before any executor exists and under the `AppCore` lock.
     pub(super) fn recover_coordination(db: &Connection) -> Result<(), PersistenceServiceError> {
         db.execute("DELETE FROM runtime_slots", [])?;
         // A durable terminal owner is released only if its effects have already been reviewed.

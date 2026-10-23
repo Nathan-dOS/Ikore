@@ -1,9 +1,21 @@
 //! Learning is an optional job after Done, never a seventh stage or project owner.
-use super::*;
+use super::{
+    AgentRuntimeConfig, CancellationToken, Connection, Duration, HashMap, HashSet,
+    OptionalExtension, PersistenceService, PersistenceServiceError, Uuid, Value, coordination,
+    indexing, params,
+};
 use crate::llm::{
     AgentExecutionTarget, AgentRole, LlmError, LlmErrorKind, LlmGateway, LlmRequest, ResponseFormat,
 };
-use crate::orchestration::{ContentSha256, LearningState, learning_report::*};
+use crate::orchestration::{
+    ContentSha256, LearningState,
+    learning_report::{
+        ContextAuditStageSnapshot, LearningActionRequest, LearningContextRunInput,
+        LearningEvidence, LearningGraphCandidate, LearningGraphDecision,
+        LearningGraphProposalSnapshot, LearningInputV2, LearningRefinementMode, LearningReportV2,
+        LearningRunSnapshot, ReviewLearningGraphRequest,
+    },
+};
 use coordination::{invalid, model_output_invalid};
 use indexing::BackgroundClaim;
 use rusqlite::TransactionBehavior;

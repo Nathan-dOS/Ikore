@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only integration helpers fail immediately when fixture setup is invalid"
+)]
 //! Pipeline v4 recovery paths (ADR-022): the bounded correction, the
 //! transport retry inside the shared allowance, and parking with the
 //! decision set the host permits. Every path is observed through the same
@@ -402,7 +406,7 @@ fn truncated_reply() -> ScriptedResponse {
     )
 }
 
-/// The parked Integrator failure: (allow_retry, primary target, targets).
+/// The parked Integrator failure: (`allow_retry`, primary target, targets).
 fn integrator_offer(harness: &Harness, checkpoint: &str) -> (bool, Option<String>, String) {
     harness
         .db()

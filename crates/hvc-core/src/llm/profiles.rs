@@ -287,7 +287,7 @@ const MODEL_FAMILIES: [(&str, &[&str]); 5] = [
 /// The first-party provider whose model `model_id` names, when that is not
 /// the connection's own provider. `gpt-4.1-mini` on a Gemini connection
 /// failed a Contract with HTTP 404 after the connection changed provider
-/// ("Haiku Teste 1", 2026-09-26). Aggregators and local servers (OpenRouter,
+/// ("Haiku Teste 1", 2026-09-26). Aggregators and local servers (`OpenRouter`,
 /// Groq, Ollama) serve many families, so nothing is ever a conflict there,
 /// and an unknown name is never one either.
 pub fn model_family_conflict(provider_id: &str, model_id: &str) -> Option<&'static str> {

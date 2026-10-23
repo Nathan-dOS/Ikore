@@ -1,4 +1,4 @@
-//! Upgrade helpers run under AppCore's existing exclusive data-directory lock.
+//! Upgrade helpers run under `AppCore`'s existing exclusive data-directory lock.
 use super::{ContentSha256, publication};
 use crate::persistence_service::PersistenceServiceError as Error;
 use rusqlite::{Connection, OptionalExtension, params};

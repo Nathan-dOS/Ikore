@@ -120,6 +120,33 @@ impl Default for AppCoreDependencies {
     }
 }
 
+/// Holds exclusive access to an application data directory until dropped.
+///
+/// Keep the guard alive for as long as the directory is in use:
+///
+/// ```no_run
+/// use hvc_core::{AppPaths, DataDirectoryLock};
+/// # fn main() -> Result<(), hvc_core::app_core::AppCoreError> {
+/// let paths = AppPaths::from_data_dir("target/example-data");
+/// let _data_lock = DataDirectoryLock::acquire(&paths)?;
+/// // Keep application services within the guard's scope.
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Discarding a successfully acquired guard releases the lock immediately:
+///
+/// ```compile_fail
+/// #![deny(unused_must_use)]
+/// use hvc_core::{AppPaths, DataDirectoryLock};
+/// use hvc_core::app_core::AppCoreError;
+///
+/// fn initialize(paths: &AppPaths) -> Result<(), AppCoreError> {
+///     DataDirectoryLock::acquire(paths)?;
+///     Ok(())
+/// }
+/// ```
+#[must_use = "Keep this guard alive while the application data directory is in use"]
 #[derive(Debug)]
 pub struct DataDirectoryLock {
     file: File,
@@ -670,7 +697,7 @@ mod tests {
             Err(AppCoreError::DataDirectoryInUse)
         ));
         drop(first);
-        DataDirectoryLock::acquire(&paths).unwrap();
+        let _reacquired = DataDirectoryLock::acquire(&paths).unwrap();
     }
 
     #[test]

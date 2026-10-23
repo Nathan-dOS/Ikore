@@ -396,7 +396,8 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
             let table_criteria_count: usize =
                 manifest.tasks.iter().map(|t| t.draft.criteria.len()).sum();
             vec![UnitDraft {
-                logical_unit_key: Handle::new("classify_batch").unwrap(),
+                logical_unit_key: Handle::new("classify_batch")
+                    .expect("built-in recipe key is a valid handle"),
                 executor_kind: ExecutorKind::IntakeClassifier,
                 task_refs: tasks.clone(),
                 criterion_refs: Vec::new(),
@@ -463,7 +464,7 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
                 inputs_refs.extend(planned_note);
             }
             vec![UnitDraft {
-                    logical_unit_key: Handle::new("specify_batch").unwrap(),
+                    logical_unit_key: Handle::new("specify_batch").expect("built-in recipe key is a valid handle"),
                     executor_kind: ExecutorKind::SpecificationAuthor,
                     task_refs: tasks.clone(),
                     criterion_refs: all_criteria_of(&builder_scope_preview(manifest)),
@@ -509,7 +510,7 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
             }
             extra = Some(text);
             vec![UnitDraft {
-                    logical_unit_key: Handle::new("contract_batch").unwrap(),
+                    logical_unit_key: Handle::new("contract_batch").expect("built-in recipe key is a valid handle"),
                     executor_kind: ExecutorKind::ContractAuthor,
                     task_refs: tasks.clone(),
                     criterion_refs: all_criteria_of(&builder_scope_preview(manifest)),
@@ -573,7 +574,7 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
                     .collect::<Vec<_>>();
                 inputs_refs.extend(missing_inputs);
                 vec![UnitDraft {
-                    logical_unit_key: Handle::new("implement_batch").unwrap(),
+                    logical_unit_key: Handle::new("implement_batch").expect("built-in recipe key is a valid handle"),
                     executor_kind: ExecutorKind::CodeImplementer,
                     task_refs: tasks.clone(),
                     criterion_refs: all_criteria_of(&builder_scope_preview(manifest)),
@@ -642,7 +643,7 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
                     .collect::<Vec<_>>();
                 inputs_refs.extend(missing_inputs);
                 vec![UnitDraft {
-                    logical_unit_key: Handle::new("test_batch").unwrap(),
+                    logical_unit_key: Handle::new("test_batch").expect("built-in recipe key is a valid handle"),
                     executor_kind: ExecutorKind::TestAuthor,
                     task_refs: tasks.clone(),
                     criterion_refs: all_criteria_of(&builder_scope_preview(manifest)),
@@ -688,7 +689,7 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
                 .collect::<Vec<_>>();
             extra = Some(batch_guidance(manifest, inputs));
             vec![UnitDraft {
-                    logical_unit_key: Handle::new("review_batch").unwrap(),
+                    logical_unit_key: Handle::new("review_batch").expect("built-in recipe key is a valid handle"),
                     executor_kind: ExecutorKind::IntegrationReviewer,
                     task_refs: tasks.clone(),
                     criterion_refs: all_criteria_of(&builder_scope_preview(manifest)),
@@ -1279,7 +1280,7 @@ pub fn finish_stage<'a>(
                 issues,
                 used_refs: Vec::new(),
             };
-            let key = Handle::new("intake_note").unwrap();
+            let key = Handle::new("intake_note").expect("built-in recipe key is a valid handle");
             host_artifacts.push(HostArtifact {
                 artifact_key: key.clone(),
                 relative_path: None,
@@ -1308,7 +1309,8 @@ pub fn finish_stage<'a>(
             let [(unit, _, CompletedPayloadV1::Specification(spec))] = payloads.as_slice() else {
                 return Err(single("The specification"));
             };
-            let key = Handle::new("specification_note").unwrap();
+            let key =
+                Handle::new("specification_note").expect("built-in recipe key is a valid handle");
             let cited = cited_file_refs(
                 table,
                 spec.existing_file_refs
@@ -1343,7 +1345,8 @@ pub fn finish_stage<'a>(
             let [(unit, _, CompletedPayloadV1::Contract(contract))] = payloads.as_slice() else {
                 return Err(single("The contract"));
             };
-            let key = Handle::new("contract_document").unwrap();
+            let key =
+                Handle::new("contract_document").expect("built-in recipe key is a valid handle");
             let planned = planned_unit_rows(inputs, contract);
             let preserved = inputs
                 .prior
@@ -1428,7 +1431,8 @@ pub fn finish_stage<'a>(
                 // Evidence that names no authored artifact (approved
                 // not-applicable coverage) is carried by the host report so
                 // the task still points at a durable artifact.
-                let report_key = Handle::new("test_report").unwrap();
+                let report_key =
+                    Handle::new("test_report").expect("built-in recipe key is a valid handle");
                 let evidence = tests
                     .evidence
                     .iter()
@@ -1449,7 +1453,8 @@ pub fn finish_stage<'a>(
             let cited = cited_file_refs(table, cited);
             let frontmatter = Frontmatter::from_references(table, &cited);
             host_artifacts.push(HostArtifact {
-                artifact_key: Handle::new("test_report").unwrap(),
+                artifact_key: Handle::new("test_report")
+                    .expect("built-in recipe key is a valid handle"),
                 relative_path: Some(vault_note_path("tests", title)?),
                 kind: ArtifactKind::ValidationReport,
                 content: render::render_test_report(title, &coverage, checks, table, &frontmatter),
@@ -1472,7 +1477,8 @@ pub fn finish_stage<'a>(
                 blockers.extend(integration.blockers.iter().cloned());
                 per_unit.push((*unit, reconstruct_artifacts(plan, preparation, child)?));
             }
-            let key = Handle::new("integration_report").unwrap();
+            let key =
+                Handle::new("integration_report").expect("built-in recipe key is a valid handle");
             host_artifacts.push(HostArtifact {
                 artifact_key: key.clone(),
                 relative_path: None,
@@ -1808,7 +1814,7 @@ pub fn explicit_paths(text: &str) -> Vec<RelPath> {
 
 /// A workspace-root file named without a directory (`index.html`,
 /// `package.json`, `README.md`). Requiring a `/` left every root file
-/// unanchored, so each greenfield ToDoListWebView pulsation spent a
+/// unanchored, so each greenfield `ToDoListWebView` pulsation spent a
 /// Specification call and a clarification round asking for `index.html`
 /// (2026-09-22). Only known source/config extensions count, and library
 /// names written like files in prose (`Node.js`, `Vue.js`) are ignored.
@@ -2322,7 +2328,7 @@ mod tests {
         );
     }
 
-    /// ToDoListWebView, 2026-09-22: both pulsations failed Code with
+    /// `ToDoListWebView`, 2026-09-22: both pulsations failed Code with
     /// `scope_insufficient` because the first unit (owning only
     /// `localStore.js`) read the batch-wide title, guidance and a clarification
     /// naming the other four files as missing destinations. The plan keeps

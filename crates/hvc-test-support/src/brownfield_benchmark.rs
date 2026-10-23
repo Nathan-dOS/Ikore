@@ -1,5 +1,5 @@
 //! RS1: auditable structural resolution and the retained BF5 task control.
-//! The benchmark uses the real AppCore worker, watcher and SQLite persistence with a loopback LLM.
+//! The benchmark uses the real `AppCore` worker, watcher and SQLite persistence with a loopback LLM.
 
 use crate::{CoreTestHarness, ScriptedHttpServer, pulsation_benchmark};
 use hvc_core::{

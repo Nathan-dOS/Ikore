@@ -1,4 +1,10 @@
-use hvc_test_support::pulsation_benchmark::*;
+#![allow(
+    clippy::unwrap_used,
+    reason = "Test-only harnesses fail immediately when fixture setup is invalid"
+)]
+use hvc_test_support::pulsation_benchmark::{
+    FIXTURE_VERSION, IDLE_WINDOW_MS, PROVIDER_DELAY_MS, Scenario, percentile, run_sample,
+};
 use serde_json::json;
 
 fn main() {

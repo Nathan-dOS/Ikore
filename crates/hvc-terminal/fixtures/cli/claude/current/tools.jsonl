@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-fixture","name":"Read","input":{"file_path":"src/main.rs"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-fixture","content":"fixture file"}]}}

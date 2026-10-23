@@ -31,6 +31,8 @@ próprio GPUI 0.2.2, sob Apache-2.0, documentado em
 ## Workspace Cargo
 
 - `crates/hvc-app`: composition root e binário GPUI.
+- `crates/hvc-contracts`: shared execution, stage, timeout, usage and redaction values.
+- `crates/hvc-terminal`: CLI services, repository, adapters, process isolation and subscription quota.
 - `crates/hvc-core`: domínio, persistência, workspace, LLM, Chat e barramento tipado.
 - `crates/hvc-ui`: native shell, three header tabs, nine views, and the GPUI design system.
 - `crates/hvc-editor`: Rope, seleção, undo/redo, diff, Markdown e Tree-sitter.
@@ -62,11 +64,13 @@ Use os atalhos na raiz do workspace. Todos mantêm as dependências do lockfile
 | `cargo test-ui` | UI |
 | `cargo test-editor` | Editor e UI consumidora |
 | `cargo test-support` | Harnesses, integrações e UI consumidora |
-| `cargo test-core` | Core |
+| `cargo test-contracts` | Shared contracts |
+| `cargo test-terminal` | Contracts and terminal subsystem |
+| `cargo test-core` | Contracts, terminal and core |
 | `cargo test-all` | Workspace completo, incluindo integrações, exemplos marcados como teste e doctests |
 | `cargo test-unit` | Workspace `lib` and `bin` tests (CI `unit` job) |
 | `cargo test-integration` | `tests/` targets and the `pulsation_ui_fixture` example (CI `integration` job) |
-| `cargo test-headless` | Crates without GPUI (`hvc-core`, `hvc-editor`, `hvc-test-support`), used by Docker |
+| `cargo test-headless` | Contracts, terminal, core, editor and test-support without GPUI, used by Docker |
 
 `test-unit`, `test-integration` and `cargo test --locked --workspace --doc`
 together select the same tests as `test-all`.
@@ -136,7 +140,7 @@ registra comandos, tempos, inventário e as pendências encontradas no gate.
 ## Docker (Linux headless harness)
 
 Docker does not run the app: GPUI needs the Windows backend. The image runs
-`hvc-core`, `hvc-editor` and `hvc-test-support` on Linux, with the same command
+`hvc-contracts`, `hvc-terminal`, `hvc-core`, `hvc-editor` and `hvc-test-support` on Linux, with the same command
 locally and in the CI `linux headless (docker)` job. Every service is one-shot
 and behind a profile, so `docker compose up` starts nothing:
 
@@ -206,3 +210,20 @@ observed terminal transitions. Capture and model-picker overlays also close on a
 outside click. Companion supports Enter to send, Shift+Enter for a newline, and a
 wrapped composer that grows to six visible rows before scrolling internally.
 See [UI interaction validation](quality/ui-interactions-validation-2026-09-07.md).
+
+## Terminal subsystem boundary
+
+The CLI service, repository, adapters, process isolation and subscription quota
+live in `hvc-terminal`. Shared execution/stage/timeout/usage/redaction values live
+in `hvc-contracts`. Existing typed core APIs remain available through reexports
+and composition facades. Host authorization and global usage persistence stay
+in core. See [ADR-030](docs/adr/030-terminal-boundary.md) and the
+[architecture](docs/architecture.md). The
+[2026-10-23 validation report](quality/rust-boundaries-validation-2026-10-23.md)
+records the test inventory, build measurements and remaining validation limits.
+
+```powershell
+cargo test-contracts
+cargo test-terminal
+powershell -ExecutionPolicy Bypass -File scripts/check-crate-boundaries.ps1
+```

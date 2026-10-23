@@ -1,5 +1,8 @@
 //! Integration barrier: approval + current filesystem evidence + one final transaction.
-use super::*;
+use super::{
+    Connection, Path, PersistenceService, PersistenceServiceError, PulsationStatus, coordination,
+    params,
+};
 use crate::orchestration::{ContentSha256, SourceRevision, publication};
 
 impl PersistenceService {

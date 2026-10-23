@@ -704,7 +704,8 @@ impl AppModel {
             ),
             "settings-adaptive-mode" => self.update_runtime_config(
                 runtime_config_update().with_adaptive_context_mode(
-                    hvc_core::agent_runtime::AdaptiveContextMode::parse(value).unwrap(),
+                    hvc_core::agent_runtime::AdaptiveContextMode::parse(value)
+                        .expect("adaptive mode comes from the validated live choice set"),
                 ),
                 "Adaptive context mode updated.",
                 cx,
@@ -727,9 +728,18 @@ impl AppModel {
                 s.composition_override_thinking = value.to_owned().into()
             }),
             "brownfield-expansion-radius" => self.toggle_brownfield_expansion_radius(cx),
-            "brownfield-llm-budget" => self.set_brownfield_budget(value.parse().unwrap(), cx),
+            "brownfield-llm-budget" => self.set_brownfield_budget(
+                value
+                    .parse()
+                    .expect("numeric value comes from the validated live choice set"),
+                cx,
+            ),
             "settings-embedding-top-k" => self.update_runtime_config(
-                runtime_config_update().with_embedding_top_k(value.parse().unwrap()),
+                runtime_config_update().with_embedding_top_k(
+                    value
+                        .parse()
+                        .expect("numeric value comes from the validated live choice set"),
+                ),
                 "Embedding Top K updated.",
                 cx,
             ),
@@ -746,7 +756,10 @@ impl AppModel {
             "settings-route-limits" => {
                 let parts = value
                     .split('/')
-                    .map(|n| n.parse::<u64>().unwrap())
+                    .map(|n| {
+                        n.parse::<u64>()
+                            .expect("route limits are built as slash-separated numeric choices")
+                    })
                     .collect::<Vec<_>>();
                 self.settings.update(cx, |s, _| {
                     s.route_max_attempts = parts[0] as _;
@@ -758,22 +771,52 @@ impl AppModel {
             _ if field.starts_with("settings-adaptive-") => {
                 self.update_dynamic_context_policy(
                     |p| match field {
-                        "settings-adaptive-initial-k" => p.initial_k = value.parse().unwrap(),
+                        "settings-adaptive-initial-k" => {
+                            p.initial_k = value
+                                .parse()
+                                .expect("numeric value comes from the validated live choice set")
+                        }
                         "settings-adaptive-max-k" => {
-                            p.max_k = value.parse().unwrap();
+                            p.max_k = value
+                                .parse()
+                                .expect("numeric value comes from the validated live choice set");
                             p.initial_k = p.initial_k.min(p.max_k);
                         }
-                        "settings-adaptive-similarity" => p.min_similarity = value.parse().unwrap(),
+                        "settings-adaptive-similarity" => {
+                            p.min_similarity = value
+                                .parse()
+                                .expect("numeric value comes from the validated live choice set")
+                        }
                         "settings-adaptive-min-candidates" => {
-                            p.min_candidates_count = value.parse().unwrap()
+                            p.min_candidates_count = value
+                                .parse()
+                                .expect("numeric value comes from the validated live choice set")
                         }
                         "settings-adaptive-max-notes" => {
-                            p.max_notes_budget = value.parse().unwrap()
+                            p.max_notes_budget = value
+                                .parse()
+                                .expect("numeric value comes from the validated live choice set")
                         }
-                        "settings-adaptive-beam" => p.beam_width = value.parse().unwrap(),
-                        "settings-adaptive-files" => p.max_source_files = value.parse().unwrap(),
-                        "settings-adaptive-code" => p.max_code_chars = value.parse().unwrap(),
-                        "settings-adaptive-timeout" => p.timeout_ms = value.parse().unwrap(),
+                        "settings-adaptive-beam" => {
+                            p.beam_width = value
+                                .parse()
+                                .expect("numeric value comes from the validated live choice set")
+                        }
+                        "settings-adaptive-files" => {
+                            p.max_source_files = value
+                                .parse()
+                                .expect("numeric value comes from the validated live choice set")
+                        }
+                        "settings-adaptive-code" => {
+                            p.max_code_chars = value
+                                .parse()
+                                .expect("numeric value comes from the validated live choice set")
+                        }
+                        "settings-adaptive-timeout" => {
+                            p.timeout_ms = value
+                                .parse()
+                                .expect("numeric value comes from the validated live choice set")
+                        }
                         _ => {}
                     },
                     cx,

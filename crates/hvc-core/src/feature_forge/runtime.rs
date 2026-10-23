@@ -1,8 +1,21 @@
-use super::{service::*, *};
+use super::{
+    DependencyOrigin, Deserialize, Feature, FeatureBrief, FeatureDependency, FeatureEvaluation,
+    FeatureState, ForgeEvent, ForgeSnapshot, Serialize, TurnError, TurnFailure, TurnFailureKind,
+    cap_notices, service,
+    service::{
+        FeatureForgeService, apply_approval, apply_evaluation, check_source, decode,
+        dependency_cycle, editable_feature, editable_feature_excluding_turn, enum_string, feature,
+        id, invalid, now, save_brief, text, upsert_dependency, validate_evaluation,
+    },
+};
 use crate::{
     AppEvent, AppEventBus,
     llm::AgentRole,
-    orchestration::*,
+    orchestration::{
+        CodeContextDiscoveryMode, CodeContextRequest, CodeContextService, CollectionBudget,
+        ContentSha256, LexicalCodeContextService, RoutedCodeContextService,
+        code_context_prompt_json,
+    },
     persistence_service::{PersistenceService, PersistenceServiceError as Error},
     terminals::CliBackend,
 };
@@ -850,7 +863,7 @@ fn strings() -> Value {
 fn object(properties: Value) -> Value {
     let keys = properties
         .as_object()
-        .unwrap()
+        .expect("schema properties are constructed as JSON objects")
         .keys()
         .cloned()
         .collect::<Vec<_>>();
@@ -927,7 +940,7 @@ pub(crate) fn codex_response_schema() -> Value {
 }
 
 /// Resolves the Feature Forge response schema according to the targeted CLI backend.
-/// OpenAI Codex requires strict Structured Outputs compliance (`additionalProperties: false`,
+/// `OpenAI` Codex requires strict Structured Outputs compliance (`additionalProperties: false`,
 /// typed array items, `enum` for single-element constraints, `anyOf` for nullable integer bounds).
 /// Other CLI backends and API Direct retain the canonical schema, with explicit isolated branches
 /// ready for any future backend-specific exceptions.

@@ -184,7 +184,7 @@ pub struct FeatureDependency {
     pub feature_id: String,
     pub prerequisite_id: String,
     pub rationale: String,
-    /// Host-owned. The FeatureAgent schema for `suggestedDependencies` does not
+    /// Host-owned. The `FeatureAgent` schema for `suggestedDependencies` does not
     /// carry this field, so `default` is what keeps a model response
     /// deserializable; the host stamps the real origin when it stores the edge.
     #[serde(default)]

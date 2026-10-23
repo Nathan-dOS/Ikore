@@ -8,7 +8,10 @@ use gpui::{
     AnyElement, Context, Div, Focusable, PathBuilder, Render, SharedString, Window, canvas,
     deferred, div, point, prelude::*, px, relative,
 };
-use hvc_core::feature_forge::*;
+use hvc_core::feature_forge::{
+    DependencyOrigin, FailureActions, Feature, FeatureState, FeatureTurn, TaskService,
+    TurnFailureKind, TurnKind, Wave, failure_actions,
+};
 
 use crate::selectable_message::SelectableMessage;
 
