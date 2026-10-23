@@ -15,6 +15,7 @@ quota-credential-collectors = ["hvc-terminal/quota-credential-collectors"]
 [dependencies]
 hvc-contracts.workspace = true
 hvc-terminal = { workspace = true, default-features = false }
+hvc-voice.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 fs2 = "0.4"

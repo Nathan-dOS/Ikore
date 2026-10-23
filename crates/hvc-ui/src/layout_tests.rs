@@ -5821,3 +5821,121 @@ fn deleting_a_note_takes_two_clicks_and_navigation_disarms_it(cx: &mut TestAppCo
     select(&model, visual, AppView::Notes);
     assert!(model.read_with(visual, |m, _| m.notes.confirm_delete.is_none()));
 }
+
+// ---------------------------------------------------------------------------
+// ADR-029: voice dictation settings
+// ---------------------------------------------------------------------------
+
+fn voice_status(
+    model_ready: bool,
+    setup: Option<hvc_core::voice::SetupProgress>,
+    push_to_talk: bool,
+) -> hvc_core::voice::VoiceStatus {
+    use hvc_core::voice::{Dictation, Hotkey, RuntimeStatus, VoiceSettings, VoiceStatus};
+    VoiceStatus {
+        runtime: RuntimeStatus {
+            platform_supported: true,
+            runtime_ready: model_ready,
+            model_ready,
+        },
+        runtime_version: "0.2.0".into(),
+        model_name: "Nemotron 3.5 ASR Streaming 0.6B".into(),
+        model_bytes: 741_548_352,
+        setup,
+        setup_error: None,
+        settings: VoiceSettings {
+            push_to_talk,
+            hotkey: Hotkey::default(),
+        },
+        listening: push_to_talk && model_ready,
+        hotkey_error: None,
+        dictation: Dictation::Idle,
+    }
+}
+
+#[gpui::test]
+fn the_voice_page_downloads_the_model_then_offers_push_to_talk(cx: &mut TestAppContext) {
+    use hvc_core::voice::{SetupProgress, SetupStage};
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        model.update(visual, |m, cx| {
+            m.voice_status = Some(voice_status(false, None, false));
+            m.open_settings(Some(SettingsPage::Voice), cx);
+        });
+        visual.run_until_parked();
+        let content = visual.debug_bounds("settings-content-scroll").unwrap();
+        for selector in [
+            "settings-row:voice-model",
+            "settings-row:voice-setup",
+            "settings-voice-download",
+            "settings-row:voice-push-to-talk",
+            "settings-row:voice-shortcut",
+            "settings-voice-status",
+        ] {
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector} at {width}"));
+            assert!(
+                bounds.left() >= content.left() && bounds.right() <= content.right() + px(1.0),
+                "{selector} escaped the settings pane at {width}: {bounds:?}"
+            );
+        }
+
+        model.update(visual, |m, cx| {
+            m.voice_status = Some(voice_status(
+                false,
+                Some(SetupProgress {
+                    stage: SetupStage::Model,
+                    received: 370_000_000,
+                    total: 741_548_352,
+                }),
+                false,
+            ));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("settings-voice-cancel").is_some());
+
+        model.update(visual, |m, cx| {
+            m.voice_status = Some(voice_status(true, None, true));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("settings-voice-push-to-talk").is_some());
+        model.update(visual, |m, cx| m.close_settings(false, cx));
+        visual.run_until_parked();
+    }
+}
+
+#[gpui::test]
+fn the_shortcut_menus_offer_every_modifier_set_and_f1_to_f10(cx: &mut TestAppContext) {
+    let (model, _visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(_visual, |m, _| {
+        m.voice_status = Some(voice_status(true, None, true));
+        let modifiers = m.voice_choices("voice-modifiers").unwrap();
+        assert_eq!(modifiers.len(), 4);
+        assert_eq!(
+            modifiers
+                .iter()
+                .filter(|c| c.selected)
+                .map(|c| c.value.to_string())
+                .collect::<Vec<_>>(),
+            ["ctrl+shift"]
+        );
+        let keys = m.voice_choices("voice-key").unwrap();
+        assert_eq!(keys.len(), 10);
+        assert_eq!(
+            keys.first().map(|c| c.value.to_string()).as_deref(),
+            Some("f1")
+        );
+        assert_eq!(
+            keys.iter()
+                .filter(|c| c.selected)
+                .map(|c| c.value.to_string())
+                .collect::<Vec<_>>(),
+            ["f9"]
+        );
+        assert!(m.voice_choices("settings-context-strategy").is_none());
+    });
+}

@@ -47,6 +47,7 @@ pub(crate) fn page_content(
         SettingsPage::Connections => crate::settings_view::connections_page(model, hl, cx),
         SettingsPage::Routes => crate::settings_view::routes_page(model, hl, cx),
         SettingsPage::Embeddings => crate::settings_view::embeddings_page(model, hl, cx),
+        SettingsPage::Voice => crate::voice_ui::voice_page(model, hl, cx),
         SettingsPage::SecondBrain => crate::settings_view::second_brain_page(model, hl, cx),
         SettingsPage::Preparation => crate::settings_view::preparation_page(model, hl, cx),
         SettingsPage::Composition => crate::composition_ui::composition_page(model, hl, cx),

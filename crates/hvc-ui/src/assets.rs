@@ -61,6 +61,7 @@ pub(crate) static ASSETS: &[(&str, &[u8])] = &[
     icon_asset!("maximize"),
     icon_asset!("message-square"),
     icon_asset!("minus"),
+    icon_asset!("mic"),
     icon_asset!("network"),
     icon_asset!("notebook-pen"),
     icon_asset!("panel-right-close"),

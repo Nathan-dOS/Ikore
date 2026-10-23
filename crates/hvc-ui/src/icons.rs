@@ -133,11 +133,13 @@ pub(crate) enum Icon {
     Pencil,
     /// Notes view (ADR-029).
     NotebookPen,
+    /// Voice dictation settings (ADR-029).
+    Mic,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 65] = [
+    pub(crate) const ALL: [Self; 66] = [
         Self::House,
         Self::Plus,
         Self::Hammer,
@@ -203,6 +205,7 @@ impl Icon {
         Self::ArrowRight,
         Self::Pencil,
         Self::NotebookPen,
+        Self::Mic,
     ];
 
     /// Asset path served by `HvcAssets`; `icons/<lucide-name>.svg`.
@@ -273,6 +276,7 @@ impl Icon {
             Self::ArrowRight => "icons/arrow-right.svg",
             Self::Pencil => "icons/pencil.svg",
             Self::NotebookPen => "icons/notebook-pen.svg",
+            Self::Mic => "icons/mic.svg",
         }
     }
 }

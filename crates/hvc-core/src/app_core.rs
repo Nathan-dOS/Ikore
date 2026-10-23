@@ -44,6 +44,8 @@ const LOCK_NAME: &str = "hard-vibe-code.lock";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppPaths {
     data_dir: PathBuf,
+    /// Large machine-local files that must not roam with the Windows profile.
+    cache_dir: PathBuf,
 }
 
 impl AppPaths {
@@ -62,19 +64,32 @@ impl AppPaths {
             })
             .ok_or(AppCoreError::DataDirectoryUnavailable)?;
 
-        Ok(Self::from_data_dir(
-            PathBuf::from(base).join(APP_IDENTIFIER),
-        ))
+        let mut paths = Self::from_data_dir(PathBuf::from(base).join(APP_IDENTIFIER));
+        #[cfg(target_os = "windows")]
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            paths.cache_dir = PathBuf::from(local).join(APP_IDENTIFIER);
+        }
+        Ok(paths)
     }
 
     pub fn from_data_dir(path: impl Into<PathBuf>) -> Self {
+        let data_dir = path.into();
         Self {
-            data_dir: path.into(),
+            cache_dir: data_dir.clone(),
+            data_dir,
         }
     }
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// The voice runtime and model (ADR-029): `%LOCALAPPDATA%` on Windows,
+    /// so ~700 MB never travels with a roaming profile; the data directory
+    /// when `HVC_DATA_DIR` isolates a run. Kept short for Windows' 260-character
+    /// path limit.
+    pub fn voice_dir(&self) -> PathBuf {
+        self.cache_dir.join("voice")
     }
 
     pub fn database_path(&self) -> PathBuf {
@@ -225,6 +240,7 @@ pub struct AppCore {
     chat: Arc<ChatService>,
     feature_agent: Arc<crate::feature_forge::FeatureAgentRuntime>,
     notes_scribe: Arc<crate::companion_notes::NoteScribeRuntime>,
+    voice: Arc<crate::voice::VoiceService>,
     terminals: Arc<TerminalService>,
     workspace: Mutex<WorkspaceContext>,
     worker_cancellation: CancellationToken,
@@ -287,6 +303,13 @@ impl AppCore {
             events.clone(),
             runtime.clone(),
         )?);
+        let voice = crate::voice::VoiceService::new(
+            hvc_voice::VoiceRuntime::new(paths.voice_dir()),
+            persistence.clone(),
+            events.clone(),
+            runtime.clone(),
+            notes_scribe.clone(),
+        );
         let worker_cancellation = CancellationToken::new();
 
         let core = Arc::new(Self {
@@ -298,6 +321,7 @@ impl AppCore {
             chat,
             feature_agent,
             notes_scribe,
+            voice,
             terminals,
             workspace: Mutex::new(WorkspaceContext::default()),
             worker_cancellation,
@@ -313,6 +337,8 @@ impl AppCore {
             .worker_task
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(task);
+        // Registers the push-to-talk shortcut when it is on and installed.
+        core.voice.apply();
         Ok(core)
     }
 
@@ -384,6 +410,9 @@ impl AppCore {
     }
     pub fn notes_scribe(&self) -> Arc<crate::companion_notes::NoteScribeRuntime> {
         self.notes_scribe.clone()
+    }
+    pub fn voice(&self) -> Arc<crate::voice::VoiceService> {
+        self.voice.clone()
     }
 
     pub fn open_workspace(
@@ -627,6 +656,7 @@ impl AppCore {
         self.chat.cancel_all_turns();
         self.feature_agent.cancel_all();
         self.notes_scribe.cancel_all();
+        self.voice.shutdown();
         self.terminals.cancel_all();
         if let Ok(mut workspace) = self.workspace.lock() {
             workspace.watcher = None;

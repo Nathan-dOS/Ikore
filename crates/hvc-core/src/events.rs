@@ -18,6 +18,8 @@ pub enum AppEvent {
     Forge(crate::feature_forge::ForgeEvent),
     /// A Companion note changed (ADR-029); the UI reloads its snapshot.
     Notes(crate::companion_notes::NotesEvent),
+    /// Voice setup or dictation changed (ADR-029); the UI rereads the status.
+    Voice(crate::voice::VoiceEvent),
     WorkspaceChanged(WorkspaceChangedEvent),
     Llm(LlmEventEnvelope),
     Chat(ChatEventEnvelope),
@@ -31,6 +33,7 @@ impl AppEvent {
         match self {
             Self::Forge(_) => "forge://changed",
             Self::Notes(_) => "notes://changed",
+            Self::Voice(_) => "voice://changed",
             Self::WorkspaceChanged(_) => crate::workspace_service::WORKSPACE_CHANGED_EVENT,
             Self::Llm(envelope) => envelope.event.event_name(),
             Self::Chat(envelope) => envelope.event_name(),

@@ -392,6 +392,8 @@ pub struct AppModel {
     needs_resync: bool,
     pub(crate) indexing_status: Option<hvc_core::orchestration::IndexingEvent>,
     pub(crate) model_pull_status: Option<hvc_core::embedding_service::ModelPullEvent>,
+    /// Voice dictation setup and push-to-talk, as the core last reported it (ADR-029).
+    pub(crate) voice_status: Option<hvc_core::voice::VoiceStatus>,
     pub(crate) notifications: crate::notifications::Notifications,
     lifecycle: LifecycleState,
     hydrating: bool,
@@ -863,6 +865,7 @@ impl AppModel {
             needs_resync: false,
             indexing_status: None,
             model_pull_status: None,
+            voice_status: None,
             notifications: crate::notifications::Notifications::default(),
             lifecycle: LifecycleState::default(),
             hydrating: false,
@@ -6425,6 +6428,7 @@ impl AppModel {
         self.notes = crate::notes::NotesUi::new(cx);
         self.navigation
             .update(cx, |navigation, _| navigation.active = AppView::Home);
+        self.sync_voice_project(cx);
     }
 
     pub(crate) fn run_settings_operation(
@@ -7379,6 +7383,8 @@ impl AppModel {
             return;
         };
         self.lifecycle.start(1);
+        // The core registered push-to-talk before this subscription existed.
+        self.refresh_voice_status(cx);
 
         let mut receiver = core.subscribe();
         self.event_task = Some(cx.spawn(async move |this, cx| {
@@ -7612,6 +7618,7 @@ impl AppModel {
         let restored_chat_conversation =
             session.and_then(|value| value.active_chat_conversation_id.clone());
         self.hydrate_chat_project(restored.project_id.clone(), restored_chat_conversation, cx);
+        self.sync_voice_project(cx);
         self.active_view = active_view;
         self.needs_resync = false;
         self.session_dirty = false;
@@ -8005,6 +8012,7 @@ impl AppModel {
                     self.refresh_notes(cx);
                 }
             }
+            AppEvent::Voice(_) => self.refresh_voice_status(cx),
             AppEvent::WorkspaceChanged(event) => {
                 self.activity.push_coalesced(
                     ActivityEntry {

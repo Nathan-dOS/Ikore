@@ -65,6 +65,7 @@ mod usage;
 mod vault;
 mod vault_view;
 mod views;
+mod voice_ui;
 mod widgets;
 mod workspace;
 mod workspace_view;

@@ -8,6 +8,7 @@ members = [
     "crates/hvc-test-support",
     "crates/hvc-terminal",
     "crates/hvc-ui",
+    "crates/hvc-voice",
 ]
 default-members = ["crates/hvc-app"]
 
@@ -24,6 +25,7 @@ futures = "0.3"
 gpui = { version = "0.2.2", default-features = false, features = ["windows-manifest"] }
 hvc-contracts = { path = "crates/hvc-contracts" }
 hvc-terminal = { path = "crates/hvc-terminal", default-features = false }
+hvc-voice = { path = "crates/hvc-voice" }
 # Members opt into the quota credential collectors through their own features (ADR-028 G10).
 hvc-core = { path = "crates/hvc-core", default-features = false }
 hvc-editor = { path = "crates/hvc-editor" }

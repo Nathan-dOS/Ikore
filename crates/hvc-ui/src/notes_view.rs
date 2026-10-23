@@ -148,7 +148,14 @@ fn master_column(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                 .justify_between()
                 .gap_2()
                 .min_w_0()
-                .child(hint("Enter saves · Shift+Enter new line"))
+                .child(hint(match &model.voice_status {
+                    // Push-to-talk works from anywhere; the capture box is where it shows.
+                    Some(voice) if voice.listening => format!(
+                        "Enter saves · or hold {} and speak",
+                        voice.settings.hotkey.label()
+                    ),
+                    _ => "Enter saves · Shift+Enter new line".to_string(),
+                }))
                 .child(action_button(
                     "notes-capture-save",
                     "Save note",
