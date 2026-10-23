@@ -1616,3 +1616,107 @@ async fn feature_discovery_uses_the_official_cli_adapters_with_isolated_context_
         assert_eq!(run.status, TerminalRunStatus::Completed);
     }
 }
+
+/// ADR-029: the Notes Scribe gets the Companion restrictions from its role, not
+/// from a job chain, runs under its own `notes` origin and refuses Custom.
+#[tokio::test]
+async fn notes_scribe_runs_companion_scoped_under_the_notes_origin() {
+    let _lock = PATH_TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let binaries = tempfile::tempdir().unwrap();
+    for name in ["codex", "claude", "gemini", "opencode", "agy"] {
+        std::fs::copy(
+            env!("CARGO_BIN_EXE_cli_fixture"),
+            binaries.path().join(format!("{name}.exe")),
+        )
+        .unwrap();
+    }
+    let original = std::env::var_os("PATH");
+    let _restore = PathRestore(original.clone());
+    let mut paths = vec![binaries.path().to_path_buf()];
+    if let Some(original) = original {
+        paths.extend(std::env::split_paths(&original));
+    }
+    // SAFETY: the PATH test lock serializes fixture discovery and restores the original value.
+    unsafe {
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+    }
+    let h = harness(vec![]);
+    let configure = |backend: CliBackend, model: &str| {
+        let custom = backend == CliBackend::Custom;
+        // A Custom executable is accepted in API Mode first, then switched to CLI.
+        let modes: &[AgentExecutionMode] = if custom {
+            &[
+                AgentExecutionMode::ApiDirect,
+                AgentExecutionMode::CliProcess,
+            ]
+        } else {
+            &[AgentExecutionMode::CliProcess]
+        };
+        for mode in modes {
+            let config = h
+                .terminals
+                .repository()
+                .get_config(&h.project_id, AgentRole::NotesScribe)
+                .unwrap();
+            h.terminals
+                .update_config(UpdateCliAgentConfigRequest {
+                    project_id: h.project_id.clone(),
+                    agent_role: AgentRole::NotesScribe,
+                    execution_mode: *mode,
+                    backend,
+                    model: Some(model.into()),
+                    model_profile: None,
+                    model_source: CliModelSelectionSource::Manual,
+                    thinking_level: ThinkingLevel::Default,
+                    custom_executable: custom.then(|| env!("CARGO_BIN_EXE_cli_fixture").into()),
+                    custom_args: vec![],
+                    custom_risk_ack: custom,
+                    expected_version: config.version,
+                })
+                .unwrap();
+        }
+    };
+    let note_request = || {
+        let mut r = request(&h.project_id, Instant::now() + Duration::from_secs(20));
+        r.target = AgentExecutionTarget::canonical(AgentRole::NotesScribe);
+        r.stage = "Notes".into();
+        r.job_chain = "note:fixture".into();
+        r.user_prompt = "notes-scribe-fixture".into();
+        r
+    };
+    for (backend, model) in [
+        (CliBackend::Codex, "gpt-5.6-luna"),
+        (CliBackend::Claude, "haiku"),
+        (CliBackend::Gemini, "gemini-2.5-flash"),
+        (CliBackend::Opencode, "fixture-opencode-model"),
+        (CliBackend::Antigravity, "gemini-3.8-flash"),
+    ] {
+        configure(backend, model);
+        let completion = h
+            .terminals
+            .execute_llm_request(&note_request(), &CancellationToken::new())
+            .await
+            .unwrap()
+            .unwrap();
+        let run = h
+            .terminals
+            .repository()
+            .get_run(&completion.terminal_run_id)
+            .unwrap();
+        assert_eq!(run.origin, hvc_core::terminals::ExecutionOrigin::Notes);
+        assert_eq!(run.agent_role, Some(AgentRole::NotesScribe));
+        assert!(run.pulsation_id.is_none());
+        assert_eq!(run.status, TerminalRunStatus::Completed, "{backend:?}");
+    }
+
+    configure(CliBackend::Custom, "haiku");
+    let refused = h
+        .terminals
+        .execute_llm_request(&note_request(), &CancellationToken::new())
+        .await
+        .expect_err("the Scribe refuses a Custom executable");
+    assert!(refused.to_string().contains("Notes Scribe"), "{refused}");
+}

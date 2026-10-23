@@ -8,6 +8,7 @@ pub mod agent_runtime;
 pub mod agent_timeout;
 pub mod app_core;
 pub mod chat_service;
+pub mod companion_notes;
 pub mod document_cache;
 pub mod embedding_service;
 pub mod events;

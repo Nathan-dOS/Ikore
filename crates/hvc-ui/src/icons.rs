@@ -131,11 +131,13 @@ pub(crate) enum Icon {
     ArrowRight,
     /// Review brief: changed since the previous revision.
     Pencil,
+    /// Notes view (ADR-029).
+    NotebookPen,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 64] = [
+    pub(crate) const ALL: [Self; 65] = [
         Self::House,
         Self::Plus,
         Self::Hammer,
@@ -200,6 +202,7 @@ impl Icon {
         Self::GitCompare,
         Self::ArrowRight,
         Self::Pencil,
+        Self::NotebookPen,
     ];
 
     /// Asset path served by `HvcAssets`; `icons/<lucide-name>.svg`.
@@ -269,6 +272,7 @@ impl Icon {
             Self::GitCompare => "icons/git-compare.svg",
             Self::ArrowRight => "icons/arrow-right.svg",
             Self::Pencil => "icons/pencil.svg",
+            Self::NotebookPen => "icons/notebook-pen.svg",
         }
     }
 }

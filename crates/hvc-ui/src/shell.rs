@@ -37,6 +37,7 @@ actions!(
         SelectAgentsView,
         SelectLogsView,
         SelectChatView,
+        SelectNotesView,
         SelectWorkspaceView,
         SelectSettingsView,
         PreviousSection,
@@ -48,9 +49,10 @@ actions!(
     ]
 );
 
-/// Nav rail order, top to bottom: Home, then each `AppTab::RAIL_ORDER` group. `ctrl-1..8` follow
-/// this order, so the shortcut for a view is its position on the rail.
-pub(crate) const RAIL_VIEWS: [AppView; 8] = [
+/// Nav rail order, top to bottom: Home, then each `AppTab::RAIL_ORDER` group. The rail itself is
+/// built from the groups; tests walk it through this list.
+#[cfg(test)]
+pub(crate) const RAIL_VIEWS: [AppView; 9] = [
     AppView::Home,
     AppView::Forge,
     AppView::Pulsations,
@@ -58,7 +60,23 @@ pub(crate) const RAIL_VIEWS: [AppView; 8] = [
     AppView::Agents,
     AppView::Logs,
     AppView::Chat,
+    AppView::Notes,
     AppView::Workspace,
+];
+
+/// `ctrl-N` per view. Explicit rather than the rail position: a view added to
+/// a group (Notes, ADR-029) takes the next free number instead of moving the
+/// shortcuts developers already know.
+pub(crate) const RAIL_SHORTCUTS: [(AppView, &str); 9] = [
+    (AppView::Home, "ctrl-1"),
+    (AppView::Forge, "ctrl-2"),
+    (AppView::Pulsations, "ctrl-3"),
+    (AppView::Vault, "ctrl-4"),
+    (AppView::Agents, "ctrl-5"),
+    (AppView::Logs, "ctrl-6"),
+    (AppView::Chat, "ctrl-7"),
+    (AppView::Workspace, "ctrl-8"),
+    (AppView::Notes, "ctrl-9"),
 ];
 
 pub(crate) fn register_navigation_keybindings(cx: &mut App) {
@@ -71,6 +89,7 @@ pub(crate) fn register_navigation_keybindings(cx: &mut App) {
         KeyBinding::new("ctrl-6", SelectLogsView, None),
         KeyBinding::new("ctrl-7", SelectChatView, None),
         KeyBinding::new("ctrl-8", SelectWorkspaceView, None),
+        KeyBinding::new("ctrl-9", SelectNotesView, None),
         KeyBinding::new("ctrl-,", SelectSettingsView, None),
         // Cycle the current view's own section strip (Pulsations/Forge/Settings).
         KeyBinding::new("ctrl-shift-[", PreviousSection, None),
@@ -89,12 +108,12 @@ pub(crate) fn register_navigation_keybindings(cx: &mut App) {
     ]);
 }
 
-/// Keyboard hint shown in a rail tooltip for `view`, derived from its rail position.
+/// Keyboard hint shown in a rail tooltip for `view`.
 fn rail_shortcut(view: AppView) -> Option<String> {
-    RAIL_VIEWS
+    RAIL_SHORTCUTS
         .iter()
-        .position(|candidate| *candidate == view)
-        .map(|index| format!("ctrl-{}", index + 1))
+        .find(|(candidate, _)| *candidate == view)
+        .map(|(_, keys)| (*keys).to_string())
 }
 
 pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> {
@@ -204,6 +223,9 @@ impl Render for AppModel {
             }))
             .on_action(cx.listener(|model, _: &SelectChatView, _, cx| {
                 model.select_view(AppView::Chat, cx);
+            }))
+            .on_action(cx.listener(|model, _: &SelectNotesView, _, cx| {
+                model.select_view(AppView::Notes, cx);
             }))
             .on_action(cx.listener(|model, _: &SelectWorkspaceView, _, cx| {
                 model.select_view(AppView::Workspace, cx);
@@ -565,6 +587,7 @@ fn nav_rail(
                 AppView::Pulsations => Some(badges.engine_awaiting_hitl),
                 AppView::Agents => Some(badges.agent_failed_runs),
                 AppView::Chat => Some(badges.companion_streaming),
+                AppView::Notes => Some(badges.notes_running),
                 _ => None,
             };
             rail = rail.child(rail_item(view, active, badge, cx));
@@ -619,6 +642,7 @@ fn content_panel(
         AppView::Pulsations => pulsations_panel(model, cx),
         AppView::Vault => vault_panel(model, cx),
         AppView::Chat => chat_panel(model, cx),
+        AppView::Notes => crate::notes_view::notes_panel(model, cx),
         AppView::Agents => agents_panel(model, cx),
         AppView::Logs => logs_panel(model, cx),
     }

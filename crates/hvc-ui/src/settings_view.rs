@@ -1472,6 +1472,7 @@ fn agent_timeouts_table() -> gpui::Div {
         (AgentRole::LearningAgent, "Knowledge synthesis"),
         (AgentRole::IntakeRouter, "Triage & validation"),
         (AgentRole::Visualizer, "Review brief notes"),
+        (AgentRole::NotesScribe, "Note structuring"),
     ];
     let header = div()
         .flex()

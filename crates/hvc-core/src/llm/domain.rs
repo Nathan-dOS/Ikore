@@ -83,10 +83,14 @@ pub enum AgentRole {
     /// through a closed, host-validated contract. Off unless a project
     /// enables it.
     Visualizer,
+    /// ADR-029: turns a developer's loose capture into a structured
+    /// Companion note, through a closed, host-validated contract. It has no
+    /// tools and never sees the repository.
+    NotesScribe,
 }
 
 impl AgentRole {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::IntakeRouter,
         Self::TaskSpecifier,
         Self::ContractAgent,
@@ -96,6 +100,7 @@ impl AgentRole {
         Self::LearningAgent,
         Self::FeatureAgent,
         Self::Visualizer,
+        Self::NotesScribe,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -109,6 +114,7 @@ impl AgentRole {
             Self::Integrator => "integrator",
             Self::LearningAgent => "learning_agent",
             Self::Visualizer => "visualizer",
+            Self::NotesScribe => "notes_scribe",
         }
     }
 

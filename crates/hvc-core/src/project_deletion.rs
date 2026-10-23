@@ -301,7 +301,8 @@ fn active_work(db: &Connection, id: &str) -> Result<bool, Error> {
         OR EXISTS(SELECT 1 FROM terminal_runs WHERE project_id=?1 AND status IN ('queued','starting','running'))
         OR EXISTS(SELECT 1 FROM artifact_publications WHERE project_id=?1 AND state='applying')
         OR EXISTS(SELECT 1 FROM chat_messages m JOIN chat_conversations c ON c.id=m.conversation_id WHERE c.project_id=?1 AND m.status IN ('pending','streaming'))
-        OR EXISTS(SELECT 1 FROM forge_turns t JOIN forge_features f ON f.id=t.feature_id WHERE f.project_id=?1 AND t.status='running')",[id],|r|r.get(0))?;
+        OR EXISTS(SELECT 1 FROM forge_turns t JOIN forge_features f ON f.id=t.feature_id WHERE f.project_id=?1 AND t.status='running')
+        OR EXISTS(SELECT 1 FROM companion_note_turns t JOIN companion_notes n ON n.id=t.note_id WHERE n.project_id=?1 AND t.status='running')",[id],|r|r.get(0))?;
     Ok(active)
 }
 
@@ -877,6 +878,51 @@ mod tests {
             .unwrap(),
             0
         );
+    }
+
+    /// ADR-029: a running Scribe turn blocks deletion like any other agent
+    /// work, and the notes and their turns go with the project.
+    #[test]
+    fn refuses_a_running_note_turn_and_purges_companion_notes() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("repo");
+        fs::create_dir_all(&root).unwrap();
+        let service = PersistenceService::initialize(&fixture.path().join("data")).unwrap();
+        let project = service
+            .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
+                workspace_path: root.to_string_lossy().into_owned(),
+                preferred_name: Some("Project".into()),
+            })
+            .unwrap()
+            .project;
+        let db = service.connection().unwrap();
+        db.execute("INSERT INTO companion_notes(id,project_id,capture_request_id,raw_input,created_at,updated_at) VALUES('note',?1,'capture','Private thought','2026-10-22','2026-10-22')",[&project.id]).unwrap();
+        db.execute("INSERT INTO companion_note_turns(id,note_id,note_revision,ordinal,request_id,kind,status,created_at,updated_at) VALUES('turn','note',1,1,'capture','structure','running','2026-10-22','2026-10-22')",[]).unwrap();
+        assert!(
+            service
+                .delete_project_permanently(&project.id, &project.name)
+                .is_err()
+        );
+        assert!(root.exists());
+        db.execute(
+            "UPDATE companion_note_turns SET status='failed' WHERE id='turn'",
+            [],
+        )
+        .unwrap();
+        drop(db);
+        service
+            .delete_project_permanently(&project.id, &project.name)
+            .unwrap();
+        let db = service.connection().unwrap();
+        for table in ["companion_notes", "companion_note_turns"] {
+            assert_eq!(
+                db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "{table}"
+            );
+        }
     }
 
     #[test]

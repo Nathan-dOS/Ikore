@@ -250,16 +250,7 @@ pub(crate) fn until(delta: chrono::Duration) -> String {
 
 /// "updated just now", "updated 3 min ago", "updated 2 h ago".
 pub(crate) fn updated(observed_at: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let minutes = (now - observed_at).num_minutes().max(0);
-    if minutes < 1 {
-        "updated just now".into()
-    } else if minutes < 60 {
-        format!("updated {minutes} min ago")
-    } else if minutes < 48 * 60 {
-        format!("updated {} h ago", minutes / 60)
-    } else {
-        format!("updated {} d ago", minutes / (24 * 60))
-    }
+    format!("updated {}", crate::time::relative_since(observed_at, now))
 }
 
 fn clock(at: DateTime<Utc>, now: DateTime<Utc>) -> String {

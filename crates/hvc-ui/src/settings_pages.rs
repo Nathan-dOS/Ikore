@@ -173,17 +173,9 @@ pub(crate) fn shortcut_catalog() -> Vec<Shortcut> {
     const REVIEW: &str = "Review & failure";
     const EDIT: &str = "Editor & text";
     const OVERLAYS: &str = "Overlays & menus";
-    let mut catalog: Vec<Shortcut> = crate::shell::RAIL_VIEWS
+    let mut catalog: Vec<Shortcut> = crate::shell::RAIL_SHORTCUTS
         .iter()
-        .enumerate()
-        .map(|(index, view)| {
-            shortcut(
-                NAV,
-                &format!("ctrl-{}", index + 1),
-                &format!("Go to {}", view.short_label()),
-                true,
-            )
-        })
+        .map(|(view, keys)| shortcut(NAV, keys, &format!("Go to {}", view.short_label()), true))
         .collect();
     catalog.extend([
         shortcut(NAV, "ctrl-,", "Open or close Settings", true),
@@ -487,11 +479,18 @@ mod tests {
                 );
             }
         });
-        // ctrl-N follows the rail order.
+        // ctrl-1..9, one per rail view, in the order of the shortcut table.
         let catalog = shortcut_catalog();
-        for (index, view) in crate::shell::RAIL_VIEWS.iter().enumerate() {
+        for (index, (view, keys)) in crate::shell::RAIL_SHORTCUTS.iter().enumerate() {
             assert_eq!(catalog[index].keys, format!("ctrl-{}", index + 1));
+            assert_eq!(catalog[index].keys, *keys);
             assert!(catalog[index].action.ends_with(view.short_label()));
+        }
+        for view in crate::shell::RAIL_VIEWS {
+            assert!(
+                crate::shell::RAIL_SHORTCUTS.iter().any(|(v, _)| *v == view),
+                "{view:?} has no shortcut"
+            );
         }
     }
 }

@@ -197,6 +197,7 @@ pub struct AppCore {
     persistence: PersistenceService,
     chat: Arc<ChatService>,
     feature_agent: Arc<crate::feature_forge::FeatureAgentRuntime>,
+    notes_scribe: Arc<crate::companion_notes::NoteScribeRuntime>,
     terminals: Arc<TerminalService>,
     workspace: Mutex<WorkspaceContext>,
     worker_cancellation: CancellationToken,
@@ -254,6 +255,11 @@ impl AppCore {
             events.clone(),
             runtime.clone(),
         )?);
+        let notes_scribe = Arc::new(crate::companion_notes::NoteScribeRuntime::new(
+            persistence.clone(),
+            events.clone(),
+            runtime.clone(),
+        )?);
         let worker_cancellation = CancellationToken::new();
 
         let core = Arc::new(Self {
@@ -264,6 +270,7 @@ impl AppCore {
             persistence,
             chat,
             feature_agent,
+            notes_scribe,
             terminals,
             workspace: Mutex::new(WorkspaceContext::default()),
             worker_cancellation,
@@ -347,6 +354,9 @@ impl AppCore {
     }
     pub fn feature_agent(&self) -> Arc<crate::feature_forge::FeatureAgentRuntime> {
         self.feature_agent.clone()
+    }
+    pub fn notes_scribe(&self) -> Arc<crate::companion_notes::NoteScribeRuntime> {
+        self.notes_scribe.clone()
     }
 
     pub fn open_workspace(
@@ -589,6 +599,7 @@ impl AppCore {
         self.persistence.cancel_all_active_jobs();
         self.chat.cancel_all_turns();
         self.feature_agent.cancel_all();
+        self.notes_scribe.cancel_all();
         self.terminals.cancel_all();
         if let Ok(mut workspace) = self.workspace.lock() {
             workspace.watcher = None;
@@ -611,6 +622,7 @@ impl AppCore {
         }
         let _ = self.chat.wait_for_idle(Duration::from_secs(3)).await;
         self.feature_agent.wait_for_idle().await;
+        self.notes_scribe.wait_for_idle().await;
         if !self.terminals.wait_for_idle(Duration::from_secs(3)).await {
             self.terminals.cancel_all();
             let _ = self.terminals.wait_for_idle(Duration::from_secs(30)).await;

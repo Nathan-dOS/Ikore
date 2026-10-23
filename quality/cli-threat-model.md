@@ -136,3 +136,17 @@ Residual risks:
 - The Codex endpoint may reject a `rustls` client. This costs availability, not security. Severity: low.
 - **Provider terms and client identification are not assessed.** Until ADR-028 G10 is completed, this item has no severity and must not be described as "no known high risk".
 - Qualification with real accounts is opt-in and outside the hermetic CI, as for every CLI backend.
+
+## Notes Scribe — 2026-10-22
+
+Decision: [ADR-029 public summary](../docs/adr/README.md#adr-029-companion-notes). The Notes Scribe is a canonical role that turns a developer capture into a structured note. It reads only the text the host gives it.
+
+| Threat | Impact | Control | Automated evidence |
+|---|---|---|---|
+| Prompt injection inside a capture | the agent leaves its note | no tools, no repository, no workspace; captures are data in the prompt; the host applies only a closed, validated contract to the one note at its admitted revision | `refinement_rewrites_only_this_note_with_a_bounded_conversation`, `the_validator_enforces_every_rule_the_prompt_states` |
+| CLI run reaches the project workspace or developer configuration | reads beyond the capture | role-scoped Companion hardening: empty temporary working directory, the Companion launch restrictions, `notes` run origin; the Custom backend is refused | `notes_scribe_runs_companion_scoped_under_the_notes_origin` |
+| A secret pasted into a capture or refinement | secret stored and sent to a provider | the secret redactor runs before storage and before the prompt; only the count is kept and shown | `secrets_are_redacted_before_storage_and_before_the_prompt` |
+| A failed or cancelled call loses the developer's text | data loss | the capture is committed before any call; failures keep it for a retry; a restart marks running turns interrupted | `a_provider_failure_keeps_the_capture_for_a_retry`, `a_restart_interrupts_running_turns_and_fails_unstructured_notes` |
+| Project deletion races a running note turn | orphaned writes | deletion refuses while a note turn runs; notes and turns go with the project | `refuses_a_running_note_turn_and_purges_companion_notes` |
+
+Residual risk: the note text follows the developer's language, so the host's English guard does not apply to it (ADR-029 decision 5). The language check is advisory and a mismatch is accepted with a notice. Severity: low; a note feeds no agent.

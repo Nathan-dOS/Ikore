@@ -151,6 +151,12 @@ impl AgentTimeoutPolicy {
                 300_000, // 5 min ceiling: the Brief never waits for it
                 30_000,
             ),
+            AgentRole::NotesScribe => Self::new(
+                180_000, // 3 min base (one note from the developer's own words)
+                90_000,  // 90s silence, as IntakeRouter
+                600_000, // 10 min ceiling
+                30_000,
+            ),
             AgentRole::IntakeRouter => Self::new(
                 180_000, // 3 min base (triagem inicial)
                 90_000, // 90s silêncio (alinhado aos demais papéis; CLIs retentam 5xx upstream com backoff que pode passar de 60s)

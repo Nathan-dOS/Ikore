@@ -54,7 +54,8 @@ See the [threat model](../../quality/cli-threat-model.md) and
 Model-authored structured prose and artifacts must be English. The host
 validates that policy before acceptance/publication. Host-rendered documents
 may quote developer-owned input verbatim; this does not grant a model an
-exception from its output contract. UI text is also English.
+exception from its output contract. UI text is also English. ADR-029 makes one
+narrow exception: a Companion note follows its author's language.
 
 ## ADR-015: navigation
 
@@ -122,6 +123,23 @@ existing human checkpoint; it never switches provider by itself.
 
 See the [threat model](../../quality/cli-threat-model.md) and the
 [quota module](../../crates/hvc-core/src/quota/mod.rs).
+
+## ADR-029: Companion notes
+
+The Notes view (Companion group, `ctrl-9`) keeps loose developer thoughts. A
+capture is stored, with secrets redacted, before any model is asked, so a failed
+or cancelled answer never loses it. The Notes Scribe, a canonical agent role
+routed like the others, turns it into a note (title, summary, Markdown topics,
+tags from a closed catalogue) and rewrites it on request. It has no tools, no
+repository and no workspace; CLI runs are Companion-hardened and refuse the
+Custom backend. Every rule in its prompt has a host check, and a rejected answer
+gets one corrective call. Notes follow the developer's language, a narrow
+exception to ADR-013: they are working memos that no agent consumes. The Scribe
+never creates or changes tasks, features or pulsations. Voice capture is a later,
+spike-gated phase.
+
+See the [notes module](../../crates/hvc-core/src/companion_notes/mod.rs) and the
+[threat model](../../quality/cli-threat-model.md).
 
 ## ADR-030: deterministic secret sanitization
 
