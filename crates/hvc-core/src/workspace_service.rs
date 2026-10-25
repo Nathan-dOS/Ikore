@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use chrono::Utc;
 use notify::event::ModifyKind;
@@ -11,6 +10,7 @@ use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 use walkdir::WalkDir;
 
@@ -1132,24 +1132,29 @@ pub fn read_workspace_file(
     }
 
     // Checked before reading: a multi-gigabyte log must never be pulled into memory.
-    let bytes = fs::metadata(&path)?.len();
-    if bytes > MAX_EDITOR_FILE_BYTES {
-        return Err(WorkspaceServiceError::TooLarge {
-            path: request.relative_path.clone(),
-            bytes,
-            limit: MAX_EDITOR_FILE_BYTES,
-        });
+    let size = fs::metadata(&path)?.len();
+    let too_large = |bytes| WorkspaceServiceError::TooLarge {
+        path: request.relative_path.clone(),
+        bytes,
+        limit: MAX_EDITOR_FILE_BYTES,
+    };
+    if size > MAX_EDITOR_FILE_BYTES {
+        return Err(too_large(size));
     }
 
-    let content = fs::read_to_string(&path).map_err(|error| {
-        if error.kind() == io::ErrorKind::InvalidData {
-            WorkspaceServiceError::InvalidUtf8(path.to_string_lossy().to_string())
-        } else {
-            WorkspaceServiceError::Io(error)
-        }
-    })?;
+    // One bounded read: the revision describes exactly these bytes, and a file that grew after
+    // the size check is still refused without being read whole.
+    let mut bytes = Vec::new();
+    fs::File::open(&path)?
+        .take(MAX_EDITOR_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_EDITOR_FILE_BYTES {
+        return Err(too_large(fs::metadata(&path)?.len()));
+    }
 
-    let revision = compute_revision(&path)?;
+    let revision = file_revision(&path, &bytes);
+    let content = String::from_utf8(bytes)
+        .map_err(|_| WorkspaceServiceError::InvalidUtf8(path.to_string_lossy().to_string()))?;
 
     Ok(ReadWorkspaceFileResponse { content, revision })
 }
@@ -1158,28 +1163,20 @@ pub fn write_workspace_file_atomic(
     root: &Path,
     request: WriteWorkspaceFileAtomicRequest,
 ) -> Result<WriteWorkspaceFileAtomicResponse, WorkspaceServiceError> {
+    write_workspace_file_checked(root, request, || {})
+}
+
+/// `before_replace` runs once the temporary file is complete, just before the final revision
+/// check; tests use it to change the target inside that window.
+fn write_workspace_file_checked(
+    root: &Path,
+    request: WriteWorkspaceFileAtomicRequest,
+    before_replace: impl FnOnce(),
+) -> Result<WriteWorkspaceFileAtomicResponse, WorkspaceServiceError> {
     let path = resolve_workspace_path(root, &request.relative_path)?;
     let expected_revision = request.expected_revision.trim();
 
-    let actual_revision = if path.exists() {
-        Some(compute_revision(&path)?)
-    } else {
-        None
-    };
-
-    if let Some(actual_revision) = actual_revision.clone() {
-        if expected_revision != actual_revision {
-            return Err(WorkspaceServiceError::Conflict {
-                expected: expected_revision.to_string(),
-                actual: actual_revision,
-            });
-        }
-    } else if !expected_revision.is_empty() {
-        return Err(WorkspaceServiceError::Conflict {
-            expected: expected_revision.to_string(),
-            actual: String::new(),
-        });
-    }
+    ensure_revision(&path, expected_revision)?;
 
     let parent = path.parent().ok_or_else(|| {
         WorkspaceServiceError::PathForbidden("Invalid path for writing.".to_string())
@@ -1202,13 +1199,33 @@ pub fn write_workspace_file_atomic(
         .sync_all()
         .map_err(WorkspaceServiceError::Io)?;
 
-    temp_file
-        .persist(&path)
-        .map_err(|error| WorkspaceServiceError::Io(error.error))?;
+    before_replace();
+    // The target may have changed while the temporary file was written. Checking again leaves
+    // only the replace itself open: a checksum followed by a rename is not an operating-system
+    // compare-and-swap, so a writer landing in between can still be overwritten.
+    ensure_revision(&path, expected_revision)?;
+    if expected_revision.is_empty() {
+        // A new file never replaces one that another writer created meanwhile.
+        temp_file.persist_noclobber(&path).map_err(|error| {
+            if error.error.kind() == io::ErrorKind::AlreadyExists {
+                ensure_revision(&path, expected_revision)
+                    .err()
+                    .unwrap_or(WorkspaceServiceError::Io(error.error))
+            } else {
+                WorkspaceServiceError::Io(error.error)
+            }
+        })?;
+    } else {
+        temp_file
+            .persist(&path)
+            .map_err(|error| WorkspaceServiceError::Io(error.error))?;
+    }
 
-    let revision = compute_revision(&path)?;
-
-    Ok(WriteWorkspaceFileAtomicResponse { revision })
+    // The revision of the bytes written rather than a fresh read: a change that lands after the
+    // replace must still surface as a conflict on the next save.
+    Ok(WriteWorkspaceFileAtomicResponse {
+        revision: file_revision(&path, request.content.as_bytes()),
+    })
 }
 
 pub fn search_workspace_text(
@@ -3079,15 +3096,45 @@ fn byte_index_to_column(text: &str, byte_index: usize) -> usize {
     text[..byte_index].chars().count() + 1
 }
 
-fn compute_revision(path: &Path) -> Result<String, WorkspaceServiceError> {
-    let metadata = fs::metadata(path).map_err(WorkspaceServiceError::Io)?;
-    let modified = metadata.modified().map_err(WorkspaceServiceError::Io)?;
-    let mtime_ms = modified
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+/// Revision token of a workspace file: SHA-256 over the resolved path and the exact bytes. The
+/// bytes catch edits that keep the size and modification time; the path keeps a token taken from
+/// one file or project root from matching another one with identical content.
+fn file_revision(path: &Path, bytes: &[u8]) -> String {
+    let mut hasher = revision_hasher(path);
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
 
-    Ok(format!("{mtime_ms}:{}", metadata.len()))
+/// Revision of the file currently on disk, or `None` when it does not exist.
+fn disk_revision(path: &Path) -> Result<Option<String>, WorkspaceServiceError> {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(WorkspaceServiceError::Io(error)),
+    };
+    let mut hasher = revision_hasher(path);
+    io::copy(&mut file, &mut hasher)?;
+    Ok(Some(format!("{:x}", hasher.finalize())))
+}
+
+fn revision_hasher(path: &Path) -> Sha256 {
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_os_str().as_encoded_bytes());
+    hasher.update([0]);
+    hasher
+}
+
+/// An empty expectation means the file must not exist yet.
+fn ensure_revision(path: &Path, expected: &str) -> Result<(), WorkspaceServiceError> {
+    let actual = disk_revision(path)?.unwrap_or_default();
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(WorkspaceServiceError::Conflict {
+            expected: expected.to_string(),
+            actual,
+        })
+    }
 }
 
 fn is_allowed_extension(path: &Path) -> bool {
@@ -3171,13 +3218,32 @@ fn map_event_kind(kind: &EventKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::thread;
-    use std::time::Duration;
-
     use super::*;
 
     fn prepare_root() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir should be created")
+    }
+
+    fn read_file(root: &Path, relative_path: &str) -> ReadWorkspaceFileResponse {
+        read_workspace_file(
+            root,
+            ReadWorkspaceFileRequest {
+                relative_path: relative_path.to_string(),
+            },
+        )
+        .expect("workspace file should be readable")
+    }
+
+    fn write_request(
+        relative_path: &str,
+        content: &str,
+        expected_revision: &str,
+    ) -> WriteWorkspaceFileAtomicRequest {
+        WriteWorkspaceFileAtomicRequest {
+            relative_path: relative_path.to_string(),
+            content: content.to_string(),
+            expected_revision: expected_revision.to_string(),
+        }
     }
 
     #[test]
@@ -3324,8 +3390,6 @@ mod tests {
         )
         .expect("read file before write");
 
-        thread::sleep(Duration::from_millis(2));
-
         let write_result = write_workspace_file_atomic(
             &root_path,
             WriteWorkspaceFileAtomicRequest {
@@ -3369,6 +3433,193 @@ mod tests {
             Err(WorkspaceServiceError::Conflict { .. }) => {}
             _ => panic!("expected conflict error"),
         }
+    }
+
+    #[test]
+    fn revision_detects_an_external_edit_that_keeps_size_and_mtime() {
+        let root = prepare_root();
+        let root_path = fs::canonicalize(root.path()).expect("canonical root path");
+        let file_path = root_path.join("note.md");
+        fs::write(&file_path, "alpha").expect("write initial content");
+        let before = read_file(&root_path, "note.md");
+        let modified = fs::metadata(&file_path)
+            .and_then(|metadata| metadata.modified())
+            .expect("initial mtime");
+
+        fs::write(&file_path, "omega").expect("external edit of the same length");
+        fs::File::options()
+            .write(true)
+            .open(&file_path)
+            .and_then(|file| file.set_modified(modified))
+            .expect("restore the original mtime");
+        let metadata = fs::metadata(&file_path).expect("edited metadata");
+        assert_eq!(metadata.len(), 5);
+        assert_eq!(metadata.modified().expect("edited mtime"), modified);
+
+        let result = write_workspace_file_atomic(
+            &root_path,
+            write_request("note.md", "stale buffer", &before.revision),
+        );
+
+        assert!(matches!(
+            result,
+            Err(WorkspaceServiceError::Conflict { .. })
+        ));
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "omega");
+        assert_ne!(read_file(&root_path, "note.md").revision, before.revision);
+    }
+
+    #[test]
+    fn revision_is_bound_to_the_file_and_the_project_root() {
+        let first = prepare_root();
+        let second = prepare_root();
+        let first_root = fs::canonicalize(first.path()).expect("first root");
+        let second_root = fs::canonicalize(second.path()).expect("second root");
+        for root in [&first_root, &second_root] {
+            fs::write(root.join("a.md"), "same").unwrap();
+            fs::write(root.join("b.md"), "same").unwrap();
+        }
+        let token = read_file(&first_root, "a.md").revision;
+        assert_ne!(token, read_file(&first_root, "b.md").revision);
+        assert_ne!(token, read_file(&second_root, "a.md").revision);
+
+        let other_file =
+            write_workspace_file_atomic(&first_root, write_request("b.md", "overwrite", &token));
+        let other_root =
+            write_workspace_file_atomic(&second_root, write_request("a.md", "overwrite", &token));
+
+        assert!(matches!(
+            other_file,
+            Err(WorkspaceServiceError::Conflict { .. })
+        ));
+        assert!(matches!(
+            other_root,
+            Err(WorkspaceServiceError::Conflict { .. })
+        ));
+        assert_eq!(fs::read_to_string(first_root.join("b.md")).unwrap(), "same");
+        assert_eq!(
+            fs::read_to_string(second_root.join("a.md")).unwrap(),
+            "same"
+        );
+    }
+
+    #[test]
+    fn a_change_while_the_temporary_file_is_written_is_a_conflict() {
+        let root = prepare_root();
+        let root_path = fs::canonicalize(root.path()).expect("canonical root path");
+        fs::write(root_path.join("note.md"), "base").unwrap();
+        let before = read_file(&root_path, "note.md");
+
+        let result = write_workspace_file_checked(
+            &root_path,
+            write_request("note.md", "mine", &before.revision),
+            || fs::write(root_path.join("note.md"), "theirs").unwrap(),
+        );
+
+        match result {
+            Err(WorkspaceServiceError::Conflict { expected, actual }) => {
+                assert_eq!(expected, before.revision);
+                assert_eq!(actual, read_file(&root_path, "note.md").revision);
+            }
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        assert_eq!(
+            fs::read_to_string(root_path.join("note.md")).unwrap(),
+            "theirs"
+        );
+        let entries: Vec<_> = fs::read_dir(&root_path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, ["note.md"], "the temporary file is removed");
+    }
+
+    #[test]
+    fn a_new_file_does_not_replace_one_created_meanwhile() {
+        let root = prepare_root();
+        let root_path = fs::canonicalize(root.path()).expect("canonical root path");
+
+        let result =
+            write_workspace_file_checked(&root_path, write_request("new.md", "mine", ""), || {
+                fs::write(root_path.join("new.md"), "theirs").unwrap()
+            });
+
+        assert!(matches!(
+            result,
+            Err(WorkspaceServiceError::Conflict { ref expected, .. }) if expected.is_empty()
+        ));
+        assert_eq!(
+            fs::read_to_string(root_path.join("new.md")).unwrap(),
+            "theirs"
+        );
+    }
+
+    #[test]
+    fn consecutive_saves_chain_revisions_and_creation_starts_empty() {
+        let root = prepare_root();
+        let root_path = fs::canonicalize(root.path()).expect("canonical root path");
+
+        let created = write_workspace_file_atomic(&root_path, write_request("new.md", "", ""))
+            .expect("create an empty file");
+        assert_eq!(read_file(&root_path, "new.md").revision, created.revision);
+        let first = write_workspace_file_atomic(
+            &root_path,
+            write_request("new.md", "one", &created.revision),
+        )
+        .expect("first save");
+        let second = write_workspace_file_atomic(
+            &root_path,
+            write_request("new.md", "two", &first.revision),
+        )
+        .expect("second save with the returned revision");
+        let reread = read_file(&root_path, "new.md");
+
+        assert_eq!(reread.content, "two");
+        assert_eq!(reread.revision, second.revision);
+        let replay = write_workspace_file_atomic(
+            &root_path,
+            write_request("new.md", "three", &first.revision),
+        );
+        assert!(matches!(
+            replay,
+            Err(WorkspaceServiceError::Conflict { .. })
+        ));
+    }
+
+    #[test]
+    fn a_deleted_file_is_a_conflict_instead_of_being_recreated() {
+        let root = prepare_root();
+        let root_path = fs::canonicalize(root.path()).expect("canonical root path");
+        fs::write(root_path.join("note.md"), "base").unwrap();
+        let before = read_file(&root_path, "note.md");
+        fs::remove_file(root_path.join("note.md")).unwrap();
+
+        let result = write_workspace_file_atomic(
+            &root_path,
+            write_request("note.md", "mine", &before.revision),
+        );
+
+        assert!(matches!(
+            result,
+            Err(WorkspaceServiceError::Conflict { ref actual, .. }) if actual.is_empty()
+        ));
+        assert!(!root_path.join("note.md").exists());
+    }
+
+    #[test]
+    fn invalid_utf8_is_refused_with_its_own_error() {
+        let root = prepare_root();
+        let root_path = fs::canonicalize(root.path()).expect("canonical root path");
+        fs::write(root_path.join("bytes.md"), [0x66, 0x6f, 0xff, 0x6f]).unwrap();
+
+        let result = read_workspace_file(
+            &root_path,
+            ReadWorkspaceFileRequest {
+                relative_path: "bytes.md".to_string(),
+            },
+        );
+
+        assert!(matches!(result, Err(WorkspaceServiceError::InvalidUtf8(_))));
     }
 
     #[test]
