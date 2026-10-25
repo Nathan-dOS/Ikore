@@ -142,6 +142,27 @@ the Review tab in the `hitl` and layout tests. Every run is hermetic:
 cargo test --locked -p hvc-test-support --test composition_review -- --test-threads=2
 ```
 
+## Editor revisions, check output and voice setup
+
+The workspace revision is a SHA-256 over the resolved path and the bytes read,
+so a same-size, same-mtime external edit is a conflict. `workspace_service`
+tests cover that edit, another file or root with identical content, a change
+while the temporary file is written, a concurrent creation and a deleted file.
+The runner fixture `exit-leaving-child` exits while a child keeps its output
+open; the receipt must end within the drain bounds and never pass. Quota HTTP
+and voice setup tests use loopback servers that never answer or stall the body,
+plus a runtime check cancelled mid-run:
+
+```powershell
+cargo test --locked -p hvc-core --lib workspace_service::tests -- --test-threads=2
+cargo test --locked -p hvc-test-support --test composition_validation -- --test-threads=2
+cargo test --locked -p hvc-terminal --lib quota::http -- --test-threads=2
+cargo test-voice
+```
+
+On Linux the process tree is not contained, so the timeout test that checks
+the grandchild stopped fails there by design; it no longer hangs the run.
+
 ## Terminal extraction and feature boundaries
 
 Run `scripts/check-crate-boundaries.ps1` to inspect all Cargo edges. Pure
