@@ -58,7 +58,7 @@ pub struct ContentSha256(String);
 
 impl ContentSha256 {
     pub fn of(bytes: &[u8]) -> Self {
-        Self(format!("{:x}", Sha256::digest(bytes)))
+        Self(crate::lower_hex(&Sha256::digest(bytes)))
     }
 
     pub fn as_str(&self) -> &str {

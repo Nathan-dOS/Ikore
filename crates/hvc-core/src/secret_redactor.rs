@@ -303,7 +303,7 @@ pub fn introduces_redaction_marker(original: &str, updated: &str) -> bool {
         .any(|(marker, count)| old.get(marker).copied().unwrap_or(0) < *count)
 }
 pub fn text_sha256(input: &str) -> String {
-    format!("{:x}", Sha256::digest(input.as_bytes()))
+    crate::lower_hex(&Sha256::digest(input.as_bytes()))
 }
 
 /// Redact intersections before inserting anchor delimiters or line numbers.

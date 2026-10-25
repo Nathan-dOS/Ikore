@@ -3102,7 +3102,7 @@ fn byte_index_to_column(text: &str, byte_index: usize) -> usize {
 fn file_revision(path: &Path, bytes: &[u8]) -> String {
     let mut hasher = revision_hasher(path);
     hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
+    crate::lower_hex(&hasher.finalize())
 }
 
 /// Revision of the file currently on disk, or `None` when it does not exist.
@@ -3113,8 +3113,15 @@ fn disk_revision(path: &Path) -> Result<Option<String>, WorkspaceServiceError> {
         Err(error) => return Err(WorkspaceServiceError::Io(error)),
     };
     let mut hasher = revision_hasher(path);
-    io::copy(&mut file, &mut hasher)?;
-    Ok(Some(format!("{:x}", hasher.finalize())))
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(Some(crate::lower_hex(&hasher.finalize())))
 }
 
 fn revision_hasher(path: &Path) -> Sha256 {

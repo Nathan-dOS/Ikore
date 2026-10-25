@@ -64,7 +64,7 @@ impl CliUsageRecorder {
         for (key, measurement) in changes {
             // Provider identifiers may contain arbitrary text. Persist only a
             // stable digest as the deduplication key, never the raw identifier.
-            let key = format!("unit:{:x}", Sha256::digest(key.as_bytes()));
+            let key = format!("unit:{}", crate::lower_hex(&Sha256::digest(key.as_bytes())));
             record_usage_on(&transaction, &self.context, &key, &measurement)?;
         }
         transaction.commit()
@@ -106,7 +106,7 @@ impl CliUsageRecorder {
             "DELETE FROM token_usage_records WHERE source_kind=?1 AND source_id=?2 AND unit_key='unavailable'",
             params![self.context.source_kind, self.context.source_id],
         )?;
-        let key = format!("unit:{:x}", Sha256::digest(b"live"));
+        let key = format!("unit:{}", crate::lower_hex(&Sha256::digest(b"live")));
         record_usage_on(&transaction, &self.context, &key, &measurement)?;
         transaction.commit()
     }

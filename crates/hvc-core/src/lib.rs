@@ -32,3 +32,14 @@ pub mod workspace_service;
 pub use agent_timeout::{AgentTimeoutPolicy, ProgressWatchdog, TimeoutReason};
 pub use app_core::{AppCore, AppCoreDependencies, AppPaths, DataDirectoryLock};
 pub use events::{AppEvent, AppEventBus};
+
+/// Lowercase hexadecimal of a digest. sha2 0.11 digests no longer implement `LowerHex`.
+pub(crate) fn lower_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
+}

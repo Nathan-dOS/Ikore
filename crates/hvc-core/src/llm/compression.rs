@@ -198,7 +198,7 @@ pub fn redact(input: &str) -> String {
 fn sha256(input: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input);
-    format!("{:x}", hasher.finalize())
+    crate::lower_hex(&hasher.finalize())
 }
 
 #[cfg(test)]

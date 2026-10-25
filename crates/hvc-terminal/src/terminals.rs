@@ -180,6 +180,17 @@ impl ProcessTreeJob {
     }
 }
 
+/// Lowercase hexadecimal of a digest. sha2 0.11 digests no longer implement `LowerHex`.
+pub(crate) fn lower_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
+}
+
 const MAX_MODEL_CHARS: usize = 200;
 const MAX_CUSTOM_ARGS: usize = 64;
 const MAX_CUSTOM_ARG_CHARS: usize = 1_024;
@@ -2730,26 +2741,20 @@ impl TerminalRepository {
             "events": &events,
         });
         canonicalize_terminal_export(&mut projection);
-        let original_evidence_sha256 = format!(
-            "{:x}",
-            Sha256::digest(terminal_export_bytes(
-                &projection,
-                false,
-                MAX_RUN_OUTPUT_BYTES
-            )?)
-        );
+        let original_evidence_sha256 = lower_hex(&Sha256::digest(terminal_export_bytes(
+            &projection,
+            false,
+            MAX_RUN_OUTPUT_BYTES,
+        )?));
         sanitize_history_events(host, &mut events, known_policy)?;
         projection["events"] = serde_json::to_value(events)?;
         redact_json_strings(host, &mut projection)?;
         canonicalize_terminal_export(&mut projection);
-        let sanitized_content_sha256 = format!(
-            "{:x}",
-            Sha256::digest(terminal_export_bytes(
-                &projection,
-                false,
-                MAX_RUN_OUTPUT_BYTES
-            )?)
-        );
+        let sanitized_content_sha256 = lower_hex(&Sha256::digest(terminal_export_bytes(
+            &projection,
+            false,
+            MAX_RUN_OUTPUT_BYTES,
+        )?));
         projection["sanitization"] = serde_json::json!({
             "policy": SANITIZATION_POLICY_VERSION,
             "originalEvidenceSha256": original_evidence_sha256,
@@ -8768,7 +8773,7 @@ fn session_fingerprint(run: &TerminalRun, workspace_snapshot_hash: &str) -> Stri
         digest.update(part.as_bytes());
         digest.update([0]);
     }
-    format!("{:x}", digest.finalize())
+    lower_hex(&digest.finalize())
 }
 
 fn validate_resume_parent(
@@ -9050,7 +9055,7 @@ fn hash_launch_files_uncached(paths: &[&Path]) -> Result<String, TerminalError> 
         }
         digest.update([0]);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(lower_hex(&digest.finalize()))
 }
 
 pub fn configure_hidden(command: &mut Command) {
@@ -9119,7 +9124,7 @@ pub(crate) fn materialize_safe_workspace<H: TerminalHost + ?Sized>(
         fs::write(destination, file.projected_content.as_bytes())?;
         manifest_files.push(relative_text.into_owned());
     }
-    let manifest_hash = format!("{:x}", digest.finalize());
+    let manifest_hash = lower_hex(&digest.finalize());
     fs::write(
         directory.path().join(".hvc-cli-snapshot.json"),
         serde_json::to_vec(&serde_json::json!({
