@@ -23,7 +23,9 @@ futures.workspace = true
 globset = "0.4"
 ignore = "0.4"
 icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
-jsonschema = "0.59"
+# Schemas are host-defined and inline: no remote or file `$ref` resolution, which would
+# also pull a second reqwest and the aws-lc native TLS build.
+jsonschema = { version = "0.59", default-features = false, features = ["idna"] }
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service"] }
 notify = "8"
 refinery = { version = "0.8", features = ["rusqlite"] }
