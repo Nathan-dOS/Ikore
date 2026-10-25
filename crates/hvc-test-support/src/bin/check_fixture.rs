@@ -58,6 +58,30 @@ fn main() {
             std::thread::sleep(Duration::from_secs(30));
             let _ = child.wait();
         }
+        "exit-leaving-child" => {
+            // The parent exits at once with success; a child that inherited stdout and stderr
+            // heartbeats into the second argument for up to 20 s without writing to them.
+            let heartbeat = args.get(1).cloned().unwrap_or_default();
+            let exe = std::env::current_exe().expect("current exe");
+            #[allow(
+                clippy::zombie_processes,
+                reason = "Exiting without waiting for the child is the scenario under test"
+            )]
+            let _child = std::process::Command::new(exe)
+                .args(["heartbeat-for", &heartbeat, "20"])
+                .spawn()
+                .expect("spawn child");
+            println!("fixture ok");
+        }
+        "heartbeat-for" => {
+            let path = args.get(1).cloned().unwrap_or_default();
+            let seconds: i64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(20);
+            let until = chrono::Utc::now().timestamp_millis() + seconds * 1_000;
+            while chrono::Utc::now().timestamp_millis() < until {
+                let _ = std::fs::write(&path, format!("{}", chrono::Utc::now().timestamp_millis()));
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
         "heartbeat" => {
             let path = args.get(1).cloned().unwrap_or_default();
             loop {
