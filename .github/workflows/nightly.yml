@@ -19,7 +19,7 @@ jobs:
   stage7:
     name: stage7 gate (windows)
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 180 # a warm-cache gate took 118 min on 2026-10-25; a lockfile change runs colder
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
