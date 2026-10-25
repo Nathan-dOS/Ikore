@@ -270,7 +270,7 @@ impl Sha256Hex {
     }
 
     pub fn of(bytes: &[u8]) -> Self {
-        Self(format!("{:x}", Sha256::digest(bytes)))
+        Self(crate::lower_hex(&Sha256::digest(bytes)))
     }
 
     pub fn as_str(&self) -> &str {
@@ -2610,7 +2610,10 @@ mod tests {
         let nfc = Sha256Hex::of("caf\u{e9}\n".as_bytes());
         assert_ne!(lf, crlf);
         assert_ne!(nfd, nfc);
-        assert_eq!(lf.as_str(), format!("{:x}", Sha256::digest(b"fn a() {}\n")));
+        assert_eq!(
+            lf.as_str(),
+            crate::lower_hex(&Sha256::digest(b"fn a() {}\n"))
+        );
         assert_eq!(
             Sha256Hex::of(b"").as_str(),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

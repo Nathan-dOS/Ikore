@@ -1437,7 +1437,7 @@ fn affinity_hash(request: &LlmRequest) -> String {
     hasher.update(request.target.stable_key().as_bytes());
     hasher.update(b"\0");
     hasher.update(request.job_chain.as_bytes());
-    format!("{:x}", hasher.finalize())
+    crate::lower_hex(&hasher.finalize())
 }
 
 fn validate_output(format: &ResponseFormat, content: &str) -> Result<(), LlmError> {

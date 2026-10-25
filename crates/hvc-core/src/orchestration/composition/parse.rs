@@ -158,7 +158,7 @@ fn schema_check(
         shape(format!(
             "The response violates the `{}` contract at `{}`: {}.",
             kind.as_str(),
-            error.instance_path,
+            error.instance_path(),
             error.kind_description()
         ))
     })
@@ -171,7 +171,7 @@ trait KindDescription {
 impl KindDescription for jsonschema::ValidationError<'_> {
     /// The validation keyword that failed, without the offending instance value.
     fn kind_description(&self) -> String {
-        let text = format!("{:?}", self.kind);
+        let text = format!("{:?}", self.kind());
         text.split(['{', '(', ' '])
             .next()
             .unwrap_or("schema")

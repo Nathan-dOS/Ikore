@@ -1486,10 +1486,9 @@ fn cli_sanitization_legacy_export_hashes_original_and_safe_envelopes_separately(
         "run": run, "events": original_events,
     });
     canonicalize_terminal_export(&mut original_envelope);
-    let original_hash = format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&original_envelope).unwrap())
-    );
+    let original_hash = lower_hex(&Sha256::digest(
+        serde_json::to_vec(&original_envelope).unwrap(),
+    ));
     let path = repository
         .export_run_history(&run.project_id, &run.id)
         .unwrap();
@@ -1505,10 +1504,7 @@ fn cli_sanitization_legacy_export_hashes_original_and_safe_envelopes_separately(
     assert_eq!(metadata["policy"], SANITIZATION_POLICY_VERSION);
     assert_eq!(metadata["originalEvidenceSha256"], original_hash);
     canonicalize_terminal_export(&mut envelope);
-    let sanitized_hash = format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&envelope).unwrap())
-    );
+    let sanitized_hash = lower_hex(&Sha256::digest(serde_json::to_vec(&envelope).unwrap()));
     assert_eq!(metadata["sanitizedContentSha256"], sanitized_hash);
     assert_ne!(
         metadata["originalEvidenceSha256"],
