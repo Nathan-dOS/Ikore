@@ -3577,6 +3577,7 @@ fn run_metadata(run: &hvc_core::terminals::TerminalRun) -> String {
             hvc_core::terminals::ExecutionOrigin::Feature => "feature",
             hvc_core::terminals::ExecutionOrigin::Review => "review",
             hvc_core::terminals::ExecutionOrigin::Notes => "notes",
+            hvc_core::terminals::ExecutionOrigin::Reconciliation => "reconciliation",
         },
         duration,
         run.exit_code

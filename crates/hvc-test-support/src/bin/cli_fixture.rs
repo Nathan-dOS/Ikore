@@ -155,8 +155,12 @@ fn main() {
         eprintln!("stdin mismatch fixture");
         std::process::exit(12);
     }
-    // The Notes Scribe runs under the same Companion restrictions as discovery.
-    if stdin.contains("feature-discovery-fixture") || stdin.contains("notes-scribe-fixture") {
+    // The Notes Scribe and the Documentation Reconciler (ADR-034 M5) run
+    // under the same Companion restrictions as discovery.
+    if stdin.contains("feature-discovery-fixture")
+        || stdin.contains("notes-scribe-fixture")
+        || stdin.contains("documentation-reconciler-fixture")
+    {
         assert!(
             !std::path::Path::new("src/lib.rs").exists(),
             "Discovery must only receive host-selected context"

@@ -68,6 +68,14 @@ pub(crate) trait PulsationsBackend: Send + Sync {
     ) -> PulsationsFuture<Option<hvc_core::persistence_service::ConvergenceStatus>> {
         Box::pin(async { Ok(None) })
     }
+    /// Risk and coverage of the review (ADR-034 M3). Backends without one
+    /// report `None`, and no risk card is drawn.
+    fn risk_status(
+        &self,
+        _pulsation_id: String,
+    ) -> PulsationsFuture<Option<hvc_core::persistence_service::CheckpointRiskStatus>> {
+        Box::pin(async { Ok(None) })
+    }
     fn stage_failure_detail(
         &self,
         checkpoint_id: String,
@@ -414,6 +422,21 @@ impl PulsationsBackend for CorePulsationsBackend {
                 .spawn_blocking(move || core.persistence().convergence_status(&pulsation_id))
                 .await
                 .map_err(|e| Self::worker_error("revision rounds", e))?
+                .map(Some)
+                .map_err(|e| e.to_string())
+        })
+    }
+    fn risk_status(
+        &self,
+        pulsation_id: String,
+    ) -> PulsationsFuture<Option<hvc_core::persistence_service::CheckpointRiskStatus>> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || core.persistence().checkpoint_risk_status(&pulsation_id))
+                .await
+                .map_err(|e| Self::worker_error("risk and coverage", e))?
                 .map(Some)
                 .map_err(|e| e.to_string())
         })

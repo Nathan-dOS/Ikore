@@ -22,10 +22,14 @@ pub enum AgentRole {
     /// Companion note, through a closed, host-validated contract. It has no
     /// tools and never sees the repository.
     NotesScribe,
+    /// ADR-034 M5: proposes the update of one Vault note after its linked
+    /// code changed, only when the developer asks. It has no tools, never
+    /// sees the repository and may only edit that note.
+    DocumentationReconciler,
 }
 
 impl AgentRole {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::IntakeRouter,
         Self::TaskSpecifier,
         Self::ContractAgent,
@@ -36,6 +40,7 @@ impl AgentRole {
         Self::FeatureAgent,
         Self::Visualizer,
         Self::NotesScribe,
+        Self::DocumentationReconciler,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -50,6 +55,7 @@ impl AgentRole {
             Self::LearningAgent => "learning_agent",
             Self::Visualizer => "visualizer",
             Self::NotesScribe => "notes_scribe",
+            Self::DocumentationReconciler => "documentation_reconciler",
         }
     }
 
@@ -166,4 +172,25 @@ pub enum UnitContextScope {
     /// Nothing: the worker runs in an empty directory and reads only the
     /// host-selected context in its prompt.
     HostContextOnly,
+}
+
+impl UnitContextScope {
+    /// The scope each composed specialty must run with (ADR-034 T1). Core's
+    /// executor policies are checked against this table, and the transport
+    /// refuses a dispatch that asks for any other scope, so a stale or forged
+    /// request cannot widen or silently change what a worker reads. `None`
+    /// for a name that is not a composed specialty.
+    pub fn required_for(executor_kind: &str) -> Option<Self> {
+        match executor_kind {
+            "intake_classifier"
+            | "specification_author"
+            | "contract_author"
+            | "code_implementer"
+            | "code_repairer"
+            | "test_author"
+            | "test_repairer" => Some(Self::Workspace),
+            "integration_reviewer" => Some(Self::HostContextOnly),
+            _ => None,
+        }
+    }
 }

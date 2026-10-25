@@ -156,6 +156,12 @@ impl AgentTimeoutPolicy {
                 600_000, // 10 min ceiling
                 30_000,
             ),
+            AgentRole::DocumentationReconciler => Self::new(
+                240_000, // 4 min base (one note and the diffs of its files)
+                90_000,  // 90s silence
+                600_000, // 10 min ceiling: the developer is waiting on it
+                30_000,
+            ),
             AgentRole::IntakeRouter => Self::new(
                 180_000, // 3 min base for initial triage
                 90_000,  // 90s silence, allowing upstream 5xx backoff beyond 60s

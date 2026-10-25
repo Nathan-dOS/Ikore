@@ -55,6 +55,7 @@ pub(crate) const fn judgement_kind_label(kind: JudgementKind) -> &'static str {
         JudgementKind::Contradicted => "Contradicted by the review",
         JudgementKind::Unverified => "Not verified by the review",
         JudgementKind::Blocker => "Blocker reported by the reviewer",
+        JudgementKind::DismissedConflict => "Architecture warning dismissed at triage",
     }
 }
 
@@ -164,6 +165,10 @@ pub(crate) struct HitlReviewState {
     /// The pulsation's revision rounds (ADR-032 M4). Beyond the threshold a
     /// revision needs an explicit decision, which the host enforces.
     pub(crate) convergence: Option<hvc_core::persistence_service::ConvergenceStatus>,
+    /// Risk and coverage of the review (ADR-034 M3). An Approve of a
+    /// high-risk review with unverified or unrun items needs a reason, which
+    /// the host enforces.
+    pub(crate) risk: Option<hvc_core::persistence_service::CheckpointRiskStatus>,
     pub(crate) busy: bool,
     pub(crate) error: Option<String>,
     load_generation: u64,
@@ -213,6 +218,7 @@ impl HitlReviewState {
             self.brief_cursor = 0;
             self.review_inputs = None;
             self.convergence = None;
+            self.risk = None;
             self.error = None;
         }
         self.expected_checkpoint = checkpoint;
@@ -341,6 +347,35 @@ impl HitlReviewState {
         true
     }
 
+    /// The risk read with this load. A failed read leaves it absent; the host
+    /// still refuses an Approve that needs an acknowledgement.
+    pub(crate) fn finish_risk(
+        &mut self,
+        generation: u64,
+        checkpoint: &HitlCheckpoint,
+        risk: Result<Option<hvc_core::persistence_service::CheckpointRiskStatus>, String>,
+    ) -> bool {
+        if generation != self.load_generation
+            || !same_checkpoint(self.expected_checkpoint.as_ref(), Some(checkpoint))
+        {
+            return false;
+        }
+        self.risk = risk.ok().flatten().filter(|status| status.applies);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_load_generation(&self) -> u64 {
+        self.load_generation
+    }
+
+    /// Whether an Approve needs an acknowledgement with a reason.
+    pub(crate) fn risk_acknowledgement_required(&self) -> bool {
+        self.risk
+            .as_ref()
+            .is_some_and(|status| status.acknowledgement_required)
+    }
+
     /// Whether a further Request revision needs an explicit decision.
     pub(crate) fn beyond_threshold(&self) -> bool {
         self.convergence
@@ -391,6 +426,7 @@ impl HitlReviewState {
         self.visualization = None;
         self.review_inputs = None;
         self.convergence = None;
+        self.risk = None;
         self.brief_selected = false;
         self.marks.clear();
         self.brief_cursor = 0;
@@ -891,5 +927,46 @@ mod tests {
         state.convergence = Some(reached);
         state.load_checkpoint(Some(&pulse("second")), Some(checkpoint("second")));
         assert!(state.convergence.is_none() && state.review_inputs.is_none());
+    }
+
+    /// ADR-034 M3: the risk status belongs to the load that read it; only a
+    /// pipeline v4 status that says so requires an acknowledgement, and a
+    /// failed read leaves it to the host to refuse.
+    #[test]
+    fn the_risk_status_belongs_to_its_checkpoint() {
+        use hvc_core::persistence_service::CheckpointRiskStatus;
+        let required = CheckpointRiskStatus {
+            applies: true,
+            acknowledgement_required: true,
+            ..Default::default()
+        };
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));
+        let (generation, first) = state.begin_documents().unwrap();
+        state.finish_documents(generation, &first, Ok(documents()));
+        assert!(!state.finish_risk(generation + 1, &first, Ok(Some(required.clone()))));
+        assert!(
+            !state.risk_acknowledgement_required(),
+            "a stale read is ignored"
+        );
+        assert!(state.finish_risk(generation, &first, Err("unreadable".into())));
+        assert!(state.risk.is_none() && !state.risk_acknowledgement_required());
+        assert!(state.finish_risk(
+            generation,
+            &first,
+            Ok(Some(CheckpointRiskStatus {
+                applies: false,
+                ..required.clone()
+            }))
+        ));
+        assert!(state.risk.is_none(), "earlier pipelines have no risk card");
+        assert!(state.finish_risk(generation, &first, Ok(Some(required))));
+        assert!(state.risk_acknowledgement_required());
+        assert!(
+            state.can_approve(),
+            "the host, not the UI, decides the refusal"
+        );
+        state.load_checkpoint(Some(&pulse("second")), Some(checkpoint("second")));
+        assert!(state.risk.is_none());
     }
 }

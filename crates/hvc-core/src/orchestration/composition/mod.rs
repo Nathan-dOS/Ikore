@@ -25,6 +25,7 @@ pub mod references;
 pub mod render;
 pub mod review_boundary;
 pub mod review_policy;
+pub mod risk;
 pub mod schema;
 pub mod settings;
 pub mod validate;

@@ -15,6 +15,10 @@ use hvc_core::feature_forge::{
 
 use crate::selectable_message::SelectableMessage;
 
+/// ADR-034 D1: shown in the batch composer while the project runs batches
+/// without stage composition, which earlier pipelines do not get.
+pub(crate) const REVIEW_POLICY_NEEDS_COMPOSITION: &str = "Review policy, risk scrutiny and coverage need stage composition (Settings → Stage composition).";
+
 fn copy_message_button(id: String, message: String) -> impl IntoElement {
     let copy_id = SharedString::from(format!("{id}:copy"));
     let debug_id = copy_id.clone();
@@ -491,6 +495,14 @@ fn backlog_body(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
             ForgeAction::ClearSelectedTasks,
             cx,
         ));
+    }
+    if !model.forge.snapshot.composition_enabled {
+        // ADR-034 D1: only composed batches get the review policy.
+        selected = selected.child(
+            div()
+                .debug_selector(|| "review-policy-needs-composition".into())
+                .child(label(REVIEW_POLICY_NEEDS_COMPOSITION)),
+        );
     }
     selected = selected.child(button(
         "dispatch-batch",
@@ -1188,6 +1200,9 @@ fn triage_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> Any
         "Evaluation guides priority. You decide whether the feature moves forward.",
     ));
     p = p.child(triage_analysis_trigger(model, f, cx));
+    if let Some(card) = preflight_card(model, f, cx) {
+        p = p.child(card);
+    }
     for (i, name) in [
         "Value and need",
         "Product alignment",
@@ -1258,6 +1273,8 @@ fn triage_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> Any
         // may be in delivery. The core declines the repeat, so the control says
         // so instead of offering an action that does nothing.
         let already_approved = f.approved_revision == Some(f.revision);
+        // ADR-034 M6: the host refuses an approval the pre-flight blocks.
+        let preflight_block = model.forge.preflight_block(f);
         p = p
             .child(button(
                 "archive-feature",
@@ -1269,9 +1286,16 @@ fn triage_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> Any
                 "triage-approve",
                 "Approve scope and tasks",
                 ForgeAction::Approve,
-                !already_approved,
+                !already_approved && preflight_block.is_none(),
                 cx,
             ));
+        if let Some(reason) = preflight_block {
+            p = p.child(
+                div()
+                    .debug_selector(|| "preflight-approval-blocked".into())
+                    .child(label(reason)),
+            );
+        }
         if already_approved {
             p = p.child(label(
                 "This revision is already approved and its tasks exist. Revise the scope in Incubation to produce a new revision.",
@@ -1280,6 +1304,101 @@ fn triage_main(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> Any
     }
     p.into_any_element()
 }
+/// ADR-034 M6: what the triage found when it compared the feature with the
+/// project's accepted decisions, and the three decisions on a blocking one.
+fn preflight_card(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> Option<Div> {
+    use hvc_core::feature_forge::preflight::{ConflictSeverity, PreflightResolution};
+    let finding = model.forge.preflight_for(f)?;
+    let current = finding.feature_revision == f.revision;
+    let mut card = card()
+        .debug_selector(|| "preflight-card".into())
+        .child(heading_info(
+            "Architecture conformance",
+            "preflight",
+            "The triage compares the feature with PROJECT_AGENT.md and the accepted decision notes. A blocking conflict stops approval until you decide.",
+        ))
+        .child(label(format!(
+            "Decisions read: {} · {} file(s){}",
+            finding.inputs.state.as_str(),
+            finding.inputs.delivered().count(),
+            if current {
+                String::new()
+            } else {
+                format!(" · from revision {}, run the triage again", finding.feature_revision)
+            }
+        )));
+    if finding.conflicts.is_empty() {
+        card = card.child(label("No conflict with the delivered decisions."));
+    }
+    for (index, conflict) in finding.conflicts.iter().enumerate() {
+        let selector = format!("preflight-conflict-{index}");
+        card = card.child(
+            div()
+                .id(SharedString::from(selector.clone()))
+                .debug_selector(move || selector.clone())
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(label(format!(
+                    "{} · {}",
+                    match conflict.severity {
+                        ConflictSeverity::Blocking => "Blocking",
+                        ConflictSeverity::Advisory => "Advisory",
+                    },
+                    finding
+                        .decision_path(conflict)
+                        .unwrap_or(&conflict.decision_ref)
+                )))
+                .child(label(conflict.conflict.clone())),
+        );
+    }
+    match finding.resolution {
+        PreflightResolution::Dismissed => {
+            card = card.child(label(format!(
+                "Dismissed: {}",
+                finding.reason.as_deref().unwrap_or("")
+            )));
+        }
+        PreflightResolution::Adjusted => {
+            card = card.child(label(
+                "You chose to adjust the feature; triage the new revision.",
+            ));
+        }
+        PreflightResolution::AdrProposed => {
+            card = card.child(label("A feature proposing the decision was created."));
+        }
+        PreflightResolution::None | PreflightResolution::Pending => {}
+    }
+    if current && finding.blocking > 0 && finding.resolution != PreflightResolution::Dismissed {
+        card = card.child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .child(button(
+                    "preflight-adjust",
+                    "Adjust the feature",
+                    ForgeAction::PreflightAdjust,
+                    cx,
+                ))
+                .child(gated_button(
+                    "preflight-propose-adr",
+                    "Propose a decision",
+                    ForgeAction::PreflightProposeAdr,
+                    finding.resolution != PreflightResolution::AdrProposed,
+                    cx,
+                ))
+                .child(button(
+                    "preflight-dismiss",
+                    "Dismiss with the rationale below",
+                    ForgeAction::PreflightDismiss,
+                    cx,
+                )),
+        );
+    }
+    Some(card)
+}
+
 fn dependency_analysis_card(model: &AppModel, f: &Feature, cx: &mut Context<AppModel>) -> Div {
     let blocked = model.forge.dependency_analysis_blocked(f);
     let agent_edges = model

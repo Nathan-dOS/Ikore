@@ -117,6 +117,9 @@ pub enum JudgementKind {
     Unverified,
     /// Integrator: a blocker the reviewer reported.
     Blocker,
+    /// Specification: a blocking architecture conflict the developer
+    /// dismissed at the Forge triage of a feature in the batch (ADR-034 M6).
+    DismissedConflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

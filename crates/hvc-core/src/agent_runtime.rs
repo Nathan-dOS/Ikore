@@ -258,6 +258,8 @@ impl AgentRuntimeConfig {
             // A title, a summary, up to 4000 characters of Markdown and a reply,
             // often in a language that tokenizes less densely than English.
             AgentRole::NotesScribe => 2_400,
+            // A summary and whole replacement anchors of one note.
+            AgentRole::DocumentationReconciler => 8_000,
         };
         self.max_output_tokens.max(floor)
     }

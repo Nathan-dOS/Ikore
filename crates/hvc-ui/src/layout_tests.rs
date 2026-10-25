@@ -6151,3 +6151,243 @@ fn a_legacy_integrator_review_says_the_policy_does_not_apply(cx: &mut TestAppCon
     assert!(visual.debug_bounds("convergence-rounds").is_none());
     assert!(visual.debug_bounds("hitl-revision").is_some());
 }
+
+fn high_risk_status() -> hvc_core::persistence_service::CheckpointRiskStatus {
+    serde_json::from_value(serde_json::json!({
+        "applies": true,
+        "assessment": {
+            "level": "high",
+            "reasons": [
+                {"signal": "sensitive_path", "level": "high",
+                 "subject": "crates/hvc-core/src/usage/export_with_a_rather_long_auth_token_name.rs"}
+            ],
+            "unknownInputs": ["intake:task_2"],
+            "policyVersion": 1,
+            "policySha256": "abc",
+            "projectPolicyState": "builtin_only"
+        },
+        "matrix": {
+            "level": "high",
+            "rows": [
+                {"kind": "criterion", "subject": "crit_1_1", "state": "model_only",
+                 "detail": "supported by the model's review only"},
+                {"kind": "check", "subject": "unit", "state": "not_run", "detail": "not_run"}
+            ],
+            "missingKinds": ["lint"]
+        },
+        "acknowledgementRequired": true,
+        "acknowledgements": []
+    }))
+    .unwrap()
+}
+
+/// ADR-034 M3: the risk card leads the Integrator's brief, fits the reader
+/// at both window sizes, and an Approve that needs an acknowledgement asks
+/// for a reason instead of sending.
+#[gpui::test]
+fn a_high_risk_integrator_review_shows_its_coverage_and_asks_for_a_reason(cx: &mut TestAppContext) {
+    let (model, visual) = open_integrator_review(cx, recorded_review_inputs(), None, true);
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            let checkpoint = state.hitl.expected_checkpoint.clone().unwrap();
+            let generation = state.hitl.current_load_generation();
+            assert!(
+                state
+                    .hitl
+                    .finish_risk(generation, &checkpoint, Ok(Some(high_risk_status())))
+            );
+        });
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let risk = visual.debug_bounds("review-risk").unwrap();
+        let inputs = visual.debug_bounds("review-inputs").unwrap();
+        assert!(
+            risk.left() >= reader.left() && risk.right() <= reader.right() + px(1.0),
+            "the risk card overflows at {width}: {risk:?} vs {reader:?}"
+        );
+        assert!(risk.bottom() <= inputs.top(), "risk leads the inputs");
+        for part in [
+            "review-risk-level",
+            "review-risk-missing",
+            "review-risk-row-0",
+            "review-risk-row-1",
+            "review-risk-acknowledgement",
+        ] {
+            let bounds = visual
+                .debug_bounds(part)
+                .unwrap_or_else(|| panic!("missing {part} at {width}"));
+            assert!(
+                bounds.right() <= reader.right() + px(1.0),
+                "{part} {bounds:?}"
+            );
+        }
+        let actions = visual.debug_bounds("review-decision-bar").unwrap();
+        let approve = visual.debug_bounds("hitl-approve").unwrap();
+        assert!(approve.left() >= actions.left() && approve.right() <= actions.right());
+        assert!(approve.bottom() <= px(height));
+    }
+    // Approve without a reason explains instead of sending.
+    model.update(visual, |model, cx| {
+        model.apply_hitl_decision(hvc_core::persistence_service::HitlDecision::Approve, cx)
+    });
+    model.read_with(visual, |model, cx| {
+        let hitl = &model.pulsations.read(cx).hitl;
+        assert!(!hitl.busy);
+        assert!(hitl.show_feedback);
+        assert_eq!(
+            hitl.error.as_deref(),
+            Some(crate::app_model::RISK_REASON_REQUIRED)
+        );
+    });
+}
+
+#[gpui::test]
+fn forge_triage_shows_the_conformance_card_and_holds_approval_on_a_blocking_conflict(
+    cx: &mut TestAppContext,
+) {
+    use hvc_core::feature_forge::FeatureState;
+    use hvc_core::feature_forge::preflight::PreflightResolution;
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    forge_feature_fixture(&model, visual, &[FeatureState::InTriage]);
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        model.update(visual, |m, cx| {
+            let mut finding = crate::test_support::blocking_finding("feature-0", 2);
+            finding.resolution = PreflightResolution::Pending;
+            m.forge.snapshot.preflight = vec![finding];
+            m.forge.section = crate::forge::ForgeSection::Triage;
+            m.select_view(AppView::Forge, cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let detail = visual.debug_bounds("forge-detail").unwrap();
+        let card = visual.debug_bounds("preflight-card").unwrap();
+        assert!(
+            card.left() >= detail.left() && card.right() <= detail.right(),
+            "the conformance card overflows the triage column at {width}x{height}: {card:?}"
+        );
+        for selector in [
+            "preflight-conflict-0",
+            "preflight-adjust",
+            "preflight-propose-adr",
+            "preflight-dismiss",
+        ] {
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "{selector} is missing at {width}x{height}"
+            );
+        }
+    }
+
+    // The approval control states why it is held.
+    assert!(visual.debug_bounds("triage-approve").is_some());
+    assert!(visual.debug_bounds("preflight-approval-blocked").is_some());
+
+    // Once dismissed, the card keeps the record without the decisions or the
+    // hint. Debug bounds outlive the frame that drew them, so the dismissed
+    // state is drawn in a fresh window.
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    forge_feature_fixture(&model, visual, &[FeatureState::InTriage]);
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    model.update(visual, |m, cx| {
+        let mut finding = crate::test_support::blocking_finding("feature-0", 2);
+        finding.resolution = PreflightResolution::Dismissed;
+        finding.reason = Some("Only the release script uses it.".into());
+        m.forge.snapshot.preflight = vec![finding];
+        m.forge.section = crate::forge::ForgeSection::Triage;
+        m.select_view(AppView::Forge, cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("preflight-card").is_some());
+    assert!(visual.debug_bounds("triage-approve").is_some());
+    assert!(visual.debug_bounds("preflight-dismiss").is_none());
+    assert!(visual.debug_bounds("preflight-approval-blocked").is_none());
+}
+
+/// A Vault window drawn once with one drifted note (ADR-034 M5).
+fn open_doc_drift(
+    cx: &mut TestAppContext,
+    with_proposal: bool,
+    open_note: bool,
+    width: f32,
+) -> (Entity<AppModel>, &mut VisualTestContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    model.update(visual, |m, cx| {
+        m.vault.update(cx, |vault, _| {
+            vault.workspace_root = Some("C:\\vault".into());
+        });
+        m.doc_drift.project_id = Some("layout-project".into());
+        m.doc_drift.overview = crate::test_support::drift_overview(with_proposal);
+        if open_note {
+            m.doc_drift.open_note = Some("knowledge/obsidian/features/api.md".into());
+        }
+    });
+    visual.simulate_resize(size(px(width), px(800.0)));
+    select(&model, visual, AppView::Vault);
+    (model, visual)
+}
+
+/// ADR-034 M5: the indicator, the Vault list and the comparison. Debug bounds
+/// outlive the frame that drew them, so each state is drawn in a fresh window.
+#[gpui::test]
+fn documentation_drift_shows_the_indicator_the_list_and_the_comparison(cx: &mut TestAppContext) {
+    for width in [960.0, 1440.0] {
+        let (_, visual) = open_doc_drift(cx, false, false, width);
+        let bar = visual.debug_bounds("status-bar").unwrap();
+        let segment = visual
+            .debug_bounds("status-doc-drift")
+            .expect("the indicator");
+        assert!(segment.right() <= bar.right() && segment.bottom() <= bar.bottom());
+        assert!(visual.debug_bounds("doc-drift-card").is_some());
+        assert!(
+            visual
+                .debug_bounds("doc-drift-note:knowledge/obsidian/features/api.md")
+                .is_some()
+        );
+        assert!(
+            visual
+                .debug_bounds(
+                    "doc-drift-unsilence:knowledge/obsidian/features/api.md:src/legacy.rs"
+                )
+                .is_some()
+        );
+        assert!(visual.debug_bounds("doc-drift-comparison").is_none());
+    }
+
+    // Without a proposal, the comparison offers to ask for one.
+    let (_, visual) = open_doc_drift(cx, false, true, 1440.0);
+    assert!(visual.debug_bounds("doc-drift-comparison").is_some());
+    assert!(visual.debug_bounds("doc-drift-propose").is_some());
+    assert!(visual.debug_bounds("doc-drift-approve").is_none());
+    assert!(
+        visual
+            .debug_bounds("doc-drift-silence:src/api.rs")
+            .is_some()
+    );
+    assert!(visual.debug_bounds("doc-drift-ignore").is_some());
+
+    // With one, both sides sit next to each other inside the column.
+    for width in [960.0, 1440.0] {
+        let (_, visual) = open_doc_drift(cx, true, true, width);
+        let panel = visual.debug_bounds("doc-drift-comparison").unwrap();
+        let code = visual.debug_bounds("doc-drift-code").unwrap();
+        let proposal = visual.debug_bounds("doc-drift-proposal").unwrap();
+        for side in [code, proposal] {
+            assert!(
+                side.left() >= panel.left() && side.right() <= panel.right(),
+                "a side overflows the comparison at {width}: {side:?}"
+            );
+        }
+        for selector in ["doc-drift-approve", "doc-drift-edit", "doc-drift-reject"] {
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "{selector} at {width}"
+            );
+        }
+        assert!(visual.debug_bounds("doc-drift-propose").is_none());
+    }
+}

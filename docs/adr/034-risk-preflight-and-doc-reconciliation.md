@@ -2,9 +2,9 @@
 
 Date: 2026-10-25
 
-Status: accepted for implementation; **not implemented yet**. Nothing below
-describes delivered behavior until the validation report of each milestone
-lands in `quality/`.
+Status: implemented (migrations V52 to V54); Linux headless validation in
+`quality/feature-10-remaining-validation-2026-10-25.md`. Windows acceptance
+and the T1 real-run measurement are pending.
 
 ## Context
 
@@ -63,5 +63,7 @@ prompts grow by at most 32 KiB of decisions. High-risk acknowledgement and
 blocking conflicts add friction on purpose, and their value must be measured.
 Additive migrations add risk, acknowledgement, pre-flight and reconciliation
 tables; reconciliation base bytes stay local with per-file and per-project
-caps. The Integrator manifest moves to schema version 2. Generated
+caps. The one exception is V54: the new `documentation_reconciler` role needs
+the three role-checked tables rebuilt, as V50 did for the Notes Scribe, with
+every row kept. The Integrator manifest moves to schema version 2. Generated
 documentation edits are English (ADR-013).

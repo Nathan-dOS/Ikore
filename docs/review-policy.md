@@ -2,8 +2,10 @@
 
 This page describes what the final reviewer of a composed (pipeline v4)
 pulsation receives, how a project can guide it with `REVIEW.md`, and how the
-host limits repeated revision rounds. The decision is
-[ADR-032](adr/032-integrator-review-boundary.md). Pipelines before v4 are
+host limits repeated revision rounds. The decisions are
+[ADR-032](adr/032-integrator-review-boundary.md) and, for risk scrutiny and the
+Intake capture of `REVIEW.md`, [ADR-034](adr/034-risk-preflight-and-doc-reconciliation.md).
+Pipelines before v4 are
 unchanged; their Integrator checkpoint says that the review policy does not
 apply.
 
@@ -15,6 +17,7 @@ checks and the developer's approval remain required.
 | Section | Content | Editable by the reviewer |
 |---|---|---|
 | Tasks, requirements, decisions, interfaces | The approved intent | No |
+| Risk scrutiny | The level the host assessed, its reasons and unknown inputs | No |
 | Review policy | The `REVIEW.md` cascade, sanitized | Never |
 | Host evidence | Status, freshness and limits of every Code/Test check | No |
 | Evidence gaps | What the host could not establish, with affected criteria | No |
@@ -43,9 +46,10 @@ a gapped file, its criterion is mapped to the gap, or the gap is global.
   receipt, its inputs changed since it ran, or its freshness cannot be verified.
 
 `base_unavailable`, `diff_truncated`, `diff_unavailable`,
-`orphaned_publication` and review policy problems are shown without changing a
-verdict, because the complete candidate is still delivered. A check gap whose
-check no criterion maps to is shown without changing a verdict.
+`orphaned_publication`, `risk_check_missing` and review policy problems
+(including `review_policy_not_captured`) are shown without changing a verdict,
+because the complete candidate is still delivered. A check gap whose check no
+criterion maps to is shown without changing a verdict.
 
 ## `REVIEW.md`
 
@@ -62,9 +66,40 @@ check or a checkpoint, or change permissions, outputs or handles. Text asking
 otherwise is treated as data.
 
 No pipeline stage may publish a file named `REVIEW.md`, in any directory or
-letter case; the developer edits it directly. The bytes read when the stage was
-prepared are the reviewed version. When a guide changes later, the checkpoint
-marks it "changed since review".
+letter case; the developer edits it directly. Every guide of the repository is
+captured once, when the pulsation's Intake is admitted (at most 64 guides and
+512 KiB; a guide left out is reported as `review_policy_not_captured`). The
+Integrator resolves its cascade over that capture, so editing or adding a
+guide mid-pulsation does not change the policy of the review; the checkpoint
+marks an edited guide "changed since intake". The captured texts are cleared
+when the pulsation ends. Pulsations started before the capture existed read
+the guides when the Integrator is prepared, as before.
+
+## Risk scrutiny and coverage
+
+When Code and Test are admitted, and again for the Integrator, the host
+assesses a risk level from the Intake's per-task risk, the `risk` of the notes
+delivered as sources, sensitive paths (authentication, secrets, migrations, CI
+workflows, scripts, Docker files, lockfiles, keys) and changed interfaces. The
+level is the highest signal; `unknown` stays visible and selects like
+`medium`. Within a pulsation the level only rises. A project can add sensitive
+path globs and required checks in Settings → Stage composition → Risk policy;
+it can never remove a built-in rule.
+
+The level only adds scrutiny:
+
+- `medium` makes every `required` profile and the project's medium checks
+  required; `high` also requires every compile, test and lint profile and the
+  project's high checks. A required kind with no profile is the gap
+  `risk_check_missing`.
+- Under risk, sensitive files take the diff budget first.
+- After the review the host derives a coverage matrix from the kept verdicts
+  and its own receipts: `executed` (a fresh receipt backs it), `model_only`,
+  `unverified` and `not_run`. It is shown on the checkpoint and in the report.
+- Approving a `high` review with unverified or unrun items needs a reason,
+  recorded with the checkpoint. Requesting a revision or rejecting does not.
+
+No level removes a stage, a check that was already required or a checkpoint.
 
 ## Reviewer transport
 

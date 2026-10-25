@@ -201,6 +201,98 @@ impl AppModel {
         );
     }
 
+    /// ADR-034 M3: shows the project's stored risk additions the first time
+    /// the page has them; never overwrites what the developer is typing.
+    pub(crate) fn fill_risk_policy_inputs(
+        &mut self,
+        snapshot: &crate::settings::SettingsSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project) = snapshot.composition.as_ref() else {
+            return;
+        };
+        let policy = &project.settings.risk_policy;
+        let join = |refs: &[hvc_core::orchestration::composition::Handle]| {
+            refs.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        for (input, value) in [
+            (
+                &self.risk_globs_input,
+                policy.sensitive_path_globs.join("\n"),
+            ),
+            (
+                &self.risk_medium_checks_input,
+                join(&policy.extra_required_check_refs.medium),
+            ),
+            (
+                &self.risk_high_checks_input,
+                join(&policy.extra_required_check_refs.high),
+            ),
+        ] {
+            if input.read(cx).value().is_empty() && !value.is_empty() {
+                input.update(cx, |input, cx| input.set_value(value, cx));
+            }
+        }
+    }
+
+    /// Saves the risk additions typed on the page. A malformed check name or
+    /// glob is refused with its reason; nothing is saved partly.
+    pub(crate) fn save_risk_policy(&mut self, cx: &mut Context<Self>) {
+        let globs = self
+            .risk_globs_input
+            .read(cx)
+            .value()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let parse = |text: &str| {
+            text.split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(hvc_core::orchestration::composition::Handle::new)
+                .collect::<Result<Vec<_>, _>>()
+        };
+        let checks = parse(self.risk_medium_checks_input.read(cx).value())
+            .and_then(|medium| Ok((medium, parse(self.risk_high_checks_input.read(cx).value())?)));
+        let policy =
+            checks.map(|(medium, high)| {
+                hvc_core::orchestration::composition::risk::ProjectRiskPolicy {
+                    sensitive_path_globs: globs,
+                    extra_required_check_refs:
+                        hvc_core::orchestration::composition::risk::ExtraRequiredChecks {
+                            medium,
+                            high,
+                        },
+                }
+            });
+        let policy = match policy.and_then(|policy| policy.validate().map(|()| policy)) {
+            Ok(policy) => policy,
+            Err(error) => {
+                let message = error.to_string();
+                self.run_settings_operation(
+                    Box::pin(async move {
+                        Err(crate::errors::UiCommandError::from_chat_parts(
+                            "validation",
+                            message,
+                        ))
+                    }),
+                    cx,
+                );
+                return;
+            }
+        };
+        self.save_composition(
+            move |settings| settings.risk_policy = policy,
+            "Risk policy updated; it applies to stages admitted from now on.",
+            cx,
+        );
+    }
+
     pub(crate) fn toggle_composition_enabled(&mut self, cx: &mut Context<Self>) {
         self.save_composition(
             |settings| settings.enabled = !settings.enabled,
@@ -912,6 +1004,18 @@ pub(crate) fn composition_page(
             ),
         )
         .section(
+            "Risk policy",
+            section(
+                "Risk policy",
+                None,
+                vec![stacked_row(
+                    "composition-risk-policy",
+                    hl,
+                    risk_policy_editor(model, !busy, cx),
+                )],
+            ),
+        )
+        .section(
             "Specialty overrides",
             section(
                 "Specialty overrides",
@@ -919,6 +1023,45 @@ pub(crate) fn composition_page(
                 vec![stacked_row("composition-overrides", hl, overrides)],
             ),
         )
+}
+
+/// ADR-034 M3: the project's additions to the built-in risk policy. The
+/// built-in rules always apply; the page can only add to them.
+fn risk_policy_editor(model: &AppModel, enabled: bool, cx: &mut Context<AppModel>) -> AnyElement {
+    let builtin = hvc_core::orchestration::composition::risk::RiskPolicyV1::builtin();
+    div()
+        .debug_selector(|| "composition-risk-policy-editor".into())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .child(format!(
+                    "Built in: {} sensitive path globs (auth, secrets, migrations, CI workflows, scripts, Docker, lockfiles, keys). A change to one is high risk; more than {} files is at least medium. These always apply.",
+                    builtin.sensitive_path_globs.len(),
+                    builtin.large_change_files
+                )),
+        )
+        .child(crate::sizing::text_area(model.risk_globs_input.clone()))
+        .child(crate::sizing::sized_input(
+            model.risk_medium_checks_input.clone(),
+            crate::sizing::INPUT_LONG,
+        ))
+        .child(crate::sizing::sized_input(
+            model.risk_high_checks_input.clone(),
+            crate::sizing::INPUT_LONG,
+        ))
+        .child(crate::widgets::btn(
+            "composition-risk-policy-save",
+            "Save risk policy",
+            crate::widgets::ButtonVariant::Secondary,
+            enabled,
+            cx,
+            |model, cx| model.save_risk_policy(cx),
+        ))
+        .into_any_element()
 }
 
 /// `−  n  +` for the revision-round threshold, within its range.

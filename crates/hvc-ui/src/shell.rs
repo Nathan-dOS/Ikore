@@ -822,6 +822,18 @@ fn status_bar(model: &AppModel, badges: TabBadges, cx: &mut Context<AppModel>) -
                         cx,
                     ))
                 })
+                .when(model.doc_drift.overview.drifted() > 0, |seg| {
+                    seg.child(status_segment(
+                        "status-doc-drift",
+                        theme::warning(),
+                        Some(Icon::Zap),
+                        hvc_core::doc_reconciliation::indicator_text(
+                            model.doc_drift.overview.drifted(),
+                        ),
+                        FlowTarget::View(AppView::Vault),
+                        cx,
+                    ))
+                })
                 .when_some(model_pull, |seg, label| {
                     seg.child(status_segment(
                         "status-model-pull",

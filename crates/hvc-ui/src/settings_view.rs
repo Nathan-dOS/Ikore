@@ -1473,6 +1473,10 @@ fn agent_timeouts_table() -> gpui::Div {
         (AgentRole::IntakeRouter, "Triage & validation"),
         (AgentRole::Visualizer, "Review brief notes"),
         (AgentRole::NotesScribe, "Note structuring"),
+        (
+            AgentRole::DocumentationReconciler,
+            "Documentation reconciliation",
+        ),
     ];
     let header = div()
         .flex()

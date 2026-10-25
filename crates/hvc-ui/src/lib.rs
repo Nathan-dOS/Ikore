@@ -13,6 +13,8 @@ mod cli_connections;
 mod composition_ui;
 mod context_rail;
 mod convergence_view;
+mod doc_drift;
+mod doc_drift_view;
 mod errors;
 mod fading_title;
 mod failure_checkpoint;

@@ -522,6 +522,7 @@ impl AppModel {
                 "learning_agent",
                 "visualizer",
                 "notes_scribe",
+                "documentation_reconciler",
             ]
             .into_iter()
             .map(|r| Choice::new(r, r, settings.binding_agent_role.as_ref() == r))

@@ -547,18 +547,37 @@ impl PersistenceService {
         }
         // Checks the approved specification made mandatory for a criterion
         // are required regardless of the profile's own flag.
-        let promoted_checks = recipes::promoted_check_refs(&inputs);
+        let mut promoted_checks = recipes::promoted_check_refs(&inputs);
+        let input_revision = fence.input_revision.unwrap_or(1);
+        // ADR-034 M3 (D7): every REVIEW.md is captured once, at Intake.
+        if comp_stage == comp::Stage::Intake {
+            self.capture_review_policy_once(&current.id, root)?;
+        }
+        // ADR-034 M3: the risk level makes more configured checks required;
+        // it never removes one.
+        if matches!(comp_stage, comp::Stage::Code | comp::Stage::Test) {
+            let risk = self.assess_composed_risk(
+                &project.id,
+                &current.id,
+                input_revision,
+                comp_stage,
+                &inputs,
+                &profiles,
+                &promoted_checks,
+                &[],
+            )?;
+            promoted_checks.extend(risk.selection.required);
+        }
         // Integrator: deterministic pre-checks first; the single reviewer
         // call addresses only what they leave open (recipes §Integrator).
         // ADR-032: the reviewer gets host-selected context only, and its
         // inputs arrive classified, with the gaps the host found.
+        if let Some(failure) =
+            self.host_context_transport_refusal(project, current, comp_stage, runtime_config)?
+        {
+            return self.park_without_execution(job, parent_run_id, stage, &failure);
+        }
         let host_findings = if comp_stage == comp::Stage::Integrator {
-            if let Some(failure) =
-                self.integrator_transport_refusal(project, current, runtime_config)?
-            {
-                return self.park_without_execution(job, parent_run_id, stage, &failure);
-            }
-            let input_revision = fence.input_revision.unwrap_or(1);
             let Some(evidence) =
                 self.integrator_prechecks(&current.id, input_revision, &inputs, root, &reads)?
             else {
@@ -570,6 +589,29 @@ impl PersistenceService {
                 return self.park_without_execution(job, parent_run_id, stage, &failure);
             };
             let findings = evidence.findings.clone();
+            let candidates = inputs
+                .sources
+                .iter()
+                .filter(|source| source.origin.class() == EvidenceClass::Candidate)
+                .map(|source| source.path.as_str().to_owned())
+                .collect::<Vec<_>>();
+            // The review covers every stage's checks, so its level selects
+            // among every enabled profile of the project, not only the
+            // Integrator's own document/custom checks.
+            let enabled = Self::validation_profiles_for(&self.connection()?, &project.id)?
+                .into_iter()
+                .filter_map(|(profile, enabled)| enabled.then_some(profile))
+                .collect::<Vec<_>>();
+            let risk = self.assess_composed_risk(
+                &project.id,
+                &current.id,
+                input_revision,
+                comp_stage,
+                &inputs,
+                &enabled,
+                &promoted_checks,
+                &candidates,
+            )?;
             let boundary = self.review_boundary(
                 &current.id,
                 input_revision,
@@ -580,6 +622,7 @@ impl PersistenceService {
                 &sanitization,
                 &sanitization_policy,
                 evidence,
+                risk,
             )?;
             preparation.review = Some(std::sync::Arc::new(boundary));
             findings
@@ -948,23 +991,35 @@ impl PersistenceService {
         Ok(Some(evidence))
     }
 
-    /// ADR-032: the composed Integrator reads host-selected context only. A
-    /// custom CLI adapter cannot be confined to it, so the stage parks before
-    /// any permit is spent and the developer picks an official adapter or
-    /// the API. A profile that does not resolve is left to admission.
-    fn integrator_transport_refusal(
+    /// ADR-032/ADR-034 T1: a specialty whose policy is `HostContextOnly`
+    /// reads host-selected context only. A custom CLI adapter cannot be
+    /// confined to it, so the stage parks before any permit is spent and the
+    /// developer picks an official adapter or the API. Today only the
+    /// Integrator's specialty has that policy. A profile that does not resolve
+    /// is left to admission.
+    fn host_context_transport_refusal(
         &self,
         project: &Project,
         current: &Pulsation,
+        stage: comp::Stage,
         runtime_config: &AgentRuntimeConfig,
     ) -> Result<Option<UnitFailure>, PersistenceServiceError> {
+        let Some(kind) = ExecutorKind::ALL
+            .into_iter()
+            .find(|kind| kind.stage() == stage && !kind.is_repair())
+        else {
+            return Ok(None);
+        };
+        if comp::policy::policy_for(kind).tools != comp::policy::ToolPolicy::HostContextOnly {
+            return Ok(None);
+        }
         let db = self.connection()?;
         let Ok(profile) = Self::resolve_effective_profile(
             &db,
             &project.id,
             &current.id,
-            AgentRole::for_stage(PulsationStage::Integrator.as_db_value()),
-            ExecutorKind::IntegrationReviewer,
+            AgentRole::for_stage(stage.to_pulsation().as_db_value()),
+            kind,
             runtime_config,
         ) else {
             return Ok(None);
@@ -973,7 +1028,17 @@ impl PersistenceService {
             || UnitFailure {
                 class: FailureClass::ProviderConfiguration,
                 code: "provider_configuration".into(),
-                diagnostic: "The composed Integrator requires an official read-only CLI adapter or API transport: a custom CLI adapter cannot be limited to host-selected context.".into(),
+                diagnostic: format!(
+                    "The composed {} requires an official read-only CLI adapter or API transport: a custom CLI adapter cannot be limited to host-selected context.",
+                    match stage {
+                        comp::Stage::Intake => "Intake",
+                        comp::Stage::Specification => "Specification",
+                        comp::Stage::Contract => "Contract",
+                        comp::Stage::Code => "Code",
+                        comp::Stage::Test => "Test",
+                        comp::Stage::Integrator => "Integrator",
+                    }
+                ),
                 repairable: false,
                 correction: None,
                 rejected_answer: false,
@@ -995,7 +1060,8 @@ impl PersistenceService {
         preparation: &StagePreparation,
         sanitization: &crate::sanitization::SanitizationStore,
         policy: &crate::sanitization::SanitizationPolicySnapshot,
-        host: HostEvidence,
+        mut host: HostEvidence,
+        risk: review_boundary::RiskReview,
     ) -> Result<ReviewBoundary, PersistenceServiceError> {
         let db = self.connection()?;
         let delivered_paths = preparation
@@ -1065,7 +1131,9 @@ impl PersistenceService {
             .into_iter()
             .filter(|path| !candidate_keys.contains(&path.to_ascii_lowercase()))
             .collect::<Vec<_>>();
-        // The review policy for every reviewed path, root first (M2).
+        // The review policy for every reviewed path, root first (M2), read
+        // from the capture taken at Intake (ADR-034 M3, D7). A pulsation that
+        // started before the capture existed reads the guides live.
         let repository = RepositoryContext::new(root).ok();
         let locations = comp::review_policy::policy_locations(
             sources
@@ -1073,18 +1141,35 @@ impl PersistenceService {
                 .filter(|source| source.delivered)
                 .map(|source| source.path.as_str()),
         );
-        let resolved = comp::review_policy::resolve(&locations, |location| {
-            let Some(repository) = repository.as_ref() else {
-                return comp::review_policy::PolicyRead::Missing;
-            };
-            if std::fs::symlink_metadata(root.join(location)).is_err() {
-                return comp::review_policy::PolicyRead::Missing;
+        let capture = Self::review_policy_capture(&db, pulsation_id)?;
+        let resolved = match &capture {
+            Some((capture, _)) => {
+                for location in &locations {
+                    if capture.omitted_location(location) {
+                        host.gaps.push(EvidenceGap::path(
+                            GapCode::ReviewPolicyNotCaptured,
+                            location,
+                            format!(
+                                "`{location}` was left out of the Intake capture at its limits and does not apply to this review."
+                            ),
+                        ));
+                    }
+                }
+                comp::review_policy::resolve(&locations, |location| capture.read(location))
             }
-            match repository.read_document(location) {
-                Ok(text) => comp::review_policy::PolicyRead::Loaded(text),
-                Err(_) => comp::review_policy::PolicyRead::Invalid,
-            }
-        });
+            None => comp::review_policy::resolve(&locations, |location| {
+                let Some(repository) = repository.as_ref() else {
+                    return comp::review_policy::PolicyRead::Missing;
+                };
+                if std::fs::symlink_metadata(root.join(location)).is_err() {
+                    return comp::review_policy::PolicyRead::Missing;
+                }
+                match repository.read_document(location) {
+                    Ok(text) => comp::review_policy::PolicyRead::Loaded(text),
+                    Err(_) => comp::review_policy::PolicyRead::Invalid,
+                }
+            }),
+        };
         let anchors = [PulsationStage::Code, PulsationStage::Test]
             .into_iter()
             .filter_map(|stage| {
@@ -1104,6 +1189,8 @@ impl PersistenceService {
             policy: Some(resolved),
             claims,
             criteria,
+            risk: Some(risk),
+            review_policy_snapshot_sha256: capture.map(|(_, sha256)| sha256),
         };
         let sanitize = |path: &str, content: &str| -> Option<String> {
             sanitization
@@ -3012,12 +3099,7 @@ impl PersistenceService {
                     frozen_transport: profile.transport.clone(),
                     frozen_backend: profile.backend.clone(),
                     frozen_model: profile.requested_model.clone(),
-                    context_scope: match policy.tools {
-                        comp::policy::ToolPolicy::HostContextOnly => {
-                            crate::llm::UnitContextScope::HostContextOnly
-                        }
-                        _ => crate::llm::UnitContextScope::Workspace,
-                    },
+                    context_scope: policy.tools.context_scope(),
                 }),
                 strict_schema: Some(strict),
                 host_validated: true,
@@ -3603,6 +3685,23 @@ impl PersistenceService {
             let response: UnitModelResponseV1 = serde_json::from_str(json)
                 .map_err(|e| PersistenceServiceError::Runtime(e.to_string()))?;
             responses.push((unit.clone(), response));
+        }
+        // ADR-034 M3: what backs each criterion and each risk-required check,
+        // derived from the kept verdicts before the review is accepted.
+        if stage == comp::Stage::Integrator
+            && let Some(review) = preparation.review.as_deref()
+        {
+            self.record_coverage(
+                &execution.id,
+                &execution.pulsation_id,
+                u64::from(execution.plan.parent_fence.input_revision),
+                review,
+                &responses
+                    .iter()
+                    .map(|(_, response)| response)
+                    .collect::<Vec<_>>(),
+                &checks,
+            )?;
         }
         let mut validated = Vec::with_capacity(responses.len());
         for (unit, response) in &responses {

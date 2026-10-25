@@ -15,11 +15,14 @@ use super::{
 };
 use crate::orchestration::PublicationState;
 use crate::orchestration::composition::CheckSummaryV1;
+use crate::orchestration::composition::review_boundary::risk_level_name;
 use crate::orchestration::composition::review_boundary::{Binding, ReviewInputManifestV1};
+use crate::orchestration::composition::risk::{CoverageRowKind, RiskSignal};
 use crate::orchestration::review_brief::{self, StageVisual};
 use crate::reports::{
-    self, FileChange, LineCounts, PulsationReport, ReportCheck, ReportConvergence, ReportCriterion,
-    ReportFile, ReportGap, ReportOutcome, ReportReview, analysis,
+    self, FileChange, LineCounts, PulsationReport, ReportCheck, ReportConvergence,
+    ReportCoverageRow, ReportCriterion, ReportFile, ReportGap, ReportOutcome, ReportReview,
+    ReportRisk, analysis,
 };
 use coordination::invalid;
 
@@ -129,6 +132,55 @@ impl PersistenceService {
                 .decisions
                 .iter()
                 .map(|decision| format!("{}: {}", decision.decision, decision.reason))
+                .collect(),
+        });
+        // ADR-034 M3: the latest review's risk level and coverage.
+        let risk = self.checkpoint_risk_status(&pulse)?;
+        report.risk = risk.assessment.as_ref().map(|assessment| ReportRisk {
+            level: risk_level_name(assessment.level).to_owned(),
+            reasons: assessment
+                .reasons
+                .iter()
+                .map(|reason| {
+                    format!(
+                        "{} `{}` ({})",
+                        match reason.signal {
+                            RiskSignal::IntakeTask => "Intake risk of task",
+                            RiskSignal::NoteRisk => "note risk",
+                            RiskSignal::SensitivePath => "sensitive path",
+                            RiskSignal::InterfaceChange => "changed interface",
+                            RiskSignal::ChangeSize => "change size",
+                        },
+                        reason.subject,
+                        risk_level_name(reason.level)
+                    )
+                })
+                .collect(),
+            unknown_inputs: assessment.unknown_inputs.clone(),
+            rows: risk
+                .matrix
+                .iter()
+                .flat_map(|matrix| matrix.rows.iter())
+                .map(|row| ReportCoverageRow {
+                    kind: match row.kind {
+                        CoverageRowKind::Criterion => "criterion",
+                        CoverageRowKind::Check => "check",
+                    }
+                    .to_owned(),
+                    subject: row.subject.to_string(),
+                    state: row.state.as_str().to_owned(),
+                    detail: row.detail.clone(),
+                })
+                .collect(),
+            missing_kinds: risk
+                .matrix
+                .as_ref()
+                .map(|matrix| matrix.missing_kinds.clone())
+                .unwrap_or_default(),
+            acknowledgements: risk
+                .acknowledgements
+                .iter()
+                .map(|record| format!("{} pending: {}", record.pending, record.reason))
                 .collect(),
         });
         Ok(report)

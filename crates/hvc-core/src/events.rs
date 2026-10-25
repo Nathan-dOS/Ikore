@@ -20,6 +20,8 @@ pub enum AppEvent {
     Notes(crate::companion_notes::NotesEvent),
     /// Voice setup or dictation changed (ADR-029); the UI rereads the status.
     Voice(crate::voice::VoiceEvent),
+    /// A documentation reconciliation proposal finished (ADR-034 M5).
+    DocDrift(crate::doc_reconciliation::DocDriftEvent),
     WorkspaceChanged(WorkspaceChangedEvent),
     Llm(LlmEventEnvelope),
     Chat(ChatEventEnvelope),
@@ -34,6 +36,7 @@ impl AppEvent {
             Self::Forge(_) => "forge://changed",
             Self::Notes(_) => "notes://changed",
             Self::Voice(_) => "voice://changed",
+            Self::DocDrift(_) => "docs://drift",
             Self::WorkspaceChanged(_) => crate::workspace_service::WORKSPACE_CHANGED_EVENT,
             Self::Llm(envelope) => envelope.event.event_name(),
             Self::Chat(envelope) => envelope.event_name(),

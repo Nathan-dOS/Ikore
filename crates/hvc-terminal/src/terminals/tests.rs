@@ -102,6 +102,37 @@ fn notes_scribe_route_does_not_inherit_a_custom_feature_agent_route() {
     assert!(scribe.model.is_none());
 }
 
+/// ADR-034 M5: the Documentation Reconciler starts from the Feature Agent's
+/// route, as the Notes Scribe does, and never inherits a Custom one.
+#[test]
+fn the_documentation_reconciler_route_follows_the_feature_agent_but_never_custom() {
+    for (backend, inherited) in [("claude", true), ("custom", false)] {
+        let (_data, _workspace, repository, project) = scribe_route_fixture(backend);
+        repository
+            .connection()
+            .unwrap()
+            .execute(
+                "DELETE FROM cli_agent_configs WHERE project_id=?1 AND agent_role='documentation_reconciler'",
+                [&project],
+            )
+            .unwrap();
+        repository.ensure_project_configs(&project, false).unwrap();
+        let route = repository
+            .get_config(&project, AgentRole::DocumentationReconciler)
+            .unwrap();
+        if inherited {
+            assert_eq!(route.execution_mode, AgentExecutionMode::CliProcess);
+            assert_eq!(route.backend, CliBackend::Claude);
+            assert_eq!(route.model.as_deref(), Some("sonnet"));
+        } else {
+            assert_eq!(route.execution_mode, AgentExecutionMode::ApiDirect);
+            assert_eq!(route.backend, CliBackend::Codex);
+            assert!(route.model.is_none());
+        }
+        assert!(route.custom_executable.is_none() && !route.custom_risk_ack);
+    }
+}
+
 #[test]
 fn schema_suffix_keeps_artifacts_english_except_for_the_notes_scribe() {
     for role in AgentRole::ALL {
@@ -4125,4 +4156,89 @@ async fn a_stale_snapshot_without_the_backend_available_waits_for_a_fresh_scan()
             .discovery_refreshing
             .load(std::sync::atomic::Ordering::SeqCst)
     );
+}
+
+fn scoped_unit_request(executor_kind: &str, context_scope: UnitContextScope) -> LlmRequest {
+    LlmRequest {
+        execution_id: crate::host::ExecutionId("scope-execution".into()),
+        project_id: "project".into(),
+        pulsation_id: Some("pulsation".into()),
+        job_id: None,
+        agent_run_id: None,
+        job_chain: "pulsation:scope".into(),
+        target: hvc_contracts::AgentExecutionTarget::canonical(AgentRole::Integrator),
+        stage: "Integrator".into(),
+        system_prompt: "Read-only".into(),
+        user_prompt: "unused".into(),
+        response_format: ResponseFormat::Text,
+        max_output_tokens: 100,
+        deadline: std::time::Instant::now() + Duration::from_secs(30),
+        dispatch: crate::host::TerminalDispatchPolicy {
+            unit: Some(hvc_contracts::UnitDispatch {
+                stage_execution_id: "execution".into(),
+                unit_id: "unit".into(),
+                attempt_id: "attempt".into(),
+                executor_kind: executor_kind.into(),
+                frozen_transport: "cli".into(),
+                frozen_backend: Some("claude".into()),
+                frozen_model: "fixture-model".into(),
+                context_scope,
+            }),
+            ..crate::host::TerminalDispatchPolicy::default()
+        },
+    }
+}
+
+#[test]
+fn a_composed_unit_runs_only_with_the_scope_its_specialty_requires() {
+    // ADR-034 T1: the transport accepts exactly the scope the shared table
+    // names for each specialty and refuses every other combination.
+    let workspace_kinds = [
+        "intake_classifier",
+        "specification_author",
+        "contract_author",
+        "code_implementer",
+        "code_repairer",
+        "test_author",
+        "test_repairer",
+    ];
+    for kind in workspace_kinds {
+        let accepted = cli_context_scope(&scoped_unit_request(kind, UnitContextScope::Workspace));
+        assert!(matches!(accepted, Ok(false)), "{kind}");
+        let refused = cli_context_scope(&scoped_unit_request(
+            kind,
+            UnitContextScope::HostContextOnly,
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(refused.contains("workspace snapshot"), "{kind}: {refused}");
+    }
+    let reviewer = cli_context_scope(&scoped_unit_request(
+        "integration_reviewer",
+        UnitContextScope::HostContextOnly,
+    ));
+    assert!(matches!(reviewer, Ok(true)));
+    let widened = cli_context_scope(&scoped_unit_request(
+        "integration_reviewer",
+        UnitContextScope::Workspace,
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(widened.contains("host-selected context only"), "{widened}");
+
+    // Boundary: an unknown or mistyped specialty is never given a guessed scope.
+    for unknown in ["", "implement_batch", "Integration_Reviewer"] {
+        let error = cli_context_scope(&scoped_unit_request(unknown, UnitContextScope::Workspace))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("not a composed specialty"),
+            "{unknown:?}: {error}"
+        );
+    }
+
+    // Requests outside composition carry no unit and keep their own rules.
+    let mut free_form = scoped_unit_request("code_implementer", UnitContextScope::Workspace);
+    free_form.dispatch.unit = None;
+    assert!(matches!(cli_context_scope(&free_form), Ok(false)));
 }

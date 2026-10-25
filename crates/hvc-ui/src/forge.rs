@@ -264,6 +264,9 @@ enum FailureFollowUp {
 /// conversation and the agent answers it in the developer's language.
 const RETRY_MESSAGE: &str = "Please try that reply again.";
 const ASK_AGENT_MESSAGE: &str = "Your last reply could not be applied. Explain in plain language what went wrong and tell me what you need from me to continue.";
+/// ADR-034 M6: a blocking conflict is only dismissed with the developer's reason.
+pub(crate) const PREFLIGHT_REASON_REQUIRED: &str =
+    "Write why the conflict does not apply in the rationale box, then dismiss the warning.";
 
 impl ForgeUi {
     pub fn new(cx: &mut Context<AppModel>) -> Self {
@@ -369,6 +372,79 @@ impl ForgeUi {
         self.selected_feature
             .as_ref()
             .and_then(|id| self.snapshot.features.iter().find(|f| &f.id == id))
+    }
+
+    /// The latest pre-flight finding of `f`, of any revision (ADR-034 M6).
+    pub(crate) fn preflight_for(
+        &self,
+        f: &Feature,
+    ) -> Option<&hvc_core::feature_forge::preflight::PreflightFinding> {
+        self.snapshot
+            .preflight
+            .iter()
+            .find(|finding| finding.feature_id == f.id)
+    }
+
+    /// Why approving `f` is refused by its pre-flight finding, if it is; the
+    /// host enforces the same rule.
+    pub(crate) fn preflight_block(&self, f: &Feature) -> Option<&'static str> {
+        let finding = self.preflight_for(f)?;
+        if finding.feature_revision != f.revision {
+            return (finding.blocking > 0).then_some(
+                "A blocking architecture conflict was found on an earlier revision. Run the triage analysis again before approving.",
+            );
+        }
+        (finding.blocking > 0 && !finding.resolution.allows_approval()).then_some(
+            "A blocking architecture conflict needs your decision before approval: adjust the feature, propose a decision or dismiss the warning with a reason.",
+        )
+    }
+
+    /// ADR-034 M6: the operation behind a pre-flight decision button, for the
+    /// current revision's blocking finding. Adjust also puts the conflicts in
+    /// the composer and returns to the discussion; a dismissal without a
+    /// reason sets the error instead.
+    fn preflight_operation(
+        &mut self,
+        action: &ForgeAction,
+        cx: &mut Context<AppModel>,
+    ) -> Option<Operation> {
+        use hvc_core::feature_forge::preflight::PreflightAction;
+        let f = self.feature()?.clone();
+        let finding = self
+            .preflight_for(&f)
+            .filter(|finding| finding.feature_revision == f.revision && finding.blocking > 0)?
+            .clone();
+        let decision = match action {
+            ForgeAction::PreflightAdjust => {
+                let mut draft = String::from(
+                    "Adjust the feature so it no longer conflicts with these decisions:",
+                );
+                for conflict in &finding.conflicts {
+                    draft.push_str(&format!(
+                        "\n- {}: {}",
+                        finding
+                            .decision_path(conflict)
+                            .unwrap_or(&conflict.decision_ref),
+                        conflict.conflict
+                    ));
+                }
+                self.message
+                    .update(cx, |input, cx| input.set_value(draft, cx));
+                self.section = ForgeSection::Incubation;
+                PreflightAction::Adjust
+            }
+            ForgeAction::PreflightProposeAdr => PreflightAction::ProposeAdr,
+            ForgeAction::PreflightDismiss => {
+                let reason = self.rationale.read(cx).value().trim().to_owned();
+                if reason.is_empty() {
+                    self.error = Some(PREFLIGHT_REASON_REQUIRED.into());
+                    return None;
+                }
+                PreflightAction::Dismiss { reason }
+            }
+            _ => return None,
+        };
+        Some(Operation::ResolvePreflight(f.id, finding.id, decision))
     }
 
     fn message_operation(
@@ -586,6 +662,10 @@ pub(crate) enum ForgeAction {
     ClearAgentDependencies,
     CloseTriageAside,
     ToggleFeatureGroup(FeatureState),
+    /// ADR-034 M6: the developer's decision on a blocking pre-flight finding.
+    PreflightAdjust,
+    PreflightProposeAdr,
+    PreflightDismiss,
 }
 enum Operation {
     EditTask(String, u64, TaskDraft),
@@ -613,6 +693,12 @@ enum Operation {
     ClearAgentDependencies(String, Vec<String>),
     /// Feature id, task title.
     RequestPathClarification(String, String),
+    /// Feature id, finding id and the developer's decision (ADR-034 M6).
+    ResolvePreflight(
+        String,
+        String,
+        hvc_core::feature_forge::preflight::PreflightAction,
+    ),
 }
 impl AppModel {
     pub(crate) fn refresh_forge(&mut self, cx: &mut Context<Self>) {
@@ -1060,6 +1146,15 @@ impl AppModel {
                 };
                 Operation::Approve(f.id, f.revision)
             }
+            ForgeAction::PreflightAdjust
+            | ForgeAction::PreflightProposeAdr
+            | ForgeAction::PreflightDismiss => {
+                let Some(operation) = self.forge.preflight_operation(&action, cx) else {
+                    cx.notify();
+                    return;
+                };
+                operation
+            }
             ForgeAction::Archive => {
                 let Some(f) = f else {
                     return;
@@ -1274,6 +1369,18 @@ impl AppModel {
                                     "Scope approved; tasks created. Plan the wave before dispatch."
                                         .into(),
                                 );
+                            }
+                            Operation::ResolvePreflight(id, finding, decision) => {
+                                use hvc_core::feature_forge::preflight::PreflightAction;
+                                notice = Some(
+                                    match &decision {
+                                        PreflightAction::Adjust => "Back to the discussion: the conflicts are in the composer. Approval stays blocked until a new triage.",
+                                        PreflightAction::ProposeAdr => "A feature proposing the decision was created. Approval stays blocked until you dismiss the warning or adjust the feature.",
+                                        PreflightAction::Dismiss { .. } => "Warning dismissed with your reason; the feature can be approved.",
+                                    }
+                                    .into(),
+                                );
+                                forge.resolve_preflight(&project, &id, &finding, decision)?;
                             }
                             Operation::Archive(id, reason) => {
                                 forge.archive(&project, &id, &reason)?
@@ -1871,6 +1978,43 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_batch_composer_says_when_the_review_policy_needs_composition(cx: &mut TestAppContext) {
+        // ADR-034 D1: batches without stage composition do not get the
+        // review policy, risk scrutiny or coverage; the composer says so.
+        cx.update(crate::text_input::register_text_input_keybindings);
+        let (model, visual) = cx.add_window_view(|_, cx| AppModel::new_for_test(cx));
+        visual.simulate_resize(size(px(1440.0), px(900.0)));
+        model.update(visual, |m, cx| {
+            m.workspace
+                .update(cx, |w, _| w.project_id = Some("test-project".into()));
+            m.forge.project_id = Some("test-project".into());
+            m.select_view(AppView::Forge, cx);
+            m.forge.section = ForgeSection::Backlog;
+            m.forge.snapshot.composition_enabled = false;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("review-policy-needs-composition")
+                .is_some()
+        );
+        assert!(visual.debug_bounds("dispatch-batch").is_some());
+
+        model.update(visual, |m, cx| {
+            m.forge.snapshot.composition_enabled = true;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("review-policy-needs-composition")
+                .is_none()
+        );
+        assert!(visual.debug_bounds("dispatch-batch").is_some());
+    }
+
+    #[gpui::test]
     fn selected_done_task_retains_deselection_button_and_composer_remove_button(
         cx: &mut TestAppContext,
     ) {
@@ -1932,5 +2076,71 @@ mod tests {
                 .is_none()
         );
         assert!(visual2.debug_bounds("clear-selected-tasks").is_none());
+    }
+
+    use crate::test_support::blocking_finding;
+
+    #[gpui::test]
+    fn preflight_decisions_act_on_the_current_blocking_finding_only(cx: &mut TestAppContext) {
+        use hvc_core::feature_forge::preflight::{PreflightAction, PreflightResolution};
+        let model = cx.new(AppModel::new_for_test);
+        model.update(cx, |model, cx| {
+            let forge = &mut model.forge;
+            forge.project_id = Some("project".into());
+            let mut f = feature();
+            f.state = FeatureState::InTriage;
+            forge.snapshot.features = vec![f.clone()];
+            forge.selected_feature = Some("feature".into());
+
+            // No finding: nothing blocks and no decision is offered.
+            assert!(forge.preflight_block(&f).is_none());
+            assert!(forge.preflight_operation(&ForgeAction::PreflightAdjust, cx).is_none());
+
+            forge.snapshot.preflight = vec![blocking_finding("feature", 1)];
+            assert!(forge.preflight_block(&f).unwrap().contains("needs your decision"));
+
+            // A dismissal without a reason is refused before it reaches the host.
+            forge.rationale.update(cx, |i, cx| i.set_value("  ", cx));
+            assert!(forge.preflight_operation(&ForgeAction::PreflightDismiss, cx).is_none());
+            assert_eq!(forge.error.as_deref(), Some(PREFLIGHT_REASON_REQUIRED));
+            forge.rationale.update(cx, |i, cx| {
+                i.set_value("Only the release script uses it.", cx)
+            });
+            assert!(matches!(
+                forge.preflight_operation(&ForgeAction::PreflightDismiss, cx),
+                Some(Operation::ResolvePreflight(id, finding, PreflightAction::Dismiss { reason }))
+                    if id == "feature" && finding == "finding" && reason == "Only the release script uses it."
+            ));
+            assert!(matches!(
+                forge.preflight_operation(&ForgeAction::PreflightProposeAdr, cx),
+                Some(Operation::ResolvePreflight(_, _, PreflightAction::ProposeAdr))
+            ));
+
+            // Adjusting goes back to the discussion with the conflict in the composer.
+            forge.section = ForgeSection::Triage;
+            assert!(matches!(
+                forge.preflight_operation(&ForgeAction::PreflightAdjust, cx),
+                Some(Operation::ResolvePreflight(_, _, PreflightAction::Adjust))
+            ));
+            assert_eq!(forge.section, ForgeSection::Incubation);
+            let draft = forge.message.read(cx).value().to_owned();
+            assert!(draft.contains("knowledge/obsidian/decisions/a-native.md"));
+            assert!(draft.contains("Electron helper process"));
+
+            // A dismissal releases the approval; an advisory finding never held it.
+            forge.snapshot.preflight[0].resolution = PreflightResolution::Dismissed;
+            assert!(forge.preflight_block(&f).is_none());
+            forge.snapshot.preflight[0].resolution = PreflightResolution::None;
+            forge.snapshot.preflight[0].blocking = 0;
+            assert!(forge.preflight_block(&f).is_none());
+
+            // A finding of an earlier revision blocks until the new one is triaged,
+            // and its decisions cannot be applied to the new revision.
+            forge.snapshot.features[0].revision = 2;
+            forge.snapshot.preflight = vec![blocking_finding("feature", 1)];
+            let f = forge.snapshot.features[0].clone();
+            assert!(forge.preflight_block(&f).unwrap().contains("earlier revision"));
+            assert!(forge.preflight_operation(&ForgeAction::PreflightProposeAdr, cx).is_none());
+        });
     }
 }

@@ -22,12 +22,16 @@ use serde::{Deserialize, Serialize};
 use super::line_diff::{self, LineDiff};
 use super::recipes::StagePayloadRecord;
 use super::review_policy::{self, PolicyFileState, ResolvedPolicy};
+use super::risk::{self, RiskAssessment, RiskCheckSelection, RiskPolicyV1};
 use super::{
     AnchorBindingV1, CompletedPayloadV1, CoverageKind, EditOperationV1, Handle, Stage,
     UnitModelResponseV1, Verdict,
 };
 
-pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
+/// Version 2 (ADR-034 M3) adds the risk assessment, the checks the level
+/// requires and the digest of the `REVIEW.md` captured at Intake. Version 1
+/// manifests still read: the added fields are optional.
+pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
 pub const TOOL_SCOPE_HOST_CONTEXT_ONLY: &str = "host_context_only";
 pub const MAX_DIFF_CHARS_PER_FILE: usize = 8_000;
 pub const MAX_DIFF_CHARS_TOTAL: usize = 32_000;
@@ -109,6 +113,10 @@ pub enum GapCode {
     OrphanedPublication,
     ReviewPolicyInvalid,
     ReviewPolicyOverBudget,
+    /// A guide the reviewed paths need was left out of the Intake capture.
+    ReviewPolicyNotCaptured,
+    /// The risk level requires a check no profile provides (ADR-034 M3).
+    RiskCheckMissing,
 }
 
 impl GapCode {
@@ -127,6 +135,8 @@ impl GapCode {
             Self::OrphanedPublication => "orphaned_publication",
             Self::ReviewPolicyInvalid => "review_policy_invalid",
             Self::ReviewPolicyOverBudget => "review_policy_over_budget",
+            Self::ReviewPolicyNotCaptured => "review_policy_not_captured",
+            Self::RiskCheckMissing => "risk_check_missing",
         }
     }
 
@@ -550,6 +560,15 @@ pub struct ReviewInputManifestV1 {
     pub gaps: Vec<EvidenceGap>,
     pub author_claims: usize,
     pub limits: ManifestLimits,
+    /// ADR-034 M3: the risk level the host assessed for this review.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk: Option<RiskAssessment>,
+    /// ADR-034 M3: the checks that level requires and the ones nobody provides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_selection: Option<RiskCheckSelection>,
+    /// ADR-034 M3: digest of the `REVIEW.md` capture taken at Intake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_policy_snapshot_sha256: Option<String>,
 }
 
 impl ReviewInputManifestV1 {
@@ -589,11 +608,24 @@ pub struct ReviewFacts {
     pub policy: Option<ResolvedPolicy>,
     pub claims: Vec<AuthorClaim>,
     pub criteria: CriterionMap,
+    /// ADR-034 M3: risk scrutiny of this review, when the host assessed it.
+    pub risk: Option<RiskReview>,
+    /// ADR-034 M3: digest of the `REVIEW.md` capture taken at Intake.
+    pub review_policy_snapshot_sha256: Option<String>,
+}
+
+/// The risk level of a review and what it requires (ADR-034 M3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RiskReview {
+    pub assessment: RiskAssessment,
+    pub selection: RiskCheckSelection,
+    pub policy: RiskPolicyV1,
 }
 
 /// Rendered, already-sanitized prompt sections.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReviewSections {
+    pub risk: Option<String>,
     pub policy: Option<String>,
     pub host_evidence: String,
     pub gaps: Option<String>,
@@ -639,7 +671,22 @@ pub fn build(
     let mut candidates = Vec::new();
     let mut changes = String::new();
     let mut diff_chars = 0usize;
-    for fact in &facts.candidates {
+    // ADR-034 M3: sensitive files take the diff budget first.
+    let ordered = match &facts.risk {
+        Some(risk) => {
+            let paths = facts
+                .candidates
+                .iter()
+                .map(|fact| fact.path.clone())
+                .collect::<Vec<_>>();
+            risk::diff_priority(&paths, &risk.policy)
+                .into_iter()
+                .filter_map(|path| facts.candidates.iter().find(|fact| fact.path == path))
+                .collect::<Vec<_>>()
+        }
+        None => facts.candidates.iter().collect(),
+    };
+    for fact in ordered {
         let binding = match &fact.live_sha256 {
             None => Binding::Unreadable,
             Some(live) if live == &fact.published_sha256 => Binding::Fresh,
@@ -812,6 +859,18 @@ pub fn build(
             )),
         }
     }
+    if let Some(risk) = &facts.risk {
+        for missing in &risk.selection.missing {
+            gaps.push(EvidenceGap::global(
+                GapCode::RiskCheckMissing,
+                format!(
+                    "The {} risk level requires {} that no validation profile provides.",
+                    risk_level_name(risk.assessment.level),
+                    missing.label()
+                ),
+            ));
+        }
+    }
     // Affected criteria: every criterion mapped to a gapped path or check.
     for gap in &mut gaps {
         let mut affected = BTreeSet::new();
@@ -838,6 +897,7 @@ pub fn build(
     gaps.dedup();
 
     let sections = ReviewSections {
+        risk: facts.risk.as_ref().map(render_risk),
         policy: render_policy(&policy, sanitize),
         host_evidence: render_host_evidence(&facts.host),
         gaps: render_gaps(&gaps),
@@ -866,6 +926,9 @@ pub fn build(
             claim_chars: MAX_CLAIM_CHARS,
             claims_chars_total: MAX_CLAIMS_CHARS_TOTAL,
         },
+        risk: facts.risk.as_ref().map(|risk| risk.assessment.clone()),
+        risk_selection: facts.risk.as_ref().map(|risk| risk.selection.clone()),
+        review_policy_snapshot_sha256: facts.review_policy_snapshot_sha256.clone(),
     };
     let manifest_sha256 = super::canonical_sha256(&manifest, &[])
         .map(|sha| sha.as_str().to_owned())
@@ -881,6 +944,55 @@ pub fn build(
         sections,
         criteria: facts.criteria,
     }
+}
+
+pub(crate) const fn risk_level_name(level: super::Risk) -> &'static str {
+    match level {
+        super::Risk::Low => "low",
+        super::Risk::Medium => "medium",
+        super::Risk::High => "high",
+        super::Risk::Unknown => "unknown",
+    }
+}
+
+/// The host's risk assessment for the reviewer: level, reasons and the
+/// checks it made required. Facts only; it never waives anything.
+fn render_risk(risk: &RiskReview) -> String {
+    let assessment = &risk.assessment;
+    let mut text = format!(
+        "The host assessed this change as **{}** risk (policy v{}). The level adds scrutiny and never waives a criterion, check or checkpoint.\n",
+        risk_level_name(assessment.level),
+        assessment.policy_version
+    );
+    if !assessment.reasons.is_empty() {
+        text.push_str("\nReasons:\n");
+        for reason in &assessment.reasons {
+            let signal = match reason.signal {
+                risk::RiskSignal::IntakeTask => "Intake risk of task",
+                risk::RiskSignal::NoteRisk => "note risk",
+                risk::RiskSignal::SensitivePath => "sensitive path",
+                risk::RiskSignal::InterfaceChange => "changed interface",
+                risk::RiskSignal::ChangeSize => "change size",
+            };
+            let _ = writeln!(
+                text,
+                "- {signal} `{}` ({})",
+                reason.subject,
+                risk_level_name(reason.level)
+            );
+        }
+    }
+    if !assessment.unknown_inputs.is_empty() {
+        let _ = writeln!(
+            text,
+            "\nUnknown inputs: {}.",
+            assessment.unknown_inputs.join(", ")
+        );
+    }
+    if matches!(assessment.level, super::Risk::High) {
+        text.push_str("\nGive sensitive files and changed interfaces extra scrutiny; a criterion that only your reading supports stays visible to the developer as model-only coverage.\n");
+    }
+    text
 }
 
 fn render_policy(
@@ -1423,5 +1535,125 @@ mod tests {
         assert!(text.contains("further claim(s) omitted"));
         assert!(text.chars().count() < MAX_CLAIMS_CHARS_TOTAL + 400);
         assert_eq!(clip(&"y".repeat(500), 400).chars().count(), 400);
+    }
+
+    fn risk_review(level: super::super::Risk, missing: Vec<risk::MissingRiskCheck>) -> RiskReview {
+        let policy = RiskPolicyV1::builtin();
+        RiskReview {
+            assessment: RiskAssessment {
+                level,
+                reasons: vec![risk::RiskReason {
+                    signal: risk::RiskSignal::SensitivePath,
+                    level,
+                    subject: "src/auth/login.rs".into(),
+                }],
+                unknown_inputs: vec!["intake:task_2".into()],
+                policy_version: policy.version,
+                policy_sha256: policy.sha256(),
+                project_policy_state: policy.project_state,
+            },
+            selection: RiskCheckSelection {
+                required: std::collections::BTreeSet::new(),
+                missing,
+            },
+            policy,
+        }
+    }
+
+    /// ADR-034 M3: sensitive files take the diff budget first, the level is
+    /// stated to the reviewer and a missing required check is a visible gap
+    /// that never changes a verdict.
+    #[test]
+    fn risk_orders_the_diff_and_reports_missing_checks_without_downgrading() {
+        // Six changed files whose diffs each fill the per-file budget: the
+        // first five exhaust the total, so path order leaves the last out.
+        let lines = |marker: &str| {
+            (0..200)
+                .map(|line| format!("{marker} {line:04} {}\n", "x".repeat(50)))
+                .collect::<String>()
+        };
+        let changed = |path: &str, id: &str| {
+            candidate(
+                path,
+                Some(&lines(&format!("old{id}"))),
+                &lines(&format!("new{id}")),
+                Some(&lines(&format!("new{id}"))),
+            )
+        };
+        let facts = || ReviewFacts {
+            candidates: vec![
+                changed("src/f1.rs", "1"),
+                changed("src/f2.rs", "2"),
+                changed("src/f3.rs", "3"),
+                changed("src/f4.rs", "4"),
+                changed("src/f5.rs", "5"),
+                changed("src/zz/auth_login.rs", "auth"),
+            ],
+            ..ReviewFacts::default()
+        };
+        // Without risk the budget goes in path order and leaves auth out.
+        let plain = build(facts(), &sanitize);
+        assert!(plain.sections.risk.is_none());
+        assert!(plain.manifest.risk.is_none());
+        let plain_changes = plain.sections.changes.as_deref().unwrap();
+        assert!(plain_changes.contains("-old1 0000"));
+        assert!(!plain_changes.contains("-oldauth 0000"), "{plain_changes}");
+
+        let mut risky = facts();
+        risky.risk = Some(risk_review(
+            super::super::Risk::High,
+            vec![risk::MissingRiskCheck::CheckKind("lint".into())],
+        ));
+        risky.review_policy_snapshot_sha256 = Some("capture".into());
+        let boundary = build(risky, &sanitize);
+        assert_eq!(boundary.manifest.candidates[0].path, "src/zz/auth_login.rs");
+        let changes = boundary.sections.changes.as_deref().unwrap();
+        assert!(
+            changes.contains("-oldauth 0000"),
+            "the sensitive diff is delivered first"
+        );
+        assert!(changes.find("auth_login.rs") < changes.find("`src/f1.rs`"));
+        let section = boundary.sections.risk.as_deref().unwrap();
+        assert!(section.contains("**high** risk"));
+        assert!(section.contains("sensitive path `src/auth/login.rs` (high)"));
+        assert!(section.contains("Unknown inputs: intake:task_2."));
+        assert!(section.contains("never waives"));
+        let missing = boundary
+            .manifest
+            .gaps
+            .iter()
+            .find(|gap| gap.code == GapCode::RiskCheckMissing)
+            .unwrap();
+        assert!(missing.subject.contains("a `lint` check"));
+        assert!(
+            !missing.limits_verdicts(),
+            "a missing check never changes a verdict"
+        );
+        assert_eq!(boundary.manifest.schema_version, 2);
+        assert_eq!(
+            boundary.manifest.review_policy_snapshot_sha256.as_deref(),
+            Some("capture")
+        );
+        assert_eq!(
+            boundary.manifest.risk.as_ref().unwrap().level,
+            super::super::Risk::High
+        );
+        let mut answer = response(&[("crit_1_1", Verdict::Supported, &[])]);
+        assert!(normalize_for_gaps(&mut answer, &boundary, &|_| None).is_empty());
+        assert_eq!(verdicts(&answer), [Verdict::Supported]);
+    }
+
+    /// A manifest recorded before ADR-034 has no risk fields and still reads.
+    #[test]
+    fn a_version_one_manifest_still_reads() {
+        let boundary = build(ReviewFacts::default(), &sanitize);
+        let mut value = serde_json::to_value(&boundary.manifest).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.insert("schemaVersion".into(), 1.into());
+        assert!(object.get("risk").is_none());
+        let earlier: ReviewInputManifestV1 = serde_json::from_value(value).unwrap();
+        assert_eq!(earlier.schema_version, 1);
+        assert!(earlier.risk.is_none() && earlier.risk_selection.is_none());
+        assert!(earlier.review_policy_snapshot_sha256.is_none());
     }
 }

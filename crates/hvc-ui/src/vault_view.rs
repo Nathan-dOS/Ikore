@@ -299,6 +299,10 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
                     })),
             )
         })
+        .when_some(
+            crate::doc_drift_view::drift_card(model, cx),
+            |panel, card| panel.child(card),
+        )
         .when(!broken_file_references.is_empty(), |panel| {
             panel.child(
                 div()
@@ -349,6 +353,11 @@ pub(crate) fn vault_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyEl
 
     // Files | (graph | inspector): the same resizable columns Workspace and Forge use. Expanding
     // the graph drops both side columns and their sashes instead of squeezing them.
+    // ADR-034 M5: a note's reconciliation takes the graph's column.
+    let graph_panel = match crate::doc_drift_view::comparison(model, cx) {
+        Some(comparison) => comparison,
+        None => graph_panel,
+    };
     let columns = if graph_expanded {
         graph_panel
     } else {
