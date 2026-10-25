@@ -86,7 +86,7 @@ request and push to `main`:
 | Workflow | Checks |
 |---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | `fmt`, `clippy (windows)`, `unit (windows)`, `integration (windows)` and `linux headless (docker)`, which stays informational until Linux passes |
-| [`nightly.yml`](.github/workflows/nightly.yml) | Complete Stage 7 gate: daily, on demand, and on pushes that change `Cargo.lock`, `third_party/` or `scripts/` |
+| [`nightly.yml`](.github/workflows/nightly.yml) | Complete Stage 7 gate: on demand and on pushes to `main` that change `Cargo.lock`, `third_party/` or `scripts/` |
 | [`security.yml`](.github/workflows/security.yml) | `cargo audit` and the license and source audit, on dependency changes and weekly |
 
 CI uses the same aliases and commands; to reproduce a failure, run the job's

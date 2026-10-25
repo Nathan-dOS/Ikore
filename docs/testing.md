@@ -109,9 +109,11 @@ for evidence and the meaning of historical design references.
 `main`: `fmt`, then `clippy`, `unit` and `integration` on `windows-latest`, plus
 the Docker job `linux headless (docker)`, which stays informational until the
 Linux failures are fixed. [`nightly.yml`](../.github/workflows/nightly.yml) runs
-the complete Stage 7 gate, and [`security.yml`](../.github/workflows/security.yml)
-runs `cargo audit` and the license and source audit. The jobs call the same
-aliases as local runs, with no retries.
+the complete Stage 7 gate on demand and on pushes to `main` that change
+`Cargo.lock`, `third_party/` or `scripts/`; it has no daily schedule because a run
+costs about two hours of Windows minutes. [`security.yml`](../.github/workflows/security.yml)
+runs `cargo audit` and the license and source audit, including a weekly run. The
+jobs call the same aliases as local runs, with no retries.
 
 ## Secret sanitization qualification
 
