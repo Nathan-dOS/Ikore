@@ -12,6 +12,7 @@ mod choices;
 mod cli_connections;
 mod composition_ui;
 mod context_rail;
+mod convergence_view;
 mod errors;
 mod fading_title;
 mod failure_checkpoint;

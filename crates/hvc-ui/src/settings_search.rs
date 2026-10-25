@@ -606,6 +606,14 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         "visualizer brief review notes agent",
     ),
     entry(
+        "composition-revision-rounds",
+        P::Composition,
+        "Revision rounds",
+        "Rounds before a decision",
+        "After this many Request revision rounds in a pulsation, each further revision needs an explicit decision: continue with a reason or replan from the Specification. Technical retries are not counted.",
+        "threshold revision rounds convergence replan",
+    ),
+    entry(
         "composition-checks",
         P::Composition,
         "Host validation",

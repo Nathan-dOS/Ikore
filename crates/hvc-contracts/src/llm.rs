@@ -151,4 +151,19 @@ pub struct UnitDispatch {
     pub frozen_transport: String,
     pub frozen_backend: Option<String>,
     pub frozen_model: String,
+    /// What a CLI worker may read beyond its prompt (ADR-032).
+    #[serde(default)]
+    pub context_scope: UnitContextScope,
+}
+
+/// The files a composed CLI worker may read with its own tools.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnitContextScope {
+    /// A sanitized snapshot of the project workspace.
+    #[default]
+    Workspace,
+    /// Nothing: the worker runs in an empty directory and reads only the
+    /// host-selected context in its prompt.
+    HostContextOnly,
 }

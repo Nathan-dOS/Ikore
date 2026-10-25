@@ -5939,3 +5939,215 @@ fn the_shortcut_menus_offer_every_modifier_set_and_f1_to_f10(cx: &mut TestAppCon
         assert!(m.voice_choices("settings-context-strategy").is_none());
     });
 }
+
+/// Parks the Integrator brief on the Review tab with the reviewer's recorded
+/// inputs and the round count read with it (ADR-032).
+fn open_integrator_review(
+    cx: &mut TestAppContext,
+    inputs: hvc_core::orchestration::composition::review_boundary::CheckpointReviewInputs,
+    convergence: Option<hvc_core::persistence_service::ConvergenceStatus>,
+    with_brief: bool,
+) -> (Entity<AppModel>, &mut VisualTestContext) {
+    use hvc_core::persistence_service::{HitlCheckpoint, HitlReviewDocument};
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    visual.update(|_, cx| crate::hitl::register_hitl_keybindings(cx));
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            state.pulsations[0].status = PulsationStatus::Checkpoint;
+            let pulse = state.pulsations[0].clone();
+            let checkpoint = HitlCheckpoint {
+                pulsation_id: pulse.id.clone(),
+                checkpoint_id: "integrator-checkpoint".into(),
+                state_version: 1,
+            };
+            state.hitl.load_checkpoint(Some(&pulse), Some(checkpoint));
+            let (generation, checkpoint) = state.hitl.begin_documents().unwrap();
+            state.hitl.finish_documents(
+                generation,
+                &checkpoint,
+                Ok(vec![HitlReviewDocument {
+                    artifact_id: "integration-report".into(),
+                    name: "integration report".into(),
+                    kind: "integration_report".into(),
+                    relative_path: None,
+                    content: "# Integration report\n".into(),
+                }]),
+            );
+            state.hitl.finish_brief(
+                generation,
+                &checkpoint,
+                Ok(with_brief.then(integrator_brief)),
+            );
+            assert!(state.hitl.finish_review_context(
+                generation,
+                &checkpoint,
+                Ok(Some(inputs)),
+                Ok(convergence),
+            ));
+            state.detail_section = PulsationDetailSection::Review;
+        });
+    });
+    (model, visual)
+}
+
+fn recorded_review_inputs()
+-> hvc_core::orchestration::composition::review_boundary::CheckpointReviewInputs {
+    let manifest = serde_json::from_value(serde_json::json!({
+        "schemaVersion": 1,
+        "toolScope": "host_context_only",
+        "sanitizationPolicy": "hvc-secret-projection-v1",
+        "sources": [
+            {"path": "crates/hvc-core/src/usage/export.rs", "class": "candidate",
+             "origin": {"kind": "stage_artifact", "stage": "code", "artifactKind": "code"},
+             "sha256": "a", "delivered": true, "owned": false},
+            {"path": "knowledge/obsidian/features/usage-export-to-csv.md", "class": "stage_document",
+             "origin": {"kind": "stage_artifact", "stage": "specification", "artifactKind": "specification"},
+             "sha256": "b", "delivered": false, "owned": false}
+        ],
+        "candidates": [
+            {"path": "crates/hvc-core/src/usage/export.rs", "base": "present", "baseSha256": "c",
+             "publishedSha256": "a", "liveSha256": "d", "binding": "changed_outside_pipeline", "diff": "included"},
+            {"path": "crates/hvc-core/tests/usage_export_header_only_test_with_a_long_name.rs", "base": "absent",
+             "publishedSha256": "e", "liveSha256": "e", "binding": "fresh", "diff": "created"}
+        ],
+        "checks": [],
+        "policy": {"state": "loaded", "files": [
+            {"path": "REVIEW.md", "state": "loaded", "sha256": "0123456789abcdef", "bytes": 120}
+        ]},
+        "gaps": [
+            {"code": "candidate_changed_outside_pipeline",
+             "subject": "`crates/hvc-core/src/usage/export.rs` changed after this pulsation published it; checks and earlier stages saw other bytes.",
+             "scope": {"kind": "paths", "items": ["crates/hvc-core/src/usage/export.rs"]},
+             "affectedCriteria": ["crit_1_1"]}
+        ],
+        "authorClaims": 3,
+        "limits": {"diffCharsPerFile": 8000, "diffCharsTotal": 32000, "claimChars": 400, "claimsCharsTotal": 8000}
+    }))
+    .unwrap();
+    hvc_core::orchestration::composition::review_boundary::CheckpointReviewInputs::Recorded {
+        manifest,
+        changed_policy_files: vec!["REVIEW.md".into()],
+    }
+}
+
+#[gpui::test]
+fn the_integrator_brief_leads_with_the_reviewer_inputs_and_requires_a_decision_beyond_the_threshold(
+    cx: &mut TestAppContext,
+) {
+    let convergence = hvc_core::persistence_service::ConvergenceStatus {
+        applies: true,
+        input_revision: 1,
+        threshold: 3,
+        rounds: 3,
+        technical_attempts: 9,
+        ..Default::default()
+    };
+    let (model, visual) =
+        open_integrator_review(cx, recorded_review_inputs(), Some(convergence), true);
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let inputs = visual.debug_bounds("review-inputs").unwrap();
+        let brief = visual.debug_bounds("review-brief").unwrap();
+        assert!(
+            inputs.left() >= reader.left() && inputs.right() <= reader.right() + px(1.0),
+            "the inputs card overflows at {width}: {inputs:?} vs {reader:?}"
+        );
+        assert!(
+            inputs.bottom() <= brief.top(),
+            "the inputs card leads the brief"
+        );
+        for head in [
+            "review-inputs-policy",
+            "review-inputs-candidate-0",
+            "review-inputs-gap-0",
+        ] {
+            let bounds = visual
+                .debug_bounds(head)
+                .unwrap_or_else(|| panic!("missing {head} at {width}"));
+            assert!(bounds.size.height <= px(64.0), "{head} is {bounds:?}");
+        }
+        let actions = visual.debug_bounds("review-decision-bar").unwrap();
+        let rounds = visual.debug_bounds("convergence-rounds").unwrap();
+        assert!(
+            rounds.bottom() <= actions.top() + px(1.0)
+                && rounds.left() >= actions.left()
+                && rounds.right() <= actions.right(),
+            "the round line {rounds:?} sits above the bar {actions:?} at {width}"
+        );
+        for action in [
+            "hitl-approve",
+            "hitl-continue-revision",
+            "hitl-replan",
+            "hitl-reject",
+        ] {
+            let bounds = visual
+                .debug_bounds(action)
+                .unwrap_or_else(|| panic!("missing {action} at {width}"));
+            assert!(
+                bounds.left() >= actions.left() && bounds.right() <= actions.right(),
+                "{action} {bounds:?} leaves the bar {actions:?} at {width}"
+            );
+            assert!(bounds.bottom() <= px(height));
+        }
+    }
+    assert!(
+        visual.debug_bounds("hitl-revision").is_none(),
+        "beyond the threshold the plain revision is gone"
+    );
+    // The keyboard's plain revision explains the choice instead of sending.
+    model.update(visual, |model, cx| {
+        model.apply_hitl_decision(
+            hvc_core::persistence_service::HitlDecision::RequestRevision,
+            cx,
+        )
+    });
+    model.read_with(visual, |model, cx| {
+        let hitl = &model.pulsations.read(cx).hitl;
+        assert!(!hitl.busy);
+        assert!(hitl.show_feedback);
+        assert!(
+            hitl.error
+                .as_deref()
+                .is_some_and(|error| error.contains("revision-round threshold")),
+            "{:?}",
+            hitl.error
+        );
+    });
+    // Continue without a reason asks for one and sends nothing.
+    click(visual, "hitl-continue-revision");
+    model.read_with(visual, |model, cx| {
+        let hitl = &model.pulsations.read(cx).hitl;
+        assert!(!hitl.busy);
+        assert!(
+            hitl.error
+                .as_deref()
+                .is_some_and(|error| error.contains("needs a reason")),
+            "{:?}",
+            hitl.error
+        );
+    });
+}
+
+#[gpui::test]
+fn a_legacy_integrator_review_says_the_policy_does_not_apply(cx: &mut TestAppContext) {
+    let (model, visual) = open_integrator_review(
+        cx,
+        hvc_core::orchestration::composition::review_boundary::CheckpointReviewInputs::LegacyPipeline,
+        None,
+        false,
+    );
+    visual.simulate_resize(size(px(960.0), px(640.0)));
+    select(&model, visual, AppView::Pulsations);
+    let notice = visual.debug_bounds("review-inputs-legacy").unwrap();
+    let reader = visual.debug_bounds("review-document-reader").unwrap();
+    assert!(
+        notice.bottom() <= reader.top(),
+        "the notice stands above the documents"
+    );
+    assert!(notice.size.height <= px(48.0), "{notice:?}");
+    assert!(visual.debug_bounds("review-inputs").is_none());
+    assert!(visual.debug_bounds("convergence-rounds").is_none());
+    assert!(visual.debug_bounds("hitl-revision").is_some());
+}

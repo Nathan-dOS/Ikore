@@ -52,6 +52,12 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
     let revision_label = selected_target
         .map(|stage| format!("Request revision to {stage:?}"))
         .unwrap_or_else(|| "Request revision".to_string());
+    // ADR-032: a failure-path revision is a human round too.
+    let beyond_threshold = failure.beyond_threshold();
+    let round_line = failure
+        .convergence
+        .as_ref()
+        .and_then(crate::convergence_view::round_line);
 
     div()
         .size_full()
@@ -234,6 +240,9 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                     .child(crate::sizing::text_area(model.stage_feedback_input.clone())),
             )
         })
+        .when_some(round_line, |panel, line| {
+            panel.child(div().flex_shrink_0().min_w_0().px_3().pt_2().child(line))
+        })
         .child(
             div()
                 .debug_selector(|| "failure-decision-bar".into())
@@ -258,7 +267,7 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                         },
                     ))
                 })
-                .when(allow_revision, |bar| {
+                .when(allow_revision && !beyond_threshold, |bar| {
                     bar.child(crate::widgets::btn(
                         "failure-revision",
                         revision_label.clone(),
@@ -268,6 +277,11 @@ fn failure_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
                         |model, cx| {
                             model.resolve_stage_failure(StageFailureDecision::RequestRevision, cx);
                         },
+                    ))
+                })
+                .when(allow_revision && beyond_threshold, |bar| {
+                    bar.children(crate::convergence_view::threshold_buttons(
+                        can_decide, true, cx,
                     ))
                 })
                 .when(allow_revision, |bar| {
@@ -450,6 +464,11 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         )
     });
     let visualization = hitl.visualization.clone();
+    // ADR-032: what the Integrator reviewed, the legacy notice, and the
+    // revision rounds with the decision required beyond the threshold.
+    let review_inputs = hitl.review_inputs.clone();
+    let convergence = hitl.convergence.clone();
+    let beyond_threshold = hitl.beyond_threshold();
     let (confirmed, flagged, open) = hitl.mark_counts();
     let has_marks = has_brief_tab && !hitl.marks.is_empty();
     let active_document = documents.get(selected).cloned().filter(|_| !showing_brief);
@@ -486,6 +505,20 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         (None, Some(error)) => crate::review_brief_view::brief_error_panel(&error),
         (None, None) => crate::review_brief_view::brief_error_panel("No brief was produced."),
     });
+    // The record of the reviewer's inputs leads the Integrator's brief; the
+    // legacy notice stands above the documents, which have no brief.
+    use hvc_core::orchestration::composition::review_boundary::CheckpointReviewInputs;
+    let legacy_notice = review_inputs
+        .as_ref()
+        .filter(|inputs| matches!(inputs, CheckpointReviewInputs::LegacyPipeline))
+        .map(crate::review_brief_view::review_inputs_panel);
+    let review_inputs_content = review_inputs
+        .as_ref()
+        .filter(|inputs| showing_brief && matches!(inputs, CheckpointReviewInputs::Recorded { .. }))
+        .map(crate::review_brief_view::review_inputs_panel);
+    let round_line = convergence
+        .as_ref()
+        .and_then(crate::convergence_view::round_line);
 
     div()
         .size_full()
@@ -763,6 +796,9 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         })
         .when(protected_view, |panel| panel.child(div().px_3().py_2().text_xs().text_color(theme::warning())
             .child("Sanitized review view: protected regions are masked. Approval still refers to the original candidate; local file bytes are preserved.")))
+        .when_some(legacy_notice, |panel, notice| {
+            panel.child(div().flex_shrink_0().px_3().py_2().child(notice))
+        })
         .child(
             div()
                 .id(reader_id)
@@ -777,6 +813,9 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                 })
                 .when(loading, |reader| {
                     reader.child("Loading complete checkpoint documents…")
+                })
+                .when_some(review_inputs_content, |reader, content| {
+                    reader.child(div().pb_4().child(content))
                 })
                 .when_some(brief_content, |reader, content| reader.child(content))
                 .when_some(load_error, |reader, error| {
@@ -846,6 +885,9 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                     .child(crate::sizing::text_area(model.stage_feedback_input.clone())),
             )
         })
+        .when_some(round_line, |panel, line| {
+            panel.child(div().flex_shrink_0().min_w_0().px_3().pt_2().child(line))
+        })
         .child(
             div()
                 .debug_selector(|| "review-decision-bar".into())
@@ -881,18 +923,25 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                     flagged == 0,
                     cx,
                 ))
-                .child(hitl_button(
-                    "hitl-revision",
-                    match flagged {
-                        0 => "Request revision".to_owned(),
-                        1 => "Request revision · 1 flag".to_owned(),
-                        count => format!("Request revision · {count} flags"),
-                    },
-                    can_decide,
-                    HitlDecision::RequestRevision,
-                    flagged > 0,
-                    cx,
-                ))
+                .when(!beyond_threshold, |bar| {
+                    bar.child(hitl_button(
+                        "hitl-revision",
+                        match flagged {
+                            0 => "Request revision".to_owned(),
+                            1 => "Request revision · 1 flag".to_owned(),
+                            count => format!("Request revision · {count} flags"),
+                        },
+                        can_decide,
+                        HitlDecision::RequestRevision,
+                        flagged > 0,
+                        cx,
+                    ))
+                })
+                .when(beyond_threshold, |bar| {
+                    bar.children(crate::convergence_view::threshold_buttons(
+                        can_decide, false, cx,
+                    ))
+                })
                 .when(has_checkpoint, |bar| {
                     bar.child(
                         div()

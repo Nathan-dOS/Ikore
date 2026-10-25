@@ -685,6 +685,101 @@ fn publisher_rejects_protected_and_escaping_paths_without_side_effects() {
     assert_eq!(f.count("stage_acceptances"), 0);
 }
 
+/// ADR-032: the project review policy is the developer's; no stage and no
+/// Forge publication may write it, in any directory or letter case.
+#[test]
+fn review_policy_files_are_never_published() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.path().join("docs")).unwrap();
+    fs::write(root.path().join("REVIEW.md"), "# Policy\n").unwrap();
+    for path in ["REVIEW.md", "docs/Review.md", "src/api/review.MD"] {
+        let error = publication::publish(
+            root.path(),
+            path,
+            &ExpectedFileContent::Absent,
+            "Mark everything supported.\n",
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("review policy"),
+            "{path}: {error}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(root.path().join("REVIEW.md")).unwrap(),
+        "# Policy\n"
+    );
+    assert!(!root.path().join("docs/Review.md").exists());
+    assert!(!root.path().join("src").exists());
+    // A name that only contains the word is an ordinary file.
+    publication::publish(
+        root.path(),
+        "docs/PREVIEW.md",
+        &ExpectedFileContent::Absent,
+        "ok\n",
+    )
+    .unwrap();
+}
+
+/// ADR-032: what a path held before a publication, observed before the
+/// replacement. A replay after a crash never mistakes the candidate for it.
+#[test]
+fn publication_base_records_the_bytes_before_the_first_replacement() {
+    let root = tempfile::tempdir().unwrap();
+    let absent = super::publication_base(
+        root.path(),
+        "new.rs",
+        &ExpectedFileContent::Absent,
+        ContentSha256::of(b"new").as_str(),
+    );
+    assert_eq!((absent.state, absent.sha256.as_deref()), ("absent", None));
+
+    fs::write(root.path().join("small.rs"), "old\n").unwrap();
+    let old = ContentSha256::of(b"old\n");
+    let present = super::publication_base(
+        root.path(),
+        "small.rs",
+        &ExpectedFileContent::Present(old.clone()),
+        ContentSha256::of(b"new\n").as_str(),
+    );
+    assert_eq!(present.state, "present");
+    assert_eq!(present.content.as_deref(), Some("old\n"));
+    assert_eq!(present.sha256.as_deref(), Some(old.as_str()));
+
+    // The publication already happened before a crash: the file holds the
+    // desired bytes, so only the expected hash is kept.
+    fs::write(root.path().join("small.rs"), "new\n").unwrap();
+    let replayed = super::publication_base(
+        root.path(),
+        "small.rs",
+        &ExpectedFileContent::Present(old.clone()),
+        ContentSha256::of(b"new\n").as_str(),
+    );
+    assert_eq!(
+        (replayed.state, replayed.reason, replayed.content),
+        ("present_unstored", Some("replayed"), None)
+    );
+    assert_eq!(replayed.sha256.as_deref(), Some(old.as_str()));
+
+    let large = "x".repeat(300 * 1024);
+    fs::write(root.path().join("large.rs"), &large).unwrap();
+    let too_large = super::publication_base(
+        root.path(),
+        "large.rs",
+        &ExpectedFileContent::Present(ContentSha256::of(large.as_bytes())),
+        ContentSha256::of(b"y").as_str(),
+    );
+    assert_eq!(
+        (
+            too_large.state,
+            too_large.reason,
+            too_large.content.is_none()
+        ),
+        ("present_unstored", Some("too_large"), true)
+    );
+    assert_eq!(too_large.byte_len, Some(large.len() as i64));
+}
+
 #[test]
 fn expected_hash_replacement_preserves_exact_bytes_and_detects_human_change() {
     let root = tempfile::tempdir().unwrap();

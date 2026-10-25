@@ -27,6 +27,10 @@ use crate::orchestration::composition::projection::{
 };
 use crate::orchestration::composition::recipes::{self, SourceFile, StageInputs, StagePreparation};
 use crate::orchestration::composition::references::ReferenceTable;
+use crate::orchestration::composition::review_boundary::{
+    self, CandidateFact, EvidenceClass, EvidenceGap, Freshness, GapCode, HostCheckRow,
+    HostEvidence, ManifestSource, ReviewBoundary, ReviewFacts, SourceOrigin,
+};
 use crate::orchestration::composition::schema::{
     RESPONSE_SCHEMA_NAME, SchemaFlavor, executor_response_schema,
 };
@@ -53,6 +57,25 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use super::composition_persistence::{
     AttemptRow, EffectiveProfile, ExecutionRow, UnitRow, composition_invalid,
 };
+
+/// What `collect_stage_inputs` could and could not read, for the
+/// Integrator's evidence boundary (ADR-032).
+#[derive(Debug, Default)]
+struct SourceReads {
+    workspace_available: bool,
+    /// Brief sources the workspace no longer serves.
+    unreadable: Vec<String>,
+    /// Every accepted artifact with a path: what was published and what the
+    /// workspace holds now.
+    artifacts: Vec<ArtifactRead>,
+}
+
+#[derive(Debug)]
+struct ArtifactRead {
+    path: String,
+    published_sha256: String,
+    live_sha256: Option<String>,
+}
 
 /// Why a work unit did not reach `validated`.
 enum UnitOutcome {
@@ -479,7 +502,8 @@ impl PersistenceService {
             &project.id,
             comp::Stage::from_pulsation(stage),
         )?;
-        let mut inputs = Self::collect_stage_inputs(root, current, &handoff, &artifact_paths)?;
+        let (mut inputs, reads) =
+            Self::collect_stage_inputs(root, current, &handoff, &artifact_paths)?;
         inputs.checks = profiles
             .iter()
             .map(|profile| profile.check_ref.clone())
@@ -526,18 +550,38 @@ impl PersistenceService {
         let promoted_checks = recipes::promoted_check_refs(&inputs);
         // Integrator: deterministic pre-checks first; the single reviewer
         // call addresses only what they leave open (recipes §Integrator).
+        // ADR-032: the reviewer gets host-selected context only, and its
+        // inputs arrive classified, with the gaps the host found.
         let host_findings = if comp_stage == comp::Stage::Integrator {
-            let findings = self.integrator_prechecks(&current.id, &inputs, root)?;
-            if !findings.is_empty() {
-                let mut extra = preparation.extra_instructions.take().unwrap_or_default();
-                extra.push_str("\n## Host pre-checks\n\nThe host verified these deterministically; address only what they leave open and never contradict them. They describe checks of earlier stages by name for context only: cite no check handle that is not listed under Host checks.\n");
-                for finding in &findings {
-                    extra.push_str("- ");
-                    extra.push_str(finding);
-                    extra.push('\n');
-                }
-                preparation.extra_instructions = Some(extra);
+            if let Some(failure) =
+                self.integrator_transport_refusal(project, current, runtime_config)?
+            {
+                return self.park_without_execution(job, parent_run_id, stage, &failure);
             }
+            let input_revision = fence.input_revision.unwrap_or(1);
+            let Some(evidence) =
+                self.integrator_prechecks(&current.id, input_revision, &inputs, root, &reads)?
+            else {
+                let failure = classify_composition_error(&CompositionError::new(
+                    Invariant::Sc006,
+                    ErrorCode::HostContractError,
+                    "The Integrator has no accepted Code execution for the current input revision.",
+                ));
+                return self.park_without_execution(job, parent_run_id, stage, &failure);
+            };
+            let findings = evidence.findings.clone();
+            let boundary = self.review_boundary(
+                &current.id,
+                input_revision,
+                root,
+                &inputs,
+                &reads,
+                &preparation,
+                &sanitization,
+                &sanitization_policy,
+                evidence,
+            )?;
+            preparation.review = Some(std::sync::Arc::new(boundary));
             findings
         } else {
             Vec::new()
@@ -721,6 +765,7 @@ impl PersistenceService {
                 &execution.plan,
                 &unit.spec,
                 &dependency_digests(&unit.spec, &rows),
+                review_digest(preparation),
             );
             Self::accept_child(&tx, &fresh, None, &json, sha.as_str(), key.as_str(), None)?;
             tx.commit()?;
@@ -730,85 +775,343 @@ impl PersistenceService {
 
     /// Deterministic Integrator pre-checks (recipes §Integrator): every
     /// criterion represented in the accepted Code evidence and Test coverage,
-    /// and every required receipt of the accepted Code/Test executions still
-    /// passed and fresh against the current baseline. Findings go to the
-    /// reviewer's prompt and to the aggregate; the reviewer cannot pass a
-    /// check by summarizing a report.
+    /// and every required receipt of the accepted Code/Test executions of the
+    /// current input revision still passed and fresh against the current
+    /// workspace. Findings go to the aggregate; rows and gaps to the
+    /// reviewer's Host evidence (ADR-032). What the host cannot verify is an
+    /// explicit gap, never silently skipped. `None` when no Code execution of
+    /// this input revision was accepted: there is nothing to review.
     fn integrator_prechecks(
         &self,
         pulsation_id: &str,
+        input_revision: u64,
         inputs: &StageInputs,
         root: &Path,
-    ) -> Result<Vec<String>, PersistenceServiceError> {
-        let mut findings = recipes::criterion_representation_findings(inputs);
-        findings.extend(contracted_literal_findings(&inputs.sources));
-        findings.extend(unreachable_script_findings(&inputs.sources));
-        let db = self.connection()?;
-        let Some(data_dir) = self.database_path().parent().map(Path::to_path_buf) else {
-            return Ok(findings);
+        reads: &SourceReads,
+    ) -> Result<Option<HostEvidence>, PersistenceServiceError> {
+        let mut evidence = HostEvidence {
+            findings: recipes::criterion_representation_findings(inputs),
+            ..HostEvidence::default()
         };
-        let mut baseline: Option<Candidate> = None;
-        for stage in [PulsationStage::Code, PulsationStage::Test] {
-            let Some(execution) =
-                Self::latest_execution_for_pulsation(&db, pulsation_id, Some(stage))?
-            else {
+        evidence
+            .findings
+            .extend(contracted_literal_findings(&inputs.sources));
+        evidence
+            .findings
+            .extend(unreachable_script_findings(&inputs.sources));
+        if !reads.workspace_available {
+            evidence.gaps.push(EvidenceGap::global(
+                GapCode::WorkspaceUnavailable,
+                "The project workspace could not be opened; no live file or check freshness was verified.",
+            ));
+        }
+        for path in &reads.unreadable {
+            evidence.gaps.push(EvidenceGap::path(
+                GapCode::SourceUnreadable,
+                path,
+                format!("`{path}`, named by the batch brief, could not be read."),
+            ));
+        }
+        let db = self.connection()?;
+        let Some(code) =
+            Self::accepted_execution_for(&db, pulsation_id, PulsationStage::Code, input_revision)?
+        else {
+            return Ok(None);
+        };
+        let test =
+            Self::accepted_execution_for(&db, pulsation_id, PulsationStage::Test, input_revision)?;
+        let profiles = Self::validation_profiles_for(&db, &self.project_of(pulsation_id)?)?;
+        let data_dir = self.database_path().parent().map(Path::to_path_buf);
+        // The live workspace, materialized once for every freshness check.
+        let mut workspace: Option<Result<Candidate, String>> = None;
+        for (stage, execution) in [
+            (PulsationStage::Code, Some(code)),
+            (PulsationStage::Test, test),
+        ] {
+            let Some(execution) = execution else {
                 continue;
             };
-            if execution.status != ExecutionStatus::Accepted {
-                continue;
-            }
+            let receipts = Self::latest_validation_receipts(&db, &execution.id)?;
             for check in &execution.plan.check_refs {
-                let receipts = Self::latest_validation_receipts(&db, &execution.id)?;
                 let Some(receipt) = receipts.iter().find(|r| &r.check_ref == check) else {
-                    findings.push(format!(
+                    evidence.findings.push(format!(
                         "The {} check named {check} has no receipt (not run).",
                         stage.as_db_value()
                     ));
+                    evidence.gaps.push(EvidenceGap::check(
+                        GapCode::CheckNotRun,
+                        check,
+                        format!(
+                            "The {} check named {check} has no receipt (not run).",
+                            stage.as_db_value()
+                        ),
+                    ));
+                    evidence.rows.push(HostCheckRow {
+                        stage: comp::Stage::from_pulsation(stage),
+                        check_ref: check.clone(),
+                        status: "not_run".into(),
+                        freshness: Freshness::NotApplicable,
+                        reason: None,
+                        receipt_id: None,
+                        stdout_truncated: false,
+                        stderr_truncated: false,
+                        diagnostics: 0,
+                    });
                     continue;
                 };
+                let mut row = HostCheckRow {
+                    stage: comp::Stage::from_pulsation(stage),
+                    check_ref: check.clone(),
+                    status: receipt_status_label(receipt.status).to_owned(),
+                    freshness: Freshness::NotApplicable,
+                    reason: None,
+                    receipt_id: Some(receipt.receipt_id.as_str().to_owned()),
+                    stdout_truncated: receipt.stdout.truncated,
+                    stderr_truncated: receipt.stderr.truncated,
+                    diagnostics: receipt.diagnostics.len(),
+                };
                 if receipt.status != comp::ReceiptStatus::Passed {
-                    findings.push(format!(
+                    evidence.findings.push(format!(
                         "The {} check named {check} did not pass ({}).",
                         stage.as_db_value(),
                         receipt_status_label(receipt.status)
                     ));
+                    evidence.rows.push(row);
                     continue;
                 }
                 // Freshness: the inputs the receipt proves must be the
                 // inputs the workspace holds now.
-                let Some(profile) =
-                    Self::validation_profiles_for(&db, &self.project_of(pulsation_id)?)?
-                        .into_iter()
-                        .map(|(profile, _)| profile)
-                        .find(|profile| &profile.check_ref == check)
+                let unverifiable = |row: &mut HostCheckRow, reason: &str| {
+                    row.freshness = Freshness::Unverifiable;
+                    row.reason = Some(reason.to_owned());
+                    EvidenceGap::check(
+                        GapCode::CheckUnverifiable,
+                        check,
+                        format!(
+                            "The freshness of the {} check named {check} could not be verified: {reason}.",
+                            stage.as_db_value()
+                        ),
+                    )
+                };
+                let Some(profile) = profiles
+                    .iter()
+                    .map(|(profile, _)| profile)
+                    .find(|profile| &profile.check_ref == check)
                 else {
+                    let gap = unverifiable(&mut row, "its validation profile no longer exists");
+                    evidence.gaps.push(gap);
+                    evidence.rows.push(row);
                     continue;
                 };
-                let candidate = match &baseline {
-                    Some(candidate) => candidate,
-                    None => {
-                        let dir = data_dir
-                            .join("stage_candidates")
-                            .join(pulsation_id)
-                            .join("integrator");
-                        match materialize_candidate(root, &[], &dir) {
-                            Ok(candidate) => baseline.insert(candidate),
-                            Err(_) => continue,
+                let candidate = workspace.get_or_insert_with(|| {
+                    let dir = data_dir
+                        .as_ref()
+                        .ok_or_else(|| "no host data directory".to_owned())?
+                        .join("stage_candidates")
+                        .join(pulsation_id)
+                        .join("integrator");
+                    materialize_candidate(root, &[], &dir)
+                        .map_err(|_| "the workspace could not be materialized".to_owned())
+                });
+                match candidate {
+                    Err(reason) => {
+                        let gap = unverifiable(&mut row, reason.as_str());
+                        evidence.gaps.push(gap);
+                    }
+                    Ok(candidate) => {
+                        let current = candidate
+                            .input_manifest_sha256(&profile.input_globs)
+                            .map_err(|e| composition_invalid(&e))?;
+                        if current == receipt.input_manifest_sha256 {
+                            row.freshness = Freshness::Fresh;
+                        } else {
+                            row.freshness = Freshness::Stale;
+                            row.reason = Some("its inputs changed after the receipt".into());
+                            evidence.findings.push(format!(
+                                "The {} check named {check} is stale: its inputs changed after the receipt.",
+                                stage.as_db_value()
+                            ));
+                            evidence.gaps.push(EvidenceGap::check(
+                                GapCode::CheckStale,
+                                check,
+                                format!(
+                                    "The {} check named {check} is stale: its inputs changed after the receipt.",
+                                    stage.as_db_value()
+                                ),
+                            ));
                         }
                     }
-                };
-                let current = candidate
-                    .input_manifest_sha256(&profile.input_globs)
-                    .map_err(|e| composition_invalid(&e))?;
-                if current != receipt.input_manifest_sha256 {
-                    findings.push(format!(
-                        "The {} check named {check} is stale: its inputs changed after the receipt.",
-                        stage.as_db_value()
-                    ));
                 }
+                evidence.rows.push(row);
             }
         }
-        Ok(findings)
+        Ok(Some(evidence))
+    }
+
+    /// ADR-032: the composed Integrator reads host-selected context only. A
+    /// custom CLI adapter cannot be confined to it, so the stage parks before
+    /// any permit is spent and the developer picks an official adapter or
+    /// the API. A profile that does not resolve is left to admission.
+    fn integrator_transport_refusal(
+        &self,
+        project: &Project,
+        current: &Pulsation,
+        runtime_config: &AgentRuntimeConfig,
+    ) -> Result<Option<UnitFailure>, PersistenceServiceError> {
+        let db = self.connection()?;
+        let Ok(profile) = Self::resolve_effective_profile(
+            &db,
+            &project.id,
+            &current.id,
+            AgentRole::for_stage(PulsationStage::Integrator.as_db_value()),
+            ExecutorKind::IntegrationReviewer,
+            runtime_config,
+        ) else {
+            return Ok(None);
+        };
+        Ok((profile.transport == "cli" && profile.backend.as_deref() == Some("custom")).then(
+            || UnitFailure {
+                class: FailureClass::ProviderConfiguration,
+                code: "provider_configuration".into(),
+                diagnostic: "The composed Integrator requires an official read-only CLI adapter or API transport: a custom CLI adapter cannot be limited to host-selected context.".into(),
+                repairable: false,
+                correction: None,
+                rejected_answer: false,
+            },
+        ))
+    }
+
+    /// Classifies the Integrator's inputs, captures base → candidate,
+    /// resolves the review policy and renders the sanitized sections
+    /// (ADR-032). Everything is read here, outside any transaction.
+    #[allow(clippy::too_many_arguments)]
+    fn review_boundary(
+        &self,
+        pulsation_id: &str,
+        input_revision: u64,
+        root: &Path,
+        inputs: &StageInputs,
+        reads: &SourceReads,
+        preparation: &StagePreparation,
+        sanitization: &crate::sanitization::SanitizationStore,
+        policy: &crate::sanitization::SanitizationPolicySnapshot,
+        host: HostEvidence,
+    ) -> Result<ReviewBoundary, PersistenceServiceError> {
+        let db = self.connection()?;
+        let delivered_paths = preparation
+            .delivered
+            .keys()
+            .filter_map(|handle| {
+                preparation
+                    .table
+                    .entry(handle)
+                    .and_then(comp::ReferenceEntryV1::relative_path)
+                    .map(|path| path.as_str().to_owned())
+            })
+            .collect::<HashSet<_>>();
+        let owned = preparation
+            .drafts
+            .iter()
+            .flat_map(|draft| draft.owned_destination_refs.iter())
+            .filter_map(|handle| {
+                preparation
+                    .table
+                    .entry(handle)
+                    .and_then(comp::ReferenceEntryV1::relative_path)
+                    .map(|path| path.as_str().to_owned())
+            })
+            .collect::<HashSet<_>>();
+        let sources = inputs
+            .sources
+            .iter()
+            .map(|source| ManifestSource {
+                path: source.path.as_str().to_owned(),
+                class: source.origin.class(),
+                origin: source.origin.clone(),
+                sha256: comp::Sha256Hex::of(source.content.as_bytes())
+                    .as_str()
+                    .to_owned(),
+                delivered: delivered_paths.contains(source.path.as_str()),
+                owned: owned.contains(source.path.as_str()),
+            })
+            .collect::<Vec<_>>();
+        let bases = Self::pulsation_file_bases(&db, pulsation_id)?;
+        let mut candidates = Vec::new();
+        for source in inputs
+            .sources
+            .iter()
+            .filter(|source| source.origin.class() == EvidenceClass::Candidate)
+        {
+            let path = source.path.as_str();
+            let Some(read) = reads.artifacts.iter().rev().find(|read| read.path == path) else {
+                continue;
+            };
+            candidates.push(CandidateFact {
+                path: path.to_owned(),
+                content: source.content.clone(),
+                published_sha256: read.published_sha256.clone(),
+                live_sha256: read.live_sha256.clone(),
+                base: bases
+                    .get(&path.to_ascii_lowercase())
+                    .cloned()
+                    .unwrap_or_else(review_boundary::BaseFact::unknown),
+            });
+        }
+        let candidate_keys = candidates
+            .iter()
+            .map(|candidate| candidate.path.to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+        let orphaned = Self::orphaned_publications(&db, pulsation_id, input_revision)?
+            .into_iter()
+            .filter(|path| !candidate_keys.contains(&path.to_ascii_lowercase()))
+            .collect::<Vec<_>>();
+        // The review policy for every reviewed path, root first (M2).
+        let repository = RepositoryContext::new(root).ok();
+        let locations = comp::review_policy::policy_locations(
+            sources
+                .iter()
+                .filter(|source| source.delivered)
+                .map(|source| source.path.as_str()),
+        );
+        let resolved = comp::review_policy::resolve(&locations, |location| {
+            let Some(repository) = repository.as_ref() else {
+                return comp::review_policy::PolicyRead::Missing;
+            };
+            if std::fs::symlink_metadata(root.join(location)).is_err() {
+                return comp::review_policy::PolicyRead::Missing;
+            }
+            match repository.read_document(location) {
+                Ok(text) => comp::review_policy::PolicyRead::Loaded(text),
+                Err(_) => comp::review_policy::PolicyRead::Invalid,
+            }
+        });
+        let anchors = [PulsationStage::Code, PulsationStage::Test]
+            .into_iter()
+            .filter_map(|stage| {
+                Self::accepted_execution_for(&db, pulsation_id, stage, input_revision)
+                    .ok()
+                    .flatten()
+                    .map(|execution| (comp::Stage::from_pulsation(stage), execution.plan.anchors))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let (claims, criteria) = review_boundary::author_claims(&inputs.prior, &anchors);
+        let facts = ReviewFacts {
+            sanitization_policy: policy.identity.clone(),
+            sources,
+            candidates,
+            orphaned,
+            host,
+            policy: Some(resolved),
+            claims,
+            criteria,
+        };
+        let sanitize = |path: &str, content: &str| -> Option<String> {
+            sanitization
+                .sanitize_source_with_policy(policy, path, content)
+                .ok()
+                .map(|view| view.text)
+        };
+        Ok(review_boundary::build(facts, &sanitize))
     }
 
     fn project_of(&self, pulsation_id: &str) -> Result<String, PersistenceServiceError> {
@@ -1509,7 +1812,7 @@ impl PersistenceService {
         current: &Pulsation,
         handoff: &StageHandoffV1,
         artifact_paths: &HashMap<String, String>,
-    ) -> Result<StageInputs, PersistenceServiceError> {
+    ) -> Result<(StageInputs, SourceReads), PersistenceServiceError> {
         let manifest = handoff.batch_manifest.clone().ok_or_else(|| {
             PersistenceServiceError::Validation(
                 "SC-002: a v4 pulsation requires a frozen task batch.".into(),
@@ -1522,16 +1825,32 @@ impl PersistenceService {
             .collect::<Vec<_>>();
         let prior = recipes::prior_payloads(&rows).map_err(|e| composition_invalid(&e))?;
         let repository = RepositoryContext::new(root).ok();
+        let mut reads = SourceReads {
+            workspace_available: repository.is_some(),
+            ..SourceReads::default()
+        };
         let mut sources: Vec<SourceFile> = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen: HashMap<String, usize> = HashMap::new();
         let mut missing = Vec::new();
-        let mut push = |path: comp::RelPath, content: String| {
-            if seen.insert(path.canonical_key()) {
+        // A path read twice keeps its first content; a stage artifact still
+        // upgrades a workspace read of the same path to its own origin, so a
+        // brief source Code rewrote is a candidate, not baseline context.
+        let mut push = |path: comp::RelPath, content: String, origin: SourceOrigin| match seen
+            .get(&path.canonical_key())
+        {
+            Some(&index) => {
+                if origin.prefers_over(&sources[index].origin) {
+                    sources[index].origin = origin;
+                }
+            }
+            None => {
+                seen.insert(path.canonical_key(), sources.len());
                 let role = recipes::role_for_path(&path);
                 sources.push(SourceFile {
                     path,
                     role,
                     content,
+                    origin,
                 });
             }
         };
@@ -1541,8 +1860,9 @@ impl PersistenceService {
                 let Ok(path) = comp::RelPath::new(source.relative_path.as_str()) else {
                     continue;
                 };
-                if let Some(content) = read(path.as_str()) {
-                    push(path, content);
+                match read(path.as_str()) {
+                    Some(content) => push(path, content, SourceOrigin::Brief),
+                    None => reads.unreadable.push(path.as_str().to_owned()),
                 }
             }
         }
@@ -1550,7 +1870,7 @@ impl PersistenceService {
             let text = format!("{} {}", task.draft.title, task.draft.description);
             for path in recipes::explicit_paths(&text) {
                 match read(path.as_str()) {
-                    Some(content) => push(path, content),
+                    Some(content) => push(path, content, SourceOrigin::Task),
                     None => {
                         if !missing.contains(&path) {
                             missing.push(path);
@@ -1580,7 +1900,7 @@ impl PersistenceService {
                         continue;
                     };
                     match read(path.as_str()) {
-                        Some(content) => push(path, content),
+                        Some(content) => push(path, content, SourceOrigin::Clarification),
                         None => {
                             if !missing.contains(&path) {
                                 missing.push(path);
@@ -1597,10 +1917,25 @@ impl PersistenceService {
             let Ok(path) = comp::RelPath::new(relative.clone()) else {
                 continue;
             };
-            let content = read(path.as_str()).unwrap_or_else(|| artifact.content.clone());
-            push(path, content);
+            let live = read(path.as_str());
+            reads.artifacts.push(ArtifactRead {
+                path: path.as_str().to_owned(),
+                published_sha256: artifact.content_sha256.as_str().to_owned(),
+                live_sha256: live
+                    .as_ref()
+                    .map(|content| comp::Sha256Hex::of(content.as_bytes()).as_str().to_owned()),
+            });
+            let content = live.unwrap_or_else(|| artifact.content.clone());
+            push(
+                path,
+                content,
+                SourceOrigin::StageArtifact {
+                    stage: comp::Stage::from_pulsation(artifact.producer_stage),
+                    artifact_kind: artifact.kind.clone(),
+                },
+            );
         }
-        missing.retain(|path| !seen.contains(&path.canonical_key()));
+        missing.retain(|path| !seen.contains_key(&path.canonical_key()));
         let mut answers = Vec::new();
         for exchange in &handoff.clarifications {
             for answer in &exchange.answers {
@@ -1613,17 +1948,22 @@ impl PersistenceService {
                 }
             }
         }
-        Ok(StageInputs {
-            title: current.feature_name.clone(),
-            manifest: Some(manifest),
-            prior,
-            sources,
-            missing_paths: missing,
-            checks: Vec::new(),
-            revision_feedback: handoff.revision_feedback.clone(),
-            clarification_answers: answers,
-            qualified_recipes: Vec::new(),
-        })
+        // A review policy is never a planned destination (ADR-032).
+        missing.retain(|path| !comp::review_policy::is_review_policy_path(path.as_str()));
+        Ok((
+            StageInputs {
+                title: current.feature_name.clone(),
+                manifest: Some(manifest),
+                prior,
+                sources,
+                missing_paths: missing,
+                checks: Vec::new(),
+                revision_feedback: handoff.revision_feedback.clone(),
+                clarification_answers: answers,
+                qualified_recipes: Vec::new(),
+            },
+            reads,
+        ))
     }
 
     /// Resolves a role's frozen transport/model. A specialty may tune effort,
@@ -2000,6 +2340,15 @@ impl PersistenceService {
             &recipe_snapshot_id,
             predecessor.as_ref().map(|p| p.id.as_str()),
         )?;
+        if let Some(review) = &preparation.review {
+            Self::record_review_inputs(
+                &tx,
+                plan.stage_execution_id.as_str(),
+                pulse,
+                input_revision,
+                review,
+            )?;
+        }
         Self::transition_execution(
             &tx,
             plan.stage_execution_id.as_str(),
@@ -2028,7 +2377,8 @@ impl PersistenceService {
                     continue;
                 }
                 let old_key = old.reuse_key_sha256.clone().unwrap_or_default();
-                let new_key = reuse_key(&plan, &unit.spec, &dependencies);
+                let new_key =
+                    reuse_key(&plan, &unit.spec, &dependencies, review_digest(preparation));
                 if old_key != new_key.as_str() {
                     continue;
                 }
@@ -2662,6 +3012,12 @@ impl PersistenceService {
                     frozen_transport: profile.transport.clone(),
                     frozen_backend: profile.backend.clone(),
                     frozen_model: profile.requested_model.clone(),
+                    context_scope: match policy.tools {
+                        comp::policy::ToolPolicy::HostContextOnly => {
+                            crate::llm::UnitContextScope::HostContextOnly
+                        }
+                        _ => crate::llm::UnitContextScope::Workspace,
+                    },
                 }),
                 strict_schema: Some(strict),
                 host_validated: true,
@@ -2900,6 +3256,21 @@ impl PersistenceService {
                 if index.plan().check_refs.is_empty() {
                     host_notes = comp::validate::normalize_without_checks(&mut response);
                 }
+                // ADR-032: a verdict never rests on evidence the host could
+                // not establish; the gaps downgrade, they never upgrade.
+                if let Some(review) = preparation.review.as_deref() {
+                    let table = &preparation.table;
+                    host_notes.extend(review_boundary::normalize_for_gaps(
+                        &mut response,
+                        review,
+                        &|handle| {
+                            table
+                                .entry(handle)
+                                .and_then(comp::ReferenceEntryV1::relative_path)
+                                .map(|path| path.as_str().to_owned())
+                        },
+                    ));
+                }
                 let child = validate_child(index, &unit.spec, &preparation.approved, &response)?;
                 recipes::reconstruct_artifacts(&execution.plan, preparation, &child)?;
                 Ok(response)
@@ -2993,6 +3364,7 @@ impl PersistenceService {
                     &execution.plan,
                     &unit.spec,
                     &dependency_digests(&unit.spec, &units),
+                    review_digest(preparation),
                 );
                 Self::accept_child(
                     &tx,
@@ -3393,10 +3765,21 @@ fn dependency_digests(spec: &comp::WorkUnitSpecV1, units: &[UnitRow]) -> Vec<(St
         .collect()
 }
 
+/// The Integrator's review-input digest (ADR-032), `None` for other stages.
+fn review_digest(preparation: &StagePreparation) -> Option<&str> {
+    preparation
+        .review
+        .as_deref()
+        .map(|review| review.manifest_sha256.as_str())
+}
+
+/// `review` is the Integrator's review-input digest. It enters the key only
+/// when present, so every other stage keeps its previous keys.
 fn reuse_key(
     plan: &comp::StageExecutionPlanV1,
     spec: &comp::WorkUnitSpecV1,
     dependency_digests: &[(String, String)],
+    review: Option<&str>,
 ) -> comp::Sha256Hex {
     let inputs = spec
         .input_refs
@@ -3424,7 +3807,7 @@ fn reuse_key(
                 .and_then(|entry| entry.relative_path().map(|p| p.as_str().to_owned()))
         })
         .collect::<Vec<_>>();
-    let value = serde_json::json!({
+    let mut value = serde_json::json!({
         "policy": plan.policy_sha256,
         "batch": plan.batch_sha256,
         "contract": plan.approved_contract_sha256,
@@ -3439,6 +3822,9 @@ fn reuse_key(
         "checks": spec.required_check_refs,
         "dependencies": dependency_digests,
     });
+    if let Some(review) = review {
+        value["reviewInputs"] = serde_json::Value::String(review.to_owned());
+    }
     comp::canonical_sha256(&value, &[]).unwrap_or_else(|_| comp::Sha256Hex::of(b"unhashable"))
 }
 
@@ -3489,6 +3875,7 @@ mod tests {
             path: RelPath::new(path).unwrap(),
             role: SourceRole::Source,
             content: content.into(),
+            origin: SourceOrigin::Brief,
         }
     }
 
@@ -3872,9 +4259,9 @@ mod tests {
         let plan = two_unit_plan();
         let consumer = &plan.units[1];
         let producer = &plan.units[0];
-        let first = reuse_key(&plan, consumer, &[("producer".into(), "aaa".into())]);
-        let same = reuse_key(&plan, consumer, &[("producer".into(), "aaa".into())]);
-        let changed = reuse_key(&plan, consumer, &[("producer".into(), "bbb".into())]);
+        let first = reuse_key(&plan, consumer, &[("producer".into(), "aaa".into())], None);
+        let same = reuse_key(&plan, consumer, &[("producer".into(), "aaa".into())], None);
+        let changed = reuse_key(&plan, consumer, &[("producer".into(), "bbb".into())], None);
         assert_eq!(first, same);
         assert_ne!(
             first, changed,
@@ -3887,9 +4274,28 @@ mod tests {
             reuse_key(
                 &again,
                 &again.units[1],
-                &[("producer".into(), "aaa".into())]
+                &[("producer".into(), "aaa".into())],
+                None
             ),
             first
+        );
+        // ADR-032: the Integrator's review inputs join the key only when
+        // present, and any change to them invalidates the unit.
+        let reviewed = reuse_key(
+            &plan,
+            consumer,
+            &[("producer".into(), "aaa".into())],
+            Some("digest-a"),
+        );
+        assert_ne!(reviewed, first);
+        assert_ne!(
+            reviewed,
+            reuse_key(
+                &plan,
+                consumer,
+                &[("producer".into(), "aaa".into())],
+                Some("digest-b")
+            )
         );
         // Digests come only from validated dependencies.
         let rows = [

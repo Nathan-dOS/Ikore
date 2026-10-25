@@ -25,6 +25,18 @@ pub struct CompositionSettings {
     /// Review Brief. Off by default; the brief is complete without it.
     #[serde(default)]
     pub visualizer_enabled: bool,
+    /// ADR-032 M4: human revision rounds of a pulsation (per input revision,
+    /// since the last replan) after which every further Request revision
+    /// needs an explicit decision. The default 3 is a hypothesis to evaluate.
+    #[serde(default = "default_revision_round_threshold")]
+    pub revision_round_threshold: u32,
+}
+
+pub const DEFAULT_REVISION_ROUND_THRESHOLD: u32 = 3;
+pub const REVISION_ROUND_THRESHOLD_RANGE: std::ops::RangeInclusive<u32> = 1..=10;
+
+const fn default_revision_round_threshold() -> u32 {
+    DEFAULT_REVISION_ROUND_THRESHOLD
 }
 
 impl Default for CompositionSettings {
@@ -35,6 +47,7 @@ impl Default for CompositionSettings {
             validation_enabled: false,
             qualified_recipes: Vec::new(),
             visualizer_enabled: false,
+            revision_round_threshold: DEFAULT_REVISION_ROUND_THRESHOLD,
         }
     }
 }
@@ -46,6 +59,13 @@ impl Validate for CompositionSettings {
                 Invariant::Sc006,
                 ErrorCode::HostContractError,
                 "maxInFlightUnits must be 1 or 2.",
+            ));
+        }
+        if !REVISION_ROUND_THRESHOLD_RANGE.contains(&self.revision_round_threshold) {
+            return Err(CompositionError::new(
+                Invariant::Sc006,
+                ErrorCode::HostContractError,
+                "revisionRoundThreshold must be between 1 and 10.",
             ));
         }
         for recipe in &self.qualified_recipes {
@@ -129,5 +149,27 @@ mod tests {
         }))
         .unwrap();
         assert!(legacy.qualified_recipes.is_empty());
+        // ADR-032: rows written before the threshold existed get the default,
+        // and the threshold stays within its range.
+        assert_eq!(
+            legacy.revision_round_threshold,
+            DEFAULT_REVISION_ROUND_THRESHOLD
+        );
+        for (threshold, valid) in [(0, false), (1, true), (10, true), (11, false)] {
+            let settings = CompositionSettings {
+                revision_round_threshold: threshold,
+                ..CompositionSettings::default()
+            };
+            assert_eq!(settings.validate().is_ok(), valid, "{threshold}");
+        }
+        let round_trip: CompositionSettings = serde_json::from_value(
+            serde_json::to_value(CompositionSettings {
+                revision_round_threshold: 5,
+                ..CompositionSettings::default()
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(round_trip.revision_round_threshold, 5);
     }
 }

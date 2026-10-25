@@ -127,7 +127,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        50
+        51
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -290,7 +290,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        50
+        51
     );
     assert_eq!(
         db.query_row(
@@ -831,7 +831,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        50
+        51
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -987,7 +987,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        50
+        51
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1084,7 +1084,7 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        50
+        51
     );
     let (error, failure, notices): (String, Option<String>, Option<String>) = db
         .query_row(
@@ -1153,7 +1153,7 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        50
+        51
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1228,7 +1228,7 @@ fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        50
+        51
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1323,7 +1323,7 @@ fn v47_to_v48_adds_quota_history_with_validated_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        50
+        51
     );
     let insert = |values: &str| {
         db.execute(
@@ -1377,7 +1377,7 @@ fn v48_to_v49_preserves_history_and_requires_new_sanitization_evidence() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        50
+        51
     );
     for table in [
         "project_secret_redaction_exceptions",
@@ -1495,7 +1495,7 @@ fn v49_to_v50_admits_the_notes_scribe_and_adds_companion_notes() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        50
+        51
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1620,6 +1620,107 @@ fn v49_to_v50_admits_the_notes_scribe_and_adds_companion_notes() {
         0,
         "turns go with their note"
     );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+/// V51 adds the Integrator's evidence boundary (ADR-032): the base each path
+/// held before a pulsation first published it, the classified review inputs
+/// of an Integrator execution and the decisions taken beyond the human
+/// revision-round threshold. Nothing existing is rebuilt; every new row goes
+/// with its pulsation, and the states are closed sets.
+#[test]
+fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(50))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V50 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version) VALUES('pulse','p','Work','Integrator','checkpoint','now','now',4)",[]).unwrap();
+    db.execute("INSERT INTO artifacts(id,pulsation_id,name,kind,relative_path,content_sha256,created_at,updated_at,content,producer_stage,input_revision) VALUES('artifact','pulse','src/lib.rs','code','src/lib.rs','a','now','now','fn a() {}\n','Code',1)",[]).unwrap();
+    db.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,generation,purpose) VALUES('review','pulse','Integrator','waiting','now','now','artifact_review',1,1,1,'artifact_review')",[]).unwrap();
+    let before: Vec<String> = db
+        .prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        51
+    );
+    let after: Vec<String> = db
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL AND name NOT IN ('pulsation_file_bases','integrator_review_inputs','pulsation_convergence_decisions') ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(before, after, "no existing table was rebuilt");
+
+    db.execute("INSERT INTO pulsation_file_bases(pulsation_id,path_key,relative_path,state,content_sha256,content,byte_len,first_artifact_id,captured_at) VALUES('pulse','src/lib.rs','src/lib.rs','present','b','fn b() {}\n',10,'artifact','now')",[])
+        .expect("a stored base");
+    db.execute("INSERT INTO pulsation_file_bases(pulsation_id,path_key,relative_path,state,first_artifact_id,captured_at) VALUES('pulse','src/new.rs','src/new.rs','absent','artifact','now')",[])
+        .expect("an absent base has no hash");
+    db.execute("INSERT INTO pulsation_file_bases(pulsation_id,path_key,relative_path,state,first_artifact_id,captured_at) VALUES('pulse','src/x.rs','src/x.rs','present','artifact','now')",[])
+        .expect_err("a present base has a hash");
+    db.execute("INSERT INTO pulsation_file_bases(pulsation_id,path_key,relative_path,state,content_sha256,content,reason,first_artifact_id,captured_at) VALUES('pulse','src/y.rs','src/y.rs','present_unstored','c','bytes','too_large','artifact','now')",[])
+        .expect_err("an unstored base keeps no bytes");
+    db.execute("INSERT INTO pulsation_file_bases(pulsation_id,path_key,relative_path,state,content_sha256,reason,first_artifact_id,captured_at) VALUES('pulse','src/z.rs','src/z.rs','present_unstored','c','guessed','artifact','now')",[])
+        .expect_err("the reasons are a closed set");
+    db.execute("INSERT INTO integrator_review_inputs(stage_execution_id,pulsation_id,input_revision,manifest_json,manifest_sha256,review_policy_state,gap_count,created_at) VALUES('missing','pulse',1,'{}','d','absent',0,'now')",[])
+        .expect_err("review inputs belong to an existing execution");
+    db.execute("INSERT INTO pulsation_convergence_decisions(id,pulsation_id,checkpoint_id,input_revision,stage,decision,rounds_at_decision,threshold,reason,created_at) VALUES('d1','pulse','review',1,'Integrator','replan',3,3,'The approach is wrong.','now')",[])
+        .expect("a decision beyond the threshold");
+    db.execute("INSERT INTO pulsation_convergence_decisions(id,pulsation_id,checkpoint_id,input_revision,stage,decision,rounds_at_decision,threshold,reason,created_at) VALUES('d2','pulse','review',1,'Integrator','continue_beyond_threshold',4,3,'Again.','now')",[])
+        .expect_err("one decision per checkpoint");
+    db.execute("DELETE FROM pulsation_convergence_decisions", [])
+        .unwrap();
+    for (decision, threshold, reason) in [
+        ("skip_threshold", 3, "Why."),
+        ("replan", 0, "Why."),
+        ("replan", 11, "Why."),
+        ("replan", 3, ""),
+    ] {
+        db.execute("INSERT INTO pulsation_convergence_decisions(id,pulsation_id,checkpoint_id,input_revision,stage,decision,rounds_at_decision,threshold,reason,created_at) VALUES('bad','pulse','review',1,'Integrator',?1,3,?2,?3,'now')",params![decision, threshold, reason])
+            .expect_err("decisions, thresholds and reasons are bounded");
+    }
+    db.execute("INSERT INTO pulsation_convergence_decisions(id,pulsation_id,checkpoint_id,input_revision,stage,decision,rounds_at_decision,threshold,reason,created_at) VALUES('d1','pulse','review',1,'Integrator','replan',3,3,'The approach is wrong.','now')",[])
+        .unwrap();
+    db.execute("DELETE FROM pulsations WHERE id='pulse'", [])
+        .unwrap();
+    for table in ["pulsation_file_bases", "pulsation_convergence_decisions"] {
+        assert_eq!(
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            0,
+            "{table} goes with its pulsation"
+        );
+    }
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
             .get::<_, u32>(

@@ -15,12 +15,58 @@ use super::{
 };
 use crate::orchestration::PublicationState;
 use crate::orchestration::composition::CheckSummaryV1;
+use crate::orchestration::composition::review_boundary::{Binding, ReviewInputManifestV1};
 use crate::orchestration::review_brief::{self, StageVisual};
 use crate::reports::{
-    self, FileChange, LineCounts, PulsationReport, ReportCheck, ReportCriterion, ReportFile,
-    ReportOutcome, analysis,
+    self, FileChange, LineCounts, PulsationReport, ReportCheck, ReportConvergence, ReportCriterion,
+    ReportFile, ReportGap, ReportOutcome, ReportReview, analysis,
 };
 use coordination::invalid;
+
+/// The latest Integrator execution's recorded inputs, without hashes.
+fn report_review(
+    db: &Connection,
+    pulsation_id: &str,
+) -> Result<Option<ReportReview>, PersistenceServiceError> {
+    let Some(json) = db
+        .query_row(
+            "SELECT manifest_json FROM integrator_review_inputs WHERE pulsation_id=?1 ORDER BY created_at DESC,rowid DESC LIMIT 1",
+            [pulsation_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let manifest: ReviewInputManifestV1 = serde_json::from_str(&json)
+        .map_err(|error| PersistenceServiceError::Runtime(error.to_string()))?;
+    Ok(Some(ReportReview {
+        tool_scope: manifest.tool_scope.clone(),
+        policy_state: manifest.policy.state.as_str().to_owned(),
+        policy_files: manifest
+            .policy
+            .loaded()
+            .map(|file| file.path.clone())
+            .collect(),
+        candidates: manifest.candidates.len(),
+        changed_outside_pipeline: manifest
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.binding == Binding::ChangedOutsidePipeline)
+            .map(|candidate| candidate.path.clone())
+            .collect(),
+        author_claims: manifest.author_claims,
+        gaps: manifest
+            .gaps
+            .iter()
+            .map(|gap| ReportGap {
+                code: gap.code.as_str().to_owned(),
+                subject: gap.subject.clone(),
+                limits_verdicts: gap.limits_verdicts(),
+            })
+            .collect(),
+    }))
+}
 
 impl PersistenceService {
     /// The typed input of a pulsation's report. Refused until a checkpoint
@@ -64,6 +110,27 @@ impl PersistenceService {
         let mut report = analysis::to_html_report(&telemetry)
             .map_err(|error| PersistenceServiceError::Runtime(error.to_string()))?;
         report.outcome = outcome;
+        // ADR-032: the latest Integrator's recorded inputs and the rounds.
+        let db = self.connection()?;
+        report.review = report_review(&db, &pulse)?;
+        let convergence = Self::convergence_status_on(&db, &pulse)?;
+        report.convergence = convergence.applies.then(|| ReportConvergence {
+            rounds: convergence.rounds,
+            threshold: convergence.threshold,
+            human_rounds: convergence
+                .human_rounds
+                .iter()
+                .map(|(_, count)| count)
+                .sum(),
+            failure_revisions: convergence.failure_revisions,
+            retries: convergence.retries,
+            technical_attempts: convergence.technical_attempts,
+            decisions: convergence
+                .decisions
+                .iter()
+                .map(|decision| format!("{}: {}", decision.decision, decision.reason))
+                .collect(),
+        });
         Ok(report)
     }
 

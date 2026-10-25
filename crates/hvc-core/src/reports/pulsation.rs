@@ -23,6 +23,44 @@ pub struct PulsationReport {
     pub outcome: Option<ReportOutcome>,
     pub run: ReportRun,
     pub rejected_outputs: Vec<RejectedOutput>,
+    /// What the composed Integrator reviewed (ADR-032); `None` before
+    /// pipeline v4 or when nothing was recorded.
+    #[serde(default)]
+    pub review: Option<ReportReview>,
+    /// Human revision rounds next to technical attempts (ADR-032 M4).
+    #[serde(default)]
+    pub convergence: Option<ReportConvergence>,
+}
+
+/// The host's record of the reviewer's inputs, without hashes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportReview {
+    pub tool_scope: String,
+    pub policy_state: String,
+    pub policy_files: Vec<String>,
+    pub candidates: usize,
+    pub changed_outside_pipeline: Vec<String>,
+    pub author_claims: usize,
+    pub gaps: Vec<ReportGap>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportGap {
+    pub code: String,
+    pub subject: String,
+    pub limits_verdicts: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportConvergence {
+    pub rounds: u32,
+    pub threshold: u32,
+    pub human_rounds: u32,
+    pub failure_revisions: u32,
+    pub retries: u32,
+    pub technical_attempts: u32,
+    /// `decision: reason`, in order.
+    pub decisions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -181,6 +219,12 @@ pub fn render_pulsation_report(report: &PulsationReport) -> String {
             page.push(&outcome_unavailable());
         }
     }
+    if report.review.is_some() || report.convergence.is_some() {
+        page.push(&review_section(
+            report.review.as_ref(),
+            report.convergence.as_ref(),
+        ));
+    }
     page.push(&run_context(&report.run));
     if !report.rejected_outputs.is_empty() {
         page.push(&rejected_outputs(&report.rejected_outputs));
@@ -255,6 +299,16 @@ fn observed_report(report: &PulsationReport) -> PulsationReport {
     for output in &mut report.rejected_outputs {
         text(&mut output.agent);
         text(&mut output.error);
+    }
+    if let Some(review) = &mut report.review {
+        strings(&mut review.policy_files);
+        strings(&mut review.changed_outside_pipeline);
+        for gap in &mut review.gaps {
+            text(&mut gap.subject);
+        }
+    }
+    if let Some(convergence) = &mut report.convergence {
+        strings(&mut convergence.decisions);
     }
     report
 }
@@ -546,6 +600,9 @@ fn navigation(report: &PulsationReport) -> SafeHtml {
         html.push_markup(
             "<li><a href=\"#summary\">Summary</a></li><li><a href=\"#criteria\">Criteria</a></li><li><a href=\"#not-verified\">Not verified</a></li><li><a href=\"#checks\">Host checks</a></li><li><a href=\"#files\">Files</a></li>",
         );
+    }
+    if report.review.is_some() || report.convergence.is_some() {
+        html.push_markup("<li><a href=\"#review\">Review inputs</a></li>");
     }
     html.push_markup("<li><a href=\"#run\">Run context</a></li>");
     if !report.rejected_outputs.is_empty() {
@@ -1302,6 +1359,97 @@ fn rejected_outputs(rejected: &[RejectedOutput]) -> SafeHtml {
     html
 }
 
+/// ADR-032: what the reviewer received and how many revision rounds it took.
+fn review_section(
+    review: Option<&ReportReview>,
+    convergence: Option<&ReportConvergence>,
+) -> SafeHtml {
+    let mut html = SafeHtml::markup(
+        "<section id=\"review\" aria-labelledby=\"review-h\"><div class=\"sec-head\"><h2 id=\"review-h\">Review inputs</h2><p>What the host gave the final reviewer, what it could not establish, and the revision rounds. A gap that limits verdicts turned any supported verdict resting on it into unverified.</p></div><div class=\"card\"><dl class=\"facts\">",
+    );
+    let fact = |html: &mut SafeHtml, label: &str, value: &str| {
+        html.push_markup("<dt>")
+            .push_text(label)
+            .push_markup("</dt><dd>")
+            .push_text(value)
+            .push_markup("</dd>");
+    };
+    if let Some(review) = review {
+        fact(
+            &mut html,
+            "Reviewer context",
+            if review.tool_scope == "host_context_only" {
+                "Host-selected context only"
+            } else {
+                "Workspace snapshot"
+            },
+        );
+        let policy = if review.policy_files.is_empty() {
+            review.policy_state.clone()
+        } else {
+            format!(
+                "{} ({})",
+                review.policy_state,
+                review.policy_files.join(", ")
+            )
+        };
+        fact(&mut html, "REVIEW.md", &policy);
+        fact(&mut html, "Candidate files", &review.candidates.to_string());
+        if !review.changed_outside_pipeline.is_empty() {
+            fact(
+                &mut html,
+                "Changed after publication",
+                &review.changed_outside_pipeline.join(", "),
+            );
+        }
+        fact(
+            &mut html,
+            "Author claims",
+            &review.author_claims.to_string(),
+        );
+    }
+    if let Some(convergence) = convergence {
+        fact(
+            &mut html,
+            "Revision rounds",
+            &format!(
+                "{} since the last replan (threshold {}) · {} at checkpoints, {} on failures, {} retries · {} technical attempts",
+                convergence.rounds,
+                convergence.threshold,
+                convergence.human_rounds,
+                convergence.failure_revisions,
+                convergence.retries,
+                convergence.technical_attempts
+            ),
+        );
+        for decision in &convergence.decisions {
+            fact(&mut html, "Decision", decision);
+        }
+    }
+    html.push_markup("</dl></div>");
+    if let Some(review) = review.filter(|review| !review.gaps.is_empty()) {
+        html.push_markup(
+            "<div class=\"table-wrap\"><table class=\"wide\"><thead><tr><th>Evidence gap</th><th>Effect</th><th>Detail</th></tr></thead><tbody>",
+        );
+        for gap in &review.gaps {
+            html.push_markup("<tr><td>")
+                .push_text(&gap.code)
+                .push_markup("</td><td>")
+                .push_text(if gap.limits_verdicts {
+                    "Limits verdicts"
+                } else {
+                    "Shown only"
+                })
+                .push_markup("</td><td class=\"wrap-text\">")
+                .push_text(&gap.subject)
+                .push_markup("</td></tr>");
+        }
+        html.push_markup("</tbody></table></div>");
+    }
+    html.push_markup("</section>");
+    html
+}
+
 fn footer() -> SafeHtml {
     SafeHtml::markup(
         "<footer><span>Rendered by the host from validated payloads, host receipts and usage records. Same inputs, same bytes. Not a document of record.</span><span>No scripts, no network requests, no external assets. Agent-written text is escaped and labelled.</span></footer>",
@@ -1453,7 +1601,60 @@ mod tests {
                 raw_output_bytes: 2048,
                 error: "missing required key `groups`".into(),
             }],
+            review: None,
+            convergence: None,
         }
+    }
+
+    /// ADR-032: the review section appears only when recorded, says what the
+    /// reviewer received and sanitizes what it quotes.
+    #[test]
+    fn the_review_section_reports_inputs_gaps_and_rounds() {
+        let mut report = sample();
+        let plain = render_pulsation_report(&report);
+        assert!(!plain.contains("id=\"review\""));
+        report.review = Some(ReportReview {
+            tool_scope: "host_context_only".into(),
+            policy_state: "loaded".into(),
+            policy_files: vec!["REVIEW.md".into()],
+            candidates: 2,
+            changed_outside_pipeline: vec!["src/lib.rs".into()],
+            author_claims: 3,
+            gaps: vec![ReportGap {
+                code: "candidate_changed_outside_pipeline".into(),
+                subject:
+                    "`src/lib.rs` changed after publication; token sk-proj-abcdefghijklmnopqrst"
+                        .into(),
+                limits_verdicts: true,
+            }],
+        });
+        report.convergence = Some(ReportConvergence {
+            rounds: 3,
+            threshold: 3,
+            human_rounds: 2,
+            failure_revisions: 1,
+            retries: 0,
+            technical_attempts: 9,
+            decisions: vec!["continue_beyond_threshold: The boundary case is still wrong.".into()],
+        });
+        let html = render_pulsation_report(&report);
+        assert!(html.contains("<a href=\"#review\">Review inputs</a>"));
+        assert!(html.contains("id=\"review\""));
+        assert!(html.contains("Host-selected context only"));
+        assert!(html.contains("loaded (REVIEW.md)"));
+        assert!(html.contains("candidate_changed_outside_pipeline"));
+        assert!(html.contains("Limits verdicts"));
+        assert!(html.contains("3 since the last replan (threshold 3)"));
+        assert!(html.contains("The boundary case is still wrong."));
+        assert!(!html.contains("sk-proj-abcdefghijklmnopqrst"));
+        // Reports written before ADR-032 still parse.
+        let mut earlier = serde_json::to_value(sample()).unwrap();
+        earlier.as_object_mut().unwrap().remove("review");
+        earlier.as_object_mut().unwrap().remove("convergence");
+        assert_eq!(
+            serde_json::from_value::<PulsationReport>(earlier).unwrap(),
+            sample()
+        );
     }
 
     #[test]

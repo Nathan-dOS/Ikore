@@ -80,6 +80,8 @@ mod component_notes;
 mod composition_coordinator;
 #[path = "orchestration/composition/host_persistence.rs"]
 mod composition_persistence;
+#[path = "orchestration/convergence.rs"]
+mod convergence;
 #[path = "orchestration/coordination.rs"]
 mod coordination;
 #[path = "feature_forge/persistence.rs"]
@@ -835,6 +837,76 @@ pub struct ApplyHitlDecisionRequest {
     pub expected_state_version: u64,
     pub feedback: Option<String>,
     pub decision: HitlDecision,
+}
+
+/// The explicit decision a revision needs once the pulsation reached its
+/// human-round threshold (ADR-032). The reason is the developer's own text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "snake_case")]
+pub enum ConvergenceAck {
+    /// Request this revision anyway.
+    ContinueBeyondThreshold { reason: String },
+    /// Revise from the Specification instead; the round window restarts.
+    Replan { reason: String },
+}
+
+impl ConvergenceAck {
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::ContinueBeyondThreshold { reason } | Self::Replan { reason } => reason,
+        }
+    }
+
+    pub const fn as_db_value(&self) -> &'static str {
+        match self {
+            Self::ContinueBeyondThreshold { .. } => "continue_beyond_threshold",
+            Self::Replan { .. } => "replan",
+        }
+    }
+}
+
+/// One recorded decision beyond the threshold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvergenceDecisionRecord {
+    pub stage: String,
+    pub decision: String,
+    pub rounds_at_decision: u32,
+    pub threshold: u32,
+    pub reason: String,
+    pub created_at: String,
+}
+
+/// How far a pulsation's current input revision is from converging
+/// (ADR-032 M4), derived from durable rows only. Human rounds and technical
+/// attempts are counted separately; only human rounds meet the threshold.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvergenceStatus {
+    /// Pipeline v4 only: earlier pipelines keep their unlimited revisions.
+    pub applies: bool,
+    pub input_revision: u64,
+    pub threshold: u32,
+    /// Human rounds (checkpoint and failure-path revisions) since the last replan.
+    pub rounds: u32,
+    /// Request revision at artifact checkpoints, per stage, in this input revision.
+    pub human_rounds: Vec<(String, u32)>,
+    pub failure_revisions: u32,
+    pub retries: u32,
+    /// Model invocations of composed work units, corrections and fallbacks included.
+    pub technical_attempts: u32,
+    /// Of those, invocations drawn from the extra (repair/retry/fallback) pool.
+    pub extra_invocations: u32,
+    /// Accepted Code candidates of this input revision.
+    pub candidate_generations: u32,
+    pub decisions: Vec<ConvergenceDecisionRecord>,
+}
+
+impl ConvergenceStatus {
+    /// Every further Request revision needs an explicit decision.
+    pub fn threshold_reached(&self) -> bool {
+        self.applies && self.rounds >= self.threshold
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2117,6 +2189,14 @@ impl PersistenceService {
                 current.id.as_str()
             ],
         )?;
+        // ADR-032: base bytes serve the review of a live pulsation only; the
+        // hashes and states stay for its report.
+        if matches!(next_status, PulsationStatus::Done | PulsationStatus::Failed) {
+            transaction.execute(
+                "UPDATE pulsation_file_bases SET content=NULL WHERE pulsation_id=?1 AND content IS NOT NULL",
+                [current.id.as_str()],
+            )?;
+        }
 
         let event_id = Uuid::new_v4().to_string();
         transaction.execute(
@@ -3287,6 +3367,18 @@ impl PersistenceService {
         request: ResolveStageFailureRequest,
         revision_target: Option<PulsationStage>,
     ) -> Result<ResolveStageFailureResponse, PersistenceServiceError> {
+        self.resolve_stage_failure_with_convergence(request, revision_target, None)
+    }
+
+    /// `ack` is the developer's explicit decision once the pulsation reached
+    /// its revision-round threshold (ADR-032); a replan revises from the
+    /// Specification instead of the failure's permitted targets.
+    pub fn resolve_stage_failure_with_convergence(
+        &self,
+        request: ResolveStageFailureRequest,
+        revision_target: Option<PulsationStage>,
+        ack: Option<ConvergenceAck>,
+    ) -> Result<ResolveStageFailureResponse, PersistenceServiceError> {
         let checkpoint_id = request.checkpoint_id.trim();
         if checkpoint_id.is_empty() {
             return Err(PersistenceServiceError::Validation(
@@ -3392,6 +3484,18 @@ impl PersistenceService {
                 "The pulsation stage changed; refresh the checkpoint.".to_string(),
             ));
         }
+        // ADR-032: a failure-path revision is a human round too.
+        let replan_target = if request.decision == StageFailureDecision::RequestRevision {
+            Self::admit_revision_round(
+                &transaction,
+                &pulsation_id,
+                checkpoint_id,
+                stage,
+                ack.as_ref(),
+            )?
+        } else {
+            None
+        };
         let now = Self::now_iso();
         let checkpoint_status = match request.decision {
             StageFailureDecision::Abort => CheckpointStatus::Rejected,
@@ -3512,14 +3616,15 @@ impl PersistenceService {
                         .collect(),
                     None => vec![primary],
                 };
-                let target = match revision_target {
-                    Some(requested) if permitted.contains(&requested) => requested,
-                    Some(_) => {
+                let target = match (replan_target, revision_target) {
+                    (Some(replan), _) => replan,
+                    (None, Some(requested)) if permitted.contains(&requested) => requested,
+                    (None, Some(_)) => {
                         return Err(PersistenceServiceError::Validation(
                             "This revision target is not allowed for this failure.".to_string(),
                         ));
                     }
-                    None => primary,
+                    (None, None) => primary,
                 };
                 if stage_execution_id.is_some() {
                     Self::supersede_stage_executions(&transaction, &pulsation_id, target)?;

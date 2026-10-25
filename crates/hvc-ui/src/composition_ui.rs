@@ -272,6 +272,18 @@ impl AppModel {
         );
     }
 
+    /// The human revision rounds after which each further revision needs an
+    /// explicit decision (ADR-032 M4). The host reads it at each decision.
+    pub(crate) fn set_revision_round_threshold(&mut self, threshold: u32, cx: &mut Context<Self>) {
+        let range = hvc_core::orchestration::composition::settings::REVISION_ROUND_THRESHOLD_RANGE;
+        let threshold = threshold.clamp(*range.start(), *range.end());
+        self.save_composition(
+            move |settings| settings.revision_round_threshold = threshold,
+            "Revision-round threshold updated; it applies to the next revision decision.",
+            cx,
+        );
+    }
+
     pub(crate) fn toggle_composition_validation(&mut self, cx: &mut Context<Self>) {
         self.save_composition(
             |settings| settings.validation_enabled = !settings.validation_enabled,
@@ -888,6 +900,18 @@ pub(crate) fn composition_page(
             ),
         )
         .section(
+            "Revision rounds",
+            section(
+                "Revision rounds",
+                None,
+                vec![row(
+                    "composition-revision-rounds",
+                    hl,
+                    revision_round_stepper(project.settings.revision_round_threshold, !busy, cx),
+                )],
+            ),
+        )
+        .section(
             "Specialty overrides",
             section(
                 "Specialty overrides",
@@ -895,6 +919,39 @@ pub(crate) fn composition_page(
                 vec![stacked_row("composition-overrides", hl, overrides)],
             ),
         )
+}
+
+/// `−  n  +` for the revision-round threshold, within its range.
+fn revision_round_stepper(threshold: u32, enabled: bool, cx: &mut Context<AppModel>) -> AnyElement {
+    let range = hvc_core::orchestration::composition::settings::REVISION_ROUND_THRESHOLD_RANGE;
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(crate::widgets::btn(
+            "composition-revision-rounds-down",
+            "−",
+            crate::widgets::ButtonVariant::Ghost,
+            enabled && threshold > *range.start(),
+            cx,
+            move |model, cx| model.set_revision_round_threshold(threshold - 1, cx),
+        ))
+        .child(
+            div()
+                .debug_selector(|| "composition-revision-rounds-value".into())
+                .min_w(gpui::px(24.0))
+                .text_center()
+                .child(threshold.to_string()),
+        )
+        .child(crate::widgets::btn(
+            "composition-revision-rounds-up",
+            "+",
+            crate::widgets::ButtonVariant::Ghost,
+            enabled && threshold < *range.end(),
+            cx,
+            move |model, cx| model.set_revision_round_threshold(threshold + 1, cx),
+        ))
+        .into_any_element()
 }
 
 /// One Labs row: the entry's text plus "Default: …" once changed, and a Reset beside the control.

@@ -157,6 +157,13 @@ pub(crate) struct HitlReviewState {
     pub(crate) marks: Vec<ItemMark>,
     /// The judgement item the C/F keys act on.
     pub(crate) brief_cursor: usize,
+    /// What the Integrator reviewed (ADR-032), or the legacy notice. Never
+    /// a gate: approval does not depend on it.
+    pub(crate) review_inputs:
+        Option<hvc_core::orchestration::composition::review_boundary::CheckpointReviewInputs>,
+    /// The pulsation's revision rounds (ADR-032 M4). Beyond the threshold a
+    /// revision needs an explicit decision, which the host enforces.
+    pub(crate) convergence: Option<hvc_core::persistence_service::ConvergenceStatus>,
     pub(crate) busy: bool,
     pub(crate) error: Option<String>,
     load_generation: u64,
@@ -204,6 +211,8 @@ impl HitlReviewState {
             self.brief_selected = false;
             self.marks.clear();
             self.brief_cursor = 0;
+            self.review_inputs = None;
+            self.convergence = None;
             self.error = None;
         }
         self.expected_checkpoint = checkpoint;
@@ -310,6 +319,35 @@ impl HitlReviewState {
         true
     }
 
+    /// The review inputs and the round count read with this load. A failed
+    /// read leaves them absent: neither ever blocks the review.
+    pub(crate) fn finish_review_context(
+        &mut self,
+        generation: u64,
+        checkpoint: &HitlCheckpoint,
+        review_inputs: Result<
+            Option<hvc_core::orchestration::composition::review_boundary::CheckpointReviewInputs>,
+            String,
+        >,
+        convergence: Result<Option<hvc_core::persistence_service::ConvergenceStatus>, String>,
+    ) -> bool {
+        if generation != self.load_generation
+            || !same_checkpoint(self.expected_checkpoint.as_ref(), Some(checkpoint))
+        {
+            return false;
+        }
+        self.review_inputs = review_inputs.ok().flatten();
+        self.convergence = convergence.ok().flatten();
+        true
+    }
+
+    /// Whether a further Request revision needs an explicit decision.
+    pub(crate) fn beyond_threshold(&self) -> bool {
+        self.convergence
+            .as_ref()
+            .is_some_and(hvc_core::persistence_service::ConvergenceStatus::threshold_reached)
+    }
+
     /// A later read of a pending note; ignored once the checkpoint changed.
     pub(crate) fn update_visualization(
         &mut self,
@@ -351,6 +389,8 @@ impl HitlReviewState {
         self.brief = None;
         self.brief_error = None;
         self.visualization = None;
+        self.review_inputs = None;
+        self.convergence = None;
         self.brief_selected = false;
         self.marks.clear();
         self.brief_cursor = 0;
@@ -803,5 +843,53 @@ mod tests {
         state.retry_documents();
         assert!(state.begin_documents().is_some());
         assert!(state.begin(HitlDecision::RequestRevision).is_some());
+    }
+
+    /// ADR-032: the review inputs and the round count belong to the load
+    /// that read them; a failed read leaves them absent and never blocks.
+    #[test]
+    fn review_context_belongs_to_its_checkpoint_and_never_gates_the_review() {
+        use hvc_core::persistence_service::ConvergenceStatus;
+        let reached = ConvergenceStatus {
+            applies: true,
+            threshold: 2,
+            rounds: 2,
+            ..Default::default()
+        };
+        let mut state = HitlReviewState::default();
+        state.load_checkpoint(Some(&pulse("first")), Some(checkpoint("first")));
+        let (generation, first) = state.begin_documents().unwrap();
+        state.finish_documents(generation, &first, Ok(documents()));
+        assert!(!state.finish_review_context(
+            generation + 1,
+            &first,
+            Ok(None),
+            Ok(Some(reached.clone()))
+        ));
+        assert!(!state.beyond_threshold(), "a stale read is ignored");
+        assert!(state.finish_review_context(
+            generation,
+            &first,
+            Err("unreadable".into()),
+            Ok(Some(reached.clone()))
+        ));
+        assert!(state.review_inputs.is_none());
+        assert!(state.beyond_threshold());
+        assert!(state.can_approve(), "rounds never gate approval");
+        // Below the threshold, or before pipeline v4, nothing is required.
+        state.convergence = Some(ConvergenceStatus {
+            rounds: 1,
+            ..reached.clone()
+        });
+        assert!(!state.beyond_threshold());
+        state.convergence = Some(ConvergenceStatus {
+            applies: false,
+            ..reached.clone()
+        });
+        assert!(!state.beyond_threshold());
+        // A new checkpoint starts without the previous one's context.
+        state.convergence = Some(reached);
+        state.load_checkpoint(Some(&pulse("second")), Some(checkpoint("second")));
+        assert!(state.convergence.is_none() && state.review_inputs.is_none());
     }
 }

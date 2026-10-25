@@ -51,6 +51,9 @@ pub(crate) struct FailureCheckpointState {
     /// permits for a composed stage (ADR-022); `None` resolves to the
     /// checkpoint's primary target.
     pub(crate) revision_target: Option<hvc_core::persistence_service::PulsationStage>,
+    /// The pulsation's revision rounds (ADR-032 M4): a failure-path revision
+    /// is a human round too.
+    pub(crate) convergence: Option<hvc_core::persistence_service::ConvergenceStatus>,
     load_generation: u64,
 }
 
@@ -80,8 +83,35 @@ impl FailureCheckpointState {
             self.busy = false;
             self.error = None;
             self.revision_target = None;
+            self.convergence = None;
         }
         self.checkpoint = checkpoint;
+    }
+
+    /// The round count read with the detail; a failed read leaves it absent.
+    pub(crate) fn finish_convergence(
+        &mut self,
+        generation: u64,
+        checkpoint_id: &str,
+        result: Result<Option<hvc_core::persistence_service::ConvergenceStatus>, String>,
+    ) -> bool {
+        if generation != self.load_generation
+            || self
+                .checkpoint
+                .as_ref()
+                .is_none_or(|c| c.checkpoint_id != checkpoint_id)
+        {
+            return false;
+        }
+        self.convergence = result.ok().flatten();
+        true
+    }
+
+    /// Whether a further revision needs an explicit decision.
+    pub(crate) fn beyond_threshold(&self) -> bool {
+        self.convergence
+            .as_ref()
+            .is_some_and(hvc_core::persistence_service::ConvergenceStatus::threshold_reached)
     }
 
     /// The revision targets the host permits: the composed set when the

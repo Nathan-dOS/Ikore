@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use hvc_contracts::{
     AgentExecutionTarget, AgentRole, AgentTimeoutPolicy, CliTimeoutBudget, PulsationStage,
-    ResponseFormat, STAGES, TimeoutReason, TokenCounts, UnitDispatch, UsageTransport,
-    canonical_stage, parse_stage, stage_role,
+    ResponseFormat, STAGES, TimeoutReason, TokenCounts, UnitContextScope, UnitDispatch,
+    UsageTransport, canonical_stage, parse_stage, stage_role,
 };
 use serde_json::json;
 
@@ -187,14 +187,38 @@ fn unit_dispatch_preserves_frozen_profile_attribution_fields() {
         frozen_transport: "cli_process".into(),
         frozen_backend: Some("codex".into()),
         frozen_model: "fixture-model".into(),
+        context_scope: UnitContextScope::Workspace,
     };
     let wire = json!({
         "stageExecutionId": "stage-1", "unitId": "unit-1", "attemptId": "attempt-1",
         "executorKind": "implement_batch", "frozenTransport": "cli_process",
-        "frozenBackend": "codex", "frozenModel": "fixture-model"
+        "frozenBackend": "codex", "frozenModel": "fixture-model",
+        "contextScope": "workspace"
     });
     assert_eq!(serde_json::to_value(&unit).unwrap(), wire);
     assert_eq!(serde_json::from_value::<UnitDispatch>(wire).unwrap(), unit);
+    // A request written before ADR-032 keeps the workspace scope.
+    let earlier = json!({
+        "stageExecutionId": "stage-1", "unitId": "unit-1", "attemptId": "attempt-1",
+        "executorKind": "implement_batch", "frozenTransport": "cli_process",
+        "frozenBackend": "codex", "frozenModel": "fixture-model"
+    });
+    assert_eq!(
+        serde_json::from_value::<UnitDispatch>(earlier).unwrap(),
+        unit
+    );
+    let reviewer = json!({
+        "stageExecutionId": "stage-1", "unitId": "unit-1", "attemptId": "attempt-1",
+        "executorKind": "integration_reviewer", "frozenTransport": "cli",
+        "frozenBackend": "claude", "frozenModel": "fixture-model",
+        "contextScope": "host_context_only"
+    });
+    assert_eq!(
+        serde_json::from_value::<UnitDispatch>(reviewer)
+            .unwrap()
+            .context_scope,
+        UnitContextScope::HostContextOnly
+    );
 }
 
 #[test]

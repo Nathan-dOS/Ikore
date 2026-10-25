@@ -11,7 +11,7 @@ pub mod store;
 
 pub use html::{CONTENT_SECURITY_POLICY, SafeHtml, escape};
 pub use pulsation::{
-    FileChange, LineCounts, PulsationReport, RejectedOutput, ReportCheck, ReportCriterion,
-    ReportFile, ReportOutcome, ReportPlanQuota, ReportPulsation, ReportRun, ReportStage,
-    ReportTokens, render_pulsation_report,
+    FileChange, LineCounts, PulsationReport, RejectedOutput, ReportCheck, ReportConvergence,
+    ReportCriterion, ReportFile, ReportGap, ReportOutcome, ReportPlanQuota, ReportPulsation,
+    ReportReview, ReportRun, ReportStage, ReportTokens, render_pulsation_report,
 };

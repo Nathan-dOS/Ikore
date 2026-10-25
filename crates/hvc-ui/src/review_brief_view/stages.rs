@@ -21,12 +21,12 @@ use crate::theme;
 use crate::widgets::icon;
 
 /// A full-width card, like the criteria card: rows need the width.
-fn wide_card(selector: &'static str) -> gpui::Div {
+pub(super) fn wide_card(selector: &'static str) -> gpui::Div {
     card(selector).w_full()
 }
 
 /// An icon and a word in one colour, never shrinking.
-fn badge(glyph: Icon, ink: gpui::Rgba, word: impl Into<SharedString>) -> AnyElement {
+pub(super) fn badge(glyph: Icon, ink: gpui::Rgba, word: impl Into<SharedString>) -> AnyElement {
     div()
         .flex_shrink_0()
         .flex()
@@ -40,7 +40,7 @@ fn badge(glyph: Icon, ink: gpui::Rgba, word: impl Into<SharedString>) -> AnyElem
 }
 
 /// One wrapping line of muted detail.
-fn detail(text: impl Into<SharedString>) -> AnyElement {
+pub(super) fn detail(text: impl Into<SharedString>) -> AnyElement {
     div()
         .min_w_0()
         .text_xs()
@@ -49,7 +49,7 @@ fn detail(text: impl Into<SharedString>) -> AnyElement {
         .into_any_element()
 }
 
-fn empty(text: &'static str) -> AnyElement {
+pub(super) fn empty(text: &'static str) -> AnyElement {
     div()
         .text_sm()
         .text_color(theme::text_muted())
@@ -58,7 +58,11 @@ fn empty(text: &'static str) -> AnyElement {
 }
 
 /// `key` in bold, a badge, and nothing else on the line.
-fn row_head(selector: String, key: &str, badge_element: AnyElement) -> gpui::Stateful<gpui::Div> {
+pub(super) fn row_head(
+    selector: String,
+    key: &str,
+    badge_element: AnyElement,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(SharedString::from(selector.clone()))
         .debug_selector(move || selector.clone())

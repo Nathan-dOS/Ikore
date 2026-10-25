@@ -270,6 +270,7 @@ async fn antigravity_effort_the_model_lacks_is_refused_on_save_and_before_launch
                 frozen_transport: "cli".into(),
                 frozen_backend: Some("antigravity".into()),
                 frozen_model: "gpt-oss-120b".into(),
+                context_scope: Default::default(),
             }),
             ..DispatchPolicy::default()
         },

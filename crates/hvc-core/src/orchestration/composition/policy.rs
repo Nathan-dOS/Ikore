@@ -40,10 +40,16 @@ impl EditOp {
 #[serde(rename_all = "snake_case")]
 pub enum ToolPolicy {
     /// Detached structured response; the prompt already carries the context.
+    /// Declarative: a CLI worker still runs in the sanitized workspace
+    /// snapshot under the pipeline hardening (read-only tools, no shell).
     None,
     /// Read-only inspection scoped to the delivered inputs, when the adapter
     /// can enforce that scope. Writes and shell are never granted.
     ReadOnlyScoped,
+    /// Enforced: the worker reads only the host-selected context of its
+    /// prompt. A CLI worker runs in an empty directory under the Companion
+    /// hardening; a custom CLI adapter is refused (ADR-032).
+    HostContextOnly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -111,9 +117,9 @@ const TEST_REPAIR_BRIEF: &str = "ROLE: Fix the listed diagnostics in this unit's
 DO NOT: change what a test asserts, remove assertions, touch production code, or alter coverage declarations to obtain a green result.
 DELIVER: a complete `TestPayloadV1` payload, exactly as the test author would: edits for every owned test destination (corrected where diagnosed), one `coverage` entry per assigned criterion, evidence and `usedRefs`.";
 
-const INTEGRATOR_BRIEF: &str = "ROLE: Assess, per listed criterion, whether the delivered final artifacts, contracts and host check results support it (`supported`), contradict it (`contradicted`) or leave it unverified (`unverified`), citing the handles you relied on.
-DO NOT: state that compilation or tests passed unless a delivered check handle reports it, rewrite code or tests, or invent a check result.
-DELIVER: an `IntegrationPayloadV1` payload with one assessment per listed criterion, `blockers` for anything that prevents completion, optional `documentationEdits` limited to delivered document handles, and `usedRefs`.";
+const INTEGRATOR_BRIEF: &str = "ROLE: Assess, per listed criterion, whether the candidate files, their base → candidate changes, the approved contracts and the host evidence support it (`supported`), contradict it (`contradicted`) or leave it unverified (`unverified`), citing the handles you relied on. Apply the project's review policy when one is delivered.
+DO NOT: state that compilation or tests passed unless the host evidence reports it, treat author claims as proof, mark `supported` a criterion that depends on an evidence gap, rewrite code or tests, edit candidate files, or invent a check result.
+DELIVER: an `IntegrationPayloadV1` payload with one assessment per listed criterion, `blockers` for anything that prevents completion, optional `documentationEdits` limited to delivered document handles marked owned, and `usedRefs`.";
 
 const NO_EDITS: &[EditOp] = &[];
 const NO_ROLES: &[SourceRole] = &[];
@@ -220,7 +226,7 @@ static POLICIES: [ExecutorPolicy; 8] = [
         may_ask: false,
         requires_evidence: false,
         repair: false,
-        tools: ToolPolicy::None,
+        tools: ToolPolicy::HostContextOnly,
     },
 ];
 
@@ -319,6 +325,15 @@ mod tests {
         // Repair specialties are bounded corrections and never get tools.
         for kind in [ExecutorKind::CodeRepairer, ExecutorKind::TestRepairer] {
             assert_eq!(policy_for(kind).tools, ToolPolicy::None);
+        }
+        // The reviewer reads only host-selected context (ADR-032), and it is
+        // the only specialty whose scope the transport enforces that way.
+        for kind in ExecutorKind::ALL {
+            assert_eq!(
+                policy_for(kind).tools == ToolPolicy::HostContextOnly,
+                kind == ExecutorKind::IntegrationReviewer,
+                "{kind:?}"
+            );
         }
         // No policy mentions publication, approval or shell in its deliverable.
         for kind in ExecutorKind::ALL {

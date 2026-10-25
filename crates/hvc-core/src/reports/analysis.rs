@@ -1026,6 +1026,8 @@ pub fn to_html_report(report: &Value) -> Result<PulsationReport, AnalysisError> 
                     .to_owned(),
             })
             .collect(),
+        review: None,
+        convergence: None,
     })
 }
 
