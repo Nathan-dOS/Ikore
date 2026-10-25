@@ -98,7 +98,7 @@ against the same tree:
 | GPUI release build | PASS | 521.194 s |
 | Windows GPUI smoke | PASS | 2.406 s |
 | Rust licenses and sources | PASS | 1.660 s |
-| Rust advisories | NOT EXECUTED: `cargo-audit` is not installed on this machine | 0.149 s |
+| Rust advisories | NOT EXECUTED in the gate: `cargo-audit` was not installed; run separately on merged `main`, FAIL (existing advisories) | 0.149 s |
 
 After the manual QA fixes below, formatting and strict Clippy passed again and
 the complete suite was re-run (2026-10-24 21:28–21:48 local time): **1,468
@@ -106,11 +106,19 @@ passed, 0 failed and 15 ignored across 51 result targets**, one more test than
 the gated run (the shared gap rule). Those fixes touch no build or dependency
 configuration; the gated release build predates them.
 
-The **overall gate is not approved**. The advisory step could not run, so this
-report makes no new advisory claim. `Cargo.toml` files and `Cargo.lock` are
-unchanged from `6810d94`, so the 9 dependency advisories recorded on
-2026-10-22 still stand until a re-run proves otherwise. The existing GPUI
-binary-distribution policy is unchanged. Neither blocker is waived.
+The **overall gate is not approved**. The advisory step could not run inside
+the gate. After `cargo-audit` 0.22.2 was installed under
+`target/tools/cargo-audit`, `scripts/audit-advisories.ps1` ran on merged `main`
+(`4ff7e00`, 2026-10-24 22:05 local time) with RustSec database commit
+`21d909e4c8bd4e14c7aea58bf980c881a0053ab1`. It reported the same
+9 dependency advisories recorded on 2026-10-22 (`quinn-proto`, `rustls`,
+`rustls-webpki` and `webpki-roots`) and no new vulnerability; `Cargo.toml`
+files and `Cargo.lock` are unchanged from `6810d94`. One informational
+`unsound` warning is new since 2026-10-22: RUSTSEC-2026-0386 in the already
+resolved `tokio 1.53.1`. The
+[dated advisory evidence](review-policy-advisories-2026-10-24.json) lists each
+advisory and the warning counts. The existing GPUI binary-distribution policy is
+unchanged. Neither blocker is waived.
 
 ## Manual QA in the application
 
