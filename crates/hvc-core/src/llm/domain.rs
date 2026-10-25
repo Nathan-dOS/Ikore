@@ -8,7 +8,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::error::LlmError;
 
-pub use hvc_contracts::llm::{AgentExecutionTarget, AgentRole, ResponseFormat, UnitDispatch};
+pub use hvc_contracts::llm::{
+    AgentExecutionTarget, AgentRole, ResponseFormat, UnitContextScope, UnitDispatch,
+};
 
 macro_rules! string_id {
     ($name:ident) => {

@@ -218,7 +218,7 @@ The CLI service, repository, adapters, process isolation and subscription quota
 live in `hvc-terminal`. Shared execution/stage/timeout/usage/redaction values live
 in `hvc-contracts`. Existing typed core APIs remain available through reexports
 and composition facades. Host authorization and global usage persistence stay
-in core. See [ADR-030](docs/adr/030-terminal-boundary.md) and the
+in core. See [ADR-031](docs/adr/031-terminal-boundary.md) and the
 [architecture](docs/architecture.md). The
 [2026-10-23 validation report](quality/rust-boundaries-validation-2026-10-23.md)
 records the test inventory, build measurements and remaining validation limits.

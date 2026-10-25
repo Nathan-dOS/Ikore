@@ -50,6 +50,24 @@ pub(crate) trait PulsationsBackend: Send + Sync {
     {
         Box::pin(async { Ok(None) })
     }
+    /// What the Integrator reviewed at the same checkpoint (ADR-032), or the
+    /// legacy notice. Backends without one report `None`.
+    fn review_inputs(
+        &self,
+        _checkpoint: hvc_core::persistence_service::HitlCheckpoint,
+    ) -> PulsationsFuture<
+        Option<hvc_core::orchestration::composition::review_boundary::CheckpointReviewInputs>,
+    > {
+        Box::pin(async { Ok(None) })
+    }
+    /// The pulsation's revision rounds (ADR-032 M4). Backends without one
+    /// report `None`, and no round line is drawn.
+    fn convergence(
+        &self,
+        _pulsation_id: String,
+    ) -> PulsationsFuture<Option<hvc_core::persistence_service::ConvergenceStatus>> {
+        Box::pin(async { Ok(None) })
+    }
     fn stage_failure_detail(
         &self,
         checkpoint_id: String,
@@ -132,6 +150,35 @@ fn observed_documents(
         document.name = hvc_core::sanitization::sanitized_observation(&document.name);
     }
     documents
+}
+
+/// Paths and gap subjects pass the same observation sanitization as the
+/// documents before they are drawn.
+fn observed_review_inputs(
+    inputs: hvc_core::orchestration::composition::review_boundary::CheckpointReviewInputs,
+) -> hvc_core::orchestration::composition::review_boundary::CheckpointReviewInputs {
+    use hvc_core::orchestration::composition::review_boundary::CheckpointReviewInputs;
+    let CheckpointReviewInputs::Recorded {
+        mut manifest,
+        changed_policy_files,
+    } = inputs
+    else {
+        return inputs;
+    };
+    let text = hvc_core::sanitization::sanitized_observation;
+    for gap in &mut manifest.gaps {
+        gap.subject = text(&gap.subject);
+    }
+    for candidate in &mut manifest.candidates {
+        candidate.path = text(&candidate.path);
+    }
+    for source in &mut manifest.sources {
+        source.path = text(&source.path);
+    }
+    CheckpointReviewInputs::Recorded {
+        manifest,
+        changed_policy_files,
+    }
 }
 
 pub(crate) fn has_sanitized_regions(text: &str) -> bool {
@@ -333,6 +380,41 @@ impl PulsationsBackend for CorePulsationsBackend {
                 .await
                 .map_err(|e| Self::worker_error("visualizer note", e))?
                 .map(|note| note.map(observed_visualization))
+                .map_err(|e| e.to_string())
+        })
+    }
+    fn review_inputs(
+        &self,
+        checkpoint: hvc_core::persistence_service::HitlCheckpoint,
+    ) -> PulsationsFuture<
+        Option<hvc_core::orchestration::composition::review_boundary::CheckpointReviewInputs>,
+    > {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || {
+                    core.persistence()
+                        .read_checkpoint_review_inputs(&checkpoint)
+                })
+                .await
+                .map_err(|e| Self::worker_error("review inputs", e))?
+                .map(|inputs| inputs.map(observed_review_inputs))
+                .map_err(|e| e.to_string())
+        })
+    }
+    fn convergence(
+        &self,
+        pulsation_id: String,
+    ) -> PulsationsFuture<Option<hvc_core::persistence_service::ConvergenceStatus>> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || core.persistence().convergence_status(&pulsation_id))
+                .await
+                .map_err(|e| Self::worker_error("revision rounds", e))?
+                .map(Some)
                 .map_err(|e| e.to_string())
         })
     }

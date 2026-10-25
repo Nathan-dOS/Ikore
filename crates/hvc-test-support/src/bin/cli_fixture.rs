@@ -185,6 +185,21 @@ fn main() {
             _ => panic!("Discovery cannot use Custom"),
         }
     }
+    // The composed Integrator reads host-selected context only (ADR-032):
+    // record what its working directory holds and the hardening it got.
+    if stdin.contains("`integration_reviewer` worker")
+        && let Ok(path) = env::current_exe()
+    {
+        let entries = std::fs::read_dir(".").map_or(0, |entries| entries.count());
+        let _ = std::fs::write(
+            path.with_file_name("integrator.fixture-scope"),
+            format!(
+                "entries={entries};project_files={};read_tools={}",
+                std::path::Path::new("src").exists(),
+                args.iter().any(|arg| arg == "Read,Glob,Grep")
+            ),
+        );
+    }
     if let Some(backend) = official_backend {
         if backend == "claude" && fixture_state == "synthetic_auth_error" {
             println!(

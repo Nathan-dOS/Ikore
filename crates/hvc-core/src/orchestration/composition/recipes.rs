@@ -24,6 +24,8 @@ use super::planner::{Destination, PathRef, ProposalNode, plan_units};
 use super::projection::{DeliveredSource, UnitPromptInputs};
 use super::references::{ReferenceTable, ReferenceTableBuilder, slug, vault_note_path};
 use super::render::{self, Frontmatter};
+use super::review_boundary::{EvidenceClass, ReviewBoundary, SourceOrigin};
+use super::review_policy::is_review_policy_path;
 use super::validate::{ApprovedContext, ValidatedChild};
 use super::{
     ArtifactKind, CheckSummaryV1, CompletedPayloadV1, CompositionError, ErrorCode, EvidenceItemV1,
@@ -91,6 +93,20 @@ pub struct SourceFile {
     pub path: RelPath,
     pub role: SourceRole,
     pub content: String,
+    /// Where the host found it; the Integrator classifies its inputs by it.
+    pub origin: SourceOrigin,
+}
+
+impl SourceFile {
+    /// A baseline workspace file named by the batch brief.
+    pub fn baseline(path: RelPath, content: impl Into<String>) -> Self {
+        Self {
+            role: role_for_path(&path),
+            path,
+            content: content.into(),
+            origin: SourceOrigin::Brief,
+        }
+    }
 }
 
 /// Everything a recipe needs, gathered by the host.
@@ -136,6 +152,9 @@ pub struct StagePreparation {
     pub decisions: Vec<String>,
     pub interfaces: Vec<InterfaceGroupV1>,
     pub extra_instructions: Option<String>,
+    /// The Integrator's classified inputs (ADR-032), attached by the host
+    /// after preparation; `None` for every other stage.
+    pub review: Option<std::sync::Arc<ReviewBoundary>>,
 }
 
 impl std::fmt::Debug for StagePreparation {
@@ -680,11 +699,29 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
             }
         }
         Stage::Integrator => {
-            let sources = add_sources(&mut builder, &inputs.sources, &mut delivered, true)?;
+            // ADR-032: stage documents (the Specification note, the Test
+            // report) are not delivered. Their normative content arrives
+            // typed, and the Test report mixes the author's narrative with
+            // the host's checks. The review policy has its own channel.
+            let reviewed = inputs
+                .sources
+                .iter()
+                .filter(|source| {
+                    source.origin.class() != EvidenceClass::StageDocument
+                        && !is_review_policy_path(source.path.as_str())
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let sources = add_sources(&mut builder, &reviewed, &mut delivered, true)?;
+            // Only baseline documents stay editable: the reviewer never
+            // edits the candidate it reviews.
             let owned = sources
                 .iter()
-                .zip(&inputs.sources)
-                .filter(|(_, source)| source.role == SourceRole::Document)
+                .zip(&reviewed)
+                .filter(|(_, source)| {
+                    source.role == SourceRole::Document
+                        && source.origin.class() == EvidenceClass::BaselineContext
+                })
                 .map(|(handle, _)| handle.clone())
                 .collect::<Vec<_>>();
             extra = Some(batch_guidance(manifest, inputs));
@@ -706,6 +743,13 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
     let table = builder.build();
     let mut drafts = drafts;
     for draft in &mut drafts {
+        // A review policy is never a destination of any stage (ADR-032).
+        draft.owned_destination_refs.retain(|handle| {
+            table
+                .entry(handle)
+                .and_then(ReferenceEntryV1::relative_path)
+                .is_none_or(|path| !is_review_policy_path(path.as_str()))
+        });
         if draft.criterion_refs.is_empty() {
             draft.criterion_refs = all_criteria(&table);
         }
@@ -738,6 +782,7 @@ pub fn prepare(stage: Stage, inputs: &StageInputs) -> Result<StagePreparation, C
         decisions,
         interfaces,
         extra_instructions: extra,
+        review: None,
     })
 }
 
@@ -1081,6 +1126,7 @@ pub fn prompt_inputs<'a>(
         dependency_outputs: Vec::new(),
         correction: None,
         extra_instructions: preparation.extra_instructions.as_deref(),
+        review: preparation.review.as_deref(),
     }
 }
 
@@ -2054,6 +2100,7 @@ mod tests {
             path: RelPath::new("src/auth.rs").unwrap(),
             role: SourceRole::Source,
             content: "fn a() {}\n".into(),
+            origin: SourceOrigin::Brief,
         };
         assert_eq!(
             default_test_destination("User Login", &[src])
@@ -2147,6 +2194,7 @@ mod tests {
             path: RelPath::new("src/auth.rs").unwrap(),
             role: SourceRole::Source,
             content: "fn a() {}\n".into(),
+            origin: SourceOrigin::Brief,
         };
         let intake = prepare(Stage::Intake, &inputs(vec![src.clone()], vec![])).unwrap();
         assert_eq!(intake.drafts.len(), 1);
@@ -2199,11 +2247,13 @@ mod tests {
             path: RelPath::new("src/auth.rs").unwrap(),
             role: SourceRole::Source,
             content: "fn a() {}\nfn b() {}\n".into(),
+            origin: SourceOrigin::Brief,
         };
         let doc = SourceFile {
             path: RelPath::new("docs/auth.md").unwrap(),
             role: SourceRole::Document,
             content: "# Auth\n".into(),
+            origin: SourceOrigin::Brief,
         };
         let mut stage_inputs = inputs(
             vec![src.clone(), doc.clone()],
@@ -2305,6 +2355,67 @@ mod tests {
             integrator.drafts[0].owned_destination_refs,
             vec![Handle::new("src_2").unwrap()]
         );
+        // ADR-032: stage documents and the review policy never reach the
+        // reviewer, and a document a stage published is a candidate it
+        // reads but cannot edit. No stage owns the review policy.
+        let mut reviewed = stage_inputs.clone();
+        for (path, origin) in [
+            (
+                "knowledge/obsidian/tests/login.md",
+                SourceOrigin::StageArtifact {
+                    stage: Stage::Test,
+                    artifact_kind: "validation_report".into(),
+                },
+            ),
+            (
+                "knowledge/obsidian/features/login.md",
+                SourceOrigin::StageArtifact {
+                    stage: Stage::Specification,
+                    artifact_kind: "specification".into(),
+                },
+            ),
+            (
+                "docs/changelog.md",
+                SourceOrigin::StageArtifact {
+                    stage: Stage::Code,
+                    artifact_kind: "documentation".into(),
+                },
+            ),
+            ("REVIEW.md", SourceOrigin::Brief),
+        ] {
+            reviewed.sources.push(SourceFile {
+                path: RelPath::new(path).unwrap(),
+                role: SourceRole::Document,
+                content: "# Note\n".into(),
+                origin,
+            });
+        }
+        let paths = |table: &ReferenceTable, handles: &[Handle]| {
+            handles
+                .iter()
+                .filter_map(|handle| table.entry(handle)?.relative_path())
+                .map(|path| path.as_str().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let integrator = prepare(Stage::Integrator, &reviewed).unwrap();
+        let draft = &integrator.drafts[0];
+        let delivered = paths(&integrator.table, &draft.input_refs);
+        assert!(delivered.contains(&"docs/changelog.md".to_owned()));
+        for hidden in [
+            "knowledge/obsidian/tests/login.md",
+            "knowledge/obsidian/features/login.md",
+            "REVIEW.md",
+        ] {
+            assert!(!delivered.contains(&hidden.to_owned()), "{hidden}");
+        }
+        assert_eq!(
+            paths(&integrator.table, &draft.owned_destination_refs),
+            ["docs/auth.md"]
+        );
+        let code = prepare(Stage::Code, &reviewed).unwrap();
+        let owned = paths(&code.table, &code.drafts[0].owned_destination_refs);
+        assert!(owned.contains(&"docs/auth.md".to_owned()), "{owned:?}");
+        assert!(!owned.contains(&"REVIEW.md".to_owned()), "{owned:?}");
         // Payload records round-trip through the legacy artifact rows.
         let rows = vec![
             (
@@ -2567,6 +2678,7 @@ mod tests {
                 path: RelPath::new(*path).unwrap(),
                 role: SourceRole::Source,
                 content: "x".repeat(8_000),
+                origin: SourceOrigin::Brief,
             })
             .collect();
         let revision = units(published, vec![]);

@@ -24,7 +24,7 @@ use crate::host::{
     LlmRequest, MAX_REDACTION_SPANS, PreparedModelInput, RedactionResult,
     SANITIZATION_POLICY_VERSION, TerminalHost,
 };
-use hvc_contracts::{AgentRole, ResponseFormat};
+use hvc_contracts::{AgentRole, ResponseFormat, UnitContextScope};
 
 mod adapters;
 mod codex_model_provenance;
@@ -5832,11 +5832,15 @@ impl TerminalService {
         let feature_discovery =
             request.pulsation_id.is_none() && request.job_chain.starts_with("feature:");
         let notes_scribe = agent_role == AgentRole::NotesScribe;
-        // Both read only host-selected text, so both get the Companion's restrictions.
-        let companion_scoped = feature_discovery || notes_scribe;
+        let host_context_only = cli_context_scope(request)?;
+        // All three read only host-selected text, so all get the Companion's restrictions.
+        let companion_scoped = feature_discovery || notes_scribe || host_context_only;
         if companion_scoped && config.backend == CliBackend::Custom {
             return Err(TerminalError::Validation(if notes_scribe {
                 "The Notes Scribe requires an official read-only CLI adapter or API transport"
+                    .into()
+            } else if host_context_only {
+                "The composed Integrator requires an official read-only CLI adapter or API transport"
                     .into()
             } else {
                 "Feature discovery requires an official read-only CLI adapter or API transport"
@@ -7979,6 +7983,23 @@ fn copy_safe_environment(command: &mut Command) {
             command.env(name, value);
         }
     }
+}
+
+/// Whether a composed unit must read only the host-selected context of its
+/// prompt (ADR-032). The composed Integrator always must: a request that
+/// names its specialty without that scope is refused, so a stale or forged
+/// dispatch cannot hand it the workspace snapshot back.
+pub(crate) fn cli_context_scope(request: &LlmRequest) -> Result<bool, TerminalError> {
+    let Some(unit) = request.dispatch.unit.as_ref() else {
+        return Ok(false);
+    };
+    let host_only = unit.context_scope == UnitContextScope::HostContextOnly;
+    if unit.executor_kind == "integration_reviewer" && !host_only {
+        return Err(TerminalError::Validation(
+            "The composed Integrator must run with host-selected context only".into(),
+        ));
+    }
+    Ok(host_only)
 }
 
 /// How much of the host's environment a spawned CLI is allowed to see.

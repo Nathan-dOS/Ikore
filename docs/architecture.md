@@ -2,7 +2,7 @@
 
 Hard Vibe Code is a local Windows x64 desktop application built with Rust and
 GPUI. The UI and domain services share one process and use typed Rust calls.
-The terminal and shared-contract boundaries were separated in ADR-030 (2026-10-23).
+The terminal and shared-contract boundaries were separated in ADR-031 (2026-10-23).
 
 | Crate | Responsibility |
 |---|---|
@@ -32,7 +32,7 @@ workspace projection, output sanitization and global usage recording. A candidat
 input proof is not authority: core checks its concrete type and exact prompt
 before returning a validated projection. Privileged range authorization remains
 private to core. SQLite migrations remain core-owned; the terminal repository
-uses that same migrated database. See [ADR-030](adr/030-terminal-boundary.md).
+uses that same migrated database. See [ADR-031](adr/031-terminal-boundary.md).
 
 ## Execution and review
 

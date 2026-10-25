@@ -1,9 +1,9 @@
 //! Atomic result acceptance, HITL and host publication, admitted by the M2 coordinator.
 use super::{
-    ApplyHitlDecisionRequest, ApplyHitlDecisionResponse, CancellationToken, Connection, HashMap,
-    HashSet, HitlCheckpoint, HitlDecision, HitlReviewDocument, Job, JobStatus, OptionalExtension,
-    Path, PersistenceService, PersistenceServiceError, Pulsation, PulsationStage, PulsationStatus,
-    StageExecutionResult, Uuid, params,
+    ApplyHitlDecisionRequest, ApplyHitlDecisionResponse, CancellationToken, Connection,
+    ConvergenceAck, HashMap, HashSet, HitlCheckpoint, HitlDecision, HitlReviewDocument, Job,
+    JobStatus, OptionalExtension, Path, PersistenceService, PersistenceServiceError, Pulsation,
+    PulsationStage, PulsationStatus, StageExecutionResult, Uuid, params,
 };
 use crate::orchestration::{
     ArtifactAcceptance, ArtifactHandoff, ArtifactLanguageGuard, ContentSha256, ContractError,
@@ -20,6 +20,76 @@ pub(super) mod tests;
 
 fn invalid(error: impl std::fmt::Display) -> PersistenceServiceError {
     PersistenceServiceError::Validation(error.to_string())
+}
+
+/// Base bytes are stored up to this size; larger files keep only their hash.
+const MAX_BASE_BYTES: usize = 256 * 1024;
+
+/// The base of one publication (ADR-032), observed before the replacement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PublicationBase {
+    pub(super) state: &'static str,
+    pub(super) sha256: Option<String>,
+    pub(super) content: Option<String>,
+    pub(super) byte_len: Option<i64>,
+    pub(super) reason: Option<&'static str>,
+}
+
+/// What `path` holds before a publication that expects `expected` and
+/// writes `desired`. A file that already holds `desired` is a replay after a
+/// crash: its pre-publication bytes are gone, so only the expected hash is
+/// recorded and the candidate is never mistaken for the base.
+pub(super) fn publication_base(
+    root: &Path,
+    path: &str,
+    expected: &ExpectedFileContent,
+    desired: &str,
+) -> PublicationBase {
+    let ExpectedFileContent::Present(sha) = expected else {
+        return PublicationBase {
+            state: "absent",
+            sha256: None,
+            content: None,
+            byte_len: None,
+            reason: None,
+        };
+    };
+    let unstored = |reason| PublicationBase {
+        state: "present_unstored",
+        sha256: Some(sha.as_str().to_owned()),
+        content: None,
+        byte_len: None,
+        reason: Some(reason),
+    };
+    if sha.as_str() != desired
+        && publication::observed_hash(root, path)
+            .ok()
+            .flatten()
+            .is_some_and(|hash| hash.as_str() == desired)
+    {
+        return unstored("replayed");
+    }
+    match crate::repository_context::RepositoryContext::new(root)
+        .and_then(|repository| repository.read_original_for_sanitization(path))
+    {
+        Ok(text) if ContentSha256::of(text.as_bytes()).as_str() == sha.as_str() => {
+            if text.len() > MAX_BASE_BYTES {
+                PublicationBase {
+                    byte_len: Some(text.len() as i64),
+                    ..unstored("too_large")
+                }
+            } else {
+                PublicationBase {
+                    state: "present",
+                    sha256: Some(sha.as_str().to_owned()),
+                    byte_len: Some(text.len() as i64),
+                    content: Some(text),
+                    reason: None,
+                }
+            }
+        }
+        _ => unstored("unreadable"),
+    }
 }
 
 /// Fails unless `checkpoint` is its pulsation's only waiting artifact review,
@@ -309,6 +379,16 @@ impl PersistenceService {
         &self,
         request: ApplyHitlDecisionRequest,
     ) -> Result<ApplyHitlDecisionResponse, PersistenceServiceError> {
+        self.apply_hitl_decision_with_convergence(request, None)
+    }
+
+    /// `ack` is the developer's explicit decision once the pulsation reached
+    /// its revision-round threshold (ADR-032); below it, it is ignored.
+    pub fn apply_hitl_decision_with_convergence(
+        &self,
+        request: ApplyHitlDecisionRequest,
+        ack: Option<ConvergenceAck>,
+    ) -> Result<ApplyHitlDecisionResponse, PersistenceServiceError> {
         if request
             .feedback
             .as_ref()
@@ -340,6 +420,19 @@ impl PersistenceService {
                 "Checkpoint or version stale or ambiguous. Refresh before deciding.",
             ));
         }
+        // ADR-032: counted before this checkpoint resolves; beyond the
+        // threshold the revision needs an explicit decision.
+        let replan_target = if request.decision == HitlDecision::RequestRevision {
+            Self::admit_revision_round(
+                &tx,
+                pulse,
+                &request.checkpoint_id,
+                current.stage,
+                ack.as_ref(),
+            )?
+        } else {
+            None
+        };
         let now = Self::now_iso();
         let resolution = match request.decision {
             HitlDecision::Approve => "approved",
@@ -371,8 +464,11 @@ impl PersistenceService {
             }
             HitlDecision::RequestRevision => {
                 tx.execute("UPDATE pulsations SET integration_checkpoint_id=NULL,integration_state_version=NULL WHERE id=?1", [pulse])?;
-                let target = revision_target(current.stage)
-                    .ok_or_else(|| invalid("This stage has no HITL review."))?;
+                let target = match replan_target {
+                    Some(target) => target,
+                    None => revision_target(current.stage)
+                        .ok_or_else(|| invalid("This stage has no HITL review."))?,
+                };
                 Self::supersede_stage_executions(&tx, pulse, target)?;
                 let target_index = catalog::STAGES
                     .iter()
@@ -578,6 +674,76 @@ impl PersistenceService {
         };
         brief.revision = revision_diff(&tx, id, &inputs.record, &context)?;
         Ok(Some(brief))
+    }
+
+    /// The classified inputs the Integrator reviewed (ADR-032) for its
+    /// still-current checkpoint: `LegacyPipeline` before pipeline v4, `None`
+    /// at other stages or when nothing was recorded. Review policy files are
+    /// hashed again, so an edit made after the review shows as changed.
+    pub fn read_checkpoint_review_inputs(
+        &self,
+        checkpoint: &HitlCheckpoint,
+    ) -> Result<Option<composition::review_boundary::CheckpointReviewInputs>, PersistenceServiceError>
+    {
+        use composition::review_boundary::CheckpointReviewInputs;
+        let mut db = self.connection()?;
+        let tx = db.transaction()?;
+        require_current_review(&tx, checkpoint)?;
+        let (stage, job, generation, version, root): (
+            String,
+            Option<String>,
+            Option<u64>,
+            u8,
+            String,
+        ) = tx.query_row(
+            "SELECT c.stage,c.producer_job_id,c.generation,p.pipeline_version,j.workspace_path
+             FROM checkpoints c JOIN pulsations p ON p.id=c.pulsation_id JOIN projects j ON j.id=p.project_id
+             WHERE c.id=?1",
+            [&checkpoint.checkpoint_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        if catalog::parse_stage(&stage) != Some(PulsationStage::Integrator) {
+            return Ok(None);
+        }
+        if !PipelineVersion::from_db(version).is_some_and(|version| version.supports_composition())
+        {
+            return Ok(Some(CheckpointReviewInputs::LegacyPipeline));
+        }
+        let (Some(job), Some(generation)) = (job, generation) else {
+            return Ok(None);
+        };
+        let Some(execution) = Self::find_execution_for_job(&tx, &job, generation)? else {
+            return Ok(None);
+        };
+        let Some(manifest) = Self::review_inputs_of(&tx, &execution.id)? else {
+            return Ok(None);
+        };
+        drop(tx);
+        let repository = crate::repository_context::RepositoryContext::new(Path::new(&root)).ok();
+        let changed_policy_files = manifest
+            .policy
+            .loaded()
+            .filter(|file| {
+                let current = repository
+                    .as_ref()
+                    .and_then(|repository| repository.read_document(&file.path).ok())
+                    .map(|text| composition::Sha256Hex::of(text.as_bytes()).to_string());
+                current != file.sha256
+            })
+            .map(|file| file.path.clone())
+            .collect();
+        Ok(Some(CheckpointReviewInputs::Recorded {
+            manifest: Box::new(manifest),
+            changed_policy_files,
+        }))
     }
 
     pub(super) fn load_stage_handoff(
@@ -1319,6 +1485,10 @@ impl PersistenceService {
             .map_err(invalid)?
             .map(ExpectedFileContent::Present)
             .unwrap_or(ExpectedFileContent::Absent);
+        // ADR-032: what the path held before this pulsation replaced it,
+        // read before the replacement and recorded with it below.
+        let base = (class != "background")
+            .then(|| publication_base(Path::new(&root), &path, &expected, &desired));
         let result = if let Err(error) = sanitization_guard {
             Err(invalid(error))
         } else if ContentSha256::of(content.as_bytes()).as_str() != desired
@@ -1363,6 +1533,25 @@ impl PersistenceService {
                     return Ok(());
                 }
                 tx.execute("INSERT INTO project_file_baselines(project_id,relative_path,content_sha256,updated_at) SELECT project_id,relative_path,desired_sha256,?2 FROM artifact_publications WHERE artifact_id=?1 ON CONFLICT(project_id,relative_path) DO UPDATE SET content_sha256=excluded.content_sha256,updated_at=excluded.updated_at",params![id,Self::now_iso()])?;
+                // The first publication of a path in this pulsation fixes its
+                // base; later revision rounds keep the pre-pulsation bytes.
+                if let Some(base) = &base {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO pulsation_file_bases(pulsation_id,path_key,relative_path,state,content_sha256,content,byte_len,reason,first_artifact_id,captured_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                        params![
+                            pulse,
+                            path.to_ascii_lowercase(),
+                            path,
+                            base.state,
+                            base.sha256,
+                            base.content,
+                            base.byte_len,
+                            base.reason,
+                            id,
+                            Self::now_iso()
+                        ],
+                    )?;
+                }
                 if path.starts_with("knowledge/obsidian/")
                     && Path::new(&path)
                         .extension()

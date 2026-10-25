@@ -164,9 +164,22 @@ This boundary covers host-provided content and a finite detector catalog, while
 native CLI tools remain available. See [secret sanitization](../secret-sanitization.md)
 and the [validation report](../../quality/secret-sanitization-validation-2026-10-22.md).
 
-## ADR-030: terminal and shared-contract boundaries
+## ADR-031: terminal and shared-contract boundaries
 
 CLI services, repository, adapters, processes and subscription quota belong to
 `hvc-terminal`; shared values belong to `hvc-contracts`. Core retains host
 authorization, orchestration, migrations and compatibility facades. See the
-[decision and validation requirements](030-terminal-boundary.md).
+[decision and validation requirements](031-terminal-boundary.md). This decision
+was first numbered ADR-030; its 2026-10-23 report keeps that label.
+
+## ADR-032: Integrator evidence boundary, review policy and convergence
+
+The composed Integrator receives classified inputs: candidate files with a
+sanitized base-to-candidate diff, baseline context, author claims labelled as
+narrative, structured host evidence and explicit evidence gaps. Gaps downgrade
+`supported` verdicts and never promote one. Stage documents are neither
+delivered nor editable, and a CLI reviewer reads host-selected context only.
+`REVIEW.md` is a read-only, budgeted review policy that no stage may publish.
+Human revision rounds beyond a configurable threshold need an explicit decision.
+See the [decision](032-integrator-review-boundary.md) and the
+[review policy](../review-policy.md).

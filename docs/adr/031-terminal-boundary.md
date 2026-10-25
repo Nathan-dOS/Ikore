@@ -1,6 +1,10 @@
-# ADR-030: terminal subsystem and shared contracts
+# ADR-031: terminal subsystem and shared contracts
 
 Date: 2026-10-23
+
+Numbering: recorded as ADR-030 on 2026-10-23 and renumbered on 2026-10-24,
+because ADR-030 is the secret sanitization decision. The 2026-10-23
+validation report keeps its original label.
 
 ## Context
 

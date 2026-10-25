@@ -25,6 +25,9 @@
 //! `--visualizer` enables the Visualizer (ADR-027 M5) and waits for the note
 //! of the parked checkpoint before the worker stops.
 //!
+//! `--review-policy` writes a project `REVIEW.md` first, so the Integrator brief
+//! shows the policy it reviewed under (ADR-032).
+//!
 //! `--report` writes the pulsation report (ADR-027 M6) and prints its path;
 //! it needs `--stage integrator`, where the report becomes available.
 use hvc_core::{
@@ -62,7 +65,10 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const SOURCE: &str = "pub struct Token {\n    pub expires_at: u64,\n}\n\npub fn validate_token(token: &Token, now: u64) -> bool {\n    let _ = (token, now);\n    true\n}\n";
+// The parameter is not called `token`: `token: &Token` reads as a sensitive
+// assignment to the secret redactor (ADR-030), whose edit guard then refuses
+// the scripted whole-file replacement and parks Code.
+const SOURCE: &str = "pub struct Token {\n    pub expires_at: u64,\n}\n\npub fn validate_token(candidate: &Token, now: u64) -> bool {\n    let _ = (candidate, now);\n    true\n}\n";
 
 struct Quiet;
 impl LlmEventSink for Quiet {
@@ -299,13 +305,14 @@ fn passing_check() -> Option<ValidationCommandProfileV1> {
     })
 }
 
-const USAGE: &str = "usage: review_brief_fixture NEW_DIRECTORY [--revised] [--visualizer] [--report] [--stage contract|test|integrator|failure]";
+const USAGE: &str = "usage: review_brief_fixture NEW_DIRECTORY [--revised] [--visualizer] [--report] [--review-policy] [--stage contract|test|integrator|failure]";
 
 fn main() {
     let root = PathBuf::from(std::env::args_os().nth(1).expect(USAGE));
     let mut revised = false;
     let mut visualizer = false;
     let mut report = false;
+    let mut review_policy = false;
     let mut target = "specification".to_owned();
     let mut options = std::env::args().skip(2);
     while let Some(option) = options.next() {
@@ -313,6 +320,7 @@ fn main() {
             "--revised" => revised = true,
             "--visualizer" => visualizer = true,
             "--report" => report = true,
+            "--review-policy" => review_policy = true,
             "--stage" => target = options.next().expect(USAGE),
             other => panic!("unknown option {other}; {USAGE}"),
         }
@@ -337,6 +345,13 @@ fn main() {
     bootstrap_greenfield_workspace(&workspace).unwrap();
     fs::create_dir_all(workspace.join("src")).unwrap();
     fs::write(workspace.join("src/auth.rs"), SOURCE).unwrap();
+    if review_policy {
+        fs::write(
+            workspace.join("REVIEW.md"),
+            "# Review policy\n\nTreat a token that expires exactly now as expired.\nFlag any change to the public signature of validate_token.\n",
+        )
+        .unwrap();
+    }
 
     let server = ScriptedHttpServer::respond_with(move |request| {
         if request.body.trim().is_empty() {

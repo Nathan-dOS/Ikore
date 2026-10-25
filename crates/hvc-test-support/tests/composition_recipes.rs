@@ -135,8 +135,9 @@ fn a_stage_whose_criteria_are_all_not_applicable_authors_no_test_and_the_report_
 fn the_integrator_receives_host_prechecks_and_a_recovery_command_is_idempotent_and_fenced() {
     let harness = Harness::start(|facts, _, request| {
         if facts.executor == "integration_reviewer" {
+            // ADR-032: pre-checks arrive as the reviewer's Host evidence.
             assert!(
-                request.body.contains("## Host pre-checks"),
+                request.body.contains("## Host evidence"),
                 "pre-checks reach the reviewer"
             );
             assert!(
@@ -148,13 +149,27 @@ fn the_integrator_receives_host_prechecks_and_a_recovery_command_is_idempotent_a
             );
             // Pre-checks name earlier stages' checks without a citable handle
             // ("Teste Haiku Only 1").
-            let prechecks = facts
-                .user_prompt
-                .split("## Host pre-checks")
-                .nth(1)
-                .and_then(|rest| rest.split("\n## ").next())
-                .unwrap();
+            let section = |title: &str| {
+                facts
+                    .user_prompt
+                    .split(title)
+                    .nth(1)
+                    .and_then(|rest| rest.split("\n## ").next())
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            let prechecks = section("## Host evidence");
+            assert!(
+                prechecks.contains("| code | fixture_compile | not_run |"),
+                "{prechecks}"
+            );
             assert!(!prechecks.contains("`fixture_compile`"), "{prechecks}");
+            // The check that never ran is an evidence gap; no criterion maps
+            // to it here, so it does not limit a verdict.
+            let gaps = section("## Evidence gaps");
+            assert!(gaps.contains("- `check_not_run`: The Code check"), "{gaps}");
+            assert!(!gaps.contains("(limits verdicts)"), "{gaps}");
+            assert!(!gaps.contains("`fixture_compile`"), "{gaps}");
             assert!(
                 facts
                     .user_prompt

@@ -118,6 +118,12 @@ pub(crate) fn publish(
     expected: &ExpectedFileContent,
     content: &str,
 ) -> Result<(), Error> {
+    // The project review policy is written by the developer only (ADR-032).
+    if super::composition::review_policy::is_review_policy_path(relative) {
+        return Err(forbidden(
+            "REVIEW.md is the project's review policy; no pipeline stage may publish it.",
+        ));
+    }
     if content.len() as u64 > MAX_ARTIFACT_BYTES || content.as_bytes().contains(&0) {
         return Err(forbidden("The artifact is binary or over the 1 MiB limit."));
     }

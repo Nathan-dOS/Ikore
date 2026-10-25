@@ -56,6 +56,9 @@ pub struct UnitPromptInputs<'a> {
     pub correction: Option<&'a CorrectionContext>,
     /// Recipe-specific guidance placed before the response contract.
     pub extra_instructions: Option<&'a str>,
+    /// The Integrator's classified inputs (ADR-032): policy, host evidence,
+    /// gaps, base → candidate changes and author claims, already sanitized.
+    pub review: Option<&'a super::review_boundary::ReviewBoundary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -525,7 +528,50 @@ pub fn render_unit_prompt(
             );
         }
     };
-    render_sources(&mut user, "Delivered content", &inputs.delivered);
+    match inputs.review {
+        Some(review) => {
+            // ADR-032: each class of the reviewer's inputs in its own section.
+            let section = |user: &mut String, title: &str, body: Option<&str>| {
+                if let Some(body) = body {
+                    let _ = writeln!(user, "## {title}\n\n{}\n", body.trim_end());
+                }
+            };
+            section(
+                &mut user,
+                "Review policy (read-only)",
+                review.sections.policy.as_deref(),
+            );
+            section(
+                &mut user,
+                "Host evidence",
+                Some(review.sections.host_evidence.as_str()),
+            );
+            section(&mut user, "Evidence gaps", review.sections.gaps.as_deref());
+            section(
+                &mut user,
+                "Changes (base → candidate)",
+                review.sections.changes.as_deref(),
+            );
+            let is_candidate = |source: &&DeliveredSource<'_>| {
+                table
+                    .entry(source.handle)
+                    .and_then(ReferenceEntryV1::relative_path)
+                    .is_some_and(|path| review.candidate_paths.contains(path.as_str()))
+            };
+            let (candidates, context): (Vec<_>, Vec<_>) =
+                inputs.delivered.iter().partition(is_candidate);
+            let candidates = candidates.into_iter().cloned().collect::<Vec<_>>();
+            let context = context.into_iter().cloned().collect::<Vec<_>>();
+            render_sources(&mut user, "Candidate files (final, read-only)", &candidates);
+            render_sources(&mut user, "Context files", &context);
+            section(
+                &mut user,
+                "Author claims (narrative, not evidence)",
+                review.sections.author_claims.as_deref(),
+            );
+        }
+        None => render_sources(&mut user, "Delivered content", &inputs.delivered),
+    }
     render_sources(&mut user, "Dependency outputs", &inputs.dependency_outputs);
 
     let unknowns = unit
@@ -827,6 +873,7 @@ mod tests {
             dependency_outputs: vec![],
             correction: None,
             extra_instructions: None,
+            review: None,
         };
         let prompt = render_unit_prompt(
             &plan,

@@ -267,6 +267,10 @@ struct RestoredSession {
 const ACTIVITY_COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 /// How often Review re-reads a Visualizer note still being written (ADR-027 M5).
 const VISUALIZER_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+/// ADR-032: shown when a plain revision is asked for beyond the threshold.
+const THRESHOLD_CHOICE: &str = "This pulsation reached its revision-round threshold. Write the reason in the feedback, then choose Continue revising or Replan from Specification, or reject.";
+const REASON_REQUIRED: &str =
+    "A decision beyond the revision threshold needs a reason: write it in the feedback first.";
 
 /// Per-tab attention counters shown as header badges and, unfolded, in the status bar. See the UI
 /// flow plan Part 4.4.
@@ -2416,6 +2420,16 @@ impl AppModel {
             } else {
                 None
             };
+            // ADR-032: what the Integrator reviewed and the round count. A
+            // legacy pulsation has no brief but still gets its notice.
+            let context = if brief.is_some() {
+                Some((
+                    backend.review_inputs(checkpoint.clone()).await,
+                    backend.convergence(checkpoint.pulsation_id.clone()).await,
+                ))
+            } else {
+                None
+            };
             let _ = this.update(cx, |model, cx| {
                 if model.workspace.read(cx).project_id != project_id {
                     return;
@@ -2429,6 +2443,14 @@ impl AppModel {
                             state
                                 .hitl
                                 .finish_visualization(generation, &checkpoint, visualization);
+                        }
+                        if let Some((review_inputs, convergence)) = context {
+                            state.hitl.finish_review_context(
+                                generation,
+                                &checkpoint,
+                                review_inputs,
+                                convergence,
+                            );
                         }
                     }
                 });
@@ -2478,16 +2500,32 @@ impl AppModel {
             return;
         };
         let project_id = self.workspace.read(cx).project_id.clone();
+        let pulsation_id = self
+            .pulsations
+            .read(cx)
+            .failure
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.pulsation_id.clone());
         self.failure_detail_task = Some(cx.spawn(async move |this, cx| {
             let result = backend.stage_failure_detail(checkpoint_id.clone()).await;
+            let convergence = match pulsation_id {
+                Some(pulsation_id) => backend.convergence(pulsation_id).await,
+                None => Ok(None),
+            };
             let _ = this.update(cx, |model, cx| {
                 if model.workspace.read(cx).project_id != project_id {
                     return;
                 }
                 model.pulsations.update(cx, |state, _| {
-                    state
+                    if state
                         .failure
-                        .finish_detail(generation, &checkpoint_id, result);
+                        .finish_detail(generation, &checkpoint_id, result)
+                    {
+                        state
+                            .failure
+                            .finish_convergence(generation, &checkpoint_id, convergence);
+                    }
                 });
                 cx.notify();
             });
@@ -2497,6 +2535,57 @@ impl AppModel {
     pub(crate) fn resolve_stage_failure(
         &mut self,
         decision: StageFailureDecision,
+        cx: &mut Context<Self>,
+    ) {
+        // ADR-032: beyond the round threshold the plain revision is gone;
+        // the developer picks Continue or Replan with a reason.
+        if decision == StageFailureDecision::RequestRevision
+            && self.pulsations.read(cx).failure.beyond_threshold()
+        {
+            self.pulsations.update(cx, |pulsations, _| {
+                pulsations.failure.show_feedback = true;
+                pulsations.failure.error = Some(THRESHOLD_CHOICE.into());
+            });
+            cx.notify();
+            return;
+        }
+        self.resolve_stage_failure_with(decision, None, cx);
+    }
+
+    /// A failure-path revision beyond the round threshold (ADR-032): the
+    /// guidance text is the decision's reason.
+    pub(crate) fn revise_failure_beyond_threshold(&mut self, replan: bool, cx: &mut Context<Self>) {
+        let Some(ack) = self.convergence_ack(replan, cx) else {
+            self.pulsations.update(cx, |pulsations, _| {
+                pulsations.failure.show_feedback = true;
+                pulsations.failure.error = Some(REASON_REQUIRED.into());
+            });
+            cx.notify();
+            return;
+        };
+        self.resolve_stage_failure_with(StageFailureDecision::RequestRevision, Some(ack), cx);
+    }
+
+    fn convergence_ack(
+        &self,
+        replan: bool,
+        cx: &gpui::App,
+    ) -> Option<hvc_core::persistence_service::ConvergenceAck> {
+        let reason = self.stage_feedback_input.read(cx).value().trim().to_owned();
+        if reason.is_empty() {
+            return None;
+        }
+        Some(if replan {
+            hvc_core::persistence_service::ConvergenceAck::Replan { reason }
+        } else {
+            hvc_core::persistence_service::ConvergenceAck::ContinueBeyondThreshold { reason }
+        })
+    }
+
+    fn resolve_stage_failure_with(
+        &mut self,
+        decision: StageFailureDecision,
+        ack: Option<hvc_core::persistence_service::ConvergenceAck>,
         cx: &mut Context<Self>,
     ) {
         self.confirm_failure_abort = false;
@@ -2538,7 +2627,7 @@ impl AppModel {
             let result = runtime
                 .spawn_blocking(move || {
                     core.persistence()
-                        .resolve_stage_failure_with_target(request, revision_target)
+                        .resolve_stage_failure_with_convergence(request, revision_target, ack)
                         .map(|_| ())
                         .map_err(|error| error.to_string())
                 })
@@ -3340,6 +3429,41 @@ impl AppModel {
     }
 
     pub(crate) fn apply_hitl_decision(&mut self, decision: HitlDecision, cx: &mut Context<Self>) {
+        // ADR-032: beyond the round threshold the plain revision is gone;
+        // the developer picks Continue or Replan with a reason.
+        if decision == HitlDecision::RequestRevision
+            && self.pulsations.read(cx).hitl.beyond_threshold()
+        {
+            self.pulsations.update(cx, |pulsations, _| {
+                pulsations.hitl.show_feedback = true;
+                pulsations.hitl.error = Some(THRESHOLD_CHOICE.into());
+            });
+            cx.notify();
+            return;
+        }
+        self.apply_hitl_decision_with(decision, None, cx);
+    }
+
+    /// A checkpoint revision beyond the round threshold (ADR-032): the
+    /// free-text feedback is the decision's reason.
+    pub(crate) fn revise_beyond_threshold(&mut self, replan: bool, cx: &mut Context<Self>) {
+        let Some(ack) = self.convergence_ack(replan, cx) else {
+            self.pulsations.update(cx, |pulsations, _| {
+                pulsations.hitl.show_feedback = true;
+                pulsations.hitl.error = Some(REASON_REQUIRED.into());
+            });
+            cx.notify();
+            return;
+        };
+        self.apply_hitl_decision_with(HitlDecision::RequestRevision, Some(ack), cx);
+    }
+
+    fn apply_hitl_decision_with(
+        &mut self,
+        decision: HitlDecision,
+        ack: Option<hvc_core::persistence_service::ConvergenceAck>,
+        cx: &mut Context<Self>,
+    ) {
         self.confirm_hitl_reject = false;
         self.confirm_stage_reject = false;
         self.confirm_failure_abort = false;
@@ -3380,7 +3504,7 @@ impl AppModel {
             let result = runtime
                 .spawn_blocking(move || {
                     core.persistence()
-                        .apply_hitl_decision(request)
+                        .apply_hitl_decision_with_convergence(request, ack)
                         .map(|_| ())
                         .map_err(|error| error.to_string())
                 })

@@ -13,6 +13,9 @@ use super::{
 };
 use crate::orchestration::SchemaV1;
 use crate::orchestration::composition::budget::{AccountLedger, Pool};
+use crate::orchestration::composition::review_boundary::{
+    BaseFact, BaseState, ReviewBoundary, ReviewInputManifestV1,
+};
 use crate::orchestration::composition::schema::SchemaFlavor;
 use crate::orchestration::composition::settings::CompositionSettings;
 use crate::orchestration::composition::validation::profile::detect_presets;
@@ -27,6 +30,7 @@ use crate::orchestration::composition::{
 };
 use crate::terminals::{AgentExecutionMode, CliBackend, SpecialtyOverride, ThinkingLevel};
 use crate::usage::UsageTotals;
+use std::collections::HashMap;
 
 fn protected_diagnostic(text: &str) -> String {
     crate::llm::adapter::sanitize_model_text(text)
@@ -235,6 +239,13 @@ impl PersistenceService {
                     validation_enabled,
                     qualified_recipes,
                     visualizer_enabled: extra["visualizerEnabled"].as_bool().unwrap_or(false),
+                    revision_round_threshold: extra["revisionRoundThreshold"]
+                        .as_u64()
+                        .and_then(|value| u32::try_from(value).ok())
+                        .filter(|value| {
+                            comp::settings::REVISION_ROUND_THRESHOLD_RANGE.contains(value)
+                        })
+                        .unwrap_or(comp::settings::DEFAULT_REVISION_ROUND_THRESHOLD),
                 }
             }
             None => CompositionSettings::default(),
@@ -266,6 +277,7 @@ impl PersistenceService {
         let extra = serde_json::json!({
             "qualifiedRecipes": settings.qualified_recipes,
             "visualizerEnabled": settings.visualizer_enabled,
+            "revisionRoundThreshold": settings.revision_round_threshold,
         })
         .to_string();
         db.execute(
@@ -656,6 +668,138 @@ impl PersistenceService {
                 Self::map_execution,
             )
             .optional()?)
+    }
+
+    /// The accepted execution of `stage` for one input revision. Request
+    /// revision keeps the input revision, so several executions of a stage
+    /// may share it; superseded ones never count (ADR-032).
+    pub(crate) fn accepted_execution_for(
+        db: &Connection,
+        pulsation_id: &str,
+        stage: PulsationStage,
+        input_revision: u64,
+    ) -> Result<Option<ExecutionRow>, PersistenceServiceError> {
+        Ok(db
+            .query_row(
+                "SELECT id,pulsation_id,job_id,parent_generation,parent_input_revision,parent_state_version,stage,budget_account_id,policy_snapshot_id,plan_json,status,execution_version,blocked_code,blocked_reason,predecessor_execution_id FROM stage_executions WHERE pulsation_id=?1 AND stage=?2 AND parent_input_revision=?3 AND status='accepted' ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                params![pulsation_id, stage.as_db_value(), input_revision],
+                Self::map_execution,
+            )
+            .optional()?)
+    }
+
+    /// The pre-pulsation base of every path this pulsation published, keyed
+    /// by the ASCII-lowercased path (ADR-032).
+    pub(crate) fn pulsation_file_bases(
+        db: &Connection,
+        pulsation_id: &str,
+    ) -> Result<HashMap<String, BaseFact>, PersistenceServiceError> {
+        let mut statement = db.prepare(
+            "SELECT path_key,state,content_sha256,reason,content FROM pulsation_file_bases WHERE pulsation_id=?1",
+        )?;
+        let rows = statement
+            .query_map([pulsation_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(key, state, sha256, reason, content)| {
+                let state = match state.as_str() {
+                    "absent" => BaseState::Absent,
+                    "present" if content.is_some() => BaseState::Present,
+                    "present" => {
+                        return (
+                            key,
+                            BaseFact {
+                                state: BaseState::PresentUnstored,
+                                sha256,
+                                reason: Some("purged".into()),
+                                content: None,
+                            },
+                        );
+                    }
+                    _ => BaseState::PresentUnstored,
+                };
+                (
+                    key,
+                    BaseFact {
+                        state,
+                        sha256,
+                        reason,
+                        content,
+                    },
+                )
+            })
+            .collect())
+    }
+
+    /// Paths this pulsation published in an earlier round whose artifact is
+    /// no longer accepted or candidate in `input_revision`.
+    pub(crate) fn orphaned_publications(
+        db: &Connection,
+        pulsation_id: &str,
+        input_revision: u64,
+    ) -> Result<Vec<String>, PersistenceServiceError> {
+        let mut statement = db.prepare(
+            "SELECT b.relative_path FROM pulsation_file_bases b WHERE b.pulsation_id=?1 AND NOT EXISTS(SELECT 1 FROM artifacts a WHERE a.pulsation_id=b.pulsation_id AND lower(a.relative_path)=b.path_key AND a.input_revision=?2 AND a.acceptance IN ('accepted','candidate')) ORDER BY b.path_key",
+        )?;
+        let rows = statement
+            .query_map(params![pulsation_id, input_revision], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Records the Integrator's classified inputs with its execution.
+    pub(crate) fn record_review_inputs(
+        db: &Connection,
+        execution_id: &str,
+        pulsation_id: &str,
+        input_revision: u64,
+        review: &ReviewBoundary,
+    ) -> Result<(), PersistenceServiceError> {
+        let json = serde_json::to_string(&review.manifest)
+            .map_err(|e| PersistenceServiceError::Runtime(e.to_string()))?;
+        db.execute(
+            "INSERT INTO integrator_review_inputs(stage_execution_id,pulsation_id,input_revision,manifest_json,manifest_sha256,review_policy_state,review_policy_sha256,gap_count,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![
+                execution_id,
+                pulsation_id,
+                input_revision,
+                json,
+                review.manifest_sha256,
+                review.manifest.policy.state.as_str(),
+                review.manifest.policy.sha256(),
+                review.manifest.gap_count() as i64,
+                Self::now_iso(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The classified inputs recorded for an Integrator execution, if any.
+    pub(crate) fn review_inputs_of(
+        db: &Connection,
+        execution_id: &str,
+    ) -> Result<Option<ReviewInputManifestV1>, PersistenceServiceError> {
+        db.query_row(
+            "SELECT manifest_json FROM integrator_review_inputs WHERE stage_execution_id=?1",
+            [execution_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|e| PersistenceServiceError::Runtime(e.to_string()))
+        })
+        .transpose()
     }
 
     /// Compare-and-swap status transition; bumps `execution_version`.

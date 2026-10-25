@@ -9,9 +9,11 @@
 //! Contract, Test and Integrator checkpoints draw their own stage visual, and a stage
 //! failure lists what each permitted decision does (M4, `stages`).
 
+mod review_inputs;
 mod stages;
 mod visualizer;
 
+pub(crate) use review_inputs::review_inputs_panel;
 pub(crate) use stages::failure_choices_card;
 
 use std::collections::HashMap;
