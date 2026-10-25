@@ -155,7 +155,8 @@ docker compose --profile tools run --rm fmt-check
 
 `test-runner` runs `cargo test-headless`. The Cargo caches and `target/` live
 in named volumes; in CI, the `docker-compose.ci.yml` override stores them in
-`.ci-cache/`. Linux validation has known failures and does not certify the
+`.ci-cache/` and builds without debug information so the test binaries fit the
+runner's disk. Linux validation has known failures and does not certify the
 Windows desktop, so the CI job is still informational.
 
 ## Paridade e desempenho
