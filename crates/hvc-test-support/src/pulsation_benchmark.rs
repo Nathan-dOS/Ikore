@@ -417,15 +417,21 @@ pub fn run_sample(scenario: Scenario, enabled: bool, iteration: usize, warmup: b
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(
-            disposition,
-            if !sample.preparation_ready_before_release[0] {
-                "on_demand"
-            } else if scenario == Scenario::EditWhileWaiting {
-                "stale_on_demand"
-            } else {
-                "reused"
-            }
+        let prepared = if scenario == Scenario::EditWhileWaiting {
+            "stale_on_demand"
+        } else {
+            "reused"
+        };
+        // The readiness sample precedes the edit and the release, and background preparation
+        // can still finish in between: a miss at the sample may be prepared context at release.
+        let allowed: &[&str] = if sample.preparation_ready_before_release[0] {
+            &[prepared]
+        } else {
+            &["on_demand", prepared]
+        };
+        assert!(
+            allowed.contains(&disposition.as_str()),
+            "disposition `{disposition}` is not one of {allowed:?}"
         );
         if scenario == Scenario::EditWhileWaiting {
             let handoff: String = db.query_row("SELECT handoff_json FROM stage_acceptances s JOIN jobs j ON j.id=s.job_id WHERE j.pulsation_id=?1 AND j.kind='run_stage::SPECIFICATION'", [&b], |r| r.get(0)).unwrap();
