@@ -38,7 +38,7 @@ tempfile = "3"
 thiserror = "2"
 tokio.workspace = true
 tokio-util.workspace = true
-toml = "0.8.23"
+toml = "1.1.4"
 tree-sitter = "=0.26.13"
 tree-sitter-rust = "=0.24.2"
 tree-sitter-typescript = "=0.23.2"
