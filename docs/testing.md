@@ -109,9 +109,11 @@ for evidence and the meaning of historical design references.
 `main`: `fmt`, then `clippy`, `unit` and `integration` on `windows-latest`, plus
 the Docker job `linux headless (docker)`, which stays informational until the
 Linux failures are fixed. [`nightly.yml`](../.github/workflows/nightly.yml) runs
-the complete Stage 7 gate, and [`security.yml`](../.github/workflows/security.yml)
-runs `cargo audit` and the license and source audit. The jobs call the same
-aliases as local runs, with no retries.
+the complete Stage 7 gate on demand and on pushes to `main` that change
+`Cargo.lock`, `third_party/` or `scripts/`; it has no daily schedule because a run
+costs about two hours of Windows minutes. [`security.yml`](../.github/workflows/security.yml)
+runs `cargo audit` and the license and source audit, including a weekly run. The
+jobs call the same aliases as local runs, with no retries.
 
 ## Secret sanitization qualification
 
@@ -141,6 +143,27 @@ the Review tab in the `hitl` and layout tests. Every run is hermetic:
 ```powershell
 cargo test --locked -p hvc-test-support --test composition_review -- --test-threads=2
 ```
+
+## Editor revisions, check output and voice setup
+
+The workspace revision is a SHA-256 over the resolved path and the bytes read,
+so a same-size, same-mtime external edit is a conflict. `workspace_service`
+tests cover that edit, another file or root with identical content, a change
+while the temporary file is written, a concurrent creation and a deleted file.
+The runner fixture `exit-leaving-child` exits while a child keeps its output
+open; the receipt must end within the drain bounds and never pass. Quota HTTP
+and voice setup tests use loopback servers that never answer or stall the body,
+plus a runtime check cancelled mid-run:
+
+```powershell
+cargo test --locked -p hvc-core --lib workspace_service::tests -- --test-threads=2
+cargo test --locked -p hvc-test-support --test composition_validation -- --test-threads=2
+cargo test --locked -p hvc-terminal --lib quota::http -- --test-threads=2
+cargo test-voice
+```
+
+On Linux the process tree is not contained, so the timeout test that checks
+the grandchild stopped fails there by design; it no longer hangs the run.
 
 ## Terminal extraction and feature boundaries
 

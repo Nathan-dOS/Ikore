@@ -123,6 +123,8 @@ struct ErrorBody {
 
 /// Upper bound for one transcription process, model load included.
 const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
+/// A download that receives nothing for this long, headers included, fails.
+const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// Keeps a console window from flashing when the GUI starts the CLI.
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -188,6 +190,33 @@ impl VoiceRuntime {
             .join(format!("{}.sha256", self.model.file_name))
     }
 
+    fn scratch_dir(&self) -> PathBuf {
+        self.root.join("tmp")
+    }
+
+    /// Removes dictated audio that a process left behind by ending before its transcription
+    /// did. Only files named like this runtime's scratch WAVs are touched. Run it before the
+    /// first transcription: a file that cannot be removed now is retried on the next start.
+    pub fn sweep_scratch(&self) -> ScratchSweep {
+        let mut sweep = ScratchSweep::default();
+        let Ok(entries) = std::fs::read_dir(self.scratch_dir()) else {
+            return sweep;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if !entry.file_type().is_ok_and(|kind| kind.is_file())
+                || !name.to_str().is_some_and(is_scratch_audio_name)
+            {
+                continue;
+            }
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => sweep.removed += 1,
+                Err(_) => sweep.remaining += 1,
+            }
+        }
+        sweep
+    }
+
     /// Checks files and their install markers; never hashes the model again.
     pub fn status(&self) -> RuntimeStatus {
         let runtime_ready = self.executable().is_file()
@@ -232,7 +261,9 @@ impl VoiceRuntime {
             .root
             .join("runtime")
             .join(format!(".staging-{}", uuid::Uuid::new_v4().simple()));
-        let installed = self.unpack_and_check(&archive, &staging).await;
+        let installed = self
+            .unpack_and_check(&archive, &staging, cancellation)
+            .await;
         let _ = tokio::fs::remove_file(&archive).await;
         if let Err(error) = installed {
             let _ = tokio::fs::remove_dir_all(&staging).await;
@@ -241,17 +272,23 @@ impl VoiceRuntime {
         Ok(())
     }
 
-    async fn unpack_and_check(&self, archive: &Path, staging: &Path) -> Result<(), VoiceError> {
+    async fn unpack_and_check(
+        &self,
+        archive: &Path,
+        staging: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<(), VoiceError> {
         tokio::fs::create_dir_all(staging).await?;
         let tar = system_tar();
-        let output = tokio::process::Command::new(&tar)
+        let mut command = tokio::process::Command::new(&tar);
+        command
             .arg("-xf")
             .arg(archive)
             .arg("-C")
             .arg(staging)
-            .kill_on_drop(true)
-            .output()
-            .await
+            .kill_on_drop(true);
+        let output = cancellable(cancellation, command.output())
+            .await?
             .map_err(|error| {
                 VoiceError::Runtime(format!("could not run {}: {error}", tar.display()))
             })?;
@@ -268,7 +305,7 @@ impl VoiceRuntime {
                 "the runtime archive does not contain bin/nemo-speech.exe".into(),
             ));
         }
-        let version = run_checked(&executable, &["--version"]).await?;
+        let version = run_checked(&executable, &["--version"], cancellation).await?;
         if !version.contains(&self.release.version) {
             return Err(VoiceError::Runtime(format!(
                 "the runtime reports `{}`, expected version {}",
@@ -276,7 +313,11 @@ impl VoiceRuntime {
                 self.release.version
             )));
         }
-        run_checked(&executable, &["--json", "doctor"]).await?;
+        run_checked(&executable, &["--json", "doctor"], cancellation).await?;
+        // Past this point the install replaces the previous runtime: never after a cancel.
+        if cancellation.is_cancelled() {
+            return Err(VoiceError::Cancelled);
+        }
         tokio::fs::write(unpacked.join(".hvc-install"), self.runtime_identity()).await?;
         let target = self.runtime_dir();
         if tokio::fs::metadata(&target).await.is_ok() {
@@ -324,13 +365,8 @@ impl VoiceRuntime {
         if !status.runtime_ready || !status.model_ready {
             return Err(VoiceError::NotInstalled);
         }
-        let scratch = self.root.join("tmp");
-        tokio::fs::create_dir_all(&scratch).await?;
-        let audio = scratch.join(format!("{}.wav", uuid::Uuid::new_v4().simple()));
-        tokio::fs::write(&audio, wav).await?;
-        let result = self.run_transcription(&audio, cancellation).await;
-        let _ = tokio::fs::remove_file(&audio).await;
-        result
+        let audio = ScratchAudio::write(&self.scratch_dir(), wav).await?;
+        self.run_transcription(audio.path(), cancellation).await
     }
 
     async fn run_transcription(
@@ -409,17 +445,24 @@ fn hide_console(command: &mut tokio::process::Command) {
     let _ = command;
 }
 
-async fn run_checked(executable: &Path, args: &[&str]) -> Result<String, VoiceError> {
+async fn run_checked(
+    executable: &Path,
+    args: &[&str],
+    cancellation: &CancellationToken,
+) -> Result<String, VoiceError> {
     let mut command = tokio::process::Command::new(executable);
     command
         .args(args)
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
     hide_console(&mut command);
-    let output = tokio::time::timeout(Duration::from_secs(60), command.output())
-        .await
-        .map_err(|_| VoiceError::Runtime(format!("`{}` did not answer", args.join(" "))))?
-        .map_err(|error| VoiceError::Runtime(format!("could not run the runtime: {error}")))?;
+    let output = cancellable(
+        cancellation,
+        tokio::time::timeout(Duration::from_secs(60), command.output()),
+    )
+    .await?
+    .map_err(|_| VoiceError::Runtime(format!("`{}` did not answer", args.join(" "))))?
+    .map_err(|error| VoiceError::Runtime(format!("could not run the runtime: {error}")))?;
     if !output.status.success() {
         return Err(VoiceError::Runtime(format!(
             "`nemo-speech {}` failed: {}",
@@ -428,6 +471,62 @@ async fn run_checked(executable: &Path, args: &[&str]) -> Result<String, VoiceEr
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Runs `work` until it finishes or `cancellation` fires. A cancel drops `work`, which kills a
+/// child process started with `kill_on_drop`.
+async fn cancellable<T>(
+    cancellation: &CancellationToken,
+    work: impl std::future::Future<Output = T>,
+) -> Result<T, VoiceError> {
+    tokio::select! {
+        output = work => Ok(output),
+        _ = cancellation.cancelled() => Err(VoiceError::Cancelled),
+    }
+}
+
+/// What [`VoiceRuntime::sweep_scratch`] did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScratchSweep {
+    pub removed: usize,
+    /// Files that could not be removed now (for example still open); retried next start.
+    pub remaining: usize,
+}
+
+/// One dictated WAV in the scratch folder. Dropping it removes the file, so the audio goes
+/// away when the transcription ends however it ends: success, error, timeout, cancel or a
+/// dropped future. A file a dying process still holds, or one a crash leaves, is removed by
+/// [`VoiceRuntime::sweep_scratch`] on the next start.
+struct ScratchAudio(PathBuf);
+
+impl ScratchAudio {
+    async fn write(scratch: &Path, wav: &[u8]) -> Result<Self, VoiceError> {
+        tokio::fs::create_dir_all(scratch).await?;
+        // Owned before the first byte, so a partial write is removed too.
+        let audio = Self(scratch.join(format!("{}.wav", uuid::Uuid::new_v4().simple())));
+        tokio::fs::write(&audio.0, wav).await?;
+        Ok(audio)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for ScratchAudio {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// The name [`ScratchAudio`] gives its files: a simple UUID and `.wav`.
+fn is_scratch_audio_name(name: &str) -> bool {
+    name.strip_suffix(".wav").is_some_and(|stem| {
+        stem.len() == 32
+            && stem
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 /// Streams `artifact` into `target`, hashing as it goes. The file appears at
@@ -459,13 +558,12 @@ async fn fetch(
     let client = reqwest::Client::builder()
         .https_only(artifact.url.starts_with("https://"))
         .connect_timeout(Duration::from_secs(20))
+        .read_timeout(STALL_TIMEOUT)
         .user_agent(concat!("hard-vibe-code/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| VoiceError::Network(error.to_string()))?;
-    let response = client
-        .get(&artifact.url)
-        .send()
-        .await
+    let response = cancellable(cancellation, client.get(&artifact.url).send())
+        .await?
         .and_then(reqwest::Response::error_for_status)
         .map_err(|error| VoiceError::Network(error.to_string()))?;
     let mut file = tokio::fs::File::create(partial).await?;
@@ -636,6 +734,189 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, VoiceError::Integrity(_)), "{error}");
         assert!(!runtime.model_path().exists());
+    }
+
+    /// Accepts one connection, reads the request, sends `reply` and then goes silent.
+    fn serve_then_stall(reply: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request = [0u8; 2048];
+                let _ = stream.read(&mut request);
+                let _ = stream.write_all(&reply);
+                std::thread::sleep(Duration::from_secs(30));
+            }
+        });
+        format!("http://{address}/artifact")
+    }
+
+    fn cancel_after(delay: Duration) -> CancellationToken {
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            cancel.cancel();
+        });
+        token
+    }
+
+    #[tokio::test]
+    async fn cancelling_while_the_server_withholds_headers_ends_the_download() {
+        let root = tempfile::tempdir().unwrap();
+        let body = vec![3u8; 10_000];
+        let runtime = VoiceRuntime::with_releases(
+            root.path(),
+            RuntimeRelease::pinned(),
+            model(serve_then_stall(Vec::new()), &body, None),
+        );
+        let token = cancel_after(Duration::from_millis(200));
+        let started = std::time::Instant::now();
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            runtime.download_model(&|_| {}, &token),
+        )
+        .await
+        .expect("a cancel ends the wait for headers")
+        .unwrap_err();
+
+        assert!(matches!(error, VoiceError::Cancelled), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!runtime.model_path().exists());
+        assert!(!runtime.model_path().with_extension("part").exists());
+        assert!(!runtime.status().model_ready);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_stalled_body_removes_the_partial_file() {
+        let root = tempfile::tempdir().unwrap();
+        let body = vec![4u8; 10_000];
+        let mut reply = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/octet-stream\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        reply.extend_from_slice(&body[..100]);
+        let runtime = VoiceRuntime::with_releases(
+            root.path(),
+            RuntimeRelease::pinned(),
+            model(serve_then_stall(reply), &body, None),
+        );
+        let token = cancel_after(Duration::from_millis(300));
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            runtime.download_model(&|_| {}, &token),
+        )
+        .await
+        .expect("a cancel ends a stalled body")
+        .unwrap_err();
+
+        assert!(matches!(error, VoiceError::Cancelled), "{error}");
+        assert!(!runtime.model_path().exists());
+        assert!(!runtime.model_path().with_extension("part").exists());
+        assert!(!runtime.status().model_ready);
+    }
+
+    #[tokio::test]
+    async fn a_slow_runtime_check_ends_when_setup_is_cancelled() {
+        let (program, args): (PathBuf, &[&str]) = if cfg!(windows) {
+            let system_root =
+                std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+            (
+                PathBuf::from(system_root).join("System32").join("PING.EXE"),
+                &["-n", "30", "127.0.0.1"],
+            )
+        } else {
+            (PathBuf::from("sleep"), &["30"])
+        };
+        let token = cancel_after(Duration::from_millis(200));
+        let started = std::time::Instant::now();
+
+        let error = run_checked(&program, args, &token).await.unwrap_err();
+
+        assert!(matches!(error, VoiceError::Cancelled), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn scratch_audio_is_removed_however_the_transcription_ends() {
+        let root = tempfile::tempdir().unwrap();
+        let scratch = root.path().join("tmp");
+
+        let audio = ScratchAudio::write(&scratch, b"RIFF").await.unwrap();
+        let path = audio.path().to_path_buf();
+        assert!(is_scratch_audio_name(
+            path.file_name().unwrap().to_str().unwrap()
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), b"RIFF");
+        drop(audio);
+        assert!(!path.exists(), "removed after a normal end");
+
+        let failed: Result<(), VoiceError> = async {
+            let _audio = ScratchAudio::write(&scratch, b"RIFF").await?;
+            Err(VoiceError::Runtime("transcription failed".into()))
+        }
+        .await;
+        assert!(failed.is_err());
+
+        let abandoned = tokio::time::timeout(Duration::from_millis(50), async {
+            let _audio = ScratchAudio::write(&scratch, b"RIFF").await.unwrap();
+            std::future::pending::<()>().await;
+        })
+        .await;
+        assert!(abandoned.is_err(), "the caller dropped the future");
+
+        assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn the_startup_sweep_removes_only_leftover_scratch_recordings() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = VoiceRuntime::new(root.path());
+        assert_eq!(
+            runtime.sweep_scratch(),
+            ScratchSweep::default(),
+            "no folder yet"
+        );
+
+        let scratch = root.path().join("tmp");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let leftover = scratch.join(format!("{}.wav", uuid::Uuid::new_v4().simple()));
+        std::fs::write(&leftover, b"RIFF").unwrap();
+        let kept = [
+            "notes.wav",
+            "0123456789ABCDEF0123456789ABCDEF.wav",
+            "0123456789abcdef0123456789abcdef.txt",
+            "0123456789abcdef0123456789abcde.wav",
+        ];
+        for name in kept {
+            std::fs::write(scratch.join(name), b"keep").unwrap();
+        }
+        std::fs::create_dir(scratch.join("fedcba9876543210fedcba9876543210.wav")).unwrap();
+
+        let sweep = runtime.sweep_scratch();
+
+        assert_eq!(
+            sweep,
+            ScratchSweep {
+                removed: 1,
+                remaining: 0
+            }
+        );
+        assert!(!leftover.exists());
+        for name in kept {
+            assert!(
+                scratch.join(name).exists(),
+                "{name} is not a scratch recording"
+            );
+        }
+        assert!(
+            scratch
+                .join("fedcba9876543210fedcba9876543210.wav")
+                .is_dir()
+        );
     }
 
     #[test]

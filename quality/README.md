@@ -19,6 +19,7 @@ historical check applies to the source and environment identified in that report
 | Deterministic secret sanitization | [2026-10-22 implementation and validation](secret-sanitization-validation-2026-10-22.md) |
 | Integrator review boundary and revision rounds | [2026-10-24 implementation and validation](review-policy-validation-2026-10-24.md) |
 | Dependency advisories | [2026-10-24 lockfile remediation and validation](dependency-advisories-2026-10-24.md) |
+| Review corrections (editor revisions, check output, quota client, voice setup) | [2026-10-25 implementation and validation](review-corrections-2026-10-25.md) |
 | Repository hygiene | [2026-10-17 change record](repository-hygiene-2026-10-17.md) |
 
 ## Historical design references

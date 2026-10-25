@@ -35,6 +35,13 @@ pub struct ReceiptContext {
     pub extra_environment: Vec<(String, String)>,
 }
 
+/// How long the output streams may stay open after the command exited before the host treats
+/// them as held by a descendant and ends the process tree. Reading what a finished command
+/// already wrote takes milliseconds.
+const DRAIN_GRACE: Duration = Duration::from_secs(5);
+/// Once the tree is ended, how long the readers get to reach the end of the streams.
+const DRAIN_AFTER_TERMINATE: Duration = Duration::from_secs(2);
+
 /// Host environment names copied into every command: what a Windows
 /// process and the Rust toolchain need to operate, and nothing else.
 const HOST_ENVIRONMENT: &[&str] = &[
@@ -95,18 +102,42 @@ fn environment_digest(profile_names: &[String], extra: &[(String, String)]) -> S
     Sha256Hex::of(lines.join("\n").as_bytes())
 }
 
+/// What a reader kept of one output stream.
+#[derive(Default)]
+struct Drained {
+    kept: Vec<u8>,
+    truncated: bool,
+    /// The stream did not reach its end: a read failed, the reader task ended abnormally or
+    /// it was stopped because the stream stayed open.
+    incomplete: bool,
+}
+
+impl Drained {
+    fn incomplete() -> Self {
+        Self {
+            incomplete: true,
+            ..Self::default()
+        }
+    }
+}
+
 /// Drains a stream to completion, keeping at most what the shared budget
 /// allows and discarding the rest so the child never blocks on a full pipe.
 async fn drain<R: tokio::io::AsyncRead + Unpin>(
     mut reader: R,
     budget: Arc<AtomicUsize>,
-) -> (Vec<u8>, bool) {
+) -> Drained {
     let mut kept = Vec::new();
     let mut truncated = false;
+    let mut incomplete = false;
     let mut buffer = [0u8; 8192];
     loop {
         let read = match reader.read(&mut buffer).await {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
+            Err(_) => {
+                incomplete = true;
+                break;
+            }
             Ok(read) => read,
         };
         let mut remaining = budget.load(Ordering::SeqCst);
@@ -131,7 +162,11 @@ async fn drain<R: tokio::io::AsyncRead + Unpin>(
             }
         }
     }
-    (kept, truncated)
+    Drained {
+        kept,
+        truncated,
+        incomplete,
+    }
 }
 
 fn excerpt(bytes: &[u8], truncated: bool) -> Result<LogExcerptV1, String> {
@@ -356,6 +391,7 @@ pub async fn run_check(
     let stderr = child.stderr.take().expect("piped stderr");
     let stdout_task = tokio::spawn(drain(stdout, budget.clone()));
     let stderr_task = tokio::spawn(drain(stderr, budget));
+    let readers = [stdout_task.abort_handle(), stderr_task.abort_handle()];
     let timeout = Duration::from_secs(u64::from(profile.timeout_seconds.clamp(1, 900)));
     let (status, exit_code) = tokio::select! {
         result = tokio::time::timeout(timeout, child.wait()) => match result {
@@ -377,11 +413,39 @@ pub async fn run_check(
         }
     };
     let finished_at = Timestamp::now();
-    let (stdout_bytes, stdout_truncated) = stdout_task.await.unwrap_or_default();
-    let (stderr_bytes, stderr_truncated) = stderr_task.await.unwrap_or_default();
+    // The streams end only when every process holding them has exited. A descendant that
+    // inherited them must not keep the receipt past the run's own deadline.
+    let streams = async { (stdout_task.await, stderr_task.await) };
+    tokio::pin!(streams);
+    let mut held_open = false;
+    let joined = match tokio::time::timeout(DRAIN_GRACE, &mut streams).await {
+        Ok(joined) => Some(joined),
+        Err(_) => {
+            held_open = true;
+            job.terminate();
+            tokio::time::timeout(DRAIN_AFTER_TERMINATE, &mut streams)
+                .await
+                .ok()
+        }
+    };
     drop(job);
-    let stdout_result = excerpt(&stdout_bytes, stdout_truncated);
-    let stderr_result = excerpt(&stderr_bytes, stderr_truncated);
+    let (stdout_drained, stderr_drained) = match joined {
+        Some((stdout, stderr)) => (
+            stdout.unwrap_or_else(|_| Drained::incomplete()),
+            stderr.unwrap_or_else(|_| Drained::incomplete()),
+        ),
+        None => {
+            for reader in &readers {
+                reader.abort();
+            }
+            (Drained::incomplete(), Drained::incomplete())
+        }
+    };
+    let stdout_truncated = stdout_drained.truncated;
+    let stderr_truncated = stderr_drained.truncated;
+    let streams_incomplete = stdout_drained.incomplete || stderr_drained.incomplete;
+    let stdout_result = excerpt(&stdout_drained.kept, stdout_truncated);
+    let stderr_result = excerpt(&stderr_drained.kept, stderr_truncated);
     let unavailable = stdout_result.is_err() || stderr_result.is_err();
     let withheld = || LogExcerptV1 {
         text: "[output withheld: sanitization unavailable]".into(),
@@ -393,6 +457,17 @@ pub async fn run_check(
         Some((
             ReceiptStatus::Error,
             "Validation evidence is incomplete or sanitization is unavailable.".to_owned(),
+        ))
+    } else if status.is_none() && (held_open || streams_incomplete) {
+        // The command finished, but its output may not be all there: never a pass.
+        Some((
+            ReceiptStatus::Error,
+            if held_open {
+                "Validation evidence is incomplete: a process the command started kept its output open after it exited, and the process tree was terminated."
+            } else {
+                "Validation evidence is incomplete: the command output could not be read to its end."
+            }
+            .to_owned(),
         ))
     } else {
         status

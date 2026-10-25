@@ -1,8 +1,8 @@
 name: Stage 7 gate
 
 on:
-  schedule:
-    - cron: "0 6 * * *" # 03:00 BRT
+  # No schedule: a full gate costs about two hours of Windows minutes. New advisories are
+  # still caught by the weekly cargo audit in security.yml.
   workflow_dispatch:
   push:
     branches: [main]

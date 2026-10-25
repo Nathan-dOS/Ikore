@@ -157,6 +157,14 @@ impl VoiceService {
         transcriber_override: Option<Arc<dyn Transcriber>>,
         sound: fn(Earcon),
     ) -> Arc<Self> {
+        // Before any dictation: audio from a run that ended mid-transcription does not stay.
+        let sweep = runtime.sweep_scratch();
+        if sweep.remaining > 0 {
+            eprintln!(
+                "voice scratch: {} leftover recording(s) could not be removed yet",
+                sweep.remaining
+            );
+        }
         Arc::new_cyclic(|me| Self {
             runtime,
             persistence,

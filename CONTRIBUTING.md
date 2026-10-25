@@ -22,13 +22,13 @@ and Linux/macOS portability of the headless crates.
 ## 1. Principles
 
 - **Respectful technical review:** critique the code and the design, never the
-  person. See the [Code of Conduct](CODE_OF_CONDUCT.md).
+  person.
 - **Focused scope:** prefer small, readable and testable changes with clear
   responsibilities.
 - **Transparency:** describe in the pull request any change to a contract,
   schema, migration, environment variable or visible behavior.
-- **Security:** never report vulnerabilities in a public issue. Follow the
-  [security policy](SECURITY.md).
+- **Security:** never report vulnerabilities in a public issue. Report them
+  privately as the [security policy](SECURITY.md) describes.
 - **English everywhere:** code, comments, identifiers, UI text, commit
   messages, issues, pull requests and documentation are written in English.
 

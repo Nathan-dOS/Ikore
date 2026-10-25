@@ -3,6 +3,9 @@
 # entries replace the named volumes from docker-compose.yml.
 services:
   test-runner: &ci-cache
+    environment:
+      # Debug info off: the hosted runner ran out of disk linking the test binaries.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     volumes:
       - ./.ci-cache/registry:/usr/local/cargo/registry
       - ./.ci-cache/git:/usr/local/cargo/git

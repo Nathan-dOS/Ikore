@@ -253,6 +253,47 @@ async fn a_hung_command_and_its_children_are_terminated_on_timeout() {
 }
 
 #[tokio::test]
+async fn a_child_holding_the_output_open_cannot_hold_the_receipt_or_pass() {
+    let heartbeat = tempfile::tempdir().unwrap();
+    let path = heartbeat.path().join("beat");
+    let path_text = path.to_string_lossy().into_owned();
+    let started = std::time::Instant::now();
+
+    let receipt = tokio::time::timeout(
+        Duration::from_secs(15),
+        run(&["exit-leaving-child", &path_text], 60, 65_536),
+    )
+    .await
+    .expect("the receipt does not wait for the child that inherited the streams");
+
+    assert!(started.elapsed() < Duration::from_secs(12));
+    assert_eq!(receipt.exit_code, Some(0), "the command itself succeeded");
+    assert_eq!(
+        receipt.status,
+        ReceiptStatus::Error,
+        "output that may be incomplete never passes"
+    );
+    assert!(
+        receipt
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("kept its output open"))
+    );
+    if cfg!(windows) {
+        // The job ended the child too: no orphan keeps running.
+        let read = |p: &Path| {
+            std::fs::read_to_string(p)
+                .ok()
+                .and_then(|t| t.trim().parse::<i64>().ok())
+        };
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let first = read(&path);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert_eq!(first, read(&path), "the child keeps writing if it survived");
+    }
+}
+
+#[tokio::test]
 async fn cancellation_stops_the_command_and_a_missing_executable_is_unavailable() {
     let fixture = fixture();
     let snapshot = resolve_profile(
