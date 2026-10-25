@@ -130,8 +130,32 @@ The Clippy warnings are the Linux-only ones of the baseline (`cfg(windows)` code
 - **Binary names (M5).** The repository rules never let a binary-named file (`.bin`, images) be a link, as for any context. Bytes that are not UTF-8 under a text name are tracked by hash only, with the `content_unavailable` gap in a proposal.
 - **Windows-only CLI test (M5).** `documentation_reconciler_runs_companion_scoped_under_the_reconciliation_origin` mirrors `notes_scribe_runs_companion_scoped_under_the_notes_origin`, already in the known Linux list. Both need the `.exe` CLI fixtures and fail on Linux before the run starts ("Codex is not ready"). It belongs to the Windows acceptance.
 
+## Windows acceptance (2026-10-25)
+
+`scripts/gate-stage7.ps1` on `cli/dreamy-hamilton-s7shmz` (`e60c31e`), Windows 11, `CARGO_BUILD_JOBS=6`: passed, exit 0. Structure, crate boundaries, `cargo fmt`, Clippy `-D warnings` (92 s), `cargo test-all` (1,689 s, 0 failures), release build (1,021 s), Windows smoke, licenses and sources, and advisories (0 vulnerabilities) all green. Timings are in `target/stage7/timings.json`. The first attempt failed in step 1 only because `cargo tree` printed "Updating crates.io index" on stderr under PowerShell 5.1; a `cargo fetch --locked` beforehand fixed it.
+
+## T1 real-run measurement (D3)
+
+Harness: `crates/hvc-test-support/tests/tool_scope_ab.rs` (paid, `#[ignore]`). Real `claude` CLI (Haiku) for Intake, Contract, Code and Test; Specification and Integrator scripted. One task (`expiry_task`, the shared fixture), pulsation driven to `done` approving each artifact review. Arm A: current tables (`Workspace`). Arm B: `HostContextOnly` for `intake_classifier`, `contract_author`, `code_repairer`, `test_repairer` in `policy.rs` and `UnitContextScope::required_for` (throwaway edit, reverted; two binaries built from the same tree and run side by side). Three paired runs.
+
+| Arm | Run | Outcome | Intake first-attempt ok | Contract first-attempt ok | Retries | CLI runs | Input tokens | Output tokens | Wall s |
+|---|---|---|---|---|---|---|---|---|---|
+| A workspace | 1 | done | 1/1 | 1/1 | 0 | 4 | 47,655 | 4,394 | 63 |
+| A workspace | 2 | done | 1/1 | 1/1 | 0 | 4 | 48,818 | 4,069 | 62 |
+| A workspace | 3 | done | 1/1 | 1/1 | 0 | 4 | 60,705 | 5,044 | 66 |
+| B host context | 1 | done | 1/1 | 1/1 | 0 | 4 | 33,651 | 3,581 | 62 |
+| B host context | 2 | done | 1/1 | 1/1 | 0 | 4 | 41,033 | 4,349 | 63 |
+| B host context | 3 | done | 1/1 | 1/1 | 0 | 4 | 33,564 | 3,984 | 64 |
+
+Token columns cover the whole pulsation (the unchanged Code and Test runs included). Mean input tokens: A 52,393, B 36,083.
+
+Reading:
+- **Intake and Contract:** first-attempt acceptance 3/3 and 3/3 in both arms, no retries, every run reached `done`. No measure worsens, so by the D3 rule (a tie favors `HostContextOnly`) they qualify. The sample is small and one easy task: it shows no regression, not a margin.
+- **Repairers:** not exercised. No check failed in any of the six runs, so no `code_repairer` or `test_repairer` attempt exists. There is no evidence either way; they stay `ReadOnlyScoped`.
+- **Not applied:** the tables on this branch are unchanged. Moving Intake and Contract is a one-line change per executor in both tables and needs another gate run.
+- A second `intake_classifier` attempt row appears in both arms alike (ok 1/2); it is the same in A and B.
+
 ## Pending
 
-- Windows acceptance of all four milestones (suite, Clippy `-D warnings`, Stage 7 gate, advisories).
-- T1 real-run measurement with authenticated CLIs (D3): only then may a repairer or the Intake/Contract executors move to `HostContextOnly`.
 - Manual QA screenshots of the new surfaces, as in ADR-032.
+- Decision on moving Intake and Contract to `HostContextOnly`; a repair-provoking fixture if the repairers are to be measured.
