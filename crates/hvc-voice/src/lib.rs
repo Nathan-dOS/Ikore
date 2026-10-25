@@ -17,8 +17,8 @@ pub use capture::Recorder;
 pub use earcon::Earcon;
 pub use hotkey::{Hotkey, Modifiers, PushToTalk, PushToTalkEvent};
 pub use runtime::{
-    ModelRelease, RuntimeRelease, RuntimeStatus, SetupProgress, SetupStage, Transcript,
-    VoiceRuntime,
+    ModelRelease, RuntimeRelease, RuntimeStatus, ScratchSweep, SetupProgress, SetupStage,
+    Transcript, VoiceRuntime,
 };
 
 #[derive(Debug, thiserror::Error)]
