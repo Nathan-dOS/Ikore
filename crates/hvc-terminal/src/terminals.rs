@@ -486,6 +486,8 @@ pub enum ExecutionOrigin {
     Review,
     /// The Notes Scribe structuring or refining a Companion note (ADR-029).
     Notes,
+    /// The Documentation Reconciler proposing a note update (ADR-034 M5).
+    Reconciliation,
 }
 
 impl ExecutionOrigin {
@@ -497,6 +499,7 @@ impl ExecutionOrigin {
             Self::Manual => "manual",
             Self::Review => "review",
             Self::Notes => "notes",
+            Self::Reconciliation => "reconciliation",
         }
     }
 
@@ -508,6 +511,7 @@ impl ExecutionOrigin {
             "manual" => Some(Self::Manual),
             "review" => Some(Self::Review),
             "notes" => Some(Self::Notes),
+            "reconciliation" => Some(Self::Reconciliation),
             _ => None,
         }
     }
@@ -646,7 +650,7 @@ pub struct CanonicalAgentDescriptor {
     pub color_key: &'static str,
 }
 
-pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 10] = [
+pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 11] = [
     CanonicalAgentDescriptor {
         role: AgentRole::FeatureAgent,
         name: "FeatureAgent",
@@ -716,6 +720,13 @@ pub const CANONICAL_AGENTS: [CanonicalAgentDescriptor; 10] = [
         glyph: "=",
         stage: "Notes",
         color_key: "orange",
+    },
+    CanonicalAgentDescriptor {
+        role: AgentRole::DocumentationReconciler,
+        name: "DocumentationReconciler",
+        glyph: "%",
+        stage: "Reconciliation",
+        color_key: "teal",
     },
 ];
 
@@ -1126,10 +1137,14 @@ impl TerminalRepository {
         };
         let transaction = connection.transaction()?;
         for (position, role) in AgentRole::ALL.into_iter().enumerate() {
-            if role == AgentRole::NotesScribe {
+            if matches!(
+                role,
+                AgentRole::NotesScribe | AgentRole::DocumentationReconciler
+            ) {
                 // A first note should not fail on a route nobody chose: start from the
                 // Feature Agent's, which already serves this project's one-shot planning
-                // calls. A Custom route is not inherited, because the Scribe refuses it.
+                // calls. A Custom route is not inherited, because the Scribe refuses it
+                // (the Documentation Reconciler, ADR-034 M5, too).
                 transaction.execute(
                     "INSERT OR IGNORE INTO cli_agent_configs(
                        project_id,agent_role,execution_mode,backend,model,thinking_level,
@@ -5837,15 +5852,19 @@ impl TerminalService {
         let feature_discovery =
             request.pulsation_id.is_none() && request.job_chain.starts_with("feature:");
         let notes_scribe = agent_role == AgentRole::NotesScribe;
+        let reconciler = agent_role == AgentRole::DocumentationReconciler;
         let host_context_only = cli_context_scope(request)?;
-        // All three read only host-selected text, so all get the Companion's restrictions.
-        let companion_scoped = feature_discovery || notes_scribe || host_context_only;
+        // All of them read only host-selected text, so all get the Companion's restrictions.
+        let companion_scoped = feature_discovery || notes_scribe || reconciler || host_context_only;
         if companion_scoped && config.backend == CliBackend::Custom {
             return Err(TerminalError::Validation(if notes_scribe {
                 "The Notes Scribe requires an official read-only CLI adapter or API transport"
                     .into()
+            } else if reconciler {
+                "The Documentation Reconciler requires an official read-only CLI adapter or API transport"
+                    .into()
             } else if host_context_only {
-                "The composed Integrator requires an official read-only CLI adapter or API transport"
+                "A composed unit confined to host-selected context requires an official read-only CLI adapter or API transport"
                     .into()
             } else {
                 "Feature discovery requires an official read-only CLI adapter or API transport"
@@ -5982,6 +6001,8 @@ impl TerminalService {
         )?;
         let origin = if notes_scribe {
             ExecutionOrigin::Notes
+        } else if reconciler {
+            ExecutionOrigin::Reconciliation
         } else if feature_discovery {
             ExecutionOrigin::Feature
         } else if agent_role == AgentRole::LearningAgent {
@@ -7991,20 +8012,37 @@ fn copy_safe_environment(command: &mut Command) {
 }
 
 /// Whether a composed unit must read only the host-selected context of its
-/// prompt (ADR-032). The composed Integrator always must: a request that
-/// names its specialty without that scope is refused, so a stale or forged
-/// dispatch cannot hand it the workspace snapshot back.
+/// prompt (ADR-032). Each specialty has exactly one admissible scope
+/// (`UnitContextScope::required_for`, ADR-034 T1): a request that names a
+/// specialty with any other scope, or names no known specialty, is refused,
+/// so a stale or forged dispatch can neither hand a confined worker the
+/// workspace snapshot back nor change what any other worker reads.
 pub(crate) fn cli_context_scope(request: &LlmRequest) -> Result<bool, TerminalError> {
     let Some(unit) = request.dispatch.unit.as_ref() else {
         return Ok(false);
     };
-    let host_only = unit.context_scope == UnitContextScope::HostContextOnly;
-    if unit.executor_kind == "integration_reviewer" && !host_only {
+    let Some(required) = UnitContextScope::required_for(&unit.executor_kind) else {
+        return Err(TerminalError::Validation(format!(
+            "`{}` is not a composed specialty this transport can scope",
+            unit.executor_kind
+        )));
+    };
+    if unit.context_scope != required {
         return Err(TerminalError::Validation(
-            "The composed Integrator must run with host-selected context only".into(),
+            if required == UnitContextScope::HostContextOnly {
+                format!(
+                    "The composed `{}` must run with host-selected context only",
+                    unit.executor_kind
+                )
+            } else {
+                format!(
+                    "The composed `{}` runs with the workspace snapshot; the dispatch asked for another scope",
+                    unit.executor_kind
+                )
+            },
         ));
     }
-    Ok(host_only)
+    Ok(required == UnitContextScope::HostContextOnly)
 }
 
 /// How much of the host's environment a spawned CLI is allowed to see.

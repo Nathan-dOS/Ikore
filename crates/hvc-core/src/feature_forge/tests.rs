@@ -1417,7 +1417,8 @@ fn triage_payload(recommendation: &str) -> Value {
         },
         "structuralLevel": 1,
         "recommendation": recommendation,
-        "rationale": "The measured benefit clearly exceeds the implementation cost."
+        "rationale": "The measured benefit clearly exceeds the implementation cost.",
+        "architectureConflicts": []
     })
 }
 
@@ -2521,5 +2522,449 @@ fn turns_written_before_typed_failures_are_classified_when_read() {
         history[0].error.as_deref(),
         Some("Suggested dependency was not supplied by the host"),
         "the stored text is untouched"
+    );
+}
+
+// ADR-034 D1: the Forge snapshot tells the batch composer whether the
+// project's new batches get the review policy (composition on) or not.
+#[test]
+fn the_forge_snapshot_reports_whether_new_batches_are_composed() {
+    let f = Fixture::new();
+    // A project that never touched the setting runs earlier pipelines.
+    assert!(!f.forge().snapshot(&f.project).unwrap().composition_enabled);
+    enable_composition(&f);
+    assert!(f.forge().snapshot(&f.project).unwrap().composition_enabled);
+    f.service
+        .update_composition_settings(
+            &f.project,
+            crate::orchestration::composition::settings::CompositionSettings::default(),
+        )
+        .unwrap();
+    assert!(!f.forge().snapshot(&f.project).unwrap().composition_enabled);
+    // A snapshot serialized before the field existed still reads, as off.
+    let mut earlier = serde_json::to_value(f.forge().snapshot(&f.project).unwrap()).unwrap();
+    earlier
+        .as_object_mut()
+        .unwrap()
+        .remove("compositionEnabled")
+        .unwrap();
+    let decoded: crate::feature_forge::ForgeSnapshot = serde_json::from_value(earlier).unwrap();
+    assert!(!decoded.composition_enabled);
+}
+
+// ---------------------------------------------------------------------------
+// Pre-flight architectural conformance (ADR-034 M6)
+// ---------------------------------------------------------------------------
+
+use crate::feature_forge::preflight::{PreflightAction, PreflightResolution};
+
+const NATIVE_DECISION: &str = "---\ntype: decision\nstatus: accepted\n---\n# Native Rust\nThe app is one Rust process; no Electron, no IPC.\n";
+
+impl Fixture {
+    fn write(&self, relative: &str, content: &str) {
+        let path = self.workspace.path().join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+    /// One accepted decision, one superseded one and the project agent file.
+    fn decisions(&self) {
+        self.write("PROJECT_AGENT.md", "Work in small, reviewed steps.\n");
+        self.write("knowledge/obsidian/decisions/a-native.md", NATIVE_DECISION);
+        self.write(
+            "knowledge/obsidian/decisions/b-old.md",
+            "---\ntype: decision\nstatus: superseded\n---\n# Old shell\nUse Electron for the shell.\n",
+        );
+    }
+}
+
+fn triage_with_conflicts(recommendation: &str, conflicts: Value) -> String {
+    let mut payload = triage_payload(recommendation);
+    payload["architectureConflicts"] = conflicts;
+    json(&payload).unwrap()
+}
+
+fn blocking_native() -> Value {
+    json!([{
+        "decisionRef": "decision_1",
+        "conflict": "The feature adds an Electron helper process, which the native Rust decision rules out.",
+        "severity": "blocking"
+    }])
+}
+
+async fn triaged(f: &Fixture, feature: &Feature, reply: String) -> Arc<ScriptedGateway> {
+    let gateway = ScriptedGateway::new(vec![reply]);
+    let runtime = runtime_with(f, gateway.clone());
+    runtime
+        .start_triage_analysis(&f.project, &feature.id, feature.revision, &id())
+        .unwrap();
+    runtime.wait_for_idle().await;
+    gateway
+}
+
+#[tokio::test]
+async fn triage_reads_the_accepted_decisions_and_a_blocking_conflict_stops_approval() {
+    let f = Fixture::new();
+    f.decisions();
+    let feature = f.feature("Export workflow");
+    let gateway = triaged(
+        &f,
+        &feature,
+        triage_with_conflicts("approve", blocking_native()),
+    )
+    .await;
+
+    // The accepted decision and the agent file reach the model under their
+    // handles; the superseded one does not.
+    let prompt = gateway.prompts().pop().unwrap();
+    assert!(prompt.contains("ARCHITECTURAL CONFORMANCE"));
+    assert!(prompt.contains("### `project_agent` (PROJECT_AGENT.md)"));
+    assert!(prompt.contains("### `decision_1` (knowledge/obsidian/decisions/a-native.md)"));
+    assert!(prompt.contains("no Electron, no IPC"));
+    assert!(!prompt.contains("Use Electron for the shell"));
+
+    // The approve recommendation is not applied over a blocking conflict.
+    let stored = f.forge().get(&f.project, &feature.id).unwrap();
+    assert_eq!(stored.state, FeatureState::InTriage);
+    assert_eq!(stored.approved_revision, None);
+    assert_eq!(stored.evaluation.impact, Some(4), "the verdict survives");
+    let snapshot = f.forge().snapshot(&f.project).unwrap();
+    let finding = &snapshot.preflight[0];
+    assert_eq!(finding.feature_revision, feature.revision);
+    assert_eq!(finding.blocking, 1);
+    assert_eq!(finding.resolution, PreflightResolution::Pending);
+    assert_eq!(
+        finding.decision_path(&finding.conflicts[0]),
+        Some("knowledge/obsidian/decisions/a-native.md")
+    );
+    assert_eq!(finding.inputs.delivered().count(), 2);
+    // Only paths and digests are recorded, never the decisions' text.
+    let stored_inputs: String = f
+        .service
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT inputs_json FROM forge_preflight_findings WHERE id=?1",
+            [&finding.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!stored_inputs.contains("no Electron"));
+
+    // The developer's approval is refused by the host, not only the button.
+    let error = f
+        .forge()
+        .approve(&f.project, &feature.id, feature.revision)
+        .unwrap_err();
+    assert!(error.to_string().contains("preflight_conflict_unresolved"));
+
+    // Dismissing needs a reason; with one, the feature can be approved.
+    assert!(
+        f.forge()
+            .resolve_preflight(
+                &f.project,
+                &feature.id,
+                &finding.id,
+                PreflightAction::Dismiss {
+                    reason: "  ".into()
+                },
+            )
+            .is_err()
+    );
+    let dismissed = f
+        .forge()
+        .resolve_preflight(
+            &f.project,
+            &feature.id,
+            &finding.id,
+            PreflightAction::Dismiss {
+                reason: "The helper runs only in the release script, not in the app.".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(dismissed.resolution, PreflightResolution::Dismissed);
+    assert!(
+        f.forge()
+            .resolve_preflight(
+                &f.project,
+                &feature.id,
+                &finding.id,
+                PreflightAction::Adjust,
+            )
+            .is_err(),
+        "a dismissal is final for that triage"
+    );
+    let approved = f
+        .forge()
+        .approve(&f.project, &feature.id, feature.revision)
+        .unwrap();
+    assert_eq!(approved.approved_revision, Some(feature.revision));
+}
+
+#[tokio::test]
+async fn adjusting_or_proposing_a_decision_keeps_the_approval_blocked() {
+    let f = Fixture::new();
+    f.decisions();
+    let feature = f.feature("Export workflow");
+    triaged(
+        &f,
+        &feature,
+        triage_with_conflicts("approve", blocking_native()),
+    )
+    .await;
+    let finding = f.forge().snapshot(&f.project).unwrap().preflight[0].clone();
+
+    let proposed = f
+        .forge()
+        .resolve_preflight(
+            &f.project,
+            &feature.id,
+            &finding.id,
+            PreflightAction::ProposeAdr,
+        )
+        .unwrap();
+    assert_eq!(proposed.resolution, PreflightResolution::AdrProposed);
+    let proposal_id = proposed.proposal_feature_id.clone().unwrap();
+    let proposal = f.forge().get(&f.project, &proposal_id).unwrap();
+    assert_eq!(proposal.state, FeatureState::Incubating);
+    assert!(proposal.title.contains("Export workflow"));
+    assert!(
+        proposal
+            .original_idea
+            .contains("knowledge/obsidian/decisions/a-native.md")
+    );
+    assert!(
+        f.forge()
+            .approve(&f.project, &feature.id, feature.revision)
+            .unwrap_err()
+            .to_string()
+            .contains("preflight_conflict_unresolved")
+    );
+
+    let adjusted = f
+        .forge()
+        .resolve_preflight(
+            &f.project,
+            &feature.id,
+            &finding.id,
+            PreflightAction::Adjust,
+        )
+        .unwrap();
+    assert_eq!(adjusted.resolution, PreflightResolution::Adjusted);
+    assert_eq!(
+        adjusted.proposal_feature_id.as_deref(),
+        Some(proposal_id.as_str()),
+        "the proposal stays linked"
+    );
+    assert!(
+        f.forge()
+            .approve(&f.project, &feature.id, feature.revision)
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn a_changed_decision_or_a_new_revision_needs_a_new_triage() {
+    let f = Fixture::new();
+    f.decisions();
+    let feature = f.feature("Export workflow");
+    triaged(
+        &f,
+        &feature,
+        triage_with_conflicts("archive", blocking_native()),
+    )
+    .await;
+    let finding = f.forge().snapshot(&f.project).unwrap().preflight[0].clone();
+    f.forge()
+        .resolve_preflight(
+            &f.project,
+            &feature.id,
+            &finding.id,
+            PreflightAction::Dismiss {
+                reason: "Accepted for the release script only.".into(),
+            },
+        )
+        .unwrap();
+
+    // The decision changed after the triage: the dismissal judged old text.
+    f.write(
+        "knowledge/obsidian/decisions/a-native.md",
+        &NATIVE_DECISION.replace("no IPC", "no IPC and no helper processes"),
+    );
+    assert!(
+        f.forge()
+            .approve(&f.project, &feature.id, feature.revision)
+            .unwrap_err()
+            .to_string()
+            .contains("preflight_stale")
+    );
+
+    // A new revision was never compared with the decisions.
+    let mut brief = feature.brief.clone();
+    brief.scope = "Bounded validated workflow without helper processes".into();
+    let revised = f
+        .forge()
+        .revise(&f.project, &feature.id, feature.revision, brief)
+        .unwrap();
+    assert!(
+        f.forge()
+            .approve(&f.project, &revised.id, revised.revision)
+            .unwrap_err()
+            .to_string()
+            .contains("preflight_required")
+    );
+    assert!(
+        f.forge()
+            .resolve_preflight(
+                &f.project,
+                &revised.id,
+                &finding.id,
+                PreflightAction::Adjust
+            )
+            .is_err(),
+        "an old revision's finding cannot be resolved for the new one"
+    );
+
+    // Triaging the new revision without conflicts lets the approval through.
+    triaged(&f, &revised, triage_with_conflicts("approve", json!([]))).await;
+    let stored = f.forge().get(&f.project, &feature.id).unwrap();
+    assert_eq!(stored.approved_revision, Some(revised.revision));
+    let latest = f.forge().snapshot(&f.project).unwrap().preflight[0].clone();
+    assert_eq!(latest.feature_revision, revised.revision);
+    assert_eq!(latest.resolution, PreflightResolution::None);
+}
+
+#[tokio::test]
+async fn an_advisory_conflict_or_a_project_without_decisions_never_blocks() {
+    let f = Fixture::new();
+    f.decisions();
+    let feature = f.feature("Export workflow");
+    triaged(
+        &f,
+        &feature,
+        triage_with_conflicts(
+            "approve",
+            json!([{"decisionRef": "project_agent", "conflict": "The feature is larger than one reviewed step.", "severity": "advisory"}]),
+        ),
+    )
+    .await;
+    let stored = f.forge().get(&f.project, &feature.id).unwrap();
+    assert_eq!(stored.state, FeatureState::Approved);
+    let finding = &f.forge().snapshot(&f.project).unwrap().preflight[0];
+    assert_eq!(finding.blocking, 0);
+    assert_eq!(finding.resolution, PreflightResolution::None);
+
+    // No decisions at all: the screen is left out of the prompt.
+    let bare = Fixture::new();
+    let feature = bare.feature("Export workflow");
+    let gateway = triaged(&bare, &feature, triage_with_conflicts("approve", json!([]))).await;
+    assert!(
+        !gateway
+            .prompts()
+            .pop()
+            .unwrap()
+            .contains("ARCHITECTURAL CONFORMANCE")
+    );
+    assert_eq!(
+        bare.forge().get(&bare.project, &feature.id).unwrap().state,
+        FeatureState::Approved
+    );
+    let finding = &bare.forge().snapshot(&bare.project).unwrap().preflight[0];
+    assert_eq!(
+        finding.inputs.state,
+        crate::feature_forge::preflight::DecisionInputsState::Absent
+    );
+}
+
+#[tokio::test]
+async fn a_conflict_citing_a_decision_that_was_not_sent_fails_the_triage() {
+    let f = Fixture::new();
+    f.decisions();
+    let feature = f.feature("Export workflow");
+    let runtime = runtime_with(
+        &f,
+        ScriptedGateway::new(vec![triage_with_conflicts(
+            "approve",
+            json!([{"decisionRef": "decision_9", "conflict": "Invented decision.", "severity": "blocking"}]),
+        )]),
+    );
+    runtime
+        .start_triage_analysis(&f.project, &feature.id, feature.revision, &id())
+        .unwrap();
+    let turn = only_turn(&runtime, &f, &feature).await;
+    assert_eq!(turn.status, "failed");
+    assert_eq!(turn.failure.unwrap().kind, TurnFailureKind::ReplyUnreadable);
+    // Nothing of the reply was applied: no verdict, no finding.
+    let stored = f.forge().get(&f.project, &feature.id).unwrap();
+    assert_eq!(stored.evaluation.impact, None);
+    assert!(f.forge().snapshot(&f.project).unwrap().preflight.is_empty());
+}
+
+#[tokio::test]
+async fn decisions_are_sanitized_before_they_reach_the_triage() {
+    let f = Fixture::new();
+    f.write(
+        "knowledge/obsidian/decisions/a-native.md",
+        "---\ntype: decision\nstatus: accepted\n---\n# Native Rust\nDeploy key: AKIAIOSFODNN7EXAMPLE\n",
+    );
+    let feature = f.feature("Export workflow");
+    let gateway = triaged(&f, &feature, triage_with_conflicts("approve", json!([]))).await;
+    let prompt = gateway.prompts().pop().unwrap();
+    assert!(prompt.contains("### `decision_1`"));
+    assert!(!prompt.contains("AKIAIOSFODNN7EXAMPLE"));
+}
+
+#[tokio::test]
+async fn a_dismissed_conflict_reaches_the_specification_brief_of_the_batch() {
+    use crate::orchestration::review_brief::JudgementKind;
+    let f = Fixture::new();
+    f.decisions();
+    let feature = f.feature("Export workflow");
+    triaged(
+        &f,
+        &feature,
+        triage_with_conflicts("approve", blocking_native()),
+    )
+    .await;
+    let finding = f.forge().snapshot(&f.project).unwrap().preflight[0].clone();
+    f.forge()
+        .resolve_preflight(
+            &f.project,
+            &feature.id,
+            &finding.id,
+            PreflightAction::Dismiss {
+                reason: "The helper runs only in the release script, not in the app.".into(),
+            },
+        )
+        .unwrap();
+    f.forge()
+        .approve(&f.project, &feature.id, feature.revision)
+        .unwrap();
+    f.forge()
+        .move_to_wave(&f.project, &feature.id, Wave::Current, 0)
+        .unwrap();
+    // A standalone task travels in the same batch and adds nothing.
+    f.add("Fix validation");
+    let tasks = f.tasks().list(&f.project).unwrap();
+    let pulsation = f.tasks().dispatch(f.dispatch(&tasks)).unwrap();
+
+    let items = crate::feature_forge::service::dismissed_conflicts(
+        &f.service.connection().unwrap(),
+        &pulsation.id,
+    )
+    .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, JudgementKind::DismissedConflict);
+    assert_eq!(items[0].label, "Export workflow");
+    assert!(items[0].text.contains("release script"));
+    assert!(
+        items[0]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("Electron helper")
+    );
+    assert_eq!(
+        items[0].refs,
+        vec!["knowledge/obsidian/decisions/a-native.md".to_owned()]
     );
 }

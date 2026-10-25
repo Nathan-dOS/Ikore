@@ -1,6 +1,7 @@
 //! Product planning and task backlogs. Only the pulsation host integrates code.
 mod failure;
 pub mod pipeline;
+pub mod preflight;
 mod publication;
 mod runtime;
 pub(crate) mod service;
@@ -200,6 +201,14 @@ pub struct ForgeSnapshot {
     pub current_wave_limit: u32,
     pub navigation: ForgeNavigation,
     pub integration_evidence: Vec<TaskEvidence>,
+    /// Whether new batches of the project run through stage composition
+    /// (pipeline v4). Only those get the Integrator's review policy, risk
+    /// scrutiny and coverage (ADR-032/ADR-034, decision D1).
+    #[serde(default)]
+    pub composition_enabled: bool,
+    /// The latest pre-flight finding of each feature (ADR-034 M6).
+    #[serde(default)]
+    pub preflight: Vec<preflight::PreflightFinding>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

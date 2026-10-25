@@ -468,6 +468,8 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
     // revision rounds with the decision required beyond the threshold.
     let review_inputs = hitl.review_inputs.clone();
     let convergence = hitl.convergence.clone();
+    let risk = hitl.risk.clone();
+    let risk_acknowledgement = hitl.risk_acknowledgement_required();
     let beyond_threshold = hitl.beyond_threshold();
     let (confirmed, flagged, open) = hitl.mark_counts();
     let has_marks = has_brief_tab && !hitl.marks.is_empty();
@@ -516,6 +518,11 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         .as_ref()
         .filter(|inputs| showing_brief && matches!(inputs, CheckpointReviewInputs::Recorded { .. }))
         .map(crate::review_brief_view::review_inputs_panel);
+    // ADR-034 M3: risk and coverage lead the Integrator's brief too.
+    let risk_content = risk
+        .as_ref()
+        .filter(|_| showing_brief)
+        .and_then(crate::review_brief_view::risk_panel);
     let round_line = convergence
         .as_ref()
         .and_then(crate::convergence_view::round_line);
@@ -814,6 +821,9 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                 .when(loading, |reader| {
                     reader.child("Loading complete checkpoint documents…")
                 })
+                .when_some(risk_content, |reader, content| {
+                    reader.child(div().pb_4().child(content))
+                })
                 .when_some(review_inputs_content, |reader, content| {
                     reader.child(div().pb_4().child(content))
                 })
@@ -917,7 +927,11 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                 })
                 .child(hitl_button(
                     "hitl-approve",
-                    "Approve",
+                    if risk_acknowledgement {
+                        "Approve with reason"
+                    } else {
+                        "Approve"
+                    },
                     can_approve,
                     HitlDecision::Approve,
                     flagged == 0,

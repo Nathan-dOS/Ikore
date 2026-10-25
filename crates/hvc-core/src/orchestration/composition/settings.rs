@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::risk::ProjectRiskPolicy;
 use super::{CompositionError, ErrorCode, Invariant, Sha256Hex, Validate, canonical_sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +31,10 @@ pub struct CompositionSettings {
     /// needs an explicit decision. The default 3 is a hypothesis to evaluate.
     #[serde(default = "default_revision_round_threshold")]
     pub revision_round_threshold: u32,
+    /// ADR-034 M3: the project's additions to the built-in risk policy.
+    /// Additions only; a project cannot lower a built-in rule.
+    #[serde(default, skip_serializing_if = "ProjectRiskPolicy::is_empty")]
+    pub risk_policy: ProjectRiskPolicy,
 }
 
 pub const DEFAULT_REVISION_ROUND_THRESHOLD: u32 = 3;
@@ -48,6 +53,7 @@ impl Default for CompositionSettings {
             qualified_recipes: Vec::new(),
             visualizer_enabled: false,
             revision_round_threshold: DEFAULT_REVISION_ROUND_THRESHOLD,
+            risk_policy: ProjectRiskPolicy::default(),
         }
     }
 }
@@ -68,6 +74,7 @@ impl Validate for CompositionSettings {
                 "revisionRoundThreshold must be between 1 and 10.",
             ));
         }
+        self.risk_policy.validate()?;
         for recipe in &self.qualified_recipes {
             if !QUALIFIABLE_RECIPES.contains(&recipe.as_str()) {
                 return Err(CompositionError::new(
@@ -171,5 +178,46 @@ mod tests {
         )
         .unwrap();
         assert_eq!(round_trip.revision_round_threshold, 5);
+    }
+
+    /// ADR-034 M3: the project's risk additions are optional, keep the digest
+    /// of a project without them, and are validated with the settings.
+    #[test]
+    fn risk_policy_additions_are_optional_and_validated() {
+        use super::super::risk::{ExtraRequiredChecks, ProjectRiskPolicy};
+        let plain = CompositionSettings::default();
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("riskPolicy").is_none(), "absent when empty");
+        let with = CompositionSettings {
+            risk_policy: ProjectRiskPolicy {
+                sensitive_path_globs: vec!["billing/**".into()],
+                extra_required_check_refs: ExtraRequiredChecks {
+                    medium: Vec::new(),
+                    high: vec![super::super::Handle::new("audit").unwrap()],
+                },
+            },
+            ..CompositionSettings::default()
+        };
+        with.validate().unwrap();
+        assert_ne!(with.sha256().unwrap(), plain.sha256().unwrap());
+        let round_trip: CompositionSettings =
+            serde_json::from_value(serde_json::to_value(&with).unwrap()).unwrap();
+        assert_eq!(round_trip, with);
+        let invalid = CompositionSettings {
+            risk_policy: ProjectRiskPolicy {
+                sensitive_path_globs: vec!["src/[".into()],
+                ..ProjectRiskPolicy::default()
+            },
+            ..CompositionSettings::default()
+        };
+        assert!(invalid.validate().is_err());
+        // An unknown key inside the additions is refused, not ignored.
+        assert!(
+            serde_json::from_value::<CompositionSettings>(serde_json::json!({
+                "enabled": true, "maxInFlightUnits": 1, "validationEnabled": false,
+                "riskPolicy": {"sensitivePathGlobs": [], "lowerBuiltins": true}
+            }))
+            .is_err()
+        );
     }
 }

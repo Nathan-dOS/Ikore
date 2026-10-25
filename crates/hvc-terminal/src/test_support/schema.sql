@@ -46,7 +46,7 @@ CREATE TABLE "cli_agent_configs" (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   agent_role TEXT NOT NULL CHECK(agent_role IN (
     'intake_router','task_specifier','contract_agent','backend_agent',
-    'test_agent','integrator','learning_agent','feature_agent','visualizer','notes_scribe'
+    'test_agent','integrator','learning_agent','feature_agent','visualizer','notes_scribe','documentation_reconciler'
   )),
   execution_mode TEXT NOT NULL DEFAULT 'api_direct'
     CHECK(execution_mode IN ('api_direct','cli_process')),
@@ -316,11 +316,11 @@ CREATE TABLE "terminal_runs" (
     CHECK(slot_kind IN ('canonical','free_form','ephemeral')),
   agent_role TEXT CHECK(agent_role IS NULL OR agent_role IN (
     'intake_router','task_specifier','contract_agent','backend_agent',
-    'test_agent','integrator','learning_agent','feature_agent','visualizer','notes_scribe'
+    'test_agent','integrator','learning_agent','feature_agent','visualizer','notes_scribe','documentation_reconciler'
   )),
   free_form_slot_id TEXT,
   free_form_label TEXT,
-  origin TEXT NOT NULL CHECK(origin IN ('pipeline','learning','manual','feature','review','notes')),
+  origin TEXT NOT NULL CHECK(origin IN ('pipeline','learning','manual','feature','review','notes','reconciliation')),
   execution_mode TEXT NOT NULL CHECK(execution_mode IN ('api_direct','cli_process')),
   backend TEXT CHECK(backend IS NULL OR backend IN ('codex','claude','gemini','opencode','antigravity','custom')),
   model TEXT,
@@ -376,7 +376,7 @@ CREATE TABLE "terminal_slots" (
   kind TEXT NOT NULL CHECK(kind IN ('canonical','free_form','ephemeral')),
   agent_role TEXT CHECK(agent_role IS NULL OR agent_role IN (
     'intake_router','task_specifier','contract_agent','backend_agent',
-    'test_agent','integrator','learning_agent','feature_agent','visualizer','notes_scribe'
+    'test_agent','integrator','learning_agent','feature_agent','visualizer','notes_scribe','documentation_reconciler'
   )),
   label TEXT NOT NULL,
   execution_mode TEXT NOT NULL DEFAULT 'api_direct'

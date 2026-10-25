@@ -98,6 +98,7 @@ fn every_role_keeps_its_persisted_identifier() {
         "feature_agent",
         "visualizer",
         "notes_scribe",
+        "documentation_reconciler",
     ];
     assert_eq!(AgentRole::ALL.len(), identifiers.len());
     for (role, identifier) in AgentRole::ALL.into_iter().zip(identifiers) {
@@ -222,6 +223,42 @@ fn unit_dispatch_preserves_frozen_profile_attribution_fields() {
 }
 
 #[test]
+fn every_composed_specialty_has_one_required_context_scope() {
+    // ADR-034 T1: the reviewer is the only specialty confined to its prompt
+    // until the T1 measurement moves another one; every other composed
+    // specialty reads the sanitized workspace snapshot.
+    for kind in [
+        "intake_classifier",
+        "specification_author",
+        "contract_author",
+        "code_implementer",
+        "code_repairer",
+        "test_author",
+        "test_repairer",
+    ] {
+        assert_eq!(
+            UnitContextScope::required_for(kind),
+            Some(UnitContextScope::Workspace),
+            "{kind}"
+        );
+    }
+    assert_eq!(
+        UnitContextScope::required_for("integration_reviewer"),
+        Some(UnitContextScope::HostContextOnly)
+    );
+    // Boundary: names that are not composed specialties have no scope, so the
+    // transport refuses them instead of guessing one.
+    for unknown in [
+        "",
+        "implement_batch",
+        "Integration_Reviewer",
+        "integration_reviewer ",
+    ] {
+        assert_eq!(UnitContextScope::required_for(unknown), None, "{unknown:?}");
+    }
+}
+
+#[test]
 fn role_timeout_budgets_keep_their_existing_absolute_limits() {
     let expected = [
         (AgentRole::FeatureAgent, 300_000, 900_000),
@@ -234,6 +271,7 @@ fn role_timeout_budgets_keep_their_existing_absolute_limits() {
         (AgentRole::LearningAgent, 240_000, 900_000),
         (AgentRole::Visualizer, 120_000, 300_000),
         (AgentRole::NotesScribe, 180_000, 600_000),
+        (AgentRole::DocumentationReconciler, 240_000, 600_000),
     ];
     for (role, initial, ceiling) in expected {
         let policy = AgentTimeoutPolicy::for_role(role);

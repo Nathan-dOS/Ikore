@@ -183,3 +183,18 @@ delivered nor editable, and a CLI reviewer reads host-selected context only.
 Human revision rounds beyond a configurable threshold need an explicit decision.
 See the [decision](032-integrator-review-boundary.md) and the
 [review policy](../review-policy.md).
+
+## ADR-034: tool policy, risk scrutiny, pre-flight guardian and documentation reconciliation
+
+Every composed executor's tool policy is the context scope the transport
+enforces. In pipeline v4 a versioned risk policy selects the required checks,
+orders the Integrator's diff, captures `REVIEW.md` at Intake and records a
+coverage matrix; approving a high level with pending items needs a reason.
+Forge triage compares the feature with the project's accepted decisions, and a
+blocking conflict holds the approval until the developer decides. Notes linked
+to code through `source-files`/`test-files` show when that code changed, and a
+tool-less reconciler proposes the note update only on request. Linux headless
+validation is done; Windows acceptance is pending. See the
+[decision](034-risk-preflight-and-doc-reconciliation.md), the
+[review policy](../review-policy.md) and
+`quality/feature-10-remaining-validation-2026-10-25.md`.

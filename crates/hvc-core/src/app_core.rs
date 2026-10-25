@@ -240,6 +240,7 @@ pub struct AppCore {
     chat: Arc<ChatService>,
     feature_agent: Arc<crate::feature_forge::FeatureAgentRuntime>,
     notes_scribe: Arc<crate::companion_notes::NoteScribeRuntime>,
+    doc_reconciler: Arc<crate::doc_reconciliation::DocReconcilerRuntime>,
     voice: Arc<crate::voice::VoiceService>,
     terminals: Arc<TerminalService>,
     workspace: Mutex<WorkspaceContext>,
@@ -303,6 +304,11 @@ impl AppCore {
             events.clone(),
             runtime.clone(),
         )?);
+        let doc_reconciler = Arc::new(crate::doc_reconciliation::DocReconcilerRuntime::new(
+            persistence.clone(),
+            events.clone(),
+            runtime.clone(),
+        ));
         let voice = crate::voice::VoiceService::new(
             hvc_voice::VoiceRuntime::new(paths.voice_dir()),
             persistence.clone(),
@@ -321,6 +327,7 @@ impl AppCore {
             chat,
             feature_agent,
             notes_scribe,
+            doc_reconciler,
             voice,
             terminals,
             workspace: Mutex::new(WorkspaceContext::default()),
@@ -410,6 +417,10 @@ impl AppCore {
     }
     pub fn notes_scribe(&self) -> Arc<crate::companion_notes::NoteScribeRuntime> {
         self.notes_scribe.clone()
+    }
+
+    pub fn doc_reconciler(&self) -> Arc<crate::doc_reconciliation::DocReconcilerRuntime> {
+        self.doc_reconciler.clone()
     }
     pub fn voice(&self) -> Arc<crate::voice::VoiceService> {
         self.voice.clone()
@@ -627,12 +638,22 @@ impl AppCore {
         request: RenameWorkspaceNoteRequest,
     ) -> Result<RenameWorkspaceNoteResponse, WorkspaceCommandError> {
         let root = self.workspace_root()?;
-        self.persistence
+        let from = request.from_relative_path.clone();
+        let renamed = self
+            .persistence
             .document_cache
             .with(&root, |cache| {
                 workspace_service::rename_workspace_note(&root, cache, request)
             })
-            .map_err(WorkspaceCommandError::from)
+            .map_err(WorkspaceCommandError::from)?;
+        // ADR-034 M5: the note keeps its reconciliation baselines and signals.
+        if let Err(error) =
+            self.persistence
+                .rename_doc_drift_note(&root, &from, &renamed.renamed_to)
+        {
+            eprintln!("documentation reconciliation rows kept their old note path: {error}");
+        }
+        Ok(renamed)
     }
 
     pub fn workspace_root(&self) -> Result<PathBuf, WorkspaceCommandError> {
@@ -656,6 +677,7 @@ impl AppCore {
         self.chat.cancel_all_turns();
         self.feature_agent.cancel_all();
         self.notes_scribe.cancel_all();
+        self.doc_reconciler.cancel_all();
         self.voice.shutdown();
         self.terminals.cancel_all();
         if let Ok(mut workspace) = self.workspace.lock() {
@@ -680,6 +702,7 @@ impl AppCore {
         let _ = self.chat.wait_for_idle(Duration::from_secs(3)).await;
         self.feature_agent.wait_for_idle().await;
         self.notes_scribe.wait_for_idle().await;
+        self.doc_reconciler.wait_for_idle().await;
         if !self.terminals.wait_for_idle(Duration::from_secs(3)).await {
             self.terminals.cancel_all();
             let _ = self.terminals.wait_for_idle(Duration::from_secs(30)).await;

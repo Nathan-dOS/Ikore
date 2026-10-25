@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use hvc_contracts::UnitContextScope;
+
 use super::{
     CompositionError, EditOperationV1, ExecutorKind, Sha256Hex, SourceRole, Stage, canonical_sha256,
 };
@@ -35,21 +37,32 @@ impl EditOp {
 }
 
 /// What a transport may expose to the worker. Project command execution is a
-/// separate host facility and never appears here (ADR-010/ADR-011).
+/// separate host facility and never appears here (ADR-010/ADR-011). Every
+/// variant is enforced by the transport; ADR-034 T1 removed the declarative
+/// `none` that a CLI worker did not honor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolPolicy {
-    /// Detached structured response; the prompt already carries the context.
-    /// Declarative: a CLI worker still runs in the sanitized workspace
-    /// snapshot under the pipeline hardening (read-only tools, no shell).
-    None,
-    /// Read-only inspection scoped to the delivered inputs, when the adapter
-    /// can enforce that scope. Writes and shell are never granted.
+    /// Read-only inspection: a CLI worker runs in the sanitized workspace
+    /// snapshot under the pipeline hardening (read tools, no writes, no
+    /// shell). The API transport has no tools.
     ReadOnlyScoped,
-    /// Enforced: the worker reads only the host-selected context of its
-    /// prompt. A CLI worker runs in an empty directory under the Companion
-    /// hardening; a custom CLI adapter is refused (ADR-032).
+    /// The worker reads only the host-selected context of its prompt. A CLI
+    /// worker runs in an empty directory under the Companion hardening; a
+    /// custom CLI adapter is refused (ADR-032).
     HostContextOnly,
+}
+
+impl ToolPolicy {
+    /// The scope the transport applies for this policy. The only mapping
+    /// between the two; the transport refuses any other scope for the
+    /// specialty (`UnitContextScope::required_for`).
+    pub const fn context_scope(self) -> UnitContextScope {
+        match self {
+            Self::ReadOnlyScoped => UnitContextScope::Workspace,
+            Self::HostContextOnly => UnitContextScope::HostContextOnly,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -142,7 +155,7 @@ static POLICIES: [ExecutorPolicy; 8] = [
         may_ask: false,
         requires_evidence: false,
         repair: false,
-        tools: ToolPolicy::None,
+        tools: ToolPolicy::ReadOnlyScoped,
     },
     ExecutorPolicy {
         kind: ExecutorKind::SpecificationAuthor,
@@ -166,7 +179,7 @@ static POLICIES: [ExecutorPolicy; 8] = [
         may_ask: false,
         requires_evidence: false,
         repair: false,
-        tools: ToolPolicy::None,
+        tools: ToolPolicy::ReadOnlyScoped,
     },
     ExecutorPolicy {
         kind: ExecutorKind::CodeImplementer,
@@ -190,7 +203,7 @@ static POLICIES: [ExecutorPolicy; 8] = [
         may_ask: false,
         requires_evidence: true,
         repair: true,
-        tools: ToolPolicy::None,
+        tools: ToolPolicy::ReadOnlyScoped,
     },
     ExecutorPolicy {
         kind: ExecutorKind::TestAuthor,
@@ -214,7 +227,7 @@ static POLICIES: [ExecutorPolicy; 8] = [
         may_ask: false,
         requires_evidence: true,
         repair: true,
-        tools: ToolPolicy::None,
+        tools: ToolPolicy::ReadOnlyScoped,
     },
     ExecutorPolicy {
         kind: ExecutorKind::IntegrationReviewer,
@@ -322,12 +335,10 @@ mod tests {
                 "{kind:?}"
             );
         }
-        // Repair specialties are bounded corrections and never get tools.
-        for kind in [ExecutorKind::CodeRepairer, ExecutorKind::TestRepairer] {
-            assert_eq!(policy_for(kind).tools, ToolPolicy::None);
-        }
         // The reviewer reads only host-selected context (ADR-032), and it is
         // the only specialty whose scope the transport enforces that way.
+        // The others honestly declare the workspace snapshot their CLI reads
+        // (ADR-034 T1) until a measurement moves one of them.
         for kind in ExecutorKind::ALL {
             assert_eq!(
                 policy_for(kind).tools == ToolPolicy::HostContextOnly,
@@ -343,6 +354,30 @@ mod tests {
             assert!(!brief.contains("shell"));
         }
         assert!(common_rules().contains("Never invent handles"));
+    }
+
+    #[test]
+    fn every_declared_tool_policy_is_the_scope_the_transport_requires() {
+        // ADR-034 T1: one table in the shared contracts says which scope the
+        // transport accepts for each specialty; a policy that disagrees would
+        // be refused at dispatch, so the two can never drift apart silently.
+        for kind in ExecutorKind::ALL {
+            assert_eq!(
+                Some(policy_for(kind).tools.context_scope()),
+                UnitContextScope::required_for(kind.as_str()),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(
+            ToolPolicy::ReadOnlyScoped.context_scope(),
+            UnitContextScope::Workspace
+        );
+        assert_eq!(
+            ToolPolicy::HostContextOnly.context_scope(),
+            UnitContextScope::HostContextOnly
+        );
+        // The retired declarative policy no longer parses.
+        assert!(serde_json::from_value::<ToolPolicy>(serde_json::json!("none")).is_err());
     }
 
     #[test]

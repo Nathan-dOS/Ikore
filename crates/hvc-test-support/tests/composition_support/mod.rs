@@ -108,16 +108,25 @@ pub fn wait_for_checkpoint(service: &PersistenceService, pulse: &str, stage: &st
     });
 }
 
+/// Approves the waiting checkpoint. The fixture's `src/auth.rs` is a
+/// sensitive path, so its review is high risk (ADR-034 M3): the approval
+/// carries an acknowledgement, which the host records only when required.
 pub fn approve(service: &PersistenceService, pulse: &str) {
     let checkpoint = service.get_hitl_checkpoint(pulse).unwrap();
     service
-        .apply_hitl_decision(ApplyHitlDecisionRequest {
-            pulsation_id: pulse.into(),
-            checkpoint_id: checkpoint.checkpoint_id,
-            expected_state_version: checkpoint.state_version,
-            feedback: None,
-            decision: HitlDecision::Approve,
-        })
+        .apply_hitl_decision_with_acknowledgements(
+            ApplyHitlDecisionRequest {
+                pulsation_id: pulse.into(),
+                checkpoint_id: checkpoint.checkpoint_id,
+                expected_state_version: checkpoint.state_version,
+                feedback: None,
+                decision: HitlDecision::Approve,
+            },
+            None,
+            Some(hvc_core::persistence_service::RiskAcknowledgement {
+                reason: "Fixture approval.".into(),
+            }),
+        )
         .unwrap();
 }
 

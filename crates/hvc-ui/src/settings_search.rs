@@ -606,6 +606,14 @@ pub(crate) static ENTRIES: &[SettingsEntry] = &[
         "visualizer brief review notes agent",
     ),
     entry(
+        "composition-risk-policy",
+        P::Composition,
+        "Risk policy",
+        "Risk policy additions",
+        "More sensitive paths and the checks each risk level requires. The built-in rules always apply; a project can only add to them.",
+        "risk sensitive paths globs required checks scrutiny coverage",
+    ),
+    entry(
         "composition-revision-rounds",
         P::Composition,
         "Revision rounds",

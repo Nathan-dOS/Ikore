@@ -142,6 +142,7 @@ pub fn agent_color(role: AgentRole) -> Rgba {
         AgentRole::FeatureAgent => rgb(0x6bded8),
         AgentRole::Visualizer => rgb(0xc4b5fd),
         AgentRole::NotesScribe => rgb(0xf5a97f),
+        AgentRole::DocumentationReconciler => rgb(0x8bd5ca),
     }
 }
 
@@ -157,5 +158,6 @@ pub fn agent_soft_color(role: AgentRole) -> Rgba {
         AgentRole::FeatureAgent => rgb(0x163d3c),
         AgentRole::Visualizer => rgb(0x2a2540),
         AgentRole::NotesScribe => rgb(0x40291c),
+        AgentRole::DocumentationReconciler => rgb(0x1c3a36),
     }
 }

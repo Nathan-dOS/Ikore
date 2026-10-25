@@ -269,14 +269,22 @@ fn wait_for_checkpoint(
 
 fn approve(service: &PersistenceService, pulse: &str) {
     let checkpoint = service.get_hitl_checkpoint(pulse).unwrap();
+    // A high-risk review approves with an acknowledgement (ADR-034 M3); the
+    // host ignores it everywhere else.
     service
-        .apply_hitl_decision(ApplyHitlDecisionRequest {
-            pulsation_id: pulse.into(),
-            checkpoint_id: checkpoint.checkpoint_id,
-            expected_state_version: checkpoint.state_version,
-            feedback: None,
-            decision: HitlDecision::Approve,
-        })
+        .apply_hitl_decision_with_acknowledgements(
+            ApplyHitlDecisionRequest {
+                pulsation_id: pulse.into(),
+                checkpoint_id: checkpoint.checkpoint_id,
+                expected_state_version: checkpoint.state_version,
+                feedback: None,
+                decision: HitlDecision::Approve,
+            },
+            None,
+            Some(hvc_core::persistence_service::RiskAcknowledgement {
+                reason: "Fixture approval.".into(),
+            }),
+        )
         .unwrap();
 }
 

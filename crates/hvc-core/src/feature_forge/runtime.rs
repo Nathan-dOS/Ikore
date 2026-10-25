@@ -112,6 +112,9 @@ pub struct TriageAnalysisResponse {
     pub structural_level: u8,
     pub recommendation: TriageRecommendation,
     pub rationale: String,
+    /// ADR-034 M6: conflicts with the delivered decisions; empty when none
+    /// conflict or none were delivered.
+    pub architecture_conflicts: Vec<super::preflight::ArchitectureConflict>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -574,9 +577,44 @@ impl FeatureAgentRuntime {
         turn: &str,
         cancellation: &CancellationToken,
     ) -> Result<(), TurnError> {
+        // ADR-034 M6: the project's accepted decisions, selected, budgeted and
+        // sanitized by the host, ride along with the same triage call.
+        let root: String = self.persistence.connection()?.query_row(
+            "SELECT workspace_path FROM projects WHERE id=?1",
+            [&f.project_id],
+            |r| r.get(0),
+        )?;
+        let root = std::path::PathBuf::from(root);
+        let linked = super::preflight::linked_from_sources(
+            &root,
+            f.brief
+                .sources
+                .iter()
+                .map(|source| source.relative_path.as_str()),
+        );
+        let decisions = super::preflight::read_decisions(&root, &linked);
+        let sanitization =
+            crate::sanitization::SanitizationStore::new(self.persistence.database_path());
+        let policy = sanitization
+            .policy_for_project(&f.project_id)
+            .map_err(|_| {
+                TurnFailure::new(
+                    TurnFailureKind::Sanitization,
+                    "The project's decisions could not be sanitized before triage",
+                )
+            })?;
+        let section = super::preflight::prompt_section(&decisions, &|path, content| {
+            sanitization
+                .sanitize_source_with_policy(&policy, path, content)
+                .ok()
+                .map(|view| view.text)
+        });
         let prompt = format!(
-            "You are FeatureAgent performing triage on a feature whose scope is settled. Judge it on its own merits; do not restate the brief. Answer the four screens concretely: value and need, product alignment, feasibility and engineering risk, usability and adoption. Rate impact, confidence and effort from 1 to 5, where effort 5 is the largest. Set structuralLevel to 0 for foundation work, 1 for domain logic, 2 for interface, 3 for optimization. Recommend approve or archive and justify it in rationale. Never dispatch, write files or implement code. Use English.\n{}",
-            service::json(&json!({"feature": f}))?
+            "You are FeatureAgent performing triage on a feature whose scope is settled. Judge it on its own merits; do not restate the brief. Answer the four screens concretely: value and need, product alignment, feasibility and engineering risk, usability and adoption. Rate impact, confidence and effort from 1 to 5, where effort 5 is the largest. Set structuralLevel to 0 for foundation work, 1 for domain logic, 2 for interface, 3 for optimization. Recommend approve or archive and justify it in rationale. Return architectureConflicts as an empty list unless architecture decisions are listed below. Never dispatch, write files or implement code. Use English.\n{}{}",
+            service::json(&json!({"feature": f}))?,
+            section
+                .map(|section| format!("\n\n{section}"))
+                .unwrap_or_default()
         );
         let raw = self
             .persistence
@@ -599,6 +637,15 @@ impl FeatureAgentRuntime {
         crate::agent_output_language::validate_english_prose("triage rationale", &result.rationale)
             .map_err(wrong_language)?;
         validate_evaluation(&result.evaluation, result.structural_level)?;
+        super::preflight::validate_conflicts(&result.architecture_conflicts, &decisions)
+            .map_err(unreadable)?;
+        for conflict in &result.architecture_conflicts {
+            crate::agent_output_language::validate_english_prose(
+                "architecture conflict",
+                &conflict.conflict,
+            )
+            .map_err(wrong_language)?;
+        }
 
         let mut db = self.persistence.connection()?;
         let mut tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -621,10 +668,23 @@ impl FeatureAgentRuntime {
         // to skip `save_brief` here -- going through it would reset the feature
         // to incubating and undo the very transition being made.
         apply_evaluation(&tx, &f.id, &result.evaluation, result.structural_level)?;
+        let finding = super::service::insert_preflight_finding(
+            &tx,
+            &f.project_id,
+            &current,
+            turn,
+            &decisions,
+            &result.architecture_conflicts,
+        )?;
 
         let mut skipped_approval = None;
         let mut approved = false;
-        if result.recommendation == TriageRecommendation::Approve {
+        if result.recommendation == TriageRecommendation::Approve && finding.blocking > 0 {
+            skipped_approval = Some(
+                "a blocking architecture conflict needs a decision first: adjust the feature, propose a decision or dismiss the warning with a reason"
+                    .to_owned(),
+            );
+        } else if result.recommendation == TriageRecommendation::Approve {
             // Re-read: applying the evaluation moved incubating -> in_triage.
             let triaged = feature(&tx, &f.project_id, &f.id)?;
             if triaged.approved_revision == Some(f.revision) {
@@ -653,9 +713,31 @@ impl FeatureAgentRuntime {
             }
         }
 
+        let conflicts = finding
+            .conflicts
+            .iter()
+            .map(|conflict| {
+                format!(
+                    "\n- {} {}: {}",
+                    match conflict.severity {
+                        super::preflight::ConflictSeverity::Blocking => "[blocking]",
+                        super::preflight::ConflictSeverity::Advisory => "[advisory]",
+                    },
+                    finding
+                        .decision_path(conflict)
+                        .unwrap_or(&conflict.decision_ref),
+                    conflict.conflict
+                )
+            })
+            .collect::<String>();
         let display = format!(
-            "{}\n\nRecommendation: {}\n{}{}",
+            "{}{}\n\nRecommendation: {}\n{}{}",
             result.message,
+            if conflicts.is_empty() {
+                String::new()
+            } else {
+                format!("\n\nArchitecture conflicts:{conflicts}")
+            },
             match result.recommendation {
                 TriageRecommendation::Approve => "approve",
                 TriageRecommendation::Archive => "archive",
@@ -885,7 +967,7 @@ pub(crate) fn triage_analysis_schema() -> Value {
         json!({"value":string(),"alignment":string(),"feasibility":string(),"usability":string(),"impact":rating.clone(),"confidence":rating.clone(),"effort":rating}),
     );
     object(
-        json!({"outputLanguage":{"type":"string","enum":["en"]},"message":string(),"evaluation":evaluation,"structuralLevel":{"type":"integer","minimum":0,"maximum":3},"recommendation":{"type":"string","enum":["approve","archive"]},"rationale":string()}),
+        json!({"outputLanguage":{"type":"string","enum":["en"]},"message":string(),"evaluation":evaluation,"structuralLevel":{"type":"integer","minimum":0,"maximum":3},"recommendation":{"type":"string","enum":["approve","archive"]},"rationale":string(),"architectureConflicts":{"type":"array","maxItems":super::preflight::MAX_CONFLICTS,"items":object(json!({"decisionRef":string(),"conflict":string(),"severity":{"type":"string","enum":["blocking","advisory"]}}))}}),
     )
 }
 

@@ -30,6 +30,28 @@ pub struct PulsationReport {
     /// Human revision rounds next to technical attempts (ADR-032 M4).
     #[serde(default)]
     pub convergence: Option<ReportConvergence>,
+    /// Risk level and coverage of the latest review (ADR-034 M3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk: Option<ReportRisk>,
+}
+
+/// The risk the host assessed and what backed each criterion and check.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportRisk {
+    pub level: String,
+    pub reasons: Vec<String>,
+    pub unknown_inputs: Vec<String>,
+    pub rows: Vec<ReportCoverageRow>,
+    pub missing_kinds: Vec<String>,
+    pub acknowledgements: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportCoverageRow {
+    pub kind: String,
+    pub subject: String,
+    pub state: String,
+    pub detail: String,
 }
 
 /// The host's record of the reviewer's inputs, without hashes.
@@ -225,6 +247,9 @@ pub fn render_pulsation_report(report: &PulsationReport) -> String {
             report.convergence.as_ref(),
         ));
     }
+    if let Some(risk) = &report.risk {
+        page.push(&risk_section(risk));
+    }
     page.push(&run_context(&report.run));
     if !report.rejected_outputs.is_empty() {
         page.push(&rejected_outputs(&report.rejected_outputs));
@@ -309,6 +334,16 @@ fn observed_report(report: &PulsationReport) -> PulsationReport {
     }
     if let Some(convergence) = &mut report.convergence {
         strings(&mut convergence.decisions);
+    }
+    if let Some(risk) = &mut report.risk {
+        strings(&mut risk.reasons);
+        strings(&mut risk.unknown_inputs);
+        strings(&mut risk.missing_kinds);
+        strings(&mut risk.acknowledgements);
+        for row in &mut risk.rows {
+            text(&mut row.subject);
+            text(&mut row.detail);
+        }
     }
     report
 }
@@ -603,6 +638,9 @@ fn navigation(report: &PulsationReport) -> SafeHtml {
     }
     if report.review.is_some() || report.convergence.is_some() {
         html.push_markup("<li><a href=\"#review\">Review inputs</a></li>");
+    }
+    if report.risk.is_some() {
+        html.push_markup("<li><a href=\"#risk\">Risk and coverage</a></li>");
     }
     html.push_markup("<li><a href=\"#run\">Run context</a></li>");
     if !report.rejected_outputs.is_empty() {
@@ -1450,6 +1488,56 @@ fn review_section(
     html
 }
 
+/// ADR-034 M3: the risk level, its reasons and what backed each criterion
+/// and each check the level required.
+fn risk_section(risk: &ReportRisk) -> SafeHtml {
+    let mut html = SafeHtml::markup(
+        "<section id=\"risk\" aria-labelledby=\"risk-h\"><div class=\"sec-head\"><h2 id=\"risk-h\">Risk and coverage</h2><p>The level the host assessed adds scrutiny and never removes a stage or checkpoint. Executed rows rest on a fresh host receipt; model-only rows rest on the reviewer's reading alone.</p></div><div class=\"card\"><dl class=\"facts\">",
+    );
+    let fact = |html: &mut SafeHtml, label: &str, value: &str| {
+        html.push_markup("<dt>")
+            .push_text(label)
+            .push_markup("</dt><dd>")
+            .push_text(value)
+            .push_markup("</dd>");
+    };
+    fact(&mut html, "Risk level", &risk.level);
+    for reason in &risk.reasons {
+        fact(&mut html, "Reason", reason);
+    }
+    if !risk.unknown_inputs.is_empty() {
+        fact(&mut html, "Unknown inputs", &risk.unknown_inputs.join(", "));
+    }
+    if !risk.missing_kinds.is_empty() {
+        fact(
+            &mut html,
+            "Required but not configured",
+            &risk.missing_kinds.join(", "),
+        );
+    }
+    for acknowledgement in &risk.acknowledgements {
+        fact(&mut html, "Acknowledged", acknowledgement);
+    }
+    html.push_markup("</dl></div>");
+    if !risk.rows.is_empty() {
+        html.push_markup(
+            "<div class=\"table-wrap\"><table class=\"wide\"><thead><tr><th>Item</th><th>Coverage</th><th>Detail</th></tr></thead><tbody>",
+        );
+        for row in &risk.rows {
+            html.push_markup("<tr><td>")
+                .push_text(&format!("{} {}", row.kind, row.subject))
+                .push_markup("</td><td>")
+                .push_text(&row.state)
+                .push_markup("</td><td class=\"wrap-text\">")
+                .push_text(&row.detail)
+                .push_markup("</td></tr>");
+        }
+        html.push_markup("</tbody></table></div>");
+    }
+    html.push_markup("</section>");
+    html
+}
+
 fn footer() -> SafeHtml {
     SafeHtml::markup(
         "<footer><span>Rendered by the host from validated payloads, host receipts and usage records. Same inputs, same bytes. Not a document of record.</span><span>No scripts, no network requests, no external assets. Agent-written text is escaped and labelled.</span></footer>",
@@ -1603,6 +1691,7 @@ mod tests {
             }],
             review: None,
             convergence: None,
+            risk: None,
         }
     }
 
@@ -1651,6 +1740,60 @@ mod tests {
         let mut earlier = serde_json::to_value(sample()).unwrap();
         earlier.as_object_mut().unwrap().remove("review");
         earlier.as_object_mut().unwrap().remove("convergence");
+        assert_eq!(
+            serde_json::from_value::<PulsationReport>(earlier).unwrap(),
+            sample()
+        );
+    }
+
+    /// ADR-034 M3: the risk section appears only when recorded, lists each
+    /// coverage state and sanitizes what it quotes.
+    #[test]
+    fn the_risk_section_reports_the_level_and_the_coverage() {
+        let mut report = sample();
+        let plain = render_pulsation_report(&report);
+        assert!(!plain.contains("id=\"risk\""));
+        report.risk = Some(ReportRisk {
+            level: "high".into(),
+            reasons: vec!["sensitive path `src/auth/session.rs` (high)".into()],
+            unknown_inputs: vec!["intake:task_2".into()],
+            rows: vec![
+                ReportCoverageRow {
+                    kind: "criterion".into(),
+                    subject: "crit_1_1".into(),
+                    state: "executed".into(),
+                    detail: "unit: passed".into(),
+                },
+                ReportCoverageRow {
+                    kind: "criterion".into(),
+                    subject: "crit_1_2".into(),
+                    state: "model_only".into(),
+                    detail: "supported by the model's review only".into(),
+                },
+                ReportCoverageRow {
+                    kind: "check".into(),
+                    subject: "lint".into(),
+                    state: "not_run".into(),
+                    detail: "token sk-proj-abcdefghijklmnopqrst".into(),
+                },
+            ],
+            missing_kinds: vec!["lint".into()],
+            acknowledgements: vec!["2 pending: The lint profile is set up next sprint.".into()],
+        });
+        let html = render_pulsation_report(&report);
+        assert!(html.contains("<a href=\"#risk\">Risk and coverage</a>"));
+        assert!(html.contains("id=\"risk\""));
+        assert!(html.contains("<dd>high</dd>"));
+        assert!(html.contains("sensitive path `src/auth/session.rs` (high)"));
+        assert!(html.contains("intake:task_2"));
+        assert!(html.contains("model_only"));
+        assert!(html.contains("Required but not configured"));
+        assert!(html.contains("The lint profile is set up next sprint."));
+        assert!(!html.contains("sk-proj-abcdefghijklmnopqrst"));
+        // Reports written before ADR-034 still parse, as having no risk.
+        let mut earlier = serde_json::to_value(sample()).unwrap();
+        assert!(earlier.as_object().unwrap().get("risk").is_none());
+        earlier.as_object_mut().unwrap().remove("risk");
         assert_eq!(
             serde_json::from_value::<PulsationReport>(earlier).unwrap(),
             sample()

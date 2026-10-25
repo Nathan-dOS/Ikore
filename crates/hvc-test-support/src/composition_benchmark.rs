@@ -709,14 +709,22 @@ impl Driver<'_> {
                     match kind.as_deref() {
                         Some("artifact_review") => {
                             let checkpoint = self.service.get_hitl_checkpoint(&self.pulse).unwrap();
+                            // A high-risk review approves with an
+                            // acknowledgement (ADR-034 M3); ignored otherwise.
                             self.service
-                                .apply_hitl_decision(ApplyHitlDecisionRequest {
-                                    pulsation_id: self.pulse.clone(),
-                                    checkpoint_id: checkpoint.checkpoint_id,
-                                    expected_state_version: checkpoint.state_version,
-                                    feedback: None,
-                                    decision: HitlDecision::Approve,
-                                })
+                                .apply_hitl_decision_with_acknowledgements(
+                                    ApplyHitlDecisionRequest {
+                                        pulsation_id: self.pulse.clone(),
+                                        checkpoint_id: checkpoint.checkpoint_id,
+                                        expected_state_version: checkpoint.state_version,
+                                        feedback: None,
+                                        decision: HitlDecision::Approve,
+                                    },
+                                    None,
+                                    Some(hvc_core::persistence_service::RiskAcknowledgement {
+                                        reason: "Benchmark approval.".into(),
+                                    }),
+                                )
                                 .unwrap();
                         }
                         Some("stage_failure") => {

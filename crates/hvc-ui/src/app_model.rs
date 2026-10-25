@@ -267,6 +267,8 @@ struct RestoredSession {
 const ACTIVITY_COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 /// How often Review re-reads a Visualizer note still being written (ADR-027 M5).
 const VISUALIZER_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+/// ADR-034 M3: shown when Approve needs an acknowledgement and the feedback is empty.
+pub(crate) const RISK_REASON_REQUIRED: &str = "This is a high-risk review with unverified or unrun items. Write why you approve it in the feedback, then approve again.";
 /// ADR-032: shown when a plain revision is asked for beyond the threshold.
 const THRESHOLD_CHOICE: &str = "This pulsation reached its revision-round threshold. Write the reason in the feedback, then choose Continue revising or Replan from Specification, or reject.";
 const REASON_REQUIRED: &str =
@@ -292,6 +294,8 @@ pub struct AppModel {
     pub(crate) core: Option<Arc<AppCore>>,
     pub(crate) forge: crate::forge::ForgeUi,
     pub(crate) notes: crate::notes::NotesUi,
+    /// ADR-034 M5: notes whose linked code changed.
+    pub(crate) doc_drift: crate::doc_drift::DocDriftUi,
     session_persistence: Option<Arc<dyn SessionPersistence>>,
     workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
     pulsations_backend: Option<Arc<dyn PulsationsBackend>>,
@@ -342,6 +346,10 @@ pub struct AppModel {
     pub(crate) composition_override_model_input: Entity<NativeTextInput>,
     pub(crate) sanitization_path_input: Entity<NativeTextInput>,
     pub(crate) sanitization_reason_input: Entity<NativeTextInput>,
+    /// ADR-034 M3: the project's additions to the built-in risk policy.
+    pub(crate) risk_globs_input: Entity<NativeTextInput>,
+    pub(crate) risk_medium_checks_input: Entity<NativeTextInput>,
+    pub(crate) risk_high_checks_input: Entity<NativeTextInput>,
     pub(crate) context_limit_input: Entity<NativeTextInput>,
     preparation_scope: Option<(String, u64, Option<String>)>,
     pub(crate) learning_graph_decisions:
@@ -625,6 +633,17 @@ impl AppModel {
             cx.new(|cx| NativeTextInput::new("Repository path, e.g. tests/fixtures/client.rs", cx));
         let sanitization_reason_input =
             cx.new(|cx| NativeTextInput::new("Why is this occurrence a synthetic fixture?", cx));
+        let risk_globs_input = cx.new(|cx| {
+            NativeTextInput::new(
+                "More sensitive paths, one glob per line (e.g. billing/**)",
+                cx,
+            )
+        });
+        let risk_medium_checks_input = cx.new(|cx| {
+            NativeTextInput::new("Checks required from medium risk, comma-separated", cx)
+        });
+        let risk_high_checks_input =
+            cx.new(|cx| NativeTextInput::new("Checks required at high risk, comma-separated", cx));
         let context_limit_input =
             cx.new(|cx| NativeTextInput::new("Context budget: 2,000 to 80,000 characters", cx));
         let vault_search_input = cx.new(|cx| NativeTextInput::new("Text or regex", cx));
@@ -747,6 +766,9 @@ impl AppModel {
             cx.observe(&settings_project_delete_input, |_, _, cx| cx.notify()),
             cx.observe(&sanitization_path_input, |_, _, cx| cx.notify()),
             cx.observe(&sanitization_reason_input, |_, _, cx| cx.notify()),
+            cx.observe(&risk_globs_input, |_, _, cx| cx.notify()),
+            cx.observe(&risk_medium_checks_input, |_, _, cx| cx.notify()),
+            cx.observe(&risk_high_checks_input, |_, _, cx| cx.notify()),
             cx.observe(&settings_embedding_model_input, |_, _, cx| cx.notify()),
             cx.observe(&chat_draft_input, |_, _, cx| cx.notify()),
             cx.subscribe(
@@ -783,6 +805,7 @@ impl AppModel {
             core,
             forge: crate::forge::ForgeUi::new(cx),
             notes: crate::notes::NotesUi::new(cx),
+            doc_drift: crate::doc_drift::DocDriftUi::new(cx),
             session_persistence,
             workspace_backend,
             pulsations_backend: None,
@@ -820,6 +843,9 @@ impl AppModel {
             composition_override_model_input,
             sanitization_path_input,
             sanitization_reason_input,
+            risk_globs_input,
+            risk_medium_checks_input,
+            risk_high_checks_input,
             context_limit_input,
             specification_answer_inputs: Vec::new(),
             preparation_scope: None,
@@ -2426,6 +2452,8 @@ impl AppModel {
                 Some((
                     backend.review_inputs(checkpoint.clone()).await,
                     backend.convergence(checkpoint.pulsation_id.clone()).await,
+                    // ADR-034 M3: the review's risk level and coverage.
+                    backend.risk_status(checkpoint.pulsation_id.clone()).await,
                 ))
             } else {
                 None
@@ -2444,13 +2472,14 @@ impl AppModel {
                                 .hitl
                                 .finish_visualization(generation, &checkpoint, visualization);
                         }
-                        if let Some((review_inputs, convergence)) = context {
+                        if let Some((review_inputs, convergence, risk)) = context {
                             state.hitl.finish_review_context(
                                 generation,
                                 &checkpoint,
                                 review_inputs,
                                 convergence,
                             );
+                            state.hitl.finish_risk(generation, &checkpoint, risk);
                         }
                     }
                 });
@@ -2891,6 +2920,8 @@ impl AppModel {
         if self.vault.read(cx).workspace_root.is_none() {
             return;
         }
+        // The indicator follows the Vault: same moments, its own query.
+        self.refresh_doc_drift(cx);
         let Some(backend) = self.vault_backend.clone() else {
             return;
         };
@@ -3441,7 +3472,33 @@ impl AppModel {
             cx.notify();
             return;
         }
-        self.apply_hitl_decision_with(decision, None, cx);
+        // ADR-034 M3: approving a high-risk review with unverified or unrun
+        // items needs a reason; the feedback text is it.
+        if decision == HitlDecision::Approve
+            && self
+                .pulsations
+                .read(cx)
+                .hitl
+                .risk_acknowledgement_required()
+        {
+            let reason = self.stage_feedback_input.read(cx).value().trim().to_owned();
+            if reason.is_empty() {
+                self.pulsations.update(cx, |pulsations, _| {
+                    pulsations.hitl.show_feedback = true;
+                    pulsations.hitl.error = Some(RISK_REASON_REQUIRED.into());
+                });
+                cx.notify();
+                return;
+            }
+            self.apply_hitl_decision_with(
+                decision,
+                None,
+                Some(hvc_core::persistence_service::RiskAcknowledgement { reason }),
+                cx,
+            );
+            return;
+        }
+        self.apply_hitl_decision_with(decision, None, None, cx);
     }
 
     /// A checkpoint revision beyond the round threshold (ADR-032): the
@@ -3455,13 +3512,14 @@ impl AppModel {
             cx.notify();
             return;
         };
-        self.apply_hitl_decision_with(HitlDecision::RequestRevision, Some(ack), cx);
+        self.apply_hitl_decision_with(HitlDecision::RequestRevision, Some(ack), None, cx);
     }
 
     fn apply_hitl_decision_with(
         &mut self,
         decision: HitlDecision,
         ack: Option<hvc_core::persistence_service::ConvergenceAck>,
+        risk: Option<hvc_core::persistence_service::RiskAcknowledgement>,
         cx: &mut Context<Self>,
     ) {
         self.confirm_hitl_reject = false;
@@ -3504,7 +3562,7 @@ impl AppModel {
             let result = runtime
                 .spawn_blocking(move || {
                     core.persistence()
-                        .apply_hitl_decision_with_convergence(request, ack)
+                        .apply_hitl_decision_with_acknowledgements(request, ack, risk)
                         .map(|_| ())
                         .map_err(|error| error.to_string())
                 })
@@ -6338,6 +6396,7 @@ impl AppModel {
                             model.settings.read(cx).selected_connection_id.clone();
                         let previous_route = model.settings.read(cx).selected_route_id.clone();
                         model.fill_preparation_threshold(&snapshot, cx);
+                        model.fill_risk_policy_inputs(&snapshot, cx);
                         let applied = model.settings.update(cx, |settings, _| {
                             settings.apply_snapshot(generation, snapshot)
                         });
@@ -6370,6 +6429,23 @@ impl AppModel {
                         }
                         if applied && model.settings.read(cx).embedding_readiness.is_none() {
                             model.refresh_embedding_readiness(cx);
+                        }
+                        // ADR-034 D1: the batch composer says when the review
+                        // policy does not apply; keep it in step with a
+                        // composition toggle made in Settings.
+                        let composition_enabled = model
+                            .settings
+                            .read(cx)
+                            .snapshot
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.composition.as_ref())
+                            .map(|project| project.settings.enabled);
+                        if applied
+                            && composition_enabled.is_some_and(|enabled| {
+                                enabled != model.forge.snapshot.composition_enabled
+                            })
+                        {
+                            model.refresh_forge(cx);
                         }
                     }
                     Err(_) if quiet => {}
@@ -8137,6 +8213,17 @@ impl AppModel {
                 }
             }
             AppEvent::Voice(_) => self.refresh_voice_status(cx),
+            AppEvent::DocDrift(event) => {
+                if self
+                    .workspace
+                    .read(cx)
+                    .project_id
+                    .as_ref()
+                    .is_some_and(|p| p.as_ref() == event.project_id)
+                {
+                    self.refresh_doc_drift(cx);
+                }
+            }
             AppEvent::WorkspaceChanged(event) => {
                 self.activity.push_coalesced(
                     ActivityEntry {
@@ -8152,6 +8239,7 @@ impl AppModel {
                     logs.record_workspace(event.clone());
                 });
                 self.handle_workspace_change(event, cx);
+                self.schedule_doc_drift_refresh(cx);
             }
             AppEvent::Llm(envelope) => {
                 let execution_id = envelope.execution_id.clone();

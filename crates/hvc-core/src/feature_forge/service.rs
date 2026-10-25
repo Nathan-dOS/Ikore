@@ -1,3 +1,7 @@
+use super::preflight::{
+    self, ArchitectureConflict, ConflictSeverity, DecisionInputs, PreflightAction,
+    PreflightFinding, PreflightResolution,
+};
 use super::{
     CreateFeatureRequest, CreatePulsationFromTasksRequest, CreateTasksRequest, DependencyOrigin,
     DispatchGateStatus, Feature, FeatureAgentRuntime, FeatureBrief, FeatureDependency,
@@ -414,6 +418,15 @@ impl FeatureForgeService {
             .unwrap_or_default();
         let integration_evidence = db.prepare("SELECT e.evidence_json FROM task_evidence e JOIN work_tasks t ON t.id=e.task_id AND t.completed_pulsation_id=e.pulsation_id JOIN pulsations p ON p.id=e.pulsation_id JOIN checkpoints c ON c.id=p.integration_checkpoint_id AND c.producer_job_id=e.job_id AND c.generation=e.generation WHERE t.project_id=?1 AND t.state='done' AND e.stage='Integrator' AND c.status='approved' ORDER BY t.id")?
             .query_map([project], |r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?.iter().map(|s|decode(s)).collect::<Result<Vec<_>,Error>>()?;
+        let composition_enabled = db
+            .query_row(
+                "SELECT enabled FROM project_composition_settings WHERE project_id=?1",
+                [project],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(false);
+        let preflight = latest_preflight_findings(db, project)?;
         Ok(ForgeSnapshot {
             integration_evidence,
             navigation,
@@ -421,6 +434,8 @@ impl FeatureForgeService {
             tasks: tasks(db, project)?,
             dependencies,
             current_wave_limit,
+            composition_enabled,
+            preflight,
         })
     }
     pub fn revise(
@@ -462,6 +477,97 @@ impl FeatureForgeService {
         tx.commit()?;
         self.reconcile_plan_publications(project)?;
         Ok(result)
+    }
+    /// ADR-034 M6: the developer's decision on a blocking pre-flight finding
+    /// of the feature's current revision. Adjust and Propose ADR keep the
+    /// approval blocked; only a dismissal with a reason releases it.
+    pub fn resolve_preflight(
+        &self,
+        project: &str,
+        feature_id: &str,
+        finding_id: &str,
+        action: PreflightAction,
+    ) -> Result<PreflightFinding, Error> {
+        let (f, finding) = {
+            let db = self.persistence.connection()?;
+            let f = feature(&db, project, feature_id)?;
+            let finding = preflight_finding_for(&db, feature_id, f.revision)?
+                .filter(|finding| finding.id == finding_id)
+                .ok_or_else(|| {
+                    invalid("This finding is not the current triage of the feature; refresh and run the triage analysis again")
+                })?;
+            (f, finding)
+        };
+        if finding.blocking == 0 {
+            return Err(invalid("This finding has no blocking conflict to resolve"));
+        }
+        if finding.resolution == PreflightResolution::Dismissed {
+            return Err(invalid("This finding was already dismissed"));
+        }
+        let (resolution, reason, proposal) = match action {
+            PreflightAction::Adjust => (PreflightResolution::Adjusted, None, None),
+            PreflightAction::ProposeAdr => {
+                let mut idea = format!(
+                    "Proposed from the triage of \"{}\" (revision {}). The feature conflicts with these accepted decisions:\n",
+                    f.title, f.revision
+                );
+                for conflict in &finding.conflicts {
+                    idea.push_str(&format!(
+                        "- {} ({:?}): {}\n",
+                        finding
+                            .decision_path(conflict)
+                            .unwrap_or(&conflict.decision_ref),
+                        conflict.severity,
+                        conflict.conflict
+                    ));
+                }
+                idea.push_str("Decide whether the decision changes. Until then the original feature stays blocked.");
+                let title: String = format!("Architecture decision for {}", f.title)
+                    .chars()
+                    .take(200)
+                    .collect();
+                let proposal = self.create(CreateFeatureRequest {
+                    project_id: project.into(),
+                    request_id: format!("preflight-adr-{finding_id}"),
+                    title,
+                    idea,
+                })?;
+                (PreflightResolution::AdrProposed, None, Some(proposal.id))
+            }
+            PreflightAction::Dismiss { reason } => {
+                let reason = reason.trim().to_owned();
+                let chars = reason.chars().count();
+                if chars == 0 || chars > preflight::MAX_REASON_CHARS {
+                    return Err(invalid(format!(
+                        "Dismissing a blocking conflict needs a reason of 1 to {} characters",
+                        preflight::MAX_REASON_CHARS
+                    )));
+                }
+                (PreflightResolution::Dismissed, Some(reason), None)
+            }
+        };
+        let mut db = self.persistence.connection()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE forge_preflight_findings SET resolution=?2,reason=?3,proposal_feature_id=COALESCE(?4,proposal_feature_id),resolved_at=?5 WHERE id=?1 AND resolution=?6",
+            params![
+                finding_id,
+                resolution.as_str(),
+                reason,
+                proposal,
+                now(),
+                finding.resolution.as_str()
+            ],
+        )?;
+        if changed != 1 {
+            return Err(invalid(
+                "The finding changed meanwhile; refresh and try again",
+            ));
+        }
+        let updated = preflight_finding_for(&tx, feature_id, f.revision)?
+            .ok_or_else(|| invalid("The finding is missing"))?;
+        tx.commit()?;
+        Ok(updated)
     }
     pub fn evaluate(
         &self,
@@ -822,6 +928,9 @@ pub(crate) fn apply_approval(
     if f.approved_revision == Some(expected) {
         return Ok(f.clone());
     }
+    // ADR-034 M6: both the developer's approval and the automatic one at the
+    // end of a triage pass here.
+    admit_preflight(db, project, f, expected)?;
     let feature_id = f.id.as_str();
     validate_ready_brief(&f.brief)?;
     for source in &f.brief.sources {
@@ -891,6 +1000,216 @@ pub(crate) fn apply_approval(
     let result = feature(db, project, feature_id)?;
     super::publication::queue_plan(db, &result)?;
     Ok(result)
+}
+
+fn map_finding(row: &rusqlite::Row<'_>) -> rusqlite::Result<PreflightFinding> {
+    let json_error = |index: usize, error: serde_json::Error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    };
+    let inputs: String = row.get(3)?;
+    let conflicts: String = row.get(5)?;
+    let resolution: String = row.get(7)?;
+    Ok(PreflightFinding {
+        id: row.get(0)?,
+        feature_id: row.get(1)?,
+        feature_revision: row.get(2)?,
+        inputs: serde_json::from_str(&inputs).map_err(|e| json_error(3, e))?,
+        inputs_sha256: row.get(4)?,
+        conflicts: serde_json::from_str(&conflicts).map_err(|e| json_error(5, e))?,
+        blocking: row.get(6)?,
+        resolution: PreflightResolution::parse(&resolution).unwrap_or(PreflightResolution::Pending),
+        reason: row.get(8)?,
+        proposal_feature_id: row.get(9)?,
+        created_at: row.get(10)?,
+    })
+}
+
+const FINDING_COLUMNS: &str = "id,feature_id,feature_revision,inputs_json,inputs_sha256,conflicts_json,blocking,resolution,reason,proposal_feature_id,created_at";
+
+/// The latest pre-flight finding of every feature of `project`.
+fn latest_preflight_findings(
+    db: &Connection,
+    project: &str,
+) -> Result<Vec<PreflightFinding>, Error> {
+    Ok(db
+        .prepare(&format!(
+            "SELECT {FINDING_COLUMNS} FROM forge_preflight_findings f WHERE f.project_id=?1
+             AND f.rowid=(SELECT g.rowid FROM forge_preflight_findings g WHERE g.feature_id=f.feature_id ORDER BY g.created_at DESC,g.rowid DESC LIMIT 1)
+             ORDER BY f.feature_id"
+        ))?
+        .query_map([project], map_finding)?
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
+/// The latest finding of one feature revision, if a triage recorded one.
+pub(crate) fn preflight_finding_for(
+    db: &Connection,
+    feature_id: &str,
+    revision: u64,
+) -> Result<Option<PreflightFinding>, Error> {
+    Ok(db
+        .query_row(
+            &format!(
+                "SELECT {FINDING_COLUMNS} FROM forge_preflight_findings WHERE feature_id=?1 AND feature_revision=?2 ORDER BY created_at DESC,rowid DESC LIMIT 1"
+            ),
+            params![feature_id, revision],
+            map_finding,
+        )
+        .optional()?)
+}
+
+/// Records one triage's finding. A blocking conflict leaves it pending.
+pub(crate) fn insert_preflight_finding(
+    db: &Connection,
+    project: &str,
+    feature: &Feature,
+    turn: &str,
+    inputs: &DecisionInputs,
+    conflicts: &[ArchitectureConflict],
+) -> Result<PreflightFinding, Error> {
+    let blocking = conflicts
+        .iter()
+        .filter(|conflict| conflict.severity == ConflictSeverity::Blocking)
+        .count() as u32;
+    let resolution = if blocking > 0 {
+        PreflightResolution::Pending
+    } else {
+        PreflightResolution::None
+    };
+    let finding = PreflightFinding {
+        id: id(),
+        feature_id: feature.id.clone(),
+        feature_revision: feature.revision,
+        inputs: inputs.clone(),
+        inputs_sha256: inputs.sha256(),
+        conflicts: conflicts.to_vec(),
+        blocking,
+        resolution,
+        reason: None,
+        proposal_feature_id: None,
+        created_at: now(),
+    };
+    db.execute(
+        "INSERT INTO forge_preflight_findings(id,project_id,feature_id,feature_revision,turn_id,inputs_state,inputs_json,inputs_sha256,conflicts_json,blocking,resolution,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+        params![
+            finding.id,
+            project,
+            finding.feature_id,
+            finding.feature_revision,
+            turn,
+            inputs.state.as_str(),
+            json(&finding.inputs)?,
+            finding.inputs_sha256,
+            json(&finding.conflicts)?,
+            finding.blocking,
+            finding.resolution.as_str(),
+            finding.created_at,
+        ],
+    )?;
+    Ok(finding)
+}
+
+/// ADR-034 M6: a blocking conflict the developer has not dismissed, a
+/// finding whose decisions changed since triage, or a feature flagged on an
+/// earlier revision and not triaged again, refuses the approval.
+pub(crate) fn admit_preflight(
+    db: &Connection,
+    project: &str,
+    f: &Feature,
+    revision: u64,
+) -> Result<(), Error> {
+    let Some(finding) = preflight_finding_for(db, &f.id, revision)? else {
+        let flagged: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM forge_preflight_findings WHERE feature_id=?1 AND blocking>0)",
+            [&f.id],
+            |r| r.get(0),
+        )?;
+        return if flagged {
+            Err(invalid(
+                "preflight_required: an earlier revision of this feature had a blocking architecture conflict; run the triage analysis again before approving",
+            ))
+        } else {
+            Ok(())
+        };
+    };
+    if finding.blocking > 0 && !finding.resolution.allows_approval() {
+        return Err(invalid(
+            "preflight_conflict_unresolved: a blocking architecture conflict needs a decision: adjust the feature, propose a decision or dismiss the warning with a reason",
+        ));
+    }
+    let root: String = db.query_row(
+        "SELECT workspace_path FROM projects WHERE id=?1",
+        [project],
+        |r| r.get(0),
+    )?;
+    let current = preflight::read_decisions(std::path::Path::new(&root), &Default::default());
+    if current.sha256() != finding.inputs_sha256 {
+        return Err(invalid(
+            "preflight_stale: the project's decisions changed since the triage analysis; run it again before approving",
+        ));
+    }
+    Ok(())
+}
+
+/// ADR-034 M6: the blocking conflicts the developer dismissed at the triage
+/// of the features whose tasks a pulsation carries, as the developer's
+/// decisions in its Specification brief.
+pub(crate) fn dismissed_conflicts(
+    db: &Connection,
+    pulsation: &str,
+) -> Result<Vec<crate::orchestration::review_brief::JudgementItem>, Error> {
+    use crate::orchestration::review_brief::{JudgementItem, JudgementKind};
+    let columns = FINDING_COLUMNS
+        .split(',')
+        .map(|column| format!("f.{column}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let rows = db
+        .prepare(&format!(
+            "SELECT DISTINCT {columns},ff.title FROM forge_preflight_findings f
+             JOIN forge_features ff ON ff.id=f.feature_id
+             JOIN work_tasks t ON t.feature_id=f.feature_id AND t.feature_revision=f.feature_revision
+             JOIN pulsation_tasks pt ON pt.task_id=t.id
+             WHERE pt.pulsation_id=?1 AND f.resolution='dismissed'
+             ORDER BY ff.title,f.created_at"
+        ))?
+        .query_map([pulsation], |row| Ok((map_finding(row)?, row.get::<_, String>(11)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(finding, title)| {
+            let blocking = finding
+                .conflicts
+                .iter()
+                .filter(|conflict| conflict.severity == ConflictSeverity::Blocking)
+                .collect::<Vec<_>>();
+            JudgementItem {
+                kind: JudgementKind::DismissedConflict,
+                label: title,
+                text: finding.reason.clone().unwrap_or_default(),
+                detail: Some(
+                    blocking
+                        .iter()
+                        .map(|conflict| conflict.conflict.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
+                refs: blocking
+                    .iter()
+                    .map(|conflict| {
+                        finding
+                            .decision_path(conflict)
+                            .unwrap_or(&conflict.decision_ref)
+                            .to_owned()
+                    })
+                    .collect(),
+            }
+        })
+        .collect())
 }
 
 pub(crate) fn validate_evaluation(

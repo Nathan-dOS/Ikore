@@ -14,6 +14,19 @@ mod cli_migrations {
     embed_migrations!("../hvc-core/migrations");
 }
 
+/// V54 rebuilds the three role-checked tables for the Documentation
+/// Reconciler (ADR-034 M5); its own test proves their rows survive. The
+/// earlier "nothing is rebuilt" checks, which upgrade to the latest version,
+/// leave exactly those three out.
+fn rebuilt_by_v54(sql: &str) -> bool {
+    ["cli_agent_configs", "terminal_slots", "terminal_runs"]
+        .iter()
+        .any(|table| {
+            sql.starts_with(&format!("CREATE TABLE \"{table}\" "))
+                || sql.starts_with(&format!("CREATE TABLE {table} "))
+        })
+}
+
 #[test]
 fn v23_cli_and_companion_schema_has_no_credential_columns() {
     let root = tempfile::tempdir().unwrap();
@@ -127,7 +140,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        51
+        54
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -290,7 +303,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        51
+        54
     );
     assert_eq!(
         db.query_row(
@@ -831,7 +844,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        51
+        54
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -987,7 +1000,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        51
+        54
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1084,7 +1097,7 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        51
+        54
     );
     let (error, failure, notices): (String, Option<String>, Option<String>) = db
         .query_row(
@@ -1153,7 +1166,7 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        51
+        54
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1228,7 +1241,7 @@ fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        51
+        54
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1323,7 +1336,7 @@ fn v47_to_v48_adds_quota_history_with_validated_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        51
+        54
     );
     let insert = |values: &str| {
         db.execute(
@@ -1377,7 +1390,7 @@ fn v48_to_v49_preserves_history_and_requires_new_sanitization_evidence() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        51
+        54
     );
     for table in [
         "project_secret_redaction_exceptions",
@@ -1495,7 +1508,7 @@ fn v49_to_v50_admits_the_notes_scribe_and_adds_companion_notes() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        51
+        54
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1670,16 +1683,37 @@ fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones()
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        51
+        54
     );
+    // Later migrations add their own tables; every table V50 had keeps its
+    // exact definition.
     let after: Vec<String> = db
-        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL AND name NOT IN ('pulsation_file_bases','integrator_review_inputs','pulsation_convergence_decisions') ORDER BY name")
+        .prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
         .unwrap()
         .query_map([], |r| r.get(0))
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    assert_eq!(before, after, "no existing table was rebuilt");
+    for table in before.iter().filter(|sql| !rebuilt_by_v54(sql)) {
+        assert!(
+            after.contains(table),
+            "no existing table was rebuilt: {table}"
+        );
+    }
+    for table in [
+        "pulsation_file_bases",
+        "integrator_review_inputs",
+        "pulsation_convergence_decisions",
+    ] {
+        assert!(
+            after
+                .iter()
+                .any(|sql| sql.starts_with(&format!("CREATE TABLE {table} "))),
+            "{table} was added"
+        );
+    }
 
     db.execute("INSERT INTO pulsation_file_bases(pulsation_id,path_key,relative_path,state,content_sha256,content,byte_len,first_artifact_id,captured_at) VALUES('pulse','src/lib.rs','src/lib.rs','present','b','fn b() {}\n',10,'artifact','now')",[])
         .expect("a stored base");
@@ -1719,6 +1753,366 @@ fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones()
                 .unwrap(),
             0,
             "{table} goes with its pulsation"
+        );
+    }
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+/// V52 adds risk-driven scrutiny (ADR-034 M3): the assessed level per
+/// composed stage, the Intake capture of `REVIEW.md`, the Integrator's
+/// coverage and the acknowledgements of high-risk approvals. Nothing
+/// existing is rebuilt; every new row goes with its pulsation, and the
+/// states and reasons are closed or bounded sets.
+#[test]
+fn v51_to_v52_adds_the_risk_scrutiny_tables_without_rebuilding_existing_ones() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(51))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V51 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version) VALUES('pulse','p','Work','Integrator','checkpoint','now','now',4)",[]).unwrap();
+    db.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at,kind,input_revision,state_version,generation,purpose) VALUES('review','pulse','Integrator','waiting','now','now','artifact_review',1,1,1,'artifact_review')",[]).unwrap();
+    let before: Vec<String> = db
+        .prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert!(
+        db.query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap()
+            >= 52
+    );
+    let after: Vec<String> = db
+        .prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for table in before.iter().filter(|sql| !rebuilt_by_v54(sql)) {
+        assert!(
+            after.contains(table),
+            "no existing table was rebuilt: {table}"
+        );
+    }
+
+    let assessment = |stage: &str, level: &str| {
+        db.execute("INSERT INTO pulsation_risk_assessments(pulsation_id,stage,input_revision,level,policy_version,policy_sha256,assessment_json,selection_json,created_at) VALUES('pulse',?1,1,?2,1,'sha','{}','{}','now')",params![stage, level])
+    };
+    assessment("Code", "high").expect("a Code assessment");
+    assessment("Integrator", "unknown").expect("an unknown level is recorded as such");
+    assessment("Code", "low").expect_err("one row per stage and input revision");
+    assessment("Intake", "low").expect_err("only Code, Test and the Integrator are assessed");
+    assessment("Test", "severe").expect_err("levels are a closed set");
+    db.execute("INSERT INTO pulsation_review_policy_snapshots(pulsation_id,state,files_json,omitted_json,content_json,snapshot_sha256,captured_at) VALUES('pulse','captured','[]','[]','{}','sha','now')",[])
+        .expect("an Intake capture");
+    db.execute("INSERT INTO pulsation_review_policy_snapshots(pulsation_id,state,files_json,omitted_json,snapshot_sha256,captured_at) VALUES('pulse','partial','[]','[]','sha','now')",[])
+        .expect_err("one capture per pulsation");
+    db.execute("INSERT INTO integrator_coverage(stage_execution_id,pulsation_id,input_revision,level,matrix_json,pending,created_at) VALUES('missing','pulse',1,'high','{}',2,'now')",[])
+        .expect_err("coverage belongs to an existing execution");
+    db.execute("INSERT INTO pulsation_risk_acknowledgements(id,pulsation_id,checkpoint_id,input_revision,level,pending,reason,created_at) VALUES('a1','pulse','review',1,'high',2,'The lint profile comes next.','now')",[])
+        .expect("an acknowledgement");
+    db.execute("INSERT INTO pulsation_risk_acknowledgements(id,pulsation_id,checkpoint_id,input_revision,level,pending,reason,created_at) VALUES('a2','pulse','review',1,'high',2,'Again.','now')",[])
+        .expect_err("one acknowledgement per checkpoint");
+    db.execute("DELETE FROM pulsation_risk_acknowledgements", [])
+        .unwrap();
+    for (level, pending, reason) in [("medium", 2, "Why."), ("high", 0, "Why."), ("high", 2, "")] {
+        db.execute("INSERT INTO pulsation_risk_acknowledgements(id,pulsation_id,checkpoint_id,input_revision,level,pending,reason,created_at) VALUES('bad','pulse','review',1,?1,?2,?3,'now')",params![level, pending, reason])
+            .expect_err("only a high level with pending items and a reason");
+    }
+    db.execute("INSERT INTO pulsation_risk_acknowledgements(id,pulsation_id,checkpoint_id,input_revision,level,pending,reason,created_at) VALUES('bad','pulse','review',1,'high',2,?1,'now')",[ "x".repeat(401) ])
+        .expect_err("the reason is bounded");
+    db.execute("INSERT INTO pulsation_risk_acknowledgements(id,pulsation_id,checkpoint_id,input_revision,level,pending,reason,created_at) VALUES('a1','pulse','review',1,'high',2,'The lint profile comes next.','now')",[])
+        .unwrap();
+    db.execute("DELETE FROM pulsations WHERE id='pulse'", [])
+        .unwrap();
+    for table in [
+        "pulsation_risk_assessments",
+        "pulsation_review_policy_snapshots",
+        "pulsation_risk_acknowledgements",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            0,
+            "{table} goes with its pulsation"
+        );
+    }
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+/// V53 adds the Forge pre-flight findings (ADR-034 M6): what one triage
+/// found against the project's accepted decisions and how the developer
+/// resolved a blocking conflict. Nothing existing is rebuilt; findings go
+/// with their feature, and a resolution, its reason and the blocking count
+/// stay consistent.
+#[test]
+fn v52_to_v53_adds_the_forge_preflight_findings_without_rebuilding_existing_ones() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(52))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V52 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO forge_features(id,project_id,title,original_idea,brief_json,evaluation_json,created_at,updated_at) VALUES('f','p','Export','Export documents','{}','{}','now','now')",[]).unwrap();
+    let before: Vec<String> = db
+        .prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert!(
+        db.query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap()
+            >= 53
+    );
+    let after: Vec<String> = db
+        .prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for table in before.iter().filter(|sql| !rebuilt_by_v54(sql)) {
+        assert!(
+            after.contains(table),
+            "no existing table was rebuilt: {table}"
+        );
+    }
+
+    let finding = |id: &str, state: &str, blocking: u32, resolution: &str, reason: Option<&str>| {
+        db.execute("INSERT INTO forge_preflight_findings(id,project_id,feature_id,feature_revision,inputs_state,inputs_json,inputs_sha256,conflicts_json,blocking,resolution,reason,created_at) VALUES(?1,'p','f',1,?2,'{}','sha','[]',?3,?4,?5,'now')",params![id, state, blocking, resolution, reason])
+    };
+    finding("clean", "absent", 0, "none", None).expect("a finding without conflicts");
+    finding("blocked", "loaded", 1, "pending", None).expect("a pending blocking conflict");
+    finding(
+        "dismissed",
+        "partial",
+        2,
+        "dismissed",
+        Some("The helper is release-only."),
+    )
+    .expect("a dismissal with its reason");
+    finding("bad", "loaded", 1, "none", None).expect_err("a blocking conflict is never 'none'");
+    finding("bad", "loaded", 0, "pending", None)
+        .expect_err("nothing to resolve without a conflict");
+    finding("bad", "loaded", 1, "dismissed", None).expect_err("a dismissal needs its reason");
+    finding("bad", "loaded", 1, "adjusted", Some("Why."))
+        .expect_err("only a dismissal keeps a reason");
+    finding("bad", "guessed", 0, "none", None).expect_err("input states are a closed set");
+    finding("bad", "loaded", 1, "dismissed", Some(&"x".repeat(401)))
+        .expect_err("the reason is bounded");
+    db.execute("INSERT INTO forge_preflight_findings(id,project_id,feature_id,feature_revision,inputs_state,inputs_json,inputs_sha256,conflicts_json,blocking,resolution,created_at) VALUES('bad','p','f',1,'loaded','not json','sha','[]',0,'none','now')",[])
+        .expect_err("the inputs are JSON");
+    db.execute("DELETE FROM forge_features WHERE id='f'", [])
+        .unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM forge_preflight_findings", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0,
+        "findings go with their feature"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+/// V54 adds documentation reconciliation (ADR-034 M5). The Documentation
+/// Reconciler is a canonical role, so, as V50 did for the Notes Scribe, the
+/// three role-checked tables are rebuilt and keep every row; everything else
+/// is new. The new rows go with their project, states are closed sets and at
+/// most one signal per note -> path and one open proposal per note are active.
+#[test]
+fn v53_to_v54_adds_the_reconciler_role_and_the_reconciliation_tables() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(53))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V53 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,created_at,updated_at) VALUES('p','notes_scribe','cli_process','claude','now','now')",[]).unwrap();
+    db.execute("INSERT INTO terminal_slots(id,project_id,kind,agent_role,label,created_at,updated_at) VALUES('slot','p','canonical','notes_scribe','NotesScribe','now','now')",[]).unwrap();
+    db.execute("INSERT INTO terminal_runs(id,project_id,agent_role,origin,execution_mode,status,created_at,updated_at,slot_id) VALUES('run','p','notes_scribe','notes','cli_process','completed','now','now','slot')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at) VALUES('pulse','p','Work','Integrator','done','now','now')",[]).unwrap();
+    let tables = |db: &Connection| -> Vec<String> {
+        db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = tables(&db);
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert!(
+        db.query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap()
+            >= 54
+    );
+    let after = tables(&db);
+    for table in before.iter().filter(|sql| !rebuilt_by_v54(sql)) {
+        assert!(
+            after.contains(table),
+            "only the role tables are rebuilt: {table}"
+        );
+    }
+    for table in ["cli_agent_configs", "terminal_slots", "terminal_runs"] {
+        assert!(
+            after
+                .iter()
+                .any(|sql| sql.contains(table) && sql.contains("documentation_reconciler")),
+            "{table} admits the new role"
+        );
+    }
+    // The rebuilt tables kept their rows and accept the new role and origin.
+    for table in ["cli_agent_configs", "terminal_slots", "terminal_runs"] {
+        assert_eq!(
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            1,
+            "{table} kept its rows"
+        );
+    }
+    db.execute("INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,created_at,updated_at) VALUES('p','documentation_reconciler','api_direct','codex','now','now')",[])
+        .expect("the new canonical role");
+    db.execute("INSERT INTO terminal_runs(id,project_id,agent_role,origin,execution_mode,status,created_at,updated_at) VALUES('run2','p','documentation_reconciler','reconciliation','cli_process','completed','now','now')",[])
+        .expect("the reconciliation origin");
+    db.execute("INSERT INTO cli_agent_configs(project_id,agent_role,execution_mode,backend,created_at,updated_at) VALUES('p','guessed_role','api_direct','codex','now','now')",[])
+        .expect_err("roles stay a closed set");
+
+    let baseline = |note: &str, code: Option<&str>, base_state: &str, state: &str| {
+        db.execute("INSERT INTO doc_reconciliation_baselines(project_id,note_path,code_path,link_kind,code_sha256,base_state,state,updated_at) VALUES('p',?1,'src/a.rs','source',?2,?3,?4,'now')",params![note, code, base_state, state])
+    };
+    baseline("n1.md", Some("sha"), "stored", "tracking").expect("a stored base");
+    baseline("n2.md", None, "absent", "silenced").expect("an absent, silenced base");
+    baseline("n3.md", None, "stored", "tracking").expect_err("a stored base has a hash");
+    baseline("n4.md", Some("sha"), "absent", "tracking").expect_err("an absent base has none");
+    baseline("n5.md", Some("sha"), "stored", "muted").expect_err("states are a closed set");
+    db.execute("INSERT INTO doc_reconciliation_blobs(project_id,content_sha256,content,byte_len,created_at) VALUES('p','sha','fn a() {}',9,'now')",[])
+        .expect("a base blob");
+    db.execute("INSERT INTO doc_reconciliation_blobs(project_id,content_sha256,content,byte_len,created_at) VALUES('p','big','x',262145,'now')",[])
+        .expect_err("blobs are bounded per file");
+    let signal = |id: &str, state: &str, origin: &str, pulsation: Option<&str>| {
+        db.execute("INSERT INTO doc_drift_signals(id,project_id,note_path,code_path,base_sha256,current_sha256,origin,pulsation_id,state,created_at,updated_at) VALUES(?1,'p','n1.md','src/a.rs','sha','new',?2,?3,?4,'now','now')",params![id, origin, pulsation, state])
+    };
+    signal("s1", "open", "watcher", None).expect("an open signal");
+    signal("s2", "proposed", "startup_scan", None).expect_err("one active signal per pair");
+    signal("s3", "resolved", "pulsation", Some("pulse")).expect("history is kept");
+    signal("s4", "resolved", "watcher", Some("pulse"))
+        .expect_err("only a pulsation signal names one");
+    signal("s5", "resolved", "guessed", None).expect_err("origins are a closed set");
+    let proposal = |id: &str, state: &str| {
+        db.execute("INSERT INTO doc_reconciliation_proposals(id,project_id,note_path,state,expected_note_sha256,expected_code_json,request_sha256,summary_json,edits_json,unresolved_json,code_diffs_json,proposed_content,preview_diff,created_at,updated_at) VALUES(?1,'p','n1.md',?2,'n','[]','r','[]','[]','[]','[]','# N','','now','now')",params![id, state])
+    };
+    proposal("p1", "pending").expect("a proposal");
+    proposal("p2", "edited").expect_err("one open proposal per note");
+    proposal("p3", "invalidated").expect("closed proposals are kept");
+    proposal("p4", "accepted").expect_err("states are a closed set");
+    db.execute("INSERT INTO doc_reconciliation_scans(project_id,state,scanned,total,scanned_at) VALUES('p','partial_scan',2000,2500,'now')",[])
+        .expect("a partial scan");
+    db.execute("INSERT INTO doc_reconciliation_pulsations(pulsation_id,project_id,processed_at) VALUES('pulse','p','now')",[])
+        .expect("a handled pulsation");
+
+    db.execute("DELETE FROM pulsations WHERE id='pulse'", [])
+        .unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT pulsation_id FROM doc_drift_signals WHERE id='s3'",
+            [],
+            |r| r.get::<_, Option<String>>(0)
+        )
+        .unwrap(),
+        None,
+        "a signal outlives its pulsation"
+    );
+    db.execute("DELETE FROM projects WHERE id='p'", []).unwrap();
+    for table in [
+        "doc_reconciliation_baselines",
+        "doc_reconciliation_blobs",
+        "doc_drift_signals",
+        "doc_reconciliation_proposals",
+        "doc_reconciliation_scans",
+        "doc_reconciliation_pulsations",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            0,
+            "{table} goes with its project"
         );
     }
     assert_eq!(

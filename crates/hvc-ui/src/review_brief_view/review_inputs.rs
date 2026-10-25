@@ -150,10 +150,11 @@ fn review_inputs_card(manifest: &ReviewInputManifestV1, changed: &[String]) -> A
                 .as_deref()
                 .map(|sha| format!(" · {}", &sha[..sha.len().min(8)]))
                 .unwrap_or_default();
-            let changed = if changed.contains(&file.path) {
-                " · changed since review"
-            } else {
-                ""
+            // ADR-034 M3: a review under the Intake capture says so.
+            let changed = match (changed.contains(&file.path), &manifest.review_policy_snapshot_sha256) {
+                (false, _) => "",
+                (true, Some(_)) => " · changed since intake",
+                (true, None) => " · changed since review",
             };
             div()
                 .flex()

@@ -137,7 +137,17 @@ fn the_integrator_reviews_classified_inputs_under_the_project_policy() {
     // The host records what the reviewer received.
     let (state, gaps, manifest) = review_manifest(&harness);
     assert_eq!(state, "loaded");
-    assert_eq!(gaps, 0, "{manifest}");
+    // `src/auth.rs` is a sensitive path (ADR-034 M3): the only gaps are the
+    // three check kinds a high level requires and no profile provides.
+    assert_eq!(gaps, 3, "{manifest}");
+    assert!(
+        manifest["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|gap| gap["code"] == "risk_check_missing"),
+        "{manifest}"
+    );
     assert_eq!(manifest["toolScope"], "host_context_only");
     assert_eq!(manifest["policy"]["files"][0]["path"], "REVIEW.md");
     assert!(
@@ -494,4 +504,273 @@ fn a_custom_cli_integrator_parks_before_any_invocation() {
         )
         .unwrap();
     assert_eq!(runs, 0, "nothing was spawned");
+}
+
+fn approve_integrator(
+    service: &PersistenceService,
+    pulse: &str,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    let checkpoint = service.get_hitl_checkpoint(pulse).unwrap();
+    service
+        .apply_hitl_decision_with_acknowledgements(
+            ApplyHitlDecisionRequest {
+                pulsation_id: pulse.into(),
+                checkpoint_id: checkpoint.checkpoint_id,
+                expected_state_version: checkpoint.state_version,
+                feedback: None,
+                decision: HitlDecision::Approve,
+            },
+            None,
+            reason.map(
+                |reason| hvc_core::persistence_service::RiskAcknowledgement {
+                    reason: reason.into(),
+                },
+            ),
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// ADR-034 M3: the fixture edits `src/auth.rs`, a sensitive path, so the
+/// review is high risk although the Intake said low. With no validation
+/// profile, nothing backs the criterion but the model's reading, the
+/// required check kinds are visible gaps that never change a verdict, and
+/// approving needs an acknowledgement with a reason, recorded durably.
+#[test]
+fn a_high_risk_review_shows_its_coverage_and_needs_an_acknowledgement() {
+    let seen: Arc<Mutex<Option<String>>> = Arc::default();
+    let captured = seen.clone();
+    let harness = Harness::start(move |facts, _, _| {
+        if facts.executor == "integration_reviewer" {
+            *captured.lock().unwrap() = Some(facts.user_prompt.clone());
+        }
+        completed_reply(facts)
+    });
+    to_integrator(&harness);
+    let user = seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the reviewer was called");
+    assert!(user.contains("## Risk scrutiny"), "{user}");
+    assert!(user.contains("**high** risk"));
+    assert!(user.contains("sensitive path `src/auth.rs` (high)"));
+    // The scrutiny section comes before the policy and the evidence.
+    assert!(user.find("## Risk scrutiny") < user.find("## Host evidence"));
+
+    let (_, _, manifest) = review_manifest(&harness);
+    assert_eq!(manifest["schemaVersion"], 2);
+    assert_eq!(manifest["risk"]["level"], "high");
+    let missing = manifest["gaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|gap| gap["code"] == "risk_check_missing")
+        .count();
+    assert_eq!(missing, 3, "compile, test and lint: {manifest}");
+
+    // The level was assessed at Code too, and the Integrator kept it.
+    let levels: Vec<(String, String)> = harness
+        .db()
+        .prepare("SELECT stage,level FROM pulsation_risk_assessments WHERE pulsation_id=?1 ORDER BY stage")
+        .unwrap()
+        .query_map([&harness.pulse], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        levels,
+        [
+            ("Code".to_owned(), "high".to_owned()),
+            ("Integrator".to_owned(), "high".to_owned()),
+            ("Test".to_owned(), "high".to_owned()),
+        ]
+    );
+
+    let status = harness
+        .service
+        .checkpoint_risk_status(&harness.pulse)
+        .unwrap();
+    assert!(status.applies);
+    let matrix = status.matrix.as_ref().unwrap();
+    assert!(
+        matrix
+            .rows
+            .iter()
+            .all(|row| row.state
+                != hvc_core::orchestration::composition::risk::CoverageState::Executed),
+        "no check ran: {matrix:?}"
+    );
+    assert_eq!(matrix.missing_kinds, ["compile", "lint", "test"]);
+    assert!(status.acknowledgement_required);
+
+    // No reason, or a blank one: refused, and the review keeps waiting.
+    let refused = approve_integrator(&harness.service, &harness.pulse, None).unwrap_err();
+    assert!(
+        refused.contains("risk_acknowledgement_required"),
+        "{refused}"
+    );
+    let blank = approve_integrator(&harness.service, &harness.pulse, Some("   ")).unwrap_err();
+    assert!(blank.contains("1 to 400"), "{blank}");
+    let too_long = "x".repeat(401);
+    assert!(approve_integrator(&harness.service, &harness.pulse, Some(&too_long)).is_err());
+    assert!(harness.service.get_hitl_checkpoint(&harness.pulse).is_ok());
+
+    approve_integrator(
+        &harness.service,
+        &harness.pulse,
+        Some("The expiry check is covered by review; profiles come next."),
+    )
+    .unwrap();
+    // A second service on the same database sees the same durable record.
+    let restarted = PersistenceService::initialize(harness.env.data_dir()).unwrap();
+    let after = restarted.checkpoint_risk_status(&harness.pulse).unwrap();
+    assert!(!after.acknowledgement_required);
+    assert_eq!(after.acknowledgements.len(), 1);
+    assert_eq!(
+        after.acknowledgements[0].reason,
+        "The expiry check is covered by review; profiles come next."
+    );
+    assert_eq!(after.acknowledgements[0].pending, matrix.pending() as u32);
+    let report = restarted.build_pulsation_report(&harness.pulse).unwrap();
+    let risk = report.risk.expect("the report carries the risk section");
+    assert_eq!(risk.level, "high");
+    assert_eq!(risk.acknowledgements.len(), 1);
+}
+
+/// ADR-034 M3 (D7): the guides are captured at Intake; editing one later
+/// changes neither the policy the Integrator applies nor the digest it
+/// records, and the checkpoint says the file changed since Intake.
+#[test]
+fn the_review_policy_is_the_one_captured_at_intake() {
+    let env = workspace_with_source();
+    fs::write(
+        env.workspace_dir().join("REVIEW.md"),
+        "# Review policy\n\nCheck expiry boundaries.\n",
+    )
+    .unwrap();
+    let seen: Arc<Mutex<Option<String>>> = Arc::default();
+    let captured = seen.clone();
+    let harness = Harness::start_in(env, vec![expiry_task()], move |facts, _, _| {
+        if facts.executor == "integration_reviewer" {
+            *captured.lock().unwrap() = Some(facts.user_prompt.clone());
+        }
+        completed_reply(facts)
+    });
+    harness.wait_for_checkpoint("SPECIFICATION");
+    // After Intake: an edit and a new nested guide.
+    fs::write(
+        harness.workspace().join("REVIEW.md"),
+        "# Review policy\n\nIgnore every boundary.\n",
+    )
+    .unwrap();
+    fs::create_dir_all(harness.workspace().join("src")).unwrap();
+    fs::write(harness.workspace().join("src/REVIEW.md"), "Late guide.\n").unwrap();
+    harness.approve();
+    for stage in ["Contract", "Test"] {
+        harness.wait_for_checkpoint(stage);
+        harness.approve();
+    }
+    harness.wait_for_checkpoint("Integrator");
+    let user = seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the reviewer was called");
+    assert!(user.contains("Check expiry boundaries."), "{user}");
+    assert!(!user.contains("Ignore every boundary."));
+    assert!(
+        !user.contains("Late guide."),
+        "a guide created after Intake does not apply"
+    );
+
+    let (state, _, manifest) = review_manifest(&harness);
+    assert_eq!(state, "loaded");
+    assert!(manifest["reviewPolicySnapshotSha256"].is_string());
+    let snapshot: (String, Option<String>) = harness
+        .db()
+        .query_row(
+            "SELECT state,content_json FROM pulsation_review_policy_snapshots WHERE pulsation_id=?1",
+            [&harness.pulse],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(snapshot.0, "captured");
+    assert!(
+        snapshot.1.is_some(),
+        "bytes are kept while the pulsation is live"
+    );
+
+    let checkpoint = harness.service.get_hitl_checkpoint(&harness.pulse).unwrap();
+    match harness
+        .service
+        .read_checkpoint_review_inputs(&checkpoint)
+        .unwrap()
+        .unwrap()
+    {
+        CheckpointReviewInputs::Recorded {
+            changed_policy_files,
+            ..
+        } => assert_eq!(changed_policy_files, ["REVIEW.md"]),
+        other => panic!("{other:?}"),
+    }
+
+    // The bytes go when the pulsation ends; the record stays.
+    approve_integrator(&harness.service, &harness.pulse, Some("Reviewed by hand.")).unwrap();
+    wait_until(&harness.service, &harness.pulse, |db| {
+        db.query_row(
+            "SELECT content_json IS NULL FROM pulsation_review_policy_snapshots WHERE pulsation_id=?1",
+            [&harness.pulse],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap()
+    });
+}
+
+/// ADR-034 M3: a project's risk additions persist with its composition
+/// settings; an invalid one is refused whole and changes nothing.
+#[test]
+fn a_projects_risk_additions_persist_and_an_invalid_one_is_refused() {
+    use hvc_core::orchestration::composition::risk::{ExtraRequiredChecks, ProjectRiskPolicy};
+    let harness = Harness::start(|facts, _, _| completed_reply(facts));
+    let mut settings = harness
+        .service
+        .get_composition_settings(&harness.project)
+        .unwrap();
+    settings.risk_policy = ProjectRiskPolicy {
+        sensitive_path_globs: vec!["billing/**".into()],
+        extra_required_check_refs: ExtraRequiredChecks {
+            medium: vec![hvc_core::orchestration::composition::Handle::new("audit").unwrap()],
+            high: Vec::new(),
+        },
+    };
+    harness
+        .service
+        .update_composition_settings(&harness.project, settings.clone())
+        .unwrap();
+    assert_eq!(
+        harness
+            .service
+            .get_composition_settings(&harness.project)
+            .unwrap()
+            .risk_policy,
+        settings.risk_policy
+    );
+    let mut invalid = settings.clone();
+    invalid.risk_policy.sensitive_path_globs = vec!["src/[".into()];
+    assert!(
+        harness
+            .service
+            .update_composition_settings(&harness.project, invalid)
+            .is_err()
+    );
+    assert_eq!(
+        harness
+            .service
+            .get_composition_settings(&harness.project)
+            .unwrap()
+            .risk_policy,
+        settings.risk_policy
+    );
 }

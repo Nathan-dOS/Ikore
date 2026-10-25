@@ -82,6 +82,11 @@ mod composition_coordinator;
 mod composition_persistence;
 #[path = "orchestration/convergence.rs"]
 mod convergence;
+#[path = "orchestration/composition/risk_persistence.rs"]
+mod risk_persistence;
+pub use risk_persistence::{
+    CheckpointRiskStatus, MAX_ACKNOWLEDGEMENT_CHARS, RiskAcknowledgement, RiskAcknowledgementRecord,
+};
 #[path = "orchestration/coordination.rs"]
 mod coordination;
 #[path = "feature_forge/persistence.rs"]
@@ -2194,6 +2199,11 @@ impl PersistenceService {
         if matches!(next_status, PulsationStatus::Done | PulsationStatus::Failed) {
             transaction.execute(
                 "UPDATE pulsation_file_bases SET content=NULL WHERE pulsation_id=?1 AND content IS NOT NULL",
+                [current.id.as_str()],
+            )?;
+            // ADR-034 M3: the same for the REVIEW.md texts captured at Intake.
+            transaction.execute(
+                "UPDATE pulsation_review_policy_snapshots SET content_json=NULL WHERE pulsation_id=?1 AND content_json IS NOT NULL",
                 [current.id.as_str()],
             )?;
         }

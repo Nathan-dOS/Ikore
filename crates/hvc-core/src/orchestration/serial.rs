@@ -389,6 +389,18 @@ impl PersistenceService {
         request: ApplyHitlDecisionRequest,
         ack: Option<ConvergenceAck>,
     ) -> Result<ApplyHitlDecisionResponse, PersistenceServiceError> {
+        self.apply_hitl_decision_with_acknowledgements(request, ack, None)
+    }
+
+    /// As [`Self::apply_hitl_decision_with_convergence`], plus `risk`: the
+    /// acknowledgement an Approve of a high-risk Integrator review with
+    /// unverified or unrun items needs (ADR-034 M3); ignored elsewhere.
+    pub fn apply_hitl_decision_with_acknowledgements(
+        &self,
+        request: ApplyHitlDecisionRequest,
+        ack: Option<ConvergenceAck>,
+        risk: Option<super::RiskAcknowledgement>,
+    ) -> Result<ApplyHitlDecisionResponse, PersistenceServiceError> {
         if request
             .feedback
             .as_ref()
@@ -433,6 +445,15 @@ impl PersistenceService {
         } else {
             None
         };
+        if request.decision == HitlDecision::Approve {
+            Self::admit_risk_acknowledgement(
+                &tx,
+                pulse,
+                &request.checkpoint_id,
+                current.stage,
+                risk.as_ref(),
+            )?;
+        }
         let now = Self::now_iso();
         let resolution = match request.decision {
             HitlDecision::Approve => "approved",
@@ -673,6 +694,14 @@ impl PersistenceService {
             return Ok(None);
         };
         brief.revision = revision_diff(&tx, id, &inputs.record, &context)?;
+        if brief.stage == PulsationStage::Specification {
+            brief
+                .judgement
+                .extend(crate::feature_forge::service::dismissed_conflicts(
+                    &tx,
+                    &checkpoint.pulsation_id,
+                )?);
+        }
         Ok(Some(brief))
     }
 

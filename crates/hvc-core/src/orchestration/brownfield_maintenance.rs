@@ -224,6 +224,12 @@ impl PersistenceService {
         let Some((project_id, _)) = project else {
             return Ok(());
         };
+        // ADR-034 M5: a hash comparison only; it never blocks the maintenance below.
+        if let Err(error) =
+            self.record_doc_drift_change(&db, &project_id, &root, &event.relative_path)
+        {
+            eprintln!("documentation drift detection skipped safely: {error}");
+        }
         let consented = Self::read_runtime_setting(&db, &brownfield_consent_key(&project_id))?
             .as_deref()
             == Some("true");

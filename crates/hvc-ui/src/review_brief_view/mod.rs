@@ -10,10 +10,12 @@
 //! failure lists what each permitted decision does (M4, `stages`).
 
 mod review_inputs;
+mod risk;
 mod stages;
 mod visualizer;
 
 pub(crate) use review_inputs::review_inputs_panel;
+pub(crate) use risk::risk_panel;
 pub(crate) use stages::failure_choices_card;
 
 use std::collections::HashMap;
@@ -633,6 +635,11 @@ fn judgement_look(kind: JudgementKind) -> (Icon, gpui::Rgba, &'static str) {
             Icon::Ban,
             theme::danger(),
             "The reviewer reports this stops delivery.",
+        ),
+        JudgementKind::DismissedConflict => (
+            Icon::Signpost,
+            theme::purple(),
+            "You dismissed this architecture warning at triage; the reason is yours.",
         ),
     }
 }

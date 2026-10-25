@@ -536,6 +536,7 @@ pub fn render_unit_prompt(
                     let _ = writeln!(user, "## {title}\n\n{}\n", body.trim_end());
                 }
             };
+            section(&mut user, "Risk scrutiny", review.sections.risk.as_deref());
             section(
                 &mut user,
                 "Review policy (read-only)",

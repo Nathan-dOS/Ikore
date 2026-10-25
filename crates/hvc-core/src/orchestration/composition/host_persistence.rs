@@ -246,6 +246,11 @@ impl PersistenceService {
                             comp::settings::REVISION_ROUND_THRESHOLD_RANGE.contains(value)
                         })
                         .unwrap_or(comp::settings::DEFAULT_REVISION_ROUND_THRESHOLD),
+                    // Stored additions that no longer parse are dropped; ones
+                    // that parse but fail validation stay visible, and the
+                    // risk assessment then applies the built-in policy alone.
+                    risk_policy: serde_json::from_value(extra["riskPolicy"].clone())
+                        .unwrap_or_default(),
                 }
             }
             None => CompositionSettings::default(),
@@ -278,6 +283,7 @@ impl PersistenceService {
             "qualifiedRecipes": settings.qualified_recipes,
             "visualizerEnabled": settings.visualizer_enabled,
             "revisionRoundThreshold": settings.revision_round_threshold,
+            "riskPolicy": settings.risk_policy,
         })
         .to_string();
         db.execute(

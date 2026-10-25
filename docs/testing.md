@@ -144,6 +144,28 @@ the Review tab in the `hitl` and layout tests. Every run is hermetic:
 cargo test --locked -p hvc-test-support --test composition_review -- --test-threads=2
 ```
 
+## Tool policy, risk, pre-flight and documentation drift
+
+ADR-034 tests sit next to their rules: the scope table in `hvc-contracts`
+`contracts`, the declared policies in `composition::policy`, the CLI refusal
+in `hvc-terminal` `terminals::tests`; risk and coverage in
+`composition::risk`, `review_boundary`, `review_policy` and
+`hvc-test-support/tests/composition_review.rs`; the Forge pre-flight in
+`feature_forge::preflight` and the Forge tests (`persistence_service::forge_batches`);
+documentation reconciliation in `doc_reconciliation` (links, contract and an
+integration suite with a scripted gateway); V52, V53 and V54 in
+`serial_upgrade`; the screens in the `forge`, `doc_drift`, `hitl` and layout
+tests:
+
+```powershell
+cargo test --locked -p hvc-core --lib doc_reconciliation feature_forge::preflight forge_batches -- --test-threads=2
+cargo test --locked -p hvc-test-support --test serial_upgrade -- --test-threads=2
+```
+
+`documentation_reconciler_runs_companion_scoped_under_the_reconciliation_origin`
+in `cli_executor`, like its Notes Scribe twin, needs the Windows `.exe` CLI
+fixtures and fails on Linux before the run starts.
+
 ## Editor revisions, check output and voice setup
 
 The workspace revision is a SHA-256 over the resolved path and the bytes read,
