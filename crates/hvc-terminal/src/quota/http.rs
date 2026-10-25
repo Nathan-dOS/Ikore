@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use reqwest::redirect::Policy;
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, ClientBuilder, StatusCode};
 use serde::de::DeserializeOwned;
 
 use super::model::UnavailableReason;
@@ -41,7 +41,10 @@ impl EndpointError {
 }
 
 pub struct QuotaHttp {
-    client: Client,
+    /// `None` when the restricted client could not be built. Requests then fail closed: a
+    /// default client would drop the HTTPS-only, no-redirect and timeout policy, and building
+    /// one can panic.
+    client: Option<Client>,
     #[cfg(test)]
     origin_override: Option<String>,
 }
@@ -54,14 +57,12 @@ impl Default for QuotaHttp {
 
 impl QuotaHttp {
     pub fn new() -> Self {
+        Self::from_builder(restricted_builder(REQUEST_TIMEOUT).https_only(true))
+    }
+
+    fn from_builder(builder: ClientBuilder) -> Self {
         Self {
-            client: Client::builder()
-                .redirect(Policy::none())
-                .https_only(true)
-                .timeout(REQUEST_TIMEOUT)
-                .user_agent(USER_AGENT)
-                .build()
-                .unwrap_or_default(),
+            client: builder.build().ok(),
             #[cfg(test)]
             origin_override: None,
         }
@@ -70,14 +71,14 @@ impl QuotaHttp {
     /// Sends pinned requests to a local plain-HTTP test server instead of the provider.
     #[cfg(test)]
     pub fn for_test(origin: String) -> Self {
+        Self::for_test_with_timeout(origin, REQUEST_TIMEOUT)
+    }
+
+    #[cfg(test)]
+    fn for_test_with_timeout(origin: String, timeout: Duration) -> Self {
         Self {
-            client: Client::builder()
-                .redirect(Policy::none())
-                .timeout(REQUEST_TIMEOUT)
-                .user_agent(USER_AGENT)
-                .build()
-                .unwrap(),
             origin_override: Some(origin),
+            ..Self::from_builder(restricted_builder(timeout))
         }
     }
 
@@ -110,8 +111,10 @@ impl QuotaHttp {
         headers: HeaderMap,
     ) -> Result<T, EndpointError> {
         let failed = EndpointError::Unavailable(UnavailableReason::SourceFailed);
-        let mut response = self
-            .client
+        let Some(client) = &self.client else {
+            return Err(failed);
+        };
+        let mut response = client
             .get(target)
             .headers(headers)
             .send()
@@ -167,7 +170,9 @@ pub(crate) async fn spike_probe(
     headers: HeaderMap,
 ) -> (u16, Option<String>, Option<serde_json::Value>) {
     assert!(PINNED_URLS.contains(&url));
-    let client = QuotaHttp::new().client;
+    let Some(client) = QuotaHttp::new().client else {
+        return (0, None, None);
+    };
     let Ok(response) = client.get(url).headers(headers).send().await else {
         return (0, None, None);
     };
@@ -180,6 +185,15 @@ pub(crate) async fn spike_probe(
     let body = response.bytes().await.ok();
     let json = body.and_then(|body| serde_json::from_slice(&body).ok());
     (status, content_type, json)
+}
+
+/// Every client that may carry a token: no redirects, a whole-request deadline and an honest
+/// user agent. Production adds HTTPS-only on top.
+fn restricted_builder(timeout: Duration) -> ClientBuilder {
+    Client::builder()
+        .redirect(Policy::none())
+        .timeout(timeout)
+        .user_agent(USER_AGENT)
 }
 
 fn retry_after(headers: &HeaderMap) -> Option<Duration> {
@@ -321,6 +335,62 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(plain.requests.lock().unwrap().is_empty());
         assert!(elsewhere.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_client_that_cannot_be_built_fails_closed_without_a_request() {
+        let server = serve(vec![reply("200 OK", &[], r#"{"ok":true}"#)]).await;
+        // An invalid header value fails the builder, as a TLS backend that cannot start would.
+        let mut http = QuotaHttp::from_builder(
+            restricted_builder(REQUEST_TIMEOUT).user_agent("hard-vibe-code\ninvalid"),
+        );
+        assert!(http.client.is_none());
+        http.origin_override = Some(server.origin.clone());
+
+        let result = http
+            .get_json::<Probe>(CLAUDE_USAGE_URL, HeaderMap::new())
+            .await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            EndpointError::Unavailable(UnavailableReason::SourceFailed)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(server.requests.lock().unwrap().is_empty());
+        assert!(
+            QuotaHttp::new().client.is_some(),
+            "the production builder is valid"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_silent_endpoint_fails_at_the_request_deadline() {
+        use tokio::io::AsyncReadExt;
+        // Accepts the connection and reads the request, then never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let silent = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0u8; 1024];
+            let _ = socket.read(&mut buffer).await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let http = QuotaHttp::for_test_with_timeout(origin, Duration::from_millis(200));
+
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            http.get_json::<Probe>(CODEX_USAGE_URL, HeaderMap::new()),
+        )
+        .await
+        .expect("the client deadline ends the request");
+
+        assert_eq!(
+            result.unwrap_err(),
+            EndpointError::Unavailable(UnavailableReason::SourceFailed)
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        silent.abort();
     }
 
     #[tokio::test]
