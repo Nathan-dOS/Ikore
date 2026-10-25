@@ -183,3 +183,13 @@ delivered nor editable, and a CLI reviewer reads host-selected context only.
 Human revision rounds beyond a configurable threshold need an explicit decision.
 See the [decision](032-integrator-review-boundary.md) and the
 [review policy](../review-policy.md).
+
+## Accepted, not implemented yet
+
+These decisions are accepted but not delivered. They do not describe current
+behavior.
+
+- [ADR-034](034-risk-preflight-and-doc-reconciliation.md): enforced executor
+  tool policies, risk-driven check selection with a coverage matrix, a
+  pre-flight conformance check in Forge triage, and on-request documentation
+  reconciliation for notes linked to code.
