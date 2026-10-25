@@ -128,6 +128,20 @@ The probe reports its build profile, sizes and timings. Whole-process peak memor
 is measured separately; scanner timing is not a claim about provider latency or
 the complete desktop application's memory.
 
+## Integrator review boundary
+
+[Review policy](review-policy.md) describes the reviewer's classified inputs,
+evidence gaps, `REVIEW.md` and revision rounds. Pure rules are tested next to
+`review_boundary`, `review_policy`, `line_diff`, `settings` and the recipes;
+publication protection and base capture in `serial_tests`; the full pipeline in
+`hvc-test-support/tests/composition_review.rs`, which also runs the reviewer
+through an official CLI fixture and a Custom adapter; V51 in `serial_upgrade`;
+the Review tab in the `hitl` and layout tests. Every run is hermetic:
+
+```powershell
+cargo test --locked -p hvc-test-support --test composition_review -- --test-threads=2
+```
+
 ## Terminal extraction and feature boundaries
 
 Run `scripts/check-crate-boundaries.ps1` to inspect all Cargo edges. Pure
@@ -145,4 +159,4 @@ cargo test --locked -p hvc-terminal --lib --no-default-features -- --test-thread
 
 Check the terminal-to-zeroize optional edge, not global absence of zeroize:
 other libraries can use zeroize independently. The full workspace tests exercise
-the default collector configuration. See [ADR-030](adr/030-terminal-boundary.md).
+the default collector configuration. See [ADR-031](adr/031-terminal-boundary.md).

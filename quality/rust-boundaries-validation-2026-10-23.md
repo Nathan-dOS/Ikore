@@ -40,7 +40,7 @@ The existing advisory and distribution blockers remain outside this refactor.
 - [Cargo graph enforcement](../scripts/check-crate-boundaries.ps1), test
   aliases, feature forwarding, CI and Docker configuration include the new
   packages. Default and disabled credential-collector graphs have distinct
-  checks. [ADR-030](../docs/adr/030-terminal-boundary.md) records the boundary
+  checks. [ADR-030](../docs/adr/031-terminal-boundary.md) records the boundary
   and its authority model.
 
 ## Coverage inventory
