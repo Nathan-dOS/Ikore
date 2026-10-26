@@ -250,6 +250,57 @@ fn approving_the_specification_issues_the_previewed_mandate_and_a_receipt() {
     );
 }
 
+/// The preview reads on its own transaction's connection only. With the
+/// rollback journal, a second connection opened inside that read transaction
+/// waits for a writer that is itself waiting for the read to end, until the
+/// busy timeout fails the preview with `database is locked`.
+#[test]
+fn the_preview_reads_while_another_connection_writes() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let f = Fixture::new(PulsationStage::Specification);
+    f.accept(&f.output("advance", None, "specification\n"))
+        .unwrap();
+    let checkpoint = f.service.get_hitl_checkpoint(&f.pulse.id).unwrap();
+    let writer = f.service.connection().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let hammer = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut writes = 0u32;
+            while !stop.load(Ordering::Relaxed) {
+                if writer
+                    .execute(
+                        "INSERT INTO runtime_settings(key,value,updated_at) VALUES('test.writer',?1,'now') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        [writes],
+                    )
+                    .is_ok()
+                {
+                    writes += 1;
+                }
+            }
+            writes
+        })
+    };
+    let previews = (0..20)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            let preview = f.service.mandate_preview(&checkpoint.checkpoint_id);
+            (preview, started.elapsed())
+        })
+        .collect::<Vec<_>>();
+    stop.store(true, Ordering::Relaxed);
+    assert!(hammer.join().unwrap() > 0, "the writer ran");
+    for (preview, elapsed) in previews {
+        assert!(matches!(preview, Ok(Some(_))), "{preview:?}");
+        // The busy timeout is 5 s; waiting it out means a lock cycle.
+        assert!(
+            elapsed < std::time::Duration::from_secs(4),
+            "a preview waited {elapsed:?}"
+        );
+    }
+}
+
 #[test]
 fn approving_the_specification_again_reissues_on_the_chain() {
     let f = Fixture::new(PulsationStage::Specification);

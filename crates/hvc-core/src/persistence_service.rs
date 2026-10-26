@@ -1693,71 +1693,79 @@ impl PersistenceService {
     }
 
     fn load_runtime_config(&self) -> Result<AgentRuntimeConfig, PersistenceServiceError> {
+        Self::runtime_config_from(&self.connection()?)
+    }
+
+    /// The runtime configuration read on `connection`, for callers inside an
+    /// open transaction: a second connection there can deadlock against a
+    /// writer waiting to commit.
+    pub(crate) fn runtime_config_from(
+        connection: &Connection,
+    ) -> Result<AgentRuntimeConfig, PersistenceServiceError> {
         let mut config = AgentRuntimeConfig::default();
-        let connection = self.connection()?;
 
         if let Some(raw_provider) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_PROVIDER)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_PROVIDER)?
             && let Some(provider) = LlmProvider::parse(raw_provider.trim())
         {
             config.provider = provider;
         }
 
-        if let Some(raw_model) = Self::read_runtime_setting(&connection, SETTING_RUNTIME_MODEL)? {
+        if let Some(raw_model) = Self::read_runtime_setting(connection, SETTING_RUNTIME_MODEL)? {
             config.model = raw_model;
         }
 
         if let Some(raw_temperature) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_TEMPERATURE)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_TEMPERATURE)?
             && let Ok(parsed) = raw_temperature.parse::<f32>()
         {
             config.temperature = parsed;
         }
 
         if let Some(raw_max_output_tokens) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_MAX_OUTPUT_TOKENS)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_MAX_OUTPUT_TOKENS)?
             && let Ok(parsed) = raw_max_output_tokens.parse::<u32>()
         {
             config.max_output_tokens = parsed;
         }
 
         if let Some(raw_timeout_ms) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_TIMEOUT_MS)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_TIMEOUT_MS)?
             && let Ok(parsed) = raw_timeout_ms.parse::<u64>()
         {
             config.timeout_ms = parsed;
         }
 
         if let Some(raw_max_retries) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_MAX_RETRIES)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_MAX_RETRIES)?
             && let Ok(parsed) = raw_max_retries.parse::<u8>()
         {
             config.max_retries = parsed;
         }
 
         if let Some(raw_context_limit) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_CONTEXT_LIMIT)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_CONTEXT_LIMIT)?
             && let Ok(parsed) = raw_context_limit.parse::<usize>()
         {
             config.context_chars_limit = parsed;
         }
 
         if let Some(raw_max_context_files) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_MAX_CONTEXT_FILES)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_MAX_CONTEXT_FILES)?
             && let Ok(parsed) = raw_max_context_files.parse::<usize>()
         {
             config.max_context_files = parsed;
         }
 
         if let Some(raw_strategy) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_CONTEXT_STRATEGY)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_CONTEXT_STRATEGY)?
             && let Some(parsed) = ContextStrategy::parse(raw_strategy.trim())
         {
             config.context_strategy = parsed;
         }
 
         if let Some(raw_embedding_enabled) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_EMBEDDING_ENABLED)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_EMBEDDING_ENABLED)?
         {
             config.embedding_enabled = matches!(
                 raw_embedding_enabled.trim(),
@@ -1766,41 +1774,41 @@ impl PersistenceService {
         }
 
         if let Some(raw_embedding_provider) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_EMBEDDING_PROVIDER)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_EMBEDDING_PROVIDER)?
             && let Some(parsed) = EmbeddingProvider::parse(raw_embedding_provider.trim())
         {
             config.embedding_provider = parsed;
         }
 
         if let Some(raw_embedding_model) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_EMBEDDING_MODEL)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_EMBEDDING_MODEL)?
         {
             config.embedding_model = raw_embedding_model;
         }
 
         if let Some(raw_embedding_top_k) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_EMBEDDING_TOP_K)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_EMBEDDING_TOP_K)?
             && let Ok(parsed) = raw_embedding_top_k.parse::<usize>()
         {
             config.embedding_top_k = parsed;
         }
 
         if let Some(raw_mode) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_ADAPTIVE_CONTEXT_MODE)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_ADAPTIVE_CONTEXT_MODE)?
             && let Some(parsed) = AdaptiveContextMode::parse(raw_mode.trim())
         {
             config.adaptive_context_mode = parsed;
         }
 
         if let Some(raw_policy) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_DYNAMIC_CONTEXT_POLICY)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_DYNAMIC_CONTEXT_POLICY)?
             && let Ok(parsed) = serde_json::from_str::<DynamicContextPolicy>(&raw_policy)
         {
             config.dynamic_context_policy = parsed;
         }
 
         if let Some(raw_mode) =
-            Self::read_runtime_setting(&connection, SETTING_RUNTIME_ROUTING_V2_MODE)?
+            Self::read_runtime_setting(connection, SETTING_RUNTIME_ROUTING_V2_MODE)?
         {
             config.routing_v2_mode = RoutingMode::parse(&raw_mode);
         }

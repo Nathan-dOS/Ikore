@@ -520,7 +520,7 @@ impl PersistenceService {
                 // ADR-035 M1: approving the Specification issues the mandate
                 // in this transaction; a derivation failure refuses it.
                 if current.stage == PulsationStage::Specification {
-                    self.issue_specification_mandate(
+                    Self::issue_specification_mandate(
                         &tx,
                         pulse,
                         &request.checkpoint_id,

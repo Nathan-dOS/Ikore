@@ -243,9 +243,9 @@ impl PersistenceService {
     }
 
     /// Derives the revision an Approve of the Specification issues. Reads
-    /// only; the preview and the issuing transaction both call it.
+    /// only, and only on `db`: the preview and the issuing transaction both
+    /// call it inside their transaction.
     fn derive_specification_mandate(
-        &self,
         db: &Connection,
         pulsation_id: &str,
         checkpoint_id: &str,
@@ -316,7 +316,7 @@ impl PersistenceService {
         let settings = Self::composition_settings_for(db, &project_id)?;
         let project_sensitive = (!settings.risk_policy.is_empty())
             .then(|| RiskPolicyV1::effective(&settings.risk_policy).sha256());
-        let config = self.load_runtime_config()?;
+        let config = Self::runtime_config_from(db)?;
         let mut transports = Vec::new();
         for (governed, kind) in GOVERNED_STAGES {
             let role = AgentRole::for_stage(governed.as_db_value());
@@ -426,14 +426,13 @@ impl PersistenceService {
     /// Issues the next revision in the transaction that approves the
     /// Specification. A derivation failure refuses the approval.
     pub(super) fn issue_specification_mandate(
-        &self,
         tx: &Connection,
         pulsation_id: &str,
         checkpoint_id: &str,
         state_version: u64,
         candidates: &[ReviewedArtifact],
     ) -> Result<u32, PersistenceServiceError> {
-        let mandate = self.derive_specification_mandate(
+        let mandate = Self::derive_specification_mandate(
             tx,
             pulsation_id,
             checkpoint_id,
@@ -466,7 +465,7 @@ impl PersistenceService {
         };
         let candidates =
             Self::checkpoint_candidates(&tx, &pulsation_id, PulsationStage::Specification)?;
-        let mandate = self.derive_specification_mandate(
+        let mandate = Self::derive_specification_mandate(
             &tx,
             &pulsation_id,
             checkpoint_id,
