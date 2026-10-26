@@ -2055,7 +2055,7 @@ impl PersistenceService {
 
     /// Resolves a role's frozen transport/model. A specialty may tune effort,
     /// but it cannot replace the canonical role's model or backend.
-    fn resolve_effective_profile(
+    pub(super) fn resolve_effective_profile(
         db: &Connection,
         project_id: &str,
         pulsation_id: &str,
@@ -2299,6 +2299,7 @@ impl PersistenceService {
         )?;
         let role = crate::llm::AgentRole::for_stage(stage.as_db_value());
         let mut profile_snapshots = BTreeMap::new();
+        let mut resolved_transports: Vec<(ExecutorKind, String, Option<String>)> = Vec::new();
         for draft in &preparation.drafts {
             let mut kinds = vec![draft.executor_kind];
             if let Some(repair) = repair_kind(draft.executor_kind) {
@@ -2316,6 +2317,11 @@ impl PersistenceService {
                     kind,
                     runtime_config,
                 )?;
+                resolved_transports.push((
+                    kind,
+                    profile.transport.clone(),
+                    profile.backend.clone(),
+                ));
                 let (snapshot_id, _) = Self::snapshot_policy(
                     &tx,
                     "executor_profile",
@@ -2329,7 +2335,82 @@ impl PersistenceService {
                 );
             }
         }
-        let stage_output_limit = runtime_config.output_budget_for(role);
+        // ADR-035 M1: a stage after the Specification approval runs only while
+        // the mandate in force still allows it: same executor policies,
+        // transports and validation profiles. A change parks the stage before
+        // any request. The Specification itself (also when a revision sends
+        // the pulsation back to it) runs on the live settings.
+        let governed = Self::mandate_governs(stage);
+        let applicable_checks = if governed {
+            Self::applicable_validation_profiles(
+                &tx,
+                &project.id,
+                comp::Stage::from_pulsation(stage),
+            )?
+        } else {
+            Vec::new()
+        };
+        let facts = super::mandate_persistence::AdmissionFacts {
+            stage: comp::Stage::from_pulsation(stage),
+            role,
+            transports: resolved_transports
+                .iter()
+                .map(|(kind, transport, backend)| (*kind, transport.as_str(), backend.as_deref()))
+                .collect(),
+            applicable_checks: &applicable_checks,
+        };
+        let refusal = if governed {
+            Self::mandate_admission_refusal(&tx, pulse, &facts)?
+        } else {
+            None
+        };
+        if let Some(reason) = refusal {
+            let revision =
+                Self::current_mandate(&tx, pulse)?.map_or(1, |(mandate, _)| mandate.revision);
+            Self::record_enforcement_event(
+                &tx,
+                pulse,
+                stage.as_db_value(),
+                "capability_mismatch",
+                None,
+                &reason,
+                revision,
+            )?;
+            // The approved configuration changed under the pulsation: a stale
+            // input, so Retry stays offered and re-admits once it is restored.
+            let failure = UnitFailure {
+                class: FailureClass::StaleInput,
+                code: "mandate_capability_mismatch".into(),
+                diagnostic: reason,
+                repairable: false,
+                correction: None,
+                rejected_answer: false,
+            };
+            Self::park_in_tx_without_execution(&tx, job, parent_run_id, stage, current, &failure)?;
+            tx.commit()?;
+            return Ok(None);
+        }
+        // ADR-035 M1: the stages after the Specification approval use the
+        // budget parameters the mandate froze, not the live settings.
+        let frozen = if governed {
+            Self::frozen_budget(&tx, pulse)?
+        } else {
+            None
+        };
+        let stage_output_limit = frozen
+            .as_ref()
+            .and_then(|budget| budget.output_limit_for(stage.as_db_value()))
+            .unwrap_or_else(|| runtime_config.output_budget_for(role));
+        let context_chars_limit = frozen
+            .as_ref()
+            .map_or(runtime_config.context_chars_limit, |budget| {
+                budget.context_chars_limit as usize
+            });
+        let max_in_flight_units = frozen
+            .as_ref()
+            .map_or(settings.max_in_flight_units, |budget| {
+                budget.max_in_flight_units
+            });
         let estimates = preparation
             .drafts
             .iter()
@@ -2340,9 +2421,9 @@ impl PersistenceService {
             .collect::<Vec<_>>();
         let (budget, _) = match derive_budget(
             stage_output_limit,
-            runtime_config.context_chars_limit,
+            context_chars_limit,
             &estimates,
-            settings.max_in_flight_units,
+            max_in_flight_units,
         ) {
             Ok(budget) => budget,
             Err(error) => {
@@ -2399,8 +2480,8 @@ impl PersistenceService {
             table: &preparation.table,
             units: preparation.drafts.clone(),
             stage_output_limit,
-            context_chars_limit: runtime_config.context_chars_limit,
-            max_in_flight_units: settings.max_in_flight_units,
+            context_chars_limit,
+            max_in_flight_units,
             profile_snapshots,
         }) {
             Ok(plan) => plan,

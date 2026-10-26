@@ -201,13 +201,14 @@ validation is done; Windows acceptance is pending. See the
 
 ## ADR-035: execution mandates, scope grants and trust layers
 
-Accepted on 2026-10-26; not implemented yet. Approving a v4 Specification will
-issue an immutable mandate that records the approved intent, write envelope,
-executor capabilities, checks and frozen budget parameters. The brief will show
-it before the click, and every checkpoint resolution will get a receipt with the
-reviewed digests. A scope request from a Code unit will become a "Grant and
-retry" action on the existing failure checkpoint. A read-only panel will show
-the Identity, Scope, Guardrails and Intent layers. See the
+Accepted on 2026-10-26. M1 is implemented (V55): approving a v4 Specification
+issues an immutable mandate that records the approved intent, write envelope,
+executor capabilities, transports, checks and frozen budget parameters. The
+brief shows it before the click ("What approving grants"), stage writes and
+dispatches are checked against it, and every checkpoint resolution records a
+receipt with the reviewed digests. Not implemented yet: the read-only panel of
+Identity, Scope, Guardrails and Intent layers (M2) and the "Grant and retry"
+scope request on the failure checkpoint (M4). See the
 [decision](035-execution-mandates.md).
 
 ## ADR-036: signed local pulsation attestation

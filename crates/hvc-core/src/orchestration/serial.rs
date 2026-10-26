@@ -460,6 +460,9 @@ impl PersistenceService {
             HitlDecision::Reject => "rejected",
             HitlDecision::RequestRevision => "revision_requested",
         };
+        // ADR-035 M1: the exact candidates this decision covers, for the
+        // mandate and the receipt, read before they are accepted.
+        let candidates = Self::checkpoint_candidates(&tx, pulse, current.stage)?;
         tx.execute(
             "UPDATE checkpoints SET status=?2,updated_at=?3 WHERE id=?1",
             params![request.checkpoint_id, resolution, now],
@@ -514,6 +517,17 @@ impl PersistenceService {
                 Self::enqueue_stage_job(&tx, &updated.id, target)?;
             }
             HitlDecision::Approve => {
+                // ADR-035 M1: approving the Specification issues the mandate
+                // in this transaction; a derivation failure refuses it.
+                if current.stage == PulsationStage::Specification {
+                    self.issue_specification_mandate(
+                        &tx,
+                        pulse,
+                        &request.checkpoint_id,
+                        request.expected_state_version,
+                        &candidates,
+                    )?;
+                }
                 tx.execute("UPDATE artifacts SET acceptance='accepted' WHERE pulsation_id=?1 AND producer_stage=?2 AND acceptance='candidate'",params![pulse,current.stage.as_db_value()])?;
                 if current.stage == PulsationStage::Specification {
                     Self::materialize_component_proposals(
@@ -550,6 +564,20 @@ impl PersistenceService {
                 }
             }
         }
+        Self::record_approval_receipt(
+            &tx,
+            super::mandate_persistence::ReceiptInput {
+                checkpoint_id: &request.checkpoint_id,
+                pulsation_id: pulse,
+                purpose: "artifact_review",
+                stage: current.stage.as_db_value(),
+                decision: resolution,
+                state_version: request.expected_state_version,
+                reviewed: candidates,
+                confirmed_paths: Vec::new(),
+                feedback: request.feedback.as_deref(),
+            },
+        )?;
         tx.commit()?;
         if let Some(job) = visualizer_job {
             self.request_job_cancellation(&job);
@@ -988,6 +1016,21 @@ impl PersistenceService {
                 }
                 if let Some(path) = path {
                     publication::safe_target(root, path, false)?;
+                    // ADR-035 M1: a v4 stage after the Specification writes only
+                    // inside the mandate in force. The frozen plan already keeps
+                    // it there, so a refusal is a host defect and fails the
+                    // stage as one. A re-run Specification is checked again at
+                    // publication, against the mandate its approval re-issues.
+                    if Self::mandate_governs(current.stage)
+                        && let Some((reason, _)) = Self::mandate_write_refusal(
+                            tx,
+                            pulse,
+                            crate::orchestration::mandate::WriteSource::PipelineStage,
+                            path,
+                        )?
+                    {
+                        return Err(PersistenceServiceError::Validation(reason));
+                    }
                     crate::workspace_service::validate_generated_vault_note(
                         root,
                         path,
@@ -1317,6 +1360,24 @@ impl PersistenceService {
             "UPDATE checkpoints SET status='approved',updated_at=?2 WHERE id=?1",
             params![request.checkpoint_id, Self::now_iso()],
         )?;
+        Self::record_approval_receipt(
+            &tx,
+            super::mandate_persistence::ReceiptInput {
+                checkpoint_id: &request.checkpoint_id,
+                pulsation_id: &request.pulsation_id,
+                purpose: "path_confirmation",
+                stage: current.stage.as_db_value(),
+                decision: "confirmed",
+                state_version: request.expected_state_version,
+                reviewed: Vec::new(),
+                confirmed_paths: request
+                    .manual_path_hints
+                    .iter()
+                    .map(|hint| hint.path.clone())
+                    .collect(),
+                feedback: None,
+            },
+        )?;
         let updated = Self::transition_pulsation(
             &tx,
             &current,
@@ -1518,8 +1579,18 @@ impl PersistenceService {
         // read before the replacement and recorded with it below.
         let base = (class != "background")
             .then(|| publication_base(Path::new(&root), &path, &expected, &desired));
+        // ADR-035 M1: checked again against the revision in force when the
+        // file is written, which covers amendments and replay after a restart.
+        let mandate_refusal = Self::mandate_write_refusal(
+            &tx,
+            &pulse,
+            crate::orchestration::mandate::WriteSource::of_publication(&class, &kind),
+            &path,
+        )?;
         let result = if let Err(error) = sanitization_guard {
             Err(invalid(error))
+        } else if let Some((reason, _)) = &mandate_refusal {
+            Err(invalid(reason.clone()))
         } else if ContentSha256::of(content.as_bytes()).as_str() != desired
             || desired != artifact_hash
         {
@@ -1595,6 +1666,22 @@ impl PersistenceService {
                     "UPDATE artifacts SET publication_state='conflict' WHERE id=?1",
                     [id],
                 )?;
+                if let Some((reason, revision)) = &mandate_refusal {
+                    let stage: String = tx.query_row(
+                        "SELECT COALESCE(producer_stage,'') FROM artifacts WHERE id=?1",
+                        [id],
+                        |row| row.get(0),
+                    )?;
+                    Self::record_enforcement_event(
+                        &tx,
+                        &pulse,
+                        &stage,
+                        "scope_violation",
+                        Some(&path),
+                        reason,
+                        *revision,
+                    )?;
+                }
                 if class == "background" {
                     if kind == "learning_report" {
                         tx.execute("UPDATE learning_runs SET state='conflict',diagnostic=?2,updated_at=?3 WHERE artifact_id=?1",params![id,error.to_string(),Self::now_iso()])?;

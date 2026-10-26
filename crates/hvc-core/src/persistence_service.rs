@@ -98,6 +98,9 @@ mod indexing;
 mod integration;
 #[path = "orchestration/learning.rs"]
 mod learning;
+#[path = "orchestration/mandate_persistence.rs"]
+mod mandate_persistence;
+pub use mandate_persistence::{MandateEnforcementEvent, MandatePreview, MandateRevisionRecord};
 #[path = "orchestration/preparation.rs"]
 mod preparation;
 #[path = "orchestration/pulsation_report.rs"]
@@ -3206,6 +3209,33 @@ impl PersistenceService {
                 ],
             )?;
         }
+        // ADR-035 M1: the approved API fallback is a transport amendment of
+        // the mandate in force; before the Specification there is none, and
+        // the issued mandate then records the override as resolved.
+        if request.decision == CliFallbackDecision::UseApi {
+            Self::amend_mandate_transport(
+                &transaction,
+                &pulsation_id,
+                role,
+                checkpoint_id,
+                stage,
+                request.expected_state_version,
+            )?;
+        }
+        Self::record_approval_receipt(
+            &transaction,
+            mandate_persistence::ReceiptInput {
+                checkpoint_id,
+                pulsation_id: &pulsation_id,
+                purpose: "cli_fallback",
+                stage: stage.as_db_value(),
+                decision: request.decision.as_db_value(),
+                state_version: request.expected_state_version,
+                reviewed: Vec::new(),
+                confirmed_paths: Vec::new(),
+                feedback: None,
+            },
+        )?;
         transaction.commit()?;
         for job_id in cancellation_ids {
             self.request_job_cancellation(&job_id);
@@ -3695,6 +3725,20 @@ impl PersistenceService {
                 updated
             }
         };
+        Self::record_approval_receipt(
+            &transaction,
+            mandate_persistence::ReceiptInput {
+                checkpoint_id,
+                pulsation_id: &pulsation_id,
+                purpose: "stage_failure",
+                stage: stage.as_db_value(),
+                decision: request.decision.as_db_value(),
+                state_version: request.expected_state_version,
+                reviewed: Vec::new(),
+                confirmed_paths: Vec::new(),
+                feedback: request.feedback.as_deref(),
+            },
+        )?;
         transaction.commit()?;
         for job_id in cancellation_ids {
             self.request_job_cancellation(&job_id);

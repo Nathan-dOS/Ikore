@@ -166,6 +166,21 @@ cargo test --locked -p hvc-test-support --test serial_upgrade -- --test-threads=
 in `cli_executor`, like its Notes Scribe twin, needs the Windows `.exe` CLI
 fixtures and fails on Linux before the run starts.
 
+## Execution mandates
+
+ADR-035 M1 keeps its pure rules in `orchestration::mandate` (derivation,
+canonical digests, the write, transport, executor and check checks, and a
+generated-envelope property test) and its host transactions in
+`persistence_service::mandate_persistence` (acceptance and publication refusals,
+receipts, the preview, the transport amendment, the frozen budget). The full v4
+pipeline runs in `hvc-test-support/tests/execution_mandate.rs`; V55 is in
+`serial_upgrade`; the grants card in the layout tests:
+
+```powershell
+cargo test --locked -p hvc-core --lib mandate -- --test-threads=2
+cargo test --locked -p hvc-test-support --test execution_mandate -- --test-threads=2
+```
+
 ## Editor revisions, check output and voice setup
 
 The workspace revision is a SHA-256 over the resolved path and the bytes read,

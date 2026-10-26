@@ -2454,6 +2454,10 @@ impl AppModel {
                     backend.convergence(checkpoint.pulsation_id.clone()).await,
                     // ADR-034 M3: the review's risk level and coverage.
                     backend.risk_status(checkpoint.pulsation_id.clone()).await,
+                    // ADR-035 M1: what approving the Specification grants.
+                    backend
+                        .mandate_preview(checkpoint.checkpoint_id.clone())
+                        .await,
                 ))
             } else {
                 None
@@ -2472,7 +2476,7 @@ impl AppModel {
                                 .hitl
                                 .finish_visualization(generation, &checkpoint, visualization);
                         }
-                        if let Some((review_inputs, convergence, risk)) = context {
+                        if let Some((review_inputs, convergence, risk, grants)) = context {
                             state.hitl.finish_review_context(
                                 generation,
                                 &checkpoint,
@@ -2480,6 +2484,7 @@ impl AppModel {
                                 convergence,
                             );
                             state.hitl.finish_risk(generation, &checkpoint, risk);
+                            state.hitl.finish_grants(generation, &checkpoint, grants);
                         }
                     }
                 });

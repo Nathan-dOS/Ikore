@@ -6244,6 +6244,165 @@ fn a_high_risk_integrator_review_shows_its_coverage_and_asks_for_a_reason(cx: &m
     });
 }
 
+/// A preview of the mandate an Approve would issue, with `paths` granted and
+/// the first one marked sensitive.
+fn grants_preview(
+    enforcement: hvc_core::orchestration::mandate::Enforcement,
+    paths: usize,
+) -> hvc_core::persistence_service::MandatePreview {
+    use hvc_core::orchestration::mandate::{
+        BudgetParameters, IssueInputs, IssuedBy, StageOutputLimit, TransportCapability, WriteClass,
+        WriteGrant, derive_issued,
+    };
+    let mut mandate = derive_issued(&IssueInputs {
+        pulsation_id: "pulse",
+        project_id: "project",
+        enforcement,
+        title: "Usage export to CSV",
+        issued_by: IssuedBy {
+            checkpoint_id: "brief-checkpoint".into(),
+            stage: "SPECIFICATION".into(),
+            state_version: 1,
+            input_revision: 1,
+        },
+        previous: None,
+        manifest: None,
+        clarification_paths: &[],
+        specification: None,
+        accepted_artifact_sha256s: &[],
+        review_policy_snapshot_sha256: None,
+        project_sensitive_sha256: None,
+        transports: vec![TransportCapability {
+            role: "backend_agent".into(),
+            transport: "cli".into(),
+            backend: Some("claude".into()),
+        }],
+        checks: Vec::new(),
+        budget: BudgetParameters {
+            stage_output_limits: vec![StageOutputLimit {
+                stage: "Code".into(),
+                output_tokens: 16_000,
+            }],
+            context_chars_limit: 16_000,
+            extra_invocation_limit: 2,
+            per_unit_extra_invocation_limit: 1,
+            max_in_flight_units: 1,
+        },
+    })
+    .unwrap();
+    mandate.scope.grants = (0..paths)
+        .map(|index| WriteGrant {
+            path: format!(
+                "crates/hvc-core/src/usage/export_with_a_rather_long_module_name_{index:02}.rs"
+            ),
+            origins: vec![WriteClass::TaskPath, WriteClass::SpecificationReference],
+            unit_key: None,
+            amendment_revision: None,
+        })
+        .collect();
+    let sensitive = mandate
+        .scope
+        .grants
+        .first()
+        .map(|grant| vec![grant.path.clone()])
+        .unwrap_or_default();
+    hvc_core::persistence_service::MandatePreview {
+        mandate_sha256: mandate.sha256().unwrap().as_str().to_owned(),
+        mandate,
+        sensitive_paths: sensitive,
+    }
+}
+
+/// ADR-035 M1: "What approving grants" leads the Specification brief, keeps
+/// every row inside the reader at both window sizes, summarizes what it does
+/// not draw, and a legacy pipeline draws no card.
+#[gpui::test]
+fn the_specification_brief_shows_what_approving_grants(cx: &mut TestAppContext) {
+    use hvc_core::orchestration::mandate::Enforcement;
+    let (model, visual) = open_specification_brief(cx);
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            let checkpoint = state.hitl.expected_checkpoint.clone().unwrap();
+            let generation = state.hitl.current_load_generation();
+            assert!(state.hitl.finish_grants(
+                generation,
+                &checkpoint,
+                Ok(Some(grants_preview(Enforcement::EnforcedV4, 70)))
+            ));
+        });
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let grants = visual
+            .debug_bounds("review-grants")
+            .unwrap_or_else(|| panic!("missing grants card at {width}"));
+        assert!(
+            grants.left() >= reader.left() && grants.right() <= reader.right() + px(1.0),
+            "the grants card overflows at {width}: {grants:?} vs {reader:?}"
+        );
+        for part in [
+            "review-grants-sensitive",
+            "review-grants-path-0",
+            "review-grants-path-63",
+            "review-grants-more",
+            "review-grants-digest",
+        ] {
+            let bounds = visual
+                .debug_bounds(part)
+                .unwrap_or_else(|| panic!("missing {part} at {width}"));
+            assert!(
+                bounds.right() <= reader.right() + px(1.0),
+                "{part} {bounds:?}"
+            );
+        }
+        assert!(
+            visual.debug_bounds("review-grants-path-64").is_none(),
+            "only the first 64 paths are drawn"
+        );
+    }
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            let checkpoint = state.hitl.expected_checkpoint.clone().unwrap();
+            let generation = state.hitl.current_load_generation();
+            assert!(state.hitl.finish_grants(
+                generation,
+                &checkpoint,
+                Ok(Some(grants_preview(Enforcement::NotAppliedLegacy, 0)))
+            ));
+            assert!(
+                state.hitl.grants.is_none(),
+                "a legacy approval has no envelope"
+            );
+        });
+    });
+}
+
+/// A legacy Specification approval has no envelope, so no grants card is
+/// drawn. A fresh window: absence is only reliable before the first frame
+/// that held the card.
+#[gpui::test]
+fn a_legacy_specification_review_draws_no_grants_card(cx: &mut TestAppContext) {
+    use hvc_core::orchestration::mandate::Enforcement;
+    let (model, visual) = open_specification_brief(cx);
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            let checkpoint = state.hitl.expected_checkpoint.clone().unwrap();
+            let generation = state.hitl.current_load_generation();
+            assert!(state.hitl.finish_grants(
+                generation,
+                &checkpoint,
+                Ok(Some(grants_preview(Enforcement::NotAppliedLegacy, 0)))
+            ));
+        });
+    });
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Pulsations);
+    assert!(visual.debug_bounds("review-document-reader").is_some());
+    assert!(visual.debug_bounds("review-grants").is_none());
+}
+
 #[gpui::test]
 fn forge_triage_shows_the_conformance_card_and_holds_approval_on_a_blocking_conflict(
     cx: &mut TestAppContext,

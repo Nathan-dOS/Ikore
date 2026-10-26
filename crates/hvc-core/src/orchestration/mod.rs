@@ -13,6 +13,7 @@ mod context;
 mod contracts;
 pub mod failure;
 pub mod learning_report;
+pub mod mandate;
 mod pipeline_version;
 mod policy;
 mod prompt_context;

@@ -105,6 +105,14 @@ Publication validates expected content and current ownership before applying
 changes. Multi-file publication uses durable, replayable intent rather than
 claiming one atomic filesystem transaction.
 
+Approving a pipeline v4 Specification issues an execution mandate: an
+append-only, hash-chained record of the write envelope, executor policies,
+transports, check profiles and frozen budget parameters that the later stages
+run under. A stage write outside the mandate is refused at acceptance and again
+at publication, and a changed transport or check profile parks the next stage
+until it is restored. Every checkpoint decision records a receipt with the
+digests it covered. See [ADR-035](adr/035-execution-mandates.md).
+
 Start with the [design summaries](adr/README.md), [test guide](testing.md) and
 [dated validation reports](../quality/README.md). The reports distinguish
 implemented behavior, executed checks and remaining work.

@@ -169,6 +169,9 @@ pub(crate) struct HitlReviewState {
     /// high-risk review with unverified or unrun items needs a reason, which
     /// the host enforces.
     pub(crate) risk: Option<hvc_core::persistence_service::CheckpointRiskStatus>,
+    /// What approving the Specification would grant (ADR-035 M1). Never a
+    /// gate: the host derives the same mandate when it approves.
+    pub(crate) grants: Option<hvc_core::persistence_service::MandatePreview>,
     pub(crate) busy: bool,
     pub(crate) error: Option<String>,
     load_generation: u64,
@@ -219,6 +222,7 @@ impl HitlReviewState {
             self.review_inputs = None;
             self.convergence = None;
             self.risk = None;
+            self.grants = None;
             self.error = None;
         }
         self.expected_checkpoint = checkpoint;
@@ -364,6 +368,26 @@ impl HitlReviewState {
         true
     }
 
+    /// The approval grants read with this load. A failed read leaves them
+    /// absent; a legacy pipeline has an approval without an envelope.
+    pub(crate) fn finish_grants(
+        &mut self,
+        generation: u64,
+        checkpoint: &HitlCheckpoint,
+        grants: Result<Option<hvc_core::persistence_service::MandatePreview>, String>,
+    ) -> bool {
+        if generation != self.load_generation
+            || !same_checkpoint(self.expected_checkpoint.as_ref(), Some(checkpoint))
+        {
+            return false;
+        }
+        self.grants = grants
+            .ok()
+            .flatten()
+            .filter(|preview| preview.mandate.enforcement.is_enforced());
+        true
+    }
+
     #[cfg(test)]
     pub(crate) fn current_load_generation(&self) -> u64 {
         self.load_generation
@@ -427,6 +451,7 @@ impl HitlReviewState {
         self.review_inputs = None;
         self.convergence = None;
         self.risk = None;
+        self.grants = None;
         self.brief_selected = false;
         self.marks.clear();
         self.brief_cursor = 0;

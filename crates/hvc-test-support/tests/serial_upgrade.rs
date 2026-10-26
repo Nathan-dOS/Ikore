@@ -140,7 +140,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -303,7 +303,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        54
+        55
     );
     assert_eq!(
         db.query_row(
@@ -844,7 +844,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1000,7 +1000,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1097,7 +1097,7 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     let (error, failure, notices): (String, Option<String>, Option<String>) = db
         .query_row(
@@ -1166,7 +1166,7 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1241,7 +1241,7 @@ fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1336,7 +1336,7 @@ fn v47_to_v48_adds_quota_history_with_validated_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     let insert = |values: &str| {
         db.execute(
@@ -1390,7 +1390,7 @@ fn v48_to_v49_preserves_history_and_requires_new_sanitization_evidence() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     for table in [
         "project_secret_redaction_exceptions",
@@ -1508,7 +1508,7 @@ fn v49_to_v50_admits_the_notes_scribe_and_adds_companion_notes() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1683,7 +1683,7 @@ fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones()
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     // Later migrations add their own tables; every table V50 had keeps its
     // exact definition.
@@ -2113,6 +2113,119 @@ fn v53_to_v54_adds_the_reconciler_role_and_the_reconciliation_tables() {
                 .unwrap(),
             0,
             "{table} goes with its project"
+        );
+    }
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+/// V55 adds execution mandates and approval receipts (ADR-035 M1). Purely
+/// additive: every earlier table keeps its definition, a pulsation that was
+/// already running gets no mandate, revisions and receipts refuse updates,
+/// causes, enforcements and decisions are closed sets, and every row goes
+/// with its pulsation.
+#[test]
+fn v54_to_v55_adds_mandates_and_receipts_without_touching_running_pulsations() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(54))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V54 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version) VALUES('pulse','p','Work','Code','running','now','now',4)",[]).unwrap();
+    db.execute("INSERT INTO checkpoints(id,pulsation_id,stage,status,created_at,updated_at) VALUES('cp','pulse','SPECIFICATION','approved','now','now')",[]).unwrap();
+    let tables = |db: &Connection| -> Vec<String> {
+        db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = tables(&db);
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let after = tables(&db);
+    for table in &before {
+        assert!(after.contains(table), "V55 rebuilds nothing: {table}");
+    }
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM execution_mandates", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        0,
+        "a pulsation past its Specification gets no retroactive mandate"
+    );
+    let sha = "a".repeat(64);
+    let mandate = |id: &str,
+                   revision: u32,
+                   cause: &str,
+                   enforcement: &str,
+                   previous: Option<&str>| {
+        db.execute(
+            "INSERT INTO execution_mandates(id,pulsation_id,revision,cause,enforcement,mandate_json,mandate_sha256,previous_sha256,checkpoint_id,created_at) VALUES(?1,'pulse',?2,?3,?4,'{}',?5,?6,'cp','now')",
+            params![id, revision, cause, enforcement, sha, previous],
+        )
+    };
+    mandate("m1", 1, "issued", "enforced_v4", None).expect("a first revision");
+    mandate("m1b", 1, "issued", "enforced_v4", None).expect_err("one row per revision");
+    mandate("m2", 2, "scope_grant", "enforced_v4", None)
+        .expect_err("a later revision names its predecessor");
+    mandate("m2", 2, "guessed", "enforced_v4", Some(&sha)).expect_err("causes are a closed set");
+    mandate("m2", 2, "reissued", "sometimes", Some(&sha))
+        .expect_err("enforcements are a closed set");
+    mandate("m2", 2, "transport_fallback", "enforced_v4", Some(&sha)).expect("a chained revision");
+    db.execute(
+        "UPDATE execution_mandates SET cause='reissued' WHERE id='m1'",
+        [],
+    )
+    .expect_err("revisions are append-only");
+    let receipt = |checkpoint: &str, purpose: &str, decision: &str| {
+        db.execute(
+            "INSERT INTO checkpoint_approval_receipts(checkpoint_id,pulsation_id,purpose,decision,receipt_json,receipt_sha256,mandate_revision,created_at) VALUES(?1,'pulse',?2,?3,'{}',?4,1,'now')",
+            params![checkpoint, purpose, decision, sha],
+        )
+    };
+    receipt("cp", "artifact_review", "approved").expect("a receipt");
+    receipt("cp", "artifact_review", "approved").expect_err("one receipt per checkpoint");
+    receipt("cp2", "artifact_review", "maybe").expect_err("decisions are a closed set");
+    receipt("cp3", "stage_failure", "grant_scope").expect("the M4 decision is admitted already");
+    db.execute(
+        "UPDATE checkpoint_approval_receipts SET decision='rejected'",
+        [],
+    )
+    .expect_err("receipts are append-only");
+    db.execute("INSERT INTO mandate_enforcement_events(id,pulsation_id,stage,rule,relative_path,detail,mandate_revision,created_at,updated_at) VALUES('e','pulse','Code','scope_violation','x.rs','refused',1,'now','now')",[])
+        .expect("an event");
+    db.execute("INSERT INTO mandate_enforcement_events(id,pulsation_id,stage,rule,relative_path,detail,mandate_revision,created_at,updated_at) VALUES('e2','pulse','Code','guessed',NULL,'refused',1,'now','now')",[])
+        .expect_err("rules are a closed set");
+
+    db.execute("DELETE FROM projects WHERE id='p'", []).unwrap();
+    for table in [
+        "execution_mandates",
+        "checkpoint_approval_receipts",
+        "mandate_enforcement_events",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            0,
+            "{table} goes with its pulsation"
         );
     }
     assert_eq!(

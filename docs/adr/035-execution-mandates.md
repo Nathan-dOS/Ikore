@@ -2,8 +2,14 @@
 
 Date: 2026-10-26
 
-Status: accepted, not implemented yet. Planned migrations: V55 (mandates and
-approval receipts) and V57 (scope requests).
+Status: accepted. M1 (mandates and approval receipts, migration V55) is
+implemented; the trust layers (M2) and scope grants (M4, migration V57) are
+not yet. Validation: `quality/mandates-attestation-m1-validation-2026-10-26.md`.
+
+Implementation notes from M1: the mandate governs only the stages after the
+Specification, so a revision back to the Specification runs it on the live
+settings and its new approval re-issues the mandate. A changed transport or
+check profile parks the stage as `stale_input`, which keeps Retry offered.
 
 ## Context
 

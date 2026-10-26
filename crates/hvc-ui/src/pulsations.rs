@@ -76,6 +76,14 @@ pub(crate) trait PulsationsBackend: Send + Sync {
     ) -> PulsationsFuture<Option<hvc_core::persistence_service::CheckpointRiskStatus>> {
         Box::pin(async { Ok(None) })
     }
+    /// What approving a waiting Specification review would grant (ADR-035
+    /// M1). Backends without one report `None`, and no grants card is drawn.
+    fn mandate_preview(
+        &self,
+        _checkpoint_id: String,
+    ) -> PulsationsFuture<Option<hvc_core::persistence_service::MandatePreview>> {
+        Box::pin(async { Ok(None) })
+    }
     fn stage_failure_detail(
         &self,
         checkpoint_id: String,
@@ -438,6 +446,20 @@ impl PulsationsBackend for CorePulsationsBackend {
                 .await
                 .map_err(|e| Self::worker_error("risk and coverage", e))?
                 .map(Some)
+                .map_err(|e| e.to_string())
+        })
+    }
+    fn mandate_preview(
+        &self,
+        checkpoint_id: String,
+    ) -> PulsationsFuture<Option<hvc_core::persistence_service::MandatePreview>> {
+        let core = self.core.clone();
+        let runtime = core.runtime_handle().clone();
+        Box::pin(async move {
+            runtime
+                .spawn_blocking(move || core.persistence().mandate_preview(&checkpoint_id))
+                .await
+                .map_err(|e| Self::worker_error("approval grants", e))?
                 .map_err(|e| e.to_string())
         })
     }
