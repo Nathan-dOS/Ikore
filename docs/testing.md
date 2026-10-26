@@ -183,6 +183,25 @@ cargo test --locked -p hvc-core --lib mandate -- --test-threads=2
 cargo test --locked -p hvc-test-support --test execution_mandate -- --test-threads=2
 ```
 
+## Trust layers
+
+ADR-035 M2 keeps the state rules in `orchestration::layers` (one table test per
+trigger and threshold edge, legacy and new pulsations, order independence, the
+50-item cut) and the reader in `persistence_service::layers_persistence` (a
+composed pulsation's mandate, writes and refusals, a tampered mandate, the
+detail read under a concurrent writer). `hvc-test-support/tests/trust_layers.rs`
+follows a v4 pulsation from the Specification to the end and provokes a model
+other than the one requested, a spent repair budget and a failed required
+check. The panel, the brief card and the header dot are in the layout tests,
+and the report's golden file carries the Layers section. The cost probe builds
+a pulsation at the batch limits and times reading and deriving the layers:
+
+```powershell
+cargo test --locked -p hvc-core --lib layers -- --test-threads=2
+cargo test --locked -p hvc-test-support --test trust_layers -- --test-threads=2
+cargo run --locked --release -p hvc-core --example layers_benchmark
+```
+
 ## Editor revisions, check output and voice setup
 
 The workspace revision is a SHA-256 over the resolved path and the bytes read,

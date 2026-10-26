@@ -17,12 +17,12 @@ use crate::orchestration::PublicationState;
 use crate::orchestration::composition::CheckSummaryV1;
 use crate::orchestration::composition::review_boundary::risk_level_name;
 use crate::orchestration::composition::review_boundary::{Binding, ReviewInputManifestV1};
-use crate::orchestration::composition::risk::{CoverageRowKind, RiskSignal};
+use crate::orchestration::composition::risk::CoverageRowKind;
 use crate::orchestration::review_brief::{self, StageVisual};
 use crate::reports::{
     self, FileChange, LineCounts, PulsationReport, ReportCheck, ReportConvergence,
-    ReportCoverageRow, ReportCriterion, ReportFile, ReportGap, ReportOutcome, ReportReview,
-    ReportRisk, analysis,
+    ReportCoverageRow, ReportCriterion, ReportFile, ReportGap, ReportLayer, ReportLayerItem,
+    ReportLayers, ReportOutcome, ReportReview, ReportRisk, analysis,
 };
 use coordination::invalid;
 
@@ -141,20 +141,7 @@ impl PersistenceService {
             reasons: assessment
                 .reasons
                 .iter()
-                .map(|reason| {
-                    format!(
-                        "{} `{}` ({})",
-                        match reason.signal {
-                            RiskSignal::IntakeTask => "Intake risk of task",
-                            RiskSignal::NoteRisk => "note risk",
-                            RiskSignal::SensitivePath => "sensitive path",
-                            RiskSignal::InterfaceChange => "changed interface",
-                            RiskSignal::ChangeSize => "change size",
-                        },
-                        reason.subject,
-                        risk_level_name(reason.level)
-                    )
-                })
+                .map(|reason| reason.describe())
                 .collect(),
             unknown_inputs: assessment.unknown_inputs.clone(),
             rows: risk
@@ -181,6 +168,30 @@ impl PersistenceService {
                 .acknowledgements
                 .iter()
                 .map(|record| format!("{} pending: {}", record.pending, record.reason))
+                .collect(),
+        });
+        // ADR-035 M2: the layers as the pulsation detail shows them now.
+        let layers = self.pulsation_layers(&pulse)?;
+        report.layers = Some(ReportLayers {
+            policy_version: layers.layers_policy_version,
+            layers: layers
+                .layers
+                .iter()
+                .map(|layer| ReportLayer {
+                    name: layer.kind.title().to_owned(),
+                    state: layer.state.label().to_owned(),
+                    headline: layer.headline.clone(),
+                    reasons: layer.reasons.clone(),
+                    items: layer
+                        .items
+                        .iter()
+                        .map(|item| ReportLayerItem {
+                            label: item.label.clone(),
+                            value: item.value.clone(),
+                        })
+                        .collect(),
+                    more: layer.truncated_count,
+                })
                 .collect(),
         });
         Ok(report)

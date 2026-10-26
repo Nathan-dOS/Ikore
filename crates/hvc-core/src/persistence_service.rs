@@ -96,6 +96,8 @@ pub(crate) use forge_batches::StructuredRequest;
 mod indexing;
 #[path = "orchestration/integration.rs"]
 mod integration;
+#[path = "orchestration/layers_persistence.rs"]
+mod layers_persistence;
 #[path = "orchestration/learning.rs"]
 mod learning;
 #[path = "orchestration/mandate_persistence.rs"]

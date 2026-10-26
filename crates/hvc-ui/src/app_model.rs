@@ -10173,6 +10173,7 @@ mod tests {
             learning_run: None,
             artifact_ids: vec![],
             stage_execution: None,
+            layers: None,
         }
     }
 

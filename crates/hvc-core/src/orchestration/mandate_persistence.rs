@@ -399,7 +399,7 @@ impl PersistenceService {
         })
     }
 
-    fn insert_mandate(
+    pub(super) fn insert_mandate(
         db: &Connection,
         mandate: &ExecutionMandateV1,
     ) -> Result<(), PersistenceServiceError> {

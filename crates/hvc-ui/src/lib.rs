@@ -27,6 +27,7 @@ mod home_charts;
 mod home_stats;
 mod home_view;
 mod icons;
+mod layers_view;
 #[cfg(test)]
 mod layout_tests;
 mod lifecycle;

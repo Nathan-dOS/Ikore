@@ -806,6 +806,12 @@ pub struct PulsationsModel {
     /// Expands the Review section's diff surface to full width, hiding the pulsation list. Formerly
     /// a Workspace concept (`diff_expanded`); moved here with the HITL surface.
     pub diff_expanded: bool,
+    /// Layers the developer opened in the Layers panel (ADR-035 M2).
+    pub(crate) layers_expanded:
+        std::collections::HashSet<hvc_core::orchestration::layers::LayerKind>,
+    /// The composed execution under "Execution details", collapsed by
+    /// default below the Layers panel.
+    pub(crate) execution_details_open: bool,
     pub(crate) hitl: HitlReviewState,
     pub(crate) failure: FailureCheckpointState,
     /// The backend the active pulsation's current stage silently failed

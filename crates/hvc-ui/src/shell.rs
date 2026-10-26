@@ -421,19 +421,32 @@ fn header(
 /// runtime slot, with its elapsed time — and, when nothing runs, the selected pulsation's settled
 /// state. Rendered in every view so the developer never has to open Pulsations to know it.
 fn header_context(model: &AppModel, window: &Window, cx: &mut Context<AppModel>) -> AnyElement {
-    let now = {
+    let (now, flagged) = {
         let pulsations = model.pulsations.read(cx);
         let agents = model.agents.read(cx);
-        crate::pipeline_status::NowRunning::derive(
-            pulsations,
-            agents.snapshot.as_ref(),
-            chrono::Local::now(),
+        // ADR-035 M2: the selected pulsation's worst layer, when one needs a look.
+        let flagged = pulsations
+            .detail()
+            .and_then(|detail| detail.layers.as_ref())
+            .and_then(|layers| layers.worst_flagged())
+            .map(|layer| (layer.state, layer.kind.title()));
+        (
+            crate::pipeline_status::NowRunning::derive(
+                pulsations,
+                agents.snapshot.as_ref(),
+                chrono::Local::now(),
+            ),
+            flagged,
         )
     };
-    let tooltip = SharedString::from(match &now.also {
+    let mut tooltip = match &now.also {
         Some(also) => format!("{} — also running: {also}", now.text),
         None => now.text.clone(),
-    });
+    };
+    if let Some((state, layer)) = flagged {
+        tooltip = format!("{tooltip} · Layers: {layer} {}", state.label());
+    }
+    let tooltip = SharedString::from(tooltip);
     // Below the default window width the second job collapses to "+1" (named in the tooltip)
     // so the job that owns the pipeline keeps the room.
     let compact_also = window.viewport_size().width < px(1280.0);
@@ -491,6 +504,16 @@ fn header_context(model: &AppModel, window: &Window, cx: &mut Context<AppModel>)
                     } else {
                         format!("+ {also}")
                     }),
+            )
+        })
+        .when_some(flagged, |pill, (state, _)| {
+            pill.child(
+                div()
+                    .debug_selector(|| "header-layers-dot".into())
+                    .flex_shrink_0()
+                    .child(crate::widgets::status_dot(
+                        crate::layers_view::state_style(state).1,
+                    )),
             )
         })
         .into_any_element()

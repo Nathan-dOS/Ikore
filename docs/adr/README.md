@@ -206,9 +206,12 @@ issues an immutable mandate that records the approved intent, write envelope,
 executor capabilities, transports, checks and frozen budget parameters. The
 brief shows it before the click ("What approving grants"), stage writes and
 dispatches are checked against it, and every checkpoint resolution records a
-receipt with the reviewed digests. Not implemented yet: the read-only panel of
-Identity, Scope, Guardrails and Intent layers (M2) and the "Grant and retry"
-scope request on the failure checkpoint (M4). See the
+receipt with the reviewed digests. M2 is implemented too: a read-only Layers
+panel on top of the pulsation detail derives Identity, Scope, Guardrails and
+Intent from the host's records, the Contract, Test and Integrator briefs show
+the four states, the header marks a layer that needs a look, and the report
+gains a Layers section. Not implemented yet: the "Grant and retry" scope
+request on the failure checkpoint (M4). See the
 [decision](035-execution-mandates.md).
 
 ## ADR-036: signed local pulsation attestation

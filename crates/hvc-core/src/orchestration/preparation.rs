@@ -364,6 +364,18 @@ impl PersistenceService {
             } else {
                 None
             };
+            // ADR-035 M2: the layers of the pulsation whose detail is open,
+            // read in this transaction next to its composed execution.
+            let layers = match pulsation_id {
+                Some(_) => Some(Self::pulsation_layers_on(
+                    db,
+                    &pulse,
+                    stage_execution
+                        .as_ref()
+                        .map(|execution| execution.checks.as_slice()),
+                )?),
+                None => None,
+            };
             result.push(PulsationCoordinationSnapshot {
                 sanitization: crate::sanitization::SanitizationStore::summary_on(
                     db,
@@ -403,6 +415,7 @@ impl PersistenceService {
                 learning_run,
                 artifact_ids: artifacts,
                 stage_execution,
+                layers,
             });
         }
         Ok(result)

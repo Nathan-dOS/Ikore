@@ -873,4 +873,8 @@ pub struct PulsationCoordinationSnapshot {
     /// or before the first admission (ADR-022).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage_execution: Option<super::composition::StageExecutionSnapshot>,
+    /// The trust layers (ADR-035 M2), read with the detail of one pulsation;
+    /// `None` in a project-wide listing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layers: Option<super::layers::PulsationLayersSnapshot>,
 }

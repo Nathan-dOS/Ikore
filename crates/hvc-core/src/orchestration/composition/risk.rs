@@ -184,14 +184,32 @@ impl RiskPolicyV1 {
             .unwrap_or_else(|_| Sha256Hex::of(b"unhashable").as_str().to_owned())
     }
 
-    fn sensitive_set(&self) -> GlobSet {
+    fn compile(globs: impl IntoIterator<Item = impl AsRef<str>>) -> GlobSet {
         let mut builder = GlobSetBuilder::new();
-        for glob in &self.sensitive_path_globs {
-            if let Ok(glob) = Glob::new(&normalize_glob(glob)) {
+        for glob in globs {
+            if let Ok(glob) = Glob::new(&normalize_glob(glob.as_ref())) {
                 builder.add(glob);
             }
         }
         builder.build().unwrap_or_else(|_| GlobSet::empty())
+    }
+
+    /// The compiled globs. The built-in list, which most projects use as is,
+    /// is compiled once: the detail reads it on every refresh (ADR-035 M2).
+    fn sensitive_set(&self) -> std::borrow::Cow<'static, GlobSet> {
+        static BUILTIN: std::sync::OnceLock<GlobSet> = std::sync::OnceLock::new();
+        if self
+            .sensitive_path_globs
+            .iter()
+            .map(String::as_str)
+            .eq(BUILTIN_SENSITIVE_GLOBS.iter().copied())
+        {
+            std::borrow::Cow::Borrowed(
+                BUILTIN.get_or_init(|| Self::compile(BUILTIN_SENSITIVE_GLOBS)),
+            )
+        } else {
+            std::borrow::Cow::Owned(Self::compile(&self.sensitive_path_globs))
+        }
     }
 
     /// The paths among `paths` that match a sensitive glob, case-insensitive
@@ -329,6 +347,24 @@ pub struct RiskReason {
     pub level: Risk,
     /// English, value-free: a task handle, a path or an interface key.
     pub subject: String,
+}
+
+impl RiskReason {
+    /// One English line for the report and the Intent layer.
+    pub fn describe(&self) -> String {
+        format!(
+            "{} `{}` ({})",
+            match self.signal {
+                RiskSignal::IntakeTask => "Intake risk of task",
+                RiskSignal::NoteRisk => "note risk",
+                RiskSignal::SensitivePath => "sensitive path",
+                RiskSignal::InterfaceChange => "changed interface",
+                RiskSignal::ChangeSize => "change size",
+            },
+            self.subject,
+            super::review_boundary::risk_level_name(self.level)
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -470,6 +470,11 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
     let convergence = hitl.convergence.clone();
     let risk = hitl.risk.clone();
     let grants = hitl.grants.clone();
+    // ADR-035 M2: the layers of the pulsation under review, from its detail.
+    let layers = pulsations
+        .detail()
+        .and_then(|detail| detail.layers.clone())
+        .zip(pulsations.active().map(|active| active.stage));
     let risk_acknowledgement = hitl.risk_acknowledgement_required();
     let beyond_threshold = hitl.beyond_threshold();
     let (confirmed, flagged, open) = hitl.mark_counts();
@@ -529,6 +534,9 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
         .as_ref()
         .filter(|_| showing_brief)
         .and_then(crate::review_brief_view::grants_panel);
+    let layers_content = layers
+        .filter(|_| showing_brief)
+        .and_then(|(layers, stage)| crate::review_brief_view::layers_card(&layers, stage));
     let round_line = convergence
         .as_ref()
         .and_then(crate::convergence_view::round_line);
@@ -828,6 +836,9 @@ pub(crate) fn review_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyE
                     reader.child("Loading complete checkpoint documents…")
                 })
                 .when_some(grants_content, |reader, content| {
+                    reader.child(div().pb_4().child(content))
+                })
+                .when_some(layers_content, |reader, content| {
                     reader.child(div().pb_4().child(content))
                 })
                 .when_some(risk_content, |reader, content| {

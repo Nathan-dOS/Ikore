@@ -12,6 +12,7 @@ pub mod composition;
 mod context;
 mod contracts;
 pub mod failure;
+pub mod layers;
 pub mod learning_report;
 pub mod mandate;
 mod pipeline_version;

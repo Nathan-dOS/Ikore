@@ -1672,6 +1672,7 @@ fn composed_detail(pulse: &Pulsation) -> hvc_core::orchestration::PulsationCoord
                 completeness: UsageCompleteness::Partial,
             },
         }),
+        layers: None,
     }
 }
 
@@ -1721,6 +1722,8 @@ fn a_composed_stage_lists_its_units_and_offers_only_permitted_revision_targets(
         cx.notify();
     });
     select(&model, visual, AppView::Pulsations);
+    // The execution sits under the Layers panel, collapsed until opened.
+    click(visual, "execution-details-toggle");
     let panel = visual.debug_bounds("composition-panel").unwrap();
     for unit in ["composition-unit-unit_core", "composition-unit-unit_api"] {
         let row = visual.debug_bounds(unit).unwrap();
@@ -6401,6 +6404,204 @@ fn a_legacy_specification_review_draws_no_grants_card(cx: &mut TestAppContext) {
     select(&model, visual, AppView::Pulsations);
     assert!(visual.debug_bounds("review-document-reader").is_some());
     assert!(visual.debug_bounds("review-grants").is_none());
+}
+
+/// Layers with every row flagged or not: 70 sensitive grants (one a
+/// 260-character path, sorted first) and, when `flagged`, a model other than
+/// the one requested.
+fn layers_snapshot(flagged: bool) -> hvc_core::orchestration::layers::PulsationLayersSnapshot {
+    use hvc_core::orchestration::layers::*;
+    use hvc_core::orchestration::mandate::MandateCause;
+    let long = format!("src/a/{}deep.rs", "segment_".repeat(31));
+    derive_layers(&LayerInputs {
+        composed: true,
+        past_specification: true,
+        mandate: Some(MandateFact {
+            revision: 1,
+            cause: MandateCause::Issued,
+            granted: 70,
+            transport_fallback: false,
+        }),
+        sensitive_granted: if flagged {
+            std::iter::once(long)
+                .chain((0..69).map(|index| format!("src/auth_{index:02}.rs")))
+                .collect()
+        } else {
+            Vec::new()
+        },
+        runs: vec![RunFact {
+            actor: "code_implementer".into(),
+            transport: "api".into(),
+            provider: Some("openai".into()),
+            requested_model: Some("gpt-4.1-mini".into()),
+            observed_model: Some(if flagged { "gpt-4.1" } else { "gpt-4.1-mini" }.into()),
+            adapter_version: None,
+            completed: true,
+        }],
+        usage: UsageFact {
+            complete: 2,
+            ..UsageFact::default()
+        },
+        criteria: Some(CriteriaFact {
+            total: 1,
+            assigned: 1,
+            validated: 1,
+            without_check: Vec::new(),
+        }),
+        ..LayerInputs::default()
+    })
+}
+
+fn with_layers(
+    model: &Entity<AppModel>,
+    visual: &mut VisualTestContext,
+    stage: PulsationStage,
+    layers: hvc_core::orchestration::layers::PulsationLayersSnapshot,
+) {
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            state.pulsations[0].stage = stage;
+            let pulse = state.pulsations[0].clone();
+            let mut detail = composed_detail(&pulse);
+            detail.stage = stage;
+            detail.layers = Some(layers);
+            state.details = vec![detail];
+        });
+        cx.notify();
+    });
+}
+
+#[gpui::test]
+fn the_layers_panel_leads_the_overview_and_opens_a_layer(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    with_layers(&model, visual, PulsationStage::Code, layers_snapshot(true));
+    model.update(visual, |m, cx| {
+        m.pulsations.update(cx, |state, _| {
+            state.detail_section = PulsationDetailSection::Overview;
+        });
+        cx.notify();
+    });
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let panel = visual
+            .debug_bounds("layers-panel")
+            .unwrap_or_else(|| panic!("missing layers panel at {width}"));
+        for row in [
+            "layers-row-identity",
+            "layers-row-scope",
+            "layers-row-guardrails",
+            "layers-row-intent",
+        ] {
+            let bounds = visual
+                .debug_bounds(row)
+                .unwrap_or_else(|| panic!("missing {row} at {width}"));
+            assert!(
+                bounds.left() >= panel.left() && bounds.right() <= panel.right() + px(1.0),
+                "{row} overflows at {width}: {bounds:?} vs {panel:?}"
+            );
+        }
+        let toggle = visual.debug_bounds("execution-details-toggle").unwrap();
+        assert!(
+            panel.bottom() <= toggle.top(),
+            "the layers lead the overview and the execution details follow"
+        );
+    }
+    click(visual, "layers-row-scope");
+    let panel = visual.debug_bounds("layers-panel").unwrap();
+    for part in [
+        "layers-items-scope",
+        "layers-item-scope-0",
+        "layers-item-scope-1",
+        "layers-item-scope-49",
+        "layers-more-scope",
+    ] {
+        let bounds = visual
+            .debug_bounds(part)
+            .unwrap_or_else(|| panic!("missing {part}"));
+        assert!(
+            bounds.right() <= panel.right() + px(1.0),
+            "{part} overflows: {bounds:?} vs {panel:?}"
+        );
+    }
+    assert!(
+        visual.debug_bounds("layers-item-scope-50").is_none(),
+        "fifty items, then the count"
+    );
+    click(visual, "layers-row-scope");
+    model.read_with(visual, |m, cx| {
+        assert!(
+            m.pulsations.read(cx).layers_expanded.is_empty(),
+            "a second click closes the layer"
+        );
+    });
+}
+
+#[gpui::test]
+fn the_header_marks_the_worst_layer_only_when_one_needs_a_look(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| fixture(cx));
+    with_layers(&model, visual, PulsationStage::Code, layers_snapshot(true));
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Pulsations);
+    let pill = visual.debug_bounds("header-context").unwrap();
+    let dot = visual.debug_bounds("header-layers-dot").unwrap();
+    assert!(dot.left() >= pill.left() && dot.right() <= pill.right());
+    // The header is in every view; check absence on one without split panes,
+    // which `assert_absent`'s second window needs.
+    with_layers(&model, visual, PulsationStage::Code, layers_snapshot(false));
+    select(&model, visual, AppView::Home);
+    assert_absent(&model, visual, "header-layers-dot");
+}
+
+#[gpui::test]
+fn the_integrator_brief_shows_the_layers_card(cx: &mut TestAppContext) {
+    let (model, visual) = open_integrator_review(cx, recorded_review_inputs(), None, true);
+    with_layers(
+        &model,
+        visual,
+        PulsationStage::Integrator,
+        layers_snapshot(true),
+    );
+    for (width, height) in [(960.0, 640.0), (1440.0, 900.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        select(&model, visual, AppView::Pulsations);
+        let reader = visual.debug_bounds("review-document-reader").unwrap();
+        let card = visual
+            .debug_bounds("review-layers")
+            .unwrap_or_else(|| panic!("missing layers card at {width}"));
+        assert!(
+            card.left() >= reader.left() && card.right() <= reader.right() + px(1.0),
+            "the layers card overflows at {width}: {card:?} vs {reader:?}"
+        );
+        for row in [
+            "review-layers-row-identity",
+            "review-layers-row-scope",
+            "review-layers-row-guardrails",
+            "review-layers-row-intent",
+        ] {
+            assert!(
+                visual.debug_bounds(row).is_some(),
+                "missing {row} at {width}"
+            );
+        }
+    }
+}
+
+/// The Specification's Scope is its grants card: no layers card there. A
+/// fresh window, as absence needs.
+#[gpui::test]
+fn a_specification_brief_draws_no_layers_card(cx: &mut TestAppContext) {
+    let (model, visual) = open_specification_brief(cx);
+    with_layers(
+        &model,
+        visual,
+        PulsationStage::Specification,
+        layers_snapshot(true),
+    );
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    select(&model, visual, AppView::Pulsations);
+    assert!(visual.debug_bounds("review-document-reader").is_some());
+    assert!(visual.debug_bounds("review-layers").is_none());
 }
 
 #[gpui::test]

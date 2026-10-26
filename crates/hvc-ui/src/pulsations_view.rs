@@ -430,6 +430,8 @@ fn detail_overview(
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     div()
+        // ADR-035 M2: where the pulsation stands against what was approved.
+        .child(crate::layers_view::layers_panel(model, cx))
         .when_some(coverage, |panel, coverage| {
             panel.child(brownfield_progress_panel(coverage))
         })
@@ -439,7 +441,7 @@ fn detail_overview(
         })
         .child(report_panel(model, active, cx))
         .child(coordination_panel(model, cx))
-        .child(composition_panel(model, cx))
+        .child(execution_details(model, cx))
         .child(crate::usage::pulsation_usage_panel(model, cx))
         .child(
             div()
@@ -1603,6 +1605,55 @@ fn report_panel(model: &AppModel, active: &Pulsation, cx: &mut Context<AppModel>
         .into_any_element()
 }
 
+/// "Execution details": the composed execution below the Layers panel,
+/// collapsed until the developer opens it.
+fn execution_details(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement {
+    let state = model.pulsations.read(cx);
+    if state
+        .detail()
+        .and_then(|detail| detail.stage_execution.as_ref())
+        .is_none()
+    {
+        return div().into_any_element();
+    }
+    let open = state.execution_details_open;
+    div()
+        .mb_3()
+        .child(
+            div()
+                .id("execution-details-toggle")
+                .debug_selector(|| "execution-details-toggle".into())
+                .flex()
+                .items_center()
+                .gap_2()
+                .py_1()
+                .cursor_pointer()
+                .on_click(cx.listener(|model, _, _, cx| {
+                    model.pulsations.update(cx, |state, _| {
+                        state.execution_details_open = !state.execution_details_open;
+                    });
+                    cx.notify();
+                }))
+                .child(crate::widgets::icon(
+                    if open {
+                        crate::icons::Icon::ChevronDown
+                    } else {
+                        crate::icons::Icon::ChevronRight
+                    },
+                    px(12.0),
+                    theme::text_muted(),
+                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child("EXECUTION DETAILS"),
+                ),
+        )
+        .when(open, |panel| panel.child(composition_panel(model, cx)))
+        .into_any_element()
+}
+
 /// The composed execution of the active pulsation's current stage (pipeline
 /// v4, ADR-022): units with their real states, attempts, effective model and
 /// real versus reserved usage, host checks apart from authored coverage, and
@@ -2153,6 +2204,7 @@ mod tests {
                             }),
                             artifact_ids: vec![],
                             stage_execution: None,
+                            layers: None,
                         }];
                     });
                 });

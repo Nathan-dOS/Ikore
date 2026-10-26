@@ -2,14 +2,22 @@
 
 Date: 2026-10-26
 
-Status: accepted. M1 (mandates and approval receipts, migration V55) is
-implemented; the trust layers (M2) and scope grants (M4, migration V57) are
-not yet. Validation: `quality/mandates-attestation-m1-validation-2026-10-26.md`.
+Status: accepted. M1 (mandates and approval receipts, migration V55) and M2
+(trust layers, no migration) are implemented; scope grants (M4, migration V57)
+are not yet. Validation: `quality/mandates-attestation-m1-validation-2026-10-26.md`
+and `quality/mandates-attestation-m2-validation-2026-10-26.md`.
 
 Implementation notes from M1: the mandate governs only the stages after the
 Specification, so a revision back to the Specification runs it on the live
 settings and its new approval re-issues the mandate. A changed transport or
 check profile parks the stage as `stale_input`, which keeps Retry offered.
+
+Implementation notes from M2: a layer is `unknown` until its main record
+exists (no run yet, no mandate before the Specification approval, no approved
+criteria). The 25% budget rule watches the extra (repair) pools of a stage
+still running, because the initial pool is sized to the plan's units and
+always reaches zero. A mandate whose digest no longer matches shows as a Scope
+issue instead of failing the detail.
 
 ## Context
 
