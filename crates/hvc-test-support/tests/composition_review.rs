@@ -560,7 +560,7 @@ fn a_high_risk_review_shows_its_coverage_and_needs_an_acknowledgement() {
     assert!(user.find("## Risk scrutiny") < user.find("## Host evidence"));
 
     let (_, _, manifest) = review_manifest(&harness);
-    assert_eq!(manifest["schemaVersion"], 2);
+    assert_eq!(manifest["schemaVersion"], 3);
     assert_eq!(manifest["risk"]["level"], "high");
     let missing = manifest["gaps"]
         .as_array()

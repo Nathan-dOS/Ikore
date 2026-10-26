@@ -655,6 +655,44 @@ pub struct CheckFact {
     pub status: String,
     /// `fresh`, `stale`, `unverifiable` or not applicable.
     pub fresh: Option<bool>,
+    /// Absent only for evidence under the older generic command contract.
+    pub interpretation: Option<String>,
+    pub result: Option<String>,
+    pub limitations: Vec<String>,
+}
+
+impl CheckFact {
+    fn fresh_executed(&self) -> bool {
+        self.fresh == Some(true)
+            && matches!(self.status.as_str(), "passed" | "failed")
+            && match (self.interpretation.as_deref(), self.result.as_deref()) {
+                (None, None) => true,
+                (Some("supported"), Some(result)) => result == self.status,
+                _ => false,
+            }
+    }
+
+    fn inconclusive(&self) -> bool {
+        !self.fresh_executed()
+            && (self.interpretation.is_some()
+                || self.result.is_some()
+                || !matches!(
+                    self.status.as_str(),
+                    "passed" | "failed" | "not_run" | "unavailable"
+                ))
+    }
+
+    fn detail(&self) -> String {
+        let mut parts = vec![self.status.clone()];
+        if let Some(interpretation) = &self.interpretation {
+            parts.push(format!("interpretation: {interpretation}"));
+        }
+        if let Some(result) = &self.result {
+            parts.push(format!("result: {result}"));
+        }
+        parts.extend(self.limitations.iter().take(8).cloned());
+        parts.join("; ").chars().take(400).collect()
+    }
 }
 
 /// The verdict the host kept for one criterion, after gap normalization.
@@ -679,9 +717,6 @@ pub fn coverage_matrix(
         .iter()
         .map(|check| (&check.check_ref, check))
         .collect::<BTreeMap<_, _>>();
-    let fresh_executed = |check: &CheckFact| {
-        check.fresh == Some(true) && !matches!(check.status.as_str(), "not_run" | "unavailable")
-    };
     let mut rows = Vec::new();
     for fact in verdicts {
         let mapped = criterion_checks.get(&fact.criterion);
@@ -689,7 +724,13 @@ pub fn coverage_matrix(
             .into_iter()
             .flatten()
             .filter_map(|check| by_ref.get(check))
-            .filter(|check| fresh_executed(check))
+            .filter(|check| check.fresh_executed())
+            .collect::<Vec<_>>();
+        let inconclusive = mapped
+            .into_iter()
+            .flatten()
+            .filter_map(|check| by_ref.get(check))
+            .filter(|check| check.inconclusive())
             .collect::<Vec<_>>();
         let (state, detail) = if fact.verdict == Verdict::Unverified {
             (
@@ -700,12 +741,30 @@ pub fn coverage_matrix(
                     "unverified".to_owned()
                 },
             )
+        } else if !inconclusive.is_empty() {
+            (
+                CoverageState::Unverified,
+                inconclusive
+                    .iter()
+                    .map(|check| {
+                        format!(
+                            "{}: {} (not verified/fresh)",
+                            check.check_ref,
+                            check.detail()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+                    .chars()
+                    .take(400)
+                    .collect(),
+            )
         } else if !executed.is_empty() {
             (
                 CoverageState::Executed,
                 executed
                     .iter()
-                    .map(|check| format!("{}: {}", check.check_ref, check.status))
+                    .map(|check| format!("{}: {}", check.check_ref, check.detail()))
                     .collect::<Vec<_>>()
                     .join(", "),
             )
@@ -727,13 +786,13 @@ pub fn coverage_matrix(
     }
     for check in &selection.required {
         let (state, detail) = match by_ref.get(check) {
-            Some(fact) if fresh_executed(fact) => (CoverageState::Executed, fact.status.clone()),
+            Some(fact) if fact.fresh_executed() => (CoverageState::Executed, fact.detail()),
             Some(fact) if matches!(fact.status.as_str(), "not_run" | "unavailable") => {
-                (CoverageState::NotRun, fact.status.clone())
+                (CoverageState::NotRun, fact.detail())
             }
             Some(fact) => (
                 CoverageState::Unverified,
-                format!("{} (not fresh)", fact.status),
+                format!("{} (not verified/fresh)", fact.detail()),
             ),
             None => (CoverageState::NotRun, "no receipt".to_owned()),
         };
@@ -1112,16 +1171,25 @@ mod tests {
                 check_ref: h("unit"),
                 status: "passed".into(),
                 fresh: Some(true),
+                interpretation: None,
+                result: None,
+                limitations: Vec::new(),
             },
             CheckFact {
                 check_ref: h("lint"),
                 status: "passed".into(),
                 fresh: Some(false),
+                interpretation: None,
+                result: None,
+                limitations: Vec::new(),
             },
             CheckFact {
                 check_ref: h("build"),
                 status: "not_run".into(),
                 fresh: None,
+                interpretation: None,
+                result: None,
+                limitations: Vec::new(),
             },
         ];
         let verdicts = [
@@ -1197,5 +1265,180 @@ mod tests {
         );
         assert_eq!(clean.pending(), 0);
         assert!(!clean.needs_acknowledgement());
+    }
+
+    #[test]
+    fn coverage_requires_completed_interpreted_evidence_and_keeps_failed_execution() {
+        for (status, interpretation, result, fresh, expected) in [
+            ("passed", None, None, Some(true), CoverageState::Executed),
+            ("failed", None, None, Some(true), CoverageState::Executed),
+            (
+                "passed",
+                Some("supported"),
+                Some("passed"),
+                Some(true),
+                CoverageState::Executed,
+            ),
+            (
+                "failed",
+                Some("supported"),
+                Some("failed"),
+                Some(true),
+                CoverageState::Executed,
+            ),
+            ("error", None, None, Some(true), CoverageState::Unverified),
+            (
+                "timed_out",
+                None,
+                None,
+                Some(true),
+                CoverageState::Unverified,
+            ),
+            (
+                "cancelled",
+                None,
+                None,
+                Some(true),
+                CoverageState::Unverified,
+            ),
+            ("running", None, None, Some(true), CoverageState::Unverified),
+            (
+                "passed",
+                Some("partial"),
+                Some("unknown"),
+                Some(true),
+                CoverageState::Unverified,
+            ),
+            (
+                "passed",
+                Some("uninterpreted"),
+                Some("unknown"),
+                Some(true),
+                CoverageState::Unverified,
+            ),
+            (
+                "passed",
+                Some("supported"),
+                Some("unknown"),
+                Some(true),
+                CoverageState::Unverified,
+            ),
+            (
+                "passed",
+                Some("supported"),
+                Some("failed"),
+                Some(true),
+                CoverageState::Unverified,
+            ),
+            (
+                "failed",
+                Some("supported"),
+                Some("passed"),
+                Some(true),
+                CoverageState::Unverified,
+            ),
+            (
+                "passed",
+                Some("supported"),
+                Some("passed"),
+                Some(false),
+                CoverageState::Unverified,
+            ),
+        ] {
+            let checks = [CheckFact {
+                check_ref: h("unit"),
+                status: status.into(),
+                fresh,
+                interpretation: interpretation.map(str::to_owned),
+                result: result.map(str::to_owned),
+                limitations: vec!["bounded execution scope".into()],
+            }];
+            let matrix = coverage_matrix(
+                Risk::High,
+                &[VerdictFact {
+                    criterion: h("crit_1_1"),
+                    verdict: Verdict::Supported,
+                    downgraded: false,
+                }],
+                &BTreeMap::from([(h("crit_1_1"), BTreeSet::from([h("unit")]))]),
+                &checks,
+                &RiskCheckSelection {
+                    required: BTreeSet::from([h("unit")]),
+                    missing: Vec::new(),
+                },
+            );
+            let check = matrix
+                .rows
+                .iter()
+                .find(|row| row.subject == h("unit"))
+                .unwrap();
+            assert_eq!(check.state, expected, "{checks:?}");
+            let criterion = matrix
+                .rows
+                .iter()
+                .find(|row| row.subject == h("crit_1_1"))
+                .unwrap();
+            assert_eq!(criterion.state, expected, "{checks:?}");
+            assert_eq!(
+                matrix.needs_acknowledgement(),
+                expected == CoverageState::Unverified
+            );
+            assert!(check.detail.contains("bounded execution scope"));
+            if let Some(interpretation) = interpretation {
+                assert!(check.detail.contains(interpretation));
+            }
+        }
+    }
+
+    #[test]
+    fn one_executed_check_cannot_hide_other_mapped_qualified_inconclusive_evidence() {
+        let good = CheckFact {
+            check_ref: h("good"),
+            status: "passed".into(),
+            fresh: Some(true),
+            interpretation: Some("supported".into()),
+            result: Some("passed".into()),
+            limitations: Vec::new(),
+        };
+        for (interpretation, result, fresh) in [
+            ("partial", "unknown", Some(true)),
+            ("uninterpreted", "unknown", Some(true)),
+            ("supported", "unknown", Some(true)),
+            ("supported", "passed", Some(false)),
+        ] {
+            let inconclusive = CheckFact {
+                check_ref: h("optional"),
+                status: "passed".into(),
+                fresh,
+                interpretation: Some(interpretation.into()),
+                result: Some(result.into()),
+                limitations: vec!["inconclusive inputs".into()],
+            };
+            let matrix = coverage_matrix(
+                Risk::High,
+                &[VerdictFact {
+                    criterion: h("crit_1_1"),
+                    verdict: Verdict::Supported,
+                    downgraded: false,
+                }],
+                &BTreeMap::from([(h("crit_1_1"), BTreeSet::from([h("good"), h("optional")]))]),
+                &[good.clone(), inconclusive],
+                &RiskCheckSelection {
+                    // The optional check has no independent required-check row.
+                    required: BTreeSet::from([h("good")]),
+                    missing: Vec::new(),
+                },
+            );
+            let criterion = matrix
+                .rows
+                .iter()
+                .find(|row| row.subject == h("crit_1_1"))
+                .unwrap();
+            assert_eq!(criterion.state, CoverageState::Unverified);
+            assert!(criterion.detail.contains("optional: passed"));
+            assert!(criterion.detail.contains("inconclusive inputs"));
+            assert_eq!(matrix.pending(), 1);
+            assert!(matrix.needs_acknowledgement());
+        }
     }
 }

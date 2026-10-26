@@ -140,7 +140,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -303,7 +303,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        54
+        55
     );
     assert_eq!(
         db.query_row(
@@ -844,7 +844,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1000,7 +1000,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1097,7 +1097,7 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     let (error, failure, notices): (String, Option<String>, Option<String>) = db
         .query_row(
@@ -1166,7 +1166,7 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1241,7 +1241,7 @@ fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1336,7 +1336,7 @@ fn v47_to_v48_adds_quota_history_with_validated_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     let insert = |values: &str| {
         db.execute(
@@ -1390,7 +1390,7 @@ fn v48_to_v49_preserves_history_and_requires_new_sanitization_evidence() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     for table in [
         "project_secret_redaction_exceptions",
@@ -1508,7 +1508,7 @@ fn v49_to_v50_admits_the_notes_scribe_and_adds_companion_notes() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1683,7 +1683,7 @@ fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones()
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        54
+        55
     );
     // Later migrations add their own tables; every table V50 had keeps its
     // exact definition.
@@ -2120,6 +2120,132 @@ fn v53_to_v54_adds_the_reconciler_role_and_the_reconciliation_tables() {
             .get::<_, u32>(
             0
         ))
+        .unwrap(),
+        0
+    );
+}
+
+/// V55 adds qualified Cargo policy, receipt details and admission snapshots.
+/// Upgrading preserves the old command verbatim and does not approve its
+/// new execution/input contract on the developer's behalf.
+#[test]
+fn v54_to_v55_adds_cargo_evidence_without_rewriting_or_enabling_legacy_profiles() {
+    use hvc_core::orchestration::composition::validation::profile::detect_presets;
+
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(54))
+        .run(&mut db)
+        .unwrap();
+    fs::write(root.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+    let mut legacy = detect_presets(root.path()).remove(0);
+    legacy.profile_version = 7;
+    legacy.argv = [
+        "check",
+        "--offline",
+        "--message-format=json",
+        "--color=never",
+    ]
+    .map(str::to_owned)
+    .into();
+    legacy.input_globs = vec!["**/*.rs".into()];
+    let profile_json = serde_json::to_string(&legacy).unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V54 Cargo fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute(
+        "INSERT INTO project_validation_profiles(project_id,check_ref,profile_version,enabled,profile_json,created_at,updated_at)
+         VALUES('p','cargo_check',7,0,?1,'now','now')",
+        [&profile_json],
+    )
+    .unwrap();
+    let before: Vec<(String, String)> = db
+        .prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        55
+    );
+    let preserved: (u32, bool, String) = db
+        .query_row(
+            "SELECT profile_version,enabled,profile_json FROM project_validation_profiles WHERE project_id='p' AND check_ref='cargo_check'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(preserved, (7, false, profile_json));
+    for (name, definition) in before {
+        let after: String = db
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [&name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, definition, "V55 is additive: {name}");
+    }
+    for table in [
+        "project_cargo_validation_policies",
+        "host_validation_run_details",
+        "stage_cargo_validation_contexts",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                .get::<_, u32>(0))
+                .unwrap(),
+            0,
+            "no new approval, receipt details or frozen context is invented: {table}"
+        );
+    }
+    db.execute("INSERT INTO project_cargo_validation_policies(project_id,check_ref,profile_version,policy_json,updated_at) VALUES('p','missing',1,'{}','now')", [])
+        .expect_err("an approved policy must reference an existing project profile");
+    db.execute("INSERT INTO project_cargo_validation_policies(project_id,check_ref,profile_version,policy_json,updated_at) VALUES('p','cargo_check',0,'{}','now')", [])
+        .expect_err("profile versions stay positive");
+    db.execute("INSERT INTO project_cargo_validation_policies(project_id,check_ref,profile_version,policy_json,updated_at) VALUES('p','cargo_check',7,'not json','now')", [])
+        .expect_err("policy JSON is validated");
+    db.execute(
+        "INSERT INTO host_validation_run_details(receipt_id,details_json) VALUES('missing','{}')",
+        [],
+    )
+    .expect_err("execution details cannot create a receipt");
+    db.execute("INSERT INTO stage_cargo_validation_contexts(execution_id,baseline_sha256,profiles_json,created_at) VALUES('missing','sha','[]','now')", [])
+        .expect_err("a frozen context must reference an admitted execution");
+    db.execute("INSERT INTO project_cargo_validation_policies(project_id,check_ref,profile_version,policy_json,updated_at) VALUES('p','cargo_check',7,'{}','now')", [])
+        .expect("host-only policy storage accepts JSON bound to a saved profile");
+    db.execute(
+        "DELETE FROM project_validation_profiles WHERE project_id='p' AND check_ref='cargo_check'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM project_cargo_validation_policies",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        0,
+        "deleting the command also deletes its approval"
+    );
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get::<_, u32>(0)
+        })
         .unwrap(),
         0
     );

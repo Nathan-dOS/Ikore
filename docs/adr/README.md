@@ -8,6 +8,16 @@ entire design archive or treat proposals as delivered behavior.
 Historical report identifiers remain unchanged. Follow their local evidence
 links for the checks actually executed at each date.
 
+## ADR-033: Cargo candidate validation
+
+The [accepted design](033-cargo-candidate-validation.md) extends the existing v4
+runner with explicitly approved offline workspace profiles, a baseline captured
+before dispatch, local asset inputs, preparation/interpretation evidence and full
+receipt freshness bindings. It preserves the V1 DTOs through host-only sidecars.
+See [Cargo validation](../cargo-validation.md) for the approved commands and
+limits. The [integrated verification report](../../quality/cargo-validation-2026-10-26.md)
+records automated results and the remaining Windows/GPUI qualification.
+
 ## ADR-006: native GPUI application
 
 The desktop application uses Rust and GPUI in one process, with typed core/UI

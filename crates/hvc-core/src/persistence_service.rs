@@ -76,6 +76,8 @@ mod clarification;
 mod cleanup;
 #[path = "orchestration/component_notes.rs"]
 mod component_notes;
+#[path = "orchestration/composition/host_cargo_validation.rs"]
+mod composition_cargo_validation;
 #[path = "orchestration/composition/host_coordinator.rs"]
 mod composition_coordinator;
 #[path = "orchestration/composition/host_persistence.rs"]

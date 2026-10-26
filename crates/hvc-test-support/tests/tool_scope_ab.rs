@@ -57,7 +57,11 @@ fn drive(harness: &Harness) -> (String, String, usize) {
                     harness.approve();
                     approvals += 1;
                 } else {
-                    return (format!("checkpoint:{}", kind.unwrap_or_default()), stage, approvals);
+                    return (
+                        format!("checkpoint:{}", kind.unwrap_or_default()),
+                        stage,
+                        approvals,
+                    );
                 }
             }
             _ => {}
@@ -123,7 +127,12 @@ fn context_scope_real_run() {
         .with_all_recipes_qualified(),
         |facts, _, _| completed_reply(facts),
         |harness| {
-            for role in ["intake_router", "contract_agent", "backend_agent", "test_agent"] {
+            for role in [
+                "intake_router",
+                "contract_agent",
+                "backend_agent",
+                "test_agent",
+            ] {
                 harness.route_role_to_official_cli(role, "claude");
             }
         },

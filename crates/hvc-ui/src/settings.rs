@@ -20,6 +20,7 @@ use hvc_core::persistence_service::{
 use hvc_core::project_deletion::{ProjectDeletionOutcome, ProjectDeletionPreview};
 
 use crate::errors::UiCommandError;
+use hvc_core::orchestration::composition::validation::cargo_policy::CargoValidationPolicyV1;
 
 pub(crate) type SettingsFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, UiCommandError>> + Send + 'static>>;
@@ -38,6 +39,7 @@ pub(crate) struct CompositionProjectSettings {
         bool,
     )>,
     pub(crate) presets: Vec<hvc_core::orchestration::composition::ValidationCommandProfileV1>,
+    pub(crate) cargo_policies: std::collections::BTreeMap<String, CargoValidationPolicyV1>,
     pub(crate) overrides: Vec<(
         hvc_core::orchestration::composition::ExecutorKind,
         hvc_core::terminals::SpecialtyOverride,
@@ -123,6 +125,13 @@ pub(crate) trait SettingsBackend: Send + Sync {
         &self,
         project_id: String,
         profile: hvc_core::orchestration::composition::ValidationCommandProfileV1,
+        enabled: bool,
+    ) -> SettingsFuture<()>;
+    fn save_cargo_validation_profile(
+        &self,
+        project_id: String,
+        profile: hvc_core::orchestration::composition::ValidationCommandProfileV1,
+        policy: CargoValidationPolicyV1,
         enabled: bool,
     ) -> SettingsFuture<()>;
     fn delete_validation_profile(
@@ -378,6 +387,19 @@ impl SettingsBackend for CoreSettingsBackend {
                 .map(|_| ())
         })
     }
+    fn save_cargo_validation_profile(
+        &self,
+        project_id: String,
+        profile: hvc_core::orchestration::composition::ValidationCommandProfileV1,
+        policy: CargoValidationPolicyV1,
+        enabled: bool,
+    ) -> SettingsFuture<()> {
+        self.blocking(move |persistence| {
+            persistence
+                .save_cargo_validation_profile(&project_id, profile, policy, enabled)
+                .map(|_| ())
+        })
+    }
     fn delete_validation_profile(
         &self,
         project_id: String,
@@ -414,13 +436,24 @@ impl SettingsBackend for CoreSettingsBackend {
                 .spawn_blocking(move || {
                     let persistence = core.persistence();
                     let composition = match persistence.get_last_active_project()?.project {
-                        Some(project) => Some(CompositionProjectSettings {
+                        Some(project) => {
+                            let profiles = persistence.list_validation_profiles(&project.id)?;
+                            let mut cargo_policies = std::collections::BTreeMap::new();
+                            for (profile, _) in &profiles {
+                                if let Some(policy) = persistence.get_cargo_validation_policy(
+                                    &project.id, profile.check_ref.as_str(),
+                                )? {
+                                    cargo_policies.insert(profile.check_ref.as_str().to_owned(), policy);
+                                }
+                            }
+                            Some(CompositionProjectSettings {
                             sanitization_exceptions: hvc_core::sanitization::SanitizationStore::new(persistence.database_path())
                                 .list_exceptions(&project.id).map_err(hvc_core::persistence_service::PersistenceServiceError::Validation)?,
                             sanitization_summary: hvc_core::sanitization::SanitizationStore::new(persistence.database_path())
                                 .summary(&project.id, None).map_err(hvc_core::persistence_service::PersistenceServiceError::Validation)?,
                             settings: persistence.get_composition_settings(&project.id)?,
-                            profiles: persistence.list_validation_profiles(&project.id)?,
+                            profiles,
+                            cargo_policies,
                             presets: persistence.detect_validation_presets(&project.id)?,
                             overrides: persistence.list_specialty_overrides(&project.id)?,
                             cli_observation_trial: persistence
@@ -429,7 +462,8 @@ impl SettingsBackend for CoreSettingsBackend {
                                 .latest_cli_observation_report(&project.id)?,
                             project_id: project.id,
                             project_name: project.name,
-                        }),
+                        })
+                        },
                         None => None,
                     };
                     Ok(SettingsSnapshot {
@@ -1053,6 +1087,8 @@ pub(crate) struct SettingsModel {
     pub(crate) composition_override_mode: SharedString,
     pub(crate) composition_override_backend: SharedString,
     pub(crate) composition_override_thinking: SharedString,
+    /// Project/check whose Cargo policy is open in the local form.
+    pub(crate) cargo_policy_scope: Option<(String, String)>,
 }
 
 impl Default for SettingsModel {
@@ -1100,6 +1136,7 @@ impl Default for SettingsModel {
             composition_override_mode: "api_direct".into(),
             composition_override_backend: "codex".into(),
             composition_override_thinking: "default".into(),
+            cargo_policy_scope: None,
         }
     }
 }

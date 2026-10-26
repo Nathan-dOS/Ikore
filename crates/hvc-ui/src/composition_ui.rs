@@ -5,6 +5,9 @@
 
 use gpui::{AnyElement, Context, IntoElement, div, prelude::*};
 use hvc_core::orchestration::composition::settings::CompositionSettings;
+use hvc_core::orchestration::composition::validation::cargo_policy::{
+    CargoValidationPolicyV1, is_qualified_cargo_profile,
+};
 use hvc_core::orchestration::composition::{ExecutorKind, ValidationCommandProfileV1};
 use hvc_core::terminals::{AgentExecutionMode, CliBackend, SpecialtyOverride, ThinkingLevel};
 
@@ -384,7 +387,7 @@ impl AppModel {
         );
     }
 
-    /// Adds every detected preset that is not configured yet, enabled.
+    /// Detection configures a preset; only a later explicit Enable authorizes execution.
     pub(crate) fn add_composition_presets(&mut self, cx: &mut Context<Self>) {
         if self.settings.read(cx).busy {
             return;
@@ -414,11 +417,11 @@ impl AppModel {
             Box::pin(async move {
                 let count = missing.len();
                 for preset in missing {
-                    backend
-                        .upsert_validation_profile(project_id.clone(), preset, true)
-                        .await?;
+                    backend.save_cargo_validation_profile(
+                        project_id.clone(), preset, CargoValidationPolicyV1::default(), false,
+                    ).await?;
                 }
-                Ok(format!("{count} detected preset(s) added and enabled."))
+                Ok(format!("{count} detected preset(s) added disabled. Inspect their configuration before enabling."))
             }),
             cx,
         );
@@ -443,11 +446,23 @@ impl AppModel {
             return;
         };
         let project_id = project.project_id;
+        let policy = project.cargo_policies.get(&check_ref).cloned();
         self.run_settings_operation(
             Box::pin(async move {
-                backend
-                    .upsert_validation_profile(project_id, profile, !enabled)
-                    .await?;
+                if is_qualified_cargo_profile(&profile) {
+                    backend
+                        .save_cargo_validation_profile(
+                            project_id,
+                            profile,
+                            policy.unwrap_or_default(),
+                            !enabled,
+                        )
+                        .await?;
+                } else {
+                    backend
+                        .upsert_validation_profile(project_id, profile, !enabled)
+                        .await?;
+                }
                 Ok(if enabled {
                     "Check disabled; it will not run on the next admission.".into()
                 } else {
@@ -456,6 +471,130 @@ impl AppModel {
             }),
             cx,
         );
+    }
+
+    pub(crate) fn configure_cargo_profile(&mut self, check_ref: String, cx: &mut Context<Self>) {
+        if self.settings.read(cx).busy {
+            return;
+        }
+        let Some(project) = self.composition_project(cx) else {
+            return;
+        };
+        if !project
+            .profiles
+            .iter()
+            .any(|(p, _)| p.check_ref.as_str() == check_ref && is_qualified_cargo_profile(p))
+        {
+            return;
+        }
+        let policy = project
+            .cargo_policies
+            .get(&check_ref)
+            .cloned()
+            .unwrap_or_default();
+        self.cargo_toolchain_input.update(cx, |input, cx| {
+            input.set_value(policy.toolchain.unwrap_or_default(), cx);
+        });
+        self.cargo_additional_inputs_input.update(cx, |input, cx| {
+            input.set_value(policy.additional_inputs.join("; "), cx);
+        });
+        if let Some((profile, _)) = project
+            .profiles
+            .iter()
+            .find(|(profile, _)| profile.check_ref.as_str() == check_ref)
+        {
+            self.cargo_timeout_input.update(cx, |input, cx| {
+                input.set_value(profile.timeout_seconds.to_string(), cx)
+            });
+        }
+        self.settings.update(cx, |settings, _| {
+            settings.cargo_policy_scope = Some((project.project_id, check_ref));
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn save_cargo_policy(&mut self, cx: &mut Context<Self>) {
+        if self.settings.read(cx).busy {
+            return;
+        }
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(project) = self.composition_project(cx) else {
+            return;
+        };
+        let Some((project_id, check_ref)) = self.settings.read(cx).cargo_policy_scope.clone()
+        else {
+            return;
+        };
+        if project_id != project.project_id {
+            return;
+        }
+        let Some((profile, _)) = project
+            .profiles
+            .iter()
+            .find(|(p, _)| p.check_ref.as_str() == check_ref && is_qualified_cargo_profile(p))
+            .cloned()
+        else {
+            return;
+        };
+        let toolchain = self
+            .cargo_toolchain_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
+        let mut policy = project
+            .cargo_policies
+            .get(&check_ref)
+            .cloned()
+            .unwrap_or_default();
+        policy.toolchain = (!toolchain.is_empty()).then_some(toolchain);
+        policy.additional_inputs =
+            additional_input_patterns(self.cargo_additional_inputs_input.read(cx).value());
+        let timeout = self.cargo_timeout_input.read(cx).value().trim().to_owned();
+        self.run_settings_operation(Box::pin(async move {
+            let mut profile = profile;
+            profile.timeout_seconds = timeout.parse::<u32>().ok().filter(|seconds| (1..=900).contains(seconds))
+                .ok_or_else(|| crate::errors::UiCommandError {
+                    code: "validation_error".into(), message: "Timeout must be between 1 and 900 seconds.".into(),
+                    details: None, remediation: None,
+                })?;
+            backend.save_cargo_validation_profile(project_id, profile, policy, false).await?;
+            Ok("Cargo configuration saved and disabled. Inspect it, then enable the check explicitly.".into())
+        }), cx);
+    }
+
+    pub(crate) fn upgrade_cargo_preset(&mut self, check_ref: String, cx: &mut Context<Self>) {
+        if self.settings.read(cx).busy {
+            return;
+        }
+        let Some(backend) = self.settings_backend.clone() else {
+            return;
+        };
+        let Some(project) = self.composition_project(cx) else {
+            return;
+        };
+        let Some((installed, _)) = project
+            .profiles
+            .iter()
+            .find(|(p, _)| p.check_ref.as_str() == check_ref)
+        else {
+            return;
+        };
+        let Some(preset) = available_preset_upgrade(installed, &project.presets).cloned() else {
+            return;
+        };
+        let policy = project
+            .cargo_policies
+            .get(&check_ref)
+            .cloned()
+            .unwrap_or_default();
+        let project_id = project.project_id;
+        self.run_settings_operation(Box::pin(async move {
+            backend.save_cargo_validation_profile(project_id, preset, policy, false).await?;
+            Ok("Cargo preset updated and disabled. The workspace command below must be enabled explicitly.".into())
+        }), cx);
     }
 
     pub(crate) fn remove_composition_profile(&mut self, check_ref: String, cx: &mut Context<Self>) {
@@ -648,6 +787,60 @@ fn list_line(text: String) -> gpui::Div {
         .child(div().flex_1().min_w_0().text_sm().child(text))
 }
 
+fn additional_input_patterns(value: &str) -> Vec<String> {
+    value
+        .split(';')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn available_preset_upgrade<'a>(
+    installed: &ValidationCommandProfileV1,
+    presets: &'a [ValidationCommandProfileV1],
+) -> Option<&'a ValidationCommandProfileV1> {
+    presets.iter().find(|preset| {
+        installed.profile_id == preset.profile_id
+            && installed.check_ref == preset.check_ref
+            && installed.toolchain_identity == "cargo"
+            && !is_qualified_cargo_profile(installed)
+            && is_qualified_cargo_profile(preset)
+    })
+}
+
+fn cargo_policy_controls(
+    model: &AppModel,
+    project: &CompositionProjectSettings,
+    busy: bool,
+    cx: &mut Context<AppModel>,
+) -> Option<AnyElement> {
+    let (project_id, check_ref) = model.settings.read(cx).cargo_policy_scope.clone()?;
+    if project_id != project.project_id
+        || !project.profiles.iter().any(|(profile, _)| {
+            profile.check_ref.as_str() == check_ref && is_qualified_cargo_profile(profile)
+        })
+    {
+        return None;
+    }
+    Some(div().debug_selector(|| "cargo-policy-form".into())
+        .p_2().flex().flex_col().gap_2()
+        .child(readout(format!("Configure {check_ref}")))
+        .child(hint("Uses an installed Rust toolchain and the existing dependency cache. The host does not install tools or fetch dependencies."))
+        .child(hint("Run only trusted projects: build scripts and tests execute code with your OS permissions; Cargo offline mode is not network isolation."))
+        .child(readout("Installed toolchain"))
+        .child(crate::sizing::sized_input(model.cargo_toolchain_input.clone(), crate::sizing::INPUT_LONG))
+        .child(readout("Additional inputs (paths/globs separated by semicolons)"))
+        .child(crate::sizing::sized_input(model.cargo_additional_inputs_input.clone(), crate::sizing::INPUT_LONG))
+        .child(readout("Timeout seconds (1–900, including preparation)"))
+        .child(crate::sizing::sized_input(model.cargo_timeout_input.clone(), crate::sizing::INPUT_SHORT))
+        .child(hint("For example: assets/icon.ico; tests/fixtures/**/*.bin. Assets stay local to validation. Credentials and paths outside the project remain blocked."))
+        .child(crate::settings_view::action(
+            "cargo-policy-save", "Save and disable for inspection", !busy, cx,
+            |model, cx| model.save_cargo_policy(cx),
+        )).into_any_element())
+}
+
 fn sanitization_controls(
     model: &AppModel,
     project: &CompositionProjectSettings,
@@ -791,6 +984,7 @@ pub(crate) fn composition_page(
     });
     let override_mode_cli = override_mode.as_ref() == "cli_process";
     let sanitization = sanitization_controls(model, &project, busy, cx);
+    let cargo_policy_form = cargo_policy_controls(model, &project, busy, cx);
 
     let checks = div()
         .flex()
@@ -802,9 +996,15 @@ pub(crate) fn composition_page(
         .children(project.profiles.iter().map(|(profile, profile_enabled)| {
             let check_ref = profile.check_ref.as_str().to_owned();
             let remove_ref = check_ref.clone();
-            list_line(format!(
-                "`{}` · {:?} · {} · {} {}",
+            let configure_ref = check_ref.clone();
+            let upgrade_ref = check_ref.clone();
+            let qualified = is_qualified_cargo_profile(profile);
+            let upgrade = available_preset_upgrade(profile, &project.presets);
+            let policy = project.cargo_policies.get(&check_ref);
+            let header = list_line(format!(
+                "`{}` · v{} · {:?} · {} · {} {}",
                 profile.check_ref.as_str(),
+                profile.profile_version,
                 profile.kind,
                 if profile.required {
                     "required"
@@ -830,6 +1030,26 @@ pub(crate) fn composition_page(
                 cx,
                 move |model, cx| model.remove_composition_profile(remove_ref.clone(), cx),
             ))
+            .when(qualified, |line| line.child(crate::widgets::btn(
+                gpui::SharedString::from(format!("composition-profile-configure-{configure_ref}")),
+                "Configure Cargo", crate::widgets::ButtonVariant::Secondary, !busy, cx,
+                move |model, cx| model.configure_cargo_profile(configure_ref.clone(), cx),
+            )));
+            div().flex().flex_col().gap_1().child(header)
+                .when(qualified, |card| card
+                    .child(hint(format!("Workspace members · default features · Cargo target settings · offline · {} s · {} bytes of retained output", profile.timeout_seconds, profile.max_log_bytes)))
+                    .child(readout(format!("Toolchain: {} · Additional inputs: {}",
+                        policy.and_then(|p| p.toolchain.as_deref()).unwrap_or("project selection (installed only)"),
+                        policy.filter(|p| !p.additional_inputs.is_empty()).map(|p| p.additional_inputs.join("; ")).unwrap_or_else(|| "none".into()),
+                    )))
+                    .child(hint("Build scripts and tests run as this user. Offline Cargo resolution does not isolate their filesystem or network access.")))
+                .when_some(upgrade, |card, preset| card
+                    .child(readout(format!("Available preset v{}: {} {}", preset.profile_version, preset.executable, preset.argv.join(" "))))
+                    .child(crate::widgets::btn(
+                        gpui::SharedString::from(format!("composition-profile-upgrade-{upgrade_ref}")),
+                        "Update preset and disable", crate::widgets::ButtonVariant::Secondary, !busy, cx,
+                        move |model, cx| model.upgrade_cargo_preset(upgrade_ref.clone(), cx),
+                    )))
         }))
         .when(has_missing_presets, |list| {
             list.child(div().pt_1().child(crate::settings_view::action(
@@ -844,7 +1064,8 @@ pub(crate) fn composition_page(
             list.child(hint(
                 "No preset detected: the project has no Cargo.toml. Custom profiles must name a direct executable (never a .cmd/.bat wrapper).",
             ))
-        });
+        })
+        .when_some(cargo_policy_form, |list, form| list.child(form));
 
     let overrides = div()
         .flex()
@@ -1347,4 +1568,35 @@ fn observation_report(report: hvc_core::terminals::CliObservationReport) -> AnyE
         )
         .children(lines.into_iter().map(readout))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod cargo_profile_tests {
+    use super::*;
+
+    fn detected() -> Vec<ValidationCommandProfileV1> {
+        hvc_core::orchestration::composition::validation::profile::detect_presets(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+        )
+    }
+
+    #[test]
+    fn legacy_profile_edit_counters_do_not_hide_the_qualified_preset_upgrade() {
+        let presets = detected();
+        let mut legacy = presets[0].clone();
+        // This is a stored profile's edit counter, not the preset generation.
+        legacy.profile_version = 9;
+        legacy.argv.retain(|arg| arg != "--locked");
+        assert!(available_preset_upgrade(&legacy, &presets).is_some());
+        assert!(available_preset_upgrade(&presets[0], &presets).is_none());
+    }
+
+    #[test]
+    fn a_custom_profile_with_the_same_check_name_is_not_replaced_by_a_preset() {
+        let presets = detected();
+        let mut custom = presets[0].clone();
+        custom.profile_id = hvc_core::orchestration::composition::Uuid::generate();
+        custom.argv.retain(|arg| arg != "--locked");
+        assert!(available_preset_upgrade(&custom, &presets).is_none());
+    }
 }

@@ -23,7 +23,7 @@ fn level_word(level: Risk) -> (Icon, gpui::Rgba, &'static str) {
 
 fn state_word(state: CoverageState) -> (Icon, gpui::Rgba, &'static str) {
     match state {
-        CoverageState::Executed => (Icon::ShieldCheck, theme::success(), "executed"),
+        CoverageState::Executed => (Icon::ShieldCheck, theme::accent(), "executed"),
         CoverageState::ModelOnly => (Icon::CircleHelp, theme::text_muted(), "model only"),
         CoverageState::Unverified => (Icon::TriangleAlert, theme::warning(), "unverified"),
         CoverageState::NotRun => (Icon::TriangleAlert, theme::warning(), "not run"),
@@ -118,7 +118,11 @@ pub(crate) fn risk_panel(status: &CheckpointRiskStatus) -> Option<AnyElement> {
                         )),
                 )
             })
-            .when(!rows.is_empty(), |card| card.child(heading("Coverage")))
+            .when(!rows.is_empty(), |card| {
+                card.child(heading("Coverage")).child(detail(
+                    "Executed means a completed, interpreted check; inspect its result before approving.",
+                ))
+            })
             .children(rows.iter().enumerate().map(|(index, row)| {
                 let (glyph, ink, word) = state_word(row.state);
                 let selector = format!("review-risk-row-{index}");

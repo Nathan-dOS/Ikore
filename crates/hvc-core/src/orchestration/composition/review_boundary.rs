@@ -29,9 +29,10 @@ use super::{
 };
 
 /// Version 2 (ADR-034 M3) adds the risk assessment, the checks the level
-/// requires and the digest of the `REVIEW.md` captured at Intake. Version 1
-/// manifests still read: the added fields are optional.
-pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
+/// requires and the digest of the `REVIEW.md` captured at Intake. Version 3
+/// (ADR-033) adds check interpretation, result and limitations. Versions 1
+/// and 2 still read: the added fields are optional.
+pub const MANIFEST_SCHEMA_VERSION: u32 = 3;
 pub const TOOL_SCOPE_HOST_CONTEXT_ONLY: &str = "host_context_only";
 pub const MAX_DIFF_CHARS_PER_FILE: usize = 8_000;
 pub const MAX_DIFF_CHARS_TOTAL: usize = 32_000;
@@ -252,6 +253,14 @@ pub struct HostCheckRow {
     /// Manifest and UI only; never rendered into the prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt_id: Option<String>,
+    /// Host interpretation of the command's output; absent on older receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interpretation: Option<String>,
+    /// Interpreted check result, distinct from process/receipt status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limitations: Vec<String>,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
     pub diagnostics: usize,
@@ -667,7 +676,30 @@ pub fn build(
     facts: ReviewFacts,
     sanitize: &dyn Fn(&str, &str) -> Option<String>,
 ) -> ReviewBoundary {
-    let mut gaps = facts.host.gaps.clone();
+    let mut host = sanitize_host_evidence(&facts.host, sanitize);
+    let superseded = superseded_code_checks(&host);
+    for row in &mut host.rows {
+        if row.stage == Stage::Code
+            && row.freshness == Freshness::Stale
+            && superseded.contains(&row.check_ref)
+        {
+            let reason = row.reason.get_or_insert_with(String::new);
+            if !reason.is_empty() {
+                reason.push_str("; ");
+            }
+            reason.push_str("superseded by fresh Test evidence");
+        }
+    }
+    let mut gaps = host
+        .gaps
+        .iter()
+        .filter(|gap| {
+            !(gap.code == GapCode::CheckStale
+                && matches!(&gap.scope, GapScope::Checks(checks)
+                    if checks.len() == 1 && superseded.contains(&checks[0])))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     let mut candidates = Vec::new();
     let mut changes = String::new();
     let mut diff_chars = 0usize;
@@ -899,7 +931,7 @@ pub fn build(
     let sections = ReviewSections {
         risk: facts.risk.as_ref().map(render_risk),
         policy: render_policy(&policy, sanitize),
-        host_evidence: render_host_evidence(&facts.host),
+        host_evidence: render_host_evidence(&host),
         gaps: render_gaps(&gaps),
         changes: (!changes.is_empty()).then(|| {
             format!(
@@ -916,7 +948,7 @@ pub fn build(
         sanitization_policy: facts.sanitization_policy.clone(),
         sources,
         candidates,
-        checks: facts.host.rows.clone(),
+        checks: host.rows,
         policy,
         gaps,
         author_claims: facts.claims.len(),
@@ -1022,14 +1054,91 @@ fn render_policy(
     Some(text)
 }
 
+/// Host details may contain tool output. Apply the same frozen source policy
+/// before either persistence in the manifest or prompt rendering. A failure
+/// cannot leave an apparent successful interpretation behind.
+fn sanitize_host_evidence(
+    host: &HostEvidence,
+    sanitize: &dyn Fn(&str, &str) -> Option<String>,
+) -> HostEvidence {
+    const OMITTED: &str = "Evidence text unavailable (sanitization failed).";
+    let mut safe = host.clone();
+    for row in &mut safe.rows {
+        let mut failed = false;
+        let mut view = |content: &str| {
+            sanitize("host-validation-evidence.txt", content).unwrap_or_else(|| {
+                failed = true;
+                OMITTED.to_owned()
+            })
+        };
+        row.status = view(&row.status);
+        row.reason = row.reason.as_deref().map(&mut view);
+        row.interpretation = row.interpretation.as_deref().map(&mut view);
+        row.result = row.result.as_deref().map(&mut view);
+        row.limitations = row.limitations.iter().map(|text| view(text)).collect();
+        if failed {
+            row.interpretation = Some("uninterpreted".into());
+            row.result = Some("unknown".into());
+            row.limitations.push(OMITTED.into());
+            safe.gaps.push(EvidenceGap::check(
+                GapCode::CheckUnverifiable,
+                &row.check_ref,
+                OMITTED,
+            ));
+        }
+    }
+    for finding in &mut safe.findings {
+        *finding =
+            sanitize("host-validation-evidence.txt", finding).unwrap_or_else(|| OMITTED.to_owned());
+    }
+    for gap in &mut safe.gaps {
+        gap.subject = sanitize("host-validation-evidence.txt", &gap.subject)
+            .unwrap_or_else(|| OMITTED.to_owned());
+    }
+    safe
+}
+
+/// A check is global across stages. Test runs on the final production/test
+/// candidate, so its fresh, interpreted receipt replaces the earlier Code
+/// receipt for that same check. Keep the old row as history; only its obsolete
+/// stale gap stops limiting the review. Inconclusive/missing receipts do not
+/// supersede anything, nor do gaps of any other kind.
+fn superseded_code_checks(host: &HostEvidence) -> BTreeSet<Handle> {
+    host.rows
+        .iter()
+        .filter(|row| {
+            row.stage == Stage::Test
+                && row.freshness == Freshness::Fresh
+                && matches!(row.status.as_str(), "passed" | "failed")
+                && row.interpretation.as_deref() == Some("supported")
+                && row.result.as_deref() == Some(row.status.as_str())
+                && row
+                    .receipt_id
+                    .as_ref()
+                    .is_some_and(|id| super::Uuid::new(id.clone()).is_ok())
+                && host.rows.iter().any(|old| {
+                    old.stage == Stage::Code
+                        && old.freshness == Freshness::Stale
+                        && old.check_ref == row.check_ref
+                        && old.receipt_id != row.receipt_id
+                })
+        })
+        .map(|row| row.check_ref.clone())
+        .collect()
+}
+
+fn table_cell(text: &str) -> String {
+    text.replace('|', "\\|").replace(['\r', '\n', '\t'], " ")
+}
+
 fn render_host_evidence(host: &HostEvidence) -> String {
     let mut text = String::from(
-        "The host ran and verified these deterministically. Status and freshness are facts: never contradict them. Earlier stages' checks are named for context only; cite no check handle that is not listed under Host checks.\n\n",
+        "The host observed these deterministically. Receipt status describes execution; interpretation and result describe the supported meaning of its output. Unknown, partial, uninterpreted or missing evidence is not a passed check. Status and freshness are facts: never contradict them. Earlier stages' checks are named for context only; cite no check handle that is not listed under Host checks.\n\n",
     );
     if host.rows.is_empty() {
         text.push_str("No check of an earlier stage is configured.\n");
     } else {
-        text.push_str("| stage | check | status | freshness | limits |\n|---|---|---|---|---|\n");
+        text.push_str("| stage | check | status | freshness | interpretation | result | limits |\n|---|---|---|---|---|---|---|\n");
         for row in &host.rows {
             let mut limits = Vec::new();
             if row.stdout_truncated {
@@ -1041,6 +1150,7 @@ fn render_host_evidence(host: &HostEvidence) -> String {
             if row.diagnostics > 0 {
                 limits.push(format!("{} diagnostic(s)", row.diagnostics));
             }
+            limits.extend(row.limitations.iter().cloned());
             let freshness = match &row.reason {
                 Some(reason) => format!("{}: {reason}", row.freshness.as_str()),
                 None => row.freshness.as_str().to_owned(),
@@ -1049,14 +1159,17 @@ fn render_host_evidence(host: &HostEvidence) -> String {
             // not citable handles here ("Teste Haiku Only 1").
             let _ = writeln!(
                 text,
-                "| {} | {} | {} | {freshness} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} |",
                 row.stage.as_str(),
                 row.check_ref,
-                row.status,
+                table_cell(&row.status),
+                table_cell(&freshness),
+                table_cell(row.interpretation.as_deref().unwrap_or("not recorded")),
+                table_cell(row.result.as_deref().unwrap_or("not recorded")),
                 if limits.is_empty() {
                     "—".to_owned()
                 } else {
-                    limits.join(", ")
+                    table_cell(&limits.join(", "))
                 }
             );
         }
@@ -1504,6 +1617,9 @@ mod tests {
                 freshness: Freshness::Stale,
                 reason: Some("its inputs changed after the receipt".into()),
                 receipt_id: Some("0b7f8c39-1111-4222-8333-944455556666".into()),
+                interpretation: Some("partial".into()),
+                result: Some("unknown".into()),
+                limitations: vec!["test counts unavailable".into()],
                 stdout_truncated: true,
                 stderr_truncated: false,
                 diagnostics: 2,
@@ -1515,8 +1631,221 @@ mod tests {
         assert!(text.contains("| test | cargo_test | passed | stale: its inputs changed"));
         assert!(!text.contains("`cargo_test`"), "not a citable handle");
         assert!(text.contains("stdout truncated, 2 diagnostic(s)"));
+        assert!(text.contains("| partial | unknown |"));
+        assert!(text.contains("test counts unavailable"));
         assert!(!text.contains("0b7f8c39"));
         assert!(text.contains("Deterministic findings"));
+    }
+
+    fn legacy_host_check() -> HostCheckRow {
+        serde_json::from_value(serde_json::json!({
+            "stage": "test",
+            "checkRef": "cargo_test",
+            "status": "passed",
+            "freshness": "fresh",
+            "stdoutTruncated": false,
+            "stderrTruncated": false,
+            "diagnostics": 0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn older_host_checks_remain_readable_without_inventing_details() {
+        let row = legacy_host_check();
+        assert_eq!(row.interpretation, None);
+        assert_eq!(row.result, None);
+        assert!(row.limitations.is_empty());
+        let value = serde_json::to_value(&row).unwrap();
+        for field in ["interpretation", "result", "limitations"] {
+            assert!(value.get(field).is_none(), "{field} must stay absent");
+        }
+        let text = render_host_evidence(&HostEvidence {
+            rows: vec![row],
+            ..HostEvidence::default()
+        });
+        assert!(text.contains("| not recorded | not recorded |"));
+        assert!(text.contains("missing evidence is not a passed check"));
+    }
+
+    #[test]
+    fn host_details_are_sanitized_in_both_manifest_and_prompt() {
+        let mut row = legacy_host_check();
+        row.status = "sk-secret".into();
+        row.reason = Some("reason sk-secret".into());
+        row.interpretation = Some("partial sk-secret".into());
+        row.result = Some("unknown sk-secret".into());
+        row.limitations = vec!["sk-secret | another\nline".into()];
+        row.receipt_id = Some("private-receipt-reference".into());
+        let boundary = build(
+            ReviewFacts {
+                host: HostEvidence {
+                    rows: vec![row],
+                    gaps: vec![EvidenceGap::check(
+                        GapCode::CheckUnverifiable,
+                        &h("cargo_test"),
+                        "gap sk-secret",
+                    )],
+                    findings: vec!["finding sk-secret".into()],
+                },
+                ..ReviewFacts::default()
+            },
+            &sanitize,
+        );
+        assert_eq!(boundary.manifest.schema_version, 3);
+        let manifest = serde_json::to_string(&boundary.manifest).unwrap();
+        assert!(!manifest.contains("sk-secret"));
+        assert!(manifest.contains("private-receipt-reference"));
+        assert!(!boundary.sections.host_evidence.contains("sk-secret"));
+        assert!(boundary.sections.host_evidence.contains("\\| another line"));
+        assert!(
+            boundary
+                .sections
+                .host_evidence
+                .contains("finding <REDACTED")
+        );
+        assert!(
+            !boundary
+                .sections
+                .host_evidence
+                .contains("private-receipt-reference")
+        );
+        assert!(!boundary.sections.gaps.unwrap().contains("sk-secret"));
+    }
+
+    #[test]
+    fn failed_host_detail_sanitization_is_an_explicit_unknown_gap() {
+        let mut row = legacy_host_check();
+        row.interpretation = Some("supported".into());
+        row.result = Some("passed".into());
+        row.limitations = vec!["sensitive tool output".into()];
+        let boundary = build(
+            ReviewFacts {
+                host: HostEvidence {
+                    rows: vec![row],
+                    ..HostEvidence::default()
+                },
+                ..ReviewFacts::default()
+            },
+            &|_, _| None,
+        );
+        let row = &boundary.manifest.checks[0];
+        assert_eq!(row.interpretation.as_deref(), Some("uninterpreted"));
+        assert_eq!(row.result.as_deref(), Some("unknown"));
+        assert!(
+            boundary
+                .manifest
+                .gaps
+                .iter()
+                .any(|gap| gap.code == GapCode::CheckUnverifiable)
+        );
+        assert!(
+            !boundary
+                .sections
+                .host_evidence
+                .contains("sensitive tool output")
+        );
+        assert!(
+            boundary
+                .sections
+                .host_evidence
+                .contains("| uninterpreted | unknown |")
+        );
+    }
+
+    #[test]
+    fn only_fresh_interpreted_test_evidence_supersedes_a_code_stale_gap() {
+        let facts = || {
+            let mut code = legacy_host_check();
+            code.stage = Stage::Code;
+            code.check_ref = h("cargo_check");
+            code.freshness = Freshness::Stale;
+            code.reason = Some("its inputs changed after the receipt".into());
+            code.receipt_id = Some(super::super::Uuid::generate().as_str().into());
+            code.interpretation = Some("supported".into());
+            code.result = Some("passed".into());
+            let mut test = code.clone();
+            test.stage = Stage::Test;
+            test.freshness = Freshness::Fresh;
+            test.reason = None;
+            test.receipt_id = Some(super::super::Uuid::generate().as_str().into());
+            ReviewFacts {
+                host: HostEvidence {
+                    rows: vec![code, test],
+                    gaps: vec![EvidenceGap::check(
+                        GapCode::CheckStale,
+                        &h("cargo_check"),
+                        "The Code check is stale after Test published its inputs.",
+                    )],
+                    ..HostEvidence::default()
+                },
+                criteria: CriterionMap {
+                    checks: BTreeMap::from([(h("crit_1_1"), BTreeSet::from([h("cargo_check")]))]),
+                    ..CriterionMap::default()
+                },
+                ..ReviewFacts::default()
+            }
+        };
+        let boundary = build(facts(), &sanitize);
+        assert!(boundary.manifest.gaps.is_empty());
+        assert_eq!(boundary.manifest.checks[0].freshness, Freshness::Stale);
+        assert!(
+            boundary.manifest.checks[0]
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("superseded by fresh Test")
+        );
+        let mut answer = response(&[("crit_1_1", Verdict::Supported, &[])]);
+        assert!(normalize_for_gaps(&mut answer, &boundary, &|_| None).is_empty());
+        assert_eq!(verdicts(&answer), [Verdict::Supported]);
+
+        for defect in [
+            "missing",
+            "stale",
+            "unverifiable",
+            "partial",
+            "unknown",
+            "no_receipt",
+            "invalid_receipt",
+            "no_interpretation",
+        ] {
+            let mut facts = facts();
+            match defect {
+                "missing" => {
+                    facts.host.rows.pop();
+                }
+                "stale" => facts.host.rows[1].freshness = Freshness::Stale,
+                "unverifiable" => facts.host.rows[1].freshness = Freshness::Unverifiable,
+                "partial" => facts.host.rows[1].interpretation = Some("partial".into()),
+                "unknown" => facts.host.rows[1].result = Some("unknown".into()),
+                "no_receipt" => facts.host.rows[1].receipt_id = None,
+                "invalid_receipt" => facts.host.rows[1].receipt_id = Some("not-a-receipt".into()),
+                "no_interpretation" => facts.host.rows[1].interpretation = None,
+                _ => unreachable!(),
+            }
+            let boundary = build(facts, &sanitize);
+            assert!(
+                boundary
+                    .manifest
+                    .gaps
+                    .iter()
+                    .any(|gap| gap.code == GapCode::CheckStale),
+                "{defect}"
+            );
+            let mut answer = response(&[("crit_1_1", Verdict::Supported, &[])]);
+            normalize_for_gaps(&mut answer, &boundary, &|_| None);
+            assert_eq!(verdicts(&answer), [Verdict::Unverified], "{defect}");
+        }
+        for code in [GapCode::CheckUnverifiable, GapCode::CheckNotRun] {
+            let mut facts = facts();
+            facts.host.gaps[0].code = code;
+            let boundary = build(facts, &sanitize);
+            assert!(boundary.manifest.gaps.iter().any(|gap| gap.code == code));
+            let mut answer = response(&[("crit_1_1", Verdict::Supported, &[])]);
+            normalize_for_gaps(&mut answer, &boundary, &|_| None);
+            assert_eq!(verdicts(&answer), [Verdict::Unverified]);
+        }
     }
 
     #[test]
@@ -1629,7 +1958,7 @@ mod tests {
             !missing.limits_verdicts(),
             "a missing check never changes a verdict"
         );
-        assert_eq!(boundary.manifest.schema_version, 2);
+        assert_eq!(boundary.manifest.schema_version, 3);
         assert_eq!(
             boundary.manifest.review_policy_snapshot_sha256.as_deref(),
             Some("capture")
@@ -1655,5 +1984,34 @@ mod tests {
         assert_eq!(earlier.schema_version, 1);
         assert!(earlier.risk.is_none() && earlier.risk_selection.is_none());
         assert!(earlier.review_policy_snapshot_sha256.is_none());
+    }
+
+    #[test]
+    fn a_version_two_manifest_keeps_its_risk_and_has_no_invented_check_details() {
+        let boundary = build(
+            ReviewFacts {
+                host: HostEvidence {
+                    rows: vec![legacy_host_check()],
+                    ..HostEvidence::default()
+                },
+                risk: Some(risk_review(super::super::Risk::High, Vec::new())),
+                review_policy_snapshot_sha256: Some("intake-policy-capture".into()),
+                ..ReviewFacts::default()
+            },
+            &sanitize,
+        );
+        let mut value = serde_json::to_value(boundary.manifest).unwrap();
+        value["schemaVersion"] = 2.into();
+        let earlier: ReviewInputManifestV1 = serde_json::from_value(value).unwrap();
+        assert_eq!(earlier.schema_version, 2);
+        assert_eq!(earlier.risk.unwrap().level, super::super::Risk::High);
+        assert!(earlier.risk_selection.is_some());
+        assert_eq!(
+            earlier.review_policy_snapshot_sha256.as_deref(),
+            Some("intake-policy-capture")
+        );
+        assert!(earlier.checks[0].interpretation.is_none());
+        assert!(earlier.checks[0].result.is_none());
+        assert!(earlier.checks[0].limitations.is_empty());
     }
 }

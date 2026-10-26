@@ -10,10 +10,14 @@
 //! termination) and is not a security sandbox.
 
 pub mod candidate;
+pub mod cargo_policy;
 pub mod diagnostics;
+pub mod evidence;
 pub mod profile;
 pub mod runner;
 
 pub use candidate::{Candidate, materialize_candidate};
+pub use cargo_policy::CargoValidationPolicyV1;
+pub use evidence::RunEvidenceDetailsV1;
 pub use profile::{ValidationProfileSnapshot, detect_presets, resolve_profile};
 pub use runner::{ReceiptContext, run_check};

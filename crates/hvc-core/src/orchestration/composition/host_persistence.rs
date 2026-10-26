@@ -1180,6 +1180,14 @@ impl PersistenceService {
         remaining.initial_invocations = remaining.initial_invocations.min(16);
         remaining.extra_invocations = remaining.extra_invocations.min(2);
         let checks = Self::execution_checks(db, execution)?;
+        let validation_evidence = checks
+            .iter()
+            .filter_map(|check| check.receipt_id.as_ref())
+            .map(|id| Self::validation_evidence_on(db, id.as_str()))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
         let totals = crate::usage::stage_execution_totals(db, &execution.id)?;
         let snapshot = StageExecutionSnapshot {
             schema_version: SchemaV1,
@@ -1199,6 +1207,8 @@ impl PersistenceService {
                 .clone()
                 .map(|r| protected_diagnostic(&r).chars().take(4_000).collect()),
             checks,
+            validation_evidence,
+            validation_receipts: Self::latest_validation_receipts(db, &execution.id)?,
             remaining_budget: RemainingBudgetV1 { ..remaining },
             usage: usage_summary(&totals),
         };
@@ -2379,15 +2389,16 @@ mod validation_profile_tests {
         let presets = service.detect_validation_presets(&project).unwrap();
         assert_eq!(presets.len(), 2);
         let mut check = presets[0].clone();
+        let initial_version = check.profile_version;
         let stored = service
             .upsert_validation_profile(&project, check.clone(), true)
             .unwrap();
-        assert_eq!(stored.profile_version, 1);
+        assert_eq!(stored.profile_version, initial_version);
         // Same content: the version stays.
         let again = service
             .upsert_validation_profile(&project, check.clone(), false)
             .unwrap();
-        assert_eq!(again.profile_version, 1);
+        assert_eq!(again.profile_version, initial_version);
         let listed = service.list_validation_profiles(&project).unwrap();
         assert_eq!(listed.len(), 1);
         assert!(!listed[0].1, "the enabled flag is updated in place");
@@ -2396,7 +2407,7 @@ mod validation_profile_tests {
         let bumped = service
             .upsert_validation_profile(&project, check, true)
             .unwrap();
-        assert_eq!(bumped.profile_version, 2);
+        assert_eq!(bumped.profile_version, initial_version + 1);
         let mut wrapper = presets[1].clone();
         wrapper.executable = r"C:\tools\cargo.cmd".into();
         let refused = service.upsert_validation_profile(&project, wrapper, true);
