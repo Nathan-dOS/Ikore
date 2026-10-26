@@ -10,7 +10,10 @@ mod composition_support;
 
 use composition_support::*;
 use hvc_core::orchestration::mandate::{AcknowledgementKind, Enforcement, MandateCause};
-use hvc_core::persistence_service::{ResolveStageFailureRequest, StageFailureDecision};
+use hvc_core::persistence_service::{
+    ApplyHitlDecisionRequest, HitlDecision, ResolveStageFailureRequest, RiskAcknowledgement,
+    StageFailureDecision,
+};
 
 fn wait_until_done(harness: &Harness) {
     wait_until(&harness.service, &harness.pulse, |db| {
@@ -125,6 +128,61 @@ fn a_composed_pulsation_runs_inside_the_mandate_its_specification_approval_issue
             .iter()
             .any(|ack| ack.kind == AcknowledgementKind::Risk)),
         "the high-risk Integrator approval kept its acknowledgement digest"
+    );
+}
+
+#[test]
+fn an_approval_whose_mandate_cannot_be_derived_is_refused_and_changes_nothing() {
+    let harness = Harness::start(|facts, _, _| completed_reply(facts));
+    harness.wait_for_checkpoint("SPECIFICATION");
+    let checkpoint = harness.service.get_hitl_checkpoint(&harness.pulse).unwrap();
+    harness
+        .db()
+        .execute(
+            "UPDATE artifacts SET content=NULL WHERE pulsation_id=?1 AND producer_stage='SPECIFICATION' AND acceptance='candidate' AND kind='stage_payload_v1'",
+            [&harness.pulse],
+        )
+        .unwrap();
+    let error = harness
+        .service
+        .apply_hitl_decision_with_acknowledgements(
+            ApplyHitlDecisionRequest {
+                pulsation_id: harness.pulse.clone(),
+                checkpoint_id: checkpoint.checkpoint_id.clone(),
+                expected_state_version: checkpoint.state_version,
+                feedback: None,
+                decision: HitlDecision::Approve,
+            },
+            None,
+            Some(RiskAcknowledgement {
+                reason: "Fixture approval.".into(),
+            }),
+        )
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("mandate_derivation_failed"),
+        "{error}"
+    );
+    assert!(
+        harness
+            .service
+            .pulsation_mandates(&harness.pulse)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        harness
+            .service
+            .checkpoint_receipt(&checkpoint.checkpoint_id)
+            .unwrap()
+            .is_none(),
+        "a refused approval leaves no receipt"
+    );
+    let still = harness.service.get_hitl_checkpoint(&harness.pulse).unwrap();
+    assert_eq!(still.checkpoint_id, checkpoint.checkpoint_id);
+    assert_eq!(
+        still.state_version, checkpoint.state_version,
+        "nothing was half approved"
     );
 }
 
