@@ -308,6 +308,35 @@ fn paths_match_by_windows_identity() {
     assert!(mandate.grants_path("Src/Auth.rs"));
 }
 
+/// The identity is the v4 owner table's (`RelPath::canonical_key`): ordinal,
+/// ASCII-only case folding. A non-ASCII case variant is another key and is
+/// refused, never granted by accident; a reserved device name is never a
+/// grant, because grants are built from `RelPath`.
+#[test]
+fn unicode_and_reserved_names_fail_closed() {
+    let mut mandate = issue();
+    mandate.scope.grants.push(WriteGrant {
+        path: "docs/ação.md".into(),
+        origins: vec![WriteClass::TaskPath],
+        unit_key: None,
+        amendment_revision: None,
+    });
+    let verdict = |path| check_write(Some(&mandate), WriteSource::PipelineStage, path);
+    assert_eq!(verdict("DOCS\\ação.md"), WriteVerdict::Allowed);
+    assert!(matches!(verdict("docs/AÇÃO.md"), WriteVerdict::Refused(_)));
+    assert_eq!(
+        path_key("Docs/Ação.md"),
+        RelPath::new("Docs/Ação.md").unwrap().canonical_key()
+    );
+    for reserved in ["src/nul.rs", "CON", "docs/Com1.md"] {
+        assert!(RelPath::new(reserved).is_err(), "`{reserved}`");
+        assert!(
+            matches!(verdict(reserved), WriteVerdict::Refused(_)),
+            "`{reserved}`"
+        );
+    }
+}
+
 #[test]
 fn intent_capabilities_and_budget_are_recorded_sorted() {
     let mandate = issue();

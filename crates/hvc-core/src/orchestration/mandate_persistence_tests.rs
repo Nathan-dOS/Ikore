@@ -251,6 +251,36 @@ fn approving_the_specification_issues_the_previewed_mandate_and_a_receipt() {
 }
 
 #[test]
+fn approving_the_specification_again_reissues_on_the_chain() {
+    let f = Fixture::new(PulsationStage::Specification);
+    // A revision back to the Specification after an earlier approval.
+    let first = enforce(&f, &["src/old.rs"]);
+    f.accept(&f.output("advance", None, "revised specification\n"))
+        .unwrap();
+    let checkpoint = f.service.get_hitl_checkpoint(&f.pulse.id).unwrap();
+    f.service
+        .apply_hitl_decision(f.decision(HitlDecision::Approve))
+        .unwrap();
+    let revisions = f.service.pulsation_mandates(&f.pulse.id).unwrap();
+    assert_eq!(revisions.len(), 2);
+    assert_eq!(revisions[1].cause, MandateCause::Reissued);
+    assert_eq!(revisions[1].mandate.revision, 2);
+    assert_eq!(
+        revisions[1].mandate.previous_sha256.as_deref(),
+        Some(first.sha256().unwrap().as_str())
+    );
+    assert_eq!(
+        f.service
+            .checkpoint_receipt(&checkpoint.checkpoint_id)
+            .unwrap()
+            .unwrap()
+            .mandate_revision,
+        Some(2),
+        "the receipt names the revision the approval issued"
+    );
+}
+
+#[test]
 fn a_rejection_gets_a_receipt_and_no_mandate() {
     let f = Fixture::new(PulsationStage::Specification);
     f.accept(&f.output("advance", None, "draft\n")).unwrap();

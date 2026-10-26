@@ -517,6 +517,20 @@ fn clarification_checkpoint_survives_restart_and_answers_cannot_approve_artifact
         .submit_specification_answers(request.clone())
         .unwrap();
     assert!(f.service.submit_specification_answers(request).is_err());
+    let receipt = f
+        .service
+        .checkpoint_receipt(&pending.checkpoint_id)
+        .unwrap()
+        .expect("the answers have a receipt");
+    assert_eq!(receipt.purpose, "clarification");
+    assert_eq!(receipt.decision, "answered");
+    assert!(receipt.feedback_sha256.is_some());
+    assert!(
+        !serde_json::to_string(&receipt)
+            .unwrap()
+            .contains("JWT assinado"),
+        "answers are kept as a digest only"
+    );
     let (job, _) = f.service.claim_next_pending_job().unwrap().unwrap();
     let db = f.service.connection().unwrap();
     let fence = PersistenceService::execution_fence(&db, &job.id).unwrap();

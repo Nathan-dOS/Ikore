@@ -112,7 +112,7 @@ fn a_foundation_task_with_no_confirmed_path_parks_before_specification_and_resol
         .service
         .resolve_path_confirmation_checkpoint(ResolvePathConfirmationRequest {
             pulsation_id: harness.pulse.clone(),
-            checkpoint_id,
+            checkpoint_id: checkpoint_id.clone(),
             expected_state_version: harness.state_version(),
             manual_path_hints: vec![ManualPathHint {
                 task_id: harness.task_id().to_string(),
@@ -120,6 +120,14 @@ fn a_foundation_task_with_no_confirmed_path_parks_before_specification_and_resol
             }],
         })
         .unwrap();
+    let receipt = harness
+        .service
+        .checkpoint_receipt(&checkpoint_id)
+        .unwrap()
+        .expect("the confirmation has a receipt");
+    assert_eq!(receipt.purpose, "path_confirmation");
+    assert_eq!(receipt.decision, "confirmed");
+    assert_eq!(receipt.confirmed_paths, vec!["src/layout.rs".to_string()]);
 
     // Resolving the checkpoint amends the frozen manifest's provenance and
     // queues Specification -- verified directly rather than by waiting for

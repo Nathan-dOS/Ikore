@@ -8791,6 +8791,13 @@ mod tests {
             })
             .expect("API authorization should resolve fallback");
         assert_eq!(response.pulsation.status, PulsationStatus::Planning);
+        let receipt = service
+            .checkpoint_receipt(&checkpoint.checkpoint_id)
+            .unwrap()
+            .expect("the fallback decision has a receipt");
+        assert_eq!(receipt.purpose, "cli_fallback");
+        assert_eq!(receipt.decision, "use_api");
+        assert_eq!(receipt.state_version, checkpoint.state_version);
         let connection = service.connection().unwrap();
         let (job_status, cancellation_reason): (String, Option<String>) = connection
             .query_row(
