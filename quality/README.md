@@ -20,6 +20,7 @@ historical check applies to the source and environment identified in that report
 | Integrator review boundary and revision rounds | [2026-10-24 implementation and validation](review-policy-validation-2026-10-24.md) |
 | Dependency advisories | [2026-10-24 lockfile remediation and validation](dependency-advisories-2026-10-24.md) |
 | Review corrections (editor revisions, check output, quota client, voice setup) | [2026-10-25 implementation and validation](review-corrections-2026-10-25.md) |
+| Execution mandates and approval receipts (ADR-035 M1) | [2026-10-26 implementation and validation](mandates-attestation-m1-validation-2026-10-26.md) |
 | Repository hygiene | [2026-10-17 change record](repository-hygiene-2026-10-17.md) |
 
 ## Historical design references

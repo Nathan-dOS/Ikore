@@ -174,7 +174,9 @@ generated-envelope property test) and its host transactions in
 `persistence_service::mandate_persistence` (acceptance and publication refusals,
 receipts, the preview, the transport amendment, the frozen budget). The full v4
 pipeline runs in `hvc-test-support/tests/execution_mandate.rs`; V55 is in
-`serial_upgrade`; the grants card in the layout tests:
+`serial_upgrade`; the grants card in the layout tests. The receipts of the CLI
+fallback, clarification and path-confirmation decisions are asserted in those
+flows' own tests, and the project-deletion test covers the V55 rows:
 
 ```powershell
 cargo test --locked -p hvc-core --lib mandate -- --test-threads=2
