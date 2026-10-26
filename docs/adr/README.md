@@ -198,3 +198,24 @@ validation is done; Windows acceptance is pending. See the
 [decision](034-risk-preflight-and-doc-reconciliation.md), the
 [review policy](../review-policy.md) and
 `quality/feature-10-remaining-validation-2026-10-25.md`.
+
+## ADR-035: execution mandates, scope grants and trust layers
+
+Accepted on 2026-10-26; not implemented yet. Approving a v4 Specification will
+issue an immutable mandate that records the approved intent, write envelope,
+executor capabilities, checks and frozen budget parameters. The brief will show
+it before the click, and every checkpoint resolution will get a receipt with the
+reviewed digests. A scope request from a Code unit will become a "Grant and
+retry" action on the existing failure checkpoint. A read-only panel will show
+the Identity, Scope, Guardrails and Intent layers. See the
+[decision](035-execution-mandates.md).
+
+## ADR-036: signed local pulsation attestation
+
+Accepted on 2026-10-26; not implemented yet. Every finished pulsation will be
+sealed as an in-toto statement in a DSSE envelope, signed with an Ed25519 key
+kept in the operating system keyring. The statement binds intent, approvals,
+host receipts and published files without carrying any content. It can be
+verified for signature, re-derivation and workspace state, and exported. It
+claims no SLSA level, trusted time or personal identity. See the
+[decision](036-pulsation-attestation.md).
