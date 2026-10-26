@@ -2310,6 +2310,11 @@ pub struct StageExecutionSnapshot {
     #[serde(deserialize_with = "nullable")]
     pub blocked_reason: Option<String>,
     pub checks: Vec<CheckSummaryV1>,
+    /// Local host evidence loaded from sidecars, never part of the model wire schema.
+    #[serde(skip)]
+    pub validation_evidence: Vec<super::validation::RunEvidenceDetailsV1>,
+    #[serde(skip)]
+    pub validation_receipts: Vec<ValidationReceiptV1>,
     pub remaining_budget: RemainingBudgetV1,
     pub usage: UsageSummaryV1,
 }

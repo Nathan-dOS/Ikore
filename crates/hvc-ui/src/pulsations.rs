@@ -183,6 +183,13 @@ fn observed_review_inputs(
     for source in &mut manifest.sources {
         source.path = text(&source.path);
     }
+    for check in &mut manifest.checks {
+        check.status = text(&check.status);
+        check.reason = check.reason.as_deref().map(text);
+        check.interpretation = check.interpretation.as_deref().map(text);
+        check.result = check.result.as_deref().map(text);
+        check.limitations = check.limitations.iter().map(|value| text(value)).collect();
+    }
     CheckpointReviewInputs::Recorded {
         manifest,
         changed_policy_files,
@@ -784,6 +791,8 @@ pub struct PulsationsModel {
     /// Expands the Review section's diff surface to full width, hiding the pulsation list. Formerly
     /// a Workspace concept (`diff_expanded`); moved here with the HITL surface.
     pub diff_expanded: bool,
+    /// Receipt currently inspected in the composed-stage panel.
+    pub(crate) expanded_validation_receipt: Option<String>,
     pub(crate) hitl: HitlReviewState,
     pub(crate) failure: FailureCheckpointState,
     /// The backend the active pulsation's current stage silently failed
@@ -875,6 +884,7 @@ impl PulsationsModel {
             || self.project_id.as_ref().map(AsRef::as_ref) != Some(project_id.as_str());
         if pulse_changed {
             self.validation_error = None;
+            self.expanded_validation_receipt = None;
             self.detail_section = PulsationDetailSection::Overview;
             self.artifacts.clear();
             self.artifact_preview = None;
@@ -940,6 +950,7 @@ impl PulsationsModel {
             self.active_pulsation_id.as_ref().map(AsRef::as_ref) != Some(pulsation_id);
         if pulse_changed {
             self.validation_error = None;
+            self.expanded_validation_receipt = None;
             self.detail_section = PulsationDetailSection::Overview;
             self.cleanup = CleanupState::default();
             self.report = ReportState::default();

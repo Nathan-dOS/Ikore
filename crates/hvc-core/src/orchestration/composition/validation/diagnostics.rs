@@ -5,7 +5,7 @@
 //! attribute stays a diagnostic without `sourceRef`; a nonzero exit with no
 //! parsed diagnostic still yields one, so a failure is never silent.
 
-use super::super::{DiagnosticV1, Handle, MAX_TEXT_CHARS, Severity};
+use super::super::{CheckKind, DiagnosticV1, Handle, MAX_TEXT_CHARS, Severity};
 
 /// Maps a tool-reported path (relative to the candidate or absolute inside
 /// it) to a plan handle.
@@ -21,6 +21,327 @@ impl<F: Fn(&str) -> Option<Handle> + Sync> PathResolver for F {
 
 /// Bounded number of diagnostics kept per receipt (contract: ≤ 64).
 pub const MAX_DIAGNOSTICS: usize = 64;
+
+/// Interpretation of the supported Cargo JSON and libtest protocols. This
+/// deliberately does not infer process success: the runner also checks the
+/// exit status, stream completeness and input integrity.
+#[derive(Debug, Clone)]
+pub struct CargoInterpretation {
+    pub diagnostics: Vec<DiagnosticV1>,
+    pub interpreted: bool,
+    pub build_succeeded: Option<bool>,
+    pub tests_passed: Option<u64>,
+    pub tests_failed: Option<u64>,
+    pub tests_ignored: Option<u64>,
+    pub limitations: Vec<String>,
+}
+
+/// Interpret only the stable Cargo protocol and the standard libtest text
+/// grammar. Unknown harness output is a limitation, never an empty success.
+pub fn interpret_cargo_output(
+    kind: CheckKind,
+    stdout: &str,
+    stderr: &str,
+    resolver: &dyn PathResolver,
+) -> CargoInterpretation {
+    let mut diagnostics = parse_cargo_json(stdout, resolver);
+    let mut result = CargoInterpretation {
+        diagnostics: Vec::new(),
+        interpreted: true,
+        build_succeeded: None,
+        tests_passed: None,
+        tests_failed: None,
+        tests_ignored: None,
+        limitations: Vec::new(),
+    };
+    let mut pending_tests = None;
+    let mut summaries = 0u64;
+    let mut counts = [0u64; 3];
+    let mut failure_output = false;
+    let mut observed_failure = false;
+    for line in stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if line.starts_with('{') {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                limitation(&mut result, "Cargo emitted malformed JSON.");
+                continue;
+            };
+            match value["reason"].as_str() {
+                Some("build-finished") => match value["success"].as_bool() {
+                    Some(success) if result.build_succeeded.is_none() => {
+                        result.build_succeeded = Some(success);
+                    }
+                    _ => limitation(
+                        &mut result,
+                        "Cargo build completion is invalid or repeated.",
+                    ),
+                },
+                Some("compiler-message") => {
+                    if !value["message"]["level"].is_string()
+                        || !value["message"]["message"].is_string()
+                        || !value["message"]["spans"].is_array()
+                    {
+                        limitation(&mut result, "Cargo emitted an invalid compiler message.");
+                    }
+                }
+                Some("compiler-artifact" | "build-script-executed") => {}
+                _ => limitation(&mut result, "Cargo emitted an unsupported JSON message."),
+            }
+            continue;
+        }
+        if kind != CheckKind::Test {
+            limitation(
+                &mut result,
+                "Cargo emitted output outside its supported JSON protocol.",
+            );
+            continue;
+        }
+        if let Some(total) = running_tests(line) {
+            if pending_tests.replace(total).is_some() {
+                limitation(
+                    &mut result,
+                    "A libtest run has no matching completion summary.",
+                );
+            }
+            failure_output = false;
+            observed_failure = false;
+            continue;
+        }
+        if line.starts_with("test result:") {
+            let Some(summary) = test_summary(line) else {
+                limitation(
+                    &mut result,
+                    "The libtest completion summary is not understood.",
+                );
+                continue;
+            };
+            let total = summary[..4]
+                .iter()
+                .try_fold(0u64, |sum, count| sum.checked_add(*count));
+            if total.is_none() || pending_tests.take() != total {
+                limitation(
+                    &mut result,
+                    "Libtest counts do not match the announced test run.",
+                );
+            }
+            for (count, additional) in counts.iter_mut().zip(summary) {
+                if let Some(sum) = count.checked_add(additional) {
+                    *count = sum;
+                } else {
+                    limitation(&mut result, "Libtest counts exceeded the supported range.");
+                }
+            }
+            summaries += 1;
+            failure_output = false;
+            observed_failure = false;
+            continue;
+        }
+        if line.starts_with("test ")
+            && let Some((_, status)) = line.rsplit_once(" ... ")
+            && (matches!(status, "ok" | "FAILED" | "ignored") || status.starts_with("ignored, "))
+        {
+            observed_failure |= status == "FAILED";
+            continue;
+        }
+        if line == "failures:" && observed_failure {
+            failure_output = true;
+            continue;
+        }
+        if failure_output {
+            // Captured assertion/panic text can be arbitrary. It is retained
+            // only as bounded sanitized diagnostics by the existing parser;
+            // matching libtest run/summary counts are still required below.
+            continue;
+        }
+        if line.starts_with("all doctests ran in ")
+            && line.contains("merged doctests compilation took ")
+        {
+            continue;
+        }
+        limitation(
+            &mut result,
+            "The test harness emitted output the configured parser does not support.",
+        );
+    }
+    if result.build_succeeded.is_none() {
+        limitation(&mut result, "Cargo did not report build completion.");
+    }
+    if kind == CheckKind::Test {
+        let mut combined = stdout.to_owned();
+        combined.push('\n');
+        combined.push_str(stderr);
+        diagnostics.extend(parse_cargo_test(&combined, resolver));
+        if pending_tests.is_some() {
+            limitation(
+                &mut result,
+                "A libtest run has no matching completion summary.",
+            );
+        }
+        if result.build_succeeded == Some(true) && summaries == 0 {
+            limitation(
+                &mut result,
+                "No supported libtest completion summary was observed.",
+            );
+        }
+        if summaries > 0 {
+            result.tests_passed = Some(counts[0]);
+            result.tests_failed = Some(counts[1]);
+            result.tests_ignored = Some(counts[2]);
+        }
+    }
+    let mut failed_targets = 0usize;
+    for line in stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if let Some(count) = failed_target_count(line) {
+            if failed_targets != 0 || kind != CheckKind::Test {
+                limitation(
+                    &mut result,
+                    "The failed-target summary is incomplete or unexpected.",
+                );
+            }
+            failed_targets = count;
+            continue;
+        }
+        if failed_targets > 0 && failed_target_selector(line) {
+            failed_targets -= 1;
+            continue;
+        }
+        if !cargo_stderr_line(line) {
+            limitation(
+                &mut result,
+                "Cargo stderr contains output the configured parser does not support.",
+            );
+        }
+    }
+    if failed_targets > 0 {
+        limitation(
+            &mut result,
+            "The failed-target summary is incomplete or unexpected.",
+        );
+    }
+    diagnostics.truncate(MAX_DIAGNOSTICS);
+    result.diagnostics = diagnostics;
+    result
+}
+
+fn limitation(result: &mut CargoInterpretation, message: &str) {
+    result.interpreted = false;
+    if !result
+        .limitations
+        .iter()
+        .any(|existing| existing == message)
+    {
+        result.limitations.push(message.to_owned());
+    }
+}
+
+fn running_tests(line: &str) -> Option<u64> {
+    let value = line.strip_prefix("running ")?;
+    value
+        .strip_suffix(" tests")
+        .or_else(|| value.strip_suffix(" test"))?
+        .parse()
+        .ok()
+}
+
+/// Counts are passed, failed, ignored, measured and filtered out.
+fn test_summary(line: &str) -> Option<[u64; 5]> {
+    let rest = line.strip_prefix("test result: ")?;
+    let (status, rest) = rest.split_once(". ")?;
+    if !matches!(status, "ok" | "FAILED") {
+        return None;
+    }
+    let mut fields = rest.split(';').map(str::trim);
+    let mut counts = [0u64; 5];
+    for (count, label) in
+        counts
+            .iter_mut()
+            .zip(["passed", "failed", "ignored", "measured", "filtered out"])
+    {
+        let field = fields.next()?;
+        let (number, actual_label) = field.split_once(' ')?;
+        if actual_label != label {
+            return None;
+        }
+        *count = number.parse().ok()?;
+    }
+    if (status == "ok") != (counts[1] == 0)
+        || !fields.next()?.starts_with("finished in ")
+        || fields.next().is_some()
+    {
+        return None;
+    }
+    Some(counts)
+}
+
+fn cargo_stderr_line(line: &str) -> bool {
+    [
+        "Compiling ",
+        "Checking ",
+        "Finished ",
+        "Running ",
+        "Doc-tests ",
+        "warning:",
+        "error:",
+        "error[",
+        "note:",
+        "Caused by:",
+    ]
+    .iter()
+    .any(|prefix| line.starts_with(prefix))
+}
+
+fn failed_target_count(line: &str) -> Option<usize> {
+    let line = line.strip_prefix("error: ")?;
+    let (count, label) = line.split_once(' ')?;
+    let count = count.parse::<usize>().ok()?;
+    ((count == 1 && label == "target failed:") || (count > 1 && label == "targets failed:"))
+        .then_some(count)
+}
+
+fn failed_target_selector(line: &str) -> bool {
+    let Some(selector) = line
+        .strip_prefix('`')
+        .and_then(|line| line.strip_suffix('`'))
+    else {
+        return false;
+    };
+    let mut parts = selector.split_whitespace();
+    let Some(mut target) = parts.next() else {
+        return false;
+    };
+    if target == "-p" {
+        let Some(package) = parts.next() else {
+            return false;
+        };
+        if package.starts_with('-') || package.contains('`') {
+            return false;
+        }
+        let Some(next) = parts.next() else {
+            return false;
+        };
+        target = next;
+    }
+    if matches!(
+        target,
+        "--lib" | "--doc" | "--bins" | "--tests" | "--examples"
+    ) {
+        return parts.next().is_none();
+    }
+    if matches!(target, "--bin" | "--test" | "--example") {
+        return parts
+            .next()
+            .is_some_and(|name| !name.starts_with('-') && !name.contains('`'))
+            && parts.next().is_none();
+    }
+    false
+}
 
 fn bounded(text: &str) -> String {
     // Decode structured tool fields first, sanitize second, then bound text.
@@ -147,7 +468,7 @@ pub fn parse_cargo_test(output: &str, resolver: &dyn PathResolver) -> Vec<Diagno
             let location = trimmed[index + "panicked at ".len()..]
                 .trim_end_matches(':')
                 .to_owned();
-            let file = location.split(':').next().unwrap_or_default().to_owned();
+            let file = source_path_from_location(&location).to_owned();
             if let Some(last) = out.last_mut()
                 && last.source_ref.is_none()
             {
@@ -175,12 +496,30 @@ pub fn parse_cargo_test(output: &str, resolver: &dyn PathResolver) -> Vec<Diagno
             && last.source_ref.is_none()
             && last.code.as_str() != "test_failed"
         {
-            let file = rest.split(':').next().unwrap_or_default();
+            let file = source_path_from_location(rest);
             last.source_ref = resolver.handle_for(file);
             last.message = bounded(&format!("{} ({rest})", last.message));
         }
     }
     out
+}
+
+fn source_path_from_location(location: &str) -> &str {
+    // Split line/column from the right so `C:\\project\\src\\lib.rs`
+    // retains its drive prefix instead of being attributed to `C`.
+    let location = location.trim().trim_end_matches(':');
+    let Some((without_column, column)) = location.rsplit_once(':') else {
+        return location;
+    };
+    if column.parse::<u64>().is_err() {
+        return location;
+    }
+    if let Some((path, line)) = without_column.rsplit_once(':')
+        && line.parse::<u64>().is_ok()
+    {
+        return path;
+    }
+    without_column
 }
 
 /// Fallback for custom commands: `path(line,col): error CODE: text`
@@ -330,5 +669,139 @@ mod tests {
         let exit = exit_diagnostic(Some(3), "first\nlast line\n\n");
         assert_eq!(exit.code.as_str(), "check_failed");
         assert_eq!(exit.message, "The command exited with status 3: last line");
+    }
+
+    const FINISHED: &str = "{\"reason\":\"build-finished\",\"success\":true}\n";
+
+    #[test]
+    fn qualified_cargo_requires_completion_and_understood_output() {
+        let complete = interpret_cargo_output(CheckKind::Compile, FINISHED, "", &resolver);
+        assert!(complete.interpreted);
+        assert_eq!(complete.build_succeeded, Some(true));
+        assert_eq!(complete.tests_passed, None);
+        let missing = interpret_cargo_output(CheckKind::Compile, "", "", &resolver);
+        assert!(!missing.interpreted);
+        let malformed = format!("{{bad json}}\n{FINISHED}");
+        assert!(!interpret_cargo_output(CheckKind::Compile, &malformed, "", &resolver).interpreted);
+        let custom = format!("I checked everything\n{FINISHED}");
+        assert!(!interpret_cargo_output(CheckKind::Compile, &custom, "", &resolver).interpreted);
+    }
+
+    #[test]
+    fn qualified_libtest_counts_multiple_harnesses_and_zero_tests() {
+        let stdout = format!(
+            "{FINISHED}running 2 tests\ntest a ... ok\ntest b ... ignored, platform\n\
+             test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\
+             running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\
+             running 1 test\ntest src/lib.rs - value (line 1) ... ok\n\
+             test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\
+             all doctests ran in 0.33s; merged doctests compilation took 0.32s\n"
+        );
+        let result = interpret_cargo_output(
+            CheckKind::Test,
+            &stdout,
+            "Running unittests src/lib.rs (target/debug/deps/x)\nDoc-tests x",
+            &resolver,
+        );
+        assert!(result.interpreted, "{:?}", result.limitations);
+        assert_eq!(result.tests_passed, Some(2));
+        assert_eq!(result.tests_failed, Some(0));
+        assert_eq!(result.tests_ignored, Some(1));
+        let zero = format!(
+            "{FINISHED}running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+        );
+        assert_eq!(
+            interpret_cargo_output(CheckKind::Test, &zero, "", &resolver).tests_passed,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn qualified_libtest_rejects_incomplete_mismatched_and_custom_harnesses() {
+        let incomplete = format!("{FINISHED}running 2 tests\ntest a ... ok\n");
+        assert!(!interpret_cargo_output(CheckKind::Test, &incomplete, "", &resolver).interpreted);
+        let mismatch = format!(
+            "{FINISHED}running 2 tests\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+        );
+        assert!(!interpret_cargo_output(CheckKind::Test, &mismatch, "", &resolver).interpreted);
+        let custom = format!("{FINISHED}custom runner says all good\n");
+        assert!(!interpret_cargo_output(CheckKind::Test, &custom, "", &resolver).interpreted);
+        assert!(!interpret_cargo_output(CheckKind::Test, FINISHED, "", &resolver).interpreted);
+    }
+
+    #[test]
+    fn qualified_failed_build_is_distinct_from_failed_libtest() {
+        let compiler = concat!(
+            "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"error\",\"code\":{\"code\":\"E0308\"},\"message\":\"wrong type\",\"spans\":[]}}\n",
+            "{\"reason\":\"build-finished\",\"success\":false}\n"
+        );
+        let result = interpret_cargo_output(
+            CheckKind::Test,
+            compiler,
+            "error: could not compile x",
+            &resolver,
+        );
+        assert!(result.interpreted);
+        assert_eq!(result.build_succeeded, Some(false));
+        assert_eq!(result.tests_failed, None);
+        assert_eq!(result.diagnostics[0].code.as_str(), "e0308");
+        let tests = format!(
+            "{FINISHED}running 1 test\ntest a ... FAILED\nfailures:\n---- a stdout ----\nthread 'a' panicked at C:\\project\\src\\lib.rs:3:5:\nassertion failed\nfailures:\n a\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+        );
+        let result = interpret_cargo_output(
+            CheckKind::Test,
+            &tests,
+            "error: test failed, to rerun pass `--lib`",
+            &resolver,
+        );
+        assert!(result.interpreted, "{:?}", result.limitations);
+        assert_eq!(result.tests_failed, Some(1));
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code.as_str() == "test_failed_a" && d.source_ref.is_some())
+        );
+    }
+
+    #[test]
+    fn qualified_no_fail_fast_understands_cargo_failed_target_lists() {
+        // Cargo 1.98.0 with two workspace libraries failing under
+        // --no-fail-fast puts a final selector list on stderr.
+        let harness = "running 1 test\ntest fails ... FAILED\nfailures:\n---- fails stdout ----\nthread 'fails' panicked at src/lib.rs:1:1:\nassertion failed\nfailures:\n    fails\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n";
+        let stdout = format!("{FINISHED}{harness}{harness}");
+        let stderr = "Compiling parser-a v0.1.0\nFinished `test` profile\nRunning unittests src/lib.rs (target/debug/deps/parser_a)\nerror: test failed, to rerun pass `-p parser-a --lib`\nRunning unittests src/lib.rs (target/debug/deps/parser_b)\nerror: test failed, to rerun pass `-p parser-b --lib`\nDoc-tests parser_a\nDoc-tests parser_b\nerror: 2 targets failed:\n    `-p parser-a --lib`\n    `-p parser-b --lib`\n";
+        let result = interpret_cargo_output(CheckKind::Test, &stdout, stderr, &resolver);
+        assert!(result.interpreted, "{:?}", result.limitations);
+        assert_eq!(result.tests_failed, Some(2));
+        let one = format!("{FINISHED}{harness}");
+        assert!(
+            interpret_cargo_output(
+                CheckKind::Test,
+                &one,
+                "error: 1 target failed:\n    `--lib`\n",
+                &resolver
+            )
+            .interpreted
+        );
+        assert!(
+            !interpret_cargo_output(
+                CheckKind::Test,
+                &one,
+                "error: 2 targets failed:\n    `--lib`\n",
+                &resolver
+            )
+            .interpreted
+        );
+        assert!(
+            !interpret_cargo_output(
+                CheckKind::Test,
+                &one,
+                "error: 1 target failed:\n    `cargo run`\n",
+                &resolver
+            )
+            .interpreted
+        );
+        assert!(!interpret_cargo_output(CheckKind::Test, &one, "`--lib`\n", &resolver).interpreted);
     }
 }

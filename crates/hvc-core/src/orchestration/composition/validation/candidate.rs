@@ -1,8 +1,8 @@
 //! Disposable candidate materialization (§2 of the validation contract).
 //!
-//! A candidate is the fenced project baseline (the same text-only snapshot
-//! the CLI transport uses: git-ignored, generated and VCS directories are
-//! excluded) overlaid with the validated unit outputs of the execution,
+//! The legacy materializer uses the CLI's safe text snapshot. Qualified Cargo
+//! validation has a separate byte-preserving capture and immutable baseline.
+//! Both are overlaid with the validated unit outputs of the execution,
 //! written under the application's data directory - never the live
 //! checkout. Every run binds to the manifest of what was written.
 
@@ -13,6 +13,14 @@ use globset::{Glob, GlobSetBuilder};
 
 use super::super::{CompositionError, ErrorCode, Invariant, RelPath, Sha256Hex};
 use crate::repository_context::RepositoryContext;
+
+#[path = "candidate_capture.rs"]
+mod capture;
+
+pub use capture::{
+    capture_baseline, capture_baseline_excluding, load_baseline, materialize_from_baseline,
+    verify_candidate,
+};
 
 /// Upper bounds of the disposable copy (the CLI workspace uses the same).
 pub const MAX_CANDIDATE_FILES: usize = 10_000;

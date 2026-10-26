@@ -183,6 +183,33 @@ fn review_inputs_card(manifest: &ReviewInputManifestV1, changed: &[String]) -> A
                 .child(mono(candidate.path.clone()))
                 .child(badge(glyph, ink, word))
         }))
+        .child(section("Host checks (separate from authored coverage)"))
+        .when(manifest.checks.is_empty(), |card| {
+            card.child(detail("No executable check evidence was recorded."))
+        })
+        .children(manifest.checks.iter().enumerate().map(|(index, check)| {
+            let supported = check.status == "passed"
+                && check.freshness == hvc_core::orchestration::composition::review_boundary::Freshness::Fresh
+                && check.interpretation.as_deref().is_none_or(|value| value == "supported");
+            let ink = if supported { theme::success() } else { theme::warning() };
+            div().debug_selector(move || format!("review-inputs-check-{index}"))
+                .min_w_0().flex().flex_col().gap_1()
+                .child(row_head(
+                    format!("review-inputs-check-status-{index}"),
+                    check.check_ref.as_str(),
+                    badge(if supported { Icon::Check } else { Icon::TriangleAlert }, ink,
+                        format!("{} · {}", check.status, check.freshness.as_str())),
+                ))
+                .when_some(check.interpretation.as_ref(), |row, interpretation| {
+                    row.child(detail(format!("Interpretation: {interpretation} · Result: {}",
+                        check.result.as_deref().unwrap_or("unknown"))))
+                })
+                .when_some(check.reason.clone(), |row, reason| row.child(detail(reason)))
+                .child(detail(format!("{} diagnostic(s){}{}", check.diagnostics,
+                    if check.stdout_truncated { " · stdout truncated" } else { "" },
+                    if check.stderr_truncated { " · stderr truncated" } else { "" })))
+                .children(check.limitations.iter().cloned().map(detail))
+        }))
         .child(section("Evidence gaps"))
         .when(manifest.gaps.is_empty(), |card| {
             card.child(detail("None: the host established every input it delivered."))

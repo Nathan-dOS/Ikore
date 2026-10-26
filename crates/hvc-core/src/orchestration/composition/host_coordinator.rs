@@ -10,6 +10,7 @@
 //! Included into `persistence_service` so it can use the service's private
 //! helpers. All model I/O happens outside database transactions.
 
+use super::composition_cargo_validation::cargo_cache_environment;
 use super::composition_persistence::check_status_of;
 use super::{
     AgentRole, AgentRuntimeConfig, CancellationToken, Connection, Job, OptionalExtension, Path,
@@ -35,8 +36,14 @@ use crate::orchestration::composition::schema::{
     RESPONSE_SCHEMA_NAME, SchemaFlavor, executor_response_schema,
 };
 use crate::orchestration::composition::validate::{PlanIndex, validate_child};
+use crate::orchestration::composition::validation::candidate::{
+    load_baseline, materialize_from_baseline,
+};
 use crate::orchestration::composition::validation::profile::{
     ProfileOrigin, ValidationProfileSnapshot, applies_to_stage, resolve_profile,
+};
+use crate::orchestration::composition::validation::runner::{
+    effective_environment_digest, run_qualified_check,
 };
 use crate::orchestration::composition::validation::{
     Candidate, ReceiptContext, materialize_candidate, run_check,
@@ -68,6 +75,12 @@ struct SourceReads {
     /// Every accepted artifact with a path: what was published and what the
     /// workspace holds now.
     artifacts: Vec<ArtifactRead>,
+}
+
+pub(crate) enum CargoFreshness {
+    Fresh,
+    Stale,
+    Unverifiable,
 }
 
 #[derive(Debug)]
@@ -578,8 +591,9 @@ impl PersistenceService {
             return self.park_without_execution(job, parent_run_id, stage, &failure);
         }
         let host_findings = if comp_stage == comp::Stage::Integrator {
-            let Some(evidence) =
-                self.integrator_prechecks(&current.id, input_revision, &inputs, root, &reads)?
+            let Some(evidence) = self
+                .integrator_prechecks(&current.id, input_revision, &inputs, root, &reads)
+                .await?
             else {
                 let failure = classify_composition_error(&CompositionError::new(
                     Invariant::Sc006,
@@ -643,6 +657,34 @@ impl PersistenceService {
         let Some(execution) = admitted else {
             return Ok(());
         };
+        let requires_validation = settings.validation_enabled
+            || Self::frozen_validation_context(&self.connection()?, &execution.id)?.is_some();
+        if requires_validation
+            && let Err(error) = self
+                .freeze_cargo_validation_context(
+                    &execution,
+                    &fence,
+                    project,
+                    &profiles,
+                    cancellation,
+                )
+                .await
+        {
+            if cancellation.is_cancelled() {
+                self.cancel_execution(&execution.id)?;
+                return Err(error);
+            }
+            let failure = UnitFailure {
+                class: FailureClass::ValidationUnavailable,
+                code: "validation_preparation_unavailable".into(),
+                diagnostic: error.to_string(),
+                repairable: false,
+                correction: None,
+                rejected_answer: false,
+            };
+            self.park_execution(job, parent_run_id, &execution, None, &failure)?;
+            return Ok(());
+        }
         if cancellation.is_cancelled() {
             self.cancel_execution(&execution.id)?;
             return Err(PersistenceServiceError::Cancelled(
@@ -824,7 +866,7 @@ impl PersistenceService {
     /// reviewer's Host evidence (ADR-032). What the host cannot verify is an
     /// explicit gap, never silently skipped. `None` when no Code execution of
     /// this input revision was accepted: there is nothing to review.
-    fn integrator_prechecks(
+    async fn integrator_prechecks(
         &self,
         pulsation_id: &str,
         input_revision: u64,
@@ -899,6 +941,9 @@ impl PersistenceService {
                         stdout_truncated: false,
                         stderr_truncated: false,
                         diagnostics: 0,
+                        interpretation: None,
+                        result: None,
+                        limitations: Vec::new(),
                     });
                     continue;
                 };
@@ -912,15 +957,37 @@ impl PersistenceService {
                     stdout_truncated: receipt.stdout.truncated,
                     stderr_truncated: receipt.stderr.truncated,
                     diagnostics: receipt.diagnostics.len(),
+                    interpretation: None,
+                    result: None,
+                    limitations: Vec::new(),
                 };
+                if let Some(details) =
+                    Self::validation_evidence_on(&db, receipt.receipt_id.as_str())?
+                {
+                    row.interpretation = Some(
+                        serde_json::to_value(details.interpretation)
+                            .ok()
+                            .and_then(|v| v.as_str().map(str::to_owned))
+                            .unwrap_or_else(|| "uninterpreted".into()),
+                    );
+                    row.result = Some(
+                        serde_json::to_value(details.result)
+                            .ok()
+                            .and_then(|v| v.as_str().map(str::to_owned))
+                            .unwrap_or_else(|| "unknown".into()),
+                    );
+                    row.limitations = details.limitations;
+                }
                 if receipt.status != comp::ReceiptStatus::Passed {
                     evidence.findings.push(format!(
                         "The {} check named {check} did not pass ({}).",
                         stage.as_db_value(),
                         receipt_status_label(receipt.status)
                     ));
-                    evidence.rows.push(row);
-                    continue;
+                    if receipt.status != comp::ReceiptStatus::Failed {
+                        evidence.rows.push(row);
+                        continue;
+                    }
                 }
                 // Freshness: the inputs the receipt proves must be the
                 // inputs the workspace holds now.
@@ -946,6 +1013,77 @@ impl PersistenceService {
                     evidence.rows.push(row);
                     continue;
                 };
+                let project_id = self.project_of(pulsation_id)?;
+                if let Some(policy) =
+                    Self::cargo_validation_policy_on(&db, &project_id, check.as_str())?
+                {
+                    let (freshness, reason) = self
+                        .inspect_cargo_receipt_freshness(
+                            root,
+                            &project_id,
+                            profile,
+                            &policy,
+                            receipt,
+                        )
+                        .await?;
+                    match freshness {
+                        CargoFreshness::Fresh => row.freshness = Freshness::Fresh,
+                        CargoFreshness::Stale => {
+                            row.freshness = Freshness::Stale;
+                            row.reason = Some(reason.clone());
+                            evidence.gaps.push(EvidenceGap::check(
+                                GapCode::CheckStale,
+                                check,
+                                reason,
+                            ));
+                        }
+                        CargoFreshness::Unverifiable => {
+                            evidence.gaps.push(unverifiable(&mut row, &reason));
+                        }
+                    }
+                    evidence.rows.push(row);
+                    continue;
+                }
+                let executed: ValidationProfileSnapshot = serde_json::from_value(
+                    Self::policy_snapshot_json(&db, receipt.profile_snapshot_id.as_str())?,
+                )
+                .map_err(|e| PersistenceServiceError::Runtime(e.to_string()))?;
+                if executed.cargo_policy.is_some() {
+                    evidence.gaps.push(unverifiable(
+                        &mut row,
+                        "the approved Cargo policy no longer matches the current profile",
+                    ));
+                    evidence.rows.push(row);
+                    continue;
+                }
+                let current_snapshot = resolve_profile(profile, ProfileOrigin::Custom)
+                    .map_err(|e| composition_invalid(&e))?;
+                let legacy_context = ReceiptContext {
+                    stage_execution_id: receipt.stage_execution_id.clone(),
+                    parent_generation: receipt.parent_generation,
+                    profile_snapshot_id: receipt.profile_snapshot_id.clone(),
+                    extra_environment: data_dir
+                        .as_ref()
+                        .map(|dir| {
+                            cache_environment(&dir.join("stage_candidates"), &current_snapshot)
+                        })
+                        .unwrap_or_default(),
+                };
+                if current_snapshot.profile_sha256 != receipt.profile_sha256
+                    || current_snapshot.toolchain_sha256 != receipt.toolchain_sha256
+                    || effective_environment_digest(&current_snapshot, &legacy_context)
+                        != receipt.environment_sha256
+                {
+                    row.freshness = Freshness::Stale;
+                    row.reason = Some("The validation command, toolchain or environment changed after the receipt.".into());
+                    evidence.gaps.push(EvidenceGap::check(
+                        GapCode::CheckStale,
+                        check,
+                        row.reason.clone().unwrap_or_default(),
+                    ));
+                    evidence.rows.push(row);
+                    continue;
+                }
                 let candidate = workspace.get_or_insert_with(|| {
                     let dir = data_dir
                         .as_ref()
@@ -1279,6 +1417,7 @@ impl PersistenceService {
             profile.required || promoted_checks.contains(&profile.check_ref)
         };
         let db = self.connection()?;
+        let frozen_context = Self::frozen_validation_context(&db, &execution.id)?;
         Self::transition_execution(
             &db,
             &execution.id,
@@ -1286,10 +1425,10 @@ impl PersistenceService {
             ExecutionStatus::Validating,
             None,
         )?;
-        if profiles.is_empty() {
+        if profiles.is_empty() && frozen_context.is_none() {
             return Ok(Some((Vec::new(), Vec::new())));
         }
-        if !validation_enabled {
+        if !validation_enabled && frozen_context.is_none() {
             // Configured but not enabled: the reports say `not_run`; the
             // human review proceeds, the qualification gate does not.
             return Ok(Some((
@@ -1308,7 +1447,14 @@ impl PersistenceService {
         // Freeze the profiles for this execution: resolved executable identity
         // and digest, recorded as immutable snapshots.
         let mut snapshots: Vec<(comp::Uuid, ValidationProfileSnapshot)> = Vec::new();
-        for profile in profiles {
+        if let Some((_, frozen)) = &frozen_context {
+            snapshots.extend(
+                frozen
+                    .iter()
+                    .map(|entry| (entry.snapshot_id.clone(), entry.snapshot.clone())),
+            );
+        }
+        for profile in profiles.iter().filter(|_| frozen_context.is_none()) {
             let origin = if profile.toolchain_identity == "cargo" {
                 ProfileOrigin::Preset
             } else {
@@ -1345,6 +1491,18 @@ impl PersistenceService {
         let root = Path::new(&project.workspace_path);
         let candidates_root = data_dir.join("stage_candidates");
         let build_dir = candidates_root.join(&execution.id).join("build");
+        let baseline = if let Some((expected, _)) = &frozen_context {
+            let baseline = load_baseline(&candidates_root.join(&execution.id).join("baseline"))
+                .map_err(|e| composition_invalid(&e))?;
+            if &baseline.candidate_sha256 != expected {
+                return Err(PersistenceServiceError::Validation(
+                    "The frozen Cargo baseline identity changed.".into(),
+                ));
+            }
+            Some(baseline)
+        } else {
+            None
+        };
         let mut repaired: HashSet<String> = HashSet::new();
         loop {
             if cancellation.is_cancelled() {
@@ -1354,8 +1512,11 @@ impl PersistenceService {
                 ));
             }
             let staged = self.staged_outputs(execution, index, preparation)?;
-            let candidate = materialize_candidate(root, &staged, &build_dir)
-                .map_err(|e| composition_invalid(&e))?;
+            let candidate = match &baseline {
+                Some(baseline) => materialize_from_baseline(baseline, &staged, &build_dir),
+                None => materialize_candidate(root, &staged, &build_dir),
+            }
+            .map_err(|e| composition_invalid(&e))?;
             let mut summaries = Vec::with_capacity(snapshots.len());
             let mut receipts = Vec::with_capacity(snapshots.len());
             for (snapshot_id, snapshot) in &snapshots {
@@ -1653,6 +1814,19 @@ impl PersistenceService {
         candidates_root: &Path,
         cancellation: &CancellationToken,
     ) -> Result<comp::ValidationReceiptV1, PersistenceServiceError> {
+        let project_id = self.project_of(&execution.pulsation_id)?;
+        let context = ReceiptContext {
+            stage_execution_id: comp::Uuid::new(execution.id.clone())
+                .map_err(|e| composition_invalid(&e))?,
+            parent_generation: execution.parent_generation as u32,
+            profile_snapshot_id: snapshot_id.clone(),
+            extra_environment: if snapshot.cargo_policy.is_some() {
+                cargo_cache_environment(candidates_root, &project_id, snapshot)
+            } else {
+                cache_environment(candidates_root, snapshot)
+            },
+        };
+        let environment_sha256 = effective_environment_digest(snapshot, &context);
         let db = self.connection()?;
         let input_manifest = candidate
             .input_manifest_sha256(&snapshot.profile.input_globs)
@@ -1664,20 +1838,61 @@ impl PersistenceService {
             input_manifest.as_str(),
             snapshot.profile_sha256.as_str(),
         )? && previous.status == comp::ReceiptStatus::Passed
+            && previous.candidate_sha256 == candidate.candidate_sha256
+            && previous.toolchain_sha256 == snapshot.toolchain_sha256
+            && previous.environment_sha256 == environment_sha256
+            && crate::orchestration::composition::validation::runner::tools_unchanged(snapshot)
         {
-            return Ok(previous);
+            let qualified = match &snapshot.cargo_policy {
+                Some(policy) => Self::validation_evidence_on(&db, previous.receipt_id.as_str())?
+                    .is_some_and(|details| {
+                        details.qualifies()
+                            && details.parser_version == policy.parser_version
+                            && details.policy_sha256
+                                == comp::canonical_sha256(policy, &[])
+                                    .unwrap_or_else(|_| comp::Sha256Hex::of(b"invalid-policy"))
+                    }),
+                None => true,
+            };
+            if qualified {
+                return Ok(previous);
+            }
         }
+        let frozen = Self::frozen_validation_context(&db, &execution.id)?;
         drop(db);
-        let context = ReceiptContext {
-            stage_execution_id: comp::Uuid::new(execution.id.clone())
-                .map_err(|e| composition_invalid(&e))?,
-            parent_generation: execution.parent_generation as u32,
-            profile_snapshot_id: snapshot_id.clone(),
-            extra_environment: cache_environment(candidates_root, snapshot),
-        };
         let resolver = path_resolver(&candidate.dir, preparation);
-        let receipt = run_check(snapshot, candidate, &context, &resolver, cancellation).await;
-        Self::insert_validation_run(&self.connection()?, &receipt)?;
+        let receipt = if let Some(policy) = &snapshot.cargo_policy {
+            let mut observed = snapshot.clone();
+            if frozen
+                .as_ref()
+                .and_then(|(_, profiles)| profiles.iter().find(|p| &p.snapshot_id == snapshot_id))
+                .is_none_or(|entry| entry.environment_sha256 != environment_sha256)
+            {
+                observed.cargo_unavailable_reason = Some("The effective environment changed after admission; review the configuration and start a new execution.".into());
+            }
+            let (receipt, details) = run_qualified_check(
+                &observed,
+                policy,
+                candidate,
+                &context,
+                &resolver,
+                cancellation,
+            )
+            .await;
+            receipt
+                .check_execution_semantics()
+                .map_err(|e| composition_invalid(&e))?;
+            let mut db = self.connection()?;
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            Self::insert_validation_run(&tx, &receipt)?;
+            Self::insert_validation_evidence(&tx, &details)?;
+            tx.commit()?;
+            receipt
+        } else {
+            let receipt = run_check(snapshot, candidate, &context, &resolver, cancellation).await;
+            Self::insert_validation_run(&self.connection()?, &receipt)?;
+            receipt
+        };
         Ok(receipt)
     }
 
@@ -1702,8 +1917,15 @@ impl PersistenceService {
         else {
             return Ok("undetermined");
         };
-        let baseline_dir = candidates_root.join(&execution.id).join("baseline");
-        let baseline = match materialize_candidate(root, &[], &baseline_dir) {
+        let baseline_dir = candidates_root.join(&execution.id).join("baseline_run");
+        let frozen = Self::frozen_validation_context(&self.connection()?, &execution.id)?;
+        let materialized = if frozen.is_some() {
+            load_baseline(&candidates_root.join(&execution.id).join("baseline"))
+                .and_then(|baseline| materialize_from_baseline(&baseline, &[], &baseline_dir))
+        } else {
+            materialize_candidate(root, &[], &baseline_dir)
+        };
+        let baseline = match materialized {
             Ok(candidate) => candidate,
             Err(_) => return Ok("undetermined"),
         };
@@ -1711,13 +1933,19 @@ impl PersistenceService {
         let input_manifest = baseline
             .input_manifest_sha256(&snapshot.profile.input_globs)
             .map_err(|e| composition_invalid(&e))?;
-        let existing = Self::find_validation_receipt(
-            &db,
-            &execution.id,
-            snapshot.profile.check_ref.as_str(),
-            input_manifest.as_str(),
-            snapshot.profile_sha256.as_str(),
-        )?;
+        let existing_json: Option<String> = db.query_row(
+            "SELECT receipt_json FROM host_validation_runs WHERE execution_id=?1 AND check_ref=?2
+             AND input_manifest_sha256=?3 AND profile_sha256=?4 AND toolchain_sha256=?5
+             AND baseline_receipt_id IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+            params![execution.id, snapshot.profile.check_ref.as_str(), input_manifest.as_str(),
+                snapshot.profile_sha256.as_str(), snapshot.toolchain_sha256.as_str()], |r| r.get(0),
+        ).optional()?;
+        let existing = existing_json
+            .map(|json| {
+                serde_json::from_str::<comp::ValidationReceiptV1>(&json)
+                    .map_err(|e| PersistenceServiceError::Runtime(e.to_string()))
+            })
+            .transpose()?;
         drop(db);
         let baseline_receipt = match existing {
             Some(previous) => previous,
@@ -1727,13 +1955,42 @@ impl PersistenceService {
                         .map_err(|e| composition_invalid(&e))?,
                     parent_generation: execution.parent_generation as u32,
                     profile_snapshot_id: snapshot_id.clone(),
-                    extra_environment: cache_environment(candidates_root, snapshot),
+                    extra_environment: if snapshot.cargo_policy.is_some() {
+                        cargo_cache_environment(
+                            candidates_root,
+                            &self.project_of(&execution.pulsation_id)?,
+                            snapshot,
+                        )
+                    } else {
+                        cache_environment(candidates_root, snapshot)
+                    },
                 };
                 let resolver = |_: &str| -> Option<comp::Handle> { None };
-                let mut baseline_receipt =
-                    run_check(snapshot, &baseline, &context, &resolver, cancellation).await;
+                let (mut baseline_receipt, details) = if let Some(policy) = &snapshot.cargo_policy {
+                    let (receipt, details) = run_qualified_check(
+                        snapshot,
+                        policy,
+                        &baseline,
+                        &context,
+                        &resolver,
+                        cancellation,
+                    )
+                    .await;
+                    (receipt, Some(details))
+                } else {
+                    (
+                        run_check(snapshot, &baseline, &context, &resolver, cancellation).await,
+                        None,
+                    )
+                };
                 baseline_receipt.baseline_receipt_id = Some(receipt.receipt_id.clone());
-                Self::insert_validation_run(&self.connection()?, &baseline_receipt)?;
+                let mut db = self.connection()?;
+                let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                Self::insert_validation_run(&tx, &baseline_receipt)?;
+                if let Some(details) = details {
+                    Self::insert_validation_evidence(&tx, &details)?;
+                }
+                tx.commit()?;
                 baseline_receipt
             }
         };

@@ -24,11 +24,15 @@ use super::{
 use crate::orchestration::PipelineVersion;
 use crate::orchestration::composition::recipes::StageInputs;
 use crate::orchestration::composition::review_boundary::{
-    Freshness, GapScope, ReviewBoundary, RiskReview, risk_level_name,
+    Freshness, GapScope, HostCheckRow, ReviewBoundary, RiskReview, risk_level_name,
 };
 use crate::orchestration::composition::review_policy::{self, PolicyCapture, PolicyRead};
 use crate::orchestration::composition::risk::{
     self, CheckFact, CoverageMatrix, RiskAssessment, RiskPolicyV1, VerdictFact,
+};
+use crate::orchestration::composition::validation::evidence::{CheckResult, InterpretationStatus};
+use crate::orchestration::composition::validation::{
+    RunEvidenceDetailsV1, ValidationProfileSnapshot,
 };
 use crate::orchestration::composition::{
     self as comp, CompletedPayloadV1, Handle, UnitModelResponseV1, ValidationCommandProfileV1,
@@ -84,6 +88,181 @@ const fn check_status_name(status: comp::CheckStatus) -> &'static str {
 
 fn runtime(error: impl std::fmt::Display) -> PersistenceServiceError {
     PersistenceServiceError::Runtime(error.to_string())
+}
+
+fn bounded_coverage_text(text: &str) -> String {
+    crate::secret_redactor::redact_secrets(text)
+        .map(|view| view.text.chars().take(400).collect())
+        .unwrap_or_else(|_| "Evidence text unavailable (sanitization failed).".to_owned())
+}
+
+fn unverified_check(mut fact: CheckFact, reason: &str) -> CheckFact {
+    fact.fresh = Some(false);
+    if fact.interpretation.as_deref() != Some("partial") {
+        fact.interpretation = Some("uninterpreted".into());
+    }
+    fact.result = Some("unknown".into());
+    fact.limitations.truncate(7);
+    fact.limitations.push(bounded_coverage_text(reason));
+    fact
+}
+
+/// Execution coverage is weaker than a successful check, but stronger than
+/// launching a process. A supported failure is useful executed evidence;
+/// timeout, incomplete parsing or a changed candidate is not.
+fn coverage_fact_for_receipt(
+    row: HostCheckRow,
+    receipt: Option<&comp::ValidationReceiptV1>,
+    snapshot: Option<&ValidationProfileSnapshot>,
+    details: Option<&RunEvidenceDetailsV1>,
+    expected_execution: Option<&str>,
+) -> CheckFact {
+    let expected_receipt_id = row.receipt_id;
+    let mut fact = CheckFact {
+        check_ref: row.check_ref,
+        status: bounded_coverage_text(&row.status),
+        fresh: match row.freshness {
+            Freshness::Fresh => Some(true),
+            Freshness::Stale | Freshness::Unverifiable => Some(false),
+            Freshness::NotApplicable => None,
+        },
+        interpretation: row.interpretation.map(|text| bounded_coverage_text(&text)),
+        result: row.result.map(|text| bounded_coverage_text(&text)),
+        limitations: row
+            .limitations
+            .iter()
+            .take(8)
+            .map(|text| bounded_coverage_text(text))
+            .collect(),
+    };
+    let Some(receipt) = receipt else {
+        return unverified_check(fact, "No complete host execution receipt is available.");
+    };
+    let completed = receipt.started_at.is_some()
+        && receipt.finished_at.is_some()
+        && receipt.exit_code.is_some()
+        && receipt.check_execution_semantics().is_ok()
+        && receipt.check_ref == fact.check_ref
+        && expected_receipt_id.as_deref() == Some(receipt.receipt_id.as_str())
+        && expected_execution.is_none_or(|id| receipt.stage_execution_id.as_str() == id)
+        && matches!(
+            receipt.status,
+            comp::ReceiptStatus::Passed | comp::ReceiptStatus::Failed
+        )
+        && match receipt.status {
+            comp::ReceiptStatus::Passed => fact.status == "passed",
+            comp::ReceiptStatus::Failed => fact.status == "failed",
+            _ => false,
+        };
+    if !completed {
+        return unverified_check(
+            fact,
+            "The receipt does not establish a completed check execution.",
+        );
+    }
+    let Some(snapshot) = snapshot else {
+        return unverified_check(fact, "The command snapshot is unavailable.");
+    };
+    if snapshot.profile.check_ref != receipt.check_ref
+        || snapshot.profile_sha256 != receipt.profile_sha256
+        || snapshot.toolchain_sha256 != receipt.toolchain_sha256
+    {
+        return unverified_check(
+            fact,
+            "The receipt does not match its command/tool snapshot.",
+        );
+    }
+    let Some(policy) = snapshot.cargo_policy.as_ref() else {
+        // Legacy generic commands have no Cargo interpretation policy. Keep
+        // their existing completed passed/failed contract without inventing
+        // qualified details for historical rows.
+        return fact;
+    };
+    let Some(details) = details else {
+        return unverified_check(fact, "The approved Cargo profile has no execution details.");
+    };
+    let interpretation = match details.interpretation {
+        InterpretationStatus::Supported => "supported",
+        InterpretationStatus::Partial => "partial",
+        InterpretationStatus::Uninterpreted => "uninterpreted",
+        InterpretationStatus::NotApplicable => "not_applicable",
+    };
+    let result = match details.result {
+        CheckResult::Passed => "passed",
+        CheckResult::Failed => "failed",
+        CheckResult::Unknown => "unknown",
+    };
+    fact.interpretation
+        .get_or_insert_with(|| interpretation.into());
+    fact.result.get_or_insert_with(|| result.into());
+    for limitation in details.limitations.iter().take(8) {
+        let text = bounded_coverage_text(limitation);
+        if fact.limitations.len() < 8 && !fact.limitations.contains(&text) {
+            fact.limitations.push(text);
+        }
+    }
+    let policy_sha = comp::canonical_sha256(policy, &[]).ok();
+    if !details.executed()
+        || details.receipt_id != receipt.receipt_id
+        || policy_sha.as_ref() != Some(&details.policy_sha256)
+        || details.parser_version != policy.parser_version
+        || result != fact.status
+    {
+        return unverified_check(
+            fact,
+            "Cargo execution evidence is inconclusive or inconsistent.",
+        );
+    }
+    fact
+}
+
+fn persisted_coverage_fact(
+    db: &Connection,
+    row: HostCheckRow,
+    expected_execution: Option<&str>,
+) -> Result<CheckFact, PersistenceServiceError> {
+    let receipt_json: Option<String> = match row.receipt_id.as_deref() {
+        Some(id) => db
+            .query_row(
+                "SELECT receipt_json FROM host_validation_runs WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?,
+        None => None,
+    };
+    let receipt: Option<comp::ValidationReceiptV1> =
+        receipt_json.and_then(|json| serde_json::from_str(&json).ok());
+    let (snapshot, details) = match receipt.as_ref() {
+        Some(receipt) => {
+            let snapshot_json: Option<String> = db
+                .query_row(
+                    "SELECT snapshot_json FROM composition_policy_snapshots WHERE id=?1",
+                    [receipt.profile_snapshot_id.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let details_json: Option<String> = db
+                .query_row(
+                    "SELECT details_json FROM host_validation_run_details WHERE receipt_id=?1",
+                    [receipt.receipt_id.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            (
+                snapshot_json.and_then(|json| serde_json::from_str(&json).ok()),
+                details_json.and_then(|json| serde_json::from_str(&json).ok()),
+            )
+        }
+        None => (None, None),
+    };
+    Ok(coverage_fact_for_receipt(
+        row,
+        receipt.as_ref(),
+        snapshot.as_ref(),
+        details.as_ref(),
+        expected_execution,
+    ))
 }
 
 impl PersistenceService {
@@ -294,18 +473,11 @@ impl PersistenceService {
         let mut checks = BTreeMap::<Handle, CheckFact>::new();
         let mut rows = manifest.checks.clone();
         rows.sort_by_key(|row| row.stage);
+        let db = self.connection()?;
         for row in rows {
             checks.insert(
                 row.check_ref.clone(),
-                CheckFact {
-                    check_ref: row.check_ref.clone(),
-                    status: row.status.clone(),
-                    fresh: match row.freshness {
-                        Freshness::Fresh => Some(true),
-                        Freshness::Stale | Freshness::Unverifiable => Some(false),
-                        Freshness::NotApplicable => None,
-                    },
-                },
+                persisted_coverage_fact(&db, row, None)?,
             );
         }
         // The Integrator's own checks ran on the reviewed candidate just now.
@@ -313,11 +485,28 @@ impl PersistenceService {
             let status = check_status_name(summary.status);
             checks.insert(
                 summary.check_ref.clone(),
-                CheckFact {
-                    check_ref: summary.check_ref.clone(),
-                    status: status.to_owned(),
-                    fresh: (!matches!(status, "not_run" | "unavailable")).then_some(true),
-                },
+                persisted_coverage_fact(
+                    &db,
+                    HostCheckRow {
+                        stage: comp::Stage::Integrator,
+                        check_ref: summary.check_ref.clone(),
+                        status: status.to_owned(),
+                        freshness: if matches!(status, "passed" | "failed") {
+                            Freshness::Fresh
+                        } else {
+                            Freshness::NotApplicable
+                        },
+                        reason: None,
+                        receipt_id: summary.receipt_id.as_ref().map(|id| id.as_str().to_owned()),
+                        interpretation: None,
+                        result: None,
+                        limitations: Vec::new(),
+                        stdout_truncated: false,
+                        stderr_truncated: false,
+                        diagnostics: 0,
+                    },
+                    Some(execution_id),
+                )?,
             );
         }
         let checks = checks.into_values().collect::<Vec<_>>();
@@ -473,5 +662,227 @@ impl PersistenceService {
             ],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod cargo_coverage_tests {
+    use super::*;
+    use crate::orchestration::SchemaV1;
+    use crate::orchestration::composition::validation::CargoValidationPolicyV1;
+    use crate::orchestration::composition::validation::evidence::{
+        PreparationEvidence, ToolVersion, ValidationPhase,
+    };
+    use crate::orchestration::composition::validation::profile::ProfileOrigin;
+
+    fn fixture() -> (
+        HostCheckRow,
+        comp::ValidationReceiptV1,
+        ValidationProfileSnapshot,
+        RunEvidenceDetailsV1,
+    ) {
+        let policy = CargoValidationPolicyV1::default();
+        let profile = ValidationCommandProfileV1 {
+            schema_version: SchemaV1,
+            profile_id: comp::Uuid::generate(),
+            profile_version: 2,
+            check_ref: Handle::new("cargo_test").unwrap(),
+            kind: comp::CheckKind::Test,
+            required: true,
+            executable: "cargo".into(),
+            argv: vec!["test".into()],
+            cwd_relative_path: ".".into(),
+            input_globs: vec!["**/*".into()],
+            environment_names: Vec::new(),
+            toolchain_identity: "cargo".into(),
+            timeout_seconds: 900,
+            max_log_bytes: 1024,
+        };
+        let snapshot = ValidationProfileSnapshot {
+            profile_sha256: comp::canonical_sha256(&profile, &[]).unwrap(),
+            profile,
+            origin: ProfileOrigin::Preset,
+            resolved_executable: Some("fixture/cargo".into()),
+            resolved_executable_sha256: Some(comp::Sha256Hex::of(b"executable")),
+            toolchain_sha256: comp::Sha256Hex::of(b"toolchain"),
+            cargo_policy: Some(policy.clone()),
+            cargo_toolchain: None,
+            cargo_unavailable_reason: None,
+            effective_environment: Vec::new(),
+        };
+        let empty_log = || comp::LogExcerptV1 {
+            text: String::new(),
+            truncated: false,
+        };
+        let receipt = comp::ValidationReceiptV1 {
+            schema_version: SchemaV1,
+            receipt_id: comp::Uuid::generate(),
+            stage_execution_id: comp::Uuid::generate(),
+            parent_generation: 1,
+            check_ref: snapshot.profile.check_ref.clone(),
+            profile_snapshot_id: comp::Uuid::generate(),
+            profile_sha256: snapshot.profile_sha256.clone(),
+            candidate_sha256: comp::Sha256Hex::of(b"candidate"),
+            input_manifest_sha256: comp::Sha256Hex::of(b"inputs"),
+            toolchain_sha256: snapshot.toolchain_sha256.clone(),
+            environment_sha256: comp::Sha256Hex::of(b"environment"),
+            status: comp::ReceiptStatus::Passed,
+            exit_code: Some(0),
+            started_at: Some(comp::Timestamp::now()),
+            finished_at: Some(comp::Timestamp::now()),
+            stdout: empty_log(),
+            stderr: empty_log(),
+            diagnostics: Vec::new(),
+            baseline_receipt_id: None,
+        };
+        let row = HostCheckRow {
+            stage: comp::Stage::Test,
+            check_ref: receipt.check_ref.clone(),
+            status: "passed".into(),
+            freshness: Freshness::Fresh,
+            reason: None,
+            receipt_id: Some(receipt.receipt_id.as_str().into()),
+            interpretation: None,
+            result: None,
+            limitations: Vec::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            diagnostics: 0,
+        };
+        let details = RunEvidenceDetailsV1 {
+            schema_version: SchemaV1,
+            receipt_id: receipt.receipt_id.clone(),
+            policy_sha256: comp::canonical_sha256(&policy, &[]).unwrap(),
+            parser_version: policy.parser_version,
+            phase: ValidationPhase::Execution,
+            interpretation: InterpretationStatus::Supported,
+            result: CheckResult::Passed,
+            candidate_integrity: true,
+            preparation: Some(PreparationEvidence {
+                status: comp::ReceiptStatus::Passed,
+                exit_code: Some(0),
+                started_at: receipt.started_at.clone(),
+                finished_at: receipt.finished_at.clone(),
+                stdout: empty_log(),
+                stderr: empty_log(),
+            }),
+            tool_versions: ["cargo", "rustc", "rustdoc"]
+                .into_iter()
+                .map(|tool| ToolVersion {
+                    tool: tool.into(),
+                    version: Some(format!("{tool} fixture")),
+                })
+                .collect(),
+            tests_passed: Some(1),
+            tests_failed: Some(0),
+            tests_ignored: Some(0),
+            limitations: Vec::new(),
+        };
+        (row, receipt, snapshot, details)
+    }
+
+    #[test]
+    fn a_completed_supported_cargo_failure_remains_executed_without_passing_its_gate() {
+        let (mut row, mut receipt, snapshot, mut details) = fixture();
+        row.status = "failed".into();
+        receipt.status = comp::ReceiptStatus::Failed;
+        receipt.exit_code = Some(101);
+        details.result = CheckResult::Failed;
+        assert!(details.executed());
+        assert!(!details.qualifies());
+        let fact = coverage_fact_for_receipt(
+            row,
+            Some(&receipt),
+            Some(&snapshot),
+            Some(&details),
+            Some(receipt.stage_execution_id.as_str()),
+        );
+        assert_eq!(fact.status, "failed");
+        assert_eq!(fact.fresh, Some(true));
+        assert_eq!(fact.interpretation.as_deref(), Some("supported"));
+        assert_eq!(fact.result.as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn approved_cargo_coverage_refuses_missing_inconclusive_or_inconsistent_evidence() {
+        for defect in [
+            "missing_details",
+            "missing_snapshot",
+            "partial",
+            "unknown",
+            "integrity",
+            "preparation",
+            "tools",
+            "receipt_binding",
+            "row_receipt_binding",
+            "policy_binding",
+            "parser",
+            "phase",
+            "not_started",
+            "not_finished",
+            "not_exited",
+            "wrong_execution",
+            "profile_binding",
+            "tool_binding",
+            "error",
+        ] {
+            let (mut row, mut receipt, mut snapshot, mut details) = fixture();
+            let mut expected = receipt.stage_execution_id.as_str().to_owned();
+            match defect {
+                "partial" => details.interpretation = InterpretationStatus::Partial,
+                "unknown" => details.result = CheckResult::Unknown,
+                "integrity" => details.candidate_integrity = false,
+                "preparation" => details.preparation = None,
+                "tools" => details.tool_versions[0].version = None,
+                "receipt_binding" => details.receipt_id = comp::Uuid::generate(),
+                "row_receipt_binding" => {
+                    row.receipt_id = Some(comp::Uuid::generate().as_str().into())
+                }
+                "policy_binding" => details.policy_sha256 = comp::Sha256Hex::of(b"other policy"),
+                "parser" => details.parser_version += 1,
+                "phase" => details.phase = ValidationPhase::Preparation,
+                "not_started" => receipt.started_at = None,
+                "not_finished" => receipt.finished_at = None,
+                "not_exited" => receipt.exit_code = None,
+                "wrong_execution" => expected = comp::Uuid::generate().as_str().into(),
+                "profile_binding" => {
+                    snapshot.profile_sha256 = comp::Sha256Hex::of(b"changed command")
+                }
+                "tool_binding" => snapshot.toolchain_sha256 = comp::Sha256Hex::of(b"changed tools"),
+                "error" => {
+                    receipt.status = comp::ReceiptStatus::Error;
+                    row.status = "error".into();
+                }
+                _ => {}
+            }
+            let fact = coverage_fact_for_receipt(
+                row,
+                Some(&receipt),
+                (defect != "missing_snapshot").then_some(&snapshot),
+                (defect != "missing_details").then_some(&details),
+                Some(&expected),
+            );
+            assert_eq!(fact.fresh, Some(false), "{defect}");
+            assert_eq!(fact.result.as_deref(), Some("unknown"), "{defect}");
+            assert!(!fact.limitations.is_empty(), "{defect}");
+        }
+    }
+
+    #[test]
+    fn legacy_commands_keep_completed_failure_coverage_but_need_actual_process_evidence() {
+        let (mut row, mut receipt, mut snapshot, _) = fixture();
+        snapshot.cargo_policy = None;
+        row.status = "failed".into();
+        receipt.status = comp::ReceiptStatus::Failed;
+        receipt.exit_code = Some(1);
+        let legacy =
+            coverage_fact_for_receipt(row.clone(), Some(&receipt), Some(&snapshot), None, None);
+        assert_eq!(legacy.fresh, Some(true));
+        assert!(legacy.interpretation.is_none() && legacy.result.is_none());
+        receipt.started_at = None;
+        let no_process =
+            coverage_fact_for_receipt(row, Some(&receipt), Some(&snapshot), None, None);
+        assert_eq!(no_process.fresh, Some(false));
+        assert_eq!(no_process.result.as_deref(), Some("unknown"));
     }
 }

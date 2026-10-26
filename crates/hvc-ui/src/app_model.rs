@@ -344,6 +344,9 @@ pub struct AppModel {
     pub(crate) last_revision_feedback: Option<String>,
     pub(crate) preparation_threshold_input: Entity<NativeTextInput>,
     pub(crate) composition_override_model_input: Entity<NativeTextInput>,
+    pub(crate) cargo_toolchain_input: Entity<NativeTextInput>,
+    pub(crate) cargo_additional_inputs_input: Entity<NativeTextInput>,
+    pub(crate) cargo_timeout_input: Entity<NativeTextInput>,
     pub(crate) sanitization_path_input: Entity<NativeTextInput>,
     pub(crate) sanitization_reason_input: Entity<NativeTextInput>,
     /// ADR-034 M3: the project's additions to the built-in risk policy.
@@ -629,6 +632,12 @@ impl AppModel {
             cx.new(|cx| NativeTextInput::new("Threshold from 0 to 100", cx));
         let composition_override_model_input =
             cx.new(|cx| NativeTextInput::new("Model id (empty = inherit from the stage)", cx));
+        let cargo_toolchain_input = cx
+            .new(|cx| NativeTextInput::new("Installed toolchain (empty = project selection)", cx));
+        let cargo_additional_inputs_input = cx
+            .new(|cx| NativeTextInput::new("Extra input paths/globs, separated by semicolons", cx));
+        let cargo_timeout_input =
+            cx.new(|cx| NativeTextInput::new("Timeout in seconds (1–900)", cx));
         let sanitization_path_input =
             cx.new(|cx| NativeTextInput::new("Repository path, e.g. tests/fixtures/client.rs", cx));
         let sanitization_reason_input =
@@ -755,6 +764,9 @@ impl AppModel {
             cx.observe(&stage_feedback_input, |_, _, cx| cx.notify()),
             cx.observe(&preparation_threshold_input, |_, _, cx| cx.notify()),
             cx.observe(&composition_override_model_input, |_, _, cx| cx.notify()),
+            cx.observe(&cargo_toolchain_input, |_, _, cx| cx.notify()),
+            cx.observe(&cargo_additional_inputs_input, |_, _, cx| cx.notify()),
+            cx.observe(&cargo_timeout_input, |_, _, cx| cx.notify()),
             cx.observe(&context_limit_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_search_input, |_, _, cx| cx.notify()),
             cx.observe(&vault_rename_input, |_, _, cx| cx.notify()),
@@ -841,6 +853,9 @@ impl AppModel {
             last_revision_feedback: None,
             preparation_threshold_input,
             composition_override_model_input,
+            cargo_toolchain_input,
+            cargo_additional_inputs_input,
+            cargo_timeout_input,
             sanitization_path_input,
             sanitization_reason_input,
             risk_globs_input,

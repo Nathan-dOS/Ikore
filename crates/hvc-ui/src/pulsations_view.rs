@@ -1613,6 +1613,7 @@ fn composition_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         AttemptState, CheckStatus, ExecutionStatus, UnitState, UsageCompleteness,
     };
     let state = model.pulsations.read(cx);
+    let expanded_receipt = state.expanded_validation_receipt.clone();
     let Some(snapshot) = state
         .detail()
         .and_then(|detail| detail.stage_execution.clone())
@@ -1707,6 +1708,8 @@ fn composition_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
         .when(!snapshot.checks.is_empty(), |panel| panel
             .child(div().mt_2().text_xs().text_color(theme::text_muted()).child("HOST CHECKS (separate from authored coverage)"))
             .children(snapshot.checks.iter().map(|check| {
+                let receipt = check.receipt_id.as_ref().and_then(|id| snapshot.validation_receipts.iter()
+                    .find(|receipt| &receipt.receipt_id == id));
                 let (label, color) = match check.status {
                     CheckStatus::Passed => ("passed", theme::success()),
                     CheckStatus::Failed => ("failed", theme::danger()),
@@ -1723,8 +1726,118 @@ fn composition_panel(model: &AppModel, cx: &mut Context<AppModel>) -> AnyElement
                     check.check_ref.as_str(),
                     if check.required { "required" } else { "optional" },
                     check.receipt_id.as_ref().map(|id| format!(" · receipt {}", id.as_str().chars().take(8).collect::<String>())).unwrap_or_default()
-                ))
+                )).when_some(receipt, |row, receipt| {
+                    let receipt_id = receipt.receipt_id.as_str().to_owned();
+                    let expanded = expanded_receipt.as_deref() == Some(receipt_id.as_str());
+                    row.child(crate::widgets::btn(
+                        gpui::SharedString::from(format!("validation-receipt-{receipt_id}")),
+                        if expanded { "Hide receipt" } else { "Inspect receipt" },
+                        crate::widgets::ButtonVariant::Secondary, true, cx,
+                        move |model, cx| {
+                            model.pulsations.update(cx, |state, _| {
+                                state.expanded_validation_receipt = if state.expanded_validation_receipt.as_deref() == Some(receipt_id.as_str()) {
+                                    None
+                                } else { Some(receipt_id.clone()) };
+                            });
+                            cx.notify();
+                        },
+                    )).when(expanded, |row| row.child(validation_receipt_details(receipt)))
+                })
             })))
+        .children(snapshot.validation_evidence.iter().map(|details| {
+            use hvc_core::orchestration::composition::validation::evidence::{
+                CheckResult, InterpretationStatus, ValidationPhase,
+            };
+            let interpretation = match details.interpretation {
+                InterpretationStatus::Supported => "supported",
+                InterpretationStatus::Partial => "partial",
+                InterpretationStatus::Uninterpreted => "not interpreted",
+                InterpretationStatus::NotApplicable => "not applicable",
+            };
+            let result = match details.result {
+                CheckResult::Passed => "passed",
+                CheckResult::Failed => "failed",
+                CheckResult::Unknown => "unknown",
+            };
+            let phase = match details.phase {
+                ValidationPhase::Preparation => "preparation",
+                ValidationPhase::Execution => "execution",
+            };
+            let count = |value: Option<u64>| value.map(|n| n.to_string()).unwrap_or_else(|| "unknown".into());
+            div().mt_2().p_2().rounded_md().bg(theme::surface_raised())
+                .flex().flex_col().gap_1()
+                .child(div().text_xs().text_color(if details.qualifies() { theme::success() } else { theme::warning() })
+                    .child(format!("Cargo evidence · receipt {} · {phase} · result {result} · interpretation {interpretation}",
+                        details.receipt_id.as_str().chars().take(8).collect::<String>())))
+                .child(div().text_xs().text_color(theme::text_muted()).child(format!(
+                    "Candidate inputs: {} · tests: {} passed / {} failed / {} ignored",
+                    if details.candidate_integrity { "unchanged" } else { "integrity not established" },
+                    count(details.tests_passed), count(details.tests_failed), count(details.tests_ignored),
+                )))
+                .children(details.tool_versions.iter().map(|tool| div().text_xs().text_color(theme::text_muted())
+                    .child(format!("{}: {}", tool.tool, tool.version.as_deref().unwrap_or("version unavailable")))))
+                .children(details.limitations.iter().cloned().map(|limitation| div().text_xs().text_color(theme::warning()).child(limitation)))
+        }))
+        .into_any_element()
+}
+
+fn validation_receipt_details(
+    receipt: &hvc_core::orchestration::composition::ValidationReceiptV1,
+) -> AnyElement {
+    let timestamp = |value: &Option<hvc_core::orchestration::composition::Timestamp>| {
+        value
+            .as_ref()
+            .map(|value| value.as_str())
+            .unwrap_or("not recorded")
+            .to_owned()
+    };
+    let preview = |text: &str| {
+        const PREVIEW_CHARS: usize = 8_192;
+        let mut excerpt: String = text.chars().take(PREVIEW_CHARS).collect();
+        if text.chars().count() > PREVIEW_CHARS {
+            excerpt.push_str("\n[receipt preview shortened]");
+        }
+        if excerpt.is_empty() {
+            "(empty)".into()
+        } else {
+            excerpt
+        }
+    };
+    div()
+        .p_2()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .text_color(theme::text_muted())
+        .child(div().child(
+            format!("Started: {} · Finished: {} · Exit: {}",
+            timestamp(&receipt.started_at), timestamp(&receipt.finished_at),
+            receipt.exit_code.map(|code| code.to_string()).unwrap_or_else(|| "none".into())),
+        ))
+        .child(div().child(format!("Candidate: {}", receipt.candidate_sha256.as_str())))
+        .child(div().child(format!(
+            "Inputs: {}",
+            receipt.input_manifest_sha256.as_str()
+        )))
+        .children(receipt.diagnostics.iter().map(|diagnostic| {
+            div().child(format!(
+                "{}: {}",
+                diagnostic.code.as_str(),
+                diagnostic.message
+            ))
+        }))
+        .child(div().child(if receipt.stdout.truncated {
+            "stdout (runner output truncated)"
+        } else {
+            "stdout"
+        }))
+        .child(div().child(preview(&receipt.stdout.text)))
+        .child(div().child(if receipt.stderr.truncated {
+            "stderr (runner output truncated)"
+        } else {
+            "stderr"
+        }))
+        .child(div().child(preview(&receipt.stderr.text)))
         .into_any_element()
 }
 

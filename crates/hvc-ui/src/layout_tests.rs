@@ -1656,6 +1656,8 @@ fn composed_detail(pulse: &Pulsation) -> hvc_core::orchestration::PulsationCoord
                 receipt_id: None,
                 status: CheckStatus::NotRun,
             }],
+            validation_evidence: vec![],
+            validation_receipts: vec![],
             remaining_budget: RemainingBudgetV1 {
                 initial_invocations: 0,
                 extra_invocations: 0,
@@ -2173,6 +2175,7 @@ fn with_settings_items(model: &mut AppModel, cx: &mut Context<AppModel>) {
             settings: Default::default(),
             profiles: vec![],
             presets: vec![],
+            cargo_policies: Default::default(),
             overrides: vec![],
             cli_observation_trial: None,
             cli_observation_report: None,
@@ -2733,6 +2736,71 @@ fn sanitization_preview_cannot_authorize_another_project_or_path(cx: &mut TestAp
     fresh.simulate_resize(size(px(1440.0), px(900.0)));
     fresh.run_until_parked();
     assert!(fresh.debug_bounds("sanitization-authorize-0").is_none());
+}
+
+#[gpui::test]
+fn cargo_policy_drafts_are_bound_to_the_project_and_check(cx: &mut TestAppContext) {
+    let (model, visual) = cx.add_window_view(|_, cx| {
+        let mut model = fixture(cx);
+        with_settings_items(&mut model, cx);
+        let presets = hvc_core::orchestration::composition::validation::profile::detect_presets(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+        );
+        model.settings.update(cx, |settings, _| {
+            let project = settings.snapshot.as_mut().unwrap().composition.as_mut().unwrap();
+            project.profiles = vec![(presets[0].clone(), false)];
+            project.presets = presets;
+            project.cargo_policies.insert("cargo_check".into(),
+                hvc_core::orchestration::composition::validation::cargo_policy::CargoValidationPolicyV1 {
+                    additional_inputs: vec!["assets/icon.ico".into()],
+                    toolchain: Some("1.98.0".into()),
+                    ..Default::default()
+                });
+        });
+        model.configure_cargo_profile("cargo_check".into(), cx);
+        model.open_settings(Some(SettingsPage::Composition), cx);
+        model
+    });
+    visual.simulate_resize(size(px(1440.0), px(900.0)));
+    visual.run_until_parked();
+    model.read_with(visual, |model, cx| {
+        assert_eq!(model.cargo_toolchain_input.read(cx).value(), "1.98.0");
+        assert_eq!(
+            model.cargo_additional_inputs_input.read(cx).value(),
+            "assets/icon.ico"
+        );
+        assert!(
+            !model
+                .settings
+                .read(cx)
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .composition
+                .as_ref()
+                .unwrap()
+                .profiles[0]
+                .1
+        );
+    });
+    assert!(visual.debug_bounds("cargo-policy-form").is_some());
+    model.update(visual, |model, cx| {
+        model.settings.update(cx, |settings, _| {
+            settings
+                .snapshot
+                .as_mut()
+                .unwrap()
+                .composition
+                .as_mut()
+                .unwrap()
+                .project_id = "different-project".into();
+        });
+        cx.notify();
+    });
+    let (_, fresh) = visual.add_window_view(|_, _| ModelHarness(model.clone()));
+    fresh.simulate_resize(size(px(1440.0), px(900.0)));
+    fresh.run_until_parked();
+    assert!(fresh.debug_bounds("cargo-policy-form").is_none());
 }
 
 #[gpui::test]
