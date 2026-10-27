@@ -22,6 +22,7 @@ historical check applies to the source and environment identified in that report
 | Review corrections (editor revisions, check output, quota client, voice setup) | [2026-10-25 implementation and validation](review-corrections-2026-10-25.md) |
 | Execution mandates and approval receipts (ADR-035 M1) | [2026-10-26 implementation and validation](mandates-attestation-m1-validation-2026-10-26.md) |
 | Trust layers (ADR-035 M2) | [2026-10-26 implementation and validation](mandates-attestation-m2-validation-2026-10-26.md) |
+| Signed local attestation (ADR-036 M3) | [2026-10-26 implementation and validation](mandates-attestation-m3-validation-2026-10-26.md) |
 | Repository hygiene | [2026-10-17 change record](repository-hygiene-2026-10-17.md) |
 
 ## Historical design references
