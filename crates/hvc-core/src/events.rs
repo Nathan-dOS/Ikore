@@ -18,6 +18,8 @@ pub enum AppEvent {
     Forge(crate::feature_forge::ForgeEvent),
     /// A Companion note changed (ADR-029); the UI reloads its snapshot.
     Notes(crate::companion_notes::NotesEvent),
+    /// Project drawing changed; subscribers reload their sanitized snapshot.
+    Drawings(crate::companion_drawings::service::DrawingsEvent),
     /// Voice setup or dictation changed (ADR-029); the UI rereads the status.
     Voice(crate::voice::VoiceEvent),
     /// A documentation reconciliation proposal finished (ADR-034 M5).
@@ -35,6 +37,7 @@ impl AppEvent {
         match self {
             Self::Forge(_) => "forge://changed",
             Self::Notes(_) => "notes://changed",
+            Self::Drawings(_) => "drawings://changed",
             Self::Voice(_) => "voice://changed",
             Self::DocDrift(_) => "docs://drift",
             Self::WorkspaceChanged(_) => crate::workspace_service::WORKSPACE_CHANGED_EVENT,

@@ -588,7 +588,7 @@ async fn run_check_in_environment(
     };
     let stdout = stdout_result.unwrap_or_else(|_| withheld());
     let stderr = stderr_result.unwrap_or_else(|_| withheld());
-    let status = if unavailable {
+    let status = if unavailable || stdout_truncated || stderr_truncated {
         Some((
             ReceiptStatus::Error,
             "Validation evidence is incomplete or sanitization is unavailable.".to_owned(),
@@ -1152,6 +1152,9 @@ mod sanitization_tests {
 
         let root = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
+        // These path-only fixtures must not contend on the user's shared package cache.
+        let cargo_home = data.path().join("cargo-home");
+        std::fs::create_dir(&cargo_home).unwrap();
         cargo_workspace(root.path());
         let original_lock = std::fs::read(root.path().join("Cargo.lock")).unwrap();
         let policy = CargoValidationPolicyV1 {
@@ -1172,10 +1175,16 @@ mod sanitization_tests {
             stage_execution_id: Uuid::generate(),
             parent_generation: 1,
             profile_snapshot_id: Uuid::generate(),
-            extra_environment: vec![(
-                "CARGO_TARGET_DIR".into(),
-                data.path().join("target").to_string_lossy().into_owned(),
-            )],
+            extra_environment: vec![
+                (
+                    "CARGO_TARGET_DIR".into(),
+                    data.path().join("target").to_string_lossy().into_owned(),
+                ),
+                (
+                    "CARGO_HOME".into(),
+                    cargo_home.to_string_lossy().into_owned(),
+                ),
+            ],
         };
         for profile in presets {
             let snapshot = resolve_cargo_profile(
@@ -1206,9 +1215,11 @@ mod sanitization_tests {
                 assert_eq!(
                     receipt.status,
                     ReceiptStatus::Passed,
-                    "{:?}; {:?}",
+                    "check={}; {:?}; {:?}; stderr={:?}",
+                    profile.check_ref,
                     receipt.diagnostics,
-                    details.limitations
+                    details.limitations,
+                    receipt.stderr.text
                 );
                 assert!(details.qualifies());
                 assert_eq!(
@@ -1279,6 +1290,9 @@ mod sanitization_tests {
 
         let root = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
+        // Keep both the build directory and dependency cache private to this test.
+        let cargo_home = data.path().join("cargo-home");
+        std::fs::create_dir(&cargo_home).unwrap();
         cargo_workspace(root.path());
         let policy = CargoValidationPolicyV1 {
             additional_inputs: vec!["assets/seed.bin".into()],
@@ -1342,10 +1356,16 @@ mod sanitization_tests {
                 stage_execution_id: Uuid::generate(),
                 parent_generation: 1,
                 profile_snapshot_id: Uuid::generate(),
-                extra_environment: vec![(
-                    "CARGO_TARGET_DIR".into(),
-                    data.path().join("target").to_string_lossy().into_owned(),
-                )],
+                extra_environment: vec![
+                    (
+                        "CARGO_TARGET_DIR".into(),
+                        data.path().join("target").to_string_lossy().into_owned(),
+                    ),
+                    (
+                        "CARGO_HOME".into(),
+                        cargo_home.to_string_lossy().into_owned(),
+                    ),
+                ],
             };
             let (receipt, details) = run_qualified_check(
                 &snapshot,

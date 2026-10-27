@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-10-27T11:54:03.2013111Z",
+  "profile": "release example, repository LTO profile",
+  "metric": "gpui_animation_frame_callback_interval_ms",
+  "scope": "Idle full-AppModel callback intervals in deterministic mixed scenes. Not compositor presentation, pan/drag latency or save latency.",
+  "clientSize": "1280x820 logical pixels",
+  "activation": "Native fixture windows explicitly activated before completion; local edits and pan were exercised only after reports completed.",
+  "desktopLoad": "No Canvas Cargo build during sampling; other desktop workloads were not controlled.",
+  "hardware": "canvas-benchmark-machine-2026-10-27.json",
+  "interruptedAttempt": "Earlier 100-element attempt was archived in target/ and replaced by a fresh run after user resumed.",
+  "measurements": [
+    {
+      "elements": 100,
+      "report": "canvas-callback-100-release-2026-10-27.json",
+      "context": "canvas-release-100-context-2026-10-27.json",
+      "samples": 1000,
+      "warmupSamples": 1000,
+      "p95Ms": 6.7732,
+      "p99Ms": 7.1737,
+      "strictProbePassed": true,
+      "withinPlanningBudget16_7Ms": true,
+      "fixtureExecutableSha256": "af03434c383aa2bc204344a0e5c9c7e523c57b641365ce320a248349bf1b3a6b",
+      "maxMs": 8.0341,
+      "intervalsOver16_7Ms": 0
+    },
+    {
+      "elements": 500,
+      "report": "canvas-callback-500-release-2026-10-27.json",
+      "context": "canvas-release-500-context-2026-10-27.json",
+      "samples": 1000,
+      "warmupSamples": 1000,
+      "p95Ms": 13.2121,
+      "p99Ms": 14.8072,
+      "strictProbePassed": false,
+      "withinPlanningBudget16_7Ms": true,
+      "fixtureExecutableSha256": "af03434c383aa2bc204344a0e5c9c7e523c57b641365ce320a248349bf1b3a6b",
+      "maxMs": 18.9069,
+      "intervalsOver16_7Ms": 4
+    }
+  ],
+  "planningBudgetDefinition": "p95 <=16.7 ms and p99 <=16.7 ms; this is not a maximum for every interval"
+}

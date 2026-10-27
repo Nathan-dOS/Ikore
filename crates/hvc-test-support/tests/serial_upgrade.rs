@@ -14,6 +14,15 @@ mod cli_migrations {
     embed_migrations!("../hvc-core/migrations");
 }
 
+fn latest_migration_version() -> i64 {
+    cli_migrations::migrations::runner()
+        .get_migrations()
+        .iter()
+        .map(|migration| i64::from(migration.version()))
+        .max()
+        .expect("the embedded migration set is nonempty")
+}
+
 /// V54 rebuilds the three role-checked tables for the Documentation
 /// Reconciler (ADR-034 M5); its own test proves their rows survive. The
 /// earlier "nothing is rebuilt" checks, which upgrade to the latest version,
@@ -137,10 +146,10 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
         db.query_row(
             "SELECT MAX(version) FROM refinery_schema_history",
             [],
-            |row| row.get::<_, u32>(0)
+            |row| row.get::<_, i64>(0)
         )
         .unwrap(),
-        55
+        latest_migration_version()
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -303,7 +312,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        55
+        latest_migration_version()
     );
     assert_eq!(
         db.query_row(
@@ -841,10 +850,10 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
         db.query_row(
             "SELECT MAX(version) FROM refinery_schema_history",
             [],
-            |r| r.get::<_, u32>(0)
+            |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        55
+        latest_migration_version()
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -997,10 +1006,10 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
         db.query_row(
             "SELECT MAX(version) FROM refinery_schema_history",
             [],
-            |r| r.get::<_, u32>(0)
+            |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        55
+        latest_migration_version()
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1094,10 +1103,10 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
         db.query_row(
             "SELECT MAX(version) FROM refinery_schema_history",
             [],
-            |r| r.get::<_, u32>(0)
+            |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        55
+        latest_migration_version()
     );
     let (error, failure, notices): (String, Option<String>, Option<String>) = db
         .query_row(
@@ -1163,10 +1172,10 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
         db.query_row(
             "SELECT MAX(version) FROM refinery_schema_history",
             [],
-            |r| r.get::<_, u32>(0)
+            |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        55
+        latest_migration_version()
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1238,10 +1247,10 @@ fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
         db.query_row(
             "SELECT MAX(version) FROM refinery_schema_history",
             [],
-            |r| r.get::<_, u32>(0)
+            |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        55
+        latest_migration_version()
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1333,10 +1342,10 @@ fn v47_to_v48_adds_quota_history_with_validated_columns() {
         db.query_row(
             "SELECT MAX(version) FROM refinery_schema_history",
             [],
-            |r| r.get::<_, u32>(0)
+            |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        55
+        latest_migration_version()
     );
     let insert = |values: &str| {
         db.execute(
@@ -1387,10 +1396,10 @@ fn v48_to_v49_preserves_history_and_requires_new_sanitization_evidence() {
         db.query_row(
             "SELECT MAX(version) FROM refinery_schema_history",
             [],
-            |r| r.get::<_, u32>(0)
+            |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        55
+        latest_migration_version()
     );
     for table in [
         "project_secret_redaction_exceptions",
@@ -1505,10 +1514,10 @@ fn v49_to_v50_admits_the_notes_scribe_and_adds_companion_notes() {
         db.query_row(
             "SELECT MAX(version) FROM refinery_schema_history",
             [],
-            |r| r.get::<_, u32>(0)
+            |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        55
+        latest_migration_version()
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1680,10 +1689,10 @@ fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones()
         db.query_row(
             "SELECT MAX(version) FROM refinery_schema_history",
             [],
-            |r| r.get::<_, u32>(0)
+            |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        55
+        latest_migration_version()
     );
     // Later migrations add their own tables; every table V50 had keeps its
     // exact definition.
@@ -2176,10 +2185,10 @@ fn v54_to_v55_adds_cargo_evidence_without_rewriting_or_enabling_legacy_profiles(
         db.query_row(
             "SELECT MAX(version) FROM refinery_schema_history",
             [],
-            |row| row.get::<_, u32>(0)
+            |row| row.get::<_, i64>(0)
         )
         .unwrap(),
-        55
+        latest_migration_version()
     );
     let preserved: (u32, bool, String) = db
         .query_row(
@@ -2242,6 +2251,243 @@ fn v54_to_v55_adds_cargo_evidence_without_rewriting_or_enabling_legacy_profiles(
         0,
         "deleting the command also deletes its approval"
     );
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get::<_, u32>(0)
+        })
+        .unwrap(),
+        0
+    );
+}
+
+/// V57 only adds drawing documents and replay intents. Existing project data
+/// and V55 policy storage remain unchanged, and reopening applies V57 once.
+/// Reconcile parallel versions before deployment; V56 cannot follow applied V57.
+#[test]
+fn v55_to_v57_adds_canvas_tables_without_rewriting_legacy_data() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(55))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('canvas-project','V55 preserved project','C:/canvas-v55-fixture','before','before')", [])
+        .unwrap();
+    db.execute("INSERT INTO companion_notes(id,project_id,capture_request_id,revision,status,raw_input,title,summary,content_markdown,output_language,created_at,updated_at) VALUES('legacy-note','canvas-project','legacy-capture',7,'ready','Keep this capture','Existing note','Keep this summary','Keep this content','en','before','before')", [])
+        .unwrap();
+    db.execute("INSERT INTO logs(id,level,message,created_at) VALUES(901,'info','Canvas upgrade sentinel','before')", [])
+        .unwrap();
+    db.execute("INSERT INTO project_validation_profiles(project_id,check_ref,profile_version,enabled,profile_json,created_at,updated_at) VALUES('canvas-project','legacy-check',3,0,'{}','before','before')", [])
+        .unwrap();
+    db.execute(r#"INSERT INTO project_cargo_validation_policies(project_id,check_ref,profile_version,policy_json,updated_at) VALUES('canvas-project','legacy-check',3,'{"marker":"preserved"}','before')"#, [])
+        .unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('companion_drawings','companion_drawing_sync_jobs')", [], |row| row.get::<_, u32>(0)).unwrap(),
+        0,
+        "the fixture actually starts before Canvas"
+    );
+    let definitions: Vec<(String, String)> = db
+        .prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    drop(db);
+
+    PersistenceService::initialize(root.path()).unwrap();
+    PersistenceService::initialize(root.path()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        latest_migration_version()
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM refinery_schema_history WHERE version=57",
+            [],
+            |row| row.get::<_, u32>(0)
+        )
+        .unwrap(),
+        1,
+        "the migration is applied exactly once"
+    );
+    for (name, before) in definitions {
+        let after: String = db
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [&name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            after, before,
+            "Canvas does not rebuild an existing table: {name}"
+        );
+    }
+    let project: (String, String, String) = db
+        .query_row(
+            "SELECT name,workspace_path,updated_at FROM projects WHERE id='canvas-project'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        project,
+        (
+            "V55 preserved project".into(),
+            "C:/canvas-v55-fixture".into(),
+            "before".into()
+        )
+    );
+    let note: (u64, String, String, String) = db.query_row("SELECT revision,raw_input,summary,content_markdown FROM companion_notes WHERE id='legacy-note'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).unwrap();
+    assert_eq!(
+        note,
+        (
+            7,
+            "Keep this capture".into(),
+            "Keep this summary".into(),
+            "Keep this content".into()
+        )
+    );
+    assert_eq!(
+        db.query_row("SELECT message FROM logs WHERE id=901", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        "Canvas upgrade sentinel"
+    );
+    let policy: (u32, bool, String) = db.query_row("SELECT p.profile_version,p.enabled,c.policy_json FROM project_validation_profiles p JOIN project_cargo_validation_policies c USING(project_id,check_ref) WHERE p.project_id='canvas-project'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+    assert_eq!(policy, (3, false, r#"{"marker":"preserved"}"#.into()));
+
+    for table in ["companion_drawings", "companion_drawing_sync_jobs"] {
+        assert_eq!(
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                .get::<_, u32>(0))
+                .unwrap(),
+            0,
+            "upgrade invents no drawing or pending operation"
+        );
+        assert_eq!(db.query_row(&format!("SELECT COUNT(*) FROM pragma_foreign_key_list('{table}') WHERE \"table\"='projects' AND \"from\"='project_id' AND \"to\"='id' AND on_delete='CASCADE'"), [], |row| row.get::<_, u32>(0)).unwrap(), 1, "{table} is project-scoped");
+    }
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM pragma_foreign_key_list('companion_drawing_sync_jobs') WHERE \"table\"='companion_drawings'", [], |row| row.get::<_, u32>(0)).unwrap(), 0, "a cleanup intent can outlive its document");
+    let insert = |id: &str,
+                  project: &str,
+                  title: &str,
+                  scene_json: &str,
+                  viewport_json: &str,
+                  revision: i64,
+                  mirrored: i64,
+                  basename: &str| {
+        db.execute("INSERT INTO companion_drawings(id,project_id,title,scene_json,viewport_json,revision,mirrored_revision,basename,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'now','now')", params![id, project, title, scene_json, viewport_json, revision, mirrored, basename])
+    };
+    insert(
+        "valid",
+        "canvas-project",
+        "Canvas",
+        "{}",
+        "{}",
+        1,
+        0,
+        "managed-basename",
+    )
+    .expect("valid schema row");
+    insert("bad", "missing", "Canvas", "{}", "{}", 1, 0, "other")
+        .expect_err("a project is required");
+    insert("bad", "canvas-project", "", "{}", "{}", 1, 0, "other")
+        .expect_err("empty titles are rejected");
+    insert(
+        "bad",
+        "canvas-project",
+        &"x".repeat(121),
+        "{}",
+        "{}",
+        1,
+        0,
+        "other",
+    )
+    .expect_err("titles are bounded");
+    insert(
+        "bad",
+        "canvas-project",
+        "Canvas",
+        "invalid",
+        "{}",
+        1,
+        0,
+        "other",
+    )
+    .expect_err("scene JSON syntax is checked");
+    insert(
+        "bad",
+        "canvas-project",
+        "Canvas",
+        "{}",
+        "invalid",
+        1,
+        0,
+        "other",
+    )
+    .expect_err("viewport JSON syntax is checked");
+    insert("bad", "canvas-project", "Canvas", "{}", "{}", 0, 0, "other")
+        .expect_err("revision zero is rejected");
+    insert(
+        "bad",
+        "canvas-project",
+        "Canvas",
+        "{}",
+        "{}",
+        -1,
+        0,
+        "other",
+    )
+    .expect_err("negative revisions are rejected");
+    insert(
+        "bad",
+        "canvas-project",
+        "Canvas",
+        "{}",
+        "{}",
+        1,
+        -1,
+        "other",
+    )
+    .expect_err("mirror revision is nonnegative");
+    insert(
+        "bad",
+        "canvas-project",
+        "Canvas",
+        "{}",
+        "{}",
+        1,
+        0,
+        "managed-basename",
+    )
+    .expect_err("mirror paths are unique within a project");
+    db.execute("INSERT INTO companion_drawing_sync_jobs(project_id,drawing_id,revision,operation,basename) VALUES('canvas-project','already-deleted',1,'delete','retained-cleanup')", [])
+        .expect("deletion intents do not require a surviving document");
+    db.execute("INSERT INTO companion_drawing_sync_jobs(project_id,drawing_id,revision,operation,basename) VALUES('missing','orphan',1,'delete','invalid')", [])
+        .expect_err("an intent still requires its project");
+    db.execute("INSERT INTO companion_drawing_sync_jobs(project_id,drawing_id,revision,operation,basename) VALUES('canvas-project','valid',0,'delete','invalid')", [])
+        .expect_err("intent revisions stay positive");
+    db.execute("INSERT INTO companion_drawing_sync_jobs(project_id,drawing_id,revision,operation,basename) VALUES('canvas-project','valid',1,'upload','invalid')", [])
+        .expect_err("operation names form a closed set");
+    db.execute("INSERT INTO companion_drawing_sync_jobs(project_id,drawing_id,revision,operation,basename) VALUES('canvas-project','valid',1,'write','invalid')", [])
+        .expect_err("a write intent requires its content and desired hashes");
+    for (column, value) in [("status", "'unknown'"), ("started", "2")] {
+        db.execute(
+            &format!("UPDATE companion_drawing_sync_jobs SET {column}={value}"),
+            [],
+        )
+        .expect_err("intent states are closed sets");
+    }
     assert_eq!(
         db.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
             row.get::<_, u32>(0)

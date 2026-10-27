@@ -1997,6 +1997,7 @@ impl PersistenceService {
                 | "vault"
                 | "chat"
                 | "notes"
+                | "canvas"
                 | "agents"
                 | "settings"
                 | "logs"
@@ -2005,7 +2006,7 @@ impl PersistenceService {
                 | "feature-forge"
         ) {
             return Err(PersistenceServiceError::Validation(
-                "activeView must be `home`, `workspace`, `pulsations`, `vault`, `chat`, `notes`, `agents`, `settings`, `logs` or `forge`."
+                "activeView must be `home`, `workspace`, `pulsations`, `vault`, `chat`, `notes`, `canvas`, `agents`, `settings`, `logs` or `forge`."
                     .to_string(),
             ));
         }
@@ -7316,7 +7317,7 @@ mod tests {
 
     /// ADR-029: the Notes view is restored like every other workbench view.
     #[test]
-    fn save_ui_session_accepts_the_notes_view() {
+    fn save_ui_session_accepts_the_notes_and_canvas_views() {
         let (_root, service) = prepare_service();
         let project = service
             .ensure_project_for_workspace(EnsureProjectForWorkspaceRequest {
@@ -7326,31 +7327,33 @@ mod tests {
             .expect("project should be created")
             .project;
 
-        service
-            .save_ui_session(SaveUiSessionRequest {
-                auto_open_review: false,
-                project_id: project.id.clone(),
-                workspace_root: "C:/workspace/notes-view".to_string(),
-                active_tab_path: None,
-                workspace_view_mode: "editor".to_string(),
-                active_view: "notes".to_string(),
-                sidebar_collapsed: false,
-                context_drawer_open: true,
-                active_pulsation_id: None,
-                selected_vault_path: None,
-                active_chat_conversation_id: None,
-                scroll_top: None,
-                tabs: vec![],
-            })
-            .expect("the notes view is a known view");
-        let session = service
-            .load_ui_session(LoadUiSessionRequest {
-                project_id: project.id,
-            })
-            .expect("session loads")
-            .session
-            .expect("session exists");
-        assert_eq!(session.active_view, "notes");
+        for view in ["notes", "canvas"] {
+            service
+                .save_ui_session(SaveUiSessionRequest {
+                    auto_open_review: false,
+                    project_id: project.id.clone(),
+                    workspace_root: "C:/workspace/notes-view".to_string(),
+                    active_tab_path: None,
+                    workspace_view_mode: "editor".to_string(),
+                    active_view: view.to_string(),
+                    sidebar_collapsed: false,
+                    context_drawer_open: true,
+                    active_pulsation_id: None,
+                    selected_vault_path: None,
+                    active_chat_conversation_id: None,
+                    scroll_top: None,
+                    tabs: vec![],
+                })
+                .expect("the notes view is a known view");
+            let session = service
+                .load_ui_session(LoadUiSessionRequest {
+                    project_id: project.id.clone(),
+                })
+                .expect("session loads")
+                .session
+                .expect("session exists");
+            assert_eq!(session.active_view, view);
+        }
     }
 
     #[test]

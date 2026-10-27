@@ -1,0 +1,38 @@
+﻿{
+    "schemaVersion":  1,
+    "auditedAt":  "2026-10-27T12:09:31.2581464Z",
+    "target":  "x86_64-pc-windows-msvc",
+    "rust":  {
+                 "resolvedPackages":  560,
+                 "deniedLicenses":  [
+
+                                    ],
+                 "missingLicenseMetadata":  [
+
+                                            ],
+                 "sourceReview":  [
+
+                                  ],
+                 "noticeLicenses":  [
+
+                                    ]
+             },
+    "technicalPassed":  true,
+    "legalBlockers":  [
+                          {
+                              "id":  "zed-55470",
+                              "title":  "GPL transitive dependencies reported upstream for GPUI",
+                              "url":  "https://github.com/zed-industries/zed/issues/55470",
+                              "status":  "open",
+                              "verifiedAt":  "2026-08-26",
+                              "upstreamState":  "closed",
+                              "upstreamStateReason":  "completed",
+                              "upstreamClosedAt":  "2026-10-07T21:12:58Z",
+                              "upstreamVerifiedAt":  "2026-10-24",
+                              "disposition":  "distribution_blocking",
+                              "scope":  "binary",
+                              "note":  "The Windows graph pinned to gpui 0.2.2 does not contain sum_tree/ztracing/zlog. The upstream issue was closed as completed on 2026-10-07 (official API, queried 2026-10-24). Closing upstream is not a legal decision: on 2026-10-25 the maintainer kept binary distribution blocked, and status stays open until an explicit decision on the distributed content is recorded. Source publication is governed by publicationScopes.source."
+                          }
+                      ],
+    "distributionAllowed":  false
+}

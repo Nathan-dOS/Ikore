@@ -175,6 +175,10 @@ resolução ou decisão jurídica explícita sobre o issue Zed #55470.
 
 ## Tab navigation and panel layout
 
+Companion includes a [native architecture canvas](docs/native-canvas.md) on `Ctrl+0`,
+with project drawings, connected shapes, gesture Undo/Redo and recoverable JSON/SVG
+mirrors. AI analysis is planned separately.
+
 Agents uses a list and one detail panel in CLI and API modes. Pulsations separates Review, Overview, Preparation, and Artifacts; Settings separates Connections, Routes, and Runtime. Agents and Companion share an absolute model-picker overlay with Escape dismissal. Logs has collapsible sections and incremental event display; Vault has independent graph and document scrolling.
 
 Pulsations groups executions by status, with Running first and initially expanded. Each group shows newest-created pulsations first; expansion choices survive view navigation and runtime polling. Review reads complete persisted documents belonging to the current checkpoint, with document/source views, full-content copy, and the existing human decisions. Workspace and Pulsations column dividers support bounded mouse resizing and double-click reset. Widths remain in memory across view navigation. Workspace text, selections, and caret stay clipped to their own viewport; long lines support horizontal scrolling.

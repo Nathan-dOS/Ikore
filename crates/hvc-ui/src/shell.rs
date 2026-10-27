@@ -38,6 +38,7 @@ actions!(
         SelectLogsView,
         SelectChatView,
         SelectNotesView,
+        SelectCanvasView,
         SelectWorkspaceView,
         SelectSettingsView,
         PreviousSection,
@@ -52,7 +53,7 @@ actions!(
 /// Nav rail order, top to bottom: Home, then each `AppTab::RAIL_ORDER` group. The rail itself is
 /// built from the groups; tests walk it through this list.
 #[cfg(test)]
-pub(crate) const RAIL_VIEWS: [AppView; 9] = [
+pub(crate) const RAIL_VIEWS: [AppView; 10] = [
     AppView::Home,
     AppView::Forge,
     AppView::Pulsations,
@@ -61,13 +62,14 @@ pub(crate) const RAIL_VIEWS: [AppView; 9] = [
     AppView::Logs,
     AppView::Chat,
     AppView::Notes,
+    AppView::Canvas,
     AppView::Workspace,
 ];
 
 /// `ctrl-N` per view. Explicit rather than the rail position: a view added to
 /// a group (Notes, ADR-029) takes the next free number instead of moving the
 /// shortcuts developers already know.
-pub(crate) const RAIL_SHORTCUTS: [(AppView, &str); 9] = [
+pub(crate) const RAIL_SHORTCUTS: [(AppView, &str); 10] = [
     (AppView::Home, "ctrl-1"),
     (AppView::Forge, "ctrl-2"),
     (AppView::Pulsations, "ctrl-3"),
@@ -77,6 +79,7 @@ pub(crate) const RAIL_SHORTCUTS: [(AppView, &str); 9] = [
     (AppView::Chat, "ctrl-7"),
     (AppView::Workspace, "ctrl-8"),
     (AppView::Notes, "ctrl-9"),
+    (AppView::Canvas, "ctrl-0"),
 ];
 
 pub(crate) fn register_navigation_keybindings(cx: &mut App) {
@@ -90,6 +93,7 @@ pub(crate) fn register_navigation_keybindings(cx: &mut App) {
         KeyBinding::new("ctrl-7", SelectChatView, None),
         KeyBinding::new("ctrl-8", SelectWorkspaceView, None),
         KeyBinding::new("ctrl-9", SelectNotesView, None),
+        KeyBinding::new("ctrl-0", SelectCanvasView, None),
         KeyBinding::new("ctrl-,", SelectSettingsView, None),
         // Cycle the current view's own section strip (Pulsations/Forge/Settings).
         KeyBinding::new("ctrl-shift-[", PreviousSection, None),
@@ -122,6 +126,7 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
     register_hitl_keybindings(cx);
     crate::failure_checkpoint::register_failure_keybindings(cx);
     register_navigation_keybindings(cx);
+    crate::canvas::register_canvas_keybindings(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
             cx.quit();
@@ -145,7 +150,13 @@ pub fn open_main_window(core: Arc<AppCore>, cx: &mut App) -> anyhow::Result<()> 
             move |_, cx| cx.new(|cx| AppModel::new(core, cx)),
         )
         .context("GPUI failed to create main window")?;
-    let _ = handle.update(cx, |_model, window, _cx| {
+    let _ = handle.update(cx, |_model, window, cx| {
+        let model = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            model
+                .update(cx, |model, cx| model.request_canvas_close(window, cx))
+                .unwrap_or(true)
+        });
         crate::title_bar::paint(window);
         window.activate_window();
     });
@@ -178,6 +189,7 @@ fn parse_qa_window_size(value: &str) -> Option<(f32, f32)> {
 
 impl Render for AppModel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.observe_canvas_focus(window, cx);
         self.observe_performance_frame(window);
         self.note_window_activation(window.is_window_active(), cx);
         let active = self.active_view();
@@ -227,6 +239,9 @@ impl Render for AppModel {
             .on_action(cx.listener(|model, _: &SelectNotesView, _, cx| {
                 model.select_view(AppView::Notes, cx);
             }))
+            .on_action(cx.listener(|model, _: &SelectCanvasView, _, cx| {
+                model.select_view(AppView::Canvas, cx);
+            }))
             .on_action(cx.listener(|model, _: &SelectWorkspaceView, _, cx| {
                 model.select_view(AppView::Workspace, cx);
             }))
@@ -242,6 +257,14 @@ impl Render for AppModel {
             .on_action(cx.listener(|model, _: &RunPrimaryFlowStep, window, cx| {
                 // The suggested step can approve a review; never run it from behind Settings.
                 if model.settings_modal.open {
+                    return;
+                }
+                if model.active_view() == AppView::Canvas && model.canvas.editing_label.is_some() {
+                    model.commit_canvas_label(cx);
+                    if model.canvas.editing_label.is_none() {
+                        model.canvas.focus.focus(window);
+                    }
+                    cx.stop_propagation();
                     return;
                 }
                 if let Some(step) = crate::flow::next_steps(model, cx).into_iter().next() {
@@ -643,6 +666,7 @@ fn content_panel(
         AppView::Vault => vault_panel(model, cx),
         AppView::Chat => chat_panel(model, cx),
         AppView::Notes => crate::notes_view::notes_panel(model, cx),
+        AppView::Canvas => crate::canvas_view::canvas_panel(model, cx),
         AppView::Agents => agents_panel(model, cx),
         AppView::Logs => logs_panel(model, cx),
     }

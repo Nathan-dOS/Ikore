@@ -6,6 +6,10 @@ mod agents;
 mod agents_view;
 mod app_model;
 mod assets;
+mod canvas;
+#[cfg(test)]
+mod canvas_integration_tests;
+mod canvas_view;
 mod chat;
 mod chat_view;
 mod choices;

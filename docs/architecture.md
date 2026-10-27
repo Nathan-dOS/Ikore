@@ -72,6 +72,13 @@ its own note through a host-validated contract. Notes never create tasks,
 features or pulsations. See [ADR-029](adr/README.md#adr-029-companion-notes)
 and [companion_notes](../crates/hvc-core/src/companion_notes/mod.rs).
 
+Companion Canvas also sits outside the pipeline. Its framework-independent scene,
+geometry, validation and SVG exporter live in `companion_drawings`; GPUI owns input,
+camera and gesture history. SQLite commits content plus durable mirror intentions;
+a restricted writer materializes JSON/SVG under the project's `.hvc/drawings/`.
+Project deletion shares the drawing service's project guard. See
+[native canvas](native-canvas.md) for save, conflict and lifecycle behavior.
+
 Voice dictation feeds the same capture path. The core
 [voice service](../crates/hvc-core/src/voice.rs) owns the settings, installs the
 pinned runtime and model on request and registers the global push-to-talk only

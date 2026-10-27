@@ -875,7 +875,11 @@ pub fn materialize_from_baseline(
                     permissions.set_mode(0o644);
                 }
                 #[cfg(windows)]
-                permissions.set_readonly(false);
+                {
+                    // Windows exposes a read-only attribute; Unix uses the explicit mode above.
+                    #[allow(clippy::permissions_set_readonly_false)]
+                    permissions.set_readonly(false);
+                }
                 permissions
             }
         };
@@ -1051,6 +1055,13 @@ mod tests {
         let target = data.path().join("build");
         let build = materialize_from_baseline(&baseline, &staged, &target).unwrap();
         verify_candidate(&build).unwrap();
+        assert!(
+            !fs::metadata(build.dir.join("crates/b/src/lib.rs"))
+                .unwrap()
+                .permissions()
+                .readonly(),
+            "a new staged source must remain writable in the disposable build"
+        );
         write(&build.dir, "crates/a/assets/icon.bin", [9, 0, 8]);
         assert!(verify_candidate(&build).is_err());
         assert_eq!(

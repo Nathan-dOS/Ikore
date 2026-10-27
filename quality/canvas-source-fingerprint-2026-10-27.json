@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "branch": "feat/native-architecture-canvas",
+  "baseRevision": "15d596c8e60dfa6d8eecfe2e964f1a331c6fc7a1",
+  "capturedAtUtc": "2026-10-27T11:52:45.1930894Z",
+  "scope": "Modified and untracked executable sources; no Git commit created",
+  "files": [
+    {
+      "path": "crates/hvc-core/migrations/V57__companion_drawings.sql",
+      "sha256": "663eae83812c714d667a3e5c9ec2504ed6861a9fb6cfe0b3f0ecae167e01e09f"
+    },
+    {
+      "path": "crates/hvc-core/src/app_core.rs",
+      "sha256": "afee4b3690f0ab8868c2e693d664abcda2a0c29e5b69650d8c8b839b9aa24832"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/domain_tests.rs",
+      "sha256": "7dddbecdf1459223a72b891c3aec18e3e58bd7d5cd1436ecb745e76d00ae6db4"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/geometry.rs",
+      "sha256": "0ef31669ed48609e1be61ad943c8273ec1da1a3aae4ffc933cf4b8a27c3b6b73"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/mod.rs",
+      "sha256": "ee56f4cdc7fb353f06d329fede1bdaa22985c488201d2e3c9c5db81988c41443"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/service_tests.rs",
+      "sha256": "8318eed4c4f460fc0333784b4b89e36e18542a786d01b0f5089d3292306b9439"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/service.rs",
+      "sha256": "3709b7fa15429ee9721f39279a2e9bad82d694d964e36b292175c15d1ca77962"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/svg.rs",
+      "sha256": "f25bc4c9fe506affdcb73b214fe6152ad4a7523e57e0a69b7916e6fba50d9376"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/validation.rs",
+      "sha256": "08bedf2d8cc48ab75cac59ef82aa83b371e7fe5e33158c58234f1f79ec79895a"
+    },
+    {
+      "path": "crates/hvc-core/src/companion_drawings/workspace_sync.rs",
+      "sha256": "36c116795663afbe3236b18726c6031bc92dd0f6bc5017b365cc9ce40cdf5d57"
+    },
+    {
+      "path": "crates/hvc-core/src/events.rs",
+      "sha256": "49917f6812ecc0d6c4769e5bd408fae1d890c288f051fa909da23f4bad990a1b"
+    },
+    {
+      "path": "crates/hvc-core/src/lib.rs",
+      "sha256": "f81b812e32e9d0c442a5d9258c2705360fcb55b5359d4045a31c2b3366913871"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/composition/validation/candidate_capture.rs",
+      "sha256": "bb0ecc9858fc6535b68ddaca830e40f44858cf50736717454ccd7744157eb1ee"
+    },
+    {
+      "path": "crates/hvc-core/src/orchestration/composition/validation/runner.rs",
+      "sha256": "846c5c3dc49701e06d6bc8593dc47c296d5675d368bd0d1ed51152e6fa87432e"
+    },
+    {
+      "path": "crates/hvc-core/src/persistence_service.rs",
+      "sha256": "78d8fd33ec22a64ceac037876e470f49ebc3fb348d25df23edc21bfd1fca1d22"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/canvas.rs",
+      "sha256": "51a8c1ff04a4913959f2f6cecc744c55a046f8a0df24659c88cb9443c08552a4"
+    },
+    {
+      "path": "crates/hvc-test-support/tests/serial_upgrade.rs",
+      "sha256": "e83281461b7678958f7fd058ca3cb1afe36259d3f8463eae1b907145d7427eeb"
+    },
+    {
+      "path": "crates/hvc-ui/examples/canvas_preview.rs",
+      "sha256": "2840dff3067dabd7257f705d2f752a963c8a4a36df21ebee8f64082f7e343352"
+    },
+    {
+      "path": "crates/hvc-ui/src/app_model.rs",
+      "sha256": "8f859dee7f02fec665fb41aea2a0af0e70661b6fc454e1290da9da71a12d1259"
+    },
+    {
+      "path": "crates/hvc-ui/src/canvas_integration_tests.rs",
+      "sha256": "6301053e63e40f6e9ffccb7ed5df67603d6d8b8a11879e2b19fd31db776917d8"
+    },
+    {
+      "path": "crates/hvc-ui/src/canvas_view.rs",
+      "sha256": "b61f8b3e514d6aa43618a902dc352782dfc782a105d3ceeb6476c021130c70d8"
+    },
+    {
+      "path": "crates/hvc-ui/src/canvas.rs",
+      "sha256": "f670a1fa8ae82a34ab87a093efa47350f2283cc80c14ed9cfbb82f887a42ad04"
+    },
+    {
+      "path": "crates/hvc-ui/src/canvas/state.rs",
+      "sha256": "f056aefd16047b7aefbf86984c5334e77bca84eefa084f453021e366198d7ee8"
+    },
+    {
+      "path": "crates/hvc-ui/src/layout_tests.rs",
+      "sha256": "6f9c246f730b501993371c8efb320259a9ebf8f046c186f37897bddb29a5d947"
+    },
+    {
+      "path": "crates/hvc-ui/src/lib.rs",
+      "sha256": "400df5d12e1978c5b155fc64653a498998a17eeb97cd2900a6dce7902bc514a8"
+    },
+    {
+      "path": "crates/hvc-ui/src/settings_pages.rs",
+      "sha256": "3f236f86ca060ac64f7b7055dfa86dfe827d609e9c47a071aeda0fa2f70a9d48"
+    },
+    {
+      "path": "crates/hvc-ui/src/shell.rs",
+      "sha256": "70f8c24f0f6ac6a76b7b54f257cf0fe6abff19a2ff84e9552777f085de4e077d"
+    },
+    {
+      "path": "scripts/check-crate-boundaries.ps1",
+      "sha256": "44842823f805be31c40150f8f956d3f85f6203193825426173dccf5c2117192f"
+    }
+  ]
+}

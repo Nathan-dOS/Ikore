@@ -1,0 +1,528 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-10-27T12:12:33.9526475Z",
+  "command": "cargo test-all",
+  "scope": "Complete locked workspace default suite; canvas_preview example tests are separate",
+  "sourceFingerprintSha256": "6fcb2bcc6ce781a87f11ca43de9408781ec30c1bd9bdddd32ee9e4b3481f0b75",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+  "passed": 1655,
+  "failed": 0,
+  "ignored": 16,
+  "targets": [
+    {
+      "target": "running 0 tests",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 0 tests",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 11 tests",
+      "status": "ok",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 896 tests",
+      "status": "ok",
+      "passed": 895,
+      "failed": 0,
+      "ignored": 1,
+      "durationSeconds": 336.18
+    },
+    {
+      "target": "running 17 tests",
+      "status": "ok",
+      "passed": 17,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.03
+    },
+    {
+      "target": "running 204 tests",
+      "status": "ok",
+      "passed": 201,
+      "failed": 0,
+      "ignored": 3,
+      "durationSeconds": 70.9
+    },
+    {
+      "target": "running 22 tests",
+      "status": "ok",
+      "passed": 22,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 7.56
+    },
+    {
+      "target": "running 0 tests",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 0 tests",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 0 tests",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 2 tests",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 2,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 1 test",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 10.8
+    },
+    {
+      "target": "running 2 tests",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 1.87
+    },
+    {
+      "target": "running 21 tests",
+      "status": "ok",
+      "passed": 15,
+      "failed": 0,
+      "ignored": 6,
+      "durationSeconds": 52.4
+    },
+    {
+      "target": "running 3 tests",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 34.11
+    },
+    {
+      "target": "running 2 tests",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 14.5
+    },
+    {
+      "target": "running 4 tests",
+      "status": "ok",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 14.98
+    },
+    {
+      "target": "running 5 tests",
+      "status": "ok",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 19.64
+    },
+    {
+      "target": "running 2 tests",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 41.81
+    },
+    {
+      "target": "running 7 tests",
+      "status": "ok",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 19.12
+    },
+    {
+      "target": "running 3 tests",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 19.33
+    },
+    {
+      "target": "running 3 tests",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 4.17
+    },
+    {
+      "target": "running 1 test",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 5.48
+    },
+    {
+      "target": "running 3 tests",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 11.26
+    },
+    {
+      "target": "running 8 tests",
+      "status": "ok",
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 31.26
+    },
+    {
+      "target": "running 6 tests",
+      "status": "ok",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 22.11
+    },
+    {
+      "target": "running 7 tests",
+      "status": "ok",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 6.21
+    },
+    {
+      "target": "running 2 tests",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 1.17
+    },
+    {
+      "target": "running 1 test",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 6.02
+    },
+    {
+      "target": "running 2 tests",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 3.56
+    },
+    {
+      "target": "running 9 tests",
+      "status": "ok",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.53
+    },
+    {
+      "target": "running 2 tests",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 3.37
+    },
+    {
+      "target": "running 1 test",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 63.53
+    },
+    {
+      "target": "running 7 tests",
+      "status": "ok",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 32.93
+    },
+    {
+      "target": "running 25 tests",
+      "status": "ok",
+      "passed": 25,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 13.66
+    },
+    {
+      "target": "running 1 test",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 5.9
+    },
+    {
+      "target": "running 2 tests",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 13.6
+    },
+    {
+      "target": "running 3 tests",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 2.25
+    },
+    {
+      "target": "running 1 test",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 1,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 3 tests",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 1.96
+    },
+    {
+      "target": "running 1 test",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 1,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 3 tests",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 1,
+      "durationSeconds": 0.26
+    },
+    {
+      "target": "running 1 test",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.02
+    },
+    {
+      "target": "running 3 tests",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 1.25
+    },
+    {
+      "target": "running 356 tests",
+      "status": "ok",
+      "passed": 356,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 75.43
+    },
+    {
+      "target": "running 16 tests",
+      "status": "ok",
+      "passed": 15,
+      "failed": 0,
+      "ignored": 1,
+      "durationSeconds": 0.44
+    },
+    {
+      "target": "running 0 tests",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 1 test",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 1 test",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.22
+    },
+    {
+      "target": "running 0 tests",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 0 tests",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 0 tests",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 0 tests",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.0
+    },
+    {
+      "target": "running 0 tests",
+      "status": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "durationSeconds": 0.0
+    }
+  ],
+  "ignoredTests": [
+    {
+      "target": "running 896 tests",
+      "test": "agent_runtime::prompt_tests::print_the_prompt_a_compact_model_receives",
+      "reason": "manual inspection aid"
+    },
+    {
+      "target": "running 204 tests",
+      "test": "quota::endpoints::spikes::spike_claude_usage_endpoint_shape",
+      "reason": "spike S2: reads the signed-in Claude Code token and calls api.anthropic.com once"
+    },
+    {
+      "target": "running 204 tests",
+      "test": "quota::endpoints::spikes::spike_codex_usage_endpoint_shape",
+      "reason": "spike S1: reads the signed-in Codex token and calls chatgpt.com once, honestly identified"
+    },
+    {
+      "target": "running 204 tests",
+      "test": "terminals::plan_usage::tests::codex_plan_usage_live_read",
+      "reason": "requires an installed Codex CLI and a signed-in subscription account"
+    },
+    {
+      "target": "running 2 tests",
+      "test": "authenticated_antigravity_runs_a_whole_pulsation_on_gemini_flash",
+      "reason": "Requires local Antigravity (agy) authentication and network; runs a whole pulsation on Gemini Flash"
+    },
+    {
+      "target": "running 2 tests",
+      "test": "authenticated_antigravity_runs_the_specification_stage_on_claude_sonnet",
+      "reason": "Requires local Antigravity (agy) authentication, network and Claude/GPT quota; runs Intake and Specification"
+    },
+    {
+      "target": "running 21 tests",
+      "test": "authenticated_antigravity_accepts_every_registry_payload_schema",
+      "reason": "Requires local Antigravity (agy) authentication and network; sends six synthetic prompts"
+    },
+    {
+      "target": "running 21 tests",
+      "test": "authenticated_antigravity_companion_smoke",
+      "reason": "Requires local Antigravity (agy) authentication and network; sends one synthetic message"
+    },
+    {
+      "target": "running 21 tests",
+      "test": "authenticated_antigravity_pipeline_smoke",
+      "reason": "Requires local Antigravity (agy) authentication and network; sends two synthetic prompts"
+    },
+    {
+      "target": "running 21 tests",
+      "test": "authenticated_claude_model_identity_smoke",
+      "reason": "Requires local Claude authentication and network; sends one synthetic Haiku identity probe"
+    },
+    {
+      "target": "running 21 tests",
+      "test": "authenticated_codex_companion_smoke",
+      "reason": "Requires local Codex authentication and network; sends only synthetic messages"
+    },
+    {
+      "target": "running 21 tests",
+      "test": "authenticated_codex_turn_context_model_smoke",
+      "reason": "Requires local Codex authentication and network; sends one synthetic model identity probe"
+    },
+    {
+      "target": "running 1 test",
+      "test": "claude_thinking_budget_paired_ab_on_specification_and_contract",
+      "reason": "paid: runs the real Claude CLI (Haiku) for Specification and Contract"
+    },
+    {
+      "target": "running 1 test",
+      "test": "context_scope_real_run",
+      "reason": "paid: runs the real Claude CLI (Haiku) for Intake, Contract, Code and Test"
+    },
+    {
+      "target": "running 3 tests",
+      "test": "live_pinned_runtime_transcribes_a_recording",
+      "reason": "downloads the real runtime and model"
+    },
+    {
+      "target": "running 16 tests",
+      "test": "hotkey::tests::push_to_talk_reports_the_press_and_the_release",
+      "reason": "sends global keystrokes; run by hand on a desktop session"
+    }
+  ]
+}
