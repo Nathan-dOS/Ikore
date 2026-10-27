@@ -470,6 +470,39 @@ fn file_check_lines(result: &Result<AttestationFileCheck, String>) -> AnyElement
         .into_any_element()
 }
 
+/// "Verify a file…" needs no key of its own, so it is there whatever the
+/// key's state.
+fn verify_file_section(
+    busy: bool,
+    file_check: Option<Result<AttestationFileCheck, String>>,
+    hl: Option<&str>,
+    cx: &mut Context<AppModel>,
+) -> AnyElement {
+    let body = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(note("Choose a saved .intoto.jsonl bundle, and the .pub.pem saved with it when it comes from another machine."))
+        .child(
+            div().px_3().child(btn(
+                "attestation-verify-file",
+                "Verify a file…",
+                ButtonVariant::Secondary,
+                !busy,
+                cx,
+                |model, cx| model.verify_attestation_file(cx),
+            )),
+        )
+        .when_some(file_check, |body, result| {
+            body.child(div().px_3().child(file_check_lines(&result)))
+        });
+    section(
+        "Verify a file",
+        None,
+        vec![stacked_row("attestation-verify-file", hl, body)],
+    )
+}
+
 pub(crate) fn security_page(
     model: &AppModel,
     hl: Option<&str>,
@@ -493,6 +526,10 @@ pub(crate) fn security_page(
                     None,
                     vec![note("The key status could not be read.")],
                 ),
+            )
+            .section(
+                "Verify a file",
+                verify_file_section(busy, file_check, hl, cx),
             );
     };
     let (state_text, state_color) = key_state_text(status.state);
@@ -574,24 +611,6 @@ pub(crate) fn security_page(
         .when(confirming && has_key, |body| {
             body.child(hint("The current key is retired and keeps verifying what it signed; pulsations that end from now on are signed with the new one."))
         });
-    let verify_body = div()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(note("Choose a saved .intoto.jsonl bundle, and the .pub.pem saved with it when it comes from another machine."))
-        .child(
-            div().px_3().child(btn(
-                "attestation-verify-file",
-                "Verify a file…",
-                ButtonVariant::Secondary,
-                !busy,
-                cx,
-                |model, cx| model.verify_attestation_file(cx),
-            )),
-        )
-        .when_some(file_check, |body, result| {
-            body.child(div().px_3().child(file_check_lines(&result)))
-        });
     PageContent::new(SettingsPage::Security.label())
         .description(SettingsPage::Security.description())
         .section(
@@ -619,11 +638,7 @@ pub(crate) fn security_page(
         )
         .section(
             "Verify a file",
-            section(
-                "Verify a file",
-                None,
-                vec![stacked_row("attestation-verify-file", hl, verify_body)],
-            ),
+            verify_file_section(busy, file_check, hl, cx),
         )
 }
 
