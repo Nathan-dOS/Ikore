@@ -13,6 +13,6 @@ pub use html::{CONTENT_SECURITY_POLICY, SafeHtml, escape};
 pub use pulsation::{
     FileChange, LineCounts, PulsationReport, RejectedOutput, ReportCheck, ReportConvergence,
     ReportCoverageRow, ReportCriterion, ReportFile, ReportGap, ReportLayer, ReportLayerItem,
-    ReportLayers, ReportOutcome, ReportPlanQuota, ReportPulsation, ReportReview, ReportRisk,
-    ReportRun, ReportStage, ReportTokens, render_pulsation_report,
+    ReportLayers, ReportOutcome, ReportPlanQuota, ReportProvenance, ReportPulsation, ReportReview,
+    ReportRisk, ReportRun, ReportStage, ReportSubject, ReportTokens, render_pulsation_report,
 };

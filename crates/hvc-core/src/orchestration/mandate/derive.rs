@@ -75,19 +75,10 @@ pub fn derive_issued(inputs: &IssueInputs<'_>) -> Result<ExecutionMandateV1, Str
     } else {
         Vec::new()
     };
-    let mut task_revisions = Vec::new();
-    if let Some(manifest) = inputs.manifest {
-        for task in &manifest.tasks {
-            let draft = serde_json::to_value(&task.draft).map_err(|error| error.to_string())?;
-            let canonical = canonical_json(&draft).map_err(|error| error.message)?;
-            task_revisions.push(TaskRevisionRef {
-                task_id: task.id.clone(),
-                revision: task.revision,
-                sha256: ContentSha256::of(canonical.as_bytes()).as_str().to_owned(),
-            });
-        }
-    }
-    task_revisions.sort_by(|a, b| a.task_id.cmp(&b.task_id));
+    let task_revisions = match inputs.manifest {
+        Some(manifest) => task_revisions(manifest)?,
+        None => Vec::new(),
+    };
     let mut transports = inputs.transports.clone();
     transports.sort_by(|a, b| a.role.cmp(&b.role));
     let mut checks = inputs.checks.clone();
@@ -171,6 +162,23 @@ pub fn executor_capabilities() -> Vec<ExecutorCapability> {
 }
 
 /// Digest of a set of digests: order-independent, duplicates kept once.
+/// Each frozen task with the digest of its canonical draft, by task id. The
+/// mandate and the attestation (ADR-036) record the same digests.
+pub fn task_revisions(manifest: &BatchManifest) -> Result<Vec<TaskRevisionRef>, String> {
+    let mut revisions = Vec::new();
+    for task in &manifest.tasks {
+        let draft = serde_json::to_value(&task.draft).map_err(|error| error.to_string())?;
+        let canonical = canonical_json(&draft).map_err(|error| error.message)?;
+        revisions.push(TaskRevisionRef {
+            task_id: task.id.clone(),
+            revision: task.revision,
+            sha256: ContentSha256::of(canonical.as_bytes()).as_str().to_owned(),
+        });
+    }
+    revisions.sort_by(|a, b| a.task_id.cmp(&b.task_id));
+    Ok(revisions)
+}
+
 pub fn digest_of_set(digests: &[String]) -> Result<String, String> {
     let mut sorted = digests.to_vec();
     sorted.sort();

@@ -36,6 +36,34 @@ pub struct PulsationReport {
     /// The trust layers when the report was rendered (ADR-035 M2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layers: Option<ReportLayers>,
+    /// The attestation and how it checked when the report was rendered
+    /// (ADR-036 M3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<ReportProvenance>,
+}
+
+/// The pulsation's attestation. It is the record; the report only repeats
+/// it and how it checks now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportProvenance {
+    pub state: String,
+    pub key_id: Option<String>,
+    pub statement_sha256: Option<String>,
+    pub sealed_at: Option<String>,
+    pub signature: Option<String>,
+    pub rederivation: Option<String>,
+    /// Why sealing failed, when it did.
+    pub diagnostic: Option<String>,
+    pub subjects: Vec<ReportSubject>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportSubject {
+    pub path: String,
+    pub sha256: String,
+    /// The file now: unchanged, changed since the attestation, missing or
+    /// unreadable.
+    pub workspace: String,
 }
 
 /// The host's trust layers, as the pulsation detail shows them.
@@ -279,6 +307,9 @@ pub fn render_pulsation_report(report: &PulsationReport) -> String {
     }
     if let Some(layers) = &report.layers {
         page.push(&layers_section(layers));
+    }
+    if let Some(provenance) = &report.provenance {
+        page.push(&provenance_section(provenance));
     }
     page.push(&run_context(&report.run));
     if !report.rejected_outputs.is_empty() {
@@ -684,6 +715,9 @@ fn navigation(report: &PulsationReport) -> SafeHtml {
     }
     if report.layers.is_some() {
         html.push_markup("<li><a href=\"#layers\">Layers</a></li>");
+    }
+    if report.provenance.is_some() {
+        html.push_markup("<li><a href=\"#provenance\">Provenance</a></li>");
     }
     html.push_markup("<li><a href=\"#run\">Run context</a></li>");
     if !report.rejected_outputs.is_empty() {
@@ -1625,6 +1659,52 @@ fn layers_section(layers: &ReportLayers) -> SafeHtml {
     html
 }
 
+fn provenance_section(provenance: &ReportProvenance) -> SafeHtml {
+    let mut html = SafeHtml::markup(
+        "<section id=\"provenance\" aria-labelledby=\"provenance-h\"><div class=\"sec-head\"><h2 id=\"provenance-h\">Provenance</h2><p>The signed attestation is the record of what this pulsation applied; this report repeats it and how it checked when rendered. A file changed since the attestation differs now; that says nothing about who changed it.</p></div><div class=\"card\"><dl class=\"facts\"><dt>State</dt><dd>",
+    );
+    html.push_text(&provenance.state).push_markup("</dd>");
+    let facts = [
+        ("Key", provenance.key_id.as_deref()),
+        ("Statement", provenance.statement_sha256.as_deref()),
+        ("Sealed", provenance.sealed_at.as_deref()),
+        ("Signature", provenance.signature.as_deref()),
+        ("Re-derivation", provenance.rederivation.as_deref()),
+        ("Sealing error", provenance.diagnostic.as_deref()),
+    ];
+    for (label, value) in facts {
+        if let Some(value) = value {
+            html.push_markup("<dt>")
+                .push_text(label)
+                .push_markup("</dt><dd class=\"wrap-text\">")
+                .push_text(&if label == "Statement" {
+                    format!("sha256:{value}")
+                } else {
+                    value.to_owned()
+                })
+                .push_markup("</dd>");
+        }
+    }
+    html.push_markup("</dl></div>");
+    if !provenance.subjects.is_empty() {
+        html.push_markup(
+            "<div class=\"table-wrap\"><table class=\"wide\"><thead><tr><th>Subject</th><th>SHA-256</th><th>Workspace now</th></tr></thead><tbody>",
+        );
+        for subject in &provenance.subjects {
+            html.push_markup("<tr><td class=\"wrap-text\">")
+                .push_text(&subject.path)
+                .push_markup("</td><td class=\"wrap-text\">")
+                .push_text(&subject.sha256)
+                .push_markup("</td><td>")
+                .push_text(&subject.workspace)
+                .push_markup("</td></tr>");
+        }
+        html.push_markup("</tbody></table></div>");
+    }
+    html.push_markup("</section>");
+    html
+}
+
 fn footer() -> SafeHtml {
     SafeHtml::markup(
         "<footer><span>Rendered by the host from validated payloads, host receipts and usage records. Same inputs, same bytes. Not a document of record.</span><span>No scripts, no network requests, no external assets. Agent-written text is escaped and labelled.</span></footer>",
@@ -1821,7 +1901,53 @@ mod tests {
                     ),
                 ],
             }),
+            provenance: Some(ReportProvenance {
+                state: "signed".into(),
+                key_id: Some(format!("hvc-ed25519:{}", "0f1e2d3c".repeat(8))),
+                statement_sha256: Some("ab".repeat(32)),
+                sealed_at: Some("2026-10-26T12:45:05Z".into()),
+                signature: Some("valid".into()),
+                rederivation: Some("matches".into()),
+                diagnostic: None,
+                subjects: vec![
+                    ReportSubject {
+                        path: "crates/hvc-core/src/usage/export.rs".into(),
+                        sha256: "cd".repeat(32),
+                        workspace: "unchanged".into(),
+                    },
+                    ReportSubject {
+                        path: "crates/hvc-ui/src/usage.rs".into(),
+                        sha256: "ef".repeat(32),
+                        workspace: "changed since the attestation".into(),
+                    },
+                ],
+            }),
         }
+    }
+
+    /// ADR-036 M3: the provenance section repeats the attestation and how
+    /// it checks; reports written before it still parse.
+    #[test]
+    fn the_provenance_section_repeats_the_attestation_and_older_reports_still_parse() {
+        let report = sample();
+        let html = render_pulsation_report(&report);
+        assert!(html.contains("<a href=\"#provenance\">Provenance</a>"));
+        assert!(html.contains("id=\"provenance\""));
+        assert!(html.contains(&format!("sha256:{}", "ab".repeat(32))));
+        assert!(html.contains("changed since the attestation"));
+        assert!(html.contains("says nothing about who changed it"));
+        let mut earlier = serde_json::to_value(&report).unwrap();
+        earlier.as_object_mut().unwrap().remove("provenance");
+        assert_eq!(
+            serde_json::from_value::<PulsationReport>(earlier).unwrap(),
+            PulsationReport {
+                provenance: None,
+                ..report
+            }
+        );
+        let mut without = sample();
+        without.provenance = None;
+        assert!(!render_pulsation_report(&without).contains("id=\"provenance\""));
     }
 
     fn layer(

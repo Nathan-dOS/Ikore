@@ -216,10 +216,14 @@ request on the failure checkpoint (M4). See the
 
 ## ADR-036: signed local pulsation attestation
 
-Accepted on 2026-10-26; not implemented yet. Every finished pulsation will be
+Accepted on 2026-10-26 and implemented (M3, V56). Every pulsation that ends is
 sealed as an in-toto statement in a DSSE envelope, signed with an Ed25519 key
-kept in the operating system keyring. The statement binds intent, approvals,
-host receipts and published files without carrying any content. It can be
-verified for signature, re-derivation and workspace state, and exported. It
-claims no SLSA level, trusted time or personal identity. See the
-[decision](036-pulsation-attestation.md).
+kept in the operating system's credential store. The statement binds intent,
+approvals, host receipts and applied files without carrying any content. The
+pulsation detail's Attestation card verifies the signature, re-derives the
+statement and reports each file's state now, saves the bundle with its public
+key and copies a commit trailer; the list marks attested pulsations, Settings →
+Security rotates the key, switches sealing and verifies a saved file, and the
+report gains a Provenance section. It claims no SLSA level, trusted time or
+personal identity. See the [decision](036-pulsation-attestation.md) and
+[attestations](../attestation.md).

@@ -21,6 +21,7 @@ mod tests;
 pub use contract::*;
 pub use derive::{
     IssueInputs, amend_transport, derive_issued, digest_of_set, executor_capabilities,
+    task_revisions,
 };
 pub use guard::{
     WriteSource, WriteVerdict, check_checks, check_executor, check_transport, check_write,

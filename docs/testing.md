@@ -202,6 +202,38 @@ cargo test --locked -p hvc-test-support --test trust_layers -- --test-threads=2
 cargo run --locked --release -p hvc-core --example layers_benchmark
 ```
 
+## Attestations
+
+ADR-036 M3 keeps the pure parts in `attestation` (the DSSE pre-authentication
+encoding, a golden vector signed with a fixed test seed, envelope tampering,
+the key's stored form) and the host in
+`persistence_service::attestation_persistence` (sealing once and after the
+publications settle, outcomes, the sealing switch, an unavailable, missing or
+replaced key, rotation, the immutability trigger, the size cap, a failed
+derivation and its retry, a restart before the seal, tampered rows, envelope
+and files, export and import, and a scan of every table for the private key).
+`hvc-test-support/tests/attestation.rs` seals a v4 pulsation that finishes and
+one aborted after writing, and checks the report's Provenance section. V56 is
+in `serial_upgrade`; the card, the list mark and the Security page are in the
+layout tests; the report's golden file carries the Provenance section.
+
+Every one of these tests keeps the key in memory. Unit tests of `hvc-core` that
+build a service on the default store never reach the operating system's
+credential store: under `cfg(test)` it reads as empty and refuses writes. The
+one test that uses the Windows Credential Manager is ignored by default and
+writes only under the test service `hard-vibe-code.attestation-test`, removing
+the entry afterwards. Run it only when you want to check the real store:
+
+```powershell
+cargo test --locked -p hvc-core --lib attestation -- --test-threads=2
+cargo test --locked -p hvc-test-support --test attestation -- --test-threads=2
+cargo test --locked -p hvc-test-support --test attestation -- --ignored --test-threads=1
+```
+
+To check a real bundle with OpenSSL as [attestation.md](attestation.md)
+describes, set `HVC_ATTESTATION_OUT` to a folder before the integration test;
+it saves the finished pulsation's bundle and public key there.
+
 ## Editor revisions, check output and voice setup
 
 The workspace revision is a SHA-256 over the resolved path and the bytes read,

@@ -376,6 +376,17 @@ impl PersistenceService {
                 )?),
                 None => None,
             };
+            // ADR-036 M3: the full state for the open detail, the mark for
+            // the list.
+            let attestation = match pulsation_id {
+                Some(_) => Some(Self::attestation_status_on(db, &pulse)?),
+                None => None,
+            };
+            let attested: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pulsation_attestations WHERE pulsation_id=?1 AND signature_state='signed')",
+                [&pulse],
+                |row| row.get(0),
+            )?;
             result.push(PulsationCoordinationSnapshot {
                 sanitization: crate::sanitization::SanitizationStore::summary_on(
                     db,
@@ -416,6 +427,8 @@ impl PersistenceService {
                 artifact_ids: artifacts,
                 stage_execution,
                 layers,
+                attestation,
+                attested,
             });
         }
         Ok(result)

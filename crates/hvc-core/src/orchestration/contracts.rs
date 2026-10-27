@@ -877,4 +877,11 @@ pub struct PulsationCoordinationSnapshot {
     /// `None` in a project-wide listing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layers: Option<super::layers::PulsationLayersSnapshot>,
+    /// The attestation (ADR-036 M3), read with the detail of one pulsation;
+    /// `None` in a project-wide listing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<crate::attestation::AttestationStatus>,
+    /// A signed attestation exists: the list's "attested" mark.
+    #[serde(default)]
+    pub attested: bool,
 }

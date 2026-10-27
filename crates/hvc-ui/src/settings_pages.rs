@@ -53,6 +53,7 @@ pub(crate) fn page_content(
         SettingsPage::Composition => crate::composition_ui::composition_page(model, hl, cx),
         SettingsPage::Timeouts => crate::settings_view::timeouts_page(hl),
         SettingsPage::Labs => crate::composition_ui::labs_page(model, hl, cx),
+        SettingsPage::Security => crate::attestation_view::security_page(model, hl, cx),
         SettingsPage::About => about_page(model, hl, cx),
     }
 }

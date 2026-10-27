@@ -298,7 +298,7 @@ pub struct AppModel {
     pub(crate) doc_drift: crate::doc_drift::DocDriftUi,
     session_persistence: Option<Arc<dyn SessionPersistence>>,
     workspace_backend: Option<Arc<dyn WorkspaceBackend>>,
-    pulsations_backend: Option<Arc<dyn PulsationsBackend>>,
+    pub(crate) pulsations_backend: Option<Arc<dyn PulsationsBackend>>,
     vault_backend: Option<Arc<dyn VaultBackend>>,
     pub(crate) settings_backend: Option<Arc<dyn SettingsBackend>>,
     pub(crate) agents_backend: Option<Arc<dyn AgentsBackend>>,
@@ -448,6 +448,10 @@ pub struct AppModel {
     cleanup_preview_task: Option<Task<()>>,
     cleanup_mutation_task: Option<Task<()>>,
     report_task: Option<Task<()>>,
+    /// The Attestation card's request (ADR-036 M3).
+    pub(crate) attestation_task: Option<Task<()>>,
+    /// "Verify a file…" on the Security page.
+    pub(crate) attestation_file_task: Option<Task<()>>,
     /// Hands a written pulsation report to the system's default application
     /// for HTML. Tests replace it: their platform cannot open files.
     report_opener: ReportOpener,
@@ -932,6 +936,8 @@ impl AppModel {
             cleanup_preview_task: None,
             cleanup_mutation_task: None,
             report_task: None,
+            attestation_task: None,
+            attestation_file_task: None,
             report_opener: Rc::new(|path, cx| cx.open_with_system(path)),
             artifact_read: Default::default(),
             backend_read: Default::default(),
@@ -8619,7 +8625,7 @@ type ReportOpener = Rc<dyn Fn(&Path, &mut gpui::App)>;
 
 /// Where "Save as…" starts for a pulsation report: the developer's home
 /// folder, never the project, whose repository the report must not enter.
-fn report_save_directory() -> PathBuf {
+pub(crate) fn report_save_directory() -> PathBuf {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
@@ -10174,6 +10180,8 @@ mod tests {
             artifact_ids: vec![],
             stage_execution: None,
             layers: None,
+            attestation: None,
+            attested: false,
         }
     }
 

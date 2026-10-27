@@ -2,7 +2,17 @@
 
 Date: 2026-10-26
 
-Status: accepted, not implemented yet. Planned migration: V56.
+Status: accepted and implemented (M3, migration V56). Validation:
+`quality/mandates-attestation-m3-validation-2026-10-26.md`. Format, key and
+verification steps: [attestations](../attestation.md).
+
+Implementation notes from M3: sealing runs from the durable intent alone; the
+background lane picks the oldest pending intent whose publications settled, so
+there is no separate job row for recovery to close. The key sits behind the
+existing credential-store abstraction, which tests replace with a memory store.
+A derivation the host cannot complete is kept `failed` with its error until
+"Seal again". A re-derivation reuses the builder and sealing time the statement
+recorded, so the same rows give the same bytes on a later build.
 
 ## Context
 
@@ -43,8 +53,9 @@ key material never reaches the database, logs, events, reports, exports or
 models.
 
 **Sealing.** Every pulsation that reaches `done` or `failed` gets a durable
-intent and a background job. The job waits for pending publications, derives
-the statement in one read transaction and stores an immutable row. Statements
+intent in its terminal transition. The background lane waits for pending
+publications, derives the statement and stores an immutable row in one
+transaction. Statements
 over 1 MiB are recorded as `too_large`, never truncated. Sealing is on by
 default and can be turned off in Settings.
 

@@ -24,6 +24,15 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
         .as_ref()
         .map(|s| s.queue.clone())
         .unwrap_or_default();
+    // ADR-036 M3: the pulsations with a signed attestation.
+    let attested_ids = model
+        .pulsations
+        .read(cx)
+        .details
+        .iter()
+        .filter(|detail| detail.attested)
+        .map(|detail| detail.pulsation_id.clone())
+        .collect::<std::collections::HashSet<_>>();
     let (
         pulsations,
         active_id,
@@ -218,7 +227,14 @@ pub(crate) fn pulsations_panel(model: &AppModel, cx: &mut Context<AppModel>) -> 
                                                     blocking_label(p.blocking_reason.as_deref())
                                                 )
                                             });
-                                            pulsation_card(pulse, active_id.as_deref(), label, cx)
+                                            let attested = attested_ids.contains(&pulse.id);
+                                            pulsation_card(
+                                                pulse,
+                                                active_id.as_deref(),
+                                                label,
+                                                attested,
+                                                cx,
+                                            )
                                         }))
                                         .when(more > 0, |list| {
                                             let id = gpui::SharedString::from(format!(
@@ -432,6 +448,8 @@ fn detail_overview(
     div()
         // ADR-035 M2: where the pulsation stands against what was approved.
         .child(crate::layers_view::layers_panel(model, cx))
+        // ADR-036 M3: the signed record of what this pulsation did.
+        .child(crate::attestation_view::attestation_panel(model, cx))
         .when_some(coverage, |panel, coverage| {
             panel.child(brownfield_progress_panel(coverage))
         })
@@ -544,6 +562,7 @@ fn pulsation_card(
     pulsation: Pulsation,
     active_id: Option<&str>,
     queue_label: Option<String>,
+    attested: bool,
     cx: &mut Context<AppModel>,
 ) -> AnyElement {
     let selected = active_id == Some(pulsation.id.as_str());
@@ -601,13 +620,23 @@ fn pulsation_card(
         .child(
             div()
                 .mt_1()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child(format!(
-                    "{} · {}",
-                    stage_label(pulsation.stage),
-                    status_label(pulsation.status, pulsation.terminal_reason.as_deref())
-                )),
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child(format!(
+                            "{} · {}",
+                            stage_label(pulsation.stage),
+                            status_label(pulsation.status, pulsation.terminal_reason.as_deref())
+                        )),
+                )
+                .when(attested, |line| {
+                    line.child(crate::attestation_view::attested_badge())
+                }),
         )
         .when_some(queue_label, |card, label| {
             card.child(
@@ -2205,6 +2234,8 @@ mod tests {
                             artifact_ids: vec![],
                             stage_execution: None,
                             layers: None,
+                            attestation: None,
+                            attested: false,
                         }];
                     });
                 });

@@ -24,8 +24,14 @@ impl KeyringCredentialStore {
     }
 }
 
+// Unit tests of this crate build services on this store; none of them may
+// reach the operating system's credential store. It reads as empty there and
+// refuses writes, so a test that needs a stored secret injects its own store.
 impl CredentialStore for KeyringCredentialStore {
     fn get(&self, credential_ref: &str) -> Result<Option<String>, LlmError> {
+        if cfg!(test) {
+            return Ok(None);
+        }
         let entry = Self::entry(credential_ref)?;
         match entry.get_password() {
             Ok(secret) if secret.trim().is_empty() => Ok(None),
@@ -46,6 +52,12 @@ impl CredentialStore for KeyringCredentialStore {
                 "apiKey cannot be empty.",
             ));
         }
+        if cfg!(test) {
+            return Err(LlmError::new(
+                LlmErrorKind::Persistence,
+                "The keyring is not reachable from unit tests.",
+            ));
+        }
         Self::entry(credential_ref)?
             .set_password(normalized)
             .map_err(|error| {
@@ -57,6 +69,9 @@ impl CredentialStore for KeyringCredentialStore {
     }
 
     fn delete(&self, credential_ref: &str) -> Result<bool, LlmError> {
+        if cfg!(test) {
+            return Ok(false);
+        }
         match Self::entry(credential_ref)?.delete_credential() {
             Ok(()) => Ok(true),
             Err(KeyringError::NoEntry) => Ok(false),

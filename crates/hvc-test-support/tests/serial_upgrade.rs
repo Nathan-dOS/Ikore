@@ -140,7 +140,7 @@ fn v20_to_v24_backfills_slots_and_preserves_terminal_and_chat_history() {
             |row| row.get::<_, u32>(0)
         )
         .unwrap(),
-        55
+        56
     );
     for table in ["terminal_model_observations", "llm_model_observations"] {
         assert_eq!(
@@ -303,7 +303,7 @@ fn v9_upgrade_preserves_outputs_checkpoints_and_restorable_wal_backup() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        55
+        56
     );
     assert_eq!(
         db.query_row(
@@ -844,7 +844,7 @@ fn v31_to_v32_admits_pipeline_v4_and_keeps_legacy_rows_and_constraints() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        55
+        56
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1000,7 +1000,7 @@ fn v34_to_v36_admits_path_confirmation_and_keeps_legacy_checkpoints_and_question
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        55
+        56
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1097,7 +1097,7 @@ fn v44_to_v45_keeps_forge_turns_and_adds_failure_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        55
+        56
     );
     let (error, failure, notices): (String, Option<String>, Option<String>) = db
         .query_row(
@@ -1166,7 +1166,7 @@ fn v45_to_v46_keeps_backend_rows_and_admits_antigravity() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        55
+        56
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1241,7 +1241,7 @@ fn v46_to_v47_keeps_terminal_rows_and_admits_the_visualizer() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        55
+        56
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1336,7 +1336,7 @@ fn v47_to_v48_adds_quota_history_with_validated_columns() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        55
+        56
     );
     let insert = |values: &str| {
         db.execute(
@@ -1390,7 +1390,7 @@ fn v48_to_v49_preserves_history_and_requires_new_sanitization_evidence() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        55
+        56
     );
     for table in [
         "project_secret_redaction_exceptions",
@@ -1508,7 +1508,7 @@ fn v49_to_v50_admits_the_notes_scribe_and_adds_companion_notes() {
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        55
+        56
     );
     let (backend, version): (String, u32) = db
         .query_row(
@@ -1683,7 +1683,7 @@ fn v50_to_v51_adds_the_review_boundary_tables_without_rebuilding_existing_ones()
             |r| r.get::<_, u32>(0)
         )
         .unwrap(),
-        55
+        56
     );
     // Later migrations add their own tables; every table V50 had keeps its
     // exact definition.
@@ -2235,5 +2235,133 @@ fn v54_to_v55_adds_mandates_and_receipts_without_touching_running_pulsations() {
         ))
         .unwrap(),
         0
+    );
+}
+
+/// V56 adds signed local attestations (ADR-036 M3). Purely additive: every
+/// earlier table keeps its definition, a pulsation that ended before the
+/// upgrade is never sealed retroactively, keys are global and can never be
+/// deleted while an attestation names them, an attestation changes only from
+/// unsigned to signed, and intents, attestations and checks go with their
+/// pulsation.
+#[test]
+fn v55_to_v56_adds_attestations_without_sealing_pulsations_that_already_ended() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hard-vibe-code.db");
+    let mut db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    cli_migrations::migrations::runner()
+        .set_target(refinery::Target::Version(55))
+        .run(&mut db)
+        .unwrap();
+    db.execute("INSERT INTO projects(id,name,workspace_path,created_at,updated_at) VALUES('p','V55 fixture','C:/fixture','now','now')",[]).unwrap();
+    db.execute("INSERT INTO pulsations(id,project_id,feature_name,stage,status,created_at,updated_at,pipeline_version) VALUES('pulse','p','Work','Integrator','done','now','now',4)",[]).unwrap();
+    let tables = |db: &Connection| -> Vec<String> {
+        db.prepare(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let before = tables(&db);
+    drop(db);
+
+    // Read-only: this service's credential store is the real keyring.
+    let service = PersistenceService::initialize(root.path()).unwrap();
+    assert_eq!(
+        service.attestation_status("pulse").unwrap().state,
+        hvc_core::persistence_service::AttestationState::NotSealed,
+        "a pulsation that ended before V56 is not sealed"
+    );
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let after = tables(&db);
+    for table in &before {
+        assert!(after.contains(table), "V56 rebuilds nothing: {table}");
+    }
+    for table in ["attestation_seal_intents", "pulsation_attestations"] {
+        assert_eq!(
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            0,
+            "{table}: nothing retroactive"
+        );
+    }
+
+    let key = |id: &str, state: &str, retired: Option<&str>| {
+        db.execute(
+            "INSERT INTO attestation_keys(key_id,algorithm,public_key,state,created_at,retired_at) VALUES(?1,'ed25519','AAAA',?2,'now',?3)",
+            params![id, state, retired],
+        )
+    };
+    let id = |c: char| format!("hvc-ed25519:{}", c.to_string().repeat(64));
+    key(&id('a'), "active", None).expect("a key");
+    key(&id('b'), "active", None).expect_err("one active key at most");
+    key(&id('b'), "retired", None).expect_err("a retired key says when");
+    key(&id('b'), "retired", Some("now")).expect("a retired key");
+    key("rsa:abc", "retired", Some("now")).expect_err("key ids are Ed25519 ones");
+
+    let intent = |state: &str, diagnostic: Option<&str>| {
+        db.execute(
+            "INSERT OR REPLACE INTO attestation_seal_intents(pulsation_id,state,diagnostic,created_at,updated_at) VALUES('pulse',?1,?2,'now','now')",
+            params![state, diagnostic],
+        )
+    };
+    intent("failed", None).expect_err("a failed seal keeps its diagnostic");
+    intent("guessed", None).expect_err("intent states are a closed set");
+    intent("sealed", None).expect("a sealed intent");
+
+    let sha = "c".repeat(64);
+    let attestation = |state: &str, envelope: Option<&str>, key: Option<&str>| {
+        db.execute(
+            "INSERT INTO pulsation_attestations(pulsation_id,schema_version,predicate_type,deriver_version,statement_json,statement_sha256,envelope_json,key_id,signature_state,outcome,subject_count,sealed_at,signed_at)
+             VALUES('pulse',1,'urn:hvc:pulsation-attestation:v1',1,'{}',?1,?2,?3,?4,'done',0,'now',CASE WHEN ?2 IS NULL THEN NULL ELSE 'now' END)",
+            params![sha, envelope, key, state],
+        )
+    };
+    attestation("signed", None, None).expect_err("a signed attestation has its envelope");
+    attestation("signed", Some("{}"), Some(&id('z'))).expect_err("the key must be known");
+    attestation("unsigned", None, None).expect("an unsigned attestation");
+    db.execute("UPDATE pulsation_attestations SET outcome='failed'", [])
+        .expect_err("attestations are immutable");
+    db.execute(
+        "UPDATE pulsation_attestations SET signature_state='signed',envelope_json='{}',key_id=?1,signed_at='now'",
+        [id('a')],
+    )
+    .expect("an unsigned attestation can be signed");
+    db.execute(
+        "UPDATE pulsation_attestations SET signature_state='unsigned',envelope_json=NULL,key_id=NULL,signed_at=NULL",
+        [],
+    )
+    .expect_err("a signature is never removed");
+    db.execute("DELETE FROM attestation_keys WHERE key_id=?1", [id('a')])
+        .expect_err("a key an attestation names stays");
+    db.execute("INSERT INTO attestation_verifications(pulsation_id,checked_at,signature,rederivation,workspace_json) VALUES('pulse','now','valid','matches','[]')",[])
+        .expect("a check");
+
+    db.execute("DELETE FROM projects WHERE id='p'", []).unwrap();
+    for table in [
+        "attestation_seal_intents",
+        "pulsation_attestations",
+        "attestation_verifications",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            0,
+            "{table} goes with its pulsation"
+        );
+    }
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM attestation_keys", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        2,
+        "keys are global"
     );
 }

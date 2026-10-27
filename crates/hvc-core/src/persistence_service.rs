@@ -60,6 +60,14 @@ fn sanitized_observation_json(value: &Value) -> Value {
 
 #[path = "orchestration/anticipation.rs"]
 mod anticipation;
+#[path = "orchestration/attestation_persistence.rs"]
+mod attestation_persistence;
+pub use crate::attestation::{
+    AttestationExport, AttestationFileCheck, AttestationKeyRecord, AttestationKeyState,
+    AttestationKeyStatus, AttestationState, AttestationStatus, AttestationVerification, FileKey,
+    RederivationCheck, SignatureCheck, SubjectCheck, WorkspaceCheck,
+};
+pub use attestation_persistence::ATTESTATION_SEALING_SETTING;
 #[path = "orchestration/brownfield_context.rs"]
 mod brownfield_context;
 #[path = "orchestration/brownfield_enrichment.rs"]
@@ -2219,6 +2227,8 @@ impl PersistenceService {
                 "UPDATE pulsation_review_policy_snapshots SET content_json=NULL WHERE pulsation_id=?1 AND content_json IS NOT NULL",
                 [current.id.as_str()],
             )?;
+            // ADR-036: sealing runs later, from this intent.
+            Self::enqueue_attestation_seal(transaction, &current.id)?;
         }
 
         let event_id = Uuid::new_v4().to_string();

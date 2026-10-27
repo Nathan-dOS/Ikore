@@ -6,6 +6,7 @@ mod agents;
 mod agents_view;
 mod app_model;
 mod assets;
+mod attestation_view;
 mod chat;
 mod chat_view;
 mod choices;

@@ -10,7 +10,7 @@ use chrono::Utc;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -455,6 +455,19 @@ impl SanitizationStore {
              AND EXISTS(SELECT 1 FROM secret_sanitization_receipts s WHERE s.project_id=x.project_id AND s.call_id=x.id)),0)",
             params![project,pulse], |row| row.get(0),
         ).map_err(storage_error)?;
+        summary.categories = Self::category_counts_on(db, project, pulse)?
+            .into_keys()
+            .collect();
+        Ok(summary)
+    }
+
+    /// How many sanitized inputs and outputs redacted each category, from the
+    /// same persisted evidence as [`Self::summary_on`].
+    pub fn category_counts_on(
+        db: &Connection,
+        project: &str,
+        pulse: Option<&str>,
+    ) -> Result<BTreeMap<String, u64>, String> {
         let mut stmt=db.prepare(
             "SELECT categories_json FROM secret_sanitization_receipts WHERE project_id=?1 AND (?2 IS NULL OR pulsation_id=?2)
              UNION ALL SELECT e.redaction_categories_json FROM terminal_events e JOIN terminal_runs r ON r.id=e.run_id
@@ -467,15 +480,15 @@ impl SanitizationStore {
         let rows = stmt
             .query_map(params![project, pulse], |r| r.get::<_, String>(0))
             .map_err(storage_error)?;
-        let mut categories = BTreeSet::new();
+        let mut categories = BTreeMap::<String, u64>::new();
         for row in rows {
-            categories.extend(
-                serde_json::from_str::<Vec<String>>(&row.map_err(storage_error)?)
-                    .map_err(storage_error)?,
-            );
+            let names = serde_json::from_str::<Vec<String>>(&row.map_err(storage_error)?)
+                .map_err(storage_error)?;
+            for name in names.into_iter().collect::<BTreeSet<_>>() {
+                *categories.entry(name).or_default() += 1;
+            }
         }
-        summary.categories = categories.into_iter().collect();
-        Ok(summary)
+        Ok(categories)
     }
 }
 
