@@ -1,0 +1,12 @@
+{
+  "elements": 100,
+  "profile": "release",
+  "launchedAtUtc": "2026-10-27T11:48:43.1786712Z",
+  "pid": 8752,
+  "executableSha256": "af03434c383aa2bc204344a0e5c9c7e523c57b641365ce320a248349bf1b3a6b",
+  "clientSize": "1280x820 (release default)",
+  "samplesRequested": 2000,
+  "warmupRequested": 1000,
+  "processLifetime": "background native process; interactive close after completed report",
+  "activatedAtUtc": "2026-10-27T11:48:51.312Z"
+}

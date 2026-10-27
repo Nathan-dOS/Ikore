@@ -1887,6 +1887,7 @@ fn nav_rail_selects_every_view_and_pins_settings_at_the_bottom(cx: &mut TestAppC
                 AppView::Logs => "rail-nav-logs",
                 AppView::Chat => "rail-nav-chat",
                 AppView::Notes => "rail-nav-notes",
+                AppView::Canvas => "rail-nav-canvas",
                 AppView::Workspace => "rail-nav-workspace",
                 AppView::Settings => unreachable!("settings is not a rail view"),
             };
@@ -1999,12 +2000,13 @@ fn keyboard_shortcuts_follow_rail_order(cx: &mut TestAppContext) {
     // Existing shortcuts keep their keys; the Notes view took the next free one.
     assert!(crate::shell::RAIL_SHORTCUTS.contains(&(AppView::Workspace, "ctrl-8")));
     assert!(crate::shell::RAIL_SHORTCUTS.contains(&(AppView::Notes, "ctrl-9")));
+    assert!(crate::shell::RAIL_SHORTCUTS.contains(&(AppView::Canvas, "ctrl-0")));
     visual.simulate_keystrokes("ctrl-,");
     visual.run_until_parked();
     assert!(model.read_with(visual, |model, _| model.settings_modal.open));
     assert_eq!(
         model.read_with(visual, |model, _| model.active_view()),
-        AppView::Notes
+        AppView::Canvas
     );
     visual.simulate_keystrokes("ctrl-shift-]");
     visual.run_until_parked();

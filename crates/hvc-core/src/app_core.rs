@@ -365,9 +365,24 @@ impl AppCore {
         &self.persistence
     }
 
+    pub fn drawings(&self) -> crate::companion_drawings::service::CompanionDrawingsService {
+        crate::companion_drawings::service::CompanionDrawingsService::new(self.persistence.clone())
+            .with_events(self.events.clone())
+    }
+
     /// Detaches the active watcher before the filesystem rename. The UI checks
     /// unsaved editor buffers before calling this explicit user operation.
     pub fn delete_project_permanently(
+        &self,
+        project_id: &str,
+        confirmation: &str,
+    ) -> Result<crate::project_deletion::ProjectDeletionOutcome, PersistenceServiceError> {
+        self.drawings().with_project_guard(project_id, || {
+            self.delete_project_with_drawings_idle(project_id, confirmation)
+        })
+    }
+
+    fn delete_project_with_drawings_idle(
         &self,
         project_id: &str,
         confirmation: &str,

@@ -480,10 +480,10 @@ mod tests {
                 );
             }
         });
-        // ctrl-1..9, one per rail view, in the order of the shortcut table.
+        // Existing ctrl-1..9 stay stable; Canvas uses ctrl-0.
         let catalog = shortcut_catalog();
         for (index, (view, keys)) in crate::shell::RAIL_SHORTCUTS.iter().enumerate() {
-            assert_eq!(catalog[index].keys, format!("ctrl-{}", index + 1));
+            assert_eq!(catalog[index].keys, format!("ctrl-{}", (index + 1) % 10));
             assert_eq!(catalog[index].keys, *keys);
             assert!(catalog[index].action.ends_with(view.short_label()));
         }

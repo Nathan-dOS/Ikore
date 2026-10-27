@@ -13,6 +13,13 @@ try {
     $contracts = @($metadata.packages | Where-Object { $_.name -eq 'hvc-contracts' -and $null -eq $_.source })
     $terminal = @($metadata.packages | Where-Object { $_.name -eq 'hvc-terminal' -and $null -eq $_.source })
     $voice = @($metadata.packages | Where-Object { $_.name -eq 'hvc-voice' -and $null -eq $_.source })
+    $core = @($metadata.packages | Where-Object { $_.name -eq 'hvc-core' -and $null -eq $_.source })
+    if ($core.Count -ne 1) { throw 'The workspace must contain exactly one hvc-core package.' }
+    foreach ($dependency in $core[0].dependencies) {
+        if ($dependency.name -in @('gpui', 'hvc-ui', 'hvc-app')) {
+            throw "hvc-core has a forbidden UI dependency on $($dependency.name), including build/dev edges."
+        }
+    }
     if ($contracts.Count -ne 1 -or $terminal.Count -ne 1 -or $voice.Count -ne 1) {
         throw 'The workspace must contain exactly one hvc-contracts, one hvc-terminal and one hvc-voice package.'
     }
@@ -37,7 +44,7 @@ try {
             throw "hvc-voice has a forbidden dependency on $($dependency.name), including build/dev edges."
         }
     }
-    Write-Output 'Crate boundaries passed: contracts are independent; terminal and voice have no dependency on the host or GPUI.'
+    Write-Output 'Crate boundaries passed: core is UI-independent; contracts are independent; terminal and voice have no dependency on the host or GPUI.'
 }
 finally {
     Pop-Location

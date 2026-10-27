@@ -1,0 +1,42 @@
+{
+  "capturedAtUtc": "2026-10-27T03:11:01.9023996Z",
+  "cpu": [
+    {
+      "Name": "AMD Ryzen 5 5600 6-Core Processor              ",
+      "NumberOfLogicalProcessors": 12
+    }
+  ],
+  "gpu": [
+    {
+      "Name": "Parsec Virtual Display Adapter",
+      "DriverVersion": "0.45.0.0"
+    },
+    {
+      "Name": "NVIDIA GeForce RTX 5060 Ti",
+      "DriverVersion": "32.0.16.1742"
+    }
+  ],
+  "os": [
+    {
+      "Caption": "Microsoft Windows 11 Pro",
+      "Version": "10.0.26300",
+      "TotalVisibleMemorySize": 33475460
+    }
+  ],
+  "metricLimit": "GPUI callback intervals do not directly measure compositor presentation or input latency",
+  "dpi": "Not measured; screenshots use logical window coordinates",
+  "displayModeInventory": [
+    {
+      "Name": "Parsec Virtual Display Adapter",
+      "CurrentHorizontalResolution": null,
+      "CurrentVerticalResolution": null,
+      "CurrentRefreshRate": null
+    },
+    {
+      "Name": "NVIDIA GeForce RTX 5060 Ti",
+      "CurrentHorizontalResolution": 2560,
+      "CurrentVerticalResolution": 1440,
+      "CurrentRefreshRate": 164
+    }
+  ]
+}

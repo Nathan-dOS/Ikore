@@ -82,13 +82,14 @@ pub enum AppView {
     Vault,
     Chat,
     Notes,
+    Canvas,
     Agents,
     Settings,
     Logs,
 }
 
 impl AppView {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Home,
         Self::Forge,
         Self::Workspace,
@@ -96,6 +97,7 @@ impl AppView {
         Self::Vault,
         Self::Chat,
         Self::Notes,
+        Self::Canvas,
         Self::Agents,
         Self::Settings,
         Self::Logs,
@@ -110,6 +112,7 @@ impl AppView {
             Self::Vault => "vault",
             Self::Chat => "chat",
             Self::Notes => "notes",
+            Self::Canvas => "canvas",
             Self::Agents => "agents",
             Self::Settings => "settings",
             Self::Logs => "logs",
@@ -125,6 +128,7 @@ impl AppView {
             Self::Vault => "Vault & Graph",
             Self::Chat => "Chat / Companion",
             Self::Notes => "Notes / Scribe",
+            Self::Canvas => "Canvas / Architecture",
             Self::Agents => "Agents & Terminais",
             Self::Settings => "Settings & AI Runtime",
             Self::Logs => "Logs & Observability",
@@ -140,6 +144,7 @@ impl AppView {
             Self::Vault => "Vault",
             Self::Chat => "Companion",
             Self::Notes => "Notes",
+            Self::Canvas => "Canvas",
             Self::Agents => "Agents",
             Self::Settings => "Settings",
             Self::Logs => "Logs",
@@ -156,6 +161,7 @@ impl AppView {
             Self::Vault => Icon::Vault,
             Self::Chat => Icon::MessageSquare,
             Self::Notes => Icon::NotebookPen,
+            Self::Canvas => Icon::Network,
             Self::Agents => Icon::Bot,
             Self::Settings => Icon::Settings,
             Self::Logs => Icon::ScrollText,
@@ -171,6 +177,7 @@ impl AppView {
             Self::Vault => "Markdown notes, links, and workspace context",
             Self::Chat => "Conversation, streaming, and read-only tools",
             Self::Notes => "Loose ideas the Notes Scribe turns into structured notes",
+            Self::Canvas => "Native diagrams, connected shapes, and project drawings",
             Self::Agents => "CLI/API execution of the seven canonical agents",
             Self::Settings => "Providers, LLM routing, and local preferences",
             Self::Logs => "Typed events and runtime diagnostics",
@@ -211,7 +218,12 @@ impl AppTab {
         match self {
             Self::Agent => &[AppView::Agents, AppView::Logs],
             Self::Engine => &[AppView::Forge, AppView::Pulsations, AppView::Vault],
-            Self::Companion => &[AppView::Chat, AppView::Notes, AppView::Workspace],
+            Self::Companion => &[
+                AppView::Chat,
+                AppView::Notes,
+                AppView::Canvas,
+                AppView::Workspace,
+            ],
         }
     }
 
@@ -294,6 +306,11 @@ pub struct AppModel {
     pub(crate) core: Option<Arc<AppCore>>,
     pub(crate) forge: crate::forge::ForgeUi,
     pub(crate) notes: crate::notes::NotesUi,
+    pub(crate) canvas: crate::canvas::CanvasUi,
+    pending_canvas_workspace: Option<String>,
+    pub(crate) canvas_close_requested: bool,
+    pub(crate) canvas_project_switching: bool,
+    canvas_close_window: Option<gpui::AnyWindowHandle>,
     /// ADR-034 M5: notes whose linked code changed.
     pub(crate) doc_drift: crate::doc_drift::DocDriftUi,
     session_persistence: Option<Arc<dyn SessionPersistence>>,
@@ -817,6 +834,11 @@ impl AppModel {
             core,
             forge: crate::forge::ForgeUi::new(cx),
             notes: crate::notes::NotesUi::new(cx),
+            canvas: crate::canvas::CanvasUi::new(cx),
+            pending_canvas_workspace: None,
+            canvas_close_requested: false,
+            canvas_project_switching: false,
+            canvas_close_window: None,
             doc_drift: crate::doc_drift::DocDriftUi::new(cx),
             session_persistence,
             workspace_backend,
@@ -1168,6 +1190,7 @@ impl AppModel {
             }
             AppView::Forge => self.refresh_forge(cx),
             AppView::Notes => self.refresh_notes(cx),
+            AppView::Canvas => self.refresh_canvas(cx),
             // Both explorers show the same tree; either one opening consumes the stale marker.
             AppView::Vault | AppView::Workspace if self.vault.read(cx).stale => {
                 self.schedule_vault_refresh(cx)
@@ -1275,11 +1298,11 @@ impl AppModel {
     }
 
     pub fn choose_workspace(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(core) = self.core.clone() else {
+        if self.core.is_none() {
             self.status = "Picker unavailable in test environment".into();
             cx.notify();
             return;
-        };
+        }
 
         let selected = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -1303,14 +1326,66 @@ impl AppModel {
                 return;
             };
             let path = path.to_string_lossy().into_owned();
-            let runtime = core.runtime_handle().clone();
+            let _ = this.update(cx, |model, cx| {
+                model.open_selected_workspace(path, cx);
+            });
+        }));
+    }
+
+    fn open_selected_workspace(&mut self, path: String, cx: &mut Context<Self>) {
+        if !self.canvas_can_leave(cx) {
+            self.pending_canvas_workspace = Some(path);
+            self.status = "Saving the drawing before changing projects…".into();
+            self.select_view(AppView::Canvas, cx);
+            return;
+        }
+        self.pending_canvas_workspace = None;
+        let Some(core) = self.core.clone() else {
+            return;
+        };
+        self.canvas_project_switching = true;
+        let runtime = core.runtime_handle().clone();
+        self.workspace_task = Some(cx.spawn(async move |this, cx| {
             let restored = runtime
-                .spawn_blocking(move || load_workspace(Arc::clone(&core), path))
+                .spawn_blocking(move || load_workspace(core, path))
                 .await;
             let _ = this.update(cx, |model, cx| {
                 model.finish_workspace_restore(restored.map(|result| result.map(Some)), cx);
             });
         }));
+    }
+
+    pub(crate) fn request_canvas_close(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.canvas_can_leave(cx) {
+            self.canvas_close_requested = false;
+            self.canvas_close_window = None;
+            return true;
+        }
+        self.canvas_close_requested = true;
+        self.canvas_close_window = Some(window.window_handle());
+        self.select_view(AppView::Canvas, cx);
+        false
+    }
+
+    pub(crate) fn complete_canvas_transition(&mut self, cx: &mut Context<Self>) {
+        if self.canvas_has_pending() {
+            return;
+        }
+        if let Some(path) = self.pending_canvas_workspace.take() {
+            self.open_selected_workspace(path, cx);
+        }
+        if self.canvas_close_requested {
+            self.canvas_close_requested = false;
+            if let Some(window) = self.canvas_close_window.take() {
+                cx.defer(move |cx| {
+                    let _ = window.update(cx, |_, window, _| window.remove_window());
+                });
+            }
+        }
     }
 
     pub fn set_brownfield_mapping_enabled(&mut self, consent: bool, cx: &mut Context<Self>) {
@@ -6567,12 +6642,13 @@ impl AppModel {
             .as_ref()
             .is_some_and(|id| id.as_ref() == preview.project.id);
         if active
-            && self
-                .workspace
-                .read(cx)
-                .tabs
-                .iter()
-                .any(|tab| tab.dirty || tab.saving || tab.conflict.is_some())
+            && (self.canvas_has_pending()
+                || self
+                    .workspace
+                    .read(cx)
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.dirty || tab.saving || tab.conflict.is_some()))
         {
             self.settings.update(cx,|settings,_|settings.error=Some(UiCommandError::worker("Save or close all dirty, saving or conflicted editor tabs before deleting this project.")));
             cx.notify();
@@ -6641,6 +6717,11 @@ impl AppModel {
             .update(cx, |vault, _| *vault = VaultModel::default());
         self.forge = crate::forge::ForgeUi::new(cx);
         self.notes = crate::notes::NotesUi::new(cx);
+        self.canvas = crate::canvas::CanvasUi::new(cx);
+        self.pending_canvas_workspace = None;
+        self.canvas_close_requested = false;
+        self.canvas_close_window = None;
+        self.canvas_project_switching = false;
         self.navigation
             .update(cx, |navigation, _| navigation.active = AppView::Home);
         self.sync_voice_project(cx);
@@ -7568,6 +7649,7 @@ impl AppModel {
             AppView::Agents => self.refresh_agents(cx),
             AppView::Forge => self.refresh_forge(cx),
             AppView::Notes => self.refresh_notes(cx),
+            AppView::Canvas => self.refresh_canvas(cx),
             AppView::Pulsations => self.refresh_pulsation_usage(cx),
             AppView::Chat => {
                 let project = self
@@ -7704,6 +7786,7 @@ impl AppModel {
         restored: Result<Result<Option<RestoredSession>, String>, tokio::task::JoinError>,
         cx: &mut Context<Self>,
     ) {
+        self.canvas_project_switching = false;
         match restored {
             Ok(Ok(Some(restored))) => self.apply_restored_session(restored, cx),
             Ok(Ok(None)) => {
@@ -7849,6 +7932,8 @@ impl AppModel {
         // the agents and settings snapshots, so all three load with the project instead of
         // waiting for their view to be opened.
         self.refresh_forge(cx);
+        // Recover committed drawing mirrors even when the restored view is not Canvas.
+        self.refresh_canvas(cx);
         match active_view {
             AppView::Agents => self.refresh_agents(cx),
             AppView::Logs => self.refresh_logs(cx),
@@ -8225,6 +8310,18 @@ impl AppModel {
                 {
                     // Reports what finished once the snapshot shows it (`notes.rs`).
                     self.refresh_notes(cx);
+                }
+            }
+            AppEvent::Drawings(event) => {
+                if self
+                    .workspace
+                    .read(cx)
+                    .project_id
+                    .as_ref()
+                    .is_some_and(|p| p.as_ref() == event.project_id)
+                    && !self.canvas_has_pending()
+                {
+                    self.refresh_canvas(cx);
                 }
             }
             AppEvent::Voice(_) => self.refresh_voice_status(cx),
@@ -9531,6 +9628,7 @@ mod tests {
         cx.read(|cx| {
             let model = model.read(cx);
             assert_eq!(model.active_view, AppView::Chat);
+            assert_eq!(model.canvas.project_id.as_deref(), Some("project-1"));
             assert!(model.navigation.read(cx).context_rail_collapsed);
             assert!(model.auto_open_review);
             let workspace = model.workspace.read(cx);
