@@ -1,3 +1,4 @@
 crates/hvc-core/migrations/*.sql text eol=lf
 crates/hvc-core/src/reports/fixtures/*.html text eol=lf
 crates/hvc-core/src/reports/*.css text eol=lf
+crates/hvc-core/src/attestation/fixtures/* -text
