@@ -1,11 +1,12 @@
 # Native canvas implementation and validation
 
-Status: basic feature validation completed in the isolated branch; integration
-awaits developer approval. Started 2026-10-26; updated 2026-10-27.
-Branch: `feat/native-architecture-canvas`, based on `15d596c`.
-Worktree: `HardVibeCode/.worktrees/native-architecture-canvas`.
-No commit, merge or push has been performed. The primary checkout and the
-Mandates worktree were not modified by this implementation.
+Status: validated and integrated into main on 2026-10-27. See the
+[main integration record](canvas-main-integration-2026-10-27.md).
+Implementation branch: `feat/native-architecture-canvas`, based on `15d596c`.
+Its isolated worktree and temporary branch were removed after the verified push.
+The validation snapshot below predates Git integration. Existing local Whisper
+edits were preserved outside the published commits; the Mandates worktree was
+not modified.
 
 ## Delivered scope
 
@@ -18,11 +19,9 @@ mirrors deterministic JSON/SVG under `.hvc/drawings/`, with conflict preservatio
 and recovery after partial writes. Camera preferences do not change the scene
 revision. Normal close/project switching preserve pending content.
 
-Migration V57 is valid on this V55 baseline. Migration numbers must be reconciled
-at integration: once V57 has been applied, adding V56 would fail refinery's missing-
-migration validation. If Canvas lands first, keep V55 Cargo/V57 Canvas and number
-the unpublished Mandates migrations V58/V59 or later free versions. If Mandates
-lands first, assign Canvas a version after its final migration and rerun validation.
+Canvas V57 was integrated first, preserving V55 Cargo. Once V57 has been applied,
+adding V56 would fail refinery's missing-migration validation. Future unpublished
+Mandates migrations must therefore use V58/V59 or later free versions.
 Never edit already applied migration history or disable refinery's checks. Existing
 Mandates development databases must stay isolated until their transition is defined.
 No existing migration was edited. Cargo manifests and lockfile are unchanged.
@@ -194,5 +193,5 @@ no direct speedup ratio or universal FPS guarantee is inferred.
 The final `scripts/gate-stage7.ps1` invocation approved architecture, crate
 boundaries, formatting, Clippy with warnings denied, full tests, release build,
 Windows smoke, source/license audit and advisories. Earlier failed attempts remain
-historical evidence. No commit, merge, push or worktree cleanup has been performed;
-the branch remains active for review and integration approval.
+historical evidence. Subsequent Git integration, publication, preservation of local
+work and cleanup are recorded separately in the main integration record.
