@@ -113,17 +113,17 @@ diagram. Other desktop workload was uncontrolled. The
 and [validation record](../quality/canvas-refinement-validation-2026-10-27.md) preserve
 the method, limits and completed validation.
 
-## Canvas AI authoring candidate — 2026-10-28
+## Canvas AI authoring — published 2026-10-29
 
-The local main candidate adds explicit Companion offers, developer consent,
+The published main source adds explicit Companion offers, developer consent,
 hidden generation and an **Open Canvas** result button, plus shared semantic
 validation for generated and manually edited architecture/process drawings.
 The [authoring implementation](canvas-ai-authoring.md) describes V58, target
-freezing, recovery and the restricted BPMN profile. On 2026-10-29, local technical
-qualification passed all nine gate checks. The complete workspace regression
-passed 1,782 tests, with zero failures and 16 existing ignored tests. No task branch
-or worktree was created, and no commit or push was performed. Authenticated
-providers and physical display/DPI/IME checks
-remain unqualified; the optional document resolver is not exposed. The
-[workflow validation record](../quality/canvas-ai-workflow-validation-2026-10-28.md)
-records evidence and qualification limits.
+freezing, recovery and the restricted BPMN profile. Source commit
+[`e7dfe4e`](https://github.com/Nathan-dOS/HARD-VC/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b)
+was qualified independently of preserved local voice work: all nine gate checks
+passed, with 1,778 tests approved, zero failures and 16 existing ignored tests.
+No task branch or worktree was created. Authenticated providers and physical
+display/DPI/IME checks remain unqualified; the optional document resolver is not
+exposed. The [publication record](../quality/canvas-ai-publication-2026-10-29.md)
+records the selected source and distinguishes the earlier combined-checkout run.

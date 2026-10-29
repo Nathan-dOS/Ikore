@@ -79,13 +79,17 @@ a restricted writer materializes JSON/SVG under the project's `.hvc/drawings/`.
 Project deletion shares the drawing service's project guard. See
 [native canvas](native-canvas.md) for save, conflict and lifecycle behavior.
 
-The [Canvas AI authoring candidate](canvas-ai-authoring.md) adds a separate
+The published [Canvas AI authoring](canvas-ai-authoring.md) adds a separate
 consent-bound job runner and V58 request/staging storage. A final-answer offer is
 not permission. Native approval freezes the Companion target; publication commits
 one new drawing and its ready receipt. Completion never navigates. Manual semantic
 commands share core validation and preserve scene/history; no general repository
-write tool is exposed. The validation record distinguishes tested fixtures from
-physical/live-provider qualification and the optional document resolver.
+write tool is exposed. Source commit
+[`e7dfe4e`](https://github.com/Nathan-dOS/HARD-VC/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b)
+passed the nine-check gate on its selected source tree, excluding unrelated local
+voice changes. The [publication record](../quality/canvas-ai-publication-2026-10-29.md)
+distinguishes that qualification from the earlier combined checkout and states
+the physical/live-provider limits and unexposed optional document resolver.
 
 Voice dictation feeds the same capture path. The core
 [voice service](../crates/hvc-core/src/voice.rs) owns the settings, installs the

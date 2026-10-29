@@ -1,14 +1,17 @@
-# Canvas AI authoring candidate
+# Canvas AI authoring
 
-**Status: technically validated local main candidate, 2026-10-29.** Implementation
-started on 2026-10-28. The complete workspace suite passed 1,782 tests with zero
-failures and all nine adopted gate checks passed. The qualified source fingerprint
-covers 887 files with zero drift. No task branch or worktree was created, and no
-commit or push was performed. This local technical qualification does not certify authenticated
-providers, physical display/DPI/IME behavior or a production model's diagram
-quality. The [qualification record](../quality/canvas-ai-workflow-qualification-2026-10-28.json)
-records the exact candidate; results and remaining limits belong to the
-[workflow validation record](../quality/canvas-ai-workflow-validation-2026-10-28.md).
+**Status: source published on main, 2026-10-29**, in
+[`e7dfe4e`](https://github.com/Nathan-dOS/HARD-VC/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b).
+The selected source tree excluded unrelated local voice changes and passed 1,778
+tests with zero failures and all nine adopted gate checks. Its 884 source hashes
+and Git blobs were verified with zero drift. No task branch or worktree was
+created. The [publication record](../quality/canvas-ai-publication-2026-10-29.md)
+and [qualification record](../quality/canvas-ai-publication-qualification-2026-10-29.json)
+identify the published scope. The earlier 1,782-test result remains evidence of
+the combined local checkout, as recorded in the
+[historical workflow report](../quality/canvas-ai-workflow-validation-2026-10-28.md).
+Technical qualification does not certify authenticated providers, physical
+display/DPI/IME behavior or a production model's diagram quality.
 
 The Companion can offer a new Canvas explanation after completing its chat answer.
 The developer approves that specific offer, generation runs in hidden staging, and
@@ -99,10 +102,10 @@ boundaries before durable storage and export.
 
 ## Persistence, publication and recovery
 
-The candidate adds `V58__canvas_authoring_jobs.sql` in the local main checkout.
-V57 and earlier applied migrations are unchanged. V58 is a candidate allocation,
-not a reservation for other branches; future integrations must reconcile their
-new migrations against the actual merged history before applying them.
+The published source includes `V58__canvas_authoring_jobs.sql`. V57 and earlier
+applied migrations are unchanged. Future integrations must use free versions
+above V58 for their new migrations and reconcile against the actual merged
+history before applying them; V58 is occupied by Canvas authoring.
 
 `companion_canvas_requests` owns the durable lifecycle:
 `awaiting_authorization` becomes `declined` or `running`; a running request ends

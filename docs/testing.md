@@ -208,14 +208,19 @@ the default collector configuration. See [ADR-031](adr/031-terminal-boundary.md)
 
 ## Canvas AI authoring candidate
 
-The [authoring implementation](canvas-ai-authoring.md) passed local technical
-qualification on 2026-10-29. The complete workspace suite passed 1,782 tests,
-zero failed, 16 ignored and zero filtered across 55 target summaries in 894.904
-seconds. All nine adopted gate checks passed in 1,405.906 seconds, including the
-release build and graceful Windows smoke with exit 0 and its temporary profile
-removed. The qualified fingerprint covers 887 source files with zero drift.
-No task branch or worktree was created, and no commit or push was performed. See the
-[qualification record](../quality/canvas-ai-workflow-qualification-2026-10-28.json).
+The [authoring implementation](canvas-ai-authoring.md) is published on main in
+[`e7dfe4e`](https://github.com/Nathan-dOS/HARD-VC/commit/e7dfe4e10691c2e7101839f89a0917d227fc4c9b).
+Its selected source tree excluded unrelated local voice changes. On 2026-10-29,
+the complete suite passed 1,778 tests, zero failed, 16 ignored and zero filtered
+across 55 target summaries in 2,023.458 seconds. All nine gate checks passed in
+2,933.376 seconds, including the 806.453-second release build and 4.951-second
+graceful Windows smoke with exit 0 and its temporary profile removed. All 884
+source hashes and Git blobs were verified with zero drift. No task branch or
+worktree was created. See the
+[publication qualification](../quality/canvas-ai-publication-qualification-2026-10-29.json)
+and [publication record](../quality/canvas-ai-publication-2026-10-29.md).
+The earlier 1,782-test/887-source result belongs to the historical combined local
+checkout; it is separate from this qualification of the published selection.
 Focused selections are:
 
 ```powershell
@@ -247,11 +252,11 @@ after a valid labeled addition and return on Undo. The completed gate included
 `cargo test-all` and the checks documented above. Authenticated providers and
 physical display/DPI/IME behavior remain unqualified; the optional document
 resolver is not exposed. Actual results and execution limits are recorded in the
-[workflow validation record](../quality/canvas-ai-workflow-validation-2026-10-28.md).
+[publication record](../quality/canvas-ai-publication-2026-10-29.md).
 
 Quota meter tests distinguish historical captured windows from live-window
 fixtures. Tests needing live windows copy the fixture and set relative future
 resets; captured files and production expiry rules remain unchanged.
 `claude_run_events_keep_expired_windows_out_of_the_live_meter` separately checks
-that expired windows stay out of the live meter. The workflow report retains the
+that expired windows stay out of the live meter. The historical workflow report retains the
 time-dependent third gate failure and the 17-test focused correction result.

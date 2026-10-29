@@ -177,10 +177,12 @@ resolução ou decisão jurídica explícita sobre o issue Zed #55470.
 
 Companion includes a [native architecture canvas](docs/native-canvas.md) on `Ctrl+0`,
 with project drawings, connected shapes, gesture Undo/Redo and recoverable JSON/SVG
-mirrors. The local [Canvas AI authoring candidate](docs/canvas-ai-authoring.md)
-adds explicit consent, hidden generation and a receipt-bound Open Canvas button,
-with profile-aware architecture/BPMN editing. Its validation record tracks the
-final gate. Drawing-to-AI analysis is planned separately.
+mirrors. [Canvas AI authoring](docs/canvas-ai-authoring.md) adds explicit consent,
+hidden generation and a receipt-bound Open Canvas button, with profile-aware
+architecture/BPMN editing. The source is published on main; its selected tree
+passed all nine checks and 1,778 tests. The [publication record](quality/canvas-ai-publication-2026-10-29.md)
+distinguishes that scope from preserved local voice work. Drawing-to-AI analysis
+is planned separately.
 
 Agents uses a list and one detail panel in CLI and API modes. Pulsations separates Review, Overview, Preparation, and Artifacts; Settings separates Connections, Routes, and Runtime. Agents and Companion share an absolute model-picker overlay with Escape dismissal. Logs has collapsible sections and incremental event display; Vault has independent graph and document scrolling.
 
